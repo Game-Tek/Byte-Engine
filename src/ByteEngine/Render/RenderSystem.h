@@ -134,7 +134,7 @@ public:
 		auto& commandListData = commandLists[command_list_handle()];
 
 		GTSL::StaticVector<GAL::AccelerationStructureBuildInfo, 8> buildDatas;
-		GTSL::StaticVector<GAL::Geometry, 8> geometries;
+		GTSL::StaticVector<GTSL::StaticVector<GAL::Geometry, 8>, 8> geometries;
 
 		for (auto handle : handles) {
 			auto& buildData = buildDatas.EmplaceBack();
@@ -148,9 +148,7 @@ public:
 
 				commandListData.CommandList.CopyBuffer(GetRenderDevice(), buffers[tlas.SourceInstancesBuffer()].Buffer, buffers[tlas.DestinationInstancesBuffer()].Buffer, GetBufferSize(tlas.DestinationInstancesBuffer));
 
-				geometries.EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.DestinationInstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
-
-				buildData.Geometries = geometries;
+				geometries.EmplaceBack().EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.DestinationInstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
 			} else {
 				const auto& as = accelerationStructures[handle()];
 				const auto& blas = accelerationStructures[handle()].BottomLevel;
@@ -158,10 +156,10 @@ public:
 				buildData.DestinationAccelerationStructure = blas.AccelerationStructure;
 				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 				
-				geometries.EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), GetBufferAddress(blas.VertexBuffer) + blas.VertexByteOffset, GetBufferAddress(blas.IndexBuffer) + blas.IndexBufferByteOffset, 0, blas.VertexCount }, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0 });
-
-				buildData.Geometries = geometries;
+				geometries.EmplaceBack().EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), GetBufferAddress(blas.VertexBuffer) + blas.VertexByteOffset, GetBufferAddress(blas.IndexBuffer) + blas.IndexBufferByteOffset, 0, blas.VertexCount }, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0 });
 			}
+
+			buildData.Geometries = geometries.back();
 		}
 
 		switch (accelerationStructureBuildDevice) {

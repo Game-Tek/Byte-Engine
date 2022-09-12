@@ -187,7 +187,7 @@ struct GPipeline : Object {
 			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
 		} Type = ElementType::NONE;
 
-		GTSL::HashMap<Id, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
+		GTSL::HashMap<GTSL::StringView, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
 		GTSL::Vector<uint32, BE::TAR> symbols;
 		GTSL::StaticString<64> Name;
 		uint16 Level = 0;
@@ -220,7 +220,7 @@ struct GPipeline : Object {
 	}
 
 	auto& GetElement(ElementHandle parent, const GTSL::StringView element_name) {
-		return elements[elements[parent.Handle].map[Id(element_name)].back()];
+		return elements[elements[parent.Handle].map[element_name].back()];
 	}
 
 	auto& GetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
@@ -235,7 +235,7 @@ struct GPipeline : Object {
 
 	uint32 GetLevel(const ElementHandle element_handle) const { return elements[element_handle.Handle].Level; }
 
-	auto& GetElement(const ElementHandle element_handle) { return elements[element_handle.Handle]; }
+	auto GetElement(const ElementHandle element_handle) -> LanguageElement& { return elements[element_handle.Handle]; }
 	const auto& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
 
 	auto& GetFunctionTokens(const ElementHandle element_handle) {
@@ -245,7 +245,7 @@ struct GPipeline : Object {
 private:
 	ElementHandle add(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
-		elements[parent.Handle].map.Emplace(Id(name)).EmplaceBack(handle);
+		elements[parent.Handle].map.Emplace(name).EmplaceBack(handle);
 		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type; e.Name = name;
@@ -256,10 +256,17 @@ private:
 		return ElementHandle(handle);
 	}
 
-
 	ElementHandle addConditional(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
+		auto& parentElement = elements[parent.Handle];
+
+		if(parentElement.map.Find(name)) { return ElementHandle(parentElement.map[name].back()); }
+
+		return add(parent, name, type);
+	}
+
+	ElementHandle addMultiple(ElementHandle parent, const GTSL::StringView name, LanguageElement::ElementType type) {
 		auto handle = elements.Emplace(parent.Handle, BE::TAR(u8"Shader"));
-		elements[parent.Handle].map.TryEmplace(Id(name)).Get().EmplaceBack(handle);
+		elements[parent.Handle].map.TryEmplace(name).Get().EmplaceBack(handle);
 		elements[parent.Handle].symbols.EmplaceBack(handle);
 		auto& e = elements[handle];
 		e.Type = type; e.Name = name;
@@ -273,7 +280,7 @@ private:
 public:
 
 	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
-		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
+		if (auto res = elements[parent.Handle].map.TryGet(name)) {
 			return { elements[res.Get().back()], true };
 		}
 		else {
@@ -282,7 +289,7 @@ public:
 	}
 
 	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) const -> GTSL::Result<const LanguageElement&> {
-		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
+		if (auto res = elements[parent.Handle].map.TryGet(name)) {
 			return { elements[res.Get().back()], true };
 		}
 		else {
@@ -291,7 +298,7 @@ public:
 	}
 
 	auto TryGetElementHandle(ElementHandle parent, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
-		if (auto res = elements[parent.Handle].map.TryGet(Id(name))) {
+		if (auto res = elements[parent.Handle].map.TryGet(name)) {
 			return { ElementHandle(res.Get().back()), true };
 		}
 
@@ -348,7 +355,7 @@ public:
 	}
 
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name) {
-		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
+		auto handle = addMultiple(parent, name, LanguageElement::ElementType::FUNCTION);
 		elements[handle.Handle].Reference = Functions.GetLength();
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Id = handle.Handle;
@@ -356,7 +363,7 @@ public:
 	}
 
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters) {
-		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
+		auto handle = addMultiple(parent, name, LanguageElement::ElementType::FUNCTION);
 		elements[handle.Handle].Reference = Functions.GetLength();
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Parameters = parameters;
@@ -365,7 +372,7 @@ public:
 	}
 
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
-		auto handle = addConditional(parent, name, LanguageElement::ElementType::FUNCTION);
+		auto handle = addMultiple(parent, name, LanguageElement::ElementType::FUNCTION);
 		elements[handle.Handle].Reference = Functions.GetLength();
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Parameters = parameters;
@@ -451,8 +458,12 @@ public:
 		return add(parentHandle, name, LanguageElement::ElementType::SCOPE);
 	}
 
+	ElementHandle TryDeclareScope(const ElementHandle parentHandle, const GTSL::StringView name) {
+		return addConditional(parentHandle, name, LanguageElement::ElementType::SCOPE);
+	}
+
 	ElementHandle DeclareShader(const ElementHandle parentHandle, const GTSL::StringView name) {
-		auto handle = addConditional(parentHandle, name, LanguageElement::ElementType::SHADER);
+		auto handle = addMultiple(parentHandle, name, LanguageElement::ElementType::SHADER);
 		auto& element = GetElement(handle);
 		return handle;
 	}
@@ -483,7 +494,7 @@ public:
 	}
 
 	ElementHandle GetElementHandle(ElementHandle parent_handle, const GTSL::StringView name) const {
-		return ElementHandle(elements[parent_handle.Handle].map.At(Id(name)).back());
+		return ElementHandle(elements[parent_handle.Handle].map.At(name).back());
 	}
 
 	StructData& GetStruct(const ElementHandle element_handle) {
@@ -648,7 +659,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
 		GTSL::StaticString<64> result = name;
 
-		switch (Hash(name)) {
+		switch (GTSL::Hash(name)) {
 		case GTSL::Hash(u8"float32"): result = u8"float"; break;
 		case GTSL::Hash(u8"vec2f"):   result = u8"vec2"; break;
 		case GTSL::Hash(u8"vec2u"):   result = u8"uvec2"; break;
@@ -1163,10 +1174,10 @@ inline void GenSPIRV() {
 
 	//Interface is a list of <id> of global OpVariable instructions.
 	//These declare the set of global variables from a module that form the interface of this entry point.
-	//The set of Interface <id> must be equal to or a superset of the global OpVariable Result <id> referenced by the entry point’s static call tree,
-	//within the interface’s storage classes. Before version 1.4, the interface’s storage classes are limited to the Input and Output storage classes.
-	//Starting with version 1.4, the interface’s storage classes are all storage classes used in declaring all global variables
-	//referenced by the entry point’s call tree.
+	//The set of Interface <id> must be equal to or a superset of the global OpVariable Result <id> referenced by the entry pointï¿½s static call tree,
+	//within the interfaceï¿½s storage classes. Before version 1.4, the interfaceï¿½s storage classes are limited to the Input and Output storage classes.
+	//Starting with version 1.4, the interfaceï¿½s storage classes are all storage classes used in declaring all global variables
+	//referenced by the entry pointï¿½s call tree.
 	//Interface <id> are forward references.Before version 1.4, duplication of these <id> is tolerated.Starting with version 1.4,
 	//an <id> must not appear more than once.
 	addInst(spv::OpEntryPoint, spv::ExecutionModelVertex, 0/*Result<id> of an OpFunction*/, 0/*literal name*/);
@@ -1345,7 +1356,7 @@ inline void GenSPIRV() {
 //	}
 //};
 
-//inline auto parseStatement(GTSL::JSONMember parent, GTSL::Tree<ShaderNode, BE::PAR>& tree, uint32 parentHandle) -> uint32 {
+//inline auto parseStatement(GTSL::JSON parent, GTSL::Tree<ShaderNode, BE::PAR>& tree, uint32 parentHandle) -> uint32 {
 //	auto handle = tree.Emplace(parentHandle);
 //	auto& node = tree[handle];
 //

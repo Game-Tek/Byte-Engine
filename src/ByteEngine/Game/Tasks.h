@@ -30,6 +30,7 @@ struct TaskInfo {
 struct TaskDependency
 {
 	TaskDependency() = default;
+	TaskDependency(const GTSL::StringView object, const AccessType access) : AccessedObject(object), Access(access) {}
 	TaskDependency(const Id object, const AccessType access) : AccessedObject(object), Access(access) {}
 
 	Id AccessedObject;

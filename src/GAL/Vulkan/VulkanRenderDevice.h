@@ -78,14 +78,14 @@ namespace GAL
 			allocationInfo = createInfo.AllocationInfo; debug = createInfo.Debug;
 
 			{
-				GTSL::HashMap<uint64, uint32, ALLOC> availableInstanceExtensions(32, alloc);
+				GTSL::HashMap<GTSL::StringView, uint32, ALLOC> availableInstanceExtensions(32, alloc);
 				VkExtensionProperties extension_properties[64];
 				
 				uint32 extensionCount = 64;
 				getInstanceProcAddr<PFN_vkEnumerateInstanceExtensionProperties>(u8"vkEnumerateInstanceExtensionProperties")(nullptr, &extensionCount, extension_properties);
 
 				for (uint32 i = 0; i < extensionCount; ++i) {
-					availableInstanceExtensions.Emplace(GTSL::Hash(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
+					availableInstanceExtensions.Emplace(GTSL::StringView(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
 				}				
 
 				VkApplicationInfo vkApplicationInfo{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -119,7 +119,7 @@ namespace GAL
 				}
 
 				auto tryAddExtension = [&](const GTSL::StringView extensionName) {
-					if (auto searchResult = availableInstanceExtensions.TryGet(Hash(extensionName))) {
+					if (auto searchResult = availableInstanceExtensions.TryGet(extensionName)) {
 						instanceExtensions.EmplaceBack(extension_properties[searchResult.Get()].extensionName);
 						return true;
 					}
@@ -222,7 +222,7 @@ namespace GAL
 				physicalDevice = vkPhysicalDevices[bestPhysicalDevice];
 			}
 
-			GTSL::HashMap<uint64, uint32, ALLOC> availableDeviceExtensions(256, 0.25f, alloc);
+			GTSL::HashMap<GTSL::StringView, uint32, ALLOC> availableDeviceExtensions(256, 0.25f, alloc);
 			VkExtensionProperties extension_properties[256];
 			GTSL::StaticVector<const char*, 32> deviceExtensions;
 
@@ -231,7 +231,7 @@ namespace GAL
 				getInstanceProcAddr<PFN_vkEnumerateDeviceExtensionProperties>(u8"vkEnumerateDeviceExtensionProperties")(physicalDevice, nullptr, &extensionCount, extension_properties);
 
 				for (uint32 i = 0; i < extensionCount; ++i) {
-					availableDeviceExtensions.Emplace(GTSL::Hash(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
+					availableDeviceExtensions.Emplace(GTSL::StringView(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
 				}
 			}
 
@@ -320,7 +320,7 @@ namespace GAL
 					};
 
 					auto tryAddExtension = [&](const GTSL::StringView extensionName) {
-						if(auto searchResult = availableDeviceExtensions.TryGet(Hash(extensionName))) {
+						if(auto searchResult = availableDeviceExtensions.TryGet(extensionName)) {
 							deviceExtensions.EmplaceBack(extension_properties[searchResult.Get()].extensionName);
 							return true;
 						}
@@ -584,7 +584,7 @@ namespace GAL
 			//getDeviceProcAddr(u8"vkGetDeviceBufferMemoryRequirementsKHR", &VkGetDeviceBufferMemoryRequirements);
 			//getDeviceProcAddr(u8"vkGetDeviceImageMemoryRequirementsKHR", &VkGetDeviceImageMemoryRequirements);
 
-			if (availableDeviceExtensions.Find(GTSL::Hash(u8"VK_NV_mesh_shader"))) {
+			if (availableDeviceExtensions.Find(u8"VK_NV_mesh_shader")) {
 				getDeviceProcAddr(u8"vkCmdDrawMeshTasksNV", &VkCmdDrawMeshTasks);
 			} else {
 				return InitRes(GTSL::Range(u8"Required extension: \nVK_NV_mesh_shader\" is not available."), false);

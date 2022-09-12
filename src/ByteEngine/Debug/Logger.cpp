@@ -5,9 +5,11 @@
 
 #include <GTSL/System.h>
 
+#include "ByteEngine/Application/Application.h"
+
 using namespace BE;
 
-Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), trace(loggerCreateInfo.Trace), logFile()//, allowedLoggers(32, GetSyste())
+Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), logFile()//, allowedLoggers(32, GetSyste())
 {
 	uint64 allocated_size{ 0 };
 	GetPersistentAllocator().Allocate(defaultBufferLength, 1, reinterpret_cast<void**>(&data), &allocated_size);
@@ -22,9 +24,17 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), t
 		default:;
 		}
 	}
+	
+	logFile.Resize(0);
+
+	GTSL::Console::SetConsoleInputModeAsUTF8();
+}
+
+void Logger::SetTrace(bool t) {
+	trace = t;
 
 	if (trace) {
-		GTSL::StaticString<260> path(loggerCreateInfo.AbsolutePathToLogDirectory);
+		GTSL::StaticString<260> path(BE::Application::Get()->GetPathToApplication());
 		path += u8"/trace.txt";
 		switch (graphFile.Open(path, GTSL::File::WRITE, true)) {
 		case GTSL::File::OpenResult::OK: break;
@@ -37,15 +47,11 @@ Logger::Logger(const LoggerCreateInfo& loggerCreateInfo) : Object(u8"Logger"), t
 		{
 			GTSL::StaticString<512> string;
 
-			string += u8"{\"otherData\": {},\"traceEvents\":[";
+			string += u8"{\"otherData\": {},\"traceEvents\":[]}";
 
 			graphFile.Write(GTSL::Range(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
 		}
 	}
-	
-	logFile.Resize(0);
-
-	GTSL::Console::SetConsoleInputModeAsUTF8();
 }
 
 //TODO: if string is too big clamp to nearest CODEPOINT not Byte
@@ -94,9 +100,4 @@ void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
 
 Logger::~Logger()
 {
-	{
-		GTSL::StaticString<512> string;
-		string += u8"]}";
-		graphFile.Write(GTSL::Range<const byte*>(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
-	}
 }

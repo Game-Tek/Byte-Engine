@@ -85,7 +85,7 @@ private:
 	void loadStaticMeshInfo(TaskInfo taskInfo, Id meshName, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS... args)
 	{
 		StaticMeshInfo static_mesh_info;
-		resource_files_.LoadEntry(meshName, static_mesh_info);
+		resource_files_.LoadEntry(GTSL::StringView(meshName), static_mesh_info);
 
 		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(static_mesh_info), GTSL::ForwardRef<ARGS>(args)...);
 	};

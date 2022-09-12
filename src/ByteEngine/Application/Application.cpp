@@ -56,12 +56,13 @@ namespace BE
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = GetPathToApplication();
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger_create_info.Trace = false;
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
 
 		if (!parseConfig()) {
 			return false;
 		}
+
+		logger->SetTrace(GetBoolOption(u8"trace"));
 
 		if(!exists(std::filesystem::path((GetPathToApplication() + u8"/resources").c_str()))) {
 			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Resources folder not found."));
@@ -200,164 +201,11 @@ namespace BE
 			return false;
 		}
 		
-		GTSL::Buffer fileBuffer(GTSL::Math::Limit(settingsFile.GetSize(), GTSL::Byte(GTSL::KiloByte(128)).GetCount()), 8, Object::GetTransientAllocator());
-		settingsFile.Read(fileBuffer);
+		GTSL::Buffer fileBuffer(settingsFile, Object::GetTransientAllocator());
 
-		jsonMember = GTSL::Parse(GTSL::StringView(fileBuffer.GetLength(), fileBuffer.GetLength(), reinterpret_cast<const char8_t*>(fileBuffer.GetData())), jsonBuffer);
+		JSON = GTSL::JSON(GTSL::StringView(fileBuffer), GTSL::DefaultAllocatorReference{});
 
 		return true;
-		
-		//uint32 i = 0;
-		//
-		//enum class Token
-		//{
-		//	NONE, SECTION, KEY, VALUE
-		//} lastParsedToken = Token::NONE, currentToken = Token::NONE;
-		//
-		//GTSL::StaticString<128> text;
-		//bool parseEnded = false;
-		//Id key;
-		//
-		//while (i < fileBuffer.GetLength()) {			
-		//	switch (static_cast<utf8>(fileBuffer.GetData()[i])) {
-		//	case '[':
-		//		{
-		//			if (lastParsedToken == Token::KEY) { return false; }
-		//			currentToken = Token::SECTION;
-		//			parseEnded = false;
-		//			break;
-		//		}
-		//
-		//	case ']':
-		//		{
-		//			if (currentToken != Token::SECTION || lastParsedToken == Token::KEY) { return false; }
-		//			parseEnded = !text.IsEmpty() && !parseEnded;
-		//			if (!parseEnded) { return false; }
-		//
-		//			key = text.c_str();
-		//
-		//			text.Drop(0);
-		//
-		//			lastParsedToken = Token::SECTION;
-		//			currentToken = Token::NONE;
-		//			
-		//			break;
-		//		}
-		//
-		//	case ' ':
-		//		{
-		//			return false;
-		//		}
-		//
-		//	case '=':
-		//		{
-		//			switch (lastParsedToken)
-		//			{
-		//			case Token::VALUE:
-		//			case Token::SECTION:
-		//			{
-		//				if(currentToken != Token::NONE) { return false; }
-		//				if (text.IsEmpty()) { return false; }
-		//				key = text.c_str();
-		//				parseEnded = true;
-		//				lastParsedToken = Token::KEY;
-		//				currentToken = Token::VALUE;
-		//				break;
-		//			}
-		//			case Token::KEY:
-		//			case Token::NONE:
-		//			{
-		//				return false;
-		//			}
-		//			default: break;
-		//			}
-		//
-		//			text.Drop(0);
-		//			break;
-		//		}
-		//
-		//	case '\0':
-		//	case '\n':
-		//	case '\r':
-		//		{
-		//			switch (lastParsedToken)
-		//			{
-		//			case Token::SECTION:
-		//			{
-		//				break;
-		//			}
-		//				
-		//			case Token::KEY:
-		//			{
-		//				if(currentToken != Token::VALUE) { return false; }
-		//				if (text.IsEmpty()) { return false; }
-		//				auto value = GTSL::ToNumber<uint32>(text);
-		//				if (!value.State()) { return false; }
-		//				settings.Emplace(key, value.Get());
-		//				lastParsedToken = Token::VALUE;
-		//				currentToken = Token::NONE;
-		//				parseEnded = true;
-		//				break;
-		//			}
-		//				
-		//			case Token::VALUE:
-		//			{
-		//				break;
-		//			}
-		//			case Token::NONE:
-		//			{
-		//				return false;
-		//			}
-		//				
-		//			default: break;
-		//			}
-		//
-		//			text.Drop(0);
-		//			break;
-		//		}
-		//		
-		//	default:
-		//		{
-		//			if (text.GetBytes() == 128) { return false; }
-		//			text += static_cast<utf8>(fileBuffer.GetData()[i]);
-		//		}
-		//	}
-		//
-		//	++i;
-		//}
-		//
-		//switch (lastParsedToken) {
-		//case Token::NONE:
-		//	{
-		//		parseEnded = false;
-		//		break;
-		//	}
-		//	
-		//case Token::SECTION:
-		//	{
-		//		parseEnded = true;
-		//		break;
-		//	}
-		//	
-		//case Token::KEY:
-		//	{
-		//		if(!text.IsEmpty())
-		//		{
-		//			auto value = GTSL::ToNumber<uint32>(text);
-		//			if (!value.State()) { return false; }
-		//			settings.Emplace(key, value.Get());
-		//			parseEnded = true;
-		//			break;
-		//		}
-		//
-		//		parseEnded = false;
-		//		break;
-		//	}
-		//	
-		//case Token::VALUE: break;
-		//}
-		//
-		//return parseEnded;
 	}
 	
 	bool Application::checkPlatformSupport() {

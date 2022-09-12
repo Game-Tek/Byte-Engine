@@ -144,7 +144,7 @@ struct ResourceFiles {
 
 	template<typename T>
 	bool AddEntry(const GTSL::StringView name, T* indexDataPointer, GTSL::Range<const byte*> dataPointer) {
-		auto hashedName = Hash(name);
+		auto hashedName = GTSL::Hash(name);
 		if (tableMap.Find(hashedName)) { return false; }
 		TableEntry table_entry;
 		table_entry.Name = hashedName;
@@ -163,12 +163,12 @@ struct ResourceFiles {
 	}
 
 	template<class T>
-	bool LoadEntry(const Id name, T& entry) {
-		if (!tableMap.Find(static_cast<uint64>(name))) { return false; }
+	bool LoadEntry(const GTSL::StringView name, T& entry) {
+		if (!tableMap.Find(static_cast<uint64>(Id(name)))) { return false; }
 
-		auto indexDataOffset = tableMap.At(static_cast<uint64>(name));
+		auto indexDataOffset = tableMap.At(static_cast<uint64>(Id(name)));
 		index.SetPointer(indexDataOffset);
-		index.ReadRaw(&entry);
+		index.Read(sizeof(T), &entry);
 
 		return true;
 	}
@@ -185,7 +185,7 @@ struct ResourceFiles {
 	
 	bool LoadData(auto& info, GTSL::Range<byte*> buffer) {
 		data.SetPointer(info.Header.DataOffset);
-		data.ReadRaw(buffer.begin(), info.Header.DataSize);
+		data.Read(info.Header.DataSize, buffer.begin());
 		return true;
 	}
 
@@ -197,7 +197,7 @@ struct ResourceFiles {
 
 	bool LoadData(auto& info, GTSL::Range<byte*> buffer, uint32 offset, uint32 size) {
 		data.SetPointer(info.Header.DataOffset + offset);
-		data.ReadRaw(buffer.begin(), size);
+		data.Read(size, buffer.begin());
 		return true;
 	}
 

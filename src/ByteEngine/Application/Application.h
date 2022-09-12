@@ -100,23 +100,23 @@ namespace BE
 		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
 
 		bool GetBoolOption(const GTSL::StringView optionName) const {
-			return jsonMember[optionName].GetBool();
+			return JSON[optionName].GetBool();
 		}
 
 		uint64 GetUINTOption(const GTSL::StringView optionName) const {
-			return jsonMember[optionName].GetUint();
+			return JSON[optionName].GetUint();
 		}
 
 		GTSL::StringView GetStringOption(const GTSL::StringView optionName) const {
-			return jsonMember[optionName].GetStringView();
+			return JSON[optionName].GetStringView();
 		}
 
 		GTSL::Extent2D GetExtent2DOption(const GTSL::StringView optionName) const {
-			return { static_cast<uint16>(jsonMember[optionName][0].GetUint()), static_cast<uint16>(jsonMember[optionName][1].GetUint()) };
+			return { static_cast<uint16>(JSON[optionName][0].GetUint()), static_cast<uint16>(JSON[optionName][1].GetUint()) };
 		}
 
-		GTSL::JSONMember GetConfig() const {
-			return jsonMember;
+		const auto& GetConfig() const {
+			return JSON;
 		}
 		
 	protected:
@@ -149,7 +149,7 @@ namespace BE
 		uint64 applicationTicks{ 0 };
 
 		GTSL::Buffer<BE::PAR> jsonBuffer;
-		GTSL::JSONMember jsonMember;
+		GTSL::JSON<GTSL::DefaultAllocatorReference> JSON;
 
 		bool parseConfig();
 		/**

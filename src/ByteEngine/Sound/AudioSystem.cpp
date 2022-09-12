@@ -46,7 +46,7 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 
 					GetApplicationManager()->EnqueueScheduledTask(renderTaskHandle);
 
-					BE_LOG_MESSAGE(u8"Started WASAPI API\n	Bits per sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
+					BE_LOG_SUCCESS(u8"Started Audio Device\n	Bits per Sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
 					if(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED) {
 						BE_LOG_ERROR(u8"Create audio device requires interleaved sample placment, which isn't supported. Oudio output will be disabled.")
@@ -84,7 +84,7 @@ AudioEmitterHandle AudioSystem::CreateAudioEmitter() {
 
 void AudioSystem::BindAudio(AudioEmitterHandle audioEmitter, Id audioToPlay) {
 	auto* audioResourceManager = GetApplicationManager()->GetSystem<AudioResourceManager>(u8"AudioResourceManager");
-	auto& sad = sourceAudioDatas.Emplace(audioToPlay);
+	auto& sad = sourceAudioDatas.Emplace(GTSL::StringView(audioToPlay));
 	sad.Loaded = false;
 	audioEmittersSettings[audioEmitter()].Name = audioToPlay;
 	audioResourceManager->LoadAudioInfo(audioToPlay, onAudioInfoLoadHandle);
@@ -135,7 +135,7 @@ void AudioSystem::render(TaskInfo) {
 			
 			auto& emitter = audioEmittersSettings[playingEmitters[pe]()];
 			
-			auto& sad = sourceAudioDatas[emitter.Name];
+			auto& sad = sourceAudioDatas[GTSL::StringView(emitter.Name)];
 			
 			auto audioFrames = sad.FrameCount;
 			auto remainingFrames = audioFrames - emitter.CurrentSample;
@@ -186,7 +186,7 @@ void AudioSystem::render(TaskInfo) {
 }
 
 void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audioResourceManager, AudioResourceManager::AudioInfo audioInfo) {
-	auto& sad = sourceAudioDatas[audioInfo.Name];
+	auto& sad = sourceAudioDatas[GTSL::StringView(audioInfo.Name)];
 	GetPersistentAllocator().Allocate(audioInfo.GetAudioSize(), 16, reinterpret_cast<void**>(&sad.Buffer), &sad.Size);
 	audioResourceManager->LoadAudio(audioInfo, GTSL::Range<byte*>(sad.Size, sad.Buffer), onAudioLoadHandle);
 }
@@ -194,7 +194,7 @@ void AudioSystem::onAudioInfoLoad(TaskInfo taskInfo, AudioResourceManager* audio
 void AudioSystem::onAudioLoad(TaskInfo taskInfo, AudioResourceManager::AudioInfo audioInfo, GTSL::Range<const byte*> buffer) {
 	GTSL::StaticVector<uint32, 16> toDelete;
 	
-	auto& sad = sourceAudioDatas[audioInfo.Name];
+	auto& sad = sourceAudioDatas[GTSL::StringView(audioInfo.Name)];
 
 	sad.Loaded = true;
 	sad.ChannelCount = audioInfo.ChannelCount;

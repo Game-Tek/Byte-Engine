@@ -238,7 +238,7 @@ void GameApplication::RegisterKeyboard()
 {
 	keyboard = inputManagerInstance->RegisterInputDevice(u8"Keyboard");
 
-	auto keys = GTSL::StaticVector<Id, 128>{ u8"Q_Key", u8"W_Key", u8"E_Key", u8"R_Key", u8"T_Key", u8"Y_Key", u8"U_Key", u8"I_Key", u8"O_Key", u8"P_Key",
+	auto keys = GTSL::StaticVector<GTSL::ShortString<64>, 128>{ u8"Q_Key", u8"W_Key", u8"E_Key", u8"R_Key", u8"T_Key", u8"Y_Key", u8"U_Key", u8"I_Key", u8"O_Key", u8"P_Key",
 	u8"A_Key", u8"S_Key", u8"D_Key", u8"F_Key", u8"G_Key", u8"H_Key", u8"J_Key", u8"K_Key", u8"L_Key",
 	u8"Z_Key", u8"X_Key", u8"C_Key", u8"V_Key", u8"B_Key", u8"N_Key", u8"M_Key",
 	u8"0_Key", u8"1_Key", u8"2_Key", u8"3_Key", u8"4_Key", u8"5_Key", u8"6_Key", u8"7_Key", u8"8_Key", u8"9_Key",
@@ -247,8 +247,14 @@ void GameApplication::RegisterKeyboard()
 	u8"UpArrow_Key", u8"RightArrow_Key", u8"DownArrow_Key", u8"LeftArrow_Key",
 	u8"Numpad0_Key", u8"Numpad1_Key", u8"Numpad2_Key", u8"Numpad3_Key", u8"Numpad4_Key", u8"Numpad5_Key", u8"Numpad6_Key", u8"Numpad7_Key", u8"Numpad8_Key", u8"Numpad9_Key",
 	u8"F1_Key", u8"F2_Key", u8"F3_Key", u8"F4_Key", u8"F5_Key", u8"F6_Key", u8"F7_Key", u8"F8_Key", u8"F9_Key", u8"F10_Key", u8"F11_Key", u8"F12_Key" };
-	
-	inputManagerInstance->RegisterInputSources(keyboard, keys, InputManager::Type::BOOL);
+
+	GTSL::StaticVector<GTSL::StringView, 128> views;
+
+	for(auto& e : keys) {
+		views.EmplaceBack(e);
+	}
+
+	inputManagerInstance->RegisterInputSources(keyboard, views, InputManager::Type::BOOL);
 }
 
 void GameApplication::RegisterControllers()
@@ -283,7 +289,7 @@ void GameApplication::RegisterControllers()
 using namespace GTSL;
 
 void GameApplication::keyboardEvent(const Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType) {
-	Id id;
+	GTSL::StaticString<64> id;
 	
 	switch (key) {
 	case Window::KeyboardKeys::Q: id = u8"Q_Key"; break; case Window::KeyboardKeys::W: id = u8"W_Key"; break;

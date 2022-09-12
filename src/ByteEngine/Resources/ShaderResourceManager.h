@@ -123,7 +123,7 @@ class ShaderResourceManager final : public ResourceManager
 	}
 
 public:
-	static StructElement readStructElement(GTSL::JSONMember json) {
+	static StructElement readStructElement(GTSL::JSON<BE::PAR> json) {
 		return { json[u8"type"], json[u8"name"], json[u8"defaultValue"] };
 	}
 
@@ -419,8 +419,9 @@ private:
 
 	GAL::ShaderCompiler compiler_;
 
-	void makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const
-	                     PermutationManager::ShaderPermutation*>*> shaderBatch, ShaderGroupDataSerialize*);
+	using ShaderMap = GTSL::HashMap<Id, GTSL::Tuple<GTSL::JSON<BE::PAR>, GTSL::StaticString<1024>>, BE::TAR>;
+
+	void makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize*, const ShaderMap& shader_map);
 
 	template<typename... ARGS>
 	void loadShaderGroup(TaskInfo taskInfo, Id shaderGroupName, TaskHandle<ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS... args) { //TODO: check why can't use ARGS&&
@@ -542,12 +543,14 @@ private:
 
 		for (const auto& s : shader_group_info.Shaders) {
 			shaderPackageFile.SetPointer(shaderOffsets[s.Hash]);
-			shaderPackageFile.ReadRaw(buffer.begin() + offset, s.Size);
+			shaderPackageFile.Read(s.Size, buffer.begin() + offset);
 			offset += s.Size;
 		}
 
 		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
 	}
+
+	using Result = GTSL::StaticVector<PermutationManager::ShaderPermutation, 8>;
 
 	GTSL::File shaderGroupsTableFile, shaderInfoTableFile, shadersTableFile;
 	GTSL::KeyMap<ShaderHash, BE::PAR> loadedShaders;
@@ -570,6 +573,26 @@ struct VertexPermutationManager {
 	GTSL::StaticVector<GPipeline::ElementHandle, 8> vertexPermutationHandles;
 };
 
+inline GAL::ShaderType ShaderTypeFromString(GTSL::StringView string) {
+	switch (GTSL::Hash(string)) {
+		case GTSL::Hash(u8"VERTEX"): return GAL::ShaderType::VERTEX;
+		case GTSL::Hash(u8"FRAGMENT"): return GAL::ShaderType::FRAGMENT;
+		case GTSL::Hash(u8"COMPUTE"): return GAL::ShaderType::COMPUTE;
+		case GTSL::Hash(u8"RAY_GEN"): return GAL::ShaderType::RAY_GEN;
+		case GTSL::Hash(u8"MISS"): return GAL::ShaderType::MISS;
+	}
+}
+
+inline Class ShaderClassFromString(GTSL::StringView string) {
+	switch (GTSL::Hash(string)) {
+		case GTSL::Hash(u8"VERTEX"): return Class::VERTEX;
+		case GTSL::Hash(u8"SURFACE"): return Class::SURFACE;
+		case GTSL::Hash(u8"COMPUTE"): return Class::COMPUTE;
+		case GTSL::Hash(u8"RAY_GEN"): return Class::RAY_GEN;
+		case GTSL::Hash(u8"MISS"): return Class::MISS;
+	}
+}
+
 inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"ShaderResourceManager"), shaderGroupInfoOffsets(8, GetPersistentAllocator()), shaderInfoOffsets(8, GetPersistentAllocator()), shaderOffsets(8, GetPersistentAllocator()), loadedShaders(16, GetPersistentAllocator()) {
 	shaderPackageFile.Open(GetResourcePath(u8"Shaders", u8"bepkg"), GTSL::File::READ | GTSL::File::WRITE, true);
 
@@ -591,16 +614,19 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	case GTSL::File::OpenResult::ERROR: break;
 	}
 
-	GTSL::SmartPointer<CommonPermutation, BE::TAR> commonPermutation(GetTransientAllocator(), u8"Common");
+	GTSL::HashMap<GTSL::StringView, PermutationManager*, BE::TAR> permutations(8, GetTransientAllocator());
 
-	{ //configure permutations
-		commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderPassPermutation");
-		//commonPermutation->CreateChild<VisibilityRenderPassPermutation>(u8"VisibilityRenderPassPermutation");
-		commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation");
-		commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation");
-	} //todo: parametrize
+	GTSL::SmartPointer<CommonPermutation, BE::TAR> commonPermutation(GetTransientAllocator(), u8"CommonPermutation");
+
+	permutations.Emplace(u8"CommonPermutation", static_cast<PermutationManager*>(commonPermutation.GetData()));
 
 	GPipeline pipeline;
+
+	{ //configure permutations
+		permutations.Emplace(u8"ForwardRenderingPermutation", commonPermutation->CreateChild<ForwardRenderPassPermutation>(&pipeline, u8"ForwardRenderingPermutation"));
+		permutations.Emplace(u8"RayTracePermutation", commonPermutation->CreateChild<RayTracePermutation>(&pipeline, u8"RayTracePermutation"));
+		permutations.Emplace(u8"UIPermutation", commonPermutation->CreateChild<UIPermutation>(&pipeline, u8"UIPermutation"));
+	}
 
 	PermutationManager::InitializePermutations(commonPermutation, &pipeline);
 
@@ -650,97 +676,111 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	}
 
 	if (created) {
-		for(auto e : PermutationManager::GetDefaultShaderGroups(commonPermutation, &pipeline)) {
-			ShaderGroupDataSerialize shaderGroupDataSerialize(GetPersistentAllocator());
+		GTSL::Vector<GTSL::StaticString<512>, BE::TAR> paths(8, GetTransientAllocator());
 
-			GTSL::Buffer deserializer(GetTransientAllocator());
-			auto json = Parse(e.ShaderGroupJSON, deserializer);
-			GTSL::StaticVector<GTSL::Range<const PermutationManager::ShaderPermutation*>, 8> s;
-			for (auto& j : e.Shaders) {
-				s.EmplaceBack(j);
+		{
+			GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*", u8"bespg"));
+
+			while(auto fileRef = shaderGroupFileQuery()) {
+				GTSL::File file(GetUserResourcePath(fileRef.Get()));
+
+				GTSL::StaticBuffer<2048> fileBuffer(file);
+
+				auto json = GTSL::JSON(GTSL::StringView(fileBuffer), GetPersistentAllocator());
+
+				auto permutation = permutations[GTSL::StringView(json[u8"name"])];
+
+				pipeline.TryDeclareScope(GPipeline::GLOBAL_SCOPE, GTSL::StringView(json[u8"name"]));
+
+				for(auto option : json[u8"options"]) {
+					auto& a = permutation->a.EmplaceBack(GetPersistentAllocator());
+
+					permutation->AddSupportedDomain(option[u8"domain"]);
+
+					for(auto subset : option[u8"subsets"]) {
+						GTSL::File guideSubsetShaderTemplateFile(GetUserResourcePath(subset[u8"name"], u8"txt"));
+
+						if(guideSubsetShaderTemplateFile) {
+							a.EmplaceBack(guideSubsetShaderTemplateFile, GetPersistentAllocator());
+						} else {
+							BE_LOG_WARNING(u8"Didn't find any shader subset template for subset: ", GTSL::StringView(subset[u8"name"]), u8".");
+						}
+					}
+				}
+
+				permutation->JSON = GTSL::MoveRef(json);
 			}
+		}
 
-			if(!shaderGroupDataSerialize.Instances) {
-				auto& basicInstance = shaderGroupDataSerialize.Instances.EmplaceBack();
-				basicInstance.Name = json[u8"name"];
-			}
+		ShaderMap shaderMap(32, GetTransientAllocator());
 
-			makeShaderGroup(json, pipeline, commonPermutation, s, &shaderGroupDataSerialize);
+		{
+			GTSL::FileQuery shaderFilesQuery(GetUserResourcePath(u8"*Shader", u8"json"));
+
+			while(auto e = shaderFilesQuery()) {
+				GTSL::File jsonShaderFile(GetUserResourcePath(e.Get()));
+				GTSL::StaticBuffer<2048> jsonShaderFileBuffer(jsonShaderFile);
+				
+				auto json = GTSL::JSON(GTSL::StringView(jsonShaderFileBuffer), GetPersistentAllocator());
+
+				auto& shaderEntry = shaderMap.Emplace(Id(json[u8"name"]), GetPersistentAllocator(), GTSL::StringView());
+
+				if(auto code = json[u8"code"]) {
+					shaderEntry.rest.element = GTSL::StringView(code);
+				} else {
+					GTSL::File shaderFile(GetUserResourcePath(json[u8"name"], u8"txt"));
+
+					if(shaderFile) {
+						GTSL::StaticBuffer<2048> shaderFileBuffer(shaderFile);
+						shaderEntry.rest.element = GTSL::StringView(shaderFileBuffer);
+					} else {
+						BE_LOG_WARNING(u8"Did not find a shader file for shader: ", json[u8"name"], u8".");
+					}
+				}
+
+				shaderEntry.element = GTSL::MoveRef(json);
+			}			
 		}
 
 		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"));
 
+
 		while (auto fileRef = shaderGroupFileQuery()) {
-			GTSL::File shaderGroupFile(GetUserResourcePath(fileRef.Get()), GTSL::File::READ, false);
-
-			GTSL::Buffer buffer(shaderGroupFile.GetSize(), 16, GetTransientAllocator()); shaderGroupFile.Read(buffer);
-
-			GTSL::Buffer deserializer(GetTransientAllocator());
-			auto json = Parse(GTSL::StringView(GTSL::Byte(buffer.GetLength()), reinterpret_cast<const utf8*>(buffer.GetData())), deserializer);
-
-			GTSL::StaticVector<GTSL::StaticVector<PermutationManager::ShaderPermutation, 8>, 8> resultsPerShader;
-
-			for (auto s : json[u8"shaders"]) {
-				GTSL::File shaderFile(GetUserResourcePath(s[u8"name"], u8"json"));
-				GTSL::Buffer shaderFileBuffer(shaderFile.GetSize(), 16, GetTransientAllocator()); shaderFile.Read(shaderFileBuffer);
-
-				GTSL::Buffer json_deserializer(BE::TAR(u8"GenerateShader"));
-				auto shaderJson = Parse(GTSL::StringView(GTSL::Byte(shaderFileBuffer.GetLength()), reinterpret_cast<const utf8*>(shaderFileBuffer.GetData())), json_deserializer);
-
-				GTSL::ShortString<64> executionString;
-
-				if (auto execution = shaderJson[u8"execution"]) {
-					executionString = execution;
-				}
-
-				if (auto domain = json[u8"domain"]; domain.GetStringView() == u8"Screen") {
-					executionString = GTSL::ShortString<64>(u8"windowExtent");
-				}
-
-				resultsPerShader.EmplaceBack(PermutationManager::ProcessShaders(commonPermutation, &pipeline, json, shaderJson));
-			}
+			GTSL::File shaderGroupFile(GetUserResourcePath(fileRef.Get()));
 
 			ShaderGroupDataSerialize shaderGroupDataSerialize(GetPersistentAllocator());
 
-			auto filePath = fileRef.Get();
-			RTrimLast(filePath, u8'.');
+			{
+				auto filePath = fileRef.Get();
+				RTrimLast(filePath, u8'.');
 
-			GTSL::FileQuery shaderGroupInstanceFileQuery(GetUserResourcePath(filePath+ u8"_*", u8"json"));
+				GTSL::FileQuery shaderGroupInstanceFileQuery(GetUserResourcePath(filePath + u8"_*", u8"json"));
 
-			while (auto instanceFileRef = shaderGroupInstanceFileQuery()) {
-				GTSL::File shaderGroupInstanceFile(GetUserResourcePath(instanceFileRef.Get()), GTSL::File::READ, false);
+				while (auto instanceFileRef = shaderGroupInstanceFileQuery()) {
+					GTSL::File shaderGroupInstanceFile(GetUserResourcePath(instanceFileRef.Get()), GTSL::File::READ, false);
+					GTSL::Buffer shaderGroupInstanceBuffer(shaderGroupInstanceFile, GetTransientAllocator());
+					
+					auto shaderGroupInstanceJson = GTSL::JSON(GTSL::StringView(shaderGroupInstanceBuffer), GetPersistentAllocator());
 
-				GTSL::Buffer shaderGroupInstanceBuffer(shaderGroupInstanceFile.GetSize(), 16, GetTransientAllocator()); shaderGroupInstanceFile.Read(shaderGroupInstanceBuffer);
+					auto instanceName = instanceFileRef.Get();
+					LTrimFirst(instanceName, u8'_'); 	RTrimLast(instanceName, u8'.');
 
-				GTSL::Buffer shaderGroupInstanceDeserializer(GetTransientAllocator());
-				auto shaderGroupInstanceJson = Parse(GTSL::StringView(GTSL::Byte(shaderGroupInstanceBuffer.GetLength()), reinterpret_cast<const utf8*>(shaderGroupInstanceBuffer.GetData())), shaderGroupInstanceDeserializer);
+					auto& instance = shaderGroupDataSerialize.Instances.EmplaceBack();
+					instance.Name = instanceName;
 
-				auto instanceName = instanceFileRef.Get();
-				LTrimFirst(instanceName, u8'_');
-				RTrimLast(instanceName, u8'.');
-
-				auto& instance = shaderGroupDataSerialize.Instances.EmplaceBack();
-				instance.Name = instanceName;
-
-				for (auto f : shaderGroupInstanceJson[u8"parameters"]) {
-					auto& param = instance.Parameters.EmplaceBack();
-					param.First = f[u8"name"];
-					param.Second = f[u8"defaultValue"];
+					for (auto f : shaderGroupInstanceJson[u8"parameters"]) {
+						auto& param = instance.Parameters.EmplaceBack();
+						param.First = f[u8"name"];
+						param.Second = f[u8"defaultValue"];
+					}
 				}
 			}
 
-			if(!shaderGroupDataSerialize.Instances) {
-				auto& basicInstance = shaderGroupDataSerialize.Instances.EmplaceBack();
-				basicInstance.Name = json[u8"name"];
-			}
+			GTSL::Buffer shaderGroupBuffer(GetTransientAllocator()); shaderGroupFile.Read(shaderGroupBuffer);
+			
+			auto json = GTSL::JSON(GTSL::StringView(shaderGroupBuffer), GetPersistentAllocator());
 
-			GTSL::StaticVector<GTSL::Range<const PermutationManager::ShaderPermutation*>, 8> s;
-
-			for(auto& e : resultsPerShader) {
-				s.EmplaceBack(e);
-			}
-
-			makeShaderGroup(json, pipeline, commonPermutation, s, &shaderGroupDataSerialize); //todo: transmit instances
+			makeShaderGroup(json, pipeline, commonPermutation, &shaderGroupDataSerialize, shaderMap); //todo: transmit instances
 		}
 	}
 
@@ -778,46 +818,57 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	}
 }
 
-inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipeline& pipeline, CommonPermutation* common_permutation, GTSL::Range<const GTSL::Range<const PermutationManager::ShaderPermutation*>*> shaderBatch, ShaderGroupDataSerialize* shader_group_data_serialize) {
+inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize* shader_group_data_serialize, const ShaderMap& shader_map) {
+	auto shaderGroupScope = pipeline.DeclareScope(GPipeline::GLOBAL_SCOPE, json[u8"name"]);
+
 	GTSL::StaticVector<uint64, 16> shaderGroupUsedShaders;
 
-	if (auto structs = json[u8"structs"]) {
-		for (auto s : structs) {
-			GTSL::StaticVector<StructElement, 8> elements;
+	for (auto s : json[u8"structs"]) {
+		GTSL::StaticVector<StructElement, 8> elements;
 
-			for (auto m : s[u8"members"]) {
-				elements.EmplaceBack(m[u8"type"], m[u8"name"]);
-			}
+		for (auto m : s[u8"members"]) {
+			elements.EmplaceBack(m[u8"type"], m[u8"name"]);
+		}
 
-			//pipeline.DeclareStruct(GPipeline::ElementHandle(), s[u8"name"], elements);
+		pipeline.DeclareStruct(shaderGroupScope, s[u8"name"], elements);
+	}
+
+	for(auto scope : json[u8"scopes"]) {
+		auto scopeHandle = pipeline.DeclareScope(shaderGroupScope, scope[u8"name"]);
+
+		for(auto e : scope[u8"elements"]) {
+			pipeline.DeclareVariable(scopeHandle, { e[u8"type"], e[u8"name"] });
 		}
 	}
 
-	if (auto functions = json[u8"functions"]) {
-		for (auto f : functions) {
-			GTSL::StaticVector<StructElement, 8> elements;
-			for (auto p : f[u8"params"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
-			//pipeline.DeclareFunction(GPipeline::ElementHandle(), f[u8"type"], f[u8"name"], elements, f[u8"code"]);
-		}
+	for (auto f : json[u8"functions"]) {
+		GTSL::StaticVector<StructElement, 8> elements;
+		for (auto p : f[u8"params"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
+		pipeline.DeclareFunction(shaderGroupScope, f[u8"type"], f[u8"name"], elements, f[u8"code"]);
 	}
 
 	shader_group_data_serialize->Name = json[u8"name"];
-
-	if (auto r = json[u8"tags"]) {
-		for (auto e : r) {
-			shader_group_data_serialize->Tags.EmplaceBack(e[u8"name"].GetStringView(), e[u8"value"].GetStringView());
-		}
+	
+	for (auto e : json[u8"tags"]) {
+		shader_group_data_serialize->Tags.EmplaceBack(e[u8"name"].GetStringView(), e[u8"value"].GetStringView());
 	}
 
-	if (auto parameters = json[u8"parameters"]) {
-		for (auto p : parameters) {
+	GPipeline::ElementHandle shaderParametersDataHandle;
+
+	{
+		GTSL::StaticVector<StructElement, 16> structElements;
+
+		for (auto p : json[u8"parameters"]) {
 			if (auto def = p[u8"defaultValue"]) {
 				shader_group_data_serialize->Parameters.EmplaceBack(p[u8"type"], p[u8"name"], def);
-			}
-			else {
+				structElements.EmplaceBack(p[u8"type"], p[u8"name"], def);
+			} else {
 				shader_group_data_serialize->Parameters.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
+				structElements.EmplaceBack(p[u8"type"], p[u8"name"], u8"");
 			}
 		}
+
+		shaderParametersDataHandle = pipeline.DeclareStruct(shaderGroupScope, u8"ShaderParametersData", structElements);
 	}
 
 	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"POSITION");
@@ -826,70 +877,190 @@ inline void ShaderResourceManager::makeShaderGroup(GTSL::JSONMember json, GPipel
 	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec3f", u8"BITANGENT");
 	shader_group_data_serialize->VertexElements.EmplaceBack().EmplaceBack(u8"vec2f", u8"TEXTURE_COORDINATES");
 
+	if(!shader_group_data_serialize->Instances) {
+		auto& basicInstance = shader_group_data_serialize->Instances.EmplaceBack();
+		basicInstance.Name = json[u8"name"];
+	}
+
 	bool rayTrace = true; ShaderGroupInfo::RayTraceData ray_trace_data;
 
-	for(auto e : shaderBatch) {
-		Class shaderClass;
+	auto shaderGroupDomain = json[u8"domain"];
 
-		//switch (GTSL::Hash(shaderJson[u8"class"])) {
-		//case GTSL::Hash(u8"Vertex"): shaderClass = Class::VERTEX; break;
-		//case GTSL::Hash(u8"Surface"): shaderClass = Class::SURFACE; break;
-		//case GTSL::Hash(u8"Compute"): shaderClass = Class::COMPUTE; break;
-		//case GTSL::Hash(u8"RayGen"): shaderClass = Class::RAY_GEN; break;
-		//case GTSL::Hash(u8"Miss"): shaderClass = Class::MISS; break;
-		//}
+	auto evaluateForPermutation = [&](PermutationManager* parent, GTSL::StaticVector<GPipeline::ElementHandle, 16> scopes, auto&& self) -> void {
+		auto permutationScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, parent->InstanceName);
+		scopes.EmplaceBack(permutationScopeHandle); //Insert permutation handle
 
-		for (auto& sb : e) {
-			auto shaderResult = GenerateShader(pipeline, sb.Scopes, sb.TargetSemantics, GetTransientAllocator());
-			if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
-			auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
+		if (!Contains(parent->GetSupportedDomains().GetRange(), GTSL::StringView(shaderGroupDomain))) {
+			for(auto e : parent->Children) {
+				self(e, scopes, self);
+			}
 
-			if (!loadedShaders.Find(shaderHash)) {
-				loadedShaders.Emplace(shaderHash);
+			return;
+		}
+
+		auto auxScopes = scopes;
+
+		for (auto s : json[u8"shaders"]) {
+			scopes = auxScopes; //reset scopes for every shader built
+
+			if(!shader_map.Find(Id(s[u8"name"]))) { BE_LOG_WARNING(u8"Could not find any shader under name: ", GTSL::StringView(s[u8"name"])); continue; }
+
+			auto& shaderEntry = shader_map[Id(s[u8"name"])];
+			auto& shaderJson = GTSL::Get<0>(shaderEntry);
+
+			GTSL::StaticVector<PermutationManager::ShaderTag, 16> tags;
+
+			GTSL::StaticString<64> executionString;
+
+			shaderJson[u8"execution"](executionString);
+
+			if (GTSL::StringView(shaderGroupDomain) == GTSL::StringView(u8"Screen")) {
+				executionString = GTSL::ShortString<64>(u8"windowExtent");
+			}
+
+			GPipeline::ElementHandle shaderScope = pipeline.DeclareShader(shaderGroupScope, shaderJson[u8"name"]);
+			GPipeline::ElementHandle mainFunctionHandle = pipeline.DeclareFunction(shaderScope, u8"void", u8"main");
+
+			if (shaderJson[u8"class"].GetStringView() == GTSL::StringView(u8"COMPUTE") or shaderJson[u8"class"].GetStringView() == GTSL::StringView(u8"RAY_GEN")) {
+				GTSL::StaticString<64> x, y, z;
+
+				if(auto res = shaderJson[u8"localSize"]) {
+					GTSL::ToString(x, res[0].GetUint()); GTSL::ToString(y, res[1].GetUint()); GTSL::ToString(z, res[2].GetUint());
+				} else {
+					x = u8"1"; y = u8"1"; z = u8"1";
+				}
+
+				pipeline.DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", x });
+				pipeline.DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", y });
+				pipeline.DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", z });
+			}
+
+			uint32 i = 0, j = 0; bool found = false;
+
+			for(; i < parent->JSON[u8"options"]; ++i) {
+				if(parent->JSON[u8"options"][i][u8"domain"] == GTSL::StringView(shaderGroupDomain)) {
+					for(; j < parent->JSON[u8"options"][i][u8"subsets"]; ++j) {
+						auto shaderClass = GTSL::StaticString<64>(shaderJson[u8"class"]);
+
+						for(uint32 k = 0; k < parent->JSON[u8"options"][i][u8"subsets"][j][u8"sourceClasses"]; ++k) {
+							auto s = GTSL::StaticString<64>(parent->JSON[u8"options"][i][u8"subsets"][j][u8"sourceClasses"][k]);
+							if(s == shaderClass) {
+								found = true;
+								break;
+							}							
+						}
+
+						if(found) break;
+					}
+
+					if(found) break;
+				}
+			}
+
+			if(!found or !(i < parent->a) or !(j < parent->a[i])) {
+				BE_LOG_WARNING(u8"Could not generate shader: ", GTSL::StringView(shaderJson[u8"name"]), u8", for shader group: ", GTSL::StringView(json[u8"name"]), u8", because a shader template for permutation: ", parent->InstanceName, (i < parent->a) ? GTSL::StaticString<128>(u8", option: ") + GTSL::StringView(parent->JSON[u8"options"][i][u8"name"]) : GTSL::StaticString<128>(), (i < parent->a && j < parent->a[i]) ? GTSL::StaticString<128>(u8", subset: ") + GTSL::StringView(parent->JSON[u8"options"][i][u8"subsets"][j][u8"name"]) : GTSL::StaticString<128>(), u8", was not available.");
+				return;
+			}
+
+			for (auto p : json[u8"parameters"]) {
+				GTSL::StaticString<256> code;
+
+				code += u8"const";
+				code &= GTSL::StringView(p[u8"type"]);
+				code &= GTSL::StringView(p[u8"name"]);
+				code &= u8"=";
+				code &= u8"pushConstantBlock.shaderParameters[pushConstantBlock.instances[_instanceIndex].shaderGroupIndex]."; code += GTSL::StringView(p[u8"name"]); code += u8";";
+
+				pipeline.AddCodeToFunction(mainFunctionHandle, code);
+			}
+
+			pipeline.AddCodeToFunction(mainFunctionHandle, PermutationManager::MakeShaderString(GTSL::StringView(parent->a[i][j]), shaderEntry.rest.element));
+
+			for(auto t : shaderJson[u8"tags"]) {
+				tags.EmplaceBack(GTSL::StringView(t[u8"name"]), GTSL::StringView(t[u8"value"]));
+			}
+
+			{
+				scopes.EmplaceBack(shaderGroupScope);
+
+				// FIX
+				{
+					auto commonPermutationScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"CommonPermutation");
+
+					Class shaderClass = ShaderClassFromString(shaderJson[u8"class"]);
+
+					GPipeline::ElementHandle subScopeHandle;
+
+					switch (shaderClass) {
+						case Class::VERTEX: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"VertexShader"); break;
+						case Class::SURFACE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"FragmentShader"); break;
+						case Class::COMPUTE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"ComputeShader"); scopes.EmplaceBack(pipeline.GetElementHandle(commonPermutationScopeHandle, u8"ComputeRenderPass")); break;
+						case Class::RENDER_PASS: break;
+						case Class::RAY_GEN: break;
+						case Class::MISS: break;
+					}
+
+					scopes.EmplaceBack(subScopeHandle);
+				}
+				// FIX
+
+				scopes.EmplaceBack(shaderScope);
+				scopes.EmplaceBack(mainFunctionHandle);
 
 				GTSL::StaticString<512> shaderName;
+				GTSL::StaticVector<GTSL::StringView, 16> scopesStrings;
 
 				//make shader name by appending all the names of the scopes that comprise, which allows to easily identify the permutation
-				for (auto& e : sb.Scopes) {
+				for (auto& e : scopes) {
 					auto& n = pipeline.GetElement(e).Name;
 
 					if (n) {
-						if (shaderName.GetBytes()) {
-							shaderName += u8".";
-						}
-
-						shaderName += n;
+						scopesStrings.EmplaceBack(n);
 					}
 				}
 
-				auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, shaderName, sb.TargetSemantics, GAL::ShaderLanguage::GLSL, true, GetTransientAllocator());
+				shaderName += GTSL::Join{ scopesStrings, u8"." };
 
-				if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
+				auto targetSemantics = ShaderTypeFromString(parent->JSON[u8"options"][i][u8"subsets"][j][u8"targetSemantics"]);
 
-				shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
-				shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
+				auto shaderResult = GenerateShader(pipeline, scopes, targetSemantics, GetTransientAllocator());
+				if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
+				auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
 
-				shaderInfosFile << GTSL::ShortString<32>(pipeline.GetElement(sb.Scopes.back()).Name) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
-				shaderInfosFile << 0; //0 params
-				shaderInfosFile << sb.TargetSemantics;
-				shaderInfosFile << sb.Tags.GetLength();
-				for (auto& t : sb.Tags) {
-					shaderInfosFile << t.First << t.Second;
+				if (!loadedShaders.Find(shaderHash)) {
+					loadedShaders.Emplace(shaderHash);
+
+					auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, shaderName, targetSemantics, GAL::ShaderLanguage::GLSL, true,		GetTransientAllocator());
+
+					if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
+
+					shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
+					shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
+
+					shaderInfosFile << GTSL::ShortString<32>(shaderJson[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
+					shaderInfosFile << 0u; //0 params
+					shaderInfosFile << targetSemantics;
+					shaderInfosFile << tags.GetLength();
+					for (auto& t : tags) {
+						shaderInfosFile << t.First << t.Second;
+					}
+
+					GTSL::String string(GetTransientAllocator());
+
+					pipeline.MakeJSON(string, scopes); //MAKE JSON
+
+					shaderInfosFile << string; //Debug data
+
+					shaderPackageFile.Write(shaderBuffer);
 				}
 
-				GTSL::String<BE::TAR> string(GetTransientAllocator());
-
-				pipeline.MakeJSON(string, sb.Scopes); //MAKE JSON
-
-				shaderInfosFile << string; //Debug data
-
-				shaderPackageFile.Write(shaderBuffer);
+				shader_group_data_serialize->Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
+				shaderGroupUsedShaders.EmplaceBack(shaderHash);
 			}
-
-			shader_group_data_serialize->Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
-			shaderGroupUsedShaders.EmplaceBack(shaderHash);
 		}
-	}
+	};
+
+	evaluateForPermutation(root_permutation, {GPipeline::GLOBAL_SCOPE}, evaluateForPermutation);
 
 	for(auto& e :shader_group_data_serialize->Instances) {
 		shaderGroupsTableFile << GTSL::ShortString<32>(e.Name) << shaderGroupInfosFile.GetSize(); // write offset to shader group for each instance name

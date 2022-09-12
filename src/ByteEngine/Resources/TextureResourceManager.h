@@ -35,7 +35,7 @@ private:
 	template<typename... ARGS>
 	void loadTextureInfo(TaskInfo taskInfo, Id textureName, TaskHandle<TextureInfo, ARGS...> dynamicTaskHandle, ARGS... args) {
 		TextureInfo textureInfo;
-		resource_files_.LoadEntry(textureName, textureInfo);
+		resource_files_.LoadEntry(GTSL::StringView(textureName), textureInfo);
 		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(textureInfo), GTSL::ForwardRef<ARGS>(args)...);
 	};
 

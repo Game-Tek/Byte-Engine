@@ -37,7 +37,7 @@ public:
 	struct SkeletonData : Data
 	{
 		GTSL::Vector<Bone, BE::PAR> Bones;
-		GTSL::HashMap<Id, uint32, BE::PAR> BonesMap;
+		GTSL::HashMap<GTSL::StringView, uint32, BE::PAR> BonesMap;
 		
 		SkeletonData(const BE::PAR& allocator) : Bones(allocator), BonesMap(256, 0.1f, allocator) {}
 	};

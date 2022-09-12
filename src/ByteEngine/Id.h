@@ -10,10 +10,10 @@ public:
 	Id() = default;
 	
 	template<uint64 N>
-	constexpr Id(char8_t const (&s)[N]) : hashedName(s) {}
+	constexpr explicit Id(char8_t const (&s)[N]) : hashedName(s) {}
 	
-	constexpr Id(const utf8* name) noexcept : hashedName(name), stringName(name) {}
-	constexpr Id(const GTSL::Range<const utf8*> name) noexcept : hashedName(name), stringName(name) {}
+	constexpr explicit Id(const utf8* name) noexcept : hashedName(name), stringName(name) {}
+	constexpr explicit Id(const GTSL::Range<const utf8*> name) noexcept : hashedName(name), stringName(name) {}
 	Id(const GTSL::Id64 name) noexcept : hashedName(name) {}
 	//explicit Id(const uint64 value) noexcept : hashedName(value) {}
 
@@ -37,3 +37,14 @@ private:
 	GTSL::Id64 hashedName;
 	GTSL::ShortString<64> stringName;
 };
+
+namespace GTSL {
+	template<>
+	struct Hash<Id> {
+		uint64 value = 0;
+		constexpr Hash(const Id& id) : value(id.GetHash()) {}
+		constexpr operator uint64() const { return value; }
+	};
+
+	Hash(Id) -> Hash<Id>;
+}

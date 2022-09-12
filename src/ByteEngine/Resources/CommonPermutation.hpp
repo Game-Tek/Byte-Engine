@@ -81,8 +81,7 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareVariable(closestHitShaderScope, { u8"vec2f", u8"hitBarycenter" });
 		pipeline->DeclareFunction(closestHitShaderScope, u8"vec3f", u8"GetVertexBarycenter", {}, u8"return Barycenter(hitBarycenter);");
 
-		commonScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"Common");
-		shader_generation_data.Scopes.EmplaceBack(commonScope);
+		commonScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"CommonPermutation");
 
 		pipeline->DeclareStruct(commonScope, u8"GlobalData", GLOBAL_DATA);
 		pipeline->DeclareStruct(commonScope, u8"ViewData", VIEW_DATA);
@@ -116,48 +115,14 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy - 1);");
 
 		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
-		pipeline->DeclareStruct(computeRenderPassScope, u8"renderPassData", { { u8"ImageReference", u8"Color" } });
+		pipeline->DeclareStruct(computeRenderPassScope, u8"RenderPassData", { { u8"ImageReference", u8"Color" } });
 
 		auto pushConstantBlockHandle = pipeline->DeclareScope(computeRenderPassScope, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"renderPassData*", u8"renderPass" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RenderPassData*", u8"renderPass" });
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2u", u8"GetPixelPosition", {}, u8"return GetGlobalIndex().xy;");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"ACES", { { u8"vec4f", u8"x" } }, u8"const float a = 2.51; const float b = 0.03; const float c = 2.43; const float d = 0.59; const float e = 0.14; return (x * (a * x + b)) / (x * (c * x + d) + e);");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"Filmic", { { u8"vec4f", u8"x" } }, u8"vec3 X = max(vec3(0.0), vec3f(x) - vec3f(0.004)); vec3 result = (X * (6.2 * X + 0.5)) / (X * (6.2 * X + 1.7) + 0.06); return vec4f(pow(result, vec3(2.2)), x.a); ");
-		AddSupportedDomain(u8"Screen");
-	}
-
-	GTSL::Vector<ShaderGroupDescriptor, BE::TAR> MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) override { return { GetTransientAllocator() }; }
-
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) override {
-		if (shaderGroupJson[u8"domain"].GetStringView() == u8"Screen") {
-			if (shader_json[u8"class"].GetStringView() == u8"Compute") {
-				auto shaderScope = pipeline->DeclareScope(computeRenderPassScope, shader_json[u8"name"]);
-				auto mainFunctionHandle = pipeline->DeclareFunction(shaderScope, u8"void", u8"main");
-				auto& main = pipeline->GetFunction({ shaderScope }, u8"main");
-
-				tokenizeCode(u8"vec4f color = Sample(pushConstantBlock.renderPass.Color, GetPixelPosition());", main.Tokens, GetPersistentAllocator()); //insert variable shader will use to store color
-				tokenizeCode(shader_json[u8"code"], main.Tokens, GetPersistentAllocator());
-				tokenizeCode(u8"Write(pushConstantBlock.renderPass.Color, GetPixelPosition(), color);", main.Tokens, GetPersistentAllocator()); //store final "color" value to image
-
-				if (auto res = shader_json[u8"localSize"]) {
-					GTSL::StaticString<64> x, y, z;
-					GTSL::ToString(x, res[0].GetUint()); GTSL::ToString(y, res[1].GetUint()); GTSL::ToString(z, res[2].GetUint());
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", x });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", y });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", z });
-				}
-				else {
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_x", u8"1" });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_y", u8"1" });
-					pipeline->DeclareVariable(shaderScope, { u8"uint16", u8"group_size_z", u8"1" });
-				}
-
-				auto& batch = batches.EmplaceBack();
-				batch.TargetSemantics = GAL::ShaderType::COMPUTE;
-				batch.Scopes.PushBack({ GPipeline::GLOBAL_SCOPE, commonScope, computeShaderScope, computeRenderPassScope, shaderScope });
-			}
-		}
 	}
 
 	GPipeline::ElementHandle commonScope, computeRenderPassScope;

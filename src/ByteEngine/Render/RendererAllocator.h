@@ -1,13 +1,14 @@
 #pragma once
+
+#include "ByteEngine/Core.h"
+#include "ByteEngine/Object.h"
+#include "ByteEngine/Application/AllocatorReferences.h"
+
 #include <GTSL/DataSizes.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Math/Math.hpp>
 
-
 #include "RenderTypes.h"
-#include "ByteEngine/Core.h"
-#include "ByteEngine/Object.h"
-#include "ByteEngine/Application/AllocatorReferences.h"
 
 class ScratchMemoryAllocator;
 
@@ -80,7 +81,7 @@ public:
 	}
 
 private:
-	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
+	inline static GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 
 	static constexpr bool SINGLE_ALLOC = false;
 	
@@ -115,7 +116,7 @@ public:
 	void Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference);
 
 private:
-	static constexpr GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
+	inline static GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 
 	static constexpr bool SINGLE_ALLOC = false;
 	

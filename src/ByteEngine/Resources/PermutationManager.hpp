@@ -1,50 +1,41 @@
 #pragma once
 
-template<typename T>
-bool Contains(const T& a, GTSL::Range<const T*> params) {
-	for (const auto& e : params) { if (e == a) { return true; } }
-	return false;
-}
-
 struct PermutationManager : Object {
 	struct ShaderGenerationData {
-		GTSL::StaticVector<GPipeline::ElementHandle, 16> Scopes;
 		GTSL::StaticVector<const PermutationManager*, 16> Hierarchy;
 	};
 
 	using ShaderTag = GTSL::Pair<GTSL::ShortString<32>, GTSL::ShortString<32>>;
 
-	PermutationManager(const GTSL::StringView instance_name, const GTSL::StringView class_name) : InstanceName(instance_name), ClassName(class_name) {
+	PermutationManager(const GTSL::StringView instance_name, const GTSL::StringView class_name) : InstanceName(instance_name), ClassName(class_name), JSON(GetPersistentAllocator()) {
 
 	}
 
-	static GTSL::StaticString<8192> MakeShaderString(GTSL::StringView path, GTSL::StringView user_shader_code = {}) {
-		GTSL::File file(ResourceManager::GetUserResourcePath(path, u8"txt"));
-
-		GTSL::StaticBuffer<8192> buffer;
-
+	static GTSL::StaticString<8192> MakeShaderString(GTSL::StringView raw_code, GTSL::StringView user_shader_code = {}) {
 		GTSL::StaticString<8192> shaderCode;
 
-		file.Read(buffer);
-
-		uint32 i = 0;
+		auto i = raw_code.begin();
 
 		while(true) {
 			auto s = i;
 
-			while(i != buffer.GetLength() && *(buffer.begin() + i) != u8'@') {
+			while(i != raw_code.end() && *i != u8'@') {
 				++i;
 			}
 
-			shaderCode += { i - s, i - s, reinterpret_cast<const utf8*>(buffer.begin()) + s };
+			shaderCode += { s, i };
 
-			if(i == buffer.GetLength()) {
+			if(i == raw_code.end()) {
 				break;
 			}
 
 			shaderCode += user_shader_code;
 
-			i += 3;
+			++i;
+
+			while(IsAnyOf(*i, u8'\n', u8'\f', u8'\r')) {
+				++i;
+			}
 		}
 
 		return shaderCode;
@@ -75,51 +66,17 @@ struct PermutationManager : Object {
 		GTSL::StaticVector<GPipeline::ElementHandle, 8> Scopes;
 		GTSL::StaticVector<ShaderTag, 4> Tags;
 	};
-	virtual void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shaderGroupJson, GTSL::JSONMember shaderJson, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) = 0;
-
-	struct ShaderGroupDescriptor {
-		GTSL::StaticString<1024> ShaderGroupJSON;
-		GTSL::StaticVector<GTSL::StaticVector<ShaderPermutation, 4>, 4> Shaders;
-	};
-	virtual GTSL::Vector<ShaderGroupDescriptor, BE::TAR > MakeShaderGroups(GPipeline* pipeline, GTSL::Range<const PermutationManager**> hierarchy) = 0;
-
-	static auto GetDefaultShaderGroups(PermutationManager* permutation_manager, GPipeline* pipeline) {
-		GTSL::StaticVector<ShaderGroupDescriptor, 8> result1s;
-		GTSL::StaticVector<const PermutationManager*, 16> hierarchy;
-
-		auto call = [&](PermutationManager* parent, auto&& self) -> void {
-			auto res = parent->MakeShaderGroups(pipeline, hierarchy);
-
-			for(auto& e : res) {
-				for(auto& s : e.Shaders) {
-					for(auto& t : s) {
-						for(uint32 i = 0; i < parent->scopes; ++i) {
-							t.Scopes.Insert(i, parent->scopes[i]);
-						}
-					}
-				}
-
-				result1s.EmplaceBack(GTSL::MoveRef(e));
-			}
-
-			hierarchy.EmplaceBack(parent);
-
-			for (const auto& e : parent->Children) {
-				self(e, self);
-			}
-		};
-
-		call(permutation_manager, call);
-
-		return result1s;
-	}
 
 	template<class A>
-	PermutationManager* CreateChild(const GTSL::StringView name) {
-		return Children.EmplaceBack(GTSL::SmartPointer<A, BE::TAR>(GetTransientAllocator(), name));
+	PermutationManager* CreateChild(GPipeline* pipeline, const GTSL::StringView name) {
+		auto permutationManager = GTSL::SmartPointer<A, BE::TAR>(GetTransientAllocator(), name);
+
+		Children.EmplaceBack(permutationManager);
+
+		return permutationManager;
 	}
 
-	GTSL::StaticVector<GTSL::SmartPointer<PermutationManager, BE::TAR>, 8> Children;
+	GTSL::StaticVector<PermutationManager*, 8> Children;
 	GTSL::StaticString<64> InstanceName;
 	const GTSL::StaticString<64> ClassName;
 
@@ -136,7 +93,7 @@ struct PermutationManager : Object {
 
 	GTSL::Range<const ShaderTag*> GetTagList() { return tags; }
 
-	static auto ProcessShaders(PermutationManager* start, GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json) {
+	static auto ProcessShaders(PermutationManager* start, GPipeline* pipeline, const GTSL::JSON<BE::PAR>& shader_group_json, const GTSL::JSON<BE::PAR>& shader_json) {
 		GTSL::StaticVector<ShaderPermutation, 8> batches;
 		GTSL::StaticVector<const PermutationManager*, 16> scopes;
 
@@ -149,13 +106,13 @@ struct PermutationManager : Object {
 			if (auto l = parent->supportedDomainsFunctions[res.Get()]) {
 				l(parent, pipeline, shader_group_json, shader_json, scopes, batches);
 			} else {
-				parent->ProcessShader(pipeline, shader_group_json, shader_json, scopes, batches);				
+				//parent->ProcessShader(pipeline, shader_group_json, shader_json, scopes, batches);				
 			}
 
 			scopes.EmplaceBack(parent);
 
 			for(const auto& e : parent->Children) {
-				if (Contains(domain, static_cast<const PermutationManager*>(e.GetData())->supportedDomains.GetRange())) {
+				if (Contains(static_cast<const PermutationManager*>(e)->supportedDomains.GetRange(), domain)) {
 					self(e, self);
 				}
 			}
@@ -176,29 +133,31 @@ struct PermutationManager : Object {
 		return batches;
 	}
 
-protected:
-	using SIG = GTSL::FunctionPointer<void(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches)>;
-
-	void AddTag(const GTSL::StringView name, const GTSL::StringView tag_string) { tags.EmplaceBack(name, tag_string); }
-
 	void AddSupportedDomain(const GTSL::StringView domain_name) {
+		if(supportedDomains.Find(domain_name)) { return; }
 		supportedDomains.EmplaceBack(domain_name);
 		supportedDomainsFunctions.EmplaceBack();
 	}
 
-	template<typename T, void(T::*L)(GPipeline*, GTSL::JSONMember, GTSL::JSONMember, GTSL::Range<const PermutationManager**>, GTSL::StaticVector<ShaderPermutation, 8>&)>
+	auto& GetSupportedDomains() const {return supportedDomains;}
+	
+	GTSL::JSON<BE::PAR> JSON;
+
+	GTSL::StaticVector<GTSL::Vector<GTSL::Buffer<BE::PAR>, BE::PAR>, 3> a;
+
+protected:
+	using SIG = GTSL::FunctionPointer<void(GPipeline* pipeline, const GTSL::JSON<BE::PAR>&, const GTSL::JSON<BE::PAR>&, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches)>;
+
+	void AddTag(const GTSL::StringView name, const GTSL::StringView tag_string) { tags.EmplaceBack(name, tag_string); }
+
+	template<typename T, void(T::*L)(GPipeline*, const GTSL::JSON<BE::PAR>&, const GTSL::JSON<BE::PAR>&, GTSL::Range<const PermutationManager**>, GTSL::StaticVector<ShaderPermutation, 8>&)>
 	void AddSupportedDomain(const GTSL::StringView domain_name) {
 		supportedDomains.EmplaceBack(domain_name);
 		supportedDomainsFunctions.EmplaceBack(SIG::Create<T, L>());
-	}
-
-	void AddScope(const GPipeline::ElementHandle scope_handle) {
-		scopes.EmplaceBack(scope_handle);
 	}
 
 private:
 	GTSL::StaticVector<ShaderTag, 4> tags;
 	GTSL::StaticVector<GTSL::ShortString<32>, 8> supportedDomains;
 	GTSL::StaticVector<SIG, 8> supportedDomainsFunctions;
-	GTSL::StaticVector<GPipeline::ElementHandle, 8> scopes;
 };

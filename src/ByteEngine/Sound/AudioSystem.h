@@ -103,7 +103,7 @@ private:
 		byte* Buffer = nullptr;
 		uint64 Size = 0;
 	};
-	GTSL::HashMap<Id, SourceAudioData, BE::PAR> sourceAudioDatas;
+	GTSL::HashMap<GTSL::StringView, SourceAudioData, BE::PAR> sourceAudioDatas;
 	
 	GTSL::Buffer<BE::PAR> audioBuffer;
 	TaskHandle<AudioResourceManager::AudioInfo> onAudioInfoLoadHandle;

@@ -22,10 +22,6 @@ public:
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
 	void Shutdown() override;
 
-	// EVENTS
-	static EventHandle<bool> GetOnFocusGainEventHandle() { return EventHandle<bool>(u8"OnFocusGain"); }
-	static EventHandle<bool> GetOnFocusLossEventHandle() { return EventHandle<bool>(u8"OnFocusLoss"); }
-
 protected:
 	GTSL::Gamepad gamepad;
 	InputDeviceHandle controller;

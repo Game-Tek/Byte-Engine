@@ -52,17 +52,17 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"Normal", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"Position", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Normal"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Position"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"ForwardRenderPass", renderSystem, geoRenderPass);
 	}
 	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(u8"Visibility", GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"VisibilityRenderPass", renderSystem, geoRenderPass);
 
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
@@ -103,7 +103,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		//Counts how many pixels each shader group uses
 		RenderOrchestrator::PassData countPixelsRenderPassData;
 		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		countPixelsRenderPassData.Attachments.EmplaceBack(u8"Visibility", GAL::AccessTypes::READ);
+		countPixelsRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"), GAL::AccessTypes::READ);
 		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"CountPixels", renderSystem, countPixelsRenderPassData);
 
 		////Performs a prefix to build an indirect buffer defining which pixels each shader group occupies
@@ -129,7 +129,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-	gammaCorrectionPass.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE); //result attachment
+	gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE); //result attachment
 	renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", renderSystem, gammaCorrectionPass);
 
 	renderOrchestrator->RegisterType(u8"global", u8"StaticMeshData", INSTANCE_DATA);
@@ -160,7 +160,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (rayTracing) {
 		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);
 
-		setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
+		//setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
 	}
 
 	//add node
@@ -183,7 +183,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 	resource.IndexType = GAL::SizeToIndexType(staticMeshInfo.IndexSize);
 	resource.Interleaved = staticMeshInfo.Interleaved;
 
-	resource.Offset = vertexComponentsPerStream; resource.IndexOffset = indicesInBuffer;
+	resource.VertexComponentsInStream = vertexComponentsPerStream; resource.IndicesInStream = indicesInBuffer;
 
 	for (uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
 		auto& sm = staticMeshInfo.GetSubMeshes().array[i];
@@ -250,11 +250,12 @@ void WorldRendererPipeline::onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* 
 	render_orchestrator->AddIndices(indexBufferNodeHandle, staticMeshInfo.GetIndexCount());
 
 	if (rayTracing) {
-		res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), destinationVertexBuffer, destinationIndexBuffer, res.Offset * 12/*todo: use actual position coordinate element size*/, res.IndexOffset);
+		res.BLAS = render_system->CreateBottomLevelAccelerationStructure(staticMeshInfo.VertexCount, 12/*todo: use actual position stride*/, staticMeshInfo.IndexCount, GAL::SizeToIndexType(staticMeshInfo.IndexSize), destinationVertexBuffer, destinationIndexBuffer, res.VertexComponentsInStream * 12/*todo: use actual position coordinate element size*/, res.IndicesInStream * 2);
+		pendingBlasUpdates.EmplaceBack(res.BLAS);
 	}
 
 	for (auto e : res.Instances) {
-		AddMeshInstance(staticMeshInfo.GetName(), e);
+		AddMeshInstance(Id(staticMeshInfo.GetName()), e);
 		*spherePositionsAndRadius.GetPointer<3>(e()) = staticMeshInfo.BoundingRadius;
 	}
 
@@ -275,8 +276,6 @@ void WorldRendererPipeline::OnAddRenderGroupMesh(TaskInfo task_info, StaticMeshR
 	meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
 
 	if (resource) { // If resource isn't already loaded 
-		//resource.Get().Index = prefixSum.EmplaceBack(0);
-		//prefixSumGuide.EmplaceBack(resourceName);
 		static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
 	}
 	else {

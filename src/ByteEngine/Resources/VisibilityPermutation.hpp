@@ -160,7 +160,7 @@ u8R"({
 		return { GetTransientAllocator() };
 	}
 
-	void ProcessShader(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) override {
+	void ProcessShader(GPipeline* pipeline, GTSL::JSON shader_group_json, GTSL::JSON shader_json, const GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) override {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {
@@ -262,7 +262,7 @@ u8R"({
 		}
 	}
 
-	void ProcessVisibility(GPipeline* pipeline, GTSL::JSONMember shader_group_json, GTSL::JSONMember shader_json, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) {
+	void ProcessVisibility(GPipeline* pipeline, GTSL::JSON shader_group_json, GTSL::JSON shader_json, GTSL::Range<const PermutationManager**> hierarchy, GTSL::StaticVector<ShaderPermutation, 8>& batches) {
 		GTSL::StaticVector<StructElement, 8> shaderParameters;
 
 		if (auto parameters = shader_group_json[u8"parameters"]) {

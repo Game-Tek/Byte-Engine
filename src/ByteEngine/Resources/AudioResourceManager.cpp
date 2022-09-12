@@ -23,9 +23,9 @@ AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info
 
 		while(auto queryResult = file_query()) {
 			auto fileName = queryResult.Get(); RTrimLast(fileName, u8'.');
-			const auto hashed_name = GTSL::Id64(fileName);
+			const auto hashed_name = Id(fileName);
 
-			if (!audioResourceInfos.Find(hashed_name)) {
+			if (!audioResourceInfos.Find(GTSL::StringView(fileName))) {
 				GTSL::File query_file(GetUserResourcePath(queryResult.Get()), GTSL::File::READ, false);
 
 				GTSL::Buffer wavBuffer(query_file.GetSize(), 8, GetTransientAllocator());
@@ -75,7 +75,7 @@ AudioResourceManager::AudioResourceManager(const InitializeInfo& initialize_info
 
 				packageFile.Write(GTSL::Range<const byte*>(data_size, wavBuffer.GetData() + wavBuffer.GetReadPosition()));
 
-				audioResourceInfos.Emplace(hashed_name, data);
+				audioResourceInfos.Emplace(GTSL::StringView(hashed_name), data);
 			}
 		}
 

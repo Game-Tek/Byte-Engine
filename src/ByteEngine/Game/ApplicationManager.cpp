@@ -254,24 +254,26 @@ void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {
 	BE_LOG_MESSAGE(u8"Removed recurring task ", GTSL::StringView(taskName), u8" from stage ", GTSL::StringView(startOn))
 }
 
-void ApplicationManager::AddStage(Id stageName)
+void ApplicationManager::AddStage(GTSL::StringView stageName)
 {
+	auto hashedName = Id(stageName);
+
 	if constexpr (BE_DEBUG) {
 		GTSL::WriteLock lock(stagesNamesMutex);
-		if (stagesNames.Find(stageName).State()) {
-			BE_LOG_ERROR(u8"Tried to add stage ", GTSL::StringView(stageName), u8" which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
+		if (stagesNames.Find(hashedName).State()) {
+			BE_LOG_ERROR(u8"Tried to add stage ", stageName, u8" which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
 		}
 	}
 
 	{
 		GTSL::WriteLock lock(stagesNamesMutex);
-		stagesNames.EmplaceBack(stageName);
+		stagesNames.EmplaceBack(hashedName);
 	}
 
 	stages.EmplaceBack();
 
-	BE_LOG_MESSAGE(u8"Added stage ", GTSL::StringView(stageName))
+	BE_LOG_MESSAGE(u8"Added stage ", stageName)
 }
 
 void ApplicationManager::initWorld(const uint8 worldId)

@@ -51,9 +51,7 @@ StaticMeshResourceManager::StaticMeshResourceManager(const InitializeInfo& initi
 
 		GTSL::Buffer buffer(GetPersistentAllocator()); meshDescriptionsFile.Read(buffer);
 
-		GTSL::Buffer jsonBuffer(GetPersistentAllocator());
-
-		GTSL::JSONMember json = GTSL::Parse(GTSL::StringView(buffer.GetLength(), buffer.GetLength(), reinterpret_cast<const char8_t*>(buffer.GetData())), jsonBuffer);
+		auto json = GTSL::JSON(GTSL::StringView(buffer.GetLength(), buffer.GetLength(), reinterpret_cast<const char8_t*>(buffer.GetData())), GetTransientAllocator());
 
 		for(auto mesh : json[u8"meshes"]) {			
 			auto fileName = mesh[u8"name"];

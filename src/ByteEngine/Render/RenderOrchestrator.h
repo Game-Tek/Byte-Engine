@@ -129,7 +129,7 @@ protected:
 	MAKE_HANDLE(uint64, Resource);
 
 	struct AttachmentData {
-		Id Name;
+		GTSL::StaticString<64> Name;
 		GAL::TextureLayout Layout;
 		GAL::PipelineStage ConsumingStages;
 		GAL::AccessType Access;
@@ -262,7 +262,7 @@ public:
 
 	[[nodiscard]] RenderModelHandle CreateShaderGroup(Id shader_group_instance_name);
 
-	void AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type);
+	void AddAttachment(GTSL::StringView attachment_name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type);
 
 	//DataKeyHandle GetIndex(const DataKeyHandle& data_key_handle, uint32 index) {
 	//	const auto& dataKey = dataKeys[data_key_handle()];
@@ -434,7 +434,7 @@ public:
 		}
 
 		const BufferWriteKey& operator=(const BufferWriteKey& other) const {
-			if (Offset == ~0u or render_orchestrator->getElement(ElementHandle).DataType != render_orchestrator->getElement(other.ElementHandle).DataType) { return *this; }
+			if (Offset == ~0u or GTSL::StringView(render_orchestrator->getElement(ElementHandle).DataType) != GTSL::StringView(render_orchestrator->getElement(other.ElementHandle).DataType)) { return *this; }
 			auto& element = render_orchestrator->getElement(ElementHandle);
 			GTSL::MemCopy(render_orchestrator->GetSize(element.Mem.TypeHandle), render_system->GetBufferPointer(other.buffer_handle), render_system->GetBufferPointer(buffer_handle) + Offset);
 			return *this;
@@ -496,7 +496,6 @@ public:
 		for(auto& e : updateKey.BWKs) {
 			auto bwk = GetBufferWriteKey(render_system, e.DKH);
 			bwk(e.EDH, e.Offset) = val;
-			PrintMember(e.DKH, render_system);
 		}
 
 		updateKey.Value = val;
@@ -519,7 +518,7 @@ public:
 
 	struct PassData {
 		struct AttachmentReference {
-			Id Name; GAL::AccessType Access;
+			GTSL::StaticString<64> Name; GAL::AccessType Access;
 		};
 		GTSL::StaticVector<AttachmentReference, 8> Attachments;
 
@@ -821,7 +820,7 @@ public:
 		return SetLayoutHandle(hash);
 	}
 
-	SetHandle AddSet(RenderSystem* renderSystem, Id setName, SetLayoutHandle setLayoutHandle, const GTSL::Range<SubSetDescriptor*> setInfo) {
+	SetHandle AddSet(RenderSystem* renderSystem, GTSL::StringView setName, SetLayoutHandle setLayoutHandle, const GTSL::Range<SubSetDescriptor*> setInfo) {
 		GTSL::StaticVector<BindingsSetLayout::BindingDescriptor, 16> bindingDescriptors;
 
 		for (auto& ss : setInfo) {
@@ -850,7 +849,7 @@ public:
 			}
 		}
 
-		auto setHandle = makeSetEx(renderSystem, setName, setLayoutHandle, bindingDescriptors);
+		auto setHandle = makeSetEx(renderSystem, Id(setName), setLayoutHandle, bindingDescriptors);
 
 		auto& set = sets[setHandle()];
 		uint32 i = 0;
@@ -1064,9 +1063,9 @@ public:
 	}
 
 private:
-	inline static const Id RENDER_TASK_NAME{ u8"RenderOrchestrator::Render" };
-	inline static const Id SETUP_TASK_NAME{ u8"RenderOrchestrator::Setup" };
-	inline static const Id CLASS_NAME{ u8"RenderOrchestrator" };
+	inline static const auto RENDER_TASK_NAME{ u8"RenderOrchestrator::Render" };
+	inline static const auto SETUP_TASK_NAME{ u8"RenderOrchestrator::Setup" };
+	inline static const auto CLASS_NAME{ u8"RenderOrchestrator" };
 
 	inline static constexpr uint32 RENDER_DATA_BUFFER_SIZE = 262144;
 	inline static constexpr uint32 RENDER_DATA_BUFFER_SLACK_SIZE = 4096;
@@ -1375,7 +1374,7 @@ private:
 		return strings;
 	}
 
-	GTSL::StaticMap<Id, NodeHandle, 16> renderPasses, renderPasses2;
+	GTSL::StaticMap<GTSL::StringView, NodeHandle, 16> renderPasses, renderPasses2;
 	GTSL::StaticVector<NodeHandle, 16> renderPassesInOrder;
 
 	GTSL::Extent2D sizeHistory[MAX_CONCURRENT_FRAMES];
@@ -1543,9 +1542,9 @@ private:
 		ResourceHandle Resource;
 		uint32 Index = 0;
 	};
-	GTSL::HashMap<Id, TextureData, BE::PAR> textures;
+	GTSL::HashMap<GTSL::StringView, TextureData, BE::PAR> textures;
 
-	void addPendingResourceToTexture(Id texture, ResourceHandle resource) {
+	void addPendingResourceToTexture(GTSL::StringView texture, ResourceHandle resource) {
 		addDependencyOnResource(resource, textures[texture].Resource);
 	}
 
@@ -1558,7 +1557,7 @@ private:
 		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
 		uint32 ImageIndex;
 	};
-	GTSL::HashMap<Id, Attachment, BE::PAR> attachments;
+	GTSL::HashMap<GTSL::StringView, Attachment, BE::PAR> attachments;
 
 	void updateImage(uint8 frameIndex, Attachment& attachment, GAL::TextureLayout textureLayout, GAL::PipelineStage stages, GAL::AccessType writeAccess) {
 		attachment.Layout[frameIndex] = textureLayout; attachment.ConsumingStages = stages; attachment.AccessType = writeAccess;
@@ -2024,7 +2023,7 @@ private:
 
 	static constexpr bool INVERSE_Z = true;
 
-	GTSL::StaticVector<Id, 8> renderPassesGuide;
+	GTSL::StaticVector<GTSL::StaticString<64>, 8> renderPassesGuide;
 
 	GTSL::Math::RandomSeed randomA, randomB;
 
@@ -2032,6 +2031,8 @@ private:
 	GAL::PipelineStage pipelineStages;
 #endif
 };
+
+inline uint64 Hash(char8_t c) { return c; }
 
 class UIRenderManager : public RenderManager {
 public:
@@ -2071,14 +2072,14 @@ public:
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
 			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
-			uiRenderPassData.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
+			uiRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"UIRenderPass", renderSystem, uiRenderPassData);
 
 			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);
 			uiInstancesDataNodeHandle = renderOrchestrator->AddDataNode(uiDataNodeHandle, u8"UIInstancesData", uiInstancesDataKey, true);
 
-			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UI"));
-			textMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(u8"UIText"));
+			uiMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(Id(u8"UI")));
+			textMaterialNodeHandle = renderOrchestrator->AddMaterial(uiInstancesDataNodeHandle, renderOrchestrator->CreateShaderGroup(Id(u8"UIText")));
 		}
 
 		meshNodeHandle = renderOrchestrator->AddSquare(uiMaterialNodeHandle);
@@ -2335,7 +2336,7 @@ private:
 
 	uint32 loadedFonts = 0;
 
-	GTSL::HashMap<char32_t, uint32, BE::PAR> charToGlyphMap;
+	GTSL::HashMap<char8_t, uint32, BE::PAR> charToGlyphMap;
 	GTSL::HashMap<uint32, FontResourceManager::Character, BE::PAR> characters;
 };
 

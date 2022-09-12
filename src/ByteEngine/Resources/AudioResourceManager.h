@@ -69,7 +69,7 @@ public:
 private:
 	template<typename... ARGS>
 	auto loadAudioInfo(TaskInfo taskInfo, Id audioName, TaskHandle<AudioInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		auto audioInfoSerialize = audioResourceInfos.At(audioName);
+		auto audioInfoSerialize = audioResourceInfos.At(GTSL::StringView(audioName));
 
 		AudioInfo audioInfo(audioName, audioInfoSerialize);
 
@@ -81,13 +81,13 @@ private:
 		uint32 bytes = audioInfo.GetAudioSize();
 		
 		packageFiles[getThread()].SetPointer(audioInfo.ByteOffset);
-		packageFiles[getThread()].ReadRaw(buffer.begin(), bytes);
+		packageFiles[getThread()].Read(bytes, buffer.begin());
 		
 		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::Range(bytes, buffer.begin()), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	GTSL::File indexFile;
-	GTSL::HashMap<Id, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
+	GTSL::HashMap<GTSL::StringView, AudioDataSerialize, BE::PersistentAllocatorReference> audioResourceInfos;
 
 	GTSL::StaticVector<GTSL::File, MAX_THREADS> packageFiles;
 };

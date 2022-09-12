@@ -49,7 +49,7 @@ void d(GTSL::StringView string, GTSL::StaticVector<GTSL::StringView, 16>& tokens
 }
 
 inline uint32 PRECEDENCE(const GTSL::StringView optor) {
-	GTSL::StaticMap<Id, uint8, 16> PRECEDENCE(16);
+	GTSL::StaticMap<GTSL::StringView, uint8, 16> PRECEDENCE(16);
 	PRECEDENCE.Emplace(u8"=", 1);
 	PRECEDENCE.Emplace(u8"||", 2);
 	PRECEDENCE.Emplace(u8"<", 7); PRECEDENCE.Emplace(u8">", 7); PRECEDENCE.Emplace(u8"<=", 7); PRECEDENCE.Emplace(u8">=", 7); PRECEDENCE.Emplace(u8"==", 7); PRECEDENCE.Emplace(u8"!=", 7);
@@ -132,16 +132,16 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 	}
 
 	{
-		tryAddElement(u8"global", u8"Common", ElementData::ElementType::SCOPE);
-		RegisterType(u8"global.Common", u8"GlobalData", GLOBAL_DATA);
-		globalDataDataKey = MakeDataKey(renderSystem, u8"global.Common", u8"GlobalData");
+		tryAddElement(u8"global", u8"CommonPermutation", ElementData::ElementType::SCOPE);
+		RegisterType(u8"global.CommonPermutation", u8"GlobalData", GLOBAL_DATA);
+		globalDataDataKey = MakeDataKey(renderSystem, u8"global.CommonPermutation", u8"GlobalData");
 		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
 	}
 
 	{
-		RegisterType(u8"global.Common", u8"ViewData", VIEW_DATA);
-		cameraMatricesHandle = RegisterType(u8"global.Common", u8"CameraData", CAMERA_DATA);
-		cameraDataKeyHandle = MakeDataKey(renderSystem, u8"global.Common", u8"CameraData");
+		RegisterType(u8"global.CommonPermutation", u8"ViewData", VIEW_DATA);
+		cameraMatricesHandle = RegisterType(u8"global.CommonPermutation", u8"CameraData", CAMERA_DATA);
+		cameraDataKeyHandle = MakeDataKey(renderSystem, u8"global.CommonPermutation", u8"CameraData");
 		//cameraDataNode = AddDataNode(globalData, u8"CameraData", cameraDataKeyHandle);
 	}
 
@@ -169,7 +169,7 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 		transferCommandList[f] = renderSystem->CreateCommandList(u8"Transfer Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 	}
 
-	auto config = BE::Application::Get()->GetConfig();
+	const auto& config = BE::Application::Get()->GetConfig();
 
 	for(auto rp : config[u8"renderPasses"]) {
 		renderPassesGuide.EmplaceBack(rp.GetStringView());
@@ -203,7 +203,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	updateDescriptors(taskInfo);
 
-	Id resultAttachment;
+	GTSL::StringView resultAttachment;
 
 	bool debugRenderNodes = BE::Application::Get()->GetBoolOption(u8"debugRenderNodes");
 
@@ -319,7 +319,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 				auto b = numbers.back(); numbers.PopBack();
 
-				switch (Hash(token)) {
+				switch (GTSL::Hash(token)) {
 				case GTSL::Hash(u8"+"): numbers.EmplaceBack(a + b); break;
 				case GTSL::Hash(u8"-"): numbers.EmplaceBack(a - b); break;
 				case GTSL::Hash(u8"*"): numbers.EmplaceBack(a * b); break;
@@ -388,7 +388,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
 					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 
-					if(debugRenderNodes) {
+					if(BE::Application::Get()->GetBoolOption(u8"RenderOrchestrator.debugBuffers")) {
 						PrintMember(layerData.DataKey, renderSystem);
 					}
 				}
@@ -481,7 +481,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 						dt += u8"*";
 						++i;
 
-						if(dt != e.Type) {
+						if(dt != GTSL::StringView(e.Type)) {
 							BE_LOG_WARNING(u8"Pipeline expected push constant layout does not match current layout. Shader declared: ", e.Type, u8", but bound type is: ", dt, u8".");
 						}
 					}
@@ -587,7 +587,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
 		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
 
-		if (resultAttachment) {
+		if (Id(resultAttachment)) {
 			auto& attachment = attachments.At(resultAttachment);
 
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
@@ -694,9 +694,9 @@ RenderModelHandle RenderOrchestrator::CreateShaderGroup(Id shader_group_instance
 	return RenderModelHandle(id);
 }
 
-void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type) {
+void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type) {
 	Attachment attachment;
-	attachment.Name = attachmentName;
+	attachment.Name = attachment_name;
 	attachment.Uses = GAL::TextureUse();
 
 	attachment.Uses |= GAL::TextureUses::ATTACHMENT;
@@ -718,7 +718,7 @@ void RenderOrchestrator::AddAttachment(Id attachmentName, uint8 bitDepth, uint8 
 	attachment.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
 	attachment.ImageIndex = imageIndex++; ++textureIndex;
 
-	attachments.Emplace(attachmentName, attachment);
+	attachments.Emplace(attachment_name, attachment);
 }
 
 RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle parent_node_handle, GTSL::StringView render_pass_name, RenderSystem* renderSystem, PassData pass_data) {
@@ -741,7 +741,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 	NodeHandle leftNodeHandle(0xFFFFFFFF);
 
 	{ // Guarantee render pass order in render tree, TODO: check render pass level or else this will fail
-		auto pos = renderPassesGuide.Find(Id(render_pass_name));
+		auto pos = renderPassesGuide.Find(render_pass_name);
 
 		if(pos) {
 			if(pos.Get() > 0) {
@@ -758,7 +758,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 	auto ddd = MakeDataKey(renderSystem, scope, u8"RenderPassData");
 	//auto renderPassDataNode = AddDataNode(renderPassName, leftNodeHandle, parent_node_handle, scope, u8"RenderPassData");
 	auto renderPassDataNode = AddDataNode(leftNodeHandle, parent_node_handle, ddd);
-	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(Hash(render_pass_name), renderPassDataNode);
+	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(GTSL::Hash(render_pass_name), renderPassDataNode);
 
 	if(!renderPassNodeHandleResult) { return renderPassNodeHandleResult.Get(); }
 
@@ -833,9 +833,9 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 
 		}
 
-		auto sgh = CreateShaderGroup(render_pass_name);
+		auto sgh = CreateShaderGroup(Id(render_pass_name));
 		auto pipelineBindNode = addPipelineBindNode(renderPassNodeHandle, sgh);
-		resultHandle = addInternalNode<DispatchData>(Hash(render_pass_name), pipelineBindNode).Get();
+		resultHandle = addInternalNode<DispatchData>(GTSL::Hash(render_pass_name), pipelineBindNode).Get();
 
 		break;
 	}
@@ -1046,7 +1046,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		for (auto& b : a) {
 			GAL::ShaderDataType type;
 
-			switch (Hash(b.Type)) {
+			switch (GTSL::Hash(b.Type)) {
 			case GTSL::Hash(u8"vec2f"): type = GAL::ShaderDataType::FLOAT2; break;
 			case GTSL::Hash(u8"vec3f"): type = GAL::ShaderDataType::FLOAT3; break;
 			case GTSL::Hash(u8"vec4f"): type = GAL::ShaderDataType::FLOAT4; break;
@@ -1059,8 +1059,9 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 	for (uint32 offset = 0, si = 0; si < shader_group_info.Shaders; offset += shader_group_info.Shaders[si].Size, ++si) {
 		const auto& s = shader_group_info.Shaders[si];
 
-		if (Contains(PermutationManager::ShaderTag(u8"Domain", u8"World"), s.Tags.GetRange())) {
-			if (!Contains(PermutationManager::ShaderTag(u8"RenderTechnique", tag), s.Tags.GetRange())) {
+		if (Contains(s.Tags.GetRange(), PermutationManager::ShaderTag(u8"Domain", u8"World"))) {
+			if (!Contains(s.Tags.GetRange(), PermutationManager::ShaderTag(u8"RenderTechnique", tag)) && !Contains(shader_group_info.Tags, PermutationManager::ShaderTag(u8"RenderTechnique", tag))) {
+				BE_LOG_WARNING(u8"Ignoring shader: ", s.Name, u8" because it does not feature needed tag: ", tag);
 				continue;
 			}
 		}
@@ -1074,9 +1075,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			loadedShadersMap.Emplace(s.Hash);
 
 			{ // Check if shader symbols match active runtime symbols
-				GTSL::Buffer jsonBuffer(8192, 8, GetTransientAllocator());
-
-				auto json = Parse(s.DebugData, jsonBuffer);
+				auto json = GTSL::JSON(s.DebugData, GetPersistentAllocator());
 				
 				for(auto jsonStruct : json[u8"structs"]) {
 					auto structName = jsonStruct[u8"name"].GetStringView();
@@ -1198,10 +1197,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			GAL::Pipeline::PipelineStateBlock::RenderContext context;
 
-			Id renderPass = u8"ForwardRenderPass";
+			GTSL::StaticString<128> renderPass{ u8"ForwardRenderPass" };
 
 			if (auto r = GTSL::Find(shader_group_info.Tags, [&](const PermutationManager::ShaderTag& tag) { return static_cast<GTSL::StringView>(tag.First) == u8"RenderPass"; })) {
-				renderPass = Id(GTSL::StringView(r.Get()->Second));
+				renderPass = GTSL::StringView(r.Get()->Second);
 			}
 
 			bool transparency = false;
@@ -1416,7 +1415,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					parameterValue = parameters[Id(p.First)].DefaultValue;
 				}
 
-				switch (Hash(parameters[Id(p.First)].Type)) {
+				switch (GTSL::Hash(parameters[Id(p.First)].Type)) {
 				case GTSL::Hash(u8"TextureReference"): {
 					CreateTextureInfo createTextureInfo;
 					createTextureInfo.RenderSystem = renderSystem;
@@ -1428,13 +1427,13 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					instanceElement[p.First] = textureReference;
 
 					for (auto& e : shaderBundles) {
-						addPendingResourceToTexture(Id(parameterValue), instance.Resource);
+						addPendingResourceToTexture(parameterValue, instance.Resource);
 					}
 
 					break;
 				}
 				case GTSL::Hash(u8"ImageReference"): {
-					auto textureReference = attachments.TryGet(Id(parameterValue));
+					auto textureReference = attachments.TryGet(parameterValue);
 
 					if (textureReference) {
 						uint32 textureComponentIndex = textureReference.Get().ImageIndex;
@@ -1514,7 +1513,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureInfo) {
 
-	if (auto t = textures.TryEmplace(Id(createTextureInfo.TextureName))) {
+	if (auto t = textures.TryEmplace(createTextureInfo.TextureName)) {
 		t.Get().Index = textureIndex++;
 		auto textureLoadInfo = TextureLoadInfo(RenderAllocation());
 		createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
@@ -1550,9 +1549,5 @@ void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager
 
 	signalDependencyToResource(texture.Resource);
 }
-
-#include "ByteEngine/MetaStruct.hpp"
-
-//using VisibilityData = meta_struct<member<"shaderGroupLength", uint32>> ;
 
 #define REGISTER_TASK(name) name = GetApplicationManager()->RegisterTask(this, u8"name", name##_DEPENDENCIES, &WorldRendererPipeline::OnUpdateMesh);

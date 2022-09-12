@@ -3,7 +3,6 @@
 #include "ByteEngine/Object.h"
 
 #include <GTSL/Id.h>
-#include <GTSL/Delegate.hpp>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/RGB.hpp>
 #include <GTSL/Time.h>
@@ -59,11 +58,11 @@ public:
 	{
 		using type = T;
 		InputDeviceHandle DeviceIndex;
-		Id InputSource;
+		GTSL::StaticString<64> InputSource;
 		GTSL::Microseconds LastEventTime;
 		T Value, LastValue;
 
-		InputEvent(InputDeviceHandle device_handle, Id inputSource, GTSL::Microseconds lastEvent, T val, T lastVal) : DeviceIndex(device_handle), InputSource(inputSource), LastEventTime(lastEvent), Value(val), LastValue(lastVal) {}
+		InputEvent(InputDeviceHandle device_handle, GTSL::StringView inputSource, GTSL::Microseconds lastEvent, T val, T lastVal) : DeviceIndex(device_handle), InputSource(inputSource), LastEventTime(lastEvent), Value(val), LastValue(lastVal) {}
 	};
 
 	MAKE_HANDLE(uint32, InputLayer)
@@ -83,7 +82,7 @@ public:
 		return InputLayerHandle(index);
 	}
 	
-	InputDeviceHandle RegisterInputDevice(Id inputDeviceName) {
+	InputDeviceHandle RegisterInputDevice(GTSL::StringView inputDeviceName) {
 		auto index = inputDevices.GetLength();
 		auto& inputDevice = inputDevices.EmplaceBack();
 		inputDevice.Name = inputDeviceName;
@@ -97,7 +96,7 @@ public:
 		inputDevices.Pop(inputDeviceHandle.DeviceHandle);
 	}
 
-	void RegisterInputSource(InputDeviceHandle, Id inputSourceName, Type type) {
+	void RegisterInputSource(InputDeviceHandle, GTSL::StringView inputSourceName, Type type) {
 		auto inputSource = inputSources.TryEmplace(inputSourceName);
 
 		if (!inputSource.State()) {
@@ -127,7 +126,7 @@ public:
 		}
 	}
 
-	void RegisterInputSources(InputDeviceHandle, GTSL::Range<const Id*> inputSourceNames, Type type) {
+	void RegisterInputSources(InputDeviceHandle, GTSL::Range<const GTSL::StringView*> inputSourceNames, Type type) {
 		for (auto& e : inputSourceNames) {
 			auto inputSource = inputSources.TryEmplace(e);
 
@@ -160,10 +159,10 @@ public:
 	}
 
 	struct Action {
-		Action(const Id inputSource, const Id actionName) : InputSourceName(inputSource), ActionName(actionName), ActionType(Type::NONE) {}
+		Action(const GTSL::StringView inputSource, const GTSL::StringView actionName) : InputSourceName(inputSource), ActionName(actionName), ActionType(Type::NONE) {}
 
 		template<typename T>
-		Action(const Id inputSource, const Id actionName, T val) : InputSourceName(inputSource), ActionName(actionName), Datatype(val), ActionType(GetType<Type, T>()) {}
+		Action(const GTSL::StringView inputSource, const GTSL::StringView actionName, T val) : InputSourceName(inputSource), ActionName(actionName), Datatype(val), ActionType(GetType<Type, T>()) {}
 
 		Id InputSourceName, ActionName;
 		Datatypes Datatype;
@@ -171,7 +170,7 @@ public:
 	};
 
 	template<typename T>
-	void SubscribeToInputEvent(Id eventName, GTSL::Range<const Action*> inputSourceNames, TaskHandle<T> dynamicTaskHandle, bool p = false) {
+	void SubscribeToInputEvent(GTSL::StringView eventName, GTSL::Range<const Action*> inputSourceNames, TaskHandle<T> dynamicTaskHandle, bool p = false) {
 		auto inputEventIndex = inputEvents.GetLength();
 		auto& inputEvent = inputEvents.EmplaceBack();
 
@@ -180,10 +179,10 @@ public:
 		inputEvent.P = p;
 
 		for (const auto& action : inputSourceNames) {
-			auto inputSource = inputSources.TryGet(action.InputSourceName);
+			auto inputSource = inputSources.TryGet(GTSL::StringView(action.InputSourceName));
 
 			if (inputSource.State()) {
-				inputEvent.InputSources.Emplace(action.InputSourceName).TargetValue = action.Datatype;
+				inputEvent.InputSources.Emplace(GTSL::StringView(action.InputSourceName)).TargetValue = action.Datatype;
 
 				inputSource.Get().BoundInputEvents.EmplaceBack(inputEventIndex);
 			} else {
@@ -193,7 +192,7 @@ public:
 	}
 
 	template<typename T>
-	void RecordInputSource(InputDeviceHandle deviceIndex, Id eventName, T newValue)
+	void RecordInputSource(InputDeviceHandle deviceIndex, GTSL::StringView eventName, T newValue)
 	{
 		if (!inputSources.Find(eventName)) { BE_LOG_WARNING(u8"Tried to record ", GTSL::StringView(eventName), u8" which is not registered as an input source."); return; }
 		if (inputSources[eventName].SourceType != GetType<Type, T>()) { BE_LOG_WARNING(u8"Tried to record ", GTSL::StringView(eventName), u8" but the input source's type does not match the type of the data being supplied."); return; }
@@ -201,37 +200,37 @@ public:
 		inputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 
-	ActionInputEvent::type GetActionInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+	ActionInputEvent::type GetActionInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Action;
 	}
 
-	CharacterInputEvent::type GetCharacterInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+	CharacterInputEvent::type GetCharacterInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Unicode;
 	}
 
-	LinearInputEvent::type GetLinearInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+	LinearInputEvent::type GetLinearInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Linear;
 	}
 
-	Vector2DInputEvent::type GetVector2DInputSourceValue(InputDeviceHandle deviceHandle, Id eventName) const {
+	Vector2DInputEvent::type GetVector2DInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Vector2D;
 	}
 	
 	void Update();
 	
-	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, Id parameterName, float32 value) {
+	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, GTSL::StringView parameterName, float32 value) {
 		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName).Linear = value;
 	}
 
-	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, Id parameterName, GTSL::RGBA value) {
+	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, GTSL::StringView parameterName, GTSL::RGBA value) {
 		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName).Color = value;
 	}
 
-	[[nodiscard]] float32 GetInputDeviceParameter(InputDeviceHandle inputDeviceHandle, Id parameterName) const {
+	[[nodiscard]] float32 GetInputDeviceParameter(InputDeviceHandle inputDeviceHandle, GTSL::StringView parameterName) const {
 		return inputDevices[inputDeviceHandle.DeviceHandle].Parameters.At(parameterName).Linear;
 	}
 
-	void RegisterInputDeviceParameter(InputDeviceHandle inputDeviceHandle, Id parameterName) {
+	void RegisterInputDeviceParameter(InputDeviceHandle inputDeviceHandle, GTSL::StringView parameterName) {
 		inputDevices[inputDeviceHandle.DeviceHandle].Parameters.Emplace(parameterName);
 	}
 
@@ -263,19 +262,19 @@ protected:
 			Datatypes TargetValue;
 			uint32_t StackEntry = ~0U;
 		};
-		GTSL::StaticMap<Id, Action, 4> InputSources{ 4, 0.75f };
+		GTSL::StaticMap<GTSL::StringView, Action, 4> InputSources{ 4, 0.75f };
 
 		GTSL::StaticVector<Datatypes, 4> Stack;
 	};
 	GTSL::Vector<InputEventData, BE::PersistentAllocatorReference> inputEvents;
 
 	struct InputDevice {
-		Id Name;
+		GTSL::StaticString<64> Name;
 		GTSL::StaticVector<uint32, 8> ActiveIndeces;
-		GTSL::StaticMap<Id, Datatypes, 8> Parameters;
+		GTSL::StaticMap<GTSL::StringView, Datatypes, 8> Parameters;
 	};
 	GTSL::Vector<InputDevice, BE::PAR> inputDevices;
-	GTSL::HashMap<Id, InputSource, BE::PersistentAllocatorReference> inputSources;
+	GTSL::HashMap<GTSL::StringView, InputSource, BE::PersistentAllocatorReference> inputSources;
 	
 	/**
 	* \brief Defines an InputSourceRecord which is record of the value the physical input source(keyboard, mouse, VR controller, etc) it is associated to had when it was triggered.
@@ -290,14 +289,14 @@ protected:
 		/**
 		 * \brief Name of the input source which caused the input source event.
 		 */
-		Id InputSource;
+		GTSL::StaticString<64> InputSource;
 
 		Datatypes NewValue;
 
 		InputSourceRecord() = default;
 
 		template<typename T>
-		InputSourceRecord(InputDeviceHandle deviceIndex, const Id name, T newValue) : InputSource(name), DeviceIndex(deviceIndex), NewValue(newValue)
+		InputSourceRecord(InputDeviceHandle deviceIndex, const GTSL::StringView name, T newValue) : DeviceIndex(deviceIndex), InputSource(name), NewValue(newValue)
 		{
 		}
 	};
@@ -309,7 +308,7 @@ protected:
 
 	void updateInput(ApplicationManager* application_manager, GTSL::Microseconds time) {
 		for (const auto& record : inputSourceRecords) {
-			auto& inputSource = inputSources[record.InputSource];
+			auto& inputSource = inputSources[GTSL::StringView(record.InputSource)];
 
 			for (const auto bie : inputSource.BoundInputEvents) {
 				auto& inputEventData = inputEvents[bie];

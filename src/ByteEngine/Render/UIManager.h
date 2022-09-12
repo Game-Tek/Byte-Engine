@@ -99,7 +99,7 @@ public:
 
 	auto& GetCanvases() { return canvases; }
 
-	void AddColor(const Id colorName, const GTSL::RGBA color) { colors.Emplace(colorName, color); }
+	void AddColor(const GTSL::StringView colorName, const GTSL::RGBA color) { colors.Emplace(Id(colorName), color); }
 	[[nodiscard]] GTSL::RGBA GetColor(const Id color) const { return colors.At(color); }
 
 	void SetExtent(const GTSL::Extent2D newExtent) { realExtent = newExtent; }
@@ -167,7 +167,7 @@ public:
 		SetSizingPolicy(canvasHandle, 0, SizingPolicies::FROM_SCREEN);
 		SetSizingPolicy(canvasHandle, 1, SizingPolicies::FROM_SCREEN);
 
-		auto processElement = [&](UIElementHandle parent_element_handle, const GTSL::StringView name, GTSL::JSONMember element, auto&& self) -> void {
+		auto processElement = [&](UIElementHandle parent_element_handle, const GTSL::StringView name, const GTSL::JSON<BE::PAR>& element, auto&& self) -> void {
 			if(const auto e = element[u8"enabled"]; e && !e.GetBool()) { return; }
 
 			auto typeString = element[u8"type"].GetStringView();
@@ -183,7 +183,7 @@ public:
 			UIElementHandle elementHandle = add(parent_element_handle, type);
 
 			if(auto sizeL = element[u8"size"]) {
-				auto processSize = [&](const uint8 axis, GTSL::JSONMember json_member) {
+				auto processSize = [&](const uint8 axis, GTSL::JSON<BE::PAR> json_member) {
 					if(!json_member) { return; }
 
 					if(auto size = json_member[u8"size"]) {
@@ -261,9 +261,8 @@ public:
 				}
 			}
 		};
-
-		GTSL::Buffer<BE::TAR> jsonBuffer(GetTransientAllocator());
-		GTSL::JSONMember json = GTSL::Parse(json_ui_text, jsonBuffer);
+		
+		GTSL::JSON json = GTSL::JSON(json_ui_text, GetPersistentAllocator());
 
 		for(auto c : json[u8"children"]) {
 			processElement(canvasHandle, u8"p", c, processElement);
@@ -322,7 +321,7 @@ public:
 		getPrimitive(ui_element_handle).OnPress = delegate;
 	}
 
-	void SetColor(const UIElementHandle ui_element_handle, const Id color) {
+	void SetColor(const UIElementHandle ui_element_handle, const GTSL::StringView color) {
 		auto& primitive = primitives[ui_element_handle()];
 		switch (primitive.Type) {
 		case PrimitiveData::PrimitiveType::NONE: break;
@@ -330,7 +329,7 @@ public:
 		//case PrimitiveData::PrimitiveType::SQUARE: squares[primitive.DerivedTypeIndex].SetColor(color); break;
 		}
 
-		auto colorEntry = colors.TryGet(color);
+		auto colorEntry = colors.TryGet(Id(color));
 
 		if(!colorEntry) { return; }
 
@@ -489,7 +488,7 @@ private:
 };
 
 inline void UIManager::OnFontLoad(TaskInfo, FontResourceManager::FontData font_data, GTSL::Buffer<BE::PAR> font_buffer) {
-	auto& font = fonts.Emplace(font_data.GetName(), GetPersistentAllocator());
+	auto& font = fonts.Emplace(Id(font_data.GetName()), GetPersistentAllocator());
 
 	for(uint32 i = 0; i < font_data.Characters.Length; ++i) {
 		font.Characters.EmplaceBack(font_data.Characters.array[i]);

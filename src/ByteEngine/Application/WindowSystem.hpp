@@ -20,7 +20,7 @@ public:
 	WindowHandle CreateWindow(const GTSL::StringView id_name, const GTSL::StringView display_name, const GTSL::Extent2D window_extent) {
 		uint32 index = windows.GetLength();
 		auto& window = windows.EmplaceBack();
-		window.window.BindToOS(display_name, window_extent, *BE::Application::Get()->GetSystemApplication(), this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this));
+		window.window.BindToOS(display_name, window_extent, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this));
 
 		window.window.AddDevice(GTSL::Window::DeviceType::MOUSE);
 		window.window.AddDevice(GTSL::Window::DeviceType::GAMEPAD);
@@ -81,7 +81,7 @@ private:
 			auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEventData*>(eventData);
 
 			auto keyboardEvent = [&](const GTSL::Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType) {
-				Id id;
+				GTSL::StaticString<64> id;
 				
 				switch (key) {
 				case GTSL::Window::KeyboardKeys::Q: id = u8"Q_Key"; break; case GTSL::Window::KeyboardKeys::W: id = u8"W_Key"; break;

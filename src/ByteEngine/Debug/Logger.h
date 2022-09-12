@@ -77,9 +77,10 @@ namespace BE
 
 		struct LoggerCreateInfo {
 			GTSL::Range<const utf8*> AbsolutePathToLogDirectory;
-			bool Trace = false;
 		};
 		explicit Logger(const LoggerCreateInfo& loggerCreateInfo);
+
+		void SetTrace(bool t);
 
 		template<typename... ARGS>
 		void PrintObjectLog(const Object* obj, const VerbosityLevel level, ARGS... args) {
@@ -128,8 +129,9 @@ namespace BE
 				if (args.GetBytes()) {
 					string += u8','; string += u8"\"args\":{ "; string += args; string += u8"}";
 				}
-				string += u8"}";
+				string += u8"}]}";
 
+				graphFile.SetPointer(graphFile.GetSize() - 2);
 				graphFile.Write(GTSL::Range<const byte*>(string.GetBytes(), reinterpret_cast<const byte*>(string.c_str())));
 			}
 		}

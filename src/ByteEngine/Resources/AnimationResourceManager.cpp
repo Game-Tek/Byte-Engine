@@ -99,7 +99,7 @@ void AnimationResourceManager::loadSkeleton(const GTSL::Range<const byte*> sourc
 	for (uint32 b = 0; b < mesh->mNumBones; ++b) {
 		const auto& assimpBone = mesh->mBones[b];
 		
-		skeletonData.BonesMap.Emplace(assimpStringToId(assimpBone->mName), b);
+		skeletonData.BonesMap.Emplace(GTSL::StringView(assimpStringToId(assimpBone->mName)), b);
 		auto& bone = skeletonData.Bones.EmplaceBack(GetPersistentAllocator());
 		
 		for (uint32 w = 0; w < assimpBone->mNumWeights; ++w) {

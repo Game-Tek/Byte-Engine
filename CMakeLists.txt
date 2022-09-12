@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 include(FetchContent)
 
 project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
@@ -25,10 +25,9 @@ FetchContent_MakeAvailable(stb)
 # stb
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "5fb0c933d0357250cf20cfad40ff7eb67d4bb6ef")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "0865fef590bc068b8f0e675b43dacd4d4d19d1df")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
-
 
 # ByteEngine options
 set(BE_GAPI "vulkan")
@@ -65,7 +64,9 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Debug/Logger.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Scripting.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Clock.cpp"
-"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp" "src/ByteEngine/Resources/BC7.cpp" "src/ByteEngine/Render/WorldRenderPipeline.cpp")
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp"
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Resources/BC7.cpp"
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/WorldRenderPipeline.cpp")
 
 set_target_properties(ByteEngine PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 set_target_properties(ByteEngine PROPERTIES PUBLIC_HEADER "${PROJECT_SOURCE_DIR}/src/ByteEngine.h")
@@ -79,8 +80,7 @@ target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono
 # assimp
 target_include_directories(ByteEngine PUBLIC "${assimp_SOURCE_DIR}/include")
 target_include_directories(ByteEngine PUBLIC "${assimp_BINARY_DIR}/include")
-target_link_libraries(ByteEngine INTERFACE "${assimp_BINARY_DIR}/lib/assimp-vc143-mtd.lib")
-target_link_libraries(ByteEngine INTERFACE "${assimp_BINARY_DIR}/contrib/zlib/zlibstaticd.lib")
+target_link_libraries(ByteEngine INTERFACE assimp)
 # find_package(assimp MODULE REQUIRED)
 # assimp
 
@@ -101,12 +101,17 @@ endif()
 
 if (WIN32)
 	if (BE_GAPI STREQUAL "vulkan")
-		target_include_directories(ByteEngine PUBLIC "$ENV{VULKAN_SDK}/Include")
-		target_link_libraries(ByteEngine INTERFACE "$ENV{VULKAN_SDK}/Lib/shaderc_shared.lib")
+		find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
+
+		target_include_directories(ByteEngine PUBLIC ${Vulkan_INCLUDE_DIRS})
+		target_link_libraries(ByteEngine PUBLIC Vulkan::Vulkan)
+		target_link_libraries(ByteEngine PUBLIC Vulkan::shaderc_combined)
+
 		target_compile_definitions(ByteEngine PUBLIC BE_VULKAN=1)
 		target_compile_definitions(ByteEngine PUBLIC BE_DX12=0)
 	elseif(BE_GAPI STREQUAL "dx12")	
-		target_include_directories(ByteEngine PUBLIC "$ENV{VULKAN_SDK}/Include")
+		target_link_libraries(ByteEngine INTERFACE d3d12.lib)
+
 		target_compile_definitions(ByteEngine PUBLIC BE_VULKAN=0)
 		target_compile_definitions(ByteEngine PUBLIC BE_DX12=1)
 	endif()	

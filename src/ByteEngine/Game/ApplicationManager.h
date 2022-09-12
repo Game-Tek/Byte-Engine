@@ -41,8 +41,8 @@ inline const char8_t* AccessTypeToString(const AccessType access) {
 
 template<class T>
 struct TypedDependency {
-	TypedDependency(Id name) : Name(name) {}
-	TypedDependency(Id name, AccessType at) : Name(name), Access(at) {}
+	TypedDependency(GTSL::StringView name) : Name(name) {}
+	TypedDependency(GTSL::StringView name, AccessType at) : Name(name), Access(at) {}
 
 	using type = T;
 	Id Name; AccessType Access = AccessTypes::READ_WRITE;
@@ -74,7 +74,8 @@ struct TaskHandle {
 
 template<typename... ARGS>
 struct EventHandle {
-	EventHandle(const Id name) : Name(name) {}
+	EventHandle(const Id hashed_name) : Name(hashed_name) {}
+	EventHandle(const GTSL::StringView name) : Name(name) {}
 	Id Name;
 };
 
@@ -131,13 +132,22 @@ namespace BE {
 		//	Identifier.TypeId = other.Identifier.TypeId;
 		//	EntityIndex = other.EntityIndex;
 		//}
-
 	private:
 		friend ApplicationManager;
 		Handle(uint32 a, uint32 handle) : BaseHandle(a, handle) {}
 	};
-
 	//static_assert(sizeof(Handle<struct RRRR {}> ) <= 8);
+}
+
+namespace GTSL {
+	template<>
+	struct Hash<BE::BaseHandle> {
+		uint64 value = 0;
+		Hash(const BE::BaseHandle handle) : value(uint64(handle)) {}
+		operator uint64() const { return value; }
+	};
+
+	Hash(BE::BaseHandle) -> GTSL::Hash<BE::BaseHandle>;
 }
 
 #define LSTR(x) u8 ## x
@@ -148,7 +158,7 @@ namespace BE {
 #define BE_RESOURCES(...) __VA_ARGS__
 #define DECLARE_BE_TASK(name, res, ...) private: TaskHandle<__VA_ARGS__> name##TaskHandle; using name##Dependencies = DependencyBlock<res>; public: auto Get##name##TaskHandle() const { return name##TaskHandle; }
 #define DECLARE_BE_TYPE(name) MAKE_BE_HANDLE(name); private: BE::TypeIdentifier name##TypeIndentifier; public: BE::TypeIdentifier Get##name##TypeIdentifier() const { return name##TypeIndentifier; }
-#define DECLARE_BE_EVENT(name, ...) private: EventHandle<__VA_ARGS__> name##EventHandle; public: static auto Get##name##EventHandle() { return EventHandle<__VA_ARGS__>(LSTR(#name)); }
+#define DECLARE_BE_EVENT(name, ...) private: EventHandle<__VA_ARGS__> name##EventHandle; public: static auto Get##name##EventHandle() { return EventHandle<__VA_ARGS__>(Id(LSTR(#name))); }
 
 template <class, template <class> class>
 struct is_instance : public std::false_type {};
@@ -199,7 +209,7 @@ public:
 	}
 
 	template<class T>
-	T* GetSystem(const Id systemName) {
+	T* GetSystem(const GTSL::StringView systemName) {
 		GTSL::Lock lock(systemsMutex);
 		return static_cast<T*>(systemsMap.At(systemName));
 	}
@@ -210,7 +220,7 @@ public:
 		return static_cast<T*>(systems[systemReference()].GetData());
 	}
 
-	SystemHandle GetSystemReference(const Id systemName) {
+	SystemHandle GetSystemReference(const GTSL::StringView systemName) {
 		GTSL::Lock lock(systemsMutex);
 		return SystemHandle(systemsIndirectionTable.At(systemName));
 	}
@@ -284,8 +294,10 @@ public:
 			GTSL::StaticString<512> args(u8"\"Start stage\":{ "); args += u8"\"Name\":\""; ToString(args, task.StartStage); args += u8"\", \"Index\":"; ToString(args, task.StartStageIndex); args += u8" },";
 			args += u8"\"End stage\":{ "; args += u8"\"Name\":\""; ToString(args, task.EndStage); args += u8"\", \"Index\":"; ToString(args, task.EndStageIndex); args += u8" },";
 			args += u8"\"Accesses\":[ ";
-			for (auto& [name, access] : task.Access) {
-				args += u8"\"System\":{ "; args += u8"\"Name\":\""; args += name; args += u8"\", \"Access type\":\""; args += AccessTypeToString(access); args += u8"\" }";
+			for (uint32 i = 0; i < task.Access; ++i) {
+				auto& [name, access] = task.Access[i];
+				if(i) { args+=u8", "; }
+				args += u8"{ \"System\":\""; args += GTSL::StringView(gameInstance->systemNames[name]); args += u8"\", \"Access type\":\""; args += AccessTypeToString(access); args += u8"\" }";
 			}
 			args += u8" ]";
 
@@ -325,7 +337,7 @@ public:
 	 * \return TaskHandle which identifies the task.
 	 */
 	template<typename T, typename... ACC, typename... FARGS>
-	[[nodiscard]] auto RegisterTask(T* caller, const Id taskName, DependencyBlock<ACC...> dependencies, void(T::* delegate)(TaskInfo, FARGS...), const Id start_stage = Id(), const Id end_stage = Id()) {
+	[[nodiscard]] auto RegisterTask(T* caller, const GTSL::StringView taskName, DependencyBlock<ACC...> dependencies, void(T::* delegate)(TaskInfo, FARGS...), const GTSL::StringView start_stage = GTSL::StringView(), const GTSL::StringView end_stage = GTSL::StringView()) {
 		//const uint64 fPointer = *reinterpret_cast<uint64*>(&delegate);
 
 		//if (const auto r = functionToTaskMap.TryGet(fPointer)) {
@@ -349,12 +361,12 @@ public:
 
 		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
 
-		if (start_stage) { // Store start stage indices if a start stage is specified
-			startStageIndex = stagesNames.Find(start_stage).Get();
+		if (start_stage != GTSL::StringView()) { // Store start stage indices if a start stage is specified
+			startStageIndex = stagesNames.Find(Id(start_stage)).Get();
 		}
 
-		if (end_stage) { // Store end stage indices if an end stage is specified
-			endStageIndex = stagesNames.Find(end_stage).Get();
+		if (end_stage != GTSL::StringView()) { // Store end stage indices if an end stage is specified
+			endStageIndex = stagesNames.Find(Id(end_stage)).Get();
 		}
 
 		systemsData[caller->GetSystemId()].Tasks.EmplaceBack(taskIndex); // Add task handle to list of system owned tasks
@@ -376,15 +388,14 @@ public:
 				//TODO: LOCKS!!
 				task.Name = GTSL::StringView(taskName); // Store task name, for debugging purposes
 				task.StartStageIndex = startStageIndex; // Store start stage index to correctly synchronize task execution, value may be 0xFFFF which indicates that there is no dependency on a stage.
-				task.StartStage = static_cast<GTSL::StringView>(start_stage); // Store start stage name for debugging purposes
+				task.StartStage = start_stage; // Store start stage name for debugging purposes
 				task.EndStageIndex = endStageIndex; // Store end stage index to correctly synchronize task execution, value may be 0xFFFF which indicates that there is no dependency on a stage.
-				task.EndStage = static_cast<GTSL::StringView>(end_stage); // Store end stage name for debugging purposes
+				task.EndStage = end_stage; // Store end stage name for debugging purposes
 				task.Callee = caller; // Store pointer to system instance which will be called when this task is executed
 				task.TaskDispatcher = FunctionType::Create<&ApplicationManager::task<T, TDI, ACC...>>(); // Store dispatcher, an application manager function which manages task state and calls the client delegate.
 				task.Access = accesses; // Store task accesses for synchronization and debugging purposes.
 				task.SetDelegate(d); // Set client function to be called
 			}
-
 
 			return TaskHandle<ARGS...>(taskIndex);
 		} (delegate);
@@ -476,10 +487,10 @@ public:
 	void RemoveTask(Id taskName, Id startOn);
 
 	template<typename... ARGS>
-	EventHandle<ARGS...> RegisterEvent(const BE::System* caller, const Id event_name, bool priority = false) {
+	EventHandle<ARGS...> RegisterEvent(const BE::System* caller, const GTSL::StringView event_name, bool priority = false) {
 		GTSL::WriteLock lock(eventsMutex);
-		if constexpr (BE_DEBUG) { if (events.Find(event_name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(event_name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return EventHandle<ARGS...>(u8""); } }
-		Event& eventData = events.Emplace(event_name, GetPersistentAllocator());
+		if constexpr (BE_DEBUG) { if (events.Find(Id(event_name))) { BE_LOG_ERROR(u8"An event by the name ", event_name, u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return EventHandle<ARGS...>(u8""); } }
+		Event& eventData = events.Emplace(Id(event_name), GetPersistentAllocator());
 
 		if (priority) {
 			eventData.priorityEntry = 0;
@@ -489,7 +500,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void AddEvent(const Id caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
+	void AddEvent(const GTSL::StringView caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(eventHandle.Name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		Event& eventData = events.Emplace(eventHandle.Name, GetPersistentAllocator());
@@ -500,7 +511,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void SubscribeToEvent(const Id caller, const EventHandle<ARGS...> eventHandle, TaskHandle<ARGS...> taskHandle) {
+	void SubscribeToEvent(const GTSL::StringView caller, const EventHandle<ARGS...> eventHandle, TaskHandle<ARGS...> taskHandle) {
 		GTSL::WriteLock lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name).Functions;
@@ -523,7 +534,7 @@ public:
 		}
 	}
 
-	void AddStage(Id stageName);
+	void AddStage(GTSL::StringView stageName);
 
 	template<typename T>
 	T MakeHandle(BE::TypeIdentifier type_identifier, uint32 index) {
@@ -549,8 +560,8 @@ private:
 	mutable GTSL::Mutex systemsMutex;
 	GTSL::FixedVector<GTSL::SmartPointer<BE::System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FixedVector<Id, BE::PersistentAllocatorReference> systemNames;
-	GTSL::HashMap<Id, BE::System*, BE::PersistentAllocatorReference> systemsMap;
-	GTSL::HashMap<Id, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
+	GTSL::HashMap<GTSL::StringView, BE::System*, BE::PersistentAllocatorReference> systemsMap;
+	GTSL::HashMap<GTSL::StringView, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 
 	/**
 	 * \brief Stores all data necessary to invoke a dispatch.
@@ -831,11 +842,11 @@ private:
 	void initWorld(uint8 worldId);
 
 	uint32 getSystemIndex(Id systemName) {
-		return systemsIndirectionTable[systemName];
+		return systemsIndirectionTable[GTSL::StringView(systemName)];
 	}
 
 	bool doesSystemExist(const Id systemName) const {
-		return systemsIndirectionTable.Find(systemName);
+		return systemsIndirectionTable.Find(GTSL::StringView(systemName));
 	}
 
 	//struct EntityClassData {
@@ -895,9 +906,9 @@ public:
 	 * \return A pointer to the created system.
 	 */
 	template<typename T>
-	T* AddSystem(const Id systemName) {
+	T* AddSystem(const GTSL::StringView systemName) {
 		if constexpr (BE_DEBUG) {
-			if (doesSystemExist(systemName)) {
+			if (doesSystemExist(Id(systemName))) {
 				BE_LOG_ERROR(u8"System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
 				return reinterpret_cast<T*>(systemsMap.At(systemName));
 			}
@@ -909,7 +920,7 @@ public:
 			BE::System::InitializeInfo initializeInfo;
 			initializeInfo.ApplicationManager = this;
 			initializeInfo.ScalingFactor = scalingFactor;
-			initializeInfo.InstanceName = systemName;
+			initializeInfo.InstanceName = Id(systemName);
 
 			{
 				GTSL::Lock lock(systemsMutex);
@@ -918,7 +929,7 @@ public:
 				initializeInfo.SystemId = systemIndex;
 				systemsIndirectionTable.Emplace(systemName, systemIndex);
 				auto& systemData = systemsData.EmplaceBack(GetPersistentAllocator());
-				systemData.Name = systemName;
+				systemData.Name = Id(systemName);
 			}
 
 			auto systemAllocation = GTSL::SmartPointer<T, BE::PAR>(GetPersistentAllocator(), initializeInfo);
@@ -928,13 +939,13 @@ public:
 				GTSL::Lock lock(systemsMutex);
 
 				systems.EmplaceAt(systemIndex, GTSL::MoveRef(systemAllocation));
-				taskSorter.AddSystem(systemName);
+				taskSorter.AddSystem(Id(systemName));
 				systemsMap.Emplace(systemName, systemPointer);
 			}
 		}
 
 		systemPointer->systemId = systemIndex;
-		systemPointer->instanceName = systemName;
+		systemPointer->instanceName = Id(systemName);
 
 		return systemPointer;
 	}

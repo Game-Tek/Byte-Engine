@@ -69,7 +69,7 @@ private:
 		GTSL::StaticVector<GTSL::StaticVector<GAL::ShaderDataType, 8>, 8> VertexElements;
 		GTSL::StaticVector<InstanceHandle, 8> Instances;
 		bool Loaded = false;
-		uint32 Offset = 0, IndexOffset = 0;
+		uint32 VertexComponentsInStream = 0, IndicesInStream = 0;
 		uint32 VertexSize, VertexCount = 0, IndexCount = 0;
 		GAL::IndexType IndexType;
 		RenderSystem::AccelerationStructureHandle BLAS;
@@ -112,7 +112,7 @@ private:
 
 		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
 
-		key[instanceIndex][u8"vertexBufferOffset"] = resource.Offset; key[instanceIndex][u8"indexBufferOffset"] = resource.IndexOffset;
+		key[instanceIndex][u8"vertexBufferOffset"] = resource.VertexComponentsInStream; key[instanceIndex][u8"indexBufferOffset"] = resource.IndicesInStream;
 		render_orchestrator->SubscribeToUpdate(render_orchestrator->GetShaderGroupIndexUpdateKey(instance.MaterialHandle), key[instanceIndex][u8"shaderGroupIndex"], meshDataBuffer);
 		key[instanceIndex][u8"transform"] = GTSL::Matrix3x4();
 
@@ -276,16 +276,16 @@ private:
 		// Make render pass
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		pass_data.Attachments.EmplaceBack(u8"Color", GAL::AccessTypes::WRITE);
-		pass_data.Attachments.EmplaceBack(u8"Position", GAL::AccessTypes::READ);
-		pass_data.Attachments.EmplaceBack(u8"Depth", GAL::AccessTypes::READ);
+		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
+		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Position"), GAL::AccessTypes::READ);
+		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ);
 
 		RenderOrchestrator::NodeHandle chain = renderOrchestrator->GetGlobalDataLayer();
 
 		chain = renderOrchestrator->AddRenderPassNode(chain, u8"DirectionalShadow", renderSystem, pass_data);
 
 		// Create shader group
-		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
+		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"DirectionalShadow"));
 		// Add dispatch
 		chain = renderOrchestrator->AddDataNode(chain, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 		chain = renderOrchestrator->AddDataNode(chain, u8"InstancesData", meshDataBuffer);

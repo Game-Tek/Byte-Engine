@@ -1439,49 +1439,19 @@ private:
 
 		GTSL::StaticString<256> message;
 
-		message += u8"Node index:"; GTSL::ToString(message, nodeHandle); message += u8", Type: ";
+		message += u8"Node: "; GTSL::ToString(message, nodeHandle); message += u8", Depth: ", GTSL::ToString(message, level); message += u8", Type: ";
 
 		switch (renderingTree.GetNodeType(nodeHandle)) {
-		case decltype(renderingTree)::GetTypeIndex<DataNode>(): {
-			message += u8"DataNode";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<PipelineBindData>(): {
-			message += u8"PipelineBind";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<MeshData>(): {
-			message += u8"MeshDraw";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<VertexBufferBindData>(): {
-			message += u8"VertexBufferBind";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<IndexBufferBindData>(): {
-			message += u8"IndexBufferBind";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): {
-			message += u8"RenderPass";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<DrawData>(): {
-			message += u8"Draw";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<IndirectComputeDispatchData>(): {
-			message += u8"Dispatch";
-			break;
-		}
-		case decltype(renderingTree)::GetTypeIndex<RayTraceData>(): {
-			message += u8"Raytrace";
-			break;
-		}
-		default: {
-			message += u8"null";
-			break;
-		}
+		case decltype(renderingTree)::GetTypeIndex<DataNode>(): { message += u8"DataNode"; break; }
+		case decltype(renderingTree)::GetTypeIndex<PipelineBindData>(): { message += u8"PipelineBind"; break; }
+		case decltype(renderingTree)::GetTypeIndex<MeshData>(): { message += u8"MeshDraw"; break; }
+		case decltype(renderingTree)::GetTypeIndex<VertexBufferBindData>(): { message += u8"VertexBufferBind"; break; }
+		case decltype(renderingTree)::GetTypeIndex<IndexBufferBindData>(): { message += u8"IndexBufferBind"; break; }
+		case decltype(renderingTree)::GetTypeIndex<RenderPassData>(): { message += u8"RenderPass"; break; }
+		case decltype(renderingTree)::GetTypeIndex<DrawData>(): { message += u8"Draw"; break; }
+		case decltype(renderingTree)::GetTypeIndex<IndirectComputeDispatchData>(): { message += u8"Dispatch"; break; }
+		case decltype(renderingTree)::GetTypeIndex<RayTraceData>(): { message += u8"Raytrace"; break; }
+		default: { message += u8"null"; break; }
 		}
 
 		message += u8", Name: "; message += getNode(nodeHandle).Name;

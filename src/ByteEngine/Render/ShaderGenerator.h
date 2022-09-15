@@ -37,7 +37,7 @@ bool IsAnyOf(const auto& a, const auto&... elems) {
 	return ((a == elems) or ...);
 }
 
-enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, MISS };
+enum class Class { VERTEX, SURFACE, COMPUTE, RENDER_PASS, RAY_GEN, CLOSEST_HIT, MISS };
 
 /**
  * \brief Turns code into a stream of tokens, every first dimension is an statement, all elements in the array's second dimension is a token. Can only parse a functions content, no language constructs (classes, enums, descriptors, etc...)

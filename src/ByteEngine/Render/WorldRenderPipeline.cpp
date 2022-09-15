@@ -160,7 +160,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (rayTracing) {
 		topLevelAccelerationStructure = renderSystem->CreateTopLevelAccelerationStructure(16);
 
-		//setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
+		setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
 	}
 
 	//add node

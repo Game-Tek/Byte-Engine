@@ -203,7 +203,7 @@ namespace BE
 		
 		GTSL::Buffer fileBuffer(settingsFile, Object::GetTransientAllocator());
 
-		JSON = GTSL::JSON(GTSL::StringView(fileBuffer), GTSL::DefaultAllocatorReference{});
+		JSON = GTSL::MoveRef(GTSL::JSON(GTSL::StringView(fileBuffer), GTSL::DefaultAllocatorReference{}));
 
 		return true;
 	}

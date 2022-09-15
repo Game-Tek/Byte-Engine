@@ -358,9 +358,13 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		BindSet(renderSystem, commandBuffer, globalBindingsSet, GAL::ShaderStages::VERTEX | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN);
 
 		auto visitNode = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
-			printNode(key, level, debugRenderNodes, enabled);
+			if (!enabled || level >= lastInvalidLevel) {
+				if(!enabled) { printNode(key, level, debugRenderNodes, enabled); }
+				if(!enabled && level < lastInvalidLevel) { lastInvalidLevel = level; }
+				return;
+			}
 
-			if (!enabled || level >= lastInvalidLevel) { lastInvalidLevel = level; return; }
+			printNode(key, level, debugRenderNodes, enabled);
 
 			DataStreamHandle dataStreamHandle = {};
 
@@ -432,7 +436,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 			case RTT::GetTypeIndex<RayTraceData>(): {
 				const RayTraceData& rayTraceData = renderingTree.GetClass<RayTraceData>(key);
-				const auto& pipelineData = pipelines[shaderGroups[rayTraceData.ShaderGroupIndex].RTPipelineIndex];
+				const auto& pipelineData = pipelines[shaderGroups[shaderGroupInstances[rayTraceData.ShaderGroupIndex].ShaderGroupIndex].RTPipelineIndex];
 				CommandList::ShaderTableDescriptor shaderTableDescriptors[4];
 				for (uint32 i = 0, offset = 0; i < 3; ++i) {
 					shaderTableDescriptors[i].Entries = pipelineData.RayTracingData.ShaderGroups[i].ShaderCount;
@@ -550,7 +554,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			if (!enabled || level >= lastInvalidLevel) { return; }
 
 			if(debugRenderNodes) {
-				BE_LOG_WARNING(u8"Leaving node ", key);
+				BE_LOG_WARNING(u8"Node: ", key, u8", Level: ", level);
 			}
 
 			switch (renderingTree.GetNodeType(key)) {
@@ -1486,8 +1490,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			for (uint32 shaderGroupIndex = 0, shaderCount = 0; shaderGroupIndex < 4; ++shaderGroupIndex) {
 				auto& groupData = rtPipelineData.ShaderGroups[shaderGroupIndex];
-				auto table = bWK[tables[shaderGroupIndex].Name];
 				for (uint32 i = 0; i < groupData.ShaderCount; ++i, ++shaderCount) {
+					auto table = bWK[tables[shaderGroupIndex].Name];
 					table[u8"shaderHandle"] = shaderGroupHandlesBuffer[shaderCount];
 					//table[u8"materialData"] = GetAddress(renderSystem, sg.Buffer); //todo: wrong
 

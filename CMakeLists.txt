@@ -25,7 +25,7 @@ FetchContent_MakeAvailable(stb)
 # stb
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "0865fef590bc068b8f0e675b43dacd4d4d19d1df")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "c22689975a11a027d3c281aab21dd7578051a02f")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 
@@ -75,13 +75,17 @@ target_compile_features(ByteEngine PUBLIC cxx_std_20)
 
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/ext")
-target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
+
+# mono
+if (WIN32)
+	target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
+endif()
+# mono
 
 # assimp
+target_link_libraries(ByteEngine INTERFACE assimp)
 target_include_directories(ByteEngine PUBLIC "${assimp_SOURCE_DIR}/include")
 target_include_directories(ByteEngine PUBLIC "${assimp_BINARY_DIR}/include")
-target_link_libraries(ByteEngine INTERFACE assimp)
-# find_package(assimp MODULE REQUIRED)
 # assimp
 
 # stb
@@ -103,7 +107,7 @@ if (WIN32)
 	if (BE_GAPI STREQUAL "vulkan")
 		find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
 
-		target_include_directories(ByteEngine PUBLIC ${Vulkan_INCLUDE_DIRS})
+		target_include_directories(ByteEngine PUBLIC Vulkan::Vulkan)
 		target_link_libraries(ByteEngine PUBLIC Vulkan::Vulkan)
 		target_link_libraries(ByteEngine PUBLIC Vulkan::shaderc_combined)
 

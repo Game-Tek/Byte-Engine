@@ -8,14 +8,12 @@ struct RayTracePermutation : public PermutationManager {
 	}
 
 	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
-		//auto shaderRecordBlockHandle = pipeline->add(closestHitShaderScope, u8"shaderRecordBlock", GPipeline::LanguageElement::ElementType::MEMBER);
-		//auto shaderRecordEntry = pipeline->DeclareVariable(shaderRecordBlockHandle, { u8"shaderParametersData*", u8"shaderEntries" });
-		//pipeline->add(closestHitShaderScope, u8"surfaceNormal", GPipeline::LanguageElement::ElementType::DISABLED);
-		//pipeline->DeclareFunction(closestHitShaderScope, u8"vec2f", u8"GetSurfaceTextureCoordinates", {}, u8"instanceData* instance = pushConstantBlock.rayTrace.instances[gl_InstanceCustomIndexEXT]; u16vec3 indices = instance.IndexBuffer[gl_PrimitiveID].indexTri; vec3f barycenter = GetVertexBarycenter(); return instance.VertexBuffer[indices[0]].TEXTURE_COORDINATES * barycenter.x + instance.VertexBuffer[indices[1]].TEXTURE_COORDINATES * barycenter.y + instance.VertexBuffer[indices[2]].TEXTURE_COORDINATES * barycenter.z;");
+		auto rayTracePermutationScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"RayTracePermutation");
 
-		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"TraceRayParameterData", TRACE_RAY_PARAMETER_DATA);
+		pipeline->DeclareStruct(rayTracePermutationScope, u8"TraceRayParameterData", TRACE_RAY_PARAMETER_DATA);
+		pipeline->DeclareFunction(rayTracePermutationScope, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" }, { u8"uint32", u8"rayFlags" } }, u8"TraceRayParameterData* r = pushConstantBlock.rayTrace; traceRayEXT(accelerationStructureEXT(r.accelerationStructure), r.rayFlags | rayFlags, 0xff, r.recordOffset, r.recordStride, r.missIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
 
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"TraceRay", { { u8"vec4f", u8"origin" }, { u8"vec4f", u8"direction" }, { u8"uint32", u8"rayFlags" } }, u8"TraceRayParameterData* r = pushConstantBlock.rayTrace; traceRayEXT(accelerationStructureEXT(r.accelerationStructure), r.rayFlags | rayFlags, 0xff, r.recordOffset, r.recordStride, r.missIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
+		pipeline->DeclareStruct(rayTracePermutationScope, u8"RenderPassData", { { u8"ImageReference", u8"Color" }, { u8"TextureReference", u8"Position" }, { u8"TextureReference", u8"Depth" } });
 	}
 private:
 };

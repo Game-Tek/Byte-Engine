@@ -579,6 +579,8 @@ inline GAL::ShaderType ShaderTypeFromString(GTSL::StringView string) {
 		case GTSL::Hash(u8"FRAGMENT"): return GAL::ShaderType::FRAGMENT;
 		case GTSL::Hash(u8"COMPUTE"): return GAL::ShaderType::COMPUTE;
 		case GTSL::Hash(u8"RAY_GEN"): return GAL::ShaderType::RAY_GEN;
+		case GTSL::Hash(u8"CLOSEST_HIT"): return GAL::ShaderType::CLOSEST_HIT;
+		case GTSL::Hash(u8"ANY_HIT"): return GAL::ShaderType::ANY_HIT;
 		case GTSL::Hash(u8"MISS"): return GAL::ShaderType::MISS;
 	}
 }
@@ -589,6 +591,7 @@ inline Class ShaderClassFromString(GTSL::StringView string) {
 		case GTSL::Hash(u8"SURFACE"): return Class::SURFACE;
 		case GTSL::Hash(u8"COMPUTE"): return Class::COMPUTE;
 		case GTSL::Hash(u8"RAY_GEN"): return Class::RAY_GEN;
+		case GTSL::Hash(u8"CLOSEST_HIT"): return Class::CLOSEST_HIT;
 		case GTSL::Hash(u8"MISS"): return Class::MISS;
 	}
 }
@@ -698,7 +701,9 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 					permutation->AddSupportedDomain(option[u8"domain"]);
 
 					for(auto subset : option[u8"subsets"]) {
-						GTSL::File guideSubsetShaderTemplateFile(GetUserResourcePath(subset[u8"name"], u8"txt"));
+						GTSL::StaticString<128> subsetPath;
+						subsetPath += GTSL::Join { { GTSL::StringView(json[u8"name"]), GTSL::StringView(option[u8"name"]), GTSL::StringView(subset[u8"name"]) }, u8"." };
+						GTSL::File guideSubsetShaderTemplateFile(GetUserResourcePath(subsetPath, u8"txt"));
 
 						if(guideSubsetShaderTemplateFile) {
 							a.EmplaceBack(guideSubsetShaderTemplateFile, GetPersistentAllocator());
@@ -743,7 +748,6 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		}
 
 		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"));
-
 
 		while (auto fileRef = shaderGroupFileQuery()) {
 			GTSL::File shaderGroupFile(GetUserResourcePath(fileRef.Get()));
@@ -996,8 +1000,9 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 						case Class::SURFACE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"FragmentShader"); break;
 						case Class::COMPUTE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"ComputeShader"); scopes.EmplaceBack(pipeline.GetElementHandle(commonPermutationScopeHandle, u8"ComputeRenderPass")); break;
 						case Class::RENDER_PASS: break;
-						case Class::RAY_GEN: break;
-						case Class::MISS: break;
+						case Class::CLOSEST_HIT: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"ClosestHitShader"); break;
+						case Class::RAY_GEN: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"RayGenShader"); break;
+						case Class::MISS: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"MissShader"); break;
 					}
 
 					scopes.EmplaceBack(subScopeHandle);

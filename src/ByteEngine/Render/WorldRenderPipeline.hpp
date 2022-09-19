@@ -157,11 +157,12 @@ private:
 		//bwk[u8"pointLights"][light_handle()][u8"intensity"] = 5.f;
 	}
 
-	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position, GTSL::RGB color, float32 intensity) {
+	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position, GTSL::RGB color, float32 intensity, float32 radius) {
 		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
 		bwk[u8"pointLights"][light_handle()][u8"position"] = position;
 		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
 		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
+		bwk[u8"pointLights"][light_handle()][u8"radius"] = radius;
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {

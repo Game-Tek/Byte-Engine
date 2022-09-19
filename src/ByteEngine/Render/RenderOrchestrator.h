@@ -1374,8 +1374,8 @@ private:
 		return strings;
 	}
 
-	GTSL::StaticMap<GTSL::StringView, NodeHandle, 16> renderPasses, renderPasses2;
-	GTSL::StaticVector<NodeHandle, 16> renderPassesInOrder;
+	GTSL::HashMap<GTSL::StringView, uint32, BE::PAR> renderPassesMap;
+	GTSL::StaticVector<NodeHandle, 32> renderPasses;
 
 	GTSL::Extent2D sizeHistory[MAX_CONCURRENT_FRAMES];
 
@@ -1992,8 +1992,6 @@ private:
 	GTSL::ShortString<16> tag;
 
 	static constexpr bool INVERSE_Z = true;
-
-	GTSL::StaticVector<GTSL::StaticString<64>, 8> renderPassesGuide;
 
 	GTSL::Math::RandomSeed randomA, randomB;
 

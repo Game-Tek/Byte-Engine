@@ -38,7 +38,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onAddLight);
 	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);
 	auto updateLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
-	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
+	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
 	sourceVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, {});
 	destinationVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, false, {});

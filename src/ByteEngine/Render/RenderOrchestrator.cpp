@@ -61,9 +61,9 @@ inline uint32 PRECEDENCE(const GTSL::StringView optor) {
 
 RenderOrchestrator::RenderOrchestrator(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderOrchestrator"),
 rayTracingSets(16, GetPersistentAllocator()), shaderHandlesDebugMap(16, GetPersistentAllocator()), shaders(16, GetPersistentAllocator()),
-resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()), renderingTree(128, GetPersistentAllocator()), renderPasses(16),
-pipelines(8, GetPersistentAllocator()), shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistentAllocator()), shaderGroupInstanceByName(16, GetPersistentAllocator()),
-textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()), elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator()), dataKeysMap(32, GetPersistentAllocator()), updateKeys(16, GetPersistentAllocator())
+resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()), dataKeysMap(32, GetPersistentAllocator()), updateKeys(16, GetPersistentAllocator()),
+renderingTree(128, GetPersistentAllocator()), renderPassesMap(16, GetPersistentAllocator()), renderPasses(16), pipelines(8, GetPersistentAllocator()),
+shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistentAllocator()), shaderGroupInstanceByName(16, GetPersistentAllocator()), textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()), elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator())
 {
 	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
@@ -172,8 +172,7 @@ textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()
 	const auto& config = BE::Application::Get()->GetConfig();
 
 	for(auto rp : config[u8"renderPasses"]) {
-		renderPassesGuide.EmplaceBack(rp.GetStringView());
-		
+		//renderPasses.EmplaceBack(rp.GetStringView());
 	}
 
 	randomB(); randomB(); randomB();
@@ -744,23 +743,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 
 	NodeHandle leftNodeHandle(0xFFFFFFFF);
 
-	{ // Guarantee render pass order in render tree, TODO: check render pass level or else this will fail
-		auto pos = renderPassesGuide.Find(render_pass_name);
-
-		if(pos) {
-			if(pos.Get() > 0) {
-				for (uint32 i = pos.Get() - 1; i != ~0u; --i) {
-					if (auto r = renderPasses2.Find(renderPassesGuide[i])) { //If render pass was already created grab it's handle to correctly place render passes, if it doesn't yet exists TODO: 
-						leftNodeHandle = renderPasses2[renderPassesGuide[i]];
-						break;
-					}
-				}
-			}
-		}
-	}
-
 	auto ddd = MakeDataKey(renderSystem, scope, u8"RenderPassData");
-	//auto renderPassDataNode = AddDataNode(renderPassName, leftNodeHandle, parent_node_handle, scope, u8"RenderPassData");
 	auto renderPassDataNode = AddDataNode(leftNodeHandle, parent_node_handle, ddd);
 	auto renderPassNodeHandleResult = addInternalNode<RenderPassData>(GTSL::Hash(render_pass_name), renderPassDataNode);
 
@@ -770,12 +753,9 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 
 	RenderPassData& renderPass = getPrivateNode<RenderPassData>(renderPassNodeHandle);
 
-	renderPasses.Emplace(render_pass_name, renderPassNodeHandle);
-	renderPasses2.Emplace(render_pass_name, renderPassDataNode);
-
-	auto renderPassIndex = renderPassesInOrder.GetLength();
-
-	renderPassesInOrder.EmplaceBack(renderPassNodeHandle);
+	auto renderPassIndex = renderPasses.GetLength();
+	renderPassesMap.Emplace(render_pass_name, renderPassIndex);
+	renderPasses.EmplaceBack(renderPassNodeHandle);
 
 	renderPass.ResourceHandle = makeResource(render_pass_name);
 	addDependencyOnResource(renderPass.ResourceHandle); //add dependency on render pass texture creation
@@ -1214,7 +1194,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 
 			//BUG: if shader group gets processed before render pass it will fail
-			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[renderPass]);
+			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[renderPassesMap[renderPass]]);
 
 			for (const auto& writeAttachment : renderPassNode.Attachments) {
 				if (writeAttachment.Access & GAL::AccessTypes::WRITE) {

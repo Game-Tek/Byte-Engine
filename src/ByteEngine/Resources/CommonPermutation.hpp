@@ -51,6 +51,26 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"LinearizeDepth", { { u8"float32", u8"depth"}, { u8"float32", u8"near"}, { u8"float32", u8"far" } }, u8"return (near * far) / (far + depth * (near - far));");
 
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"mat3f", u8"AngleAxis3x3", { { u8"vec3f", u8"axis"}, { u8"float32", u8"angle"} }, 
+			u8"float32 c = cos(angle), s = sin(angle); float32 t = 1 - c; float32 x = axis.x; float32 y = axis.y; float z = axis.z; return mat3f(t * x * x + c, t * x * y - s * z,  t * x * z + s * y, t * x * y + s * z, t * y * y + c, t * y * z - s * x, t * x * z - s * y,  t * y * z + s * x,  t * z * z + c);");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Perpendicular", { { u8"vec3f", u8"u"} }, u8"vec3f a = abs(u); uint32 xm = ((a.x - a.y)<0 && (a.x - a.z)<0) ? 1 : 0; uint32 ym = (a.y - a.z)<0 ? (1 ^ xm) : 0; uint32 zm = 1 ^ (xm | ym); return cross(u, vec3f(xm, ym, zm));");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"uint32", u8"MakeRandomSeed", { { u8"uint32", u8"val0" }, { u8"uint32", u8"val1" } },
+			u8"uint32 v0 = val0, v1 = val1, s0 = 0; for (uint n = 0; n < 16; n++) { s0 += 0x9e3779b9; v0 += ((v1 << 4) + 0xa341316c) ^ (v1 + s0) ^ ((v1 >> 5) + 0xc8013ea4); v1 += ((v0 << 4) + 0xad90777d) ^ (v0 + s0) ^ ((v0 >> 5) + 0x7e95761e); } return v0;");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"NextRandom", { { u8"inout uint32", u8"s" } },
+			u8"s += 1375; return fract(sin(dot(vec2f(uint(s), uint(s) + 7), vec2f(12.9898,78.233))) * 43758.5453123);");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2f", u8"MapRectangleToCircle", { { u8"vec2f", u8"rect" } },
+			u8"float32 radius = sqrt(rect.x); float32 angle = rect.y * 2 * PI(); return vec2f(radius * cos(angle), radius * sin(angle));");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"SphereDirection", { { u8"vec2f", u8"rect" }, { u8"vec3f", u8"direction" }, { u8"float32", u8"radius" } },
+			u8"vec2f point = MapRectangleToCircle(rect) * radius; vec3f tangent = normalize(cross(direction, vec3f(0, 1, 0))); vec3f bitangent = normalize(cross(tangent, direction)); return normalize(direction + point.x * tangent + point.y * bitangent);");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"CosineWeightedHemisphereSample", { { u8"vec3f", u8"hitNorm" }, { u8"vec2f", u8"random" } },
+			u8"vec3f bitangent = Perpendicualar(hitNorm); vec3f tangent = cross(bitangent, hitNorm); float32 r = sqrt(random.x); float phi = 2.0f * PI() * random.y; return tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hitNorm.xyz * sqrt(1 - random.x);");
+
 		vertexShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"VertexShader");
 		fragmentShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"FragmentShader");
 		computeShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"ComputeShader");

@@ -20,7 +20,7 @@ struct StructElement {
 
 struct ShaderNode {
 	enum class Type : uint8 {
-		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON, HASH, EXCLAMATION, LESS_THAN, GREATER_THAN
+		NONE, ID, OP, LITERAL, LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE, DOT, COMMA, COLON, SEMICOLON, HASH, EXCLAMATION, LESS_THAN, GREATER_THAN, AND
 	} ValueType;
 
 	GTSL::StaticString<64> Name;
@@ -104,7 +104,7 @@ void tokenizeCode(const GTSL::StringView code, auto& statements) {
 			else if (c == U'>') {
 				type = ShaderNode::Type::GREATER_THAN;
 			}
-			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%')) {
+			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%', U'^', U'&')) {
 				type = ShaderNode::Type::OP;
 			}
 

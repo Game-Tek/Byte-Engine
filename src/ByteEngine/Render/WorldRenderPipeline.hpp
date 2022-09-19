@@ -289,6 +289,7 @@ private:
 		// Add dispatch
 		chain = renderOrchestrator->AddDataNode(chain, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 		chain = renderOrchestrator->AddDataNode(chain, u8"InstancesData", meshDataBuffer);
+		chain = renderOrchestrator->AddDataNode(chain, u8"LightingData", lightsDataKey); //lighting data
 		chain = renderOrchestrator->addPipelineBindNode(chain, rayTraceShaderGroupHandle);
 
 
@@ -304,7 +305,7 @@ private:
 		bwk[u8"recordOffset"] = 0u;
 		bwk[u8"recordStride"] = 0u;
 		bwk[u8"missIndex"] = 0u;
-		bwk[u8"tMin"] = 0.001f;
+		bwk[u8"tMin"] = 0.008f;
 		bwk[u8"tMax"] = 100.0f;
 	}
 };

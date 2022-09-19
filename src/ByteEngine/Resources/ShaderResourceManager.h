@@ -214,7 +214,7 @@ public:
 	struct CallableShader {};
 
 	struct ShaderInfo {
-		GTSL::ShortString<32> Name;
+		GTSL::ShortString<64> Name;
 		GAL::ShaderType Type; uint64 Hash = 0;
 		GTSL::StaticVector<Parameter, 8> Parameters;
 		GTSL::StaticVector<PermutationManager::ShaderTag, 4> Tags;
@@ -1042,7 +1042,7 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 					shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
 					shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
 
-					shaderInfosFile << GTSL::ShortString<32>(shaderJson[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
+					shaderInfosFile << GTSL::ShortString<64>(shaderJson[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
 					shaderInfosFile << 0u; //0 params
 					shaderInfosFile << targetSemantics;
 					shaderInfosFile << tags.GetLength();

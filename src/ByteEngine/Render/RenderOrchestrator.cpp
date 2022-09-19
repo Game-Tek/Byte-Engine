@@ -225,7 +225,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			//SetNodeState(cameraDataNode, true); // Set state on data key, to fullfil resource counts
 			auto fov = cameraSystem->GetFieldOfViews()[0]; auto aspectRatio = static_cast<float32>(renderArea.Width) / static_cast<float32>(renderArea.Height);
 
-			float32 nearValue = 0.01f, farValue = 1000.0f;
+			float32 nearValue = 0.04f, farValue = 1000.0f;
 
 			if constexpr (INVERSE_Z) {
 				std::swap(nearValue, farValue);

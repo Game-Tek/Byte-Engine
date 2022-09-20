@@ -877,7 +877,7 @@ private:
 		GTSL::StaticVector<BE::TypeIdentifier, 4> ObservedTypes;
 		GTSL::StaticVector<SystemHandle, 4> ObservingSystems;
 
-		GTSL::StaticVector<TypeErasedTaskHandle, 16> Tasks;
+		GTSL::StaticVector<TypeErasedTaskHandle, 32> Tasks;
 
 		uint32 TypeCount = 0; // Owned types count
 

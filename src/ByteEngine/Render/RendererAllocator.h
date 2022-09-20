@@ -83,7 +83,7 @@ public:
 private:
 	inline static GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 
-	static constexpr bool SINGLE_ALLOC = false;
+	static constexpr bool SINGLE_ALLOC = true;
 	
 	uint32 bufferMemoryType = 0, textureMemoryType = 0;
 
@@ -118,7 +118,7 @@ public:
 private:
 	inline static GTSL::Byte ALLOCATION_SIZE{ GTSL::MegaByte(128) };
 
-	static constexpr bool SINGLE_ALLOC = false;
+	static constexpr bool SINGLE_ALLOC = true;
 	
 	uint32 bufferMemoryType = 0;
 

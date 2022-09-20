@@ -21,7 +21,7 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
 		}
 
-		forwardRenderPassScopeHandle = pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, { u8"TextureReference", u8"Position" }, {u8"ImageReference", u8"Depth"}});
+		forwardRenderPassScopeHandle = pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", { { u8"ImageReference", u8"Color" }, {u8"ImageReference", u8"Normal" }, {u8"ImageReference", u8"Depth"}});
 
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", POINT_LIGHT_DATA));
 		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", LIGHTING_DATA);

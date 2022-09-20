@@ -1521,7 +1521,7 @@ private:
 	struct Attachment {
 		RenderSystem::TextureHandle TextureHandle[MAX_CONCURRENT_FRAMES];
 
-		Id Name;
+		GTSL::StaticString<64> Name;
 		GAL::TextureUse Uses; GAL::TextureLayout Layout[MAX_CONCURRENT_FRAMES];
 		GAL::PipelineStage ConsumingStages; GAL::AccessType AccessType;
 		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
@@ -1994,6 +1994,10 @@ private:
 	static constexpr bool INVERSE_Z = true;
 
 	GTSL::Math::RandomSeed randomA, randomB;
+
+	uint32 bnoise[4] = { 0 };
+
+	uint32 frameIndex = 0;
 
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;

@@ -54,7 +54,6 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Normal"), GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Position"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"ForwardRenderPass", renderSystem, geoRenderPass);
 	}

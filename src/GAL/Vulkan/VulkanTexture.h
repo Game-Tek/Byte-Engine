@@ -92,7 +92,9 @@ namespace GAL
 
 		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::uint8 anisotropy) {
 			VkSamplerCreateInfo vkSamplerCreateInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-			vkSamplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT; vkSamplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT; vkSamplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			vkSamplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			vkSamplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			vkSamplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 			vkSamplerCreateInfo.minFilter = VK_FILTER_LINEAR; vkSamplerCreateInfo.magFilter = VK_FILTER_LINEAR;
 			vkSamplerCreateInfo.maxAnisotropy = static_cast<GTSL::float32>(anisotropy == 0 ? 1 : anisotropy);
 			vkSamplerCreateInfo.anisotropyEnable = static_cast<VkBool32>(anisotropy);

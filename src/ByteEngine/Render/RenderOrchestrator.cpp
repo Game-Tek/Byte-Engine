@@ -123,8 +123,8 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 	{
 		GTSL::StaticVector<SubSetDescriptor, 10> subSetInfos;
-		subSetInfos.EmplaceBack(SubSetType::READ_TEXTURES, 16, &textureSubsetsHandle);
-		subSetInfos.EmplaceBack(SubSetType::WRITE_TEXTURES, 16, &imagesSubsetHandle);
+		subSetInfos.EmplaceBack(SubSetType::READ_TEXTURES, 32, &textureSubsetsHandle);
+		subSetInfos.EmplaceBack(SubSetType::WRITE_TEXTURES, 32, &imagesSubsetHandle);
 		subSetInfos.EmplaceBack(SubSetType::SAMPLER, 16, &samplersSubsetHandle, samplers);
 
 		globalSetLayout = AddSetLayout(renderSystem, SetLayoutHandle(), subSetInfos);
@@ -136,6 +136,16 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 		RegisterType(u8"global.CommonPermutation", u8"GlobalData", GLOBAL_DATA);
 		globalDataDataKey = MakeDataKey(renderSystem, u8"global.CommonPermutation", u8"GlobalData");
 		globalData = AddDataNode({}, u8"GlobalData", globalDataDataKey);
+		bnoise[0] = createTexture({ u8"bnoise_v_0", GetApplicationManager(), renderSystem, GetApplicationManager()->GetSystem<TextureResourceManager>(u8"TextureResourceManager") });
+		bnoise[1] = createTexture({ u8"bnoise_v_1", GetApplicationManager(), renderSystem, GetApplicationManager()->GetSystem<TextureResourceManager>(u8"TextureResourceManager") });
+		bnoise[2] = createTexture({ u8"bnoise_v_2", GetApplicationManager(), renderSystem, GetApplicationManager()->GetSystem<TextureResourceManager>(u8"TextureResourceManager") });
+		bnoise[3] = createTexture({ u8"bnoise_v_3", GetApplicationManager(), renderSystem, GetApplicationManager()->GetSystem<TextureResourceManager>(u8"TextureResourceManager") });
+
+		auto bwk = GetBufferWriteKey(renderSystem, globalDataDataKey);
+		bwk[u8"blueNoise2D"][0] = bnoise[0];
+		bwk[u8"blueNoise2D"][1] = bnoise[1];
+		bwk[u8"blueNoise2D"][2] = bnoise[2];
+		bwk[u8"blueNoise2D"][3] = bnoise[3];
 	}
 
 	{
@@ -153,7 +163,7 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
 			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			//AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
 			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
@@ -208,7 +218,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	{
 		auto bwk = GetBufferWriteKey(renderSystem, globalDataDataKey);
-		bwk[u8"frameIndex"] = 0u;
+		bwk[u8"frameIndex"] = frameIndex++;
 		bwk[u8"elapsedTime"] = BE::Application::Get()->GetClock()->GetElapsedTime().As<float32, GTSL::Seconds>();
 		bwk[u8"deltaTime"] = BE::Application::Get()->GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
 		bwk[u8"random"][0] = static_cast<uint32>(randomA()); bwk[u8"random"][1] = static_cast<uint32>(randomB());
@@ -1498,7 +1508,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureInfo) {
 
 	if (auto t = textures.TryEmplace(createTextureInfo.TextureName)) {
-		t.Get().Index = textureIndex++;
+		t.Get().Index = textureIndex++; ++imageIndex;
 		auto textureLoadInfo = TextureLoadInfo(RenderAllocation());
 		createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
 		t.Get().Resource = makeResource(createTextureInfo.TextureName);

@@ -278,7 +278,6 @@ private:
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
 		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
-		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Position"), GAL::AccessTypes::READ);
 		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ);
 
 		RenderOrchestrator::NodeHandle chain = renderOrchestrator->GetGlobalDataLayer();

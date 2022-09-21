@@ -21,7 +21,7 @@ struct RayTracePermutation : public PermutationManager {
 
 		pipeline->DeclareFunction(rayTracePermutationScope, u8"vec3f", u8"GetConeSample", { { u8"vec3f", u8"direction" }, { u8"float32", u8"cone_angle" } }, u8"float32 cosAngle = cos(cone_angle); float32 z = NextRandom(randSeed) * (1-cosAngle) + cosAngle; float32 phi = NextRandom(randSeed) * 2 * PI(); float32 x = sqrt(1 - z * z) * cos(phi); float32 y = sqrt(1 - z * *) * sin(phi); vec3f north = vec3f(0, 1, 0); vec3f axis = normalize(cross(north, normalize(direction))); float32 angle = acos(dot(normalize(direction), north)); mat3f r = AngleAxis3x3(axis, angle); return r * vec3f(x, y, z);");
 
-		pipeline->DeclareStruct(rayTracePermutationScope, u8"RenderPassData", { { u8"ImageReference", u8"Color" }, { u8"TextureReference", u8"Depth" } });
+		pipeline->DeclareStruct(rayTracePermutationScope, u8"RenderPassData", RT_RENDERPASS_DATA);
 	}
 private:
 };

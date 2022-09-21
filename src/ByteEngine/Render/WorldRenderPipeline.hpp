@@ -163,6 +163,9 @@ private:
 		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
 		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
 		bwk[u8"pointLights"][light_handle()][u8"radius"] = radius;
+
+		bwk[u8"lightCount"] = 1u; // TODO: constant
+		bwk[u8"lights"][0] = light_handle();
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {
@@ -265,6 +268,22 @@ private:
 		}
 	}
 
+	auto RenderPassStructToAttachments(const GTSL::Range<const StructElement*> struct_elements) {
+		GTSL::StaticVector<RenderOrchestrator::PassData::AttachmentReference, 8> attachmentReferences;
+
+		for(const auto& e : struct_elements) {
+			if(e.Type == u8"TextureReference") {
+				attachmentReferences.EmplaceBack(GTSL::StringView(e.Name), GAL::AccessTypes::READ);
+			}
+
+			if(e.Type == u8"ImageReference") {
+				attachmentReferences.EmplaceBack(GTSL::StringView(e.Name), GAL::AccessTypes::WRITE);
+			}
+		}
+
+		return attachmentReferences;
+	}
+
 	void setupDirectionShadowRenderPass(RenderSystem* renderSystem, RenderOrchestrator* renderOrchestrator) {
 		renderOrchestrator->RegisterType(u8"global", u8"TraceRayParameterData", TRACE_RAY_PARAMETER_DATA);
 
@@ -277,9 +296,7 @@ private:
 		// Make render pass
 		RenderOrchestrator::PassData pass_data;
 		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
-		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
-		pass_data.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ);
-
+		pass_data.Attachments = RenderPassStructToAttachments(RT_RENDERPASS_DATA);
 		RenderOrchestrator::NodeHandle chain = renderOrchestrator->GetGlobalDataLayer();
 
 		chain = renderOrchestrator->AddRenderPassNode(chain, u8"DirectionalShadow", renderSystem, pass_data);

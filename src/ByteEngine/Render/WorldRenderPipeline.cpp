@@ -52,7 +52,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Albedo"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Normal"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"ForwardRenderPass", renderSystem, geoRenderPass);
@@ -128,7 +128,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	RenderOrchestrator::PassData gammaCorrectionPass;
 	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-	gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE); //result attachment
+	gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Albedo"), GAL::AccessTypes::WRITE); //result attachment
 	renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", renderSystem, gammaCorrectionPass);
 
 	renderOrchestrator->RegisterType(u8"global", u8"StaticMeshData", INSTANCE_DATA);

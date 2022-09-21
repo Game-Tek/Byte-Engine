@@ -867,11 +867,35 @@ public:
 		uint32 DataSize = 0;
 	};
 
-	void SetNodeState(const NodeHandle node_handle, const bool state) { //TODO: DONT CHANGE STATE IF THERE ARE PENDING RESOURCES WHICH SHOULD IMPEDE ENABLING THE NODE
-		if(renderingTree.GetNodeState(node_handle()) != state) {
-			renderingTree.ToggleBranch(node_handle(), state);
+	void revalNode(const NodeHandle node_handle) {
+		auto& node = getNode(node_handle);
+		const bool nodeState = node.Enabled && node.References >= node.L;
+		if(nodeState != renderingTree.GetNodeState(node_handle())) {
+			renderingTree.ToggleBranch(node_handle(), nodeState);
 			setRenderTreeAsDirty(node_handle);
 		}
+	}
+
+	void AddNodeDependency(const NodeHandle node_handle) {
+		auto& node = getNode(node_handle);
+		++node.L;
+
+		revalNode(node_handle);
+	}
+
+	void FullfilNodeDependency(const NodeHandle node_handle) {
+		auto& node = getNode(node_handle);
+		++node.References;
+
+		revalNode(node_handle);
+	}
+
+	void SetNodeState(const NodeHandle node_handle, const bool state) {
+		auto& node = getNode(node_handle);
+
+		node.Enabled = state;
+
+		revalNode(node_handle);
 	}
 
 	bool GetResourceState(const ResourceHandle resource_handle) {
@@ -1168,6 +1192,8 @@ private:
 		GTSL::ShortString<32> Name;
 		NodeType Type; uint8 Level = 0;
 		uint32 InstanceCount = 0;
+		uint32 References = 0, L = 0;
+		bool Enabled = true;
 	};
 
 	//Node's names are nnot provided inn the CreateNode functions since we donn't wantt to generate debug nnames in realease builds, and the compiler won't eliminnate the useless stringg generation code

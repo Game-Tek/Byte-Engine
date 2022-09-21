@@ -161,11 +161,11 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 	{
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
-			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			//AddAttachment(u8"Position", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Shadow", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
-			AddAttachment(u8"Color", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 		}
 
@@ -716,7 +716,7 @@ void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 b
 	attachment.Uses |= GAL::TextureUses::SAMPLE;
 
 	if (type == GAL::TextureType::COLOR) {
-		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::COLOR, 0, 1, 2, 3);
+		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::COLOR, 0, componentCount >= 2 ? 1 : 0, componentCount >= 3 ? 2 : 0, componentCount >= 4 ? 3 : 0);
 		attachment.Uses |= GAL::TextureUses::STORAGE;
 		attachment.Uses |= GAL::TextureUses::TRANSFER_SOURCE;
 		attachment.ClearColor = GTSL::RGBA(0, 0, 0, 0);
@@ -864,7 +864,16 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 	auto bwk = GetBufferWriteKey(renderSystem, renderPassDataNode);
 
 	for (auto i = 0u; i < pass_data.Attachments.GetLength(); ++i) {
-		bwk[GTSL::StringView(pass_data.Attachments[i].Name)] = attachments[renderPass.Attachments[i].Name].ImageIndex;
+		const auto& e = pass_data.Attachments[i];
+
+		AddNodeDependency(renderPassNodeHandle);
+
+		if(auto a = attachments.TryGet(e.Name)) {
+			bwk[GTSL::StringView(pass_data.Attachments[i].Name)] = a.Get().ImageIndex;
+			FullfilNodeDependency(renderPassNodeHandle);
+		} else {
+			BE_LOG_WARNING(u8"Render pass: ", render_pass_name, u8", references attachment: ", e.Name, u8", which does not exist. Render pass will be disabled.");
+		}
 	}
 
 	return resultHandle;
@@ -905,21 +914,18 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 
 void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable)
 {
-	if (renderPassName) {
-		auto& renderPassNode = getPrivateNode<RenderPassData>(renderPassName);
+	if (!renderPassName) { BE_LOG_WARNING(u8"Tried to ", enable ? u8"enable" : u8"disable", u8" a render pass which does not exist."); return; }
 
-		switch (renderPassNode.Type) {
-		case PassType::RASTER: break;
-		case PassType::COMPUTE: break;
-		case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetBoolOption(u8"rayTracing"); break; // Enable render pass only if function is enaled in settings
-		default: break;
-		}
+	auto& renderPassNode = getPrivateNode<RenderPassData>(renderPassName);
 
-		SetNodeState(renderPassName, enable); //TODO: enable only if resource is not impeding activation
+	switch (renderPassNode.Type) {
+	case PassType::RASTER: break;
+	case PassType::COMPUTE: break;
+	case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetBoolOption(u8"rayTracing"); break; // Enable render pass only if function is enaled in settings
+	default: break;
 	}
-	else {
-		BE_LOG_WARNING(u8"Tried to ", enable ? u8"enable" : u8"disable", u8" a render pass which does not exist.");
-	}
+
+	SetNodeState(renderPassName, enable);
 }
 
 void RenderOrchestrator::onRenderEnable(ApplicationManager* gameInstance, const GTSL::Range<const TaskDependency*> dependencies) {
@@ -1010,7 +1016,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		//}
 	}
 
-	auto& sg = shaderGroups[shaderGroupsByName[Id(shader_group_info.Name)]];
+	auto& shaderGroup = shaderGroups[shaderGroupsByName[Id(shader_group_info.Name)]];
 
 	addScope(u8"global", shader_group_info.Name);
 
@@ -1107,9 +1113,9 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					}
 				}
 
-				if(!sg.PushConstantLayout) {
+				if(!shaderGroup.PushConstantLayout) {
 					for(auto e : json[u8"pushConstant"][u8"members"]) {
-						sg.PushConstantLayout.EmplaceBack(e[u8"type"], e[u8"name"]);
+						shaderGroup.PushConstantLayout.EmplaceBack(e[u8"type"], e[u8"name"]);
 					}
 				}
 			}
@@ -1166,18 +1172,18 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	for (uint32 pi = 0; const auto & p : shader_group_info.Parameters) {
 		parameters.Emplace(Id(p.Name), p.Type, p.Name, p.Value);
-		members.EmplaceBack(MemberInfo{ &sg.ParametersHandles.Emplace(Id(p.Name)), p.Type, p.Name });
+		members.EmplaceBack(MemberInfo{ &shaderGroup.ParametersHandles.Emplace(Id(p.Name)), p.Type, p.Name });
 	}
 
 	for (auto& e : shaderBundles) {
 		GTSL::Vector<GPUPipeline::ShaderInfo, BE::TAR> shaderInfos(8, GetTransientAllocator());
 
 		if (e.Stage & (GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT)) {
-			if (sg.RasterPipelineIndex == 0xFFFFFFFF) { //if no pipeline already exists for this stage, create one
-				sg.RasterPipelineIndex = pipelines.Emplace(GetPersistentAllocator());
+			if (shaderGroup.RasterPipelineIndex == 0xFFFFFFFF) { //if no pipeline already exists for this stage, create one
+				shaderGroup.RasterPipelineIndex = pipelines.Emplace(GetPersistentAllocator());
 			}
 
-			e.PipelineIndex = sg.RasterPipelineIndex;
+			e.PipelineIndex = shaderGroup.RasterPipelineIndex;
 
 			for (auto s : e.Shaders) {
 				auto& shaderInfo = shaderInfos.EmplaceBack();
@@ -1258,11 +1264,11 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		}
 
 		if (e.Stage & GAL::ShaderStages::COMPUTE) {
-			if (sg.ComputePipelineIndex == 0xFFFFFFFF) { //if no pipeline already exists for this stage, create one
-				sg.ComputePipelineIndex = pipelines.Emplace(GetPersistentAllocator());
+			if (shaderGroup.ComputePipelineIndex == 0xFFFFFFFF) { //if no pipeline already exists for this stage, create one
+				shaderGroup.ComputePipelineIndex = pipelines.Emplace(GetPersistentAllocator());
 			}
 
-			e.PipelineIndex = sg.ComputePipelineIndex;
+			e.PipelineIndex = shaderGroup.ComputePipelineIndex;
 
 			auto& pipeline = pipelines[e.PipelineIndex];
 
@@ -1283,13 +1289,13 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			if (!BE::Application::Get()->GetBoolOption(u8"rayTracing")) { continue; }
 
 			if(auto r = rayTracingSets.TryEmplace(Id(e.Set), 0xFFFFFFFFu)) {
-				sg.RTPipelineIndex = pipelines.Emplace(GetPersistentAllocator());
-				r.Get() = sg.RTPipelineIndex;
+				shaderGroup.RTPipelineIndex = pipelines.Emplace(GetPersistentAllocator());
+				r.Get() = shaderGroup.RTPipelineIndex;
 			} else {
-				sg.RTPipelineIndex = r.Get();
+				shaderGroup.RTPipelineIndex = r.Get();
 			}
 
-			e.PipelineIndex = sg.RTPipelineIndex;
+			e.PipelineIndex = shaderGroup.RTPipelineIndex;
 
 			auto& pipelineData = pipelines[e.PipelineIndex];
 
@@ -1370,7 +1376,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			}
 		}
 
-		signalDependencyToResource(sg.Resource); //add ref count for pipeline load itself, todo: do we signal even when we are doing a pipeline update?
+		signalDependencyToResource(shaderGroup.Resource); //add ref count for pipeline load itself, todo: do we signal even when we are doing a pipeline update?
 
 		for(auto& k : shader_group_info.Instances) {
 			if(!shaderGroupInstanceByName.Find(Id(k.Name))) { continue; }
@@ -1379,15 +1385,15 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 		}
 	}
 
-	if (!sg.Loaded) {
-		sg.Loaded = true;
+	if (!shaderGroup.Loaded) {
+		shaderGroup.Loaded = true;
 
 		GTSL::StaticString<64> scope(u8"global"); scope << u8"." << GTSL::StringView(shader_group_info.Name);
 
 		auto materialDataMember = RegisterType(scope, u8"ShaderParametersData", members);
-		sg.Buffer = MakeDataKey(renderSystem, scope, u8"ShaderParametersData[4]", sg.Buffer); // Create shader group data in array, with an element for each instance
+		shaderGroup.Buffer = MakeDataKey(renderSystem, scope, u8"ShaderParametersData[4]", shaderGroup.Buffer); // Create shader group data in array, with an element for each instance
 
-		auto bwk = GetBufferWriteKey(renderSystem, sg.Buffer);
+		auto bwk = GetBufferWriteKey(renderSystem, shaderGroup.Buffer);
 
 		for (uint8 ii = 0; auto & i : shader_group_info.Instances) { //TODO: check parameters against stored layout to check if everything is still compatible
 			if(!shaderGroupInstanceByName.Find(Id(i.Name))) { continue; }
@@ -1395,7 +1401,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			WriteUpdateKey(renderSystem, instance.UpdateKey, uint32(ii));
 
-			CopyDataKey(instance.DataKey, sg.Buffer);
+			CopyDataKey(instance.DataKey, shaderGroup.Buffer);
 
 			auto instanceElement = bwk[ii];
 

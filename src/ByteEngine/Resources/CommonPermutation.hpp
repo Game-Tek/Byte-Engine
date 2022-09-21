@@ -35,6 +35,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4u", u8"SampleUint", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(usampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"float32", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), vec4f(value));");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"X", { { u8"vec4f", u8"vec" } }, u8"return vec.x;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Y", { { u8"vec4f", u8"vec" } }, u8"return vec.y;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Z", { { u8"vec4f", u8"vec" } }, u8"return vec.z;");
@@ -136,7 +137,7 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");
 
 		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
-		pipeline->DeclareStruct(computeRenderPassScope, u8"RenderPassData", { { u8"ImageReference", u8"Color" } });
+		pipeline->DeclareStruct(computeRenderPassScope, u8"RenderPassData", { { u8"ImageReference", u8"Albedo" } });
 
 		auto pushConstantBlockHandle = pipeline->DeclareScope(computeRenderPassScope, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });

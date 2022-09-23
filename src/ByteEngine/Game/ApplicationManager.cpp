@@ -75,6 +75,8 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 
 	uint16 stageIndex = 0;
 
+	bool debugTasks = BE::Application::Get()->GetBoolOption(u8"ApplicationManager.debugTasks");
+
 	auto tryDispatchTask = [&](TaskStackType& stack) -> bool {
 		const uint32 taskIndex = rr++ % stack.GetLength();
 		auto& ddd = stack[taskIndex];
@@ -111,8 +113,10 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 						++taskInstance.DispatchAttempts;
 
 						if(taskInstance.DispatchAttempts > 3) {
-							BE_LOG_WARNING(u8"Failed to dispatch ", task.Name, u8", instance: ", taskInstance.TaskNumber, u8". Requires level: ", r.Get(), u8", but has: ", val)
-							BE_LOG_WARNING(u8"Task: ", tasks[t.SetupSteps[val].TaskHandle()].Name, u8" is required")
+							if(debugTasks) {
+								BE_LOG_WARNING(u8"Failed to dispatch ", task.Name, u8", instance: ", taskInstance.TaskNumber, u8". Requires level: ", r.Get(), u8", but has: ", val);
+								BE_LOG_WARNING(u8"Task: ", tasks[t.SetupSteps[val].TaskHandle()].Name, u8" is required");
+							}
 						}
 
 						++i; continue;
@@ -125,7 +129,9 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 						++taskInstance.DispatchAttempts;
 
 						if(taskInstance.DispatchAttempts > 3) {
-							BE_LOG_WARNING(u8"Failed to dispatch ", task.Name, u8", instance: ", taskInstance.TaskNumber)
+							if(debugTasks) {
+								BE_LOG_WARNING(u8"Failed to dispatch ", task.Name, u8", instance: ", taskInstance.TaskNumber)
+							}
 						}
 
 						++i; continue;

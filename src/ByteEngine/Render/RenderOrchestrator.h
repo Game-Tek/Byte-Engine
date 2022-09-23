@@ -1173,7 +1173,7 @@ private:
 
 	struct RenderPassData {
 		PassType Type;
-		GTSL::StaticVector<AttachmentData, 4> Attachments;
+		GTSL::StaticVector<AttachmentData, 16> Attachments;
 		GAL::PipelineStage PipelineStages;
 		MemberHandle RenderTargetReferences;
 		ResourceHandle ResourceHandle;
@@ -2401,3 +2401,19 @@ private:
 //	}
 //
 //}
+
+inline auto RenderPassStructToAttachments(const GTSL::Range<const StructElement*> struct_elements) {
+	GTSL::StaticVector<RenderOrchestrator::PassData::AttachmentReference, 8> attachmentReferences;
+
+	for(const auto& e : struct_elements) {
+		if(e.Type == u8"TextureReference") {
+			attachmentReferences.EmplaceBack(GTSL::StringView(e.Name), GAL::AccessTypes::READ);
+		}
+
+		if(e.Type == u8"ImageReference") {
+			attachmentReferences.EmplaceBack(GTSL::StringView(e.Name), GAL::AccessTypes::WRITE);
+		}
+	}
+
+	return attachmentReferences;
+}

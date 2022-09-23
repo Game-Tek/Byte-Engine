@@ -13,7 +13,7 @@ class WorldRendererPipeline : public RenderPipeline {
 public:
 	MAKE_BE_HANDLE(Instance)
 
-		WorldRendererPipeline(const InitializeInfo& initialize_info);
+	WorldRendererPipeline(const InitializeInfo& initialize_info);
 
 	void onAddShaderGroup(RenderOrchestrator* render_orchestrator, RenderSystem* render_system) {
 		++shaderGroupCount;
@@ -86,7 +86,7 @@ private:
 	RenderSystem::BufferHandle sourceVertexBuffer, destinationVertexBuffer, sourceIndexBuffer, destinationIndexBuffer;
 	uint32 vertexComponentsPerStream = 0, indicesInBuffer = 0;
 
-	RenderOrchestrator::NodeHandle visibilityRenderPassNodeHandle, lightingDataNodeHandle;
+	RenderOrchestrator::NodeHandle visibilityRenderPassNodeHandle;
 
 	static uint32 calculateMeshSize(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
 		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
@@ -150,7 +150,7 @@ private:
 	uint32 lights = 0;
 
 	void onAddLight(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle) {
-		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
+		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightsDataKey);
 		bwk[u8"pointLightsLength"] = ++lights;
 		//bwk[u8"pointLights"][light_handle()][u8"position"] = GTSL::Vector3(0, 0, 0);
 		//bwk[u8"pointLights"][light_handle()][u8"color"] = GTSL::Vector3(1, 1, 1);
@@ -158,14 +158,16 @@ private:
 	}
 
 	void updateLight(const TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, LightsRenderGroup::PointLightHandle light_handle, GTSL::Vector3 position, GTSL::RGB color, float32 intensity, float32 radius) {
-		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightingDataNodeHandle);
+		auto bwk = render_orchestrator->GetBufferWriteKey(render_system, lightsDataKey);
 		bwk[u8"pointLights"][light_handle()][u8"position"] = position;
 		bwk[u8"pointLights"][light_handle()][u8"color"] = color;
 		bwk[u8"pointLights"][light_handle()][u8"intensity"] = intensity;
 		bwk[u8"pointLights"][light_handle()][u8"radius"] = radius;
 
-		bwk[u8"lightCount"] = 1u; // TODO: constant
+		bwk[u8"lightCount"] = GTSL::Math::Min(lights, 8);
 		bwk[u8"lights"][0] = light_handle();
+		bwk[u8"lights"][1] = 0u;
+		bwk[u8"lights"][2] = 1u;
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {
@@ -266,22 +268,6 @@ private:
 				index++;
 			}
 		}
-	}
-
-	auto RenderPassStructToAttachments(const GTSL::Range<const StructElement*> struct_elements) {
-		GTSL::StaticVector<RenderOrchestrator::PassData::AttachmentReference, 8> attachmentReferences;
-
-		for(const auto& e : struct_elements) {
-			if(e.Type == u8"TextureReference") {
-				attachmentReferences.EmplaceBack(GTSL::StringView(e.Name), GAL::AccessTypes::READ);
-			}
-
-			if(e.Type == u8"ImageReference") {
-				attachmentReferences.EmplaceBack(GTSL::StringView(e.Name), GAL::AccessTypes::WRITE);
-			}
-		}
-
-		return attachmentReferences;
 	}
 
 	void setupDirectionShadowRenderPass(RenderSystem* renderSystem, RenderOrchestrator* renderOrchestrator) {

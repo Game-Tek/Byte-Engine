@@ -163,6 +163,8 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
 			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Lighting", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Roughness", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Shadow", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
 			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
@@ -221,6 +223,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		bwk[u8"frameIndex"] = frameIndex++;
 		bwk[u8"elapsedTime"] = BE::Application::Get()->GetClock()->GetElapsedTime().As<float32, GTSL::Seconds>();
 		bwk[u8"deltaTime"] = BE::Application::Get()->GetClock()->GetDeltaTime().As<float32, GTSL::Seconds>();
+		bwk[u8"framePipelineDepth"] = static_cast<uint32>(renderSystem->GetPipelinedFrames());
 		bwk[u8"random"][0] = static_cast<uint32>(randomA()); bwk[u8"random"][1] = static_cast<uint32>(randomB());
 		bwk[u8"random"][2] = static_cast<uint32>(randomA()); bwk[u8"random"][3] = static_cast<uint32>(randomB());
 	}
@@ -292,7 +295,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		while (tokens) {
 			auto token = tokens.back(); tokens.PopBack();
 
-			if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
+			if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent", u8"localSize")) {
 				output.EmplaceBack(token);
 			}
 			else { //is an operator
@@ -315,9 +318,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		//evaluate
 		for (uint32 i = 0; i < output; ++i) {
 			auto token = output[i];
-			if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent")) {
+			if (GTSL::IsNumber(token) or IsAnyOf(token, u8"windowExtent", u8"localSize")) {
 				if (token == u8"windowExtent") {
 					numbers.EmplaceBack(renderArea);
+				}
+				else if (token == u8"localSize") {
+					numbers.EmplaceBack(GTSL::Extent3D(32, 32, 1));
 				}
 				else {
 					numbers.EmplaceBack(GTSL::ToNumber<uint16>(token).Get());
@@ -435,7 +441,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			case RTT::GetTypeIndex<DispatchData>(): {
 				const DispatchData& dispatchData = renderingTree.GetClass<DispatchData>(key);
 
-				const auto& execution = pipelines[renderState.BoundPipelineIndex].ExecutionString;
+				const auto& pipeline = pipelines[renderState.BoundPipelineIndex];
+				const auto& execution = pipeline.ExecutionString;
 
 				auto executionExtent = processExecutionString(execution);
 
@@ -540,8 +547,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					}
 
 					commandBuffer.BeginRenderPass(renderSystem->GetRenderDevice(), renderArea, renderPassTargetDescriptions);
-
-					resultAttachment = renderPassData.Attachments[0].Name;
 					break;
 				}
 				case PassType::COMPUTE: {
@@ -553,6 +558,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					break;
 				}
 				}
+
+				resultAttachment = renderPassData.Attachments[0].Name;
 
 				break;
 			}
@@ -600,7 +607,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
 		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
 
-		if (Id(resultAttachment)) {
+		if (resultAttachment.GetCodepoints()) {
 			auto& attachment = attachments.At(resultAttachment);
 
 			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
@@ -829,7 +836,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 
 		auto sgh = CreateShaderGroup(Id(render_pass_name));
 		auto pipelineBindNode = addPipelineBindNode(renderPassNodeHandle, sgh);
-		resultHandle = addInternalNode<DispatchData>(GTSL::Hash(render_pass_name), pipelineBindNode).Get();
+		resultHandle = pipelineBindNode;
 
 		break;
 	}

@@ -21,19 +21,20 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
 		}
 
-		forwardRenderPassScopeHandle = pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", { { u8"ImageReference", u8"Albedo" }, {u8"ImageReference", u8"Normal" }, {u8"ImageReference", u8"Depth"}});
+		forwardRenderPassScopeHandle = pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", FORWARD_RENDERPASS_DATA);
 
-		pipeline->SetMakeStruct(pipeline->DeclareStruct(forwardScopeHandle, u8"PointLightData", POINT_LIGHT_DATA));
-		pipeline->DeclareStruct(forwardScopeHandle, u8"LightingData", LIGHTING_DATA);
-
-		AddPushConstantDeclaration(pipeline, forwardScopeHandle, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"CameraData*", u8"camera" }, { u8"LightingData*", u8"lightingData" }, { u8"InstanceData*", u8"instances" }, { u8"ShaderParametersData*", u8"shaderParameters" } });
+		AddPushConstantDeclaration(pipeline, forwardScopeHandle, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"CameraData*", u8"camera" }, { u8"InstanceData*", u8"instances" }, { u8"ShaderParametersData*", u8"shaderParameters" } });
 
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");
-			auto outColorHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
-			auto outNormalHandle = pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
-			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_WorldPosition" });
-			pipeline->AddMemberDeductionGuide(forwardScopeHandle, u8"surfaceColor", { outColorHandle });
+
+			for(const auto& e : GTSL::Range<const StructElement*>FORWARD_RENDERPASS_DATA) {
+				if(e.Type == u8"ImageReference") {}
+			}
+
+			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
+			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
+			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"float32", u8"out_Roughness" });
 		}
 
 		const CommonPermutation* common_permutation = Find<CommonPermutation>(u8"CommonPermutation", shader_generation_data.Hierarchy);

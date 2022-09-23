@@ -346,7 +346,7 @@ public:
 	}
 
 	auto GetChildren(const ElementHandle element_handle) {
-		GTSL::StaticVector<ElementHandle, 64> children;
+		GTSL::StaticVector<ElementHandle, 128> children;
 		for (auto& e : GetElement(element_handle).symbols) {
 			children.EmplaceBack(e);
 		}

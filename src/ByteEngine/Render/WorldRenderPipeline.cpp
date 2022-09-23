@@ -54,6 +54,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Albedo"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Normal"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Roughness"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"ForwardRenderPass", renderSystem, geoRenderPass);
 	}
@@ -126,11 +127,6 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		//renderOrchestrator->SetShaderGroupParameter(renderSystem, ShaderGroupHandle{}, u8"materialCount", 0u);
 	}
 
-	RenderOrchestrator::PassData gammaCorrectionPass;
-	gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-	gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Albedo"), GAL::AccessTypes::WRITE); //result attachment
-	renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", renderSystem, gammaCorrectionPass);
-
 	renderOrchestrator->RegisterType(u8"global", u8"StaticMeshData", INSTANCE_DATA);
 	meshDataBuffer = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"StaticMeshData[8]", meshDataBuffer);
 
@@ -140,9 +136,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	renderPassNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 
 	lightsDataKey = renderOrchestrator->MakeDataKey(renderSystem, u8"global", u8"LightingData");
-	lightingDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"LightingDataNode", lightsDataKey);
 
-	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, lightingDataNodeHandle, destinationVertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
+	vertexBufferNodeHandle = renderOrchestrator->AddVertexBufferBind(renderSystem, renderPassNodeHandle, destinationVertexBuffer, { { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT3 }, { GAL::ShaderDataType::FLOAT2 } });
 	indexBufferNodeHandle = renderOrchestrator->AddIndexBufferBind(vertexBufferNodeHandle, destinationIndexBuffer);
 	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer, true);
 
@@ -162,13 +157,20 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		setupDirectionShadowRenderPass(renderSystem, renderOrchestrator);
 	}
 
-	//add node
-	//RenderOrchestrator::PassData pass_data;
-	//pass_data.PassType = RenderOrchestrator::PassType::COMPUTE;
-	//pass_data.WriteAttachments.EmplaceBack(u8"Color");
-	//pass_data.ReadAttachments.EmplaceBack(u8"Normal");
-	//pass_data.ReadAttachments.EmplaceBack(u8"RenderDepth");
-	//auto renderPassLayerHandle = renderOrchestrator->AddRenderPassNode(u8"Lighting", renderOrchestrator->GetCameraDataLayer(), renderSystem, pass_data, initialize_info.ApplicationManager);
+	{
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE });
+		s = renderOrchestrator->AddDataNode(s, u8"Camera Data", renderOrchestrator->cameraDataKeyHandle);
+		s = renderOrchestrator->AddDataNode(s, u8"Lighting Data", lightsDataKey);
+		s = renderOrchestrator->addInternalNode<RenderOrchestrator::DispatchData>(GTSL::Hash(u8"Lighting"), s).Get();
+	}
+
+	{
+		RenderOrchestrator::PassData gammaCorrectionPass;
+		gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
+		gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Lighting"), GAL::AccessTypes::WRITE); //result attachment
+		auto gcrpnh = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", renderSystem, gammaCorrectionPass);
+		renderOrchestrator->addInternalNode<RenderOrchestrator::DispatchData>(GTSL::Hash(u8"GammaCorrection"), gcrpnh).Get();
+	}
 }
 
 void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo) {

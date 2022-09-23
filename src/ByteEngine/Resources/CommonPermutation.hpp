@@ -19,6 +19,8 @@ struct CommonPermutation : PermutationManager {
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"TextureReference", { { u8"uint32", u8"Instance" } }));
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"ImageReference", { { u8"uint32", u8"Instance" } }));
 		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"IndirectDispatchCommand", INDIRECT_DISPATCH_COMMAND_DATA));
+		pipeline->SetMakeStruct(pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"PointLightData", POINT_LIGHT_DATA));
+		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"LightingData", LIGHTING_DATA);
 
 		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"uint32", { { u8"uint32", u8"a"} });
 		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"vec2s", { { u8"u16vec2", u8"wh"} });
@@ -109,8 +111,8 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareStruct(commonScope, u8"ViewData", VIEW_DATA);
 		pipeline->DeclareStruct(commonScope, u8"CameraData", CAMERA_DATA);
 
-		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
-		pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
+		//pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
+		//pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
 
 		auto glPositionHandle = pipeline->DeclareVariable(vertexShaderScope, { u8"vec4f", u8"gl_Position" });
 		pipeline->AddMemberDeductionGuide(vertexShaderScope, u8"vertexPosition", { glPositionHandle });
@@ -133,16 +135,18 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"vec3f", u8"GetNormalizedGlobalIndex", {}, u8"return (vec3f(GetGlobalIndex()) + vec3f(0.5f)) / vec3f(GetGlobalExtent());");
 		
-		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8" return gl_LaunchIDEXT.xy;");
+		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8"return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");
 
 		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
-		pipeline->DeclareStruct(computeRenderPassScope, u8"RenderPassData", { { u8"ImageReference", u8"Albedo" } });
 
 		auto pushConstantBlockHandle = pipeline->DeclareScope(computeRenderPassScope, u8"pushConstantBlock");
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
 		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RenderPassData*", u8"renderPass" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"CameraData*", u8"camera" });
+		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lighting" });
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2u", u8"GetPixelPosition", {}, u8"return GetGlobalIndex().xy;");
+		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2f", u8"GetNormalizedPixelPosition", {}, u8"return GetNormalizedGlobalIndex().xy;");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"ACES", { { u8"vec4f", u8"x" } }, u8"const float a = 2.51; const float b = 0.03; const float c = 2.43; const float d = 0.59; const float e = 0.14; return (x * (a * x + b)) / (x * (c * x + d) + e);");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"Filmic", { { u8"vec4f", u8"x" } }, u8"vec3 X = max(vec3(0.0), vec3f(x) - vec3f(0.004)); vec3 result = (X * (6.2 * X + 0.5)) / (X * (6.2 * X + 1.7) + 0.06); return vec4f(pow(result, vec3(2.2)), x.a); ");
 	}

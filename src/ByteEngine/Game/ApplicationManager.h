@@ -687,7 +687,7 @@ private:
 
 			uint16 DispatchAttempts = 0;
 		};
-		GTSL::StaticVector<InstanceData, 8> Instances;
+		GTSL::StaticVector<InstanceData, 16> Instances;
 
 		bool OnlyLast = false;
 

@@ -9,9 +9,7 @@ struct RayTracePermutation : public PermutationManager {
 
 	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
 		auto rayTracePermutationScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"RayTracePermutation");
-
-		pipeline->DeclareStruct(rayTracePermutationScope, u8"PointLightData", POINT_LIGHT_DATA);
-		pipeline->DeclareStruct(rayTracePermutationScope, u8"LightingData", LIGHTING_DATA);
+		
 		pipeline->DeclareStruct(rayTracePermutationScope, u8"TraceRayParameterData", TRACE_RAY_PARAMETER_DATA);
 		pipeline->DeclareFunction(rayTracePermutationScope, u8"void", u8"TraceRay", { { u8"vec3f", u8"origin" }, { u8"vec3f", u8"direction" }, { u8"uint32", u8"rayFlags" } }, u8"TraceRayParameterData* r = pushConstantBlock.rayTrace; traceRayEXT(accelerationStructureEXT(r.accelerationStructure), r.rayFlags | rayFlags, 0xff, r.recordOffset, r.recordStride, r.missIndex, vec3f(origin), r.tMin, vec3f(direction), r.tMax, 0);");
 

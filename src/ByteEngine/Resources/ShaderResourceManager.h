@@ -419,7 +419,7 @@ private:
 
 	GAL::ShaderCompiler compiler_;
 
-	using ShaderMap = GTSL::HashMap<Id, GTSL::Tuple<GTSL::JSON<BE::PAR>, GTSL::StaticString<1024>>, BE::TAR>;
+	using ShaderMap = GTSL::HashMap<Id, GTSL::Tuple<GTSL::JSON<BE::PAR>, GTSL::StaticString<2048>>, BE::TAR>;
 
 	void makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize*, const ShaderMap& shader_map);
 
@@ -736,7 +736,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 					GTSL::File shaderFile(GetUserResourcePath(json[u8"name"], u8"txt"));
 
 					if(shaderFile) {
-						GTSL::StaticBuffer<2048> shaderFileBuffer(shaderFile);
+						GTSL::StaticBuffer<4096> shaderFileBuffer(shaderFile);
 						shaderEntry.rest.element = GTSL::StringView(shaderFileBuffer);
 					} else {
 						BE_LOG_WARNING(u8"Did not find a shader file for shader: ", json[u8"name"], u8".");
@@ -822,19 +822,23 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	}
 }
 
+inline void ParseStructJSONAndDeclareStruct(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, GPipeline::ElementHandle scope) {
+	GTSL::StaticVector<StructElement, 8> elements;
+
+	for (auto m : json[u8"members"]) {
+		elements.EmplaceBack(m[u8"type"], m[u8"name"]);
+	}
+
+	pipeline.DeclareStruct(scope, json[u8"name"], elements);
+}
+
 inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize* shader_group_data_serialize, const ShaderMap& shader_map) {
 	auto shaderGroupScope = pipeline.DeclareScope(GPipeline::GLOBAL_SCOPE, json[u8"name"]);
 
 	GTSL::StaticVector<uint64, 16> shaderGroupUsedShaders;
 
 	for (auto s : json[u8"structs"]) {
-		GTSL::StaticVector<StructElement, 8> elements;
-
-		for (auto m : s[u8"members"]) {
-			elements.EmplaceBack(m[u8"type"], m[u8"name"]);
-		}
-
-		pipeline.DeclareStruct(shaderGroupScope, s[u8"name"], elements);
+		ParseStructJSONAndDeclareStruct(s, pipeline, shaderGroupScope);
 	}
 
 	for(auto scope : json[u8"scopes"]) {
@@ -998,7 +1002,10 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 					switch (shaderClass) {
 						case Class::VERTEX: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"VertexShader"); break;
 						case Class::SURFACE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"FragmentShader"); break;
-						case Class::COMPUTE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"ComputeShader"); scopes.EmplaceBack(pipeline.GetElementHandle(commonPermutationScopeHandle, u8"ComputeRenderPass")); break;
+						case Class::COMPUTE: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"ComputeShader");
+
+						scopes.EmplaceBack(pipeline.GetElementHandle(commonPermutationScopeHandle, u8"ComputeRenderPass"));
+						break;
 						case Class::RENDER_PASS: break;
 						case Class::CLOSEST_HIT: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"ClosestHitShader"); break;
 						case Class::RAY_GEN: subScopeHandle = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, u8"RayGenShader"); break;

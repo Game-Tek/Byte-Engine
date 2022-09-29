@@ -44,7 +44,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"FresnelSchlick", { { u8"float32", u8"cosTheta" }, { u8"vec3f", u8"F0" } }, u8"return F0 + (1.0 - F0) * pow(max(0.0, 1.0 - cosTheta), 5.0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Normalize", { { u8"vec3f", u8"a" } }, u8"return normalize(a);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Sigmoid", { { u8"float32", u8"x" } }, u8"return 1.0 / (1.0 + pow(x / (1.0 - x), -3.0));");
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth2", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"matrix4f", u8"inverse_proj_view_matrix" } }, u8"vec4 clipSpacePosition = vec4((texture_coordinate * 2.0) - 1.0, depth, 1.0); vec4f position = inverse_proj_view_matrix * clipSpacePosition; return position.xyz / position.w;");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"matrix4f", u8"inverse_proj_view_matrix" } }, u8"vec4 clipSpacePosition = vec4((texture_coordinate * 2.0) - 1.0, depth, 1.0); vec4f position = inverse_proj_view_matrix * clipSpacePosition; return position.xyz / position.w;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"WorldPositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"matrix4f", u8"inverse_proj_matrix" }, { u8"matrix4f", u8"inverse_view_matrix" } }, u8"vec2 ndc = (texture_coordinate * 2.0) - 1.0; vec4 clipSpacePosition = vec4(ndc, depth, 1.0); vec4f viewSpacePosition = inverse_proj_matrix * clipSpacePosition; viewSpacePosition /= viewSpacePosition.w; return (inverse_view_matrix * viewSpacePosition).xyz;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"PI", { }, u8"return 3.14159265359f;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2f", u8"SphericalCoordinates", { { u8"vec3f", u8"v" } }, u8"vec2f uv = vec2(atan(v.z, v.x), asin(v.y)); uv *= vec2(0.1591, 0.3183); uv += 0.5; return uv; ");
@@ -70,6 +70,9 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"SphereDirection", { { u8"vec2f", u8"rect" }, { u8"vec3f", u8"direction" }, { u8"float32", u8"radius" } },
 			u8"vec2f point = MapRectangleToCircle(rect) * radius; vec3f tangent = normalize(cross(direction, vec3f(0, 1, 0))); vec3f bitangent = normalize(cross(tangent, direction)); return normalize(direction + point.x * tangent + point.y * bitangent);");
+
+		// [Eberly2014] GPGPU Programming for Games and Science
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"FastAcos", { { u8"float32", u8"x" } }, u8"float res = -0.156583 * abs(x) + (PI() / 2); res *= sqrt(1.0 - abs(x)); return x >= 0 ? res : PI() - res;");
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"CosineWeightedHemisphereSample", { { u8"vec3f", u8"hitNorm" }, { u8"vec2f", u8"random" } },
 			u8"vec3f bitangent = Perpendicualar(hitNorm); vec3f tangent = cross(bitangent, hitNorm); float32 r = sqrt(random.x); float phi = 2.0f * PI() * random.y; return tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hitNorm.xyz * sqrt(1 - random.x);");

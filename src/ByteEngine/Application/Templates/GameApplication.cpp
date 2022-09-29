@@ -70,6 +70,21 @@ void GameApplication::PostInitialize()
 	applicationManager->AddEvent(u8"Application", EventHandle(u8"OnFocusLoss"));
 	applicationManager->AddEvent(u8"Application", EventHandle<GTSL::Extent2D>(u8"OnWindowResize"));
 	
+	auto* windowSystem = applicationManager->AddSystem<WindowSystem>(u8"WindowSystem");
+
+	{
+		bool fullscreen = GetBoolOption(u8"fullScreen");
+		GTSL::Extent2D screenSize;
+
+		if(fullscreen) {
+			screenSize = GTSL::System::GetScreenExtent();			
+		} else {
+			screenSize = GetExtent2DOption(u8"resolution");
+		}
+
+		windowHandle = windowSystem->CreateWindow(u8"main", u8"Sandbox", screenSize);
+	}
+
 	auto* renderSystem = applicationManager->AddSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
@@ -83,24 +98,9 @@ void GameApplication::PostInitialize()
 
 	applicationManager->AddSystem<LightsRenderGroup>(u8"LightsRenderGroup");
 
-	auto* windowSystem = applicationManager->AddSystem<WindowSystem>(u8"WindowSystem");
 	windowSystemHandle = applicationManager->GetSystemReference(u8"WindowSystem");
 
-	{
-		bool fullscreen = GetBoolOption(u8"fullScreen");
-		GTSL::Extent2D screenSize;
-
-		if(fullscreen) {
-			screenSize = GTSL::System::GetScreenExtent();			
-		} else {
-			screenSize = GetExtent2DOption(u8"resolution");
-		}
-
-		windowSystem->CreateWindow(u8"main", u8"Sandbox", screenSize);
-	}
-
 	windowSystem->keyboard = keyboard; windowSystem->mouse = mouse;
-
 	
 	auto* uiManager = applicationManager->AddSystem<UIManager>(u8"UIManager");
 

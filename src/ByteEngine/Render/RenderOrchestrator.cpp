@@ -177,14 +177,25 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Graphics Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT, false);
 		graphicsWorkloadHandle[f] = renderSystem->CreateWorkload(u8"Frame work", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT);
-		imageAcquisitionWorkloadHandles[f] = renderSystem->CreateWorkload(u8"Swpachain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
+		imageAcquisitionWorkloadHandles[f] = renderSystem->CreateWorkload(u8"Swapchain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 		transferCommandList[f] = renderSystem->CreateCommandList(u8"Transfer Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 	}
 
 	const auto& config = BE::Application::Get()->GetConfig();
 
-	for(auto rp : config[u8"renderPasses"]) {
-		//renderPasses.EmplaceBack(rp.GetStringView());
+	auto* windowSystem = GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem");
+
+	renderContext = renderSystem->CreateRenderContext(windowSystem, static_cast<GameApplication*>(BE::Application::Get())->GetWindowHandle());
+
+	for(auto rp : config[u8"RenderOrchestrator.debugViews"]) {
+		auto& dv = debugViews.EmplaceBack(rp.GetStringView());
+
+		dv.windowHandle = windowSystem->CreateWindow(u8"debugView", rp.GetStringView(), { 1280, 720 });
+		dv.renderContext = renderSystem->CreateRenderContext(windowSystem, dv.windowHandle);
+
+		for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
+			dv.workloadHandles[f] = renderSystem->CreateWorkload(u8"Debug view image acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
+		}
 	}
 
 	randomB(); randomB(); randomB();
@@ -203,13 +214,18 @@ void Skim(GTSL::HashMap<K, V, ALLOC>& hash_map, auto predicate, const ALLOC& all
 void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
 
-	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent();
+	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent(renderContext);
 	
 	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]); // We HAVE to wait or else descriptor update fails because command list may be in use
 
-	if (auto res = renderSystem->AcquireImage(imageAcquisitionWorkloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
+	if (auto res = renderSystem->AcquireImage(renderContext, imageAcquisitionWorkloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
 		OnResize(renderSystem, res.Get());
 		renderArea = res.Get();
+	}
+
+	for(auto& dv : debugViews) {
+		if (auto res = renderSystem->AcquireImage(dv.renderContext, dv.workloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res) {
+		}
 	}
 
 	updateDescriptors(taskInfo);
@@ -261,6 +277,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			auto currentView = cameraData[u8"viewHistory"][0];
 
+			auto fExtent = GTSL::Vector2(renderArea.Width, renderArea.Height);
+
 			currentView[u8"view"] = viewMatrix;
 			currentView[u8"proj"] = projectionMatrix;
 			currentView[u8"viewInverse"] = GTSL::Math::Inverse(viewMatrix);
@@ -271,6 +289,8 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			currentView[u8"near"] = nearValue;
 			currentView[u8"far"] = farValue;
 			currentView[u8"extent"] = renderArea;
+			currentView[u8"extentReciprocal"] = GTSL::Vector2(1) / fExtent;
+			currentView[u8"aspectRatio"] = fExtent.X() / fExtent.Y();
 		}
 		else { //disable rendering for everything which depends on this view
 			//SetNodeState(cameraDataNode, false);
@@ -605,7 +625,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		ForEachWithDisabled(renderingTree, visitNode, endNode);
 
 		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
-		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
 
 		if (resultAttachment.GetCodepoints()) {
 			auto& attachment = attachments.At(resultAttachment);
@@ -616,11 +636,30 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 			updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
 
-			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory [currentFrame], *renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent()));
+			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory [currentFrame], *renderSystem->GetSwapchainTexture(renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(renderContext)));
 		}
 
-		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(), GAL::TextureLayout::TRANSFER_DESTINATION,
+		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
 		GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+
+		for(auto& dv : debugViews) {
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+
+			{
+				auto& attachment = attachments.At(dv.name);
+
+				commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
+					GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
+					GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
+
+				updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
+
+				commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory [currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
+			}
+
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
+			GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+		}
 
 		renderSystem->EndCommandList(graphicsCommandLists[currentFrame]);
 
@@ -665,13 +704,28 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		}
 
 		workloads.EmplaceBack(imageAcquisitionWorkloadHandles[currentFrame]);
+
+		for(auto& dv : debugViews) {
+			workloads.EmplaceBack(dv.workloadHandles[currentFrame]);
+		}
+
 		workloads.EmplaceBack(graphicsWorkloadHandle[currentFrame]);
 
 		commandLists.EmplaceBack(graphicsCommandLists[currentFrame]);
 
-		renderSystem->Submit(GAL::QueueTypes::GRAPHICS, { { { transferCommandList[currentFrame] }, {}, { graphicsWorkloadHandle[currentFrame]}}, {{graphicsCommandLists[currentFrame]}, workloads,	{graphicsWorkloadHandle[currentFrame]}}}, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()]); // Wait on image acquisition to render maybe, //Signal grpahics workload
+		renderSystem->Submit(GAL::QueueTypes::GRAPHICS, { { { transferCommandList[currentFrame] }, {}, { graphicsWorkloadHandle[currentFrame]}}, {{graphicsCommandLists[currentFrame]}, workloads,	{graphicsWorkloadHandle[currentFrame]}}}, graphicsWorkloadHandle[renderSystem->GetCurrentFrame()]); // Wait on image acquisition to render maybe, //Signal graphics workload
 
-		renderSystem->Present(GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem"), { graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
+		auto windowSystem = GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem");
+
+		GTSL::StaticVector<RenderSystem::RenderContextHandle, 8> renderContexts;
+
+		renderContexts.EmplaceBack(renderContext);
+
+		for(const auto& e : debugViews) {
+			renderContexts.EmplaceBack(e.renderContext);
+		}
+
+		renderSystem->Present(windowSystem, renderContexts, { graphicsWorkloadHandle[currentFrame] }); // Wait on graphics work to present
 	}
 
 	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]);

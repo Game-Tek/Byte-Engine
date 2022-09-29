@@ -6,6 +6,7 @@
 #include <GTSL/Gamepad.h>
 
 #include "ByteEngine/Application/InputManager.h"
+#include "ByteEngine/Application/WindowSystem.hpp"
 #include "ByteEngine/Game/ApplicationManager.h"
 
 class GameApplication : public BE::Application
@@ -22,11 +23,15 @@ public:
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
 	void Shutdown() override;
 
+	auto GetWindowHandle() const { return windowHandle; }
+
 protected:
 	GTSL::Gamepad gamepad;
 	InputDeviceHandle controller;
 	InputDeviceHandle keyboard;
 	InputDeviceHandle mouse;
+
+	WindowSystem::WindowHandle windowHandle;
 
 	SystemHandle windowSystemHandle;
 

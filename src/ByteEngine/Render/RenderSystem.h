@@ -22,6 +22,7 @@ class RenderSystem : public BE::System {
 public:
 	MAKE_HANDLE(uint32, Buffer)
 	MAKE_HANDLE(uint32, Texture);
+	MAKE_HANDLE(uint32, RenderContext);
 	
 	explicit RenderSystem(const InitializeInfo& initializeInfo);
 	~RenderSystem();
@@ -245,18 +246,23 @@ public:
 		}
 	}
 
-	void Present(WindowSystem* window_system, const GTSL::Range<const WorkloadHandle*> wait_workload_handles) {
+	void Present(WindowSystem* window_system, GTSL::Range<const RenderContextHandle*> render_context_handles, const GTSL::Range<const WorkloadHandle*> wait_workload_handles) {
 		GTSL::StaticVector<Synchronizer*, 8> waitSemaphores;
 
 		for(auto e : wait_workload_handles) {
 			waitSemaphores.EmplaceBack(&workloads[e()].Semaphore);
 		}
 
-		if (surface.GetHandle()) {
-			if (!renderContext.Present(GetRenderDevice(), waitSemaphores, imageIndex, graphicsQueue)) {
-				resize(window_system);
-			}
+		GTSL::StaticVector<RenderContext*, 8> renderContexts;
+		GTSL::StaticVector<uint32, 8> imageIndices;
+
+		for(auto& e : render_context_handles) {
+			auto& renderContext = renderx[e()];
+			renderContexts.EmplaceBack(&renderContext.renderContext);
+			imageIndices.EmplaceBack(renderContext.imageIndex);
 		}
+
+		RenderContext::Present(GetRenderDevice(), waitSemaphores, renderContexts, imageIndices, graphicsQueue);
 	}
 
 	void AllocateLocalTextureMemory(Texture* texture, const GTSL::StringView name, GAL::TextureUse uses, GAL::FormatDescriptor format, GTSL::Extent3D extent, GAL::Tiling tiling,
@@ -311,7 +317,31 @@ public:
 	void DeallocateLocalBufferMemory(const RenderAllocation renderAllocation) {
 		localMemoryAllocator.DeallocateLinearMemory(renderDevice, renderAllocation);
 	}
-	
+
+	RenderContextHandle CreateRenderContext(WindowSystem* window_system, WindowSystem::WindowHandle window_handle) {
+		uint32 renderContextIndex = renderx.GetLength();
+		auto& renderContext = renderx.EmplaceBack();
+
+		renderContext.windowHandle = window_handle;
+
+		return RenderContextHandle(renderContextIndex);
+	}
+
+	void DestroyRenderContext(const RenderContextHandle render_context_handle) {
+		auto& renderContext = renderx[render_context_handle()];
+
+		if (renderContext.renderContext.GetHandle())
+			renderContext.renderContext.Destroy(&renderDevice);
+
+		if (renderContext.surface.GetHandle())
+			renderContext.surface.Destroy(&renderDevice);
+
+		for (auto& e : renderContext.swapchainTextureViews) {
+			if (e.GetVkImageView())
+				e.Destroy(&renderDevice);
+		}
+	}
+
 	RenderDevice* GetRenderDevice() { return &renderDevice; }
 	const RenderDevice* GetRenderDevice() const { return &renderDevice; }
 	GPUBuffer GetBuffer(const RenderSystem::BufferHandle buffer_handle) const {
@@ -347,7 +377,10 @@ public:
 
 	[[nodiscard]] PipelineCache GetPipelineCache() const;
 
-	[[nodiscard]] const Texture* GetSwapchainTexture() const { return &swapchainTextures[imageIndex]; }
+	[[nodiscard]] const Texture* GetSwapchainTexture(const RenderContextHandle render_context_handle) const {
+		const auto& renderContext = renderx[render_context_handle()];
+		return &renderContext.swapchainTextures[renderContext.imageIndex];
+	}
 
 	[[nodiscard]] byte* GetBufferPointer(BufferHandle bufferHandle) const {
 		return static_cast<byte*>(buffers[bufferHandle()].Allocation.Data);
@@ -368,9 +401,9 @@ public:
 	CommandList* GetCommandList(const CommandListHandle handle) { return &commandLists[handle()].CommandList; }
 	const CommandList* GetCommandList(const CommandListHandle handle) const { return &commandLists[handle()].CommandList; }
 
-	[[nodiscard]] GTSL::Extent2D GetRenderExtent() const { return renderArea; }
+	[[nodiscard]] GTSL::Extent2D GetRenderExtent(const RenderContextHandle render_context_handle) const { return renderx[render_context_handle()].renderArea; }
 	
-	void onResize(TaskInfo, GTSL::Extent2D extent) { renderArea = extent; }
+	void onResize(TaskInfo, GTSL::Extent2D extent) {}
 
 	uint32 GetShaderGroupHandleSize() const { return shaderGroupHandleSize; }
 	uint32 GetShaderGroupBaseAlignment() const { return shaderGroupBaseAlignment; }
@@ -411,7 +444,7 @@ public:
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
 
-	GTSL::Result<GTSL::Extent2D> AcquireImage(const WorkloadHandle workload_handle, WindowSystem* window_system);
+	GTSL::Result<GTSL::Extent2D> AcquireImage(const RenderContextHandle render_context_handle, const WorkloadHandle workload_handle, WindowSystem* window_system);
 
 	BufferHandle CreateBuffer(uint32 size, GAL::BufferUse flags, bool willWriteFromHost, const BufferHandle buffer_handle);
 
@@ -531,24 +564,27 @@ private:
 	GTSL::Mutex testMutex;
 	
 	bool needsStagingBuffer = true;
-	uint8 imageIndex = 0;
 
 	uint8 pipelinedFrames = 0;
-
-	bool useHDR = false;
 	
 	RenderDevice renderDevice;
-	Surface surface;
-	RenderContext renderContext;
-	
-	GTSL::Extent2D renderArea, lastRenderArea;
+
+	bool useHDR = false;
+
+	struct Renderx {
+		Surface surface;
+		RenderContext renderContext;		
+		GTSL::Extent2D renderArea, lastRenderArea;
+		Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
+		TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
+		WindowSystem::WindowHandle windowHandle;
+		uint8 imageIndex = 0;
+	};
+	GTSL::StaticVector<Renderx, 8> renderx;	
 
 	struct BufferCopyData {
 		BufferHandle SourceBufferHandle, DestinationBufferHandle; uint32 SourceOffset = 0, DestinationOffset = 0;
 	};
-	
-	Texture swapchainTextures[MAX_CONCURRENT_FRAMES];
-	TextureView swapchainTextureViews[MAX_CONCURRENT_FRAMES];
 	
 	GAL::VulkanQueue graphicsQueue, computeQueue, transferQueue;
 
@@ -642,7 +678,7 @@ private:
 	GAL::FormatDescriptor swapchainFormat;
 	GAL::ColorSpaces swapchainColorSpace;
 
-	void resize(WindowSystem* window_system);
+	void resize(WindowSystem* window_system, const RenderContextHandle render_context_handle);
 	
 	void renderFlush(TaskInfo taskInfo);
 

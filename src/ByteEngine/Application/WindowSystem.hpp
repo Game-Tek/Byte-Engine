@@ -30,20 +30,17 @@ public:
 		return GetApplicationManager()->MakeHandle<WindowHandle>(WindowTypeIndentifier, index);
 	}
 
-	GTSL::Vector2 GetWindowPosition() const {
-		return windows[0].position;
-	}
-
-	GTSL::Extent2D GetWindowClientExtent() const {
-		return windows[0].window.GetFramebufferExtent();
+	GTSL::Vector2 GetWindowPosition(const WindowHandle window_handle) const {
+		return windows[window_handle()].position;
 	}
 
 	GTSL::Extent2D GetWindowClientExtent(const WindowHandle window_handle) const {
 		return windows[window_handle()].window.GetFramebufferExtent();
 	}
 
-	const GTSL::Window& GetWindow() const {
-		return windows[0].window;
+
+	const GTSL::Window& GetWindow(const WindowHandle window_handle) const {
+		return windows[window_handle()].window;
 	}
 
 	void Update() {

@@ -2025,8 +2025,18 @@ private:
 
 	uint32 frameIndex = 0;
 
+	RenderSystem::RenderContextHandle renderContext;
+
 #if BE_DEBUG
 	GAL::PipelineStage pipelineStages;
+
+	struct DebugView {
+		GTSL::StaticString<64> name;
+		WindowSystem::WindowHandle windowHandle;
+		RenderSystem::RenderContextHandle renderContext;
+		RenderSystem::WorkloadHandle workloadHandles[MAX_CONCURRENT_FRAMES];
+	};
+	GTSL::StaticVector<DebugView, 8> debugViews;
 #endif
 };
 
@@ -2154,7 +2164,7 @@ public:
 
 		{
 			// TODO: value can be outdated
-			auto windowExtent = render_system->GetRenderExtent();
+			auto windowExtent = GTSL::Extent2D(1920, 1080);
 			auto windowSize = GTSL::Vector2(static_cast<float32>(windowExtent.Width), static_cast<float32>(windowExtent.Height));
 			auto windowNormalizedSize = GTSL::Vector2(float32(windowExtent.Width) / static_cast<float32>(windowExtent.Height), 1.0f);
 

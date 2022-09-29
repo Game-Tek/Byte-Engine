@@ -140,7 +140,7 @@ namespace GAL
 		 * \param acquireNextImageInfo Information to perform image acquisition.
 		 * \return Returns true if the contexts needs to be recreated.
 		 */
-		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSynchronizer& semaphore, VulkanSynchronizer& fence) {
+		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSynchronizer& semaphore, VulkanSynchronizer& fence) const {
 			GTSL::uint32 image_index = 0;
 
 			auto result = renderDevice->VkAcquireNextImage(renderDevice->GetVkDevice(), swapchain, ~0ULL, semaphore.GetVkSemaphore(), fence.GetVkFence(), &image_index);
@@ -153,7 +153,7 @@ namespace GAL
 			return GTSL::Result(static_cast<GTSL::uint8>(image_index), state);
 		}
 		
-		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSynchronizer* semaphore) {
+		[[nodiscard]] GTSL::Result<GTSL::uint8, AcquireState> AcquireNextImage(const VulkanRenderDevice* renderDevice, VulkanSynchronizer* semaphore) const {
 			GTSL::uint32 image_index = 0;
 
 			auto result = renderDevice->VkAcquireNextImage(renderDevice->GetVkDevice(), swapchain, ~0ULL, semaphore->GetVkSemaphore(), nullptr, &image_index);
@@ -173,21 +173,26 @@ namespace GAL
 			return GTSL::Result(static_cast<GTSL::uint8>(image_index), acquire_state);
 		}
 		
-		bool Present(const VulkanRenderDevice* renderDevice, GTSL::Range<VulkanSynchronizer**> waitSemaphores, GTSL::uint32 index, VulkanQueue queue) {
+		static bool Present(const VulkanRenderDevice* renderDevice, GTSL::Range<VulkanSynchronizer**> waitSemaphores, GTSL::Range<VulkanRenderContext**> render_contexts, GTSL::Range<const GTSL::uint32*> indices, VulkanQueue queue) {
 			VkPresentInfoKHR vkPresentInfoKhr{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 
 			GTSL::StaticVector<VkSemaphore, 16> semaphores;
+			GTSL::StaticVector<VkSwapchainKHR, 16> swapchains;
 
 			for (auto& s : waitSemaphores) {
 				s->Release();
 				semaphores.EmplaceBack(s->GetVkSemaphore());
 			}
+
+			for(const auto& e : render_contexts) {
+				swapchains.EmplaceBack(e->swapchain);
+			}
 			
 			vkPresentInfoKhr.waitSemaphoreCount = semaphores.GetLength();
 			vkPresentInfoKhr.pWaitSemaphores = semaphores.begin();
-			vkPresentInfoKhr.swapchainCount = 1;
-			vkPresentInfoKhr.pSwapchains = &swapchain;
-			vkPresentInfoKhr.pImageIndices = &index;
+			vkPresentInfoKhr.swapchainCount = swapchains.GetLength();
+			vkPresentInfoKhr.pSwapchains = swapchains.GetData();
+			vkPresentInfoKhr.pImageIndices = indices.begin();
 			vkPresentInfoKhr.pResults = nullptr;
 
 			return renderDevice->VkQueuePresent(queue.GetVkQueue(), &vkPresentInfoKhr) == VK_SUCCESS;

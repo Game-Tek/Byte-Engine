@@ -682,9 +682,9 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		GTSL::Vector<GTSL::StaticString<512>, BE::TAR> paths(8, GetTransientAllocator());
 
 		{
-			GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*", u8"bespg"));
+			GTSL::FileQuery renderingGuideFileQuery(GetUserResourcePath(u8"*.bespg.json"));
 
-			while(auto fileRef = shaderGroupFileQuery()) {
+			while(auto fileRef = renderingGuideFileQuery()) {
 				GTSL::File file(GetUserResourcePath(fileRef.Get()));
 
 				GTSL::StaticBuffer<2048> fileBuffer(file);
@@ -720,7 +720,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		ShaderMap shaderMap(32, GetTransientAllocator());
 
 		{
-			GTSL::FileQuery shaderFilesQuery(GetUserResourcePath(u8"*Shader", u8"json"));
+			GTSL::FileQuery shaderFilesQuery(GetUserResourcePath(u8"*.besh.json"));
 
 			while(auto e = shaderFilesQuery()) {
 				GTSL::File jsonShaderFile(GetUserResourcePath(e.Get()));
@@ -747,7 +747,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			}			
 		}
 
-		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"));
+		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*.besg.json"));
 
 		while (auto fileRef = shaderGroupFileQuery()) {
 			GTSL::File shaderGroupFile(GetUserResourcePath(fileRef.Get()));
@@ -756,7 +756,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			{
 				auto filePath = fileRef.Get();
-				RTrimLast(filePath, u8'.');
+				RTrimFirst(filePath, u8'.');
 
 				GTSL::FileQuery shaderGroupInstanceFileQuery(GetUserResourcePath(filePath + u8"_*", u8"json"));
 

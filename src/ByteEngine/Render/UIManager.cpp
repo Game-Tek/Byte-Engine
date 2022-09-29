@@ -19,7 +19,7 @@ void UIManager::ProcessUpdates() {
 	auto screenSize = GTSL::Vector2(screenExtent.Width, screenExtent.Height);
 
 	auto windowSystem = GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem");
-	auto windowExtent = windowSystem->GetWindowClientExtent();
+	auto windowExtent = GTSL::Extent2D(1920, 1080);
 	auto windowSize = GTSL::Vector2(windowExtent.Width, windowExtent.Height);
 	auto windowRelativeSize = GTSL::Vector2(windowSize.X() / windowSize.Y(), 1.0f);
 

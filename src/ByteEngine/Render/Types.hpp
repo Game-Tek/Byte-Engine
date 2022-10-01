@@ -25,3 +25,4 @@
 #define FORWARD_RENDERPASS_DATA { { u8"ImageReference", u8"Albedo" }, { u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Roughness" }, { u8"ImageReference", u8"Depth" } }
 #define RT_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Shadow" } }
 #define LIGHTING_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Roughness" }, { u8"TextureReference", u8"Shadow" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Lighting" } }
+#define AO_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"AO" } }

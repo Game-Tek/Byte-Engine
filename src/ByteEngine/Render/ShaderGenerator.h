@@ -48,106 +48,95 @@ void tokenizeCode(const GTSL::StringView code, auto& statements, const auto& all
 	tokenizeCode(code, statements);
 }
 
-void tokenizeCode(const GTSL::StringView code, auto& statements) {
-	GTSL::StaticVector<GTSL::StaticString<64>, 2048> tokens;
-	GTSL::StaticVector<ShaderNode::Type, 1024> tokenTypes;
+void tokenizeCode(const GTSL::StringView string, auto& statements) {
+	auto parse = [&](const GTSL::StringView code) {
+		for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
+			auto c = code[i];
 
-	auto codeString = code;
+			ShaderNode::Type type;
 
-	for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
-		auto c = code[i];
+			GTSL::StaticString<64> str;
 
-		ShaderNode::Type type;
+			if (GTSL::IsSymbol(c) and c != U'_') {
+				if (c == U'(') {
+					type = ShaderNode::Type::LPAREN;
+				}
+				else if (c == U')') {
+					type = ShaderNode::Type::RPAREN;
+				}
+				else if (c == U'[') {
+					type = ShaderNode::Type::LBRACKET;
+				}
+				else if (c == U']') {
+					type = ShaderNode::Type::RBRACKET;
+				}
+				else if (c == U'{') {
+					type = ShaderNode::Type::LBRACE;
+				}
+				else if (c == U'}') {
+					type = ShaderNode::Type::RBRACE;
+				}
+				else if (c == U'.') {
+					type = ShaderNode::Type::DOT;
+				}
+				else if (c == U',') {
+					type = ShaderNode::Type::COMMA;
+				}
+				else if (c == U':') {
+					type = ShaderNode::Type::COLON;
+				}
+				else if (c == U';') {
+					type = ShaderNode::Type::SEMICOLON;
+				}
+				else if (c == U'#') {
+					type = ShaderNode::Type::HASH;
+				}
+				else if (c == U'!') {
+					type = ShaderNode::Type::EXCLAMATION;
+				}
+				else if (c == U'<') {
+					type = ShaderNode::Type::LESS_THAN;
+				}
+				else if (c == U'>') {
+					type = ShaderNode::Type::GREATER_THAN;
+				}
+				else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%', U'^', U'&')) {
+					type = ShaderNode::Type::OP;
+				}
 
-		GTSL::StaticString<64> str;
+				str += c;
+			}
+			else if (GTSL::IsNumber(c)) {
+				while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'.') {
+					str += code[i];
+					++i;
+				}
 
-		if (GTSL::IsSymbol(c) and c != U'_') {
-			if (c == U'(') {
-				type = ShaderNode::Type::LPAREN;
+				type = ShaderNode::Type::LITERAL;
+
+				--i;
 			}
-			else if (c == U')') {
-				type = ShaderNode::Type::RPAREN;
-			}
-			else if (c == U'[') {
-				type = ShaderNode::Type::LBRACKET;
-			}
-			else if (c == U']') {
-				type = ShaderNode::Type::RBRACKET;
-			}
-			else if (c == U'{') {
-				type = ShaderNode::Type::LBRACE;
-			}
-			else if (c == U'}') {
-				type = ShaderNode::Type::RBRACE;
-			}
-			else if (c == U'.') {
-				type = ShaderNode::Type::DOT;
-			}
-			else if (c == U',') {
-				type = ShaderNode::Type::COMMA;
-			}
-			else if (c == U':') {
-				type = ShaderNode::Type::COLON;
-			}
-			else if (c == U';') {
-				type = ShaderNode::Type::SEMICOLON;
-			}
-			else if (c == U'#') {
-				type = ShaderNode::Type::HASH;
-			}
-			else if (c == U'!') {
-				type = ShaderNode::Type::EXCLAMATION;
-			}
-			else if (c == U'<') {
-				type = ShaderNode::Type::LESS_THAN;
-			}
-			else if (c == U'>') {
-				type = ShaderNode::Type::GREATER_THAN;
-			}
-			else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%', U'^', U'&')) {
-				type = ShaderNode::Type::OP;
+			else if (GTSL::IsLetter(code[i]) or code[i] == u8'_') {
+				while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
+					str += code[i];
+					++i;
+				}
+
+				if (code[i] == U'*') { str += U'*'; ++i; }
+
+				type = ShaderNode::Type::ID;
+
+				--i;
+			} else {
+				//anything else, new line, null, space, skip
+				continue;
 			}
 
-			str += c;
-
-			tokens.EmplaceBack(str);
-			tokenTypes.EmplaceBack(type);
+			statements.EmplaceBack(type, str);
 		}
-		else if (GTSL::IsNumber(c)) {
-			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'.') {
-				str += code[i];
-				++i;
-			}
+	};
 
-			type = ShaderNode::Type::LITERAL;
-
-			tokens.EmplaceBack(str);
-			tokenTypes.EmplaceBack(type);
-
-			--i;
-		}
-		else if (GTSL::IsLetter(code[i]) or code[i] == u8'_') {
-			while (GTSL::IsLetter(code[i]) or GTSL::IsNumber(code[i]) or code[i] == U'_') {
-				str += code[i];
-				++i;
-			}
-
-			if (code[i] == U'*') { str += U'*'; ++i; }
-
-			type = ShaderNode::Type::ID;
-
-			tokens.EmplaceBack(str);
-			tokenTypes.EmplaceBack(type);
-
-			--i;
-		}
-
-		//anything else, new line, null, space, skip
-	}
-
-	for(uint32 i = 0; i < tokens; ++i) {
-		statements.EmplaceBack(tokenTypes[i], tokens[i]);
-	}
+	GTSL::ForEachLine(string, parse);
 }
 
 struct GPipeline : Object {
@@ -168,9 +157,8 @@ struct GPipeline : Object {
 
 		GTSL::StaticString<64> Return, Name;
 		GTSL::StaticVector<StructElement, 12> Parameters;
-		//GTSL::StaticString<512> Code;
 		GTSL::Vector<ShaderNode, BE::PAR> Tokens;
-		bool IsRaw = false, Inline = false;
+		bool Inline = false;
 
 		//Every function gets assigned an id which is unique per pipeline
 		//It aides in identifying functions when dealing with overloads, which share name and thus does not allow to uniquely identify them
@@ -672,6 +660,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		case GTSL::Hash(u8"matrix4x3f"): result = u8"mat3x4"; break;
 		case GTSL::Hash(u8"uint8"):   result = u8"uint8_t"; break;
 		case GTSL::Hash(u8"uint64"):  result = u8"uint64_t"; break;
+		case GTSL::Hash(u8"int32"):  result = u8"int"; break;
 		case GTSL::Hash(u8"uint32"):  result = u8"uint"; break;
 		case GTSL::Hash(u8"uint16"):  result = u8"uint16_t"; break;
 		case GTSL::Hash(u8"ptr_t"):   result = u8"uint64_t"; break;
@@ -794,7 +783,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 		auto functionUsed = usedFunctions.TryEmplace(function.Id, false);
 
-		GTSL::StaticString<2048> string;
+		GTSL::StaticString<4096> string;
 
 		if (!functionUsed.Get()) {
 			string += resolveTypeName({ function.Return, u8"" }).Type; string += u8' ';  string += function.Name;
@@ -817,7 +806,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			for (uint32 i = 0; i < function.Tokens;) {
 				auto makeStatement = [&] {
-					GTSL::StaticString<2048> statementString;
+					GTSL::StaticString<4096> statementString;
 
 					while (i < function.Tokens) {
 						const auto& node = function.Tokens[i++];
@@ -854,7 +843,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 									statementString += node.Name;
 								} else if(element.Type == GPipeline::LanguageElement::ElementType::DISABLED) {
-									return GTSL::StaticString<2048>(); //skip statement
+									return GTSL::StaticString<4096>(); //skip statement
 								} else {
 									statementString += resolve(node.Name);
 								}

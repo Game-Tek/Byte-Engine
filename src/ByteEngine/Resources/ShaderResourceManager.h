@@ -419,12 +419,14 @@ private:
 
 	GAL::ShaderCompiler compiler_;
 
-	using ShaderMap = GTSL::HashMap<Id, GTSL::Tuple<GTSL::JSON<BE::PAR>, GTSL::StaticString<2048>>, BE::TAR>;
+	using ShaderMap = GTSL::HashMap<Id, GTSL::Tuple<GTSL::JSON<BE::PAR>, GTSL::String<BE::PAR>>, BE::TAR>;
 
 	void makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize*, const ShaderMap& shader_map);
 
 	template<typename... ARGS>
 	void loadShaderGroup(TaskInfo taskInfo, Id shaderGroupName, TaskHandle<ShaderGroupInfo, ARGS...> dynamicTaskHandle, ARGS... args) { //TODO: check why can't use ARGS&&
+		if(!shaderGroupInfoOffsets.Find(shaderGroupName)) { BE_LOG_WARNING(u8"Shader group: ", GTSL::StringView(shaderGroupName), u8", does not exist."); return; }
+
 		shaderGroupInfosFile.SetPointer(shaderGroupInfoOffsets[shaderGroupName]);
 
 		ShaderGroupInfo shaderGroupInfo(GetPersistentAllocator());
@@ -649,22 +651,43 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			entriesMap.Emplace(cacheEntries[i]);
 		}
 
-		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*ShaderGroup", u8"json"));
+		uint32 items = 0;
+
+		GTSL::FileQuery shaderGroupFileQuery(GetUserResourcePath(u8"*.besg", u8"json"));
 
 		while (auto fileRef = shaderGroupFileQuery()) {
 			if(!entriesMap.Find(shaderGroupFileQuery.GetFileHash())) {
 				changeCache << shaderGroupFileQuery.GetFileHash();
 				created = true;
 			}
+
+			++items;
 		}
 
-		GTSL::FileQuery shaderQuery(GetUserResourcePath(u8"*Shader", u8"json"));
+		GTSL::FileQuery shaderDesciptionQuery(GetUserResourcePath(u8"*.besh", u8"json"));
+
+		while (auto fileRef = shaderDesciptionQuery()) {
+			if(!entriesMap.Find(shaderDesciptionQuery.GetFileHash())) {
+				changeCache << shaderDesciptionQuery.GetFileHash();
+				created = true;
+			}
+
+			++items;
+		}
+
+		GTSL::FileQuery shaderQuery(GetUserResourcePath(u8"*", u8"txt"));
 
 		while (auto fileRef = shaderQuery()) {
 			if(!entriesMap.Find(shaderQuery.GetFileHash())) {
 				changeCache << shaderQuery.GetFileHash();
 				created = true;
 			}
+
+			++items;
+		}
+
+		if(items != cacheEntryCount) {
+			created = true;
 		}
 	}
 
@@ -728,7 +751,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				
 				auto json = GTSL::JSON(GTSL::StringView(jsonShaderFileBuffer), GetPersistentAllocator());
 
-				auto& shaderEntry = shaderMap.Emplace(Id(json[u8"name"]), GetPersistentAllocator(), GTSL::StringView());
+				auto& shaderEntry = shaderMap.Emplace(Id(json[u8"name"]), GetPersistentAllocator(), GetPersistentAllocator());
 
 				if(auto code = json[u8"code"]) {
 					shaderEntry.rest.element = GTSL::StringView(code);
@@ -736,7 +759,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 					GTSL::File shaderFile(GetUserResourcePath(json[u8"name"], u8"txt"));
 
 					if(shaderFile) {
-						GTSL::StaticBuffer<4096> shaderFileBuffer(shaderFile);
+						GTSL::StaticBuffer<8192> shaderFileBuffer(shaderFile);
 						shaderEntry.rest.element = GTSL::StringView(shaderFileBuffer);
 					} else {
 						BE_LOG_WARNING(u8"Did not find a shader file for shader: ", json[u8"name"], u8".");
@@ -850,8 +873,8 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 	}
 
 	for (auto f : json[u8"functions"]) {
-		GTSL::StaticVector<StructElement, 8> elements;
-		for (auto p : f[u8"params"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
+		GTSL::StaticVector<StructElement, 16> elements;
+		for (auto p : f[u8"parameters"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
 		pipeline.DeclareFunction(shaderGroupScope, f[u8"type"], f[u8"name"], elements, f[u8"code"]);
 	}
 
@@ -1044,7 +1067,10 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 
 					auto [compRes, resultString, shaderBuffer] = compiler_.Compile(shaderResult.Get().First, shaderName, targetSemantics, GAL::ShaderLanguage::GLSL, true,		GetTransientAllocator());
 
-					if (!compRes) { BE_LOG_ERROR(shaderResult.Get().First); BE_LOG_ERROR(resultString); }
+					if (!compRes) {
+						GTSL::Console::Print(shaderResult.Get().First);
+						/*BE_LOG_ERROR(shaderResult.Get().First);*/ BE_LOG_ERROR(resultString);
+					}
 
 					shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
 					shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table

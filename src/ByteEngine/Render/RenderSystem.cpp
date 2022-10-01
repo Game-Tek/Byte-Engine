@@ -40,9 +40,11 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
 
-	useHDR = BE::Application::Get()->GetBoolOption(u8"hdr");
-	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp((uint32)BE::Application::Get()->GetUINTOption(u8"buffer"), 2u, 3u));
-	bool rayTracing = BE::Application::Get()->GetBoolOption(u8"rayTracing");
+	auto config = BE::Application::Get()->GetConfig()[u8"Rendering"];
+
+	useHDR = config[u8"hdr"].GetBool();
+	pipelinedFrames = static_cast<uint8>(GTSL::Math::Clamp(static_cast<uint32>(config[u8"buffer"].GetUint()), 2u, 3u));
+	bool rayTracing = config[u8"rayTracing"].GetBool();
 
 	{
 		RenderDevice::CreateInfo createInfo;

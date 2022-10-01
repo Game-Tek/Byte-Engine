@@ -165,6 +165,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	}
 
 	{
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE });
+		s = renderOrchestrator->AddDataNode(s, u8"Camera Data", renderOrchestrator->cameraDataKeyHandle);
+		s = renderOrchestrator->addInternalNode<RenderOrchestrator::DispatchData>(GTSL::Hash(u8"AO"), s).Get();
+	}
+
+	{
 		RenderOrchestrator::PassData gammaCorrectionPass;
 		gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
 		gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Lighting"), GAL::AccessTypes::WRITE); //result attachment

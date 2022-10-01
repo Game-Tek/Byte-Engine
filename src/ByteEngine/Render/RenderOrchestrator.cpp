@@ -67,7 +67,7 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 {
 	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
-	tag = BE::Application::Get()->GetStringOption(u8"renderTechnique");
+	tag = BE::Application::Get()->GetConfig()[u8"Rendering"][u8"renderTechnique"];
 
 	//renderBuffers.EmplaceBack().BufferHandle = renderSystem->CreateBuffer(RENDER_DATA_BUFFER_PAGE_SIZE, GAL::BufferUses::STORAGE, true, true, RenderSystem::BufferHandle());
 
@@ -156,7 +156,7 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 	}
 
 	if constexpr (BE_DEBUG) {
-		pipelineStages |= BE::Application::Get()->GetBoolOption(u8"debugSync") ? GAL::PipelineStages::ALL_GRAPHICS : GAL::PipelineStage(0);
+		pipelineStages |= BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugSync"].GetBool() ? GAL::PipelineStages::ALL_GRAPHICS : GAL::PipelineStage(0);
 	}
 
 	{
@@ -166,6 +166,7 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 			AddAttachment(u8"Lighting", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Roughness", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Shadow", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
+			AddAttachment(u8"AO", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
 			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
 			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
@@ -187,14 +188,20 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 	renderContext = renderSystem->CreateRenderContext(windowSystem, static_cast<GameApplication*>(BE::Application::Get())->GetWindowHandle());
 
-	for(auto rp : config[u8"RenderOrchestrator.debugViews"]) {
+	for(auto rp : config[u8"RenderOrchestrator"][u8"debugViews"]) {
 		auto& dv = debugViews.EmplaceBack(rp.GetStringView());
 
-		dv.windowHandle = windowSystem->CreateWindow(u8"debugView", rp.GetStringView(), { 1280, 720 });
+		dv.windowHandle = windowSystem->CreateWindow(u8"debugView", rp.GetStringView(), { 1920, 1080 });
 		dv.renderContext = renderSystem->CreateRenderContext(windowSystem, dv.windowHandle);
 
 		for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 			dv.workloadHandles[f] = renderSystem->CreateWorkload(u8"Debug view image acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
+		}
+	}
+	
+	for(auto rp : config[u8"RenderOrchestrator"][u8"renderPasses"]) {
+		if(auto enabled = rp[u8"enabled"]) {
+			
 		}
 	}
 
@@ -232,7 +239,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 	GTSL::StringView resultAttachment;
 
-	bool debugRenderNodes = BE::Application::Get()->GetBoolOption(u8"debugRenderNodes");
+	bool debugRenderNodes = BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugRenderNodes"].GetBool();
 
 	{
 		auto bwk = GetBufferWriteKey(renderSystem, globalDataDataKey);
@@ -372,7 +379,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	uint32 counterI = 0;
 
 	if(isRenderTreeDirty) { // If render tree is dirty then every command buffer for every frame has to be updated
-		if(BE::Application::Get()->GetBoolOption(u8"optimizeRenderTree")) {
+		if(BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"optimizeRenderTree"].GetBool()) {
 			renderingTree.Optimize();
 		}
 
@@ -427,7 +434,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
 					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 
-					if(BE::Application::Get()->GetBoolOption(u8"RenderOrchestrator.debugBuffers")) {
+					if(BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugBuffers"].GetBool()) {
 						PrintMember(layerData.DataKey, renderSystem);
 					}
 				}
@@ -1101,6 +1108,8 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 	shaderGroupNotify(this, renderSystem);
 
+	auto debugShaders = BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"inspectShaders"].GetBool();
+
 	for (uint8 ai = 0;  auto& a : shader_group_info.VertexElements) {
 		auto& stream = vertexStreams.EmplaceBack();
 
@@ -1144,7 +1153,10 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					auto handle = tryGetDataTypeHandle(structName);
 
 					if(!handle) {
-						BE_LOG_WARNING(u8"Could not find compatible shader declared symbol: ", structName);
+						if(debugShaders) {
+							BE_LOG_WARNING(u8"Could not find compatible shader declared symbol: ", structName);
+						}
+
 						continue;
 					}
 
@@ -1154,7 +1166,9 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 						auto memberSearchResult = tryGetDataTypeHandle(handle.Get(), c[u8"name"]);
 
 						if(!memberSearchResult) {
-							BE_LOG_WARNING(u8"Shader symbol ", structName, u8", has member: ", c[u8"name"], u8", which matching renderer symbol doesn't.");
+							if(debugShaders) {
+								BE_LOG_WARNING(u8"Shader symbol ", structName, u8", has member: ", c[u8"name"], u8", which matching renderer symbol doesn't.");
+							}
 						}
 					}
 
@@ -1169,7 +1183,9 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 								}
 							}
 
-							BE_LOG_WARNING(u8"Renderer symbol ", element.Name, u8", has member: ", f.Name, u8", which matching shader symbol doesn't.");						
+							if(debugShaders) {
+								BE_LOG_WARNING(u8"Renderer symbol ", element.Name, u8", has member: ", f.Name, u8", which matching shader symbol doesn't.");
+							}
 						};
 					}
 				}
@@ -1315,7 +1331,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			{
 				auto& debugEntry = specializationEntries.EmplaceBack();
 				debugEntry.Size = 4; debugEntry.Offset = 0u; debugEntry.ID = 0u;
-				specializationData.AllocateStructure<uint32>(BE::Application::Get()->GetBoolOption(u8"debugShaders"));
+				specializationData.AllocateStructure<uint32>(BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugShaders"].GetBool());
 			}
 
 			specializations.Specialization.Entries = specializationEntries;

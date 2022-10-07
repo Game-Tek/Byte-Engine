@@ -52,18 +52,15 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Albedo"), GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Normal"), GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Roughness"), GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
-		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"ForwardRenderPass", renderSystem, geoRenderPass);
+		geoRenderPass.Attachments = RenderPassStructToAttachments(FORWARD_RENDERPASS_DATA);
+		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Geometry Pass", u8"ForwardRenderPass", renderSystem, geoRenderPass);
 	}
 	else if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
 		RenderOrchestrator::PassData geoRenderPass;
 		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"), GAL::AccessTypes::WRITE);
-		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
-		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"VisibilityRenderPass", renderSystem, geoRenderPass);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"),GTSL::StringView(u8"Visibility"), GAL::AccessTypes::WRITE);
+		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"),GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
+		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Geometry Pass", u8"VisibilityRenderPass", renderSystem, geoRenderPass);
 
 		GTSL::StaticVector<RenderOrchestrator::MemberInfo, 16> members;
 		members.EmplaceBack(nullptr, u8"ptr_t", u8"positionStream");
@@ -103,8 +100,8 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 		//Counts how many pixels each shader group uses
 		RenderOrchestrator::PassData countPixelsRenderPassData;
 		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
-		countPixelsRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"), GAL::AccessTypes::READ);
-		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"CountPixels", renderSystem, countPixelsRenderPassData);
+		countPixelsRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"), GTSL::StringView(u8"Visibility"), GAL::AccessTypes::READ);
+		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"CountPixels", u8"CountPixels", renderSystem, countPixelsRenderPassData);
 
 		////Performs a prefix to build an indirect buffer defining which pixels each shader group occupies
 		//RenderOrchestrator::PassData prefixSumRenderPassData;
@@ -142,7 +139,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	meshDataNode = renderOrchestrator->AddDataNode(indexBufferNodeHandle, u8"MeshNode", meshDataBuffer, true);
 
 	if (renderOrchestrator->tag == GTSL::ShortString<16>(u8"Visibility")) {
-		auto shaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"VisibilityShaderGroup"));
+		auto shaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"VisibilityShaderGroup");
 		mainVisibilityPipelineNode = renderOrchestrator->AddMaterial(meshDataNode, shaderGroupHandle);
 	}
 
@@ -158,24 +155,36 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	}
 
 	{
-		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE });
-		s = renderOrchestrator->AddDataNode(s, u8"Camera Data", renderOrchestrator->cameraDataKeyHandle);
-		s = renderOrchestrator->AddDataNode(s, u8"Lighting Data", lightsDataKey);
-		s = renderOrchestrator->addInternalNode<RenderOrchestrator::DispatchData>(GTSL::Hash(u8"Lighting"), s).Get();
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"Lighting", u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle }, { u8"Lighting Data", lightsDataKey } });
 	}
 
 	{
-		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE });
-		s = renderOrchestrator->AddDataNode(s, u8"Camera Data", renderOrchestrator->cameraDataKeyHandle);
-		s = renderOrchestrator->addInternalNode<RenderOrchestrator::DispatchData>(GTSL::Hash(u8"AO"), s).Get();
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", u8"AO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+
+		{
+			auto l = {
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Source"), GTSL::StringView(u8"AO"), GAL::AccessTypes::READ },
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Target"), GTSL::StringView(u8"Transient"), GAL::AccessTypes::WRITE }
+			};
+		
+			auto t = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"H AO Blur", u8"BlurH", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE });
+		}
+		
+		{
+			auto l = {
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Source"), GTSL::StringView(u8"Transient"), GAL::AccessTypes::READ },
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Target"), GTSL::StringView(u8"AO"), GAL::AccessTypes::WRITE }
+			};
+		
+			auto t = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"V AO Blur", u8"BlurV", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE });
+		}
 	}
 
 	{
 		RenderOrchestrator::PassData gammaCorrectionPass;
 		gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
-		gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Lighting"), GAL::AccessTypes::WRITE); //result attachment
-		auto gcrpnh = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", renderSystem, gammaCorrectionPass);
-		renderOrchestrator->addInternalNode<RenderOrchestrator::DispatchData>(GTSL::Hash(u8"GammaCorrection"), gcrpnh).Get();
+		gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Lighting"), GTSL::StringView(u8"Lighting"), GAL::AccessTypes::WRITE); //result attachment
+		auto gcrpnh = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", u8"GammaCorrection", renderSystem, gammaCorrectionPass);
 	}
 }
 
@@ -194,7 +203,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 
 	for (uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
 		auto& sm = staticMeshInfo.GetSubMeshes().array[i];
-		auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(Id(sm.ShaderGroupName));
+		auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(sm.ShaderGroupName);
 		resource.RenderModelHandle = shaderGroupHandle;
 
 		if (render_orchestrator->tag == GTSL::ShortString<16>(u8"Forward")) {
@@ -224,15 +233,8 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 
 			t.EmplaceBack(b);
 
-			if (b == GAL::ShaderDataType::U16_UNORM or b == GAL::ShaderDataType::U16_UNORM2 or b == GAL::ShaderDataType::U16_UNORM3 or b == GAL::ShaderDataType::U16_UNORM4) {
-				usesxNorm = true;
-			}
-
-			if (b == GAL::ShaderDataType::U16_SNORM or b == GAL::ShaderDataType::U16_SNORM2 or b == GAL::ShaderDataType::U16_SNORM3 or b == GAL::ShaderDataType::U16_SNORM4) {
-				usesxNorm = true;
-			}
+			usesxNorm = IsAnyOf(b, GAL::ShaderDataType::U16_UNORM, GAL::ShaderDataType::U16_UNORM2, GAL::ShaderDataType::U16_UNORM3, GAL::ShaderDataType::U16_UNORM4, GAL::ShaderDataType::U16_SNORM, GAL::ShaderDataType::U16_SNORM2, GAL::ShaderDataType::U16_SNORM3, GAL::ShaderDataType::U16_SNORM4);
 		}
-
 	}
 
 	if (usesxNorm) {

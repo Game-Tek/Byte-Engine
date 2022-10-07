@@ -3,17 +3,6 @@
 #include "PermutationManager.hpp"
 #include "ByteEngine/Render/ShaderGenerator.h"
 
-inline std::tuple<GPipeline::ElementHandle, GPipeline::ElementHandle> DeclareShader(GPipeline* pipeline, GTSL::StaticVector<PermutationManager::ShaderPermutation, 8>& s, GTSL::StringView name, GTSL::Range<const PermutationManager::ShaderTag*> tags, GAL::ShaderType target_semantics) {
-	auto shaderHandle = pipeline->DeclareShader({}, name);
-
-	PermutationManager::ShaderPermutation& perm = s.EmplaceBack();
-	perm.Tags = tags;
-	perm.TargetSemantics = target_semantics;
-	perm.Scopes.EmplaceBack(shaderHandle);
-
-	return { shaderHandle, pipeline->DeclareFunction(shaderHandle, u8"void", u8"main") };
-}
-
 class UIPermutation : public PermutationManager {
 public:
 	UIPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"UIPermutation") {

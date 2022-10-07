@@ -451,7 +451,11 @@ namespace GAL
 			//SET_NAME(pipeline, VK_OBJECT_TYPE_PIPELINE, createInfo);
 		}
 		
-		void InitializeComputePipeline(const VulkanRenderDevice* renderDevice, const GTSL::Range<const PipelineStateBlock*>, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
+		void InitializeComputePipeline(const VulkanRenderDevice* renderDevice, const GTSL::Range<const PipelineStateBlock*> pipeline_states, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
+			GTSL::StaticVector<VkSpecializationMapEntry, 8> specializationMapEntries; const byte* specializationData = nullptr; uint64 specializationDataSize = 0;
+
+			GTSL::StaticBuffer<8192> buffer;
+
 			VkComputePipelineCreateInfo computePipelineCreateInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
 			computePipelineCreateInfo.basePipelineIndex = -1;
 			computePipelineCreateInfo.layout = pipelineLayout.GetVkPipelineLayout();
@@ -459,6 +463,32 @@ namespace GAL
 			computePipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
 			computePipelineCreateInfo.stage.pName = "main";
 			computePipelineCreateInfo.stage.module = stages[0].Shader.GetVkShaderModule();
+
+			auto* specializationInfo = buffer.AllocateStructure<VkSpecializationInfo>();
+
+			computePipelineCreateInfo.stage.pSpecializationInfo = specializationInfo;
+
+			for (GTSL::uint8 ps = 0; ps < static_cast<GTSL::uint8>(pipeline_states.ElementCount()); ++ps) {
+				switch (const auto& pipelineState = pipeline_states[ps]; pipelineState.Type) {
+				case PipelineStateBlock::StateType::SPECIALIZATION: {
+					specializationData = pipelineState.Specialization.Data.begin();
+					specializationDataSize = pipelineState.Specialization.Data.Bytes();
+
+					for(auto& e : pipelineState.Specialization.Entries) {
+						auto& s = specializationMapEntries.EmplaceBack();
+						s.size = e.Size; s.offset = e.Offset;
+						s.constantID = e.ID;
+					}
+
+					break;
+				}
+				}
+			}
+
+			specializationInfo->dataSize = specializationDataSize;
+			specializationInfo->mapEntryCount = specializationMapEntries.GetLength();
+			specializationInfo->pData = specializationData;
+			specializationInfo->pMapEntries = specializationMapEntries.GetData();
 
 			renderDevice->VkCreateComputePipelines(renderDevice->GetVkDevice(), pipelineCache.GetVkPipelineCache(), 1, &computePipelineCreateInfo, renderDevice->GetVkAllocationCallbacks(), &pipeline);
 		}

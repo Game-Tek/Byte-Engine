@@ -23,8 +23,6 @@ struct ForwardRenderPassPermutation : PermutationManager {
 
 		forwardRenderPassScopeHandle = pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", FORWARD_RENDERPASS_DATA);
 
-		AddPushConstantDeclaration(pipeline, forwardScopeHandle, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"CameraData*", u8"camera" }, { u8"InstanceData*", u8"instances" }, { u8"ShaderParametersData*", u8"shaderParameters" } });
-
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(forwardScopeHandle, u8"fragmentOutputBlock");
 
@@ -33,6 +31,8 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			}
 
 			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Color" });
+			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec3f", u8"out_WorldSpacePosition" });
+			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec3f", u8"out_ViewSpacePosition" });
 			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"vec4f", u8"out_Normal" });
 			pipeline->DeclareVariable(fragmentOutputBlockHandle, { u8"float32", u8"out_Roughness" });
 		}
@@ -41,9 +41,9 @@ struct ForwardRenderPassPermutation : PermutationManager {
 
 		if (common_permutation) {
 			auto vertexSurfaceInterface = pipeline->DeclareScope(forwardScopeHandle, u8"vertexSurfaceInterface");
-			auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec2f", u8"vertexTextureCoordinates" });
-			auto vertexViewSpacePositionHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpacePosition" });
-			auto vertexViewSpaceNormalHandle = pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpaceNormal" });
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec2f", u8"vertexTextureCoordinates" });
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpacePosition" });
+			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"viewSpaceNormal" });
 			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"vec3f", u8"worldSpacePosition" });
 			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"mat3f", u8"tbn" });
 			pipeline->DeclareVariable(vertexSurfaceInterface, { u8"uint32", u8"_instanceIndex" });

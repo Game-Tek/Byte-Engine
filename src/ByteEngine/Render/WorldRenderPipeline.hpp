@@ -285,10 +285,10 @@ private:
 		pass_data.Attachments = RenderPassStructToAttachments(RT_RENDERPASS_DATA);
 		RenderOrchestrator::NodeHandle chain = renderOrchestrator->GetGlobalDataLayer();
 
-		chain = renderOrchestrator->AddRenderPassNode(chain, u8"DirectionalShadow", renderSystem, pass_data);
+		chain = renderOrchestrator->AddRenderPassNode(chain, u8"Sun Shadow", u8"DirectionalShadow", renderSystem, pass_data);
 
 		// Create shader group
-		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(Id(u8"DirectionalShadow"));
+		auto rayTraceShaderGroupHandle = renderOrchestrator->CreateShaderGroup(u8"DirectionalShadow");
 		// Add dispatch
 		chain = renderOrchestrator->AddDataNode(chain, u8"CameraData", renderOrchestrator->cameraDataKeyHandle);
 		chain = renderOrchestrator->AddDataNode(chain, u8"InstancesData", meshDataBuffer);

@@ -121,10 +121,12 @@ namespace GAL {
 			VkViewport viewport;
 			viewport.x = 0;
 			viewport.y = 0;
+			//viewport.y = renderArea.Height;
 			viewport.minDepth = 0;
 			viewport.maxDepth = 1.0f;
 			viewport.width = renderArea.Width;
 			viewport.height = renderArea.Height;
+			//viewport.height = -renderArea.Height;
 			renderDevice->VkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
 			VkRect2D scissor;

@@ -32,7 +32,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 
 void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
 {
-	BE_ASSERT(size > 0 && size <= ALLOCATION_SIZE, "Invalid size!")
+	BE_ASSERT(GTSL::Byte(size).GetCount() > 0 && GTSL::Byte(size).GetCount() <= ALLOCATION_SIZE.GetCount(), "Invalid size!")
 	
 	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(size, granularity);
 
@@ -55,7 +55,7 @@ void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevi
 		}
 
 		bufferMemoryBlocks.EmplaceBack(GetPersistentAllocator());
-		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), GAL::MemoryTypes::HOST_VISIBLE | GAL::MemoryTypes::HOST_COHERENT, GetPersistentAllocator());
+		bufferMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::HOST_VISIBLE | GAL::MemoryTypes::HOST_COHERENT, GetPersistentAllocator());
 		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &renderAllocation->Data);
 	}
 	else
@@ -75,15 +75,15 @@ void ScratchMemoryAllocator::Free(const RenderDevice& renderDevice,	const BE::Pe
 	for (auto& e : bufferMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
 }
 
-void MemoryBlock::Initialize(const RenderDevice& renderDevice, uint32 size, GAL::MemoryType memoryType, const BE::PersistentAllocatorReference& allocatorReference)
+void MemoryBlock::Initialize(const RenderDevice& renderDevice, GTSL::Byte size, GAL::MemoryType memoryType, const BE::PersistentAllocatorReference& allocatorReference)
 {	
-	deviceMemory.Initialize(&renderDevice, GAL::AllocationFlags::DEVICE_ADDRESS, size, renderDevice.FindNearestMemoryType(memoryType));
+	deviceMemory.Initialize(&renderDevice, GAL::AllocationFlags::DEVICE_ADDRESS, size.GetCount(), renderDevice.FindNearestMemoryType(memoryType));
 
 	if (static_cast<GAL::MemoryType::value_type>(memoryType & GAL::MemoryTypes::HOST_VISIBLE)) {
-		mappedMemory = deviceMemory.Map(&renderDevice, size, 0);
+		mappedMemory = deviceMemory.Map(&renderDevice, size.GetCount(), 0);
 	}
 	
-	freeSpaces.EmplaceBack(size, 0);
+	freeSpaces.EmplaceBack(size.GetCount(), 0);
 }
 
 void MemoryBlock::Free(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
@@ -231,7 +231,7 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 
 void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
 {
-	BE_ASSERT(size > 0 && size <= ALLOCATION_SIZE, "Invalid size!")
+	BE_ASSERT(size > 0 && size <= ALLOCATION_SIZE.GetCount(), "Invalid size!")
 
 	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(size, granularity);
 
@@ -259,7 +259,7 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 		}
 
 		bufferMemoryBlocks.EmplaceBack(GetPersistentAllocator());
-		bufferMemoryBlocks.back().Initialize(renderDevice, static_cast<uint32>(ALLOCATION_SIZE), GAL::MemoryTypes::GPU, GetPersistentAllocator());
+		bufferMemoryBlocks.back().Initialize(renderDevice, ALLOCATION_SIZE, GAL::MemoryTypes::GPU, GetPersistentAllocator());
 		bufferMemoryBlocks.back().Allocate(deviceMemory, alignedSize, allocation, &dummy);
 	}
 	else

@@ -41,7 +41,7 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat)) {
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
-					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)), mixFormat.GetFrameSize());
+					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)).GetCount(), mixFormat.GetFrameSize());
 					auto renderTaskHandle = GetApplicationManager()->RegisterTask(this, u8"renderAudio", DependencyBlock(), &AudioSystem::render, u8"RenderDo", u8"RenderEnd");
 
 					GetApplicationManager()->EnqueueScheduledTask(renderTaskHandle);

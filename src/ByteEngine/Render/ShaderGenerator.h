@@ -172,7 +172,7 @@ struct GPipeline : Object {
 		ElementHandle Parent;
 
 		enum class ElementType {
-			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER
+			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER, CONSTANT
 		} Type = ElementType::NONE;
 
 		GTSL::HashMap<GTSL::StringView, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
@@ -188,7 +188,7 @@ struct GPipeline : Object {
 		bool IsConst = false;
 	};
 
-	GPipeline() : elements(32, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), Functions(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")), structs(64, BE::TAR(u8"Shader")) {
+	GPipeline() : elements(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), structs(64, BE::TAR(u8"Shader")), Functions(128, BE::TAR(u8"Shader")) {
 		auto handle = elements.Emplace(0, BE::TAR(u8"Shader"));
 		auto& e = elements[handle];
 		e.Type = LanguageElement::ElementType::SCOPE;
@@ -205,20 +205,6 @@ struct GPipeline : Object {
 		//add(ElementHandle(), u8"vec3f", LanguageElement::ElementType::TYPE);
 		//add(ElementHandle(), u8"vec4f", LanguageElement::ElementType::TYPE);
 		//add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
-	}
-
-	auto& GetElement(ElementHandle parent, const GTSL::StringView element_name) {
-		return elements[elements[parent.Handle].map[element_name].back()];
-	}
-
-	auto& GetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
-		for (auto& p : parents) {
-			if (auto res = TryGetElement(p, name)) {
-				return res.Get();
-			}
-		}
-
-		__debugbreak();
 	}
 
 	uint32 GetLevel(const ElementHandle element_handle) const { return elements[element_handle.Handle].Level; }
@@ -266,7 +252,6 @@ private:
 	}
 
 public:
-
 	auto TryGetElement(ElementHandle parent, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
 		if (auto res = elements[parent.Handle].map.TryGet(name)) {
 			return { elements[res.Get().back()], true };
@@ -342,17 +327,12 @@ public:
 		return children;
 	}
 
-	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name) {
-		auto handle = addMultiple(parent, name, LanguageElement::ElementType::FUNCTION);
-		elements[handle.Handle].Reference = Functions.GetLength();
-		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
-		function.Name = name; function.Return = returnType; function.Id = handle.Handle;
-		return handle;
-	}
-
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters) {
 		auto handle = addMultiple(parent, name, LanguageElement::ElementType::FUNCTION);
-		elements[handle.Handle].Reference = Functions.GetLength();
+		auto& element = GetElement(handle);
+
+		element.Reference = Functions.GetLength();
+
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Parameters = parameters;
 		function.Id = handle.Handle;
@@ -361,31 +341,23 @@ public:
 
 	ElementHandle DeclareFunction(ElementHandle parent, const GTSL::StringView returnType, const GTSL::StringView name, const GTSL::Range<const StructElement*> parameters, const GTSL::StringView code) {
 		auto handle = addMultiple(parent, name, LanguageElement::ElementType::FUNCTION);
-		elements[handle.Handle].Reference = Functions.GetLength();
+		auto& element = GetElement(handle);
+
+		element.Reference = Functions.GetLength();
+
 		auto& function = Functions.EmplaceBack(GetPersistentAllocator());
 		function.Name = name; function.Return = returnType; function.Parameters = parameters;
 		function.Id = handle.Handle;
-		//function.Code = code;
 		tokenizeCode(code, function.Tokens, GetPersistentAllocator());
 		return handle;
 	}
 
-	auto& GetFunction(uint32 id) {
-		return Functions[elements[id].Reference];
+	auto& GetFunction(ElementHandle element_handle) {
+		return Functions[elements[element_handle.Handle].Reference];
 	}
 
-	auto& GetFunction(uint32 id) const {
-		return Functions[elements[id].Reference];
-	}
-
-	auto& GetFunction(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
-		for (auto& p : parents) {
-			if (auto res = TryGetElement(p, name)) {
-				return Functions[res.Get().Reference];
-			}
-		}
-
-		__debugbreak();
+	auto& GetFunction(ElementHandle element_handle) const {
+		return Functions[elements[element_handle.Handle].Reference];
 	}
 
 	void AddCodeToFunction(const ElementHandle function_handle, const GTSL::StringView code) {
@@ -394,30 +366,43 @@ public:
 	}
 
 	void AddCodeToFunction(const ElementHandle function_handle, const GTSL::Range<const ShaderNode*> tokens) {
-		auto& main = GetFunction({ function_handle }, u8"main");
+		auto& main = Functions[GetElement(function_handle).Reference];
 		main.Tokens.PushBack(tokens);
+	}
+
+	auto GetFunctionOverloads(const ElementHandle parent, const GTSL::StringView name) {
+		auto& element = GetElement(parent);
+
+		GTSL::StaticVector<ElementHandle, 8> overloads;
+
+		for (auto& e : element.map[name]) {
+			overloads.EmplaceBack(elements[e].Reference);
+		}
+
+		return overloads;
 	}
 
 	auto GetFunctionOverloads(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
 		for (auto& p : parents) {
 			if (auto res = TryGetElement(p, name)) {
-				GTSL::StaticVector<FunctionDefinition*, 8> overloads;
+				GTSL::StaticVector<ElementHandle, 8> overloads;
 
-				for (auto& e : elements[p.Handle].map[name]) {
-					overloads.EmplaceBack(&Functions[elements[e].Reference]);
+				for (auto e : GetElement(p).map[name]) {
+					overloads.EmplaceBack(e);
 				}
 
 				return overloads;
 			}
 		}
 
-		return GTSL::StaticVector<FunctionDefinition*, 8>();
+		return GTSL::StaticVector<ElementHandle, 8>();
 	}
 
 	ElementHandle DeclareStruct(const ElementHandle parent, const GTSL::StringView name, GTSL::Range<const StructElement*> members) {
 		auto handle = add(parent, name, LanguageElement::ElementType::STRUCT);
+		auto& element = GetElement(handle);
 
-		GetElement(handle).Reference = structs.GetLength();
+		element.Reference = structs.GetLength();
 
 		auto& strct = structs.EmplaceBack();
 
@@ -440,6 +425,13 @@ public:
 
 	void SetAsConst(const ElementHandle element_handle) {
 		GetStruct(element_handle).IsConst = true;
+	}
+
+	void DeclareConstant(const ElementHandle parent, const StructElement constant) {
+		auto handle = add(parent, constant.Name, LanguageElement::ElementType::CONSTANT);
+		auto& element = GetElement(handle);
+		element.Reference = members.GetLength();
+		members.EmplaceBack(constant);
 	}
 
 	ElementHandle DeclareScope(const ElementHandle parentHandle, const GTSL::StringView name) {
@@ -507,6 +499,25 @@ public:
 		return chain;
 	}
 
+	// Returns an array of elements that match the desired type
+	// The return order is by scope
+	auto GetElements(LanguageElement::ElementType element_type, GTSL::Range<const ElementHandle*> scopes) {
+		GTSL::StaticVector<ElementHandle, 32> foundElements;
+
+		for(auto& scope : scopes) {
+			auto& element = elements[scope.Handle];
+			for(auto childIterator : element.symbols) {
+				auto& child = elements[childIterator];
+
+				if(child.Type != element_type) { continue; }
+
+				foundElements.EmplaceBack(ElementHandle(childIterator));
+			}
+		}
+
+		return foundElements;
+	}
+
 	void MakeJSON(auto& string, const GTSL::Range<const ElementHandle*> scopes) {
 		GTSL::JSONSerializer serializer = GTSL::MakeSerializer(string);
 
@@ -528,30 +539,28 @@ public:
 				g(e, g);
 			}
 
-			for (auto& r : GetChildren(e)) {
+			for (auto& r : GetElements(GPipeline::LanguageElement::ElementType::STRUCT, { e })) {
 				auto& element = GetElement(r);
+				
+				GTSL::StartObject(serializer, string);
 
-				if (element.Type == GPipeline::LanguageElement::ElementType::STRUCT) {
+				StructData& structData = GetStruct(r);
+
+				GTSL::Insert(serializer, string, u8"name", shaderName + element.Name);
+
+				GTSL::StartArray(serializer, string, u8"members");
+
+				for (auto& c : GetChildren(r)) {
 					GTSL::StartObject(serializer, string);
-
-					StructData& structData = GetStruct(r);
-
-					GTSL::Insert(serializer, string, u8"name", shaderName + element.Name);
-
-					GTSL::StartArray(serializer, string, u8"members");
-
-					for (auto& c : GetChildren(r)) {
-						GTSL::StartObject(serializer, string);
-						const auto& structMember = GetMember(c);
-						GTSL::Insert(serializer, string, u8"type", structMember.Type);
-						GTSL::Insert(serializer, string, u8"name", structMember.Name);
-						GTSL::EndObject(serializer, string);
-					}
-
-					GTSL::EndArray(serializer, string);
-
+					const auto& structMember = GetMember(c);
+					GTSL::Insert(serializer, string, u8"type", structMember.Type);
+					GTSL::Insert(serializer, string, u8"name", structMember.Name);
 					GTSL::EndObject(serializer, string);
 				}
+
+				GTSL::EndArray(serializer, string);
+
+				GTSL::EndObject(serializer, string);
 			}
 		}
 
@@ -561,32 +570,32 @@ public:
 
 		auto pushConstantElementHandleSearch = TryGetElementHandle(scopes, u8"pushConstantBlock");
 		
-			GTSL::StartArray(serializer, string, u8"members");
+		GTSL::StartArray(serializer, string, u8"members");
 
-			for (auto& c : GetChildren(pushConstantElementHandleSearch.Get())) {
-				GTSL::StartObject(serializer, string);
-				const auto& structMember = GetMember(c);
+		for (auto& c : GetChildren(pushConstantElementHandleSearch.Get())) {
+			GTSL::StartObject(serializer, string);
+			const auto& structMember = GetMember(c);
 
-				auto typeName = structMember.Type;
-				RTrimLast(typeName, u8'*');
+			auto typeName = structMember.Type;
+			RTrimLast(typeName, u8'*');
 
-				auto typeHandle = TryGetElementHandle(scopes, typeName);
+			auto typeHandle = TryGetElementHandle(scopes, typeName);
 
-				GTSL::StaticString<512> shaderName;
+			GTSL::StaticString<512> shaderName;
 
-				for(auto& e : GetAccessChain(typeHandle.Get())) {
-					shaderName += GetElement(e).Name;
-					shaderName += u8".";
-				}
-
-				shaderName.Drop(shaderName.GetCodepoints() - 1);
-
-				GTSL::Insert(serializer, string, u8"type", shaderName);
-				GTSL::Insert(serializer, string, u8"name", structMember.Name);
-				GTSL::EndObject(serializer, string);
+			for(auto& e : GetAccessChain(typeHandle.Get())) {
+				shaderName += GetElement(e).Name;
+				shaderName += u8".";
 			}
 
-			GTSL::EndArray(serializer, string);
+			shaderName.Drop(shaderName.GetCodepoints() - 1);
+
+			GTSL::Insert(serializer, string, u8"type", shaderName);
+			GTSL::Insert(serializer, string, u8"name", structMember.Name);
+			GTSL::EndObject(serializer, string);
+		}
+
+		GTSL::EndArray(serializer, string);
 
 		GTSL::EndObject(serializer, string);
 
@@ -642,7 +651,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
 	}
 	headerBlock += u8"layout(row_major) uniform; layout(row_major) buffer;\n"; //matrix order definitions
-	headerBlock += u8"layout(constant_id = 0) const uint DEBUG = 0;\n";
 
 	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
 		GTSL::StaticString<64> result = name;
@@ -650,7 +658,9 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		switch (GTSL::Hash(name)) {
 		case GTSL::Hash(u8"float32"): result = u8"float"; break;
 		case GTSL::Hash(u8"vec2f"):   result = u8"vec2"; break;
+		case GTSL::Hash(u8"vec2i"):   result = u8"ivec2"; break;
 		case GTSL::Hash(u8"vec2u"):   result = u8"uvec2"; break;
+		case GTSL::Hash(u8"vec3u"):   result = u8"uvec3"; break;
 		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
 		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
 		case GTSL::Hash(u8"mat2f"):   result = u8"mat2"; break;
@@ -693,6 +703,22 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		return result;
 	};
 
+	{
+		auto constants = pipeline.GetElements(GPipeline::LanguageElement::ElementType::CONSTANT, scopes);
+
+		uint32 i = 0;
+		for(auto& c : constants) {
+			const auto& member = pipeline.GetMember(c);
+
+			headerBlock += u8"layout(constant_id="; GTSL::ToString(headerBlock, i++); headerBlock += u8") const ";
+
+			auto m = resolveTypeName(member);
+			headerBlock += m.Type; headerBlock &= m.Name;
+			headerBlock += u8"=";
+			headerBlock += m.Type; headerBlock += u8"("; headerBlock += m.DefaultValue; headerBlock += u8")"; headerBlock += u8";\n";
+		}
+	}
+
 	auto writeStructElement = [resolveTypeName](auto& string, const StructElement& element) {
 		auto newName = resolveTypeName(element);
 		string += newName.Type; string += u8' '; string += newName.Name; string += u8';';
@@ -715,6 +741,47 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	GTSL::HashMap<uint32, bool, ALLOCATOR> usedFunctions(16, allocator);
 	GTSL::HashMap<Id, bool, ALLOCATOR> usedStructs(16, allocator); //TODO: try emplace return is a reference which might be invalidated if map is resized during recursive call
 
+	auto addBlockDeclaration = [&](GTSL::String<ALLOCATOR>& string, const GTSL::StringView name, const GTSL::StringView type, const GTSL::Range<const GTSL::StringView*> vars, const GTSL::Range<const StructElement*> struct_elements) {
+		string += u8"layout("; string += GTSL::Join{ vars, u8"," };
+		string += u8") "; string += type; string &= name; string += u8" { ";
+
+		for (const auto& e : struct_elements) {
+			writeStructElement(string, e);
+		}
+
+		string += u8"};\n";
+	};
+
+	auto addInterfaceBlockDeclaration = [&](const GTSL::StringView interface_name, const GTSL::StringView type, const GTSL::Range<const GTSL::StringView*> vars) {
+		auto blockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
+		if (!blockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
+
+		declarationBlock += u8"layout("; declarationBlock += GTSL::Join{ vars, u8"," };
+		declarationBlock += u8") "; declarationBlock += type; declarationBlock += u8" _"; declarationBlock += interface_name; declarationBlock += u8" { ";
+
+		for (const auto& e : pipeline.GetChildren(blockHandle.Get())) {
+			writeStructElement(declarationBlock, pipeline.GetMember(e));
+		}
+		declarationBlock += u8" } ";
+		declarationBlock += interface_name;
+		declarationBlock += u8";\n";
+	};
+
+	auto addInterfaceBlockDeclarationWithMembers = [&](const GTSL::StringView interface_name, const GTSL::StringView type, const GTSL::Range<const GTSL::StringView*> vars, const GTSL::Range<const StructElement*> members) {
+		auto blockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
+		if (!blockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
+
+		declarationBlock += u8"layout("; declarationBlock += GTSL::Join{ vars, u8"," };
+		declarationBlock += u8") "; declarationBlock += type; declarationBlock += u8" _"; declarationBlock += interface_name; declarationBlock += u8" { ";
+
+		for (const auto& e : members) {
+			writeStructElement(declarationBlock, e);
+		}
+		declarationBlock += u8" } ";
+		declarationBlock += interface_name;
+		declarationBlock += u8";\n";
+	};
+
 	auto writeStruct = [&](GTSL::StringView ne, const GPipeline::ElementHandle structHandle, bool ref, bool readOnly, auto&& self) {
 		//if (usedStructs.Find(Id(ne))) { return; }
 
@@ -724,62 +791,56 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 		usedStructs.Emplace(Id(name), true);
 
-		GTSL::StaticVector<StructElement, 16> stt;
+		GTSL::StaticString<128> qualifiers;
 
-		GTSL::StaticString<512> statementString;
+		GTSL::StaticVector<StructElement, 16> members;
 
-		for (auto& e : pipeline.GetChildren(structHandle)) {
-			//if (pipeline.GetElement(e).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
-			//	writeStruct(pipeline.GetElement(r).Name, r, true, true, writeStruct);
-			//	writeStruct(pipeline.GetElement(r).Name, r, false, true, writeStruct);
-			//}
-
-			stt.EmplaceBack(pipeline.GetMember(e));
+		for (const auto& e : pipeline.GetChildren(structHandle)) {
+			members.EmplaceBack(pipeline.GetMember(e));
 		}
 
-		if (!stt.GetLength()) {
-			stt.EmplaceBack(u8"uint32", u8"dummy");
+		if(!members) {
+			members.EmplaceBack(u8"uint32", u8"dummy");
 		}
 
 		if (ref) {
-			statementString += u8"layout(buffer_reference,scalar,buffer_reference_align=2) ";
-
 			if (readOnly)
-				statementString += u8"readonly ";
+				qualifiers += u8"readonly";
 
-			statementString += u8"buffer ";
+			qualifiers += u8"buffer";
+
+			addBlockDeclaration(structBlock, name, qualifiers, { u8"buffer_reference", u8"scalar", u8"buffer_reference_align=2" }, members);
+		} else {
+			structBlock += u8"struct "; structBlock += name; structBlock += u8"{";
+			for(auto& e : members) {
+				writeStructElement(structBlock, e);
+			}
+			structBlock += u8"};\n";
 		}
-		else {
-			statementString += u8"struct ";
-		}
-
-		statementString += name; statementString += u8" { ";
-
-		for (auto& e : stt) { writeStructElement(statementString, e); }
-
-		statementString += u8"};\n";
-
-		structBlock += statementString;
 	};
 
-	for (auto& e : scopes) {
-		for (auto& r : pipeline.GetChildren(e)) {
-			if (pipeline.GetElement(r).Type == GPipeline::LanguageElement::ElementType::STRUCT) {
-				auto genType = pipeline.GetStruct(r).GenerationType; bool makeConst = pipeline.GetStruct(r).IsConst;
-				if (genType == 0) {
-					writeStruct(pipeline.GetElement(r).Name, r, false, makeConst, writeStruct);
-				} else if(genType == 1) {
-					writeStruct(pipeline.GetElement(r).Name, r, true, makeConst, writeStruct);
-				} else {
-					writeStruct(pipeline.GetElement(r).Name, r, false, makeConst, writeStruct);
-					writeStruct(pipeline.GetElement(r).Name, r, true, makeConst, writeStruct);
-				}
+	{
+		auto structs = pipeline.GetElements(GPipeline::LanguageElement::ElementType::STRUCT, scopes);
+
+		for (auto r : structs) {
+			const auto& element = pipeline.GetElement(r);
+			const auto& structData = pipeline.GetStruct(r);
+
+			auto genType = structData.GenerationType; bool makeConst = structData.IsConst;
+
+			if (genType == 0) {
+				writeStruct(element.Name, r, false, makeConst, writeStruct);
+			} else if(genType == 1) {
+				writeStruct(element.Name, r, true, makeConst, writeStruct);
+			} else {
+				writeStruct(element.Name, r, false, makeConst, writeStruct);
+				writeStruct(element.Name, r, true, makeConst, writeStruct);
 			}
 		}
 	}
 
-	auto writeFunction = [&pipeline, scopes, &usedFunctions, resolveTypeName, resolve, addErrorCode, writeStruct](auto& resultString, const GPipeline::ElementHandle function_handle, const uint32 id, auto&& self) -> void {
-		auto& function = pipeline.GetFunction(id);
+	auto writeFunction = [&pipeline, scopes, &usedFunctions, resolveTypeName, resolve](auto& resultString, const GPipeline::ElementHandle function_handle, auto&& self) -> void {
+		auto& function = pipeline.GetFunction(function_handle);
 
 		auto functionUsed = usedFunctions.TryEmplace(function.Id, false);
 
@@ -800,10 +861,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			string += u8") { ";
 
-			//if (!function.Statements) {
-			//	tokenizeCode(function.Code, function.Statements);
-			//}
-
 			for (uint32 i = 0; i < function.Tokens;) {
 				auto makeStatement = [&] {
 					GTSL::StaticString<4096> statementString;
@@ -816,8 +873,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							if (statementString) {
 								if (GTSL::IsLetter(*(statementString.end() - 1)) || GTSL::IsNumber(*(statementString.end() - 1))) { statementString += U' '; }
 							}
-
-							//if (function.IsRaw) { statementString += resolve(node.Name); break; }
 
 							auto elementResult = pipeline.TryGetElementHandle(scopes, function_handle, node.Name);
 
@@ -835,10 +890,8 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 									}
 								}
 								else if (element.Type == GPipeline::LanguageElement::ElementType::FUNCTION) {
-									if (auto res = pipeline.TryGetElement(scopes, node.Name)) {
-										for (auto e : pipeline.GetFunctionOverloads(scopes, node.Name)) { //for every overload, TODO: type deduction?
-											self(resultString, elementResult.Get(), e->Id, self); //add function
-										}
+									for (auto e : pipeline.GetFunctionOverloads(scopes, node.Name)) { //for every overload, TODO: type deduction?
+										self(resultString, e, self); //add function
 									}
 
 									statementString += node.Name;
@@ -936,22 +989,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		resultString += string;
 	};
 
-	auto addBlockDeclaration = [&](const GTSL::StringView interface_name, const GTSL::StringView type, const GTSL::Range<const GTSL::StringView*> vars) {
-		auto vertexFragmentInterfaceBlockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
-		if (!vertexFragmentInterfaceBlockHandle) { addErrorCode(GTSL::StaticString<64>(interface_name) + u8" interface block declaration was not found."); return; }
-
-		declarationBlock += u8"layout(";
-		for (uint32 i = 0; i < vars.ElementCount(); ++i) { if (i) { declarationBlock += u8", "; } declarationBlock += vars[i]; }
-		declarationBlock += u8") "; declarationBlock += type; declarationBlock += u8" _"; declarationBlock += interface_name; declarationBlock += u8" { ";
-
-		for (const auto& e : pipeline.GetChildren(vertexFragmentInterfaceBlockHandle.Get())) {
-			writeStructElement(declarationBlock, pipeline.GetMember(e));
-		}
-		declarationBlock += u8" } ";
-		declarationBlock += interface_name;
-		declarationBlock += u8";\n";
-	};
-
 	auto addLayoutDeclaration = [&](const GTSL::StringView interface_name, const GTSL::StringView type, bool isVertexSurfaceInterface = false) {
 		auto interfaceBlockHandle = pipeline.TryGetElementHandle(scopes, interface_name);
 		if (!interfaceBlockHandle) { addErrorCode(GTSL::StaticString<256>(interface_name) + u8" interface block declaration was not found."); return; }
@@ -964,31 +1001,47 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 			declarationBlock += u8"layout(location="; ToString(declarationBlock, locationIndex); declarationBlock += u8") ";
 			declarationBlock += type;
 
-			const auto member = resolveTypeName(pipeline.GetMember(arr[i]));
+			const auto& member = pipeline.GetMember(arr[i]);
 
-			if (isVertexSurfaceInterface) { if (member.Type == u8"uint") { declarationBlock &= u8"flat"; } }
-			declarationBlock &= member.Type; declarationBlock &= member.Name; declarationBlock += u8";\n";
+			const auto resolvedMember = resolveTypeName(member);
 
-			locationIndex += pipeline.GetMember(arr[i]).Type == u8"mat3f" ? 3 : 1; // TODO: add proper support for other types
+			if (isVertexSurfaceInterface) { if (resolvedMember.Type == u8"uint") { declarationBlock &= u8"flat"; } }
+			declarationBlock &= resolvedMember.Type; declarationBlock &= resolvedMember.Name; declarationBlock += u8";\n";
+
+			locationIndex += member.Type == u8"mat3f" ? 3 : 1; // TODO: add proper support for other types
 		}
 	};
 
-	addBlockDeclaration(u8"pushConstantBlock", u8"uniform", { u8"push_constant", u8"scalar" });
+
+	{
+		GTSL::StaticVector<StructElement, 16> elements;
+
+		for(auto s : scopes) {
+			auto r = pipeline.TryGetElementHandle(s, u8"pushConstantBlock");
+
+			auto& e = pipeline.GetElement(s);
+
+			if(r) {
+				auto els = pipeline.GetElements(GPipeline::LanguageElement::ElementType::MEMBER, { r.Get() });
+
+				for(auto m : els) {
+					elements.EmplaceBack(pipeline.GetMember(m));
+				}
+			}
+		}
+
+		addInterfaceBlockDeclarationWithMembers(u8"pushConstantBlock", u8"uniform", { u8"push_constant", u8"scalar" }, elements);
+	}
 
 	if (isRayTracing) {
 		addLayoutDeclaration(u8"payloadBlock", targetSemantics == GAL::ShaderType::RAY_GEN ? u8"rayPayloadEXT" : u8"rayPayloadInEXT");
-		addBlockDeclaration(u8"shaderRecordBlock", u8"buffer", { u8"shaderRecordEXT", u8"scalar" });
+		addInterfaceBlockDeclaration(u8"shaderRecordBlock", u8"buffer", { u8"shaderRecordEXT", u8"scalar" });
 	}
 
 	switch (targetSemantics) {
 	case GAL::ShaderType::VERTEX: {
-		//addBlockDeclaration(u8"vertexSurfaceInterface", u8"out", { u8"location=0" });
-		//addBlockDeclaration(u8"vertexSurfaceInterface1", u8"out", { u8"location=4" });
-
 		addLayoutDeclaration(u8"vertexSurfaceInterface", u8"out", true);
-
 		addLayoutDeclaration(u8"vertex", u8"in");
-
 		break;
 	}
 	case GAL::ShaderType::MESH:
@@ -1008,13 +1061,8 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	case GAL::ShaderType::TESSELLATION_EVALUATION: break;
 	case GAL::ShaderType::GEOMETRY: break;
 	case GAL::ShaderType::FRAGMENT: {
-		//addBlockDeclaration(u8"vertexSurfaceInterface", u8"in", { u8"location=0" });
-		//addBlockDeclaration(u8"vertexSurfaceInterface1", u8"in", { u8"location=4" });
-
 		addLayoutDeclaration(u8"vertexSurfaceInterface", u8"in", true);
-
 		addLayoutDeclaration(u8"fragmentOutputBlock", u8"out");
-
 		break;
 	}
 	case GAL::ShaderType::COMPUTE: {
@@ -1025,7 +1073,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		declarationBlock += u8",local_size_y="; declarationBlock += pipeline.GetMember(ySize.Get()).DefaultValue;
 		declarationBlock += u8",local_size_z="; declarationBlock += pipeline.GetMember(zSize.Get()).DefaultValue;
 		declarationBlock += u8") in;\n";
-
 		break;
 	}
 	case GAL::ShaderType::TASK:
@@ -1040,7 +1087,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		break;
 	}
 
-	writeFunction(functionBlock, pipeline.TryGetElementHandle(scopes, u8"main").Get(), pipeline.GetFunction(scopes, u8"main").Id, writeFunction); //add main
+	writeFunction(functionBlock, pipeline.TryGetElementHandle(scopes, u8"main").Get(), writeFunction); //add main
 
 	GTSL::String<ALLOCATOR> fin(allocator);
 
@@ -1075,27 +1122,12 @@ inline void AddVertexSurfaceInterfaceBlockDeclaration(GPipeline* pipeline, GPipe
 	}
 }
 
-inline void AddVertexSurfaceInterfaceBlockDeclaration1(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
-	auto vertexSurfaceInterface = pipeline->DeclareScope(parent_element_handle, u8"vertexSurfaceInterface1");
-
-	for (auto& e : elements) {
-		auto vertexTextureCoordinatesHandle = pipeline->DeclareVariable(vertexSurfaceInterface, e);
-		//pipeline->AddMemberDeductionGuide(common_permutation->vertexShaderScope, u8"vertexTextureCoordinates", { { vertexSurfaceInterface }, { vertexTextureCoordinatesHandle } });
-	}
-}
-
 inline void AddVertexBlockDeclaration(GPipeline* pipeline, GPipeline::ElementHandle parent_element_handle, const GTSL::Range<const StructElement*> elements) {
 	auto vertexBlock = pipeline->DeclareScope(parent_element_handle, u8"vertex");
 	for (auto& e : elements) {
 		pipeline->DeclareVariable(vertexBlock, e);
 
 	}
-}
-
-inline GPipeline::ElementHandle AddRenderPassDeclaration(GPipeline* pipeline, const GTSL::StringView render_pass_name, const GTSL::Range<const StructElement*> elements) {
-	auto renderPassScopeHandle = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, render_pass_name);
-	pipeline->DeclareStruct(renderPassScopeHandle, u8"RenderPassData", elements);
-	return renderPassScopeHandle;
 }
 
 // SHADER DOC

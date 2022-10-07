@@ -30,6 +30,7 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec3f", u8"p" }, { u8"vec3f", u8"a" }, { u8"vec3f", u8"b" }, { u8"vec3f", u8"c" } }, u8"vec3f v0 = b - a, v1 = c - a, v2 = p - a; float32 d00 = dot(v0, v0); float32 d01 = dot(v0, v1); float32 d11 = dot(v1, v1); float32 d20 = dot(v2, v0); float32 d21 = dot(v2, v1); float32 invDenom = 1.0f / (d00 * d11 - d01 * d01); v = (d11 * d20 - d01 * d21) * invDenom; w = (d00 * d21 - d01 * d20) * invDenom; return vec3f(1.0f - v - w, v, w);");
+
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" }, { u8"float32", u8"mip" } }, u8"return textureLod(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord, mip);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"tex" }, { u8"vec2f", u8"texCoord" }, { u8"float32", u8"mip" } }, u8"return textureLod(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord, mip);");
@@ -38,8 +39,11 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos) % textureSize(sampler2D(textures[nonuniformEXT(tex.Instance)], s), 0), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4u", u8"SampleUint", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(usampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
+
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"vec2f", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos * vec2f(imageSize(images[nonuniformEXT(img.Instance)]))), value);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"float32", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), vec4f(value));");
+
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"X", { { u8"vec4f", u8"vec" } }, u8"return vec.x;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Y", { { u8"vec4f", u8"vec" } }, u8"return vec.y;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Z", { { u8"vec4f", u8"vec" } }, u8"return vec.z;");
@@ -54,7 +58,10 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"GeometrySchlickGGX", { { u8"float32", u8"NdotV"}, { u8"float32", u8"roughness"} }, u8"float32 r = (roughness + 1.0); float32 k = (r * r) / 8.0; float32 num = NdotV; float32 denom = NdotV * (1.0 - k) + k; return num / denom;");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"GeometrySmith", { { u8"vec3f", u8"N"}, { u8"vec3f", u8"V"}, { u8"vec3f", u8"L"}, { u8"float32", u8"roughness" } }, u8"float32 NdotV = max(dot(N, V), 0.0); float32 NdotL = max(dot(N, L), 0.0); float32 ggx2 = GeometrySchlickGGX(NdotV, roughness); float32 ggx1 = GeometrySchlickGGX(NdotL, roughness); return ggx1 * ggx2;");
 
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"LinearizeDepth", { { u8"float32", u8"depth"}, { u8"float32", u8"near"}, { u8"float32", u8"far" } }, u8"return ((near * far) / (far + depth * (near - far))) * far;");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"LinearizeDepth", { { u8"float32", u8"depth"}, { u8"float32", u8"near"}, { u8"float32", u8"far" } }, 
+			u8"return ((near * far) / (far + depth * (near - far))) * far;"
+			//u8"return (2.f * near * far) / (far + near - depth * (far - near));"
+		);
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"mat3f", u8"AngleAxis3x3", { { u8"vec3f", u8"axis"}, { u8"float32", u8"angle"} }, 
 			u8"float32 c = cos(angle), s = sin(angle); float32 t = 1 - c; float32 x = axis.x; float32 y = axis.y; float z = axis.z; return mat3f(t * x * x + c, t * x * y - s * z,  t * x * z + s * y, t * x * y + s * z, t * y * y + c, t * y * z - s * x, t * x * z - s * y,  t * y * z + s * x,  t * z * z + c);");
@@ -78,6 +85,7 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"CosineWeightedHemisphereSample", { { u8"vec3f", u8"hitNorm" }, { u8"vec2f", u8"random" } },
 			u8"vec3f bitangent = Perpendicualar(hitNorm); vec3f tangent = cross(bitangent, hitNorm); float32 r = sqrt(random.x); float phi = 2.0f * PI() * random.y; return tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hitNorm.xyz * sqrt(1 - random.x);");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"ViewSpacePositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"matrix4f", u8"inverse_proj_matrix" } }, u8"vec4f viewPositionH = inverse_proj_matrix * vec4f((texture_coordinate.x - 0.5f) * 2, (texture_coordinate.y - 0.5f) * 2, depth, 1); return viewPositionH.xyz / viewPositionH.w;");
 
 		vertexShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"VertexShader");
 		fragmentShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"FragmentShader");
@@ -144,14 +152,9 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");
 
 		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
-
-		auto pushConstantBlockHandle = pipeline->DeclareScope(computeRenderPassScope, u8"pushConstantBlock");
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"GlobalData*", u8"global" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"RenderPassData*", u8"renderPass" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"CameraData*", u8"camera" });
-		pipeline->DeclareVariable(pushConstantBlockHandle, { u8"LightingData*", u8"lighting" });
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2u", u8"GetPixelPosition", {}, u8"return GetGlobalIndex().xy;");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2f", u8"GetNormalizedPixelPosition", {}, u8"return GetNormalizedGlobalIndex().xy;");
+		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2u", u8"GetExtent", { { u8"ImageReference", u8"image" } }, u8"return vec2u(imageSize(images[nonuniformEXT(image.Instance)]));");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"ACES", { { u8"vec4f", u8"x" } }, u8"const float a = 2.51; const float b = 0.03; const float c = 2.43; const float d = 0.59; const float e = 0.14; return (x * (a * x + b)) / (x * (c * x + d) + e);");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"Filmic", { { u8"vec4f", u8"x" } }, u8"vec3 X = max(vec3(0.0), vec3f(x) - vec3f(0.004)); vec3 result = (X * (6.2 * X + 0.5)) / (X * (6.2 * X + 1.7) + 0.06); return vec4f(pow(result, vec3(2.2)), x.a); ");
 	}

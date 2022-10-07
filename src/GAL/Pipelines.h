@@ -264,13 +264,13 @@ namespace GAL
 
 			if (shaderc_module.GetCompilationStatus() != shaderc_compilation_status_success) {
 				auto errorString = shaderc_module.GetErrorMessage();
-				return { false, GTSL::String<ALLOCATOR>{ GTSL::Range(GTSL::Byte(errorString.size()), reinterpret_cast<const char8_t*>(errorString.c_str())), allocator }, GTSL::Buffer<ALLOCATOR>{ allocator } };
+				return { false, GTSL::String<ALLOCATOR>(GTSL::StringView(GTSL::Byte(errorString.size()), reinterpret_cast<const char8_t*>(errorString.c_str())), allocator), GTSL::Buffer<ALLOCATOR>(allocator) };
 			}
 
 			GTSL::Buffer<ALLOCATOR> buffer((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), 16, allocator);
 			buffer.Write((shaderc_module.end() - shaderc_module.begin()) * sizeof(GTSL::uint32), reinterpret_cast<const GTSL::byte*>(shaderc_module.begin()));
 
-			return { true, GTSL::String<ALLOCATOR>{ allocator }, GTSL::Buffer<ALLOCATOR>{ GTSL::MoveRef(buffer) } };
+			return { true, GTSL::String<ALLOCATOR>(allocator), GTSL::Buffer<ALLOCATOR>(GTSL::MoveRef(buffer)) };
 		}
 
 	private:

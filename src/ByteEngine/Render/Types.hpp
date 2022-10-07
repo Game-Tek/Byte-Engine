@@ -22,7 +22,7 @@
 
 #define TRACE_RAY_PARAMETER_DATA { { u8"uint64", u8"accelerationStructure" }, { u8"uint32", u8"rayFlags" }, { u8"uint32", u8"recordOffset"}, { u8"uint32", u8"recordStride"}, { u8"uint32", u8"missIndex"}, { u8"float32", u8"tMin"}, { u8"float32", u8"tMax"} }
 
-#define FORWARD_RENDERPASS_DATA { { u8"ImageReference", u8"Albedo" }, { u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Roughness" }, { u8"ImageReference", u8"Depth" } }
+#define FORWARD_RENDERPASS_DATA { { u8"ImageReference", u8"Albedo" }, { u8"ImageReference", u8"WorldSpacePosition" }, { u8"ImageReference", u8"ViewSpacePosition" }, { u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Roughness" }, { u8"ImageReference", u8"Depth" } }
 #define RT_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Shadow" } }
 #define LIGHTING_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Roughness" }, { u8"TextureReference", u8"Shadow" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Lighting" } }
-#define AO_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"AO" } }
+#define AO_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"WorldSpacePosition" }, { u8"TextureReference", u8"ViewSpacePosition" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"AO" } }

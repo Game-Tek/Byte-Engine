@@ -686,7 +686,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			++items;
 		}
 
-		if(items != cacheEntryCount) {
+		if(items > cacheEntryCount) {
 			created = true;
 		}
 	}
@@ -716,7 +716,15 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 				auto permutation = permutations[GTSL::StringView(json[u8"name"])];
 
-				pipeline.TryDeclareScope(GPipeline::GLOBAL_SCOPE, GTSL::StringView(json[u8"name"]));
+				auto permutationScopeHandle = pipeline.TryDeclareScope(GPipeline::GLOBAL_SCOPE, GTSL::StringView(json[u8"name"]));
+
+				if(auto dataLayers = json[u8"dataLayers"]) {
+					auto pcd = pipeline.DeclareScope(permutationScopeHandle, u8"pushConstantBlock");
+
+					for(auto e : dataLayers) {
+						pipeline.DeclareVariable(pcd, { e[u8"type"], e[u8"name"] });
+					}
+				}
 
 				for(auto option : json[u8"options"]) {
 					auto& a = permutation->a.EmplaceBack(GetPersistentAllocator());
@@ -872,6 +880,14 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 		}
 	}
 
+	if(auto dataLayers = json[u8"dataLayers"]) {
+		auto pcb = pipeline.DeclareScope(shaderGroupScope, u8"pushConstantBlock");
+
+		for(auto dataLayer : dataLayers) {
+			pipeline.DeclareVariable(pcb, { dataLayer[u8"type"], dataLayer[u8"name"] });
+		}
+	}
+
 	for (auto f : json[u8"functions"]) {
 		GTSL::StaticVector<StructElement, 16> elements;
 		for (auto p : f[u8"parameters"]) { elements.EmplaceBack(p[u8"type"], p[u8"name"]); }
@@ -950,7 +966,11 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 			}
 
 			GPipeline::ElementHandle shaderScope = pipeline.DeclareShader(shaderGroupScope, shaderJson[u8"name"]);
-			GPipeline::ElementHandle mainFunctionHandle = pipeline.DeclareFunction(shaderScope, u8"void", u8"main");
+			GPipeline::ElementHandle mainFunctionHandle = pipeline.DeclareFunction(shaderScope, u8"void", u8"main", {});
+
+			auto pcd = pipeline.DeclareScope(shaderScope, u8"pushConstantBlock");
+
+			pipeline.DeclareVariable(pcd, { u8"ShaderParametersData*", u8"shaderParameters" });
 
 			if (shaderJson[u8"class"].GetStringView() == GTSL::StringView(u8"COMPUTE") or shaderJson[u8"class"].GetStringView() == GTSL::StringView(u8"RAY_GEN")) {
 				GTSL::StaticString<64> x, y, z;
@@ -993,17 +1013,7 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 				return;
 			}
 
-			for (auto p : json[u8"parameters"]) {
-				GTSL::StaticString<256> code;
-
-				code += u8"const";
-				code &= GTSL::StringView(p[u8"type"]);
-				code &= GTSL::StringView(p[u8"name"]);
-				code &= u8"=";
-				code &= u8"pushConstantBlock.shaderParameters[pushConstantBlock.instances[_instanceIndex].shaderGroupIndex]."; code += GTSL::StringView(p[u8"name"]); code += u8";";
-
-				pipeline.AddCodeToFunction(mainFunctionHandle, code);
-			}
+			pipeline.DeclareConstant(shaderScope, { u8"uint32", u8"DEBUG", u8"0" });
 
 			pipeline.AddCodeToFunction(mainFunctionHandle, PermutationManager::MakeShaderString(GTSL::StringView(parent->a[i][j]), shaderEntry.rest.element));
 

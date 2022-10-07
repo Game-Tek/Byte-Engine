@@ -54,8 +54,8 @@ AnimationResourceManager::AnimationResourceManager(const InitializeInfo& initial
 			SkeletonDataSerialize skeletonData(GetPersistentAllocator());
 			AnimationDataSerialize animationData(GetPersistentAllocator());
 
-			GTSL::Buffer skeletonDataBuffer(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
-			GTSL::Buffer animationDataBuffer(GTSL::Byte(GTSL::KiloByte(8)), 16, GetTransientAllocator());
+			GTSL::Buffer skeletonDataBuffer(GTSL::Byte(GTSL::KiloByte(8)).GetCount(), 16, GetTransientAllocator());
+			GTSL::Buffer animationDataBuffer(GTSL::Byte(GTSL::KiloByte(8)).GetCount(), 16, GetTransientAllocator());
 
 			loadSkeleton(static_cast<GTSL::Range<const byte*>>(buffer), skeletonData, skeletonDataBuffer);
 			loadAnimation(static_cast<GTSL::Range<const byte*>>(buffer), animationData, animationDataBuffer);

@@ -29,6 +29,7 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareStruct(GPipeline::GLOBAL_SCOPE, u8"vec4f", { { u8"vec4f", u8"xyzw"} });
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec2f", u8"coords" } }, u8"return vec3(1.0f - coords.x - coords.y, coords.x, coords.y);");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2f", u8"Normalize", { { u8"vec2u", u8"pos" }, { u8"vec2u", u8"extent" } }, u8"return (vec2f(pos) + 0.5f) / vec2f(extent);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec3f", u8"p" }, { u8"vec3f", u8"a" }, { u8"vec3f", u8"b" }, { u8"vec3f", u8"c" } }, u8"vec3f v0 = b - a, v1 = c - a, v2 = p - a; float32 d00 = dot(v0, v0); float32 d01 = dot(v0, v1); float32 d11 = dot(v1, v1); float32 d20 = dot(v2, v0); float32 d21 = dot(v2, v1); float32 invDenom = 1.0f / (d00 * d11 - d01 * d01); v = (d11 * d20 - d01 * d21) * invDenom; w = (d00 * d21 - d01 * d20) * invDenom; return vec3f(1.0f - v - w, v, w);");
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
@@ -85,7 +86,10 @@ struct CommonPermutation : PermutationManager {
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"CosineWeightedHemisphereSample", { { u8"vec3f", u8"hitNorm" }, { u8"vec2f", u8"random" } },
 			u8"vec3f bitangent = Perpendicualar(hitNorm); vec3f tangent = cross(bitangent, hitNorm); float32 r = sqrt(random.x); float phi = 2.0f * PI() * random.y; return tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hitNorm.xyz * sqrt(1 - random.x);");
+
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"ViewSpacePositionFromDepth", { { u8"vec2f", u8"texture_coordinate" }, { u8"float32", u8"depth" }, { u8"matrix4f", u8"inverse_proj_matrix" } }, u8"vec4f viewPositionH = inverse_proj_matrix * vec4f((texture_coordinate.x - 0.5f) * 2, (texture_coordinate.y - 0.5f) * 2, depth, 1); return viewPositionH.xyz / viewPositionH.w;");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"SampleViewSpacePosition", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"coords" }, { u8"ViewData", u8"view_data" }, { u8"float32", u8"mip" } }, u8"float32 rawDepth = Sample(tex, coords, mip).x; return ViewSpacePositionFromDepth(coords, rawDepth, view_data.projInverse);");
 
 		vertexShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"VertexShader");
 		fragmentShaderScope = pipeline->DeclareScope(GPipeline::GLOBAL_SCOPE, u8"FragmentShader");
@@ -147,6 +151,9 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetGlobalExtent", {}, u8"return gl_WorkGroupSize * gl_NumWorkGroups;");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"vec3f", u8"GetNormalizedGlobalIndex", {}, u8"return (vec3f(GetGlobalIndex()) + vec3f(0.5f)) / vec3f(GetGlobalExtent());");
+
+		pipeline->DeclareFunction(computeShaderScope, u8"int32", u8"IntegerDivideBy_11", { { u8"int32", u8"i" } }, u8"return (i * 5958) >> 16;");
+		pipeline->DeclareFunction(computeShaderScope, u8"vec2i", u8"IntModAndDiv_11", { { u8"int32", u8"i" } }, u8"ivec2 v = ivec2(i, IntegerDivideBy_11(i)); v.x -= v.y * 11; return v;");
 		
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8"return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");

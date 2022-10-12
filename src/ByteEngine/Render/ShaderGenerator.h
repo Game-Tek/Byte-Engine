@@ -49,7 +49,9 @@ void tokenizeCode(const GTSL::StringView code, auto& statements, const auto& all
 }
 
 void tokenizeCode(const GTSL::StringView string, auto& statements) {
-	auto parse = [&](const GTSL::StringView code) {
+	auto parseLine = [&](const GTSL::StringView code) {
+		if(GTSL::IsIn(code, u8"//")) { return; }
+
 		for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
 			auto c = code[i];
 
@@ -136,7 +138,7 @@ void tokenizeCode(const GTSL::StringView string, auto& statements) {
 		}
 	};
 
-	GTSL::ForEachLine(string, parse);
+	GTSL::ForEachLine(string, parseLine);
 }
 
 struct GPipeline : Object {
@@ -172,7 +174,7 @@ struct GPipeline : Object {
 		ElementHandle Parent;
 
 		enum class ElementType {
-			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER, CONSTANT
+			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER, CONSTANT, SHARED
 		} Type = ElementType::NONE;
 
 		GTSL::HashMap<GTSL::StringView, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
@@ -425,6 +427,13 @@ public:
 
 	void SetAsConst(const ElementHandle element_handle) {
 		GetStruct(element_handle).IsConst = true;
+	}
+
+	void DeclareShared(const ElementHandle parent, const StructElement shared) {
+		auto handle = add(parent, shared.Name, LanguageElement::ElementType::SHARED);
+		auto& element = GetElement(handle);
+		element.Reference = members.GetLength();
+		members.EmplaceBack(shared);
 	}
 
 	void DeclareConstant(const ElementHandle parent, const StructElement constant) {
@@ -895,7 +904,8 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 									}
 
 									statementString += node.Name;
-								} else if(element.Type == GPipeline::LanguageElement::ElementType::DISABLED) {
+								}
+								else if(element.Type == GPipeline::LanguageElement::ElementType::DISABLED) {
 									return GTSL::StaticString<4096>(); //skip statement
 								} else {
 									statementString += resolve(node.Name);
@@ -1066,6 +1076,13 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		break;
 	}
 	case GAL::ShaderType::COMPUTE: {
+		auto sharedVariables = pipeline.GetElements(GPipeline::LanguageElement::ElementType::SHARED, scopes);
+
+		for(auto sharedVariable : sharedVariables) {
+			auto resolvedMember = resolveTypeName(pipeline.GetMember(sharedVariable));
+			declarationBlock += u8"shared"; declarationBlock &= resolvedMember.Type; declarationBlock &= resolvedMember.Name; declarationBlock += u8";\n";
+		}
+
 		auto xSize = pipeline.TryGetElementHandle(scopes, u8"group_size_x");
 		auto ySize = pipeline.TryGetElementHandle(scopes, u8"group_size_y");
 		auto zSize = pipeline.TryGetElementHandle(scopes, u8"group_size_z");
@@ -1073,6 +1090,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		declarationBlock += u8",local_size_y="; declarationBlock += pipeline.GetMember(ySize.Get()).DefaultValue;
 		declarationBlock += u8",local_size_z="; declarationBlock += pipeline.GetMember(zSize.Get()).DefaultValue;
 		declarationBlock += u8") in;\n";
+
 		break;
 	}
 	case GAL::ShaderType::TASK:

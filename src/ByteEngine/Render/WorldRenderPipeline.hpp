@@ -168,6 +168,7 @@ private:
 		bwk[u8"lights"][0] = light_handle();
 		bwk[u8"lights"][1] = 0u;
 		bwk[u8"lights"][2] = 1u;
+		bwk[u8"shadowMapCount"] = 0u;
 	}
 
 	void preRender(TaskInfo, RenderSystem* render_system, RenderOrchestrator* render_orchestrator) {

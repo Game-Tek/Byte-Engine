@@ -1,7 +1,7 @@
 #pragma once
 
 #define POINT_LIGHT_DATA { { u8"vec3f", u8"position" }, { u8"vec3f", u8"color" }, {u8"float32", u8"intensity"}, {u8"float32", u8"radius"} }
-#define LIGHTING_DATA { { u8"uint32", u8"lightCount" }, { u8"uint32[8]", u8"lights" }, { u8"uint32", u8"pointLightsLength" },  { u8"PointLightData[1024]", u8"pointLights" } }
+#define LIGHTING_DATA { { u8"uint32", u8"shadowMapCount" }, { u8"uint32", u8"lightCount" }, { u8"uint32[8]", u8"lights" }, { u8"uint32", u8"pointLightsLength" },  { u8"PointLightData[1024]", u8"pointLights" } }
 #define INSTANCE_DATA { { u8"matrix3x4f", u8"transform" }, { u8"uint32", u8"vertexBufferOffset" }, { u8"uint32", u8"indexBufferOffset" }, { u8"uint32", u8"shaderGroupIndex" }, {u8"uint32", u8"padding" } }
 #define VIEW_DATA { { u8"matrix4f", u8"view" }, { u8"matrix4f", u8"proj" }, { u8"matrix4f", u8"viewInverse" }, { u8"matrix4f", u8"projInverse" }, { u8"matrix4f", u8"vp" }, { u8"matrix4f", u8"vpInverse" }, { u8"vec4f", u8"position" },{ u8"float32", u8"near" }, { u8"float32", u8"far" }, { u8"u16vec2", u8"extent"}, { u8"vec2f", u8"extentReciprocal" }, { u8"float32", u8"aspectRatio" }  }
 #define CAMERA_DATA { { u8"ViewData[3]", u8"viewHistory" } }
@@ -24,5 +24,5 @@
 
 #define FORWARD_RENDERPASS_DATA { { u8"ImageReference", u8"Albedo" }, { u8"ImageReference", u8"WorldSpacePosition" }, { u8"ImageReference", u8"ViewSpacePosition" }, { u8"ImageReference", u8"Normal" }, { u8"ImageReference", u8"Roughness" }, { u8"ImageReference", u8"Depth" } }
 #define RT_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Shadow" } }
-#define LIGHTING_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Roughness" }, { u8"TextureReference", u8"Shadow" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Lighting" } }
+#define LIGHTING_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Roughness" }, { u8"TextureReference", u8"Shadow" }, { u8"TextureReference", u8"AO" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"Lighting" } }
 #define AO_RENDERPASS_DATA { { u8"TextureReference", u8"Albedo" }, { u8"TextureReference", u8"WorldSpacePosition" }, { u8"TextureReference", u8"ViewSpacePosition" }, { u8"TextureReference", u8"Normal" }, { u8"TextureReference", u8"Depth" }, { u8"ImageReference", u8"AO" } }

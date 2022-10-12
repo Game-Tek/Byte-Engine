@@ -222,6 +222,18 @@ void Skim(GTSL::HashMap<K, V, ALLOC>& hash_map, auto predicate, const ALLOC& all
 	for (auto e : toSkim) { hash_map.Remove(e); }
 }
 
+inline float32 Halton(uint32 i, uint32 b) {
+    float32 f = 1.0f, r = 0.0f;
+ 
+    while (i > 0) {
+        f /= static_cast<float32>(b);
+        r = r + f * static_cast<float32>(i % b);
+        i = static_cast<uint32>(floorf(static_cast<float32>(i) / static_cast<float32>(b)));
+    }
+ 
+    return r;
+}
+
 void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
 
@@ -264,11 +276,20 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			//SetNodeState(cameraDataNode, true); // Set state on data key, to fullfil resource counts
 			auto fov = cameraSystem->GetFieldOfViews()[0]; auto aspectRatio = static_cast<float32>(renderArea.Width) / static_cast<float32>(renderArea.Height);
 
+			auto fExtent = GTSL::Vector2(renderArea.Width, renderArea.Height);
+
 			float32 nearValue = 0.1f, farValue = 1000.0f;
 
 			if constexpr (INVERSE_Z) {
 				std::swap(nearValue, farValue);
 			}
+
+			uint32 jitterIndex = frameIndex % 8;
+
+			float haltonX = 2.0f * Halton(jitterIndex + 1, 2) - 1.0f;
+			float haltonY = 2.0f * Halton(jitterIndex + 1, 3) - 1.0f;
+			float jitterX = (haltonX / fExtent.X());
+			float jitterY = (haltonY / fExtent.Y());
 
 			GTSL::Matrix4 projectionMatrix = GTSL::Math::BuildPerspectiveMatrix(fov, aspectRatio, nearValue, farValue);
 			projectionMatrix[1][1] *= API == GAL::RenderAPI::VULKAN ? -1.0f : 1.0f;
@@ -287,8 +308,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			//cameraData[u8"viewHistory"][1] = cameraData[u8"viewHistory"][0];
 
 			auto currentView = cameraData[u8"viewHistory"][0];
-
-			auto fExtent = GTSL::Vector2(renderArea.Width, renderArea.Height);
 
 			currentView[u8"view"] = viewMatrix;
 			currentView[u8"proj"] = projectionMatrix;
@@ -454,7 +473,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					GAL::DeviceAddress address;
 					const auto& dataKey = getDataKey(layerData.DataKey);
 
-					address = renderSystem->GetBufferAddress(dataKey.Buffer[1]); // Get READ buffer handle
+					address = renderSystem->GetBufferAddress(dataKey.Buffer[1]) + dataKeysMap[layerData.DataKey()].Second; // Get READ buffer handle
 
 					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
 					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
@@ -763,7 +782,7 @@ RenderModelHandle RenderOrchestrator::CreateShaderGroup(GTSL::StringView shader_
 		shaderGroupInstance.Resource = makeResource(GTSL::StringView(shader_group_instance_name));
 		addDependencyOnResource(shaderGroupInstance.Resource); // Add dependency the pipeline itself
 		shaderGroupInstance.DataKey = MakeDataKey();
-		shaderGroupInstance.Name = static_cast<GTSL::StringView>(shader_group_instance_name);
+		shaderGroupInstance.Name = shader_group_instance_name;
 		shaderGroupInstance.UpdateKey = CreateUpdateKey();
 	} else {
 		auto& material = shaderGroups[shaderGroupReference.Get()];
@@ -931,7 +950,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 	renderPass.Type = renderPassType;
 	renderPass.PipelineStages = pipelineStage;
 
-	auto bwk = GetBufferWriteKey(renderSystem, renderPassDataNode);
+	auto bwk = GetBufferWriteKey(renderSystem, ddd);
 
 	for (auto i = 0u; i < pass_data.Attachments.GetLength(); ++i) {
 		const auto& e = pass_data.Attachments[i];
@@ -939,7 +958,7 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 		AddNodeDependency(renderPassNodeHandle);
 
 		if(auto a = attachments.TryGet(e.Attachment)) {
-			bwk[GTSL::StringView(pass_data.Attachments[i].Name)] = a.Get().ImageIndex;
+			bwk[pass_data.Attachments[i].Name] = a.Get().ImageIndex;
 			FulfillNodeDependency(renderPassNodeHandle);
 		} else {
 			BE_LOG_WARNING(u8"Render pass: ", render_pass_name, u8", references attachment: ", e.Name, u8", which does not exist. Render pass will be disabled.");
@@ -1297,7 +1316,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				auto& shader = shaders[shader_group_info.Shaders[s].Hash];
 				shaderInfo.Type = shader.Type;
 				shaderInfo.Shader = shader.Shader;
-				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
 			}
 
 			GTSL::StaticVector<GAL::Pipeline::PipelineStateBlock::RenderContext::AttachmentState, 8> attachmentStates;
@@ -1370,7 +1388,6 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				auto& shader = shaders[shader_group_info.Shaders[s].Hash];
 				shaderInfo.Type = shader.Type;
 				shaderInfo.Shader = shader.Shader;
-				//shaderInfo.Blob = GTSL::Range(shader_group_info.Shaders[s].Size, shaderLoadInfo.Buffer.GetData() + offset);
 			}
 
 			pipeline.ExecutionString = executionString;
@@ -1493,7 +1510,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			WriteUpdateKey(renderSystem, instance.UpdateKey, uint32(ii));
 
-			CopyDataKey(instance.DataKey, shaderGroup.Buffer);
+			CopyDataKey(instance.DataKey, shaderGroup.Buffer, instance.Name == u8"BlurV" ? 8 : 0);
 
 			auto instanceElement = bwk[ii];
 
@@ -1593,19 +1610,12 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					auto table = bWK[tables[shaderGroupIndex].Name];
 					table[u8"shaderHandle"] = shaderGroupHandlesBuffer[shaderCount];
 
-					uint64 shaderHandleHash = 0; GTSL::StaticString<128> string(u8"S.H: "); string += shader_group_info.Name; string << u8", "; string += shaders[pipeline.Shaders[shaderCount]].Name << u8": ";
-
-					for (uint32 j = 0; j < 4; ++j) {
-						uint64 val = reinterpret_cast<uint64*>(&shaderGroupHandlesBuffer[shaderCount])[j];
-						if (j) { string += U'-'; } GTSL::ToString(string, val);
-					}
+					uint64 shaderHandleHash = 0;
 
 					shaderHandleHash = quickhash64({ 32, reinterpret_cast<byte*>(&shaderGroupHandlesBuffer[shaderCount]) });
 
-					BE_LOG_MESSAGE(string);
-
 					if(auto r = shaderHandlesDebugMap.TryEmplace(shaderHandleHash, shaders[pipeline.Shaders[shaderCount]].Name); !r) {
-						BE_LOG_ERROR(u8"Could not emplace ", string);
+						BE_LOG_ERROR(u8"Could not emplace ");
 					}
 				}
 			}

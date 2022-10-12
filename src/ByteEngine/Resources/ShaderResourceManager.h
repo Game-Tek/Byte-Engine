@@ -972,6 +972,10 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 
 			pipeline.DeclareVariable(pcd, { u8"ShaderParametersData*", u8"shaderParameters" });
 
+			for(auto sharedVariableJSON : shaderJson[u8"sharedVariables"]) {
+				pipeline.DeclareShared(shaderScope, { sharedVariableJSON[u8"type"], sharedVariableJSON[u8"name"] });
+			}
+
 			if (shaderJson[u8"class"].GetStringView() == GTSL::StringView(u8"COMPUTE") or shaderJson[u8"class"].GetStringView() == GTSL::StringView(u8"RAY_GEN")) {
 				GTSL::StaticString<64> x, y, z;
 

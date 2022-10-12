@@ -164,7 +164,7 @@ public:
 
 	DataKeyHandle MakeDataKey() {
 		auto pos = dataKeysMap.GetLength();
-		dataKeysMap.EmplaceBack(dataKeys.Emplace());
+		dataKeysMap.EmplaceBack(dataKeys.Emplace(), 0u);
 		return DataKeyHandle(pos);
 	}
 
@@ -201,13 +201,12 @@ public:
 
 		for (auto& e : dataKey.Nodes) {
 			SetNodeState(e, static_cast<bool>(dataKey.Buffer[0]) && static_cast<bool>(dataKey.Buffer[1]));
-			renderingTree.UpdateNodeKey(e(), dataKeysMap[data_key_handle()]);
+			renderingTree.UpdateNodeKey(e(), dataKeysMap[data_key_handle()].First);
 			setRenderTreeAsDirty(e);
-			getPrivateNode<DataNode>(e).DataKey = data_key_handle;
 		}
 	}
 
-	void CopyDataKey(const DataKeyHandle from, const DataKeyHandle to) {
+	void CopyDataKey(const DataKeyHandle from, const DataKeyHandle to, uint32 offset) {
 		if(from == to) { BE_LOG_WARNING(u8"Trying to transfer from same data key."); return; }
 
 		{ // Scope variables since some will be invalidated after deletion
@@ -220,11 +219,13 @@ public:
 			}
 
 			destinationDataKey.Nodes.PushBack(sourceDataKey.Nodes); // Transfer associated nodes
+
+			sourceDataKey.Offset = offset;
 		}
 
-		dataKeys.Pop(dataKeysMap[from()]); // Remove data key entry
-		dataKeysMap[from()] = dataKeysMap[to()]; // Update entry pointer
-		UpdateDataKey(to);
+		dataKeys.Pop(dataKeysMap[from()].First); // Remove data key entry
+		dataKeysMap[from()].First = dataKeysMap[to()].First; // Update entry pointer
+		dataKeysMap[from()].Second = offset;
 		UpdateDataKey(from);
 	}
 
@@ -602,11 +603,14 @@ public:
 		auto nodeHandle = addInternalNode<DataNode>(data_key_handle(), left_node_handle, parent);
 		if(!nodeHandle) { return nodeHandle.Get(); }
 
+		auto& dataNode = getPrivateNode<DataNode>(nodeHandle.Get());
+
 		auto& dataKey = dataKeys[data_key_handle()];
 		dataKey.Nodes.EmplaceBack(nodeHandle.Get());
 		UpdateDataKey(data_key_handle);
 		setNodeName(nodeHandle.Get(), getElement(dataKey.Handle).Name);
-		getPrivateNode<DataNode>(nodeHandle.Get()).UseCounter = false;
+		dataNode.DataKey = data_key_handle;
+		dataNode.UseCounter = false;
 		return nodeHandle.Get();
 	}
 
@@ -614,25 +618,15 @@ public:
 		auto nodeHandle = addInternalNode<DataNode>(data_key_handle(), parent_node_handle);
 		if(!nodeHandle) { return nodeHandle.Get(); }
 
-		auto& dataKey = dataKeys[data_key_handle()];
+		auto& dataNode = getPrivateNode<DataNode>(nodeHandle.Get());
+
+		auto& dataKey = getDataKey(data_key_handle);
 		dataKey.Nodes.EmplaceBack(nodeHandle.Get());
 		UpdateDataKey(data_key_handle);
 		setNodeName(nodeHandle.Get(), node_name);
-		getPrivateNode<DataNode>(nodeHandle.Get()).UseCounter = use_counter;
+		dataNode.DataKey = data_key_handle;
+		dataNode.UseCounter = use_counter;
 		return nodeHandle.Get();
-	}
-	
-	BufferWriteKey GetBufferWriteKey(RenderSystem* render_system, const NodeHandle node_handle, uint32 frame = ~0u) {
-		auto& node = getPrivateNode<DataNode>(node_handle);
-		BufferWriteKey buffer_write_key;
-		buffer_write_key.render_system = render_system;
-		buffer_write_key.render_orchestrator = this;
-		const auto& dataKey = getDataKey(node.DataKey);
-		buffer_write_key.buffer_handle = dataKey.Buffer[0];
-		buffer_write_key.Offset = dataKey.Offset;
-		buffer_write_key.ElementHandle = dataKey.Handle;
-		addPendingWrite(render_system, dataKey.Buffer[0], dataKey.Buffer[1]);
-		return buffer_write_key;
 	}
 
 	BufferWriteKey GetBufferWriteKey(RenderSystem* render_system, const DataKeyHandle data_key_handle) {
@@ -1242,14 +1236,14 @@ private:
 		ElementDataHandle Handle;
 	};
 	GTSL::FixedVector<DataKeyData, BE::PAR> dataKeys;
-	GTSL::Vector<uint32, BE::PAR> dataKeysMap;
+	GTSL::Vector<GTSL::Pair<uint32, uint32>, BE::PAR> dataKeysMap;
 
 	DataKeyData& getDataKey(const DataKeyHandle data_key_handle) {
-		return dataKeys[dataKeysMap[data_key_handle()]];
+		return dataKeys[dataKeysMap[data_key_handle()].First];
 	}
 
 	const DataKeyData& getDataKey(const DataKeyHandle data_key_handle) const {
-		return dataKeys[dataKeysMap[data_key_handle()]];
+		return dataKeys[dataKeysMap[data_key_handle()].First];
 	}
 
 	// ------------ Data Keys ------------
@@ -1966,6 +1960,61 @@ private:
 	};
 	GTSL::StaticVector<DebugView, 8> debugViews;
 #endif
+
+	template<typename T>
+	struct Graph {
+		explicit Graph(T d) : internal(new Internal(d)) {}
+
+		~Graph() { if(internal) { delete internal; } }
+
+		void Connect(Graph* other) {
+			internal->nodes[internal->childrenCount++] = other->internal;
+		}
+
+	private:
+		struct Internal	{
+			Internal(T d) : data(d) {}
+
+			T data;
+			Internal* nodes[8] = { nullptr };
+			uint32 childrenCount = 0;
+		}* internal = nullptr;
+	};
+
+	void parseRenderPassJSON() {
+		GTSL::JSON<BE::PAR> json(GetPersistentAllocator());
+
+		GTSL::HashMap<GTSL::StringView, GTSL::StaticString<64>, BE::PAR> allAttachments(GetPersistentAllocator());
+		GTSL::HashMap<GTSL::StringView, Graph<uint32>, BE::PAR> renderPassNodes(GetPersistentAllocator());
+
+		for(auto renderPass : json) {
+			auto name = renderPass[u8"name"];
+
+			auto& node = renderPassNodes.Emplace(name, 0u);
+
+			for(auto attachment : renderPass[u8"attachments"]) {
+				auto name = attachment[u8"name"];
+
+				allAttachments.TryEmplace(name, name);
+
+				auto use = attachment[u8"use"];
+
+				if(GTSL::StringView(use) == u8"INPUT") {
+					
+				} else if (GTSL::StringView(use) == u8"OUTPUT") {
+					
+				} else {
+					// TODO: error
+				}
+			}
+
+			for(auto dependsOn : renderPass[u8"dependsOn"]) {
+				renderPassNodes[dependsOn].Connect(&node);
+			}
+		}
+
+		GTSL::Vector<GTSL::StaticString<64>, BE::PAR> fullAttachments(GetPersistentAllocator()), transientAttachments(GetPersistentAllocator());
+	}
 };
 
 inline uint64 Hash(char8_t c) { return c; }

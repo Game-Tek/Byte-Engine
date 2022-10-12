@@ -155,29 +155,40 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	}
 
 	{
-		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"Lighting", u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle }, { u8"Lighting Data", lightsDataKey } });
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", u8"AO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+
+		//{
+		//	auto l = {
+		//		RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Source"), GTSL::StringView(u8"AO"), GAL::AccessTypes::READ },
+		//		RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Target"), GTSL::StringView(u8"Transient"), GAL::AccessTypes::WRITE },
+		//		RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"VarianceSource"), GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ }
+		//	};
+		//
+		//	auto t = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"H AO Blur", u8"BlurH", renderSystem, { l, //RenderOrchestrator::PassType::COMPUTE });
+		//}
+		//
+		//{
+		//	auto l = {
+		//		RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Source"), GTSL::StringView(u8"Transient"), GAL::AccessTypes::READ },
+		//		RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Target"), GTSL::StringView(u8"AO"), GAL::AccessTypes::WRITE },
+		//		RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"VarianceSource"), GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ }
+		//	};
+		//
+		//	auto t = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"V AO Blur", u8"BlurV", renderSystem, { l, //RenderOrchestrator::PassType::COMPUTE });
+		//}
+
+		{
+			auto l = {
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Depth"), GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ },
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"AO"), GTSL::StringView(u8"AO"), GAL::AccessTypes::WRITE }
+			};
+
+			auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO Blur", u8"TemporalBlur", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+		}
 	}
 
 	{
-		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", u8"AO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
-
-		{
-			auto l = {
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Source"), GTSL::StringView(u8"AO"), GAL::AccessTypes::READ },
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Target"), GTSL::StringView(u8"Transient"), GAL::AccessTypes::WRITE }
-			};
-		
-			auto t = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"H AO Blur", u8"BlurH", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE });
-		}
-		
-		{
-			auto l = {
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Source"), GTSL::StringView(u8"Transient"), GAL::AccessTypes::READ },
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Target"), GTSL::StringView(u8"AO"), GAL::AccessTypes::WRITE }
-			};
-		
-			auto t = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"V AO Blur", u8"BlurV", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE });
-		}
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"Lighting", u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle }, { u8"Lighting Data", lightsDataKey } });
 	}
 
 	{

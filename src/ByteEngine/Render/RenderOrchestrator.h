@@ -21,6 +21,8 @@
 #include "ByteEngine/Resources/ShaderResourceManager.h"
 #include "ByteEngine/Resources/TextureResourceManager.h"
 
+#include "ByteEngine/Graph.hpp"
+
 class RenderOrchestrator;
 class RenderState;
 class RenderGroup;
@@ -1961,26 +1963,6 @@ private:
 	GTSL::StaticVector<DebugView, 8> debugViews;
 #endif
 
-	template<typename T>
-	struct Graph {
-		explicit Graph(T d) : internal(new Internal(d)) {}
-
-		~Graph() { if(internal) { delete internal; } }
-
-		void Connect(Graph* other) {
-			internal->nodes[internal->childrenCount++] = other->internal;
-		}
-
-	private:
-		struct Internal	{
-			Internal(T d) : data(d) {}
-
-			T data;
-			Internal* nodes[8] = { nullptr };
-			uint32 childrenCount = 0;
-		}* internal = nullptr;
-	};
-
 	void parseRenderPassJSON() {
 		GTSL::JSON<BE::PAR> json(GetPersistentAllocator());
 
@@ -2009,7 +1991,7 @@ private:
 			}
 
 			for(auto dependsOn : renderPass[u8"dependsOn"]) {
-				renderPassNodes[dependsOn].Connect(&node);
+				renderPassNodes[dependsOn].Connect(node);
 			}
 		}
 

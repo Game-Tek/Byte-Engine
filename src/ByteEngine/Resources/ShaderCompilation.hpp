@@ -120,3 +120,46 @@ inline void UpdateParentFileNameCache(uint64 po, GTSL::File& file, uint64 parent
 	file.SetPointer(po + 8 * 2);
 	file << parent_file_name_hash;
 }
+
+template<class A>
+auto operator<<(A& buffer, const GTSL::StringView string_view) -> A& {
+	buffer << string_view.GetBytes() << string_view.GetCodepoints();
+	buffer.Write(string_view.GetBytes(), reinterpret_cast<const byte*>(string_view.GetData()));
+	return buffer;
+}
+
+template<class A>
+auto operator>>(auto& buffer, GTSL::String<A>& vector) -> decltype(buffer)& {
+	uint32 length, codepoints;
+	buffer >> length >> codepoints;
+	for (uint32 i = 0; i < length; ++i) {
+		char8_t c;
+		buffer >> c;
+		vector += c;
+	}
+	return buffer;
+}
+
+inline void WriteIndexEntry(GTSL::File& file, uint64 pointer, GTSL::StringView string_view) {
+	file << pointer;
+	file << string_view;
+	byte pad = 0;
+	for(uint32 i = 0; i < (128 - 8 - 4 - 4 - string_view.GetBytes()); ++i) { file << pad; }
+}
+
+inline uint64 ReadIndexEntry(GTSL::File& file, uint64 pointer, auto&& f) {
+	file.SetPointer(pointer);
+
+	GTSL::StaticBuffer<256> buffer;
+	auto readBytes = file.Read(buffer, 128);
+
+	uint64 offset = 0; // Points to the data
+	buffer >> offset;
+
+	GTSL::StaticString<120> string;
+	buffer >> string;
+
+	f(offset, GTSL::StringView(string));
+
+	return pointer + readBytes;
+}

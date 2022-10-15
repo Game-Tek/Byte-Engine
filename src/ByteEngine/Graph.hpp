@@ -8,16 +8,18 @@ private:
 		Internal(T d) : data(d) {}
 
 		~Internal() {
-			for(uint32 i = 0; i < childrenCount; ++i) {
-				nodes[i] = nullptr;
+			for(uint32 i = 0; i < downstreamCount; ++i) {
+				downstream[i] = nullptr;
 			}
 
-			childrenCount = 0u;
+			downstreamCount = 0u;
+			upstreamCount = 0u;
 		}
 
 		T data;
-		Internal* nodes[64] = { nullptr };
-		uint32 childrenCount = 0;
+		Internal* downstream[64] = { nullptr };
+		Internal* upstream[64] = { nullptr };
+		uint32 downstreamCount = 0, upstreamCount = 0;
 	}* internal = nullptr;
 
 	bool shared = false;
@@ -32,10 +34,15 @@ public:
 	}
 
 	Graph(const Graph& other) : internal(new Internal(other.GetData())) {
-		internal->childrenCount = other.internal->childrenCount;
+		internal->downstreamCount = other.internal->downstreamCount;
+		internal->upstreamCount = other.internal->upstreamCount;
 
-		for(uint32 i = 0; i < internal->childrenCount; ++i) {
-			internal->nodes[i] = other.internal->nodes[i];
+		for(uint32 i = 0; i < internal->downstreamCount; ++i) {
+			internal->downstream[i] = other.internal->downstream[i];
+		}
+
+		for(uint32 i = 0; i < internal->upstreamCount; ++i) {
+			internal->upstream[i] = other.internal->upstream[i];
 		}
 	}
 
@@ -44,15 +51,26 @@ public:
 		internal = nullptr;
 	}
 
-	void Connect(const Graph& other) {
-		internal->nodes[internal->childrenCount++] = other.internal;
+	void Connect(Graph& other) {
+		internal->downstream[internal->downstreamCount++] = other.internal;
+		other.internal->upstream[other.internal->upstreamCount++] = internal;
+	}
+
+	auto GetParents() const {
+		GTSL::StaticVector<Graph, 64> children;
+
+		for(uint32 i = 0; i < internal->upstreamCount; ++i) {
+			children.EmplaceBack(internal->upstream[i]);
+		}
+
+		return children;
 	}
 
 	auto GetChildren() const {
 		GTSL::StaticVector<Graph, 64> children;
 
-		for(uint32 i = 0; i < internal->childrenCount; ++i) {
-			children.EmplaceBack(internal->nodes[i]);
+		for(uint32 i = 0; i < internal->downstreamCount; ++i) {
+			children.EmplaceBack(internal->downstream[i]);
 		}
 
 		return children;

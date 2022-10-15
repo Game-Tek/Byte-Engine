@@ -155,7 +155,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	}
 
 	{
-		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", u8"GTAO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO", u8"SSAO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
 
 		//{
 		//	auto l = {

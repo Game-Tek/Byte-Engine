@@ -68,7 +68,7 @@ struct PermutationManager : Object {
 	};
 
 	template<class A>
-	PermutationManager* CreateChild(GPipeline* pipeline, const GTSL::StringView name) {
+	PermutationManager* CreateChild(const GTSL::StringView name) {
 		auto permutationManager = GTSL::SmartPointer<A, BE::TAR>(GetTransientAllocator(), name);
 
 		Children.EmplaceBack(permutationManager);

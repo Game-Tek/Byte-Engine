@@ -41,25 +41,6 @@ auto operator>>(auto& buffer, GTSL::Vector<T, A>& vector) -> decltype(buffer)& {
 	return buffer;
 }
 
-template<class A>
-auto operator<<(auto& buffer, const GTSL::String<A>& vector) -> decltype(buffer)& {
-	buffer << vector.GetBytes() << vector.GetCodepoints();
-	for (uint32 i = 0; i < vector.GetBytes(); ++i) { buffer << vector.c_str()[i]; }
-	return buffer;
-}
-
-template<class A>
-auto operator>>(auto& buffer, GTSL::String<A>& vector) -> decltype(buffer)& {
-	uint32 length, codepoints;
-	buffer >> length >> codepoints;
-	for (uint32 i = 0; i < length; ++i) {
-		char8_t c;
-		buffer >> c;
-		vector += c;
-	}
-	return buffer;
-}
-
 template<typename T, class A>
 auto Read(auto& buffer, GTSL::Vector<T, A>& vector, const BE::PAR& allocator) -> decltype(buffer)& {
 	uint32 length;
@@ -69,26 +50,22 @@ auto Read(auto& buffer, GTSL::Vector<T, A>& vector, const BE::PAR& allocator) ->
 }
 
 template<uint8 S>
-auto operator<<(auto& buffer, const GTSL::ShortString<S>& string) -> decltype(buffer)& {
-	for (uint32 i = 0; i < S; ++i) { buffer << string.begin()[i]; }
-	return buffer;
-}
-
-template<uint8 S>
 auto operator>>(auto& buffer, GTSL::ShortString<S>& string) -> decltype(buffer)& {
-	for (uint32 i = 0; i < S; ++i) { buffer >> const_cast<char8_t*>(string.begin())[i]; }
+	uint32 length, codepoints;
+	buffer >> length; buffer >> codepoints;
+	for (uint32 i = 0; i < length; ++i) { buffer >> const_cast<char8_t*>(string.begin())[i]; }
 	return buffer;
 }
 
-template<GTSL::Enum E>
-auto operator<<(auto& buffer, const E enu) -> decltype(buffer)& {
-	buffer << static_cast<GTSL::UnderlyingType<E>>(enu);
+template<class A>
+A& operator<<(A& buffer, GTSL::Enum auto enu) {
+	buffer << static_cast<GTSL::UnderlyingType<decltype(enu)>>(enu);
 	return buffer;
 }
 
-template<GTSL::Enum E>
-auto operator>>(auto& buffer, E& enu) -> decltype(buffer)& {
-	buffer >> reinterpret_cast<GTSL::UnderlyingType<E>&>(enu);
+template<class A, GTSL::Enum T>
+A& operator>>(A& buffer, T& enu) {
+	buffer >> reinterpret_cast<GTSL::UnderlyingType<T>&>(enu);
 	return buffer;
 }
 
@@ -547,7 +524,7 @@ private:
 		uint32 offset = 0;
 
 		for (const auto& s : shader_group_info.Shaders) {
-			shaderPackageFile.SetPointer(shaderOffsets[s.Hash]);
+			shaderPackageFile.SetPointer(shaderOffsets[GTSL::Hash(s.Name)]);
 			shaderPackageFile.Read(s.Size, buffer.begin() + offset);
 			offset += s.Size;
 		}
@@ -602,13 +579,11 @@ inline Class ShaderClassFromString(GTSL::StringView string) {
 }
 
 inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initialize_info) : ResourceManager(initialize_info, u8"ShaderResourceManager"), shaderGroupInfoOffsets(8, GetPersistentAllocator()), shaderInfoOffsets(8, GetPersistentAllocator()), shaderOffsets(8, GetPersistentAllocator()), loadedShaders(16, GetPersistentAllocator()) {
-	shaderPackageFile.Open(GetResourcePath(u8"Shaders", u8"bepkg"), GTSL::File::READ | GTSL::File::WRITE, true);
+	auto a0 = shaderPackageFile.Open(GetResourcePath(u8"Shaders", u8"bepkg"), GTSL::File::READ | GTSL::File::WRITE, true);
 
-	shaderGroupsTableFile.Open(GetResourcePath(u8"ShaderGroups.betbl"), GTSL::File::READ | GTSL::File::WRITE, true);
-	shaderInfoTableFile.Open(GetResourcePath(u8"ShaderInfo.betbl"), GTSL::File::READ | GTSL::File::WRITE, true);
-	shadersTableFile.Open(GetResourcePath(u8"Shaders.betbl"), GTSL::File::READ | GTSL::File::WRITE, true);
-
-	bool created = false;
+	auto a1 = shaderGroupsTableFile.Open(GetResourcePath(u8"ShaderGroups.betbl"), GTSL::File::READ | GTSL::File::WRITE, true);
+	auto a2 = shaderInfoTableFile.Open(GetResourcePath(u8"ShaderInfo.betbl"), GTSL::File::READ | GTSL::File::WRITE, true);
+	auto a3 = shadersTableFile.Open(GetResourcePath(u8"Shaders.betbl"), GTSL::File::READ | GTSL::File::WRITE, true);
 
 	switch (shaderInfosFile.Open(GetResourcePath(u8"Shaders", u8"beidx"), GTSL::File::READ | GTSL::File::WRITE, true)) {
 	case GTSL::File::OpenResult::OK: break;
@@ -628,28 +603,28 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 	permutations.Emplace(u8"CommonPermutation", static_cast<PermutationManager*>(commonPermutation.GetData()));
 
-	GPipeline pipeline;
 
 	{ //configure permutations
-		permutations.Emplace(u8"ForwardRenderingPermutation", commonPermutation->CreateChild<ForwardRenderPassPermutation>(&pipeline, u8"ForwardRenderingPermutation"));
-		permutations.Emplace(u8"RayTracePermutation", commonPermutation->CreateChild<RayTracePermutation>(&pipeline, u8"RayTracePermutation"));
-		permutations.Emplace(u8"UIPermutation", commonPermutation->CreateChild<UIPermutation>(&pipeline, u8"UIPermutation"));
+		permutations.Emplace(u8"ForwardRenderingPermutation", commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderingPermutation"));
+		permutations.Emplace(u8"RayTracePermutation", commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation"));
+		permutations.Emplace(u8"UIPermutation", commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation"));
 	}
+
+	GPipeline pipeline;
 
 	PermutationManager::InitializePermutations(commonPermutation, &pipeline);
 
-	changeCache.Open(GetResourcePath(u8"ShaderResourceManagerCache.bin"), GTSL::File::READ | GTSL::File::WRITE, true);
+	auto a4 = changeCache.Open(GetResourcePath(u8"ShaderResourceManagerCache.bin"), GTSL::File::READ | GTSL::File::WRITE, true);
 
 	auto changedFiles = GetChangedFiles(GetTransientAllocator(), changeCache, { GetUserResourcePath(u8"*.bespg.json"), GetUserResourcePath(u8"*.besh.json"), GetUserResourcePath(u8"*.besg.json"), GetUserResourcePath(u8"*.txt") });
 
-	if (!(shaderPackageFile.GetSize() && shaderGroupsTableFile.GetSize() && shaderInfoTableFile.GetSize() && shadersTableFile.GetSize() && shaderInfosFile.GetSize() && shaderGroupInfosFile.GetSize() && changeCache.GetSize()) or created) {
+	if (!(shaderPackageFile.GetSize() && shaderGroupsTableFile.GetSize() && shaderInfoTableFile.GetSize() && shadersTableFile.GetSize() && shaderInfosFile.GetSize() && shaderGroupInfosFile.GetSize() && changeCache.GetSize())) {
 		shaderPackageFile.Resize(0);
 		shaderGroupsTableFile.Resize(0);
 		shaderInfoTableFile.Resize(0);
 		shadersTableFile.Resize(0);
 		shaderInfosFile.Resize(0);
 		shaderGroupInfosFile.Resize(0);
-		created = true;
 	}
 
 	ShaderMap shaderMap(32, GetTransientAllocator());
@@ -860,6 +835,12 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		UpdateFileHashCache(e.Pointer, changeCache, e.FileHash);
 	}
 
+	for (auto& e : changedFiles) {
+		if(e.State != State::DELETED) { continue; }
+
+		// TODO: delete
+	}
+
 	auto printDependencyTree = [&](uint64 parent_file_name_hash, const Graph<IFile>& node, auto&& self) -> void {
 		auto& nodeData = node.GetData();
 
@@ -874,37 +855,27 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		printDependencyTree(0ull, dependencyTree[GTSL::Hash(u8"CommonPermutation.bespg.json")], printDependencyTree);
 	}
 
-	shaderGroupsTableFile.SetPointer(0);
-
 	{
 		uint32 offset = 0;
-		while (offset < shaderGroupsTableFile.GetSize()) {
-			GTSL::ShortString<32> name; uint64 position;
-			shaderGroupsTableFile >> name >> position;
-			offset += 32 + 8;
-			shaderGroupInfoOffsets.Emplace(Id(name), position);
+
+		while(offset != shaderGroupsTableFile.GetSize()) {
+			offset = ReadIndexEntry(shaderGroupsTableFile, offset, [&](const uint64 offset, const GTSL::StringView name) { shaderGroupInfoOffsets.Emplace(Id(name), offset); });
 		}
 	}
 
-	shaderInfoTableFile.SetPointer(0);
 	{
 		uint32 offset = 0;
-		while (offset < shaderInfoTableFile.GetSize()) {
-			uint64 name; uint64 position;
-			shaderInfoTableFile >> name >> position;
-			offset += 8 + 8;
-			shaderInfoOffsets.Emplace(name, position);
+
+		while(offset != shaderInfoTableFile.GetSize()) {
+			offset = ReadIndexEntry(shaderInfoTableFile, offset, [&](const uint64 offset, const GTSL::StringView name) { shaderInfoOffsets.Emplace(GTSL::Hash(name), offset); });		
 		}
 	}
 
-	shadersTableFile.SetPointer(0);
 	{
 		uint32 offset = 0;
-		while (offset < shadersTableFile.GetSize()) {
-			uint64 name; uint64 position;
-			shadersTableFile >> name >> position;
-			offset += 8 + 8;
-			shaderOffsets.Emplace(name, position);
+
+		while(offset != shadersTableFile.GetSize()) {
+			offset = ReadIndexEntry(shadersTableFile, offset, [&](const uint64 offset, const GTSL::StringView name) { shaderOffsets.Emplace(GTSL::Hash(name), offset); });
 		}
 	}
 }
@@ -956,9 +927,8 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 		shader_group_data_serialize->Tags.EmplaceBack(e[u8"name"].GetStringView(), e[u8"value"].GetStringView());
 	}
 
-	GPipeline::ElementHandle shaderParametersDataHandle;
-
 	{
+		GPipeline::ElementHandle shaderParametersDataHandle;
 		GTSL::StaticVector<StructElement, 16> structElements;
 
 		for (auto p : json[u8"parameters"]) {
@@ -1132,6 +1102,8 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 				if (!shaderResult) { BE_LOG_WARNING(shaderResult.Get().Second); }
 				auto shaderHash = quickhash64(GTSL::Range(shaderResult.Get().First.GetBytes(), reinterpret_cast<const byte*>(shaderResult.Get().First.c_str())));
 
+				uint64 shaderNameHash = GTSL::Hash(shaderJson[u8"name"].GetStringView());
+
 				if (!loadedShaders.Find(shaderHash)) {
 					loadedShaders.Emplace(shaderHash);
 
@@ -1142,8 +1114,8 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 						/*BE_LOG_ERROR(shaderResult.Get().First);*/ BE_LOG_ERROR(resultString);
 					}
 
-					shaderInfoTableFile << shaderHash << shaderInfosFile.GetSize(); //shader info table
-					shadersTableFile << shaderHash << shaderPackageFile.GetSize(); //shader table
+					WriteIndexEntry(shaderInfoTableFile, shaderInfosFile.GetSize(), shaderJson[u8"name"]);
+					WriteIndexEntry(shadersTableFile, shaderPackageFile.GetSize(), shaderJson[u8"name"]);
 
 					shaderInfosFile << GTSL::ShortString<64>(shaderJson[u8"name"]) << static_cast<uint32>(shaderBuffer.GetLength()) << shaderHash;
 					shaderInfosFile << 0u; //0 params
@@ -1163,7 +1135,7 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 				}
 
 				shader_group_data_serialize->Shaders.EmplaceBack(shaderGroupUsedShaders.GetLength());
-				shaderGroupUsedShaders.EmplaceBack(shaderHash);
+				shaderGroupUsedShaders.EmplaceBack(shaderNameHash);
 			}
 		}
 	};
@@ -1171,7 +1143,7 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 	evaluateForPermutation(root_permutation, {GPipeline::GLOBAL_SCOPE}, evaluateForPermutation);
 
 	for(auto& e :shader_group_data_serialize->Instances) {
-		shaderGroupsTableFile << GTSL::ShortString<32>(e.Name) << shaderGroupInfosFile.GetSize(); // write offset to shader group for each instance name
+		WriteIndexEntry(shaderGroupsTableFile, shaderGroupInfosFile.GetSize(), e.Name); // write offset to shader group for each instance name
 	}
 
 	{

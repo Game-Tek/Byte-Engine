@@ -212,7 +212,7 @@ struct GPipeline : Object {
 	uint32 GetLevel(const ElementHandle element_handle) const { return elements[element_handle.Handle].Level; }
 
 	auto GetElement(const ElementHandle element_handle) -> LanguageElement& { return elements[element_handle.Handle]; }
-	const auto& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
+	const LanguageElement& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
 
 	auto& GetFunctionTokens(const ElementHandle element_handle) {
 		return Functions[GetElement(element_handle).Reference].Tokens;
@@ -320,7 +320,7 @@ public:
 		return { ElementHandle(GLOBAL_SCOPE), false };
 	}
 
-	auto GetChildren(const ElementHandle element_handle) {
+	auto GetChildren(const ElementHandle element_handle) const {
 		GTSL::StaticVector<ElementHandle, 128> children;
 		for (auto& e : GetElement(element_handle).symbols) {
 			children.EmplaceBack(e);
@@ -372,7 +372,7 @@ public:
 		main.Tokens.PushBack(tokens);
 	}
 
-	auto GetFunctionOverloads(const ElementHandle parent, const GTSL::StringView name) {
+	auto GetFunctionOverloads(const ElementHandle parent, const GTSL::StringView name) const {
 		auto& element = GetElement(parent);
 
 		GTSL::StaticVector<ElementHandle, 8> overloads;
@@ -384,7 +384,7 @@ public:
 		return overloads;
 	}
 
-	auto GetFunctionOverloads(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) {
+	auto GetFunctionOverloads(GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) const {
 		for (auto& p : parents) {
 			if (auto res = TryGetElement(p, name)) {
 				GTSL::StaticVector<ElementHandle, 8> overloads;
@@ -470,11 +470,11 @@ public:
 		deductionGuides.EmplaceBack().PushBack(access_chain);
 	}
 
-	GTSL::Range<const ElementHandle*> GetMemberDeductionGuide(const ElementHandle member_deduction_guide) {
+	GTSL::Range<const ElementHandle*> GetMemberDeductionGuide(const ElementHandle member_deduction_guide) const {
 		return GTSL::Range<const ElementHandle*>(deductionGuides[GetElement(member_deduction_guide).Reference]);
 	}
 
-	StructElement GetMember(ElementHandle element_handle) {
+	StructElement GetMember(ElementHandle element_handle) const {
 		return members[GetElement(element_handle).Reference];
 	}
 
@@ -494,7 +494,7 @@ public:
 		return structs[GetElement(element_handle).Reference];
 	}
 
-	GTSL::StaticVector<ElementHandle, 16> GetAccessChain(const ElementHandle source) {
+	GTSL::StaticVector<ElementHandle, 16> GetAccessChain(const ElementHandle source) const {
 		GTSL::StaticVector<ElementHandle, 16> chain;
 
 		auto g = [&](ElementHandle t, auto&& self) -> void {
@@ -510,12 +510,12 @@ public:
 
 	// Returns an array of elements that match the desired type
 	// The return order is by scope
-	auto GetElements(LanguageElement::ElementType element_type, GTSL::Range<const ElementHandle*> scopes) {
+	auto GetElements(LanguageElement::ElementType element_type, GTSL::Range<const ElementHandle*> scopes) const {
 		GTSL::StaticVector<ElementHandle, 32> foundElements;
 
 		for(auto& scope : scopes) {
 			auto& element = elements[scope.Handle];
-			for(auto childIterator : element.symbols) {
+			for(const auto childIterator : element.symbols) {
 				auto& child = elements[childIterator];
 
 				if(child.Type != element_type) { continue; }
@@ -527,7 +527,7 @@ public:
 		return foundElements;
 	}
 
-	void MakeJSON(auto& string, const GTSL::Range<const ElementHandle*> scopes) {
+	void MakeJSON(auto& string, const GTSL::Range<const ElementHandle*> scopes) const {
 		GTSL::JSONSerializer serializer = GTSL::MakeSerializer(string);
 
 		GTSL::StartArray(serializer, string, u8"structs");
@@ -548,7 +548,7 @@ public:
 				g(e, g);
 			}
 
-			for (auto& r : GetElements(GPipeline::LanguageElement::ElementType::STRUCT, { e })) {
+			for (auto& r : GetElements(LanguageElement::ElementType::STRUCT, { e })) {
 				auto& element = GetElement(r);
 				
 				GTSL::StartObject(serializer, string);
@@ -629,7 +629,7 @@ private:
  * \return Result containing an error code and two strings, one with shader code and one with all the error codes.
  */
 template<class ALLOCATOR>
-GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> GenerateShader(GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics, const ALLOCATOR& allocator) {
+GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> GenerateShader(const GPipeline& pipeline, const GTSL::Range<const GPipeline::ElementHandle*> scopes, GAL::ShaderType targetSemantics, const ALLOCATOR& allocator) {
 	GTSL::String<ALLOCATOR> headerBlock(allocator), structBlock(allocator), functionBlock(allocator), declarationBlock(allocator); GTSL::StaticString<1024> errorString;
 
 	auto addErrorCode = [&errorString](const GTSL::StringView string) {

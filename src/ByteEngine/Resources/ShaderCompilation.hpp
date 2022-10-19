@@ -1,4 +1,5 @@
 #pragma once
+
 #include "ByteEngine/Graph.hpp"
 
 enum class State : uint8 {
@@ -162,4 +163,35 @@ inline uint64 ReadIndexEntry(GTSL::File& file, uint64 pointer, auto&& f) {
 	f(offset, GTSL::StringView(string));
 
 	return pointer + readBytes;
+}
+
+inline void UpdateIndexEntry(GTSL::File& file, uint64 pointer, uint64 new_pointer) {
+	file.SetPointer(pointer);
+
+	file << new_pointer;
+}
+
+inline GAL::ShaderType ShaderTypeFromString(GTSL::StringView string) {
+	switch (GTSL::Hash(string)) {
+		case GTSL::Hash(u8"VERTEX"): return GAL::ShaderType::VERTEX;
+		case GTSL::Hash(u8"FRAGMENT"): return GAL::ShaderType::FRAGMENT;
+		case GTSL::Hash(u8"COMPUTE"): return GAL::ShaderType::COMPUTE;
+		case GTSL::Hash(u8"RAY_GEN"): return GAL::ShaderType::RAY_GEN;
+		case GTSL::Hash(u8"CLOSEST_HIT"): return GAL::ShaderType::CLOSEST_HIT;
+		case GTSL::Hash(u8"ANY_HIT"): return GAL::ShaderType::ANY_HIT;
+		case GTSL::Hash(u8"MISS"): return GAL::ShaderType::MISS;
+	}
+}
+
+#include "ShaderGenerator.h"
+
+inline Class ShaderClassFromString(GTSL::StringView string) {
+	switch (GTSL::Hash(string)) {
+		case GTSL::Hash(u8"VERTEX"): return Class::VERTEX;
+		case GTSL::Hash(u8"SURFACE"): return Class::SURFACE;
+		case GTSL::Hash(u8"COMPUTE"): return Class::COMPUTE;
+		case GTSL::Hash(u8"RAY_GEN"): return Class::RAY_GEN;
+		case GTSL::Hash(u8"CLOSEST_HIT"): return Class::CLOSEST_HIT;
+		case GTSL::Hash(u8"MISS"): return Class::MISS;
+	}
 }

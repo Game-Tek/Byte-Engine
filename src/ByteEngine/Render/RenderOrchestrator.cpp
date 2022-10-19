@@ -1177,7 +1177,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 			shader.Name = shaderInfo.Name;
 			loadedShadersMap.Emplace(shaderInfo.Hash);
 
-			{ // Check if shader symbols match active runtime symbols
+			if(shaderInfo.DebugData){ // Check if shader symbols match active runtime symbols
 				auto json = GTSL::JSON(shaderInfo.DebugData, GetPersistentAllocator());
 				
 				for(auto jsonStruct : json[u8"structs"]) {

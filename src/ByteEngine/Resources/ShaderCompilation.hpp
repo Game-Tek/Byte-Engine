@@ -3,7 +3,7 @@
 #include "ByteEngine/Graph.hpp"
 
 enum class State : uint8 {
-	ADDED, MODIFIED, DELETED
+	NONE, ADDED, MODIFIED, DELETED
 };
 
 struct FileChangeNotification {
@@ -83,7 +83,7 @@ auto GetTree(const auto& allocator, GTSL::File& file){
 		auto currentNodeFileHash = *(reinterpret_cast<const uint64*>(entry) + 1);
 		auto parentHash = *(reinterpret_cast<const uint64*>(entry) + 2);
 
-		auto& currentNode = tree.Emplace(currentNodeHash, FileChangeNotification{ State::MODIFIED, currentNodeHash, currentNodeFileHash, { GTSL::StringView{ reinterpret_cast<const char8_t*>(entry + 24) }, allocator }, i * 512, parentHash });
+		auto& currentNode = tree.Emplace(currentNodeHash, FileChangeNotification{ State::NONE, currentNodeHash, currentNodeFileHash, { GTSL::StringView{ reinterpret_cast<const char8_t*>(entry + 24) }, allocator }, i * 512, parentHash });
 
 		if(!parentHash) { continue; }
 
@@ -141,11 +141,15 @@ auto operator>>(auto& buffer, GTSL::String<A>& vector) -> decltype(buffer)& {
 	return buffer;
 }
 
-inline void WriteIndexEntry(GTSL::File& file, uint64 pointer, GTSL::StringView string_view) {
-	file << pointer;
+inline uint64 WriteIndexEntry(GTSL::File& file, uint64 pointer, uint64 data_pointer, GTSL::StringView string_view) {
+	uint64 p = 0;
+	if(pointer != ~0ULL) { file.SetPointer(pointer); p = pointer; } else { p = file.GetSize(); }
+	file << data_pointer;
 	file << string_view;
 	byte pad = 0;
 	for(uint32 i = 0; i < (128 - 8 - 4 - 4 - string_view.GetBytes()); ++i) { file << pad; }
+	BE_ASSERT(p % 128 == 0, u8"uh oh");
+	return p;
 }
 
 inline uint64 ReadIndexEntry(GTSL::File& file, uint64 pointer, auto&& f) {

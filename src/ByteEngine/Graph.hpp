@@ -52,6 +52,12 @@ public:
 	}
 
 	void Connect(Graph& other) {
+		for(uint32 i = 0; i < other.internal->upstreamCount; ++i) {
+			if(other.internal->upstream[i] == other.internal) {
+				__debugbreak();
+			}
+		}
+
 		internal->downstream[internal->downstreamCount++] = other.internal;
 		other.internal->upstream[other.internal->upstreamCount++] = internal;
 	}

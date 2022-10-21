@@ -717,7 +717,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				GTSL::File shaderFile(GetUserResourcePath(json[u8"name"], u8"besh.txt"));
 
 				if(shaderFile) {
-					GTSL::StaticBuffer<8192> shaderFileBuffer(shaderFile);
+					GTSL::StaticBuffer<16384> shaderFileBuffer(shaderFile);
 					shaderEntry.rest.element = GTSL::StringView(shaderFileBuffer);
 				} else {
 					BE_LOG_WARNING(u8"Did not find a shader file for shader: ", json[u8"name"], u8".");

@@ -126,7 +126,7 @@ protected:
 	MAKE_HANDLE(uint64, Resource);
 
 	struct AttachmentData {
-		GTSL::StaticString<64> Name;
+		GTSL::StaticString<64> Name, Attachment;
 		GAL::TextureLayout Layout;
 		GAL::PipelineStage ConsumingStages;
 		GAL::AccessType Access;
@@ -173,23 +173,19 @@ public:
 	[[nodiscard]] DataKeyHandle MakeDataKey(RenderSystem* renderSystem, const GTSL::StringView scope, const GTSL::StringView type, DataKeyHandle data_key_handle = DataKeyHandle(), GAL::BufferUse buffer_uses = GAL::BufferUse()) {
 		RenderSystem::BufferHandle b[2]{};
 
-		GTSL::StaticString<64> string(u8"Buffer: "); string << scope << u8"." << type;
-		auto handle = addMember(scope, type, string);
+		GTSL::StaticString<128> string(u8"Buffer: "); string << scope << u8"." << type;
+		const auto handle = addMember(scope, type, string);
 
-		auto size = GetSize(handle.Get());
+		const auto size = GetSize(handle.Get());
 
-		b[0] = renderSystem->CreateBuffer(size, buffer_uses, true, b[0]);
-		b[1] = renderSystem->CreateBuffer(size, buffer_uses, false, b[1]);
+		b[0] = renderSystem->CreateBuffer(size, buffer_uses, true, b[0]); // Create host local, mappable buffer
+		b[1] = renderSystem->CreateBuffer(size, buffer_uses, false, b[1]); // Create device local buffer to copy content into
 
 		if(!data_key_handle) {
 			data_key_handle = MakeDataKey();			
 		}
 
 		auto& dataKey = getDataKey(data_key_handle);
-
-		if(dataKey.Buffer[0]) {
-			__debugbreak();
-		}
 
 		dataKey.Buffer[0] = b[0];
 		dataKey.Buffer[1] = b[1];
@@ -1106,6 +1102,7 @@ private:
 		GAL::PipelineStage PipelineStages;
 		MemberHandle RenderTargetReferences;
 		ResourceHandle ResourceHandle;
+		DataKeyHandle DataKey;
 	};
 
 	struct DataNode {
@@ -1479,7 +1476,7 @@ private:
 		GAL::TextureUse Uses; GAL::TextureLayout Layout[MAX_CONCURRENT_FRAMES];
 		GAL::PipelineStage ConsumingStages; GAL::AccessType AccessType;
 		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
-		uint32 ImageIndex;
+		uint32 ImageIndeces[MAX_CONCURRENT_FRAMES];
 	};
 	GTSL::HashMap<GTSL::StringView, Attachment, BE::PAR> attachments;
 

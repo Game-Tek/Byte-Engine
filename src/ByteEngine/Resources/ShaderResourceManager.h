@@ -874,7 +874,6 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 		while(offset != shaderInfoTableFile.GetSize()) {
 			offset = ReadIndexEntry(shaderInfoTableFile, offset, [&](const uint64 offs, const GTSL::StringView name) {
-				BE_LOG_MESSAGE(u8"Shader info offsets: ", name);
 				shaderInfoOffsets.Emplace(GTSL::Hash(name), offs);
 				shaderInfoPointers.Emplace(GTSL::Hash(name), offset);
 			});		
@@ -886,7 +885,6 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 		while(offset != shadersTableFile.GetSize()) {
 			offset = ReadIndexEntry(shadersTableFile, offset, [&](const uint64 offs, const GTSL::StringView name) {
-				BE_LOG_MESSAGE(u8"Shader offsets: ", name);
 				shaderOffsets.Emplace(GTSL::Hash(name), offs);
 				shadersPointer.Emplace(GTSL::Hash(name), offset);
 			});

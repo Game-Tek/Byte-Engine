@@ -181,7 +181,6 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
 		graphicsCommandLists[f] = renderSystem->CreateCommandList(u8"Graphics Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT, false);
 		graphicsWorkloadHandle[f] = renderSystem->CreateWorkload(u8"Frame work", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT);
-		imageAcquisitionWorkloadHandles[f] = renderSystem->CreateWorkload(u8"Swapchain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 		transferCommandList[f] = renderSystem->CreateCommandList(u8"Transfer Command List", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
 	}
 
@@ -189,12 +188,19 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 	auto* windowSystem = GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem");
 
-	renderContext = renderSystem->CreateRenderContext(windowSystem, static_cast<GameApplication*>(BE::Application::Get())->GetWindowHandle());
+	{
+		auto& v = views.EmplaceBack();
+		v.name = u8"Lighting";
+		v.windowHandle = static_cast<GameApplication*>(BE::Application::Get())->GetWindowHandle();
+		v.renderContext = renderSystem->CreateRenderContext(windowSystem, v.windowHandle);
+		v.workloadHandles[0] = renderSystem->CreateWorkload(u8"Swapchain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
+		v.workloadHandles[1] = renderSystem->CreateWorkload(u8"Swapchain Image Acquisition", GAL::QueueTypes::GRAPHICS, GAL::PipelineStages::TRANSFER);
+	}
 
 	for(auto rp : config[u8"RenderOrchestrator"][u8"debugViews"]) {
 		if(!attachments.Find(rp)) { BE_LOG_WARNING(u8"Tried to enable debug view for attachment ", GTSL::StringView(rp), u8", but no such attachment exists."); continue; }
 
-		auto& dv = debugViews.EmplaceBack(rp.GetStringView());
+		auto& dv = views.EmplaceBack(rp.GetStringView());
 
 		dv.windowHandle = windowSystem->CreateWindow(u8"debugView", rp.GetStringView(), { 1920, 1080 });
 		dv.renderContext = renderSystem->CreateRenderContext(windowSystem, dv.windowHandle);
@@ -236,25 +242,24 @@ inline float32 Halton(uint32 i, uint32 b) {
 }
 
 void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
-	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = uint8(currentFrame - uint8(1)) % renderSystem->GetPipelinedFrames();
-
-	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent(renderContext);
+	const uint8 currentFrame = renderSystem->GetCurrentFrame(); auto beforeFrame = static_cast<uint8>(currentFrame - static_cast<uint8>(1)) % renderSystem->GetPipelinedFrames();
 	
 	renderSystem->Wait(graphicsWorkloadHandle[currentFrame]); // We HAVE to wait or else descriptor update fails because command list may be in use
 
-	if (auto res = renderSystem->AcquireImage(renderContext, imageAcquisitionWorkloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res || sizeHistory[currentFrame] != sizeHistory[beforeFrame]) {
-		OnResize(renderSystem, res.Get());
-		renderArea = res.Get();
-	}
-
-	for(auto& dv : debugViews) {
-		if (auto res = renderSystem->AcquireImage(dv.renderContext, dv.workloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res) {
+	for(uint32 i = 0; i < views; ++i) {
+		auto& dv = views[i];
+		if (auto res = renderSystem->AcquireImage(dv.renderContext, dv.workloadHandles[currentFrame], GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem")); res || dv.sizeHistory[currentFrame] != dv.sizeHistory[beforeFrame]) {
+			if(i == 0u) { // Only resize attachments if master window was resized.
+				OnResize(renderSystem, res.Get());
+			} else {
+				dv.sizeHistory[currentFrame] = views[0].sizeHistory[currentFrame];
+			}
 		}
 	}
 
-	updateDescriptors(taskInfo);
+	GTSL::Extent2D renderArea = renderSystem->GetRenderExtent(views[0].renderContext);
 
-	GTSL::StringView resultAttachment;
+	updateDescriptors(taskInfo);
 
 	bool debugRenderNodes = BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugRenderNodes"].GetBool();
 
@@ -618,8 +623,6 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				}
 				}
 
-				resultAttachment = renderPassData.Attachments[0].Name;
-
 				break;
 			}
 			}
@@ -650,7 +653,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				break;
 			}
 			case RTT::GetTypeIndex<RenderPassData>(): {
-				auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
+				const auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
 				if (renderPassData.Type == PassType::RASTER) {
 					commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
 				}
@@ -663,26 +666,12 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		ForEachWithDisabled(renderingTree, visitNode, endNode);
 
-		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE,
-		CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+		GTSL::StaticVector<CommandList::BarrierData, 8> preTransitions, postTransitions;
 
-		if (resultAttachment.GetCodepoints()) {
-			auto& attachment = attachments.At(resultAttachment);
+		for(auto& dv : views) {
+			auto& pre = preTransitions.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() });
 
-			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
-				GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
-				GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
-
-			updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
-
-			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory [currentFrame], *renderSystem->GetSwapchainTexture(renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(renderContext)));
-		}
-
-		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
-		GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
-
-		for(auto& dv : debugViews) {
-			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { pre }, GetTransientAllocator());
 
 			{
 				auto& attachment = attachments.At(dv.name);
@@ -693,11 +682,13 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 				updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
 
-				commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, sizeHistory [currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
+				commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, dv.sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
 			}
 
-			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
-			GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() } } }, GetTransientAllocator());
+			auto& post = postTransitions.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
+			GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() });
+
+			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { post }, GetTransientAllocator());
 		}
 
 		renderSystem->EndCommandList(graphicsCommandLists[currentFrame]);
@@ -742,9 +733,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		if (BE::Application::Get()->GetBoolOption(u8"rayTracing")) {
 		}
 
-		workloads.EmplaceBack(imageAcquisitionWorkloadHandles[currentFrame]);
-
-		for(auto& dv : debugViews) {
+		for(auto& dv : views) {
 			workloads.EmplaceBack(dv.workloadHandles[currentFrame]);
 		}
 
@@ -758,9 +747,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		GTSL::StaticVector<RenderSystem::RenderContextHandle, 8> renderContexts;
 
-		renderContexts.EmplaceBack(renderContext);
-
-		for(const auto& e : debugViews) {
+		for(const auto& e : views) {
 			renderContexts.EmplaceBack(e.renderContext);
 		}
 
@@ -1013,8 +1000,8 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 		attachment.Layout[currentFrame] = GAL::TextureLayout::UNDEFINED;
 	};
 
-	if (sizeHistory[currentFrame] != newSize) {
-		sizeHistory[currentFrame] = newSize;
+	if (views[0].sizeHistory[currentFrame] != newSize) {
+		views[0].sizeHistory[currentFrame] = newSize;
 		GTSL::ForEach(attachments, resize);
 	}
 

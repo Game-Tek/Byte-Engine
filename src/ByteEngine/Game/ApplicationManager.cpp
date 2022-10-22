@@ -150,7 +150,9 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 			if (!taskSorter.GetValidInstances(result.Get())) {
 				taskSorter.ReleaseResources(result.Get());
 				if(ddd.RunAttempts > 3) {
-					BE_LOG_WARNING(u8"Task: ", task.Name, u8", has failed to run multiple times, removing from stack.");
+					if(debugTasks) {
+						BE_LOG_WARNING(u8"Task: ", task.Name, u8", has failed to run multiple times, removing from stack.");
+					}
 
 					nonDispatchedTasks.EmplaceBack(taskHandle);
 					stack.Pop(taskIndex); // Remove task from the stack for this cycle, since multiple fails to run can stall the whole pipeline
@@ -278,8 +280,6 @@ void ApplicationManager::AddStage(GTSL::StringView stageName)
 	}
 
 	stages.EmplaceBack();
-
-	BE_LOG_MESSAGE(u8"Added stage ", stageName)
 }
 
 void ApplicationManager::initWorld(const uint8 worldId)

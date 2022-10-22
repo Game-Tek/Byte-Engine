@@ -1045,7 +1045,7 @@ private:
 	RenderSystem::CommandListHandle graphicsCommandLists[MAX_CONCURRENT_FRAMES];
 	RenderSystem::CommandListHandle buildCommandList[MAX_CONCURRENT_FRAMES], transferCommandList[MAX_CONCURRENT_FRAMES];
 
-	RenderSystem::WorkloadHandle graphicsWorkloadHandle[MAX_CONCURRENT_FRAMES], buildAccelerationStructuresWorkloadHandle[MAX_CONCURRENT_FRAMES], imageAcquisitionWorkloadHandles[MAX_CONCURRENT_FRAMES];
+	RenderSystem::WorkloadHandle graphicsWorkloadHandle[MAX_CONCURRENT_FRAMES], buildAccelerationStructuresWorkloadHandle[MAX_CONCURRENT_FRAMES];
 
 	GTSL::HashMap<Id, uint32, BE::PAR> rayTracingSets;
 
@@ -1326,8 +1326,6 @@ private:
 
 	GTSL::HashMap<GTSL::StringView, uint32, BE::PAR> renderPassesMap;
 	GTSL::StaticVector<NodeHandle, 32> renderPasses;
-
-	GTSL::Extent2D sizeHistory[MAX_CONCURRENT_FRAMES];
 
 	struct Pipeline {
 		Pipeline(const BE::PAR& allocator) {}
@@ -1934,8 +1932,6 @@ private:
 
 	uint32 frameIndex = 0;
 
-	RenderSystem::RenderContextHandle renderContext;
-
 	struct UpdateKeyData {
 		struct ttt
 		{
@@ -1956,8 +1952,9 @@ private:
 		WindowSystem::WindowHandle windowHandle;
 		RenderSystem::RenderContextHandle renderContext;
 		RenderSystem::WorkloadHandle workloadHandles[MAX_CONCURRENT_FRAMES];
+		GTSL::Extent2D sizeHistory[MAX_CONCURRENT_FRAMES];
 	};
-	GTSL::StaticVector<DebugView, 8> debugViews;
+	GTSL::StaticVector<DebugView, 8> views;
 #endif
 
 	void parseRenderPassJSON() {

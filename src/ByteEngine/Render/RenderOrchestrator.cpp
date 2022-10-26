@@ -664,30 +664,39 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 		ForEach(renderingTree, visitNode, endNode);
 
-		GTSL::StaticVector<CommandList::BarrierData, 8> preTransitions, postTransitions;
+		GTSL::StaticVector<CommandList::BarrierData, 32> preTransitions, postTransitions;
 
+		// Do pre copy pipeline barriers
 		for(auto& dv : views) {
-			auto& pre = preTransitions.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() });
+			// Transition view swapchain image
+			preTransitions.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::UNDEFINED, GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat() });
 
-			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { pre }, GetTransientAllocator());
+			auto& attachment = attachments.At(dv.name);
 
-			{
-				auto& attachment = attachments.At(dv.name);
-
-				commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { { attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
+			// Transition attachment
+			preTransitions.EmplaceBack(attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
 					GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
-					GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor } } }, GetTransientAllocator());
+					GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor });
 
-				updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
-
-				commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, dv.sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
-			}
-
-			auto& post = postTransitions.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
-			GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() });
-
-			commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), { post }, GetTransientAllocator());
+			updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
 		}
+
+		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), preTransitions, GetTransientAllocator());
+
+		// Do copies from attachments to swapchain images
+		for(auto& dv : views) {
+			auto& attachment = attachments.At(dv.name);
+
+			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, dv.sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
+		}
+
+		// Do post copy pipeline barriers
+		for(auto& dv : views) {
+			postTransitions.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ, GAL::AccessTypes::WRITE, CommandList::TextureBarrier	{ renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION,
+			GAL::TextureLayout::PRESENTATION, renderSystem->GetSwapchainFormat() });
+		}
+
+		commandBuffer.AddPipelineBarrier(renderSystem->GetRenderDevice(), postTransitions, GetTransientAllocator());
 
 		renderSystem->EndCommandList(graphicsCommandLists[currentFrame]);
 

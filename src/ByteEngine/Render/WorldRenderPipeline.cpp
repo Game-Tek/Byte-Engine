@@ -159,13 +159,12 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 		{
 			auto l = {
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Depth"), GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ },
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"HistoryDepth"), GTSL::StringView(u8"Depth"), GAL::AccessTypes::READ },
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"HistoryAO"), GTSL::StringView(u8"AO"), GAL::AccessTypes::READ },
-				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"AO"), GTSL::StringView(u8"AO"), GAL::AccessTypes::WRITE }
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"AO"), GTSL::StringView(u8"AO"), GAL::AccessTypes::READ },
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Mean"), GTSL::StringView(u8"Mean"), GAL::AccessTypes::WRITE },
+				RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Variance"), GTSL::StringView(u8"Variance"), GAL::AccessTypes::WRITE }
 			};
 
-			auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"AO Blur", u8"TemporalBlur", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+			auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->globalData, u8"Calculate AO Variance", u8"CalculateVariance", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
 		}
 	}
 

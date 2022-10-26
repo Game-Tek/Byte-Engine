@@ -641,7 +641,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 	headerBlock += u8"#version 460 core\n"; //push version
 
-	bool isRayTracing = false;
+	bool isRayTracing = false, isCompute = false;
 
 	switch (targetSemantics) {
 	case GAL::ShaderType::RAY_GEN:
@@ -651,17 +651,29 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	case GAL::ShaderType::CALLABLE:
 	case GAL::ShaderType::MISS:
 		isRayTracing = true;
+		break;
+	case GAL::ShaderType::COMPUTE:
+		isCompute = true;
+		break;
 	}
 
 	headerBlock += u8"#extension GL_EXT_shader_16bit_storage : enable\n"; headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n";
 	headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n"; headerBlock += u8"#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n";
 	headerBlock += u8"#extension GL_EXT_nonuniform_qualifier : enable\n"; headerBlock += u8"#extension GL_EXT_scalar_block_layout : enable\n";
 	headerBlock += u8"#extension GL_EXT_buffer_reference : enable\n"; headerBlock += u8"#extension GL_EXT_buffer_reference2 : enable\n";
-	headerBlock += u8"#extension GL_EXT_shader_image_load_formatted : enable\n"; headerBlock += u8"#extension GL_KHR_shader_subgroup_basic : enable\n";
-	headerBlock += u8"#extension GL_KHR_shader_subgroup_arithmetic  : enable\n"; headerBlock += u8"#extension GL_KHR_shader_subgroup_ballot : enable\n";
+	headerBlock += u8"#extension GL_EXT_shader_image_load_formatted : enable\n";
+
+	if(isCompute) {
+		headerBlock += u8"#extension GL_KHR_shader_subgroup_basic : enable\n";
+		headerBlock += u8"#extension GL_KHR_shader_subgroup_arithmetic  : enable\n";
+		headerBlock += u8"#extension GL_KHR_shader_subgroup_ballot : enable\n";
+		headerBlock += u8"#extension GL_KHR_shader_subgroup_shuffle : enable\n";
+	}
+
 	if (isRayTracing) {
 		headerBlock += u8"#extension GL_EXT_ray_tracing : enable\n";
 	}
+
 	headerBlock += u8"layout(row_major) uniform; layout(row_major) buffer;\n"; //matrix order definitions
 
 	auto resolve = [&](const GTSL::StringView name) -> GTSL::StaticString<64> {
@@ -966,7 +978,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 							break;
 						}
 						case ShaderNode::Type::SEMICOLON: {
-							statementString += u8';';
+							statementString += u8";\n";
 							break;
 						}
 						case ShaderNode::Type::HASH: {

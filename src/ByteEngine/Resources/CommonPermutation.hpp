@@ -32,16 +32,20 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2f", u8"Normalize", { { u8"vec2u", u8"pos" }, { u8"vec2u", u8"extent" } }, u8"return (vec2f(pos) + 0.5f) / vec2f(extent);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec3f", u8"Barycenter", { { u8"vec3f", u8"p" }, { u8"vec3f", u8"a" }, { u8"vec3f", u8"b" }, { u8"vec3f", u8"c" } }, u8"vec3f v0 = b - a, v1 = c - a, v2 = p - a; float32 d00 = dot(v0, v0); float32 d01 = dot(v0, v1); float32 d11 = dot(v1, v1); float32 d20 = dot(v2, v0); float32 d21 = dot(v2, v1); float32 invDenom = 1.0f / (d00 * d11 - d01 * d01); v = (d11 * d20 - d01 * d21) * invDenom; w = (d00 * d21 - d01 * d20) * invDenom; return vec3f(1.0f - v - w, v, w);");
 
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2u", u8"GetExtent", { { u8"ImageReference", u8"image" } }, u8"return vec2u(imageSize(images[nonuniformEXT(image.Instance)]));");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec2u", u8"GetExtent", { { u8"TextureReference", u8"texture" } }, u8"return vec2u(textureSize(sampler2D(textures[nonuniformEXT(texture.Instance)], s), 0));");
+
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" }, { u8"float32", u8"mip" } }, u8"return textureLod(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord, mip);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"SampleNormal", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" } }, u8"return normalize(texture(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord) * 2.0f - 1.0f);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"vec2f", u8"texCoord" }, { u8"vec2f", u8"ddx" }, { u8"vec2f", u8"ddy" } }, u8"return textureGrad(sampler2D(textures[nonuniformEXT(tex.Instance)], s), texCoord, ddx, ddy);");
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos) % textureSize(sampler2D(textures[nonuniformEXT(tex.Instance)], s), 0), 0);");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos % GetExtent(tex)), 0);");
+
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4u", u8"SampleUint", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(usampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
 
-		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Sample__float32__", { { u8"TextureReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos)).x;");
-		//pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"vec2f", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos * vec2f(imageSize(images[nonuniformEXT(img.Instance)]))));");
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Sample_float32_", { { u8"TextureReference", u8"texture" }, { u8"uvec2", u8"pos" } }, u8"return Sample(texture, pos).x;");
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"vec2f", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos * vec2f(imageSize(images[nonuniformEXT(img.Instance)]))), value);");
@@ -130,6 +134,8 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareStruct(commonScope, u8"ViewData", VIEW_DATA);
 		pipeline->DeclareStruct(commonScope, u8"CameraData", CAMERA_DATA);
 
+		pipeline->DeclareFunction(commonScope, u8"bool", u8"IsInExtent", { { u8"vec2u", u8"value" }, { u8"vec2u", u8"extent" } }, u8"return value.x < extent.x && value.y < extent.y;");
+
 		//pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Color" });
 		//pipeline->DeclareVariable(fragmentShaderScope, { u8"vec4f", u8"Normal" });
 
@@ -153,8 +159,8 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetGlobalExtent", {}, u8"return gl_WorkGroupSize * gl_NumWorkGroups;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetLocalInvocationIndex", {}, u8"return gl_LocalInvocationIndex;");
 
-		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetThreadIndex", {}, u8"return gl_SubgroupInvocationID;");
-		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetWaveThreadCount", {}, u8"return gl_SubgroupSize;");
+		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetLaneIndex", {}, u8"return gl_SubgroupInvocationID;");
+		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetWaveLaneCount", {}, u8"return gl_SubgroupSize;");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"void", u8"GroupMemoryAndSynchronize", {}, u8"groupMemoryBarrier(); barrier();");
 
@@ -163,8 +169,8 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(computeShaderScope, u8"int32", u8"IntegerDivideBy_11", { { u8"int32", u8"i" } }, u8"return (i * 5958) >> 16;");
 		pipeline->DeclareFunction(computeShaderScope, u8"vec2i", u8"IntModAndDiv_11", { { u8"int32", u8"i" } }, u8"ivec2 v = ivec2(i, IntegerDivideBy_11(i)); v.x -= v.y * 11; return v;");
 
-		pipeline->DeclareFunction(computeShaderScope, u8"void", u8"ReadValueFromThread", { { u8"float32", u8"x" }, { u8"uint32", u8"i" } }, u8"subgroupShuffle(x, i);");
-		pipeline->DeclareFunction(computeShaderScope, u8"void", u8"ReadValueFromThread", { { u8"uint32", u8"x" }, { u8"uint32", u8"i" } }, u8"subgroupShuffle(x, i);");
+		pipeline->DeclareFunction(computeShaderScope, u8"float32", u8"ReadValueFromThread", { { u8"float32", u8"x" }, { u8"uint32", u8"i" } }, u8"return subgroupShuffle(x, i);");
+		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"ReadValueFromThread", { { u8"uint32", u8"x" }, { u8"uint32", u8"i" } }, u8"return subgroupShuffle(x, i);");
 		
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8"return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");
@@ -172,7 +178,6 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		computeRenderPassScope = pipeline->DeclareScope(commonScope, u8"ComputeRenderPass");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2u", u8"GetPixelPosition", {}, u8"return GetGlobalIndex().xy;");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2f", u8"GetNormalizedPixelPosition", {}, u8"return GetNormalizedGlobalIndex().xy;");
-		pipeline->DeclareFunction(computeRenderPassScope, u8"vec2u", u8"GetExtent", { { u8"ImageReference", u8"image" } }, u8"return vec2u(imageSize(images[nonuniformEXT(image.Instance)]));");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"ACES", { { u8"vec4f", u8"x" } }, u8"const float a = 2.51; const float b = 0.03; const float c = 2.43; const float d = 0.59; const float e = 0.14; return (x * (a * x + b)) / (x * (c * x + d) + e);");
 		pipeline->DeclareFunction(computeRenderPassScope, u8"vec4f", u8"Filmic", { { u8"vec4f", u8"x" } }, u8"vec3 X = max(vec3(0.0), vec3f(x) - vec3f(0.004)); vec3 result = (X * (6.2 * X + 0.5)) / (X * (6.2 * X + 1.7) + 0.06); return vec4f(pow(result, vec3(2.2)), x.a); ");
 	}

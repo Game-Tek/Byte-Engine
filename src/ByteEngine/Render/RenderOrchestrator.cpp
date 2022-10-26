@@ -178,10 +178,10 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 		// AO
 		AddAttachment(u8"AO", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, true);
-		//AddAttachment(u8"Mean", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
-		//AddAttachment(u8"Variance", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
-		//AddAttachment(u8"PartialDistanceDerivatives", 16, 2, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
-		//AddAttachment(u8"TSPP", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+		AddAttachment(u8"Mean", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+		AddAttachment(u8"Variance", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+		AddAttachment(u8"PartialDistanceDerivatives", 16, 2, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+		AddAttachment(u8"TSPP", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
 		// AO
 	}
 
@@ -528,9 +528,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 
 				const auto& pipeline = pipelines[renderState.BoundPipelineIndex];
 				const auto& execution = pipeline.ExecutionString;
-
 				const auto executionExtent = processExecutionString(execution);
-
 				commandBuffer.Dispatch(renderSystem->GetRenderDevice(), executionExtent);
 
 				break;
@@ -580,9 +578,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			case RTT::GetTypeIndex<DrawData>(): {
 				const DrawData& draw_data = renderingTree.GetClass<DrawData>(key);
 				commandBuffer.Draw(renderSystem->GetRenderDevice(), draw_data.VertexCount, draw_data.InstanceCount, counterStack[counterI - 1]);
-
 				counterStack[counterI - 1] += draw_data.InstanceCount;
-
 				break;
 			}
 			case RTT::GetTypeIndex<RenderPassData>(): {

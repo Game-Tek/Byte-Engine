@@ -354,6 +354,7 @@ public:
 		return handle;
 	}
 
+
 	auto& GetFunction(ElementHandle element_handle) {
 		return Functions[elements[element_handle.Handle].Reference];
 	}
@@ -368,8 +369,10 @@ public:
 	}
 
 	void AddCodeToFunction(const ElementHandle function_handle, const GTSL::Range<const ShaderNode*> tokens) {
-		auto& main = Functions[GetElement(function_handle).Reference];
-		main.Tokens.PushBack(tokens);
+		auto& function = GetFunction(function_handle);
+		for(auto& e : tokens) { // TODO: don't
+			function.Tokens.EmplaceBack(e);			
+		}
 	}
 
 	auto GetFunctionOverloads(const ElementHandle parent, const GTSL::StringView name) const {
@@ -1021,7 +1024,6 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 			locationIndex += member.Type == u8"mat3f" ? 3 : 1; // TODO: add proper support for other types
 		}
 	};
-
 
 	{
 		GTSL::StaticVector<StructElement, 16> elements;

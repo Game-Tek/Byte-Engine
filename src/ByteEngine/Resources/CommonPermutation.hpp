@@ -39,6 +39,8 @@ struct CommonPermutation : PermutationManager {
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(sampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos) % textureSize(sampler2D(textures[nonuniformEXT(tex.Instance)], s), 0), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4u", u8"SampleUint", { { u8"TextureReference", u8"tex" }, { u8"uvec2", u8"pos" } }, u8"return texelFetch(usampler2D(textures[nonuniformEXT(tex.Instance)], s), ivec2(pos), 0);");
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos));");
+
+		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"float32", u8"Sample__float32__", { { u8"TextureReference", u8"img" }, { u8"uvec2", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos)).x;");
 		//pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"vec4f", u8"Sample", { { u8"ImageReference", u8"img" }, { u8"vec2f", u8"pos" } }, u8"return imageLoad(images[nonuniformEXT(img.Instance)], ivec2(pos * vec2f(imageSize(images[nonuniformEXT(img.Instance)]))));");
 
 		pipeline->DeclareFunction(GPipeline::GLOBAL_SCOPE, u8"void", u8"Write", { { u8"ImageReference", u8"img" }, { u8"uvec2", u8"pos" }, { u8"vec4f", u8"value" } }, u8"imageStore(images[nonuniformEXT(img.Instance)], ivec2(pos), value);");
@@ -149,11 +151,20 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetGlobalIndex", {}, u8"return gl_GlobalInvocationID;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetWorkGroupExtent", {}, u8"return gl_WorkGroupSize;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetGlobalExtent", {}, u8"return gl_WorkGroupSize * gl_NumWorkGroups;");
+		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetLocalInvocationIndex", {}, u8"return gl_LocalInvocationIndex;");
+
+		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetThreadIndex", {}, u8"return gl_SubgroupInvocationID;");
+		pipeline->DeclareFunction(computeShaderScope, u8"uint32", u8"GetWaveThreadCount", {}, u8"return gl_SubgroupSize;");
+
+		pipeline->DeclareFunction(computeShaderScope, u8"void", u8"GroupMemoryAndSynchronize", {}, u8"groupMemoryBarrier(); barrier();");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"vec3f", u8"GetNormalizedGlobalIndex", {}, u8"return (vec3f(GetGlobalIndex()) + vec3f(0.5f)) / vec3f(GetGlobalExtent());");
 
 		pipeline->DeclareFunction(computeShaderScope, u8"int32", u8"IntegerDivideBy_11", { { u8"int32", u8"i" } }, u8"return (i * 5958) >> 16;");
 		pipeline->DeclareFunction(computeShaderScope, u8"vec2i", u8"IntModAndDiv_11", { { u8"int32", u8"i" } }, u8"ivec2 v = ivec2(i, IntegerDivideBy_11(i)); v.x -= v.y * 11; return v;");
+
+		pipeline->DeclareFunction(computeShaderScope, u8"void", u8"ReadValueFromThread", { { u8"float32", u8"x" }, { u8"uint32", u8"i" } }, u8"subgroupShuffle(x, i);");
+		pipeline->DeclareFunction(computeShaderScope, u8"void", u8"ReadValueFromThread", { { u8"uint32", u8"x" }, { u8"uint32", u8"i" } }, u8"subgroupShuffle(x, i);");
 		
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2u", u8"GetFragmentPosition", {}, u8"return gl_LaunchIDEXT.xy;");
 		pipeline->DeclareFunction(rayGenShaderScope, u8"vec2f", u8"GetNormalizedFragmentPosition", {}, u8"vec2f pixelCenter = vec2f(gl_LaunchIDEXT.xy) + vec2f(0.5f); return pixelCenter / vec2f(gl_LaunchSizeEXT.xy);");

@@ -5,7 +5,7 @@
 #include <GTSL/Algorithm.hpp>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
-#include <GTSL/DataSizes.h>
+#include <GTSL/SmartPointer.hpp>
 #include <GTSL/String.hpp>
 #include <GTSL/File.hpp>
 #include <GTSL/HashMap.hpp>
@@ -717,7 +717,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				GTSL::File shaderFile(GetUserResourcePath(json[u8"name"], u8"besh.txt"));
 
 				if(shaderFile) {
-					GTSL::StaticBuffer<16384> shaderFileBuffer(shaderFile);
+					GTSL::Buffer<BE::TAR> shaderFileBuffer(shaderFile, GetTransientAllocator());
 					shaderEntry.rest.element = GTSL::StringView(shaderFileBuffer);
 				} else {
 					BE_LOG_WARNING(u8"Did not find a shader file for shader: ", json[u8"name"], u8".");
@@ -806,8 +806,6 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 				auto shaderJSON = GTSL::Find(sgd.ShaderJSONs, [&shaderName](const GTSL::JSON<BE::TAR>& json){ return json[u8"name"] == shaderName; });
 
-				BE_LOG_ERROR((*shaderJSON.Get())[u8"name"]);
-
 				auto shaderBinaryBuffer = compileShader(*shaderJSON.Get(), pipeline, sgd.SSS[0][shaderJSON.Get() - sgd.ShaderJSONs.begin()]);
 				serializeShader(*shaderJSON.Get(), shaderBinaryBuffer.GetRange());
 
@@ -821,10 +819,10 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 		if(GTSL::IsIn(interestData.Name, u8"besh") and state == State::MODIFIED) {
 			// Look for first shader group upstream and recompile the shader under that context, as shaders "cannot" be compiled stand-alone
-			BE_LOG_WARNING(u8"Parents: ")
-			for(auto& e : node.GetParents()) {
-				BE_LOG_WARNING(e.GetData().Name);
-			}
+			//BE_LOG_WARNING(u8"Parents: ")
+			//for(auto& e : node.GetParents()) {
+			//	BE_LOG_WARNING(e.GetData().Name);
+			//}
 
 			for(auto& e : node.GetParents()) {
 				self(processed, e, u8"besg", state, self);
@@ -903,9 +901,9 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 		UpdateParentFileNameCache(nodeData.Pointer, changeCache, parent_file_name_hash);
 
-		BE_LOG_SUCCESS(u8"Parent: ", parent_file_name_hash, u8"Node: ", node.GetData().Name);
+		//BE_LOG_SUCCESS(u8"Parent: ", parent_file_name_hash, u8"Node: ", node.GetData().Name);
 		for(auto& e : node.GetChildren()) {
-			BE_LOG_SUCCESS(u8"Child: ", e.GetData().Name);
+			//BE_LOG_SUCCESS(u8"Child: ", e.GetData().Name);
 			self(GTSL::Hash(nodeData.Name), e, self);
 		}
 	};
@@ -1058,7 +1056,6 @@ ShaderResourceManager::makeShaderGroup(
 			}
 
 			GPipeline::ElementHandle shaderScope = pipeline.DeclareShader(shaderGroupScope, shaderJson[u8"name"]);
-			GPipeline::ElementHandle mainFunctionHandle = pipeline.DeclareFunction(shaderScope, u8"void", u8"main", {});
 
 			auto pcd = pipeline.DeclareScope(shaderScope, u8"pushConstantBlock");
 
@@ -1109,7 +1106,78 @@ ShaderResourceManager::makeShaderGroup(
 				return;
 			}
 
-			pipeline.AddCodeToFunction(mainFunctionHandle, PermutationManager::MakeShaderString(GTSL::StringView(permutation_manager->a[i][j]), shaderEntry.rest.element));
+			auto& shaderFileSourceCode = shaderEntry.rest.element;
+
+			GTSL::Vector<ShaderNode, BE::TAR> tokens(GetTransientAllocator());
+			tokenizeCode(shaderFileSourceCode, tokens, GetTransientAllocator());
+
+			for(uint32 t = 0u; t < tokens; ++t) {
+				if(tokens[t].Name != u8"function") { continue; }
+
+				++t; // Skip "function" token
+
+				auto returnType = tokens[t].Name;
+				++t;
+				auto functionName = tokens[t].Name;
+				++t;
+
+				++t; // Skip open parenthesis
+
+				GTSL::StaticVector<StructElement, 16> parameters;
+
+				while(true) {
+					if(tokens[t].Name == u8")") { ++t; break; }
+
+					auto parameterReturnType = tokens[t].Name;
+					++t;
+
+					if(parameterReturnType == u8"inout" or parameterReturnType == u8"in" or parameterReturnType == u8"out") {
+						parameterReturnType &= tokens[t].Name;
+						++t;
+					}
+
+					auto parameterName = tokens[t].Name;
+					++t;
+					parameters.EmplaceBack(parameterReturnType, parameterName);
+					if(tokens[t].ValueType == ShaderNode::Type::COMMA) { ++t; }
+				}
+
+				++t; // Skip open brace
+
+				const auto shaderGuide = GTSL::StringView(permutation_manager->a[i][j]);
+
+				auto b = shaderGuide.begin();
+
+				while(b != shaderGuide.end() && *b != u8'@') {
+					++b;
+				}
+
+				auto functionHandle = pipeline.DeclareFunction(shaderScope, returnType, functionName, parameters);
+
+				if(functionName == u8"main") {
+					pipeline.AddCodeToFunction(functionHandle, { shaderGuide.begin(), b });
+				}
+
+				uint32 startFunctionCode = t;
+
+				uint32 openCloseCounter = 1u; // Must be one because we skipped over open brace
+				while(true) {
+					if(tokens[t].Name == u8"}") {
+						--openCloseCounter;
+						if(!openCloseCounter) {
+							break;
+						}
+					}
+					if(tokens[t].Name == u8"{") { ++openCloseCounter; }
+					++t;
+				}
+
+				pipeline.AddCodeToFunction(functionHandle, {t - startFunctionCode, tokens.begin() + startFunctionCode});
+
+				if(functionName == u8"main") {
+					pipeline.AddCodeToFunction(functionHandle, { ++b, shaderGuide.end() });
+				}
+			}
 
 			{
 				// FIX
@@ -1137,7 +1205,6 @@ ShaderResourceManager::makeShaderGroup(
 				// FIX
 
 				permutationScopes.EmplaceBack(shaderScope);
-				permutationScopes.EmplaceBack(mainFunctionHandle);
 
 				GTSL::String shaderJsonString(GetTransientAllocator());
 

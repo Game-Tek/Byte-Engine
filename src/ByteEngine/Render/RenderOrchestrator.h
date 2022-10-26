@@ -238,7 +238,7 @@ public:
 
 	[[nodiscard]] RenderModelHandle CreateShaderGroup(GTSL::StringView shader_group_instance_name);
 
-	void AddAttachment(GTSL::StringView attachment_name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type);
+	void AddAttachment(GTSL::StringView attachment_name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, bool is_multiframe);
 
 	NodeHandle AddVertexBufferBind(RenderSystem* render_system, NodeHandle parent_node_handle, RenderSystem::BufferHandle buffer_handle, GTSL::Range<const GTSL::Range<const GAL::ShaderDataType*>*> meshVertexLayout) {
 		auto nodeHandle = addInternalNode<VertexBufferBindData>(0, parent_node_handle);
@@ -813,10 +813,19 @@ public:
 	// Used to enable a node only if dependencies have been fulfilled
 	void revalNode(const NodeHandle node_handle) {
 		auto& node = getNode(node_handle);
-		const bool nodeState = node.Enabled && node.References >= node.L;
+		const bool fulfilled = node.References >= node.L;
+		const bool nodeState = node.Enabled && fulfilled;
 		if(nodeState != renderingTree.GetNodeState(node_handle())) {
 			renderingTree.ToggleBranch(node_handle(), nodeState);
 			setRenderTreeAsDirty(node_handle);
+		}
+
+		if(BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugResourceFulfillment"].GetBool()) {
+			if(nodeState) {
+				BE_LOG_MESSAGE(u8"Node: ", node.Name, u8", was enabled.");
+			} else {
+				BE_LOG_MESSAGE(u8"Node: ", node.Name, u8", was disabled.");
+			}
 		}
 	}
 
@@ -1475,6 +1484,7 @@ private:
 		GAL::PipelineStage ConsumingStages; GAL::AccessType AccessType;
 		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
 		uint32 ImageIndeces[MAX_CONCURRENT_FRAMES];
+		//bool IsMultiFrame = false;
 	};
 	GTSL::HashMap<GTSL::StringView, Attachment, BE::PAR> attachments;
 

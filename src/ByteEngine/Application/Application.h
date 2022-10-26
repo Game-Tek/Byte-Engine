@@ -13,6 +13,7 @@
 #include "SystemAllocator.h"
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Resources/ResourceManager.h"
+#include "GTSL/SmartPointer.hpp"
 
 class ApplicationManager;
 class InputManager;

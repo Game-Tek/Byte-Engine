@@ -167,6 +167,8 @@ namespace GAL
 		case Format::RGBA_I8: return VK_FORMAT_R8G8B8A8_UNORM;
 		case Format::RGBA_SRGB_I8: return VK_FORMAT_R8G8B8A8_SRGB;
 		case Format::RGBA_F16: return VK_FORMAT_R16G16B16A16_SFLOAT;
+		case Format::RG_S8: return VK_FORMAT_R8G8_SNORM;
+		case Format::RG_F16: return VK_FORMAT_R16G16_SFLOAT;
 		case Format::RG_I32: return VK_FORMAT_R32G32_UINT;
 		case Format::BGRA_I8: return VK_FORMAT_B8G8R8A8_UNORM;
 		case Format::DEPTH32: return VK_FORMAT_D32_SFLOAT;

@@ -6,6 +6,7 @@
 #include <GTSL/Vector.hpp>
 #include <GTSL/Algorithm.hpp>
 #include <GTSL/Allocator.h>
+#include <GTSL/SmartPointer.hpp>
 #include <GTSL/Semaphore.h>
 #include <GTSL/Atomic.hpp>
 

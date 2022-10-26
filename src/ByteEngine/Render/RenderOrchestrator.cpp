@@ -124,8 +124,8 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 	{
 		GTSL::StaticVector<SubSetDescriptor, 10> subSetInfos;
-		subSetInfos.EmplaceBack(SubSetType::READ_TEXTURES, 32, &textureSubsetsHandle);
-		subSetInfos.EmplaceBack(SubSetType::WRITE_TEXTURES, 32, &imagesSubsetHandle);
+		subSetInfos.EmplaceBack(SubSetType::READ_TEXTURES, 128, &textureSubsetsHandle);
+		subSetInfos.EmplaceBack(SubSetType::WRITE_TEXTURES, 128, &imagesSubsetHandle);
 		subSetInfos.EmplaceBack(SubSetType::SAMPLER, 16, &samplersSubsetHandle, samplers);
 
 		globalSetLayout = AddSetLayout(renderSystem, SetLayoutHandle(), subSetInfos);
@@ -161,21 +161,28 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 	}
 
 	{
+		AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
-			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"WorldSpacePosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"ViewSpacePosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"Lighting", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"Roughness", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
-			AddAttachment(u8"Shadow", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR);
-			AddAttachment(u8"AO", 8, 4, GAL::ComponentType::INT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+			AddAttachment(u8"WorldSpacePosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+			AddAttachment(u8"ViewSpacePosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+			AddAttachment(u8"Lighting", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+			AddAttachment(u8"Roughness", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+			AddAttachment(u8"Shadow", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
 		} else if(tag == GTSL::ShortString<16>(u8"Visibility")) {
-			AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR);
-			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR);
+			AddAttachment(u8"Visibility", 32, 2, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
 		}
 
-		AddAttachment(u8"Depth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH);
+		AddAttachment(u8"Depth", 32, 1, GAL::ComponentType::FLOAT, GAL::TextureType::DEPTH, true);
+
+		// AO
+		AddAttachment(u8"AO", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, true);
+		//AddAttachment(u8"Mean", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+		//AddAttachment(u8"Variance", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+		//AddAttachment(u8"PartialDistanceDerivatives", 16, 2, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+		//AddAttachment(u8"TSPP", 8, 1, GAL::ComponentType::INT, GAL::TextureType::COLOR, false);
+		// AO
 	}
 
 	for (uint32 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
@@ -439,16 +446,9 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		BindSet(renderSystem, commandBuffer, globalBindingsSet, GAL::ShaderStages::VERTEX | GAL::ShaderStages::COMPUTE | GAL::ShaderStages::RAY_GEN);
 
 		RenderState renderState;
-		uint32 lastInvalidLevel = 0xFFFFFFFF;
 
-		auto visitNode = [&](const decltype(renderingTree)::Key key, const uint32_t level, bool enabled) -> void {
-			if (!enabled || level >= lastInvalidLevel) {
-				if(!enabled) { printNode(key, level, debugRenderNodes, enabled); }
-				if(!enabled && level < lastInvalidLevel) { lastInvalidLevel = level; }
-				return;
-			}
-
-			printNode(key, level, debugRenderNodes, enabled);
+		auto visitNode = [&](const decltype(renderingTree)::Key key, const uint32_t level) -> void {
+			printNode(key, level, debugRenderNodes, true);
 
 			const auto& baseData = renderingTree.GetAlpha(key);
 
@@ -628,9 +628,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 		};
 
-		auto endNode = [&](const uint32 key, const uint32_t level, bool enabled) {
-			if (!enabled || level >= lastInvalidLevel) { return; }
-
+		auto endNode = [&](const uint32 key, const uint32_t level) {
 			if(debugRenderNodes) {
 				BE_LOG_WARNING(u8"Node: ", key, u8", Level: ", level);
 			}
@@ -664,7 +662,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 		};
 
-		ForEachWithDisabled(renderingTree, visitNode, endNode);
+		ForEach(renderingTree, visitNode, endNode);
 
 		GTSL::StaticVector<CommandList::BarrierData, 8> preTransitions, postTransitions;
 
@@ -786,7 +784,7 @@ RenderModelHandle RenderOrchestrator::CreateShaderGroup(GTSL::StringView shader_
 	return RenderModelHandle(id);
 }
 
-void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type) {
+void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 bitDepth, uint8 componentCount, GAL::ComponentType compType, GAL::TextureType type, bool is_multiframe) {
 	Attachment attachment;
 	attachment.Name = attachment_name;
 	attachment.Uses = GAL::TextureUse();
@@ -799,8 +797,7 @@ void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 b
 		attachment.Uses |= GAL::TextureUses::STORAGE;
 		attachment.Uses |= GAL::TextureUses::TRANSFER_SOURCE;
 		attachment.ClearColor = GTSL::RGBA(1, 1, 1, 1);
-	}
-	else {
+	} else {
 		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::DEPTH, 0, 0, 0, 0);
 		attachment.ClearColor = GTSL::RGBA(INVERSE_Z ? 0.0f: 1.0f, 0, 0, 0);
 	}
@@ -809,7 +806,7 @@ void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 b
 	attachment.AccessType = GAL::AccessTypes::READ;
 	attachment.ConsumingStages = GAL::PipelineStages::TOP_OF_PIPE;
 
-	for(uint32 f = 0; f < 2; ++f) {
+	for(uint32 f = 0; f < 2u; ++f) {
 		attachment.ImageIndeces[f] = imageIndex++;
 		++textureIndex;
 	}
@@ -920,6 +917,10 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 		}
 
 		resultHandle = addInternalNode<DispatchData>(GTSL::Hash(render_pass_name), resultHandle).Get();
+
+		GTSL::StaticString<128> namee(u8"Dispatch: "); namee += render_pass_name;
+
+		setNodeName(resultHandle, namee);
 
 		break;
 	}

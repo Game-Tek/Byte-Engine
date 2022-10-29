@@ -19,7 +19,7 @@ namespace AAL
 		/**
 		* \brief Initializes the audio device to start receiving audio. Must be called before any other function.
 		*/
-		[[nodiscard]] bool Initialize(const CreateInfo& audioDeviceCreateInfo) {
+		[[nodiscard]] bool Initialize(const CreateInfo&) {
 			if(CoInitializeEx(nullptr, 0) != S_OK) {
 				return false;
 			}

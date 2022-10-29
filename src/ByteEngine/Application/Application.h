@@ -69,7 +69,7 @@ namespace BE
 			GTSL::Lock lock(crashLogMutex);
 			
 			if(!crashLog) {
-				crashLog.Open(GTSL::ShortString<32>(u8"crash.log"), GTSL::File::WRITE, true);
+				auto crashLogFileOpenResult = crashLog.Open(GTSL::ShortString<32>(u8"crash.log"), GTSL::File::WRITE, true);
 			}
 
 			GTSL::Buffer<GTSL::StaticAllocator<512>> buffer;

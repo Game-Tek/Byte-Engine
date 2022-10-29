@@ -352,7 +352,7 @@ public:
 		BufferWriteKey operator[](const uint32 index) {
 			auto& e = render_orchestrator->getElement(ElementHandle);
 
-			BE_ASSERT(render_orchestrator->getElement(ElementHandle).Type == ElementData::ElementType::MEMBER);
+			BE_ASSERT(render_orchestrator->getElement(ElementHandle).Type == ElementData::ElementType::MEMBER, u8"Type is not what it should be.");
 			if(e.Mem.Multiplier == 1) {
 				render_orchestrator->getLogger()->PrintObjectLog(render_orchestrator, BE::Logger::VerbosityLevel::FATAL, u8"Tried to access ", Path, u8" as array but it isn't.");
 				return BufferWriteKey{ 0xFFFFFFFF, Path, ElementHandle, *this };
@@ -996,7 +996,7 @@ public:
 
 				offset += dt.TyEl.Size;
 
-				BE_ASSERT(dt.Type == ElementData::ElementType::TYPE);
+				BE_ASSERT(dt.Type == ElementData::ElementType::TYPE, u8"Type is not what it should be.");
 			}
 
 			return dt.TyEl.Size * e.Mem.Multiplier; //todo: align
@@ -1850,7 +1850,7 @@ private:
 		case ElementData::ElementType::MEMBER: return getElement(e.Mem.TypeHandle).TyEl.Size * (getOnlyType ? 1 : e.Mem.Multiplier);
 		}
 
-		BE_ASSERT(false);
+		BE_ASSERT(false, u8"Should not reach here");
 
 		return 0;
 	}

@@ -4,32 +4,28 @@
 
 #include "Application/AllocatorReferences.h"
 
-namespace BE
-{
+namespace BE {
 	class Logger;
 }
 
 /**
  * \brief Base class for most non-data only classes in the engine.
  */
-class Object
-{
+class Object {
 public:
 	Object() = default;
 	
-	Object(const utf8* objectName) : name(objectName) {}
+	Object(const utf8* objectName) : objectName(objectName) {}
 	
 	~Object() = default;
 
-	[[nodiscard]] auto& GetName() const { return name; }
+	[[nodiscard]] auto& GetName() const { return objectName; }
 
-	[[nodiscard]] BE::PersistentAllocatorReference GetPersistentAllocator() const
-	{
+	[[nodiscard]] BE::PersistentAllocatorReference GetPersistentAllocator() const {
 		return BE::PersistentAllocatorReference(GetName());
 	}
 
-	[[nodiscard]] BE::TransientAllocatorReference GetTransientAllocator() const
-	{
+	[[nodiscard]] BE::TransientAllocatorReference GetTransientAllocator() const {
 		return BE::TransientAllocatorReference(GetName());
 	}
 
@@ -38,8 +34,7 @@ protected:
 	uint8 getThread() const;
 	
 private:
-	GTSL::ShortString<128> name = u8"Object";
-
+	GTSL::ShortString<128> objectName = u8"Object";
 };
 
 #ifdef BE_DEBUG

@@ -16,7 +16,7 @@ class StackAllocator
 public:
 	struct DebugData
 	{
-		explicit DebugData(BE::SystemAllocatorReference* allocatorReference)
+		explicit DebugData(BE::SystemAllocatorReference*)
 		{
 		}
 		
@@ -260,7 +260,7 @@ public:
 #endif
 	}
 
-	void Deallocate(uint64 size, uint64 alignment, void* memory, const GTSL::Range<const char8_t*> name)
+	void Deallocate(uint64 size, uint64 alignment, void*, const GTSL::Range<const char8_t*> name)
 	{
 		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 		BE_ASSERT(size <= blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!");

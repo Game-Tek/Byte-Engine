@@ -16,18 +16,6 @@ class RenderStaticMeshCollection;
 
 PipelineCache RenderSystem::GetPipelineCache() const { return pipelineCaches[GTSL::Thread::ThisTreadID()]; }
 
-//RenderSystem::MeshHandle RenderSystem::CreateMesh(Id name, uint32 customIndex, uint32 vertexCount, uint32 vertexSize, const uint32 indexCount, const uint32 indexSize, ShaderGroupHandle materialHandle)
-//{
-//	auto meshIndex = meshes.Emplace(); auto& mesh = meshes[meshIndex];
-//	mesh.CustomMeshIndex = customIndex;
-//	mesh.MaterialHandle = materialHandle;
-//
-//	auto meshHandle = MeshHandle(meshIndex);
-//	
-//	SignalMeshDataUpdate(meshHandle, vertexCount, vertexSize, indexCount, indexSize);
-//	return meshHandle;
-//}
-
 RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"RenderSystem"),
 	accelerationStructures(16, GetPersistentAllocator()), buffers(32, GetPersistentAllocator()),
 	pipelineCaches(16, decltype(pipelineCaches)::allocator_t()),

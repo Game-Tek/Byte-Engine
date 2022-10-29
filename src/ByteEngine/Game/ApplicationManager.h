@@ -38,6 +38,8 @@ inline const char8_t* AccessTypeToString(const AccessType access) {
 	case static_cast<uint8>(AccessTypes::READ): return u8"READ";
 	case static_cast<uint8>(AccessTypes::READ_WRITE): return u8"READ_WRITE";
 	}
+
+	return u8"NULL";
 }
 
 template<class T>
@@ -361,11 +363,11 @@ public:
 		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
 
 		if (start_stage != GTSL::StringView()) { // Store start stage indices if a start stage is specified
-			startStageIndex = stagesNames.Find(Id(start_stage)).Get();
+			startStageIndex = (uint32)stagesNames.Find(Id(start_stage)).Get();
 		}
 
 		if (end_stage != GTSL::StringView()) { // Store end stage indices if an end stage is specified
-			endStageIndex = stagesNames.Find(Id(end_stage)).Get();
+			endStageIndex = (uint32)stagesNames.Find(Id(end_stage)).Get();
 		}
 
 		systemsData[caller->GetSystemId()].Tasks.EmplaceBack(taskIndex); // Add task handle to list of system owned tasks
@@ -518,7 +520,7 @@ public:
 	}
 
 	template<typename... ARGS>
-	void DispatchEvent(const BE::System* caller, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
+	void DispatchEvent(const BE::System*, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
 		GTSL::ReadLock lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 
@@ -546,7 +548,7 @@ public:
 
 		{
 			for(auto osh : s.ObservingSystems) {
-				auto in = liveInstances.Emplace(type_identifier.SystemId, type_identifier.TypeId);
+				liveInstances.Emplace(type_identifier.SystemId, type_identifier.TypeId);
 			}
 		}
 
@@ -740,8 +742,8 @@ private:
 
 	uint16 getStageIndex(const Id stageName) const {
 		auto findRes = GTSL::Find(stagesNames, [&](const Id& goal_name) { return goal_name == stageName; });
-		BE_ASSERT(findRes, "No stage found with that name!")
-			return findRes.Get() - stagesNames.begin();
+		BE_ASSERT(findRes, "No stage found with that name!");
+		return static_cast<uint16>(findRes.Get() - stagesNames.begin());
 	}
 
 	template<typename U>

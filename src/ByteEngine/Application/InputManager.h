@@ -19,9 +19,8 @@ namespace GTSL {
 	class Window;
 }
 
-struct InputDeviceHandle
-{
-	uint8 DeviceHandle, DeviceIndex;
+struct InputDeviceHandle {
+	uint32 DeviceHandle, DeviceIndex;
 };
 
 template<typename E, typename T>
@@ -44,9 +43,9 @@ public:
 		Datatypes(GTSL::RGBA r) : Color(r) {}
 		Datatypes(GTSL::Quaternion q) : Quaternion(q) {}
 
+		GTSL::RGBA Color;
 		bool Action; char32_t Unicode; float32 Linear;
 		GTSL::Vector2 Vector2D; GTSL::Vector3 Vector3D;
-		GTSL::RGBA Color;
 		GTSL::Quaternion Quaternion;
 	};
 
@@ -77,7 +76,7 @@ public:
 	InputManager();
 	~InputManager();
 
-	InputLayerHandle RegisterInputLayer(const Id inputLayerName) {
+	InputLayerHandle RegisterInputLayer(const GTSL::StringView) {
 		uint32 index = inputLayers.GetLength();
 		return InputLayerHandle(index);
 	}
@@ -200,19 +199,19 @@ public:
 		inputSourceRecords.EmplaceBack(deviceIndex, eventName, newValue);
 	}
 
-	ActionInputEvent::type GetActionInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
+	ActionInputEvent::type GetActionInputSourceValue(InputDeviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Action;
 	}
 
-	CharacterInputEvent::type GetCharacterInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
+	CharacterInputEvent::type GetCharacterInputSourceValue(InputDeviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Unicode;
 	}
 
-	LinearInputEvent::type GetLinearInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
+	LinearInputEvent::type GetLinearInputSourceValue(InputDeviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Linear;
 	}
 
-	Vector2DInputEvent::type GetVector2DInputSourceValue(InputDeviceHandle deviceHandle, GTSL::StringView eventName) const {
+	Vector2DInputEvent::type GetVector2DInputSourceValue(InputDeviceHandle, GTSL::StringView eventName) const {
 		return inputSources[eventName].LastValue.Vector2D;
 	}
 	

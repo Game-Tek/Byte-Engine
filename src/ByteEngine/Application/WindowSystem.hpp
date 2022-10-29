@@ -17,7 +17,7 @@ public:
 
 #undef CreateWindow
 
-	WindowHandle CreateWindow(const GTSL::StringView id_name, const GTSL::StringView display_name, const GTSL::Extent2D window_extent) {
+	WindowHandle CreateWindow(const GTSL::StringView, const GTSL::StringView display_name, const GTSL::Extent2D window_extent) {
 		uint32 index = windows.GetLength();
 		auto& window = windows.EmplaceBack();
 		window.window.BindToOS(display_name, window_extent, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this));

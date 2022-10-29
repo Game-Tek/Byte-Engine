@@ -273,9 +273,7 @@ public:
 
 		DeviceMemory memory;  uint32 offset = 0;
 		
-		testMutex.Lock();
 		localMemoryAllocator.AllocateNonLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
-		testMutex.Unlock();
 		
 		texture->Initialize(GetRenderDevice(), name, memory, offset);
 	}
@@ -290,9 +288,7 @@ public:
 
 		DeviceMemory memory; uint32 offset = 0;
 		
-		testMutex.Lock();
 		scratchMemoryAllocator.AllocateLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
-		testMutex.Unlock();
 		
 		buffer->Initialize(GetRenderDevice(), memoryRequirements, memory, offset);
 	}
@@ -307,9 +303,7 @@ public:
 
 		DeviceMemory memory; uint32 offset = 0;
 		
-		testMutex.Lock();
 		localMemoryAllocator.AllocateLinearMemory(renderDevice, &memory, allocation, memoryRequirements.Size, &offset);
-		testMutex.Unlock();
 		
 		buffer->Initialize(GetRenderDevice(), memoryRequirements, memory, offset);
 	}
@@ -369,10 +363,8 @@ public:
 		GAL::FormatDescriptor Format;
 	};
 	void AddTextureCopy(CommandListHandle command_list_handle, const TextureCopyData& textureCopyData) {
-		BE_ASSERT(testMutex.TryLock());
 		auto& commandList = commandLists[command_list_handle()];
 		commandList.textureCopyDatas.EmplaceBack(textureCopyData);
-		testMutex.Unlock();
 	}
 
 	[[nodiscard]] PipelineCache GetPipelineCache() const;
@@ -560,9 +552,7 @@ public:
 		GAL::WriteInstanceBindingTableRecordOffset(offset, GetBufferPointer(accelerationStructures[topLevel()].TopLevel.SourceInstancesBuffer), instance_handle());
 	}
 
-private:	
-	GTSL::Mutex testMutex;
-	
+private:
 	bool needsStagingBuffer = true;
 
 	uint8 pipelinedFrames = 0;

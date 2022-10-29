@@ -1,0 +1,21 @@
+{
+    "version": 2,
+    "configurePresets": [
+        {
+            "name": "win-x64",
+            "displayName": "Configure preset using toolchain file",
+            "description": "Sets Ninja generator, build and install directory",
+            "generator": "Ninja Multi-Config",
+            "architecture": { "value":"x64", "strategy":"external" },
+            "toolset":{ "value":"host=x64" },
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cmakeExecutable": "C:/Program Files/CMake/bin/cmake.exe",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_TOOLCHAIN_FILE": "",
+                "CMAKE_CXX_COMPILER":"cl",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+            }
+        }
+    ]
+}

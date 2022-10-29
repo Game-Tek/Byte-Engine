@@ -7,7 +7,6 @@
 #include "LightsRenderGroup.h"
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Game/Tasks.h"
-#include "StaticMeshRenderGroup.h"
 #include "UIManager.h"
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/Templates/GameApplication.h"

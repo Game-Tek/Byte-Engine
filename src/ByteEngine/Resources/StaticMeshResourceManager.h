@@ -69,8 +69,8 @@ public:
 	};
 
 	template<typename... ARGS>
-	void LoadStaticMeshInfo(ApplicationManager* gameInstance, Id meshName, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
-		gameInstance->EnqueueTask(gameInstance->RegisterTask(this, u8"StaticMeshResourceManager::loadStaticMeshInfo", {}, &StaticMeshResourceManager::loadStaticMeshInfo<ARGS...>), GTSL::MoveRef(meshName), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
+	void LoadStaticMeshInfo(ApplicationManager* gameInstance, GTSL::StringView meshName, TaskHandle<StaticMeshInfo, ARGS...> dynamicTaskHandle, ARGS&&... args) {
+		gameInstance->EnqueueTask(gameInstance->RegisterTask(this, u8"StaticMeshResourceManager::loadStaticMeshInfo", {}, &StaticMeshResourceManager::loadStaticMeshInfo<ARGS...>), GTSL::MoveRef(Id(meshName)), GTSL::MoveRef(dynamicTaskHandle), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>

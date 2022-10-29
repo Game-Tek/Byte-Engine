@@ -8,5 +8,5 @@ class RigidBody
 	float inverseBodyMass = 1;
 
 public:
-	void SetMass(const float _Mass) { inverseBodyMass = 1 / _Mass; }
+	void SetMass(const float mass) { inverseBodyMass = 1 / mass; }
 };

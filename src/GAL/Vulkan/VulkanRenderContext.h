@@ -19,11 +19,27 @@ namespace GAL
 		VulkanSurface() = default;
 		
 		bool Initialize(const VulkanRenderDevice* renderDevice, const GTSL::Application& application, const GTSL::Window& window) {
+#if BE_PLATFORM_WINDOWS
 			VkWin32SurfaceCreateInfoKHR vkWin32SurfaceCreateInfoKhr{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 			vkWin32SurfaceCreateInfoKhr.hwnd = window.GetHWND();
 			vkWin32SurfaceCreateInfoKhr.hinstance = application.GetHINSTANCE();
 			return renderDevice->VkCreateWin32Surface(renderDevice->GetVkInstance(), &vkWin32SurfaceCreateInfoKhr, renderDevice->GetVkAllocationCallbacks(), &surface) == VK_SUCCESS;
 			//setName(renderDevice, surface, VK_OBJECT_TYPE_SURFACE_KHR, createInfo.Name);
+#elif BE_PLATFORM_LINUX
+			if(true) { // Use X11 {
+				// Create Vulkan X11 surface
+				VkXlibSurfaceCreateInfoKHR vkXlibSurfaceCreateInfoKhr{ VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR };
+				vkXlibSurfaceCreateInfoKhr.dpy = application.GetDisplay();
+				vkXlibSurfaceCreateInfoKhr.window = window.GetWindow();
+				return renderDevice->VkCreateXlibSurface(renderDevice->GetVkInstance(), &vkXlibSurfaceCreateInfoKhr, renderDevice->GetVkAllocationCallbacks(), &surface) == VK_SUCCESS;
+			} else {
+				// Create Vulkan Wayland surface
+				VkWaylandSurfaceCreateInfoKHR vkWaylandSurfaceCreateInfoKhr{ VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR };
+				vkWaylandSurfaceCreateInfoKhr.display = application.GetDisplay();
+				vkWaylandSurfaceCreateInfoKhr.surface = window.GetWindow();
+				return renderDevice->VkCreateWaylandSurface(renderDevice->GetVkInstance(), &vkWaylandSurfaceCreateInfoKhr, renderDevice->GetVkAllocationCallbacks(), &surface) == VK_SUCCESS;
+			}
+#endif
 		}
 
 		void Destroy(class VulkanRenderDevice* renderDevice) {
@@ -92,16 +108,13 @@ namespace GAL
 		VkSurfaceKHR surface = nullptr;
 	};
 
-	class VulkanRenderContext final : public RenderContext
-	{
+	class VulkanRenderContext final : public RenderContext {
 	public:
 		VulkanRenderContext() = default;
 
 		~VulkanRenderContext() = default;
 
-		bool InitializeOrRecreate(const VulkanRenderDevice* renderDevice, [[maybe_unused]] const VulkanQueue queue, const VulkanSurface* surface,
-		                          GTSL::Extent2D extent, FormatDescriptor format, ColorSpaces colorSpace,
-		                          TextureUse textureUse, PresentModes presentMode, GTSL::uint8 desiredFramesInFlight) {
+		bool InitializeOrRecreate(const VulkanRenderDevice* renderDevice, [[maybe_unused]] const VulkanQueue queue, const VulkanSurface* surface, GTSL::Extent2D extent, FormatDescriptor format, ColorSpaces colorSpace, TextureUse textureUse, PresentModes presentMode, GTSL::uint8 desiredFramesInFlight) {
 			VkSwapchainCreateInfoKHR vkSwapchainCreateInfoKhr{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 			vkSwapchainCreateInfoKhr.surface = static_cast<VkSurfaceKHR>(surface->GetVkSurface());
 			vkSwapchainCreateInfoKhr.minImageCount = desiredFramesInFlight;

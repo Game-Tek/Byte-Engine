@@ -8,27 +8,18 @@
 #include "ByteEngine/Game/System.hpp"
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Game/ApplicationManager.h"
-#include "ByteEngine/Render/StaticMeshRenderGroup.h"
+#include "ByteEngine/Render/StaticMeshSystem.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
 class StaticMeshResourceManager;
-MAKE_HANDLE(uint32, PhysicsObject);
 
 class PhysicsWorld : public BE::System {
 public:
-	PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"),
-		physicsObjects(32, GetPersistentAllocator())
-	{
-		//initialize_info.ApplicationManager->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"GameplayEnd");
+	DECLARE_BE_TYPE(PhysicsObject)
 
-		//onStaticMeshInfoLoadedHandle = initialize_info.ApplicationManager->
-		// (this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
-		//onStaticMeshLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
+	PhysicsWorld(const InitializeInfo& initialize_info);
 
-		boundlessForces.EmplaceBack(0, -10, 0, 0);
-	}
-
-	PhysicsObjectHandle AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshRenderGroup::StaticMeshHandle);
+	PhysicsObjectHandle AddPhysicsObject(StaticMeshSystem::StaticMeshHandle);
 
 	GTSL::Vector4 GetPosition(const PhysicsObjectHandle physics_object_handle) const { return physicsObjects[physics_object_handle()].position; }
 
@@ -64,7 +55,7 @@ private:
 		bitfield[0] = pos.X() > 0.0f; bitfield[1] = pos.Y() > 0.0f; bitfield[2] = pos.Z() > 0.0f;
 	}
 	
-	void onUpdate(TaskInfo taskInfo, StaticMeshRenderGroup*);
+	void onUpdate(TaskInfo taskInfo, StaticMeshSystem* static_mesh_system);
 
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);
 	void onStaticMeshLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo, uint32);
@@ -80,7 +71,7 @@ private:
 		//shape
 		float32 radius = 1.0f;
 
-		StaticMeshRenderGroup::StaticMeshHandle Handle;
+		StaticMeshSystem::StaticMeshHandle Handle;
 		GTSL::Vector3 aabb;
 
 		PhysicsObject(const BE::PAR& allocator) : Buffer(allocator) {}

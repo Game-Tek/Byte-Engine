@@ -8,22 +8,27 @@
 
 #include "ByteEngine/Handle.hpp"
 
+#include <GTSL/String.hpp>
+
 class WorldRendererPipeline;
 
-class StaticMeshRenderGroup final : public BE::System
-{
+class StaticMeshSystem final : public BE::System {
 public:
-	StaticMeshRenderGroup(const InitializeInfo& initializeInfo);
+	StaticMeshSystem(const InitializeInfo& initializeInfo);
 
 	DECLARE_BE_TYPE(StaticMesh)
+
+	StaticMeshHandle AddStaticMesh(GTSL::StringView mesh_name);
 
 	GTSL::Matrix4 GetMeshTransform(StaticMeshHandle index) { return transformations[index()]; }
 	GTSL::Matrix4& GetTransformation(StaticMeshHandle staticMeshHandle) { return transformations[staticMeshHandle()]; }
 	GTSL::Vector3 GetMeshPosition(StaticMeshHandle staticMeshHandle) const { return GTSL::Math::GetTranslation(transformations[staticMeshHandle()]); }
 
-	StaticMeshHandle AddStaticMesh(Id MeshName);
+	GTSL::StaticString<64> GetMeshName(const StaticMeshHandle static_mesh_handle) const { 
+		return meshes[static_mesh_handle()].meshResourceName;
+	}
 
-	DECLARE_BE_EVENT(OnAddMesh, StaticMeshHandle, Id);
+	DECLARE_BE_EVENT(OnAddMesh, StaticMeshHandle, GTSL::StaticString<64>);
 	DECLARE_BE_EVENT(OnUpdateMesh, StaticMeshHandle, GTSL::Matrix3x4);
 
 	void SetPosition(StaticMeshHandle staticMeshHandle, GTSL::Vector3 vector3) {
@@ -44,7 +49,7 @@ private:
 	}
 
 	struct Mesh {
-	};
-	
+		GTSL::StaticString<64> meshResourceName;
+	};	
 	GTSL::FixedVector<Mesh, BE::PAR> meshes;
 };

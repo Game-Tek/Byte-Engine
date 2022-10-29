@@ -48,7 +48,7 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/RenderSystem.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Game/World.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Light.cpp"
-"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/StaticMeshRenderGroup.cpp"
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/StaticMeshSystem.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/UIManager.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Resources/AnimationResourceManager.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Resources/AudioResourceManager.cpp"
@@ -76,12 +76,6 @@ target_compile_features(ByteEngine PUBLIC cxx_std_20)
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/ext")
 
-# mono
-if (WIN32)
-	target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
-endif()
-# mono
-
 # assimp
 target_link_libraries(ByteEngine INTERFACE assimp)
 target_include_directories(ByteEngine PUBLIC "${assimp_SOURCE_DIR}/include")
@@ -104,6 +98,10 @@ else()
 endif()
 
 if (WIN32)
+	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_WINDOWS=1)
+
+	target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
+
 	if (BE_GAPI STREQUAL "vulkan")
 		find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
 
@@ -127,6 +125,10 @@ if (WIN32)
 	target_compile_definitions(ByteEngine PUBLIC NOMINMAX)
 	target_compile_definitions(ByteEngine PUBLIC VC_EXTRALEAN)
 	target_compile_definitions(ByteEngine PUBLIC WIN32_LEAN_AND_MEAN)
+endif()
+
+if (UNIX)
+	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_LINUX=1)
 endif()
 
 install(TARGETS ByteEngine DESTINATION lib)

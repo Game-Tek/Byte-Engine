@@ -35,7 +35,7 @@ public:
 		
 		auto worldName = json[u8"name"].GetStringView();
 
-		auto* staticMeshSystem = GetApplicationManager()->GetSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+		auto* staticMeshSystem = GetApplicationManager()->GetSystem<StaticMeshSystem>(u8"StaticMeshSystem");
 		auto lightsSystem = GetApplicationManager()->GetSystem<LightsRenderGroup>(u8"LightsRenderGroup");
 
 		for(auto e : json[u8"elements"]) {
@@ -43,7 +43,7 @@ public:
 				auto componentName = e[u8"name"];
 				auto resourceName = e[u8"mesh"];
 
-				auto staticMeshHandle = staticMeshSystem->AddStaticMesh(Id(resourceName));
+				auto staticMeshHandle = staticMeshSystem->AddStaticMesh(resourceName);
 
 				SetPosition(e, staticMeshSystem, staticMeshHandle);
 				SetRotation(e, staticMeshSystem, staticMeshHandle);

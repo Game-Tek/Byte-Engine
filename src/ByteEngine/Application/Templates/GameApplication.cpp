@@ -9,7 +9,7 @@
 #include "ByteEngine/Game/WorldSystem.hpp"
 #include "ByteEngine/Render/LightsRenderGroup.h"
 #include "ByteEngine/Render/RenderOrchestrator.h"
-#include "ByteEngine/Render/StaticMeshRenderGroup.h"
+#include "ByteEngine/Render/StaticMeshSystem.h"
 #include "ByteEngine/Network/ConnectionHandler.hpp"
 
 #include "ByteEngine/Render/RenderSystem.h"
@@ -88,7 +88,7 @@ void GameApplication::PostInitialize()
 	auto* renderSystem = applicationManager->AddSystem<RenderSystem>(u8"RenderSystem");
 	auto* renderOrchestrator = applicationManager->AddSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
-	applicationManager->AddSystem<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup");
+	applicationManager->AddSystem<StaticMeshSystem>(u8"StaticMeshSystem");
 	applicationManager->AddSystem<WorldRendererPipeline>(u8"WorldRendererPipeline");
 
 	applicationManager->AddSystem<PhysicsWorld>(u8"PhysicsWorld");

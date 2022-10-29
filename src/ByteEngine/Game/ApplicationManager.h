@@ -167,8 +167,6 @@ struct is_instance : public std::false_type {};
 template <class T, template <class> class U>
 struct is_instance<U<T>, U> : public std::true_type {};
 
-
-
 class ApplicationManager : public Object {
 	MAKE_HANDLE(uint32, TypeErasedTask)
 	using TypeErasedHandleHandle = BE::BaseHandle;

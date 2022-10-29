@@ -1,12 +1,13 @@
 #pragma once
 
 #include "RenderSystem.h"
+
 #include "ByteEngine/Game/ApplicationManager.h"
 #include <ByteEngine/Render/RenderOrchestrator.h>
+#include "ByteEngine/Render/StaticMeshSystem.h"
 
 #include "LightsRenderGroup.h"
 
-class StaticMeshRenderGroup;
 class StaticMeshResouceManager;
 
 class WorldRendererPipeline : public RenderPipeline {
@@ -27,8 +28,8 @@ public:
 private:
 	DECLARE_BE_TYPE(Instance)
 
-	DECLARE_BE_TASK(OnAddRenderGroupMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*, StaticMeshRenderGroup*), StaticMeshRenderGroup::StaticMeshHandle, Id);
-	DECLARE_BE_TASK(OnUpdateRenderGroupMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), StaticMeshRenderGroup::StaticMeshHandle, GTSL::Matrix3x4);
+	DECLARE_BE_TASK(OnAddRenderGroupMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*, StaticMeshSystem*), StaticMeshSystem::StaticMeshHandle, GTSL::StaticString<64>);
+	DECLARE_BE_TASK(OnUpdateRenderGroupMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), StaticMeshSystem::StaticMeshHandle, GTSL::Matrix3x4);
 
 	DECLARE_BE_TASK(OnAddMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*), InstanceHandle, Id);
 	DECLARE_BE_TASK(OnUpdateMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), InstanceHandle, GTSL::Matrix3x4);
@@ -36,12 +37,12 @@ private:
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshLoadHandle;
 	TaskHandle<StaticMeshResourceManager::StaticMeshInfo> onStaticMeshInfoLoadHandle;
 
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddInfiniteLight;
+	TaskHandle<StaticMeshSystem::StaticMeshHandle, Id, RenderModelHandle> OnAddInfiniteLight;
 
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddBackdrop;
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddParticleSystem;
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddVolume;
-	TaskHandle<StaticMeshRenderGroup::StaticMeshHandle, Id, RenderModelHandle> OnAddSkinnedMesh;
+	TaskHandle<StaticMeshSystem::StaticMeshHandle, Id, RenderModelHandle> OnAddBackdrop;
+	TaskHandle<StaticMeshSystem::StaticMeshHandle, Id, RenderModelHandle> OnAddParticleSystem;
+	TaskHandle<StaticMeshSystem::StaticMeshHandle, Id, RenderModelHandle> OnAddVolume;
+	TaskHandle<StaticMeshSystem::StaticMeshHandle, Id, RenderModelHandle> OnAddSkinnedMesh;
 
 	uint32 shaderGroupCount = 0;
 	RenderOrchestrator::NodeHandle staticMeshRenderGroup;
@@ -61,7 +62,7 @@ private:
 	};
 	GTSL::FixedVector<Mesh, BE::PAR> instances;
 
-	GTSL::HashMap<StaticMeshRenderGroup::StaticMeshHandle, InstanceHandle, BE::PAR> meshToInstanceMap;
+	GTSL::HashMap<StaticMeshSystem::StaticMeshHandle, InstanceHandle, BE::PAR> meshToInstanceMap;
 
 	RenderOrchestrator::DataKeyHandle meshDataBuffer;
 
@@ -78,7 +79,7 @@ private:
 		RenderOrchestrator::NodeHandle nodeHandle;
 		RenderModelHandle RenderModelHandle;
 	};
-	GTSL::HashMap<Id, Resource, BE::PAR> resources;
+	GTSL::HashMap<GTSL::StringView, Resource, BE::PAR> resources;
 
 	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 32> pendingBlasUpdates;
 	GTSL::StaticVector<RenderSystem::AccelerationStructureHandle, 32> pendingAdditions;
@@ -88,21 +89,21 @@ private:
 
 	RenderOrchestrator::NodeHandle visibilityRenderPassNodeHandle;
 
-	static uint32 calculateMeshSize(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
+	GTSL::StaticString<64> renderTechniqueName = GTSL::StaticString<64>(u8"Forward");
+
+	static uint32 calculateContiguousMeshBytesWithRouding(const uint32 vertexCount, const uint32 vertexSize, const uint32 indexCount, const uint32 indexSize) {
 		return GTSL::Math::RoundUpByPowerOf2(vertexCount * vertexSize, 16) + indexCount * indexSize;
 	}
 
-	//GTSL::StaticVector<uint32, 16> prefixSum; GTSL::StaticVector<Id, 16> prefixSumGuide;
-
 	void onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMeshResourceManager* staticMeshResourceManager, RenderSystem* render_system, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo);
 
-	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshRenderGroup* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo);
+	void onStaticMeshLoaded(TaskInfo taskInfo, RenderSystem* render_system, StaticMeshSystem* render_group, RenderOrchestrator* render_orchestrator, StaticMeshResourceManager::StaticMeshInfo staticMeshInfo);
 
-	void OnAddRenderGroupMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshRenderGroup* static_mesh_render_group, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, Id resourceName);
+	void OnAddRenderGroupMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, StaticMeshSystem* static_mesh_render_group, StaticMeshSystem::StaticMeshHandle static_mesh_handle, GTSL::StaticString<64> resourceName);
 
-	void OnAddMesh(TaskInfo task_info, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, InstanceHandle instance_handle, Id resourceName) {
+	void OnAddMesh(TaskInfo, StaticMeshResourceManager* static_mesh_resource_manager, RenderOrchestrator* render_orchestrator, RenderSystem* render_system, InstanceHandle instance_handle, Id resourceName) {
 		auto& instance = instances[instance_handle()];
-		auto& resource = resources[resourceName];
+		auto& resource = resources[GTSL::StringView(resourceName)];
 
 		render_orchestrator->AddInstance(meshDataNode, resource.nodeHandle, instance_handle);
 
@@ -125,7 +126,7 @@ private:
 		GetApplicationManager()->EnqueueTask(OnAddMeshTaskHandle, GTSL::MoveRef(instance_handle), GTSL::MoveRef(resource_name)); //Signal can update
 	}
 
-	void OnUpdateRenderGroupMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle, GTSL::Matrix3x4 transform) {
+	void OnUpdateRenderGroupMesh(TaskInfo, RenderSystem* renderSystem, RenderOrchestrator* render_orchestrator, StaticMeshSystem::StaticMeshHandle static_mesh_handle, GTSL::Matrix3x4 transform) {
 		auto instanceHandle = meshToInstanceMap.At(static_mesh_handle);
 		GetApplicationManager()->EnqueueTask(OnUpdateMeshTaskHandle, GTSL::MoveRef(instanceHandle), GTSL::MoveRef(transform));
 	}

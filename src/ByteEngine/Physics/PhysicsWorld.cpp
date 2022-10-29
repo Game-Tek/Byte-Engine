@@ -4,17 +4,31 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
-PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(ApplicationManager* gameInstance, Id meshName, StaticMeshResourceManager* staticMeshResourceManager, StaticMeshRenderGroup::StaticMeshHandle static_mesh_handle)
+PhysicsWorld::PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"), physicsObjects(32, GetPersistentAllocator()), PhysicsObjectTypeIndentifier(initialize_info.ApplicationManager->RegisterType(this, u8"PhysicsObject"))
+{
+		//initialize_info.ApplicationManager->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"GameplayEnd");
+
+		//onStaticMeshInfoLoadedHandle = initialize_info.ApplicationManager->
+		// (this, u8"onStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshInfoLoaded);
+		//onStaticMeshLoadedHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"onStaticMeshLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ)), &PhysicsWorld::onStaticMeshLoaded);
+
+		boundlessForces.EmplaceBack(0, -10, 0, 0);
+}
+
+PhysicsWorld::PhysicsObjectHandle PhysicsWorld::AddPhysicsObject(StaticMeshSystem::StaticMeshHandle static_mesh_handle)
 {
 	auto objectIndex = physicsObjects.Emplace(GetPersistentAllocator());
 	physicsObjects[objectIndex].Handle = static_mesh_handle;
 	
-	staticMeshResourceManager->LoadStaticMeshInfo(gameInstance, meshName, onStaticMeshInfoLoadedHandle, GTSL::MoveRef(objectIndex));
+	auto* staticMeshResourceManager = GetApplicationManager()->GetSystem<StaticMeshResourceManager>(u8"StaticMeshResourceManager");
+	auto* staticMeshSystem = GetApplicationManager()->GetSystem<StaticMeshSystem>(u8"StaticMeshSystem");
+
+	staticMeshResourceManager->LoadStaticMeshInfo(GetApplicationManager(), staticMeshSystem->GetMeshName(static_mesh_handle), onStaticMeshInfoLoadedHandle, GTSL::MoveRef(objectIndex));
 	
-	return PhysicsObjectHandle(objectIndex);
+	return GetApplicationManager()->MakeHandle<PhysicsObjectHandle>(PhysicsObjectTypeIndentifier, objectIndex);
 }
 
-void PhysicsWorld::onUpdate(TaskInfo taskInfo, StaticMeshRenderGroup* static_mesh_render_group)
+void PhysicsWorld::onUpdate(TaskInfo taskInfo, StaticMeshSystem* static_mesh_render_group)
 {
 	auto deltaMicroseconds = BE::Application::Get()->GetClock()->GetDeltaTime();
 

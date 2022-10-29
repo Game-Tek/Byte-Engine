@@ -13,7 +13,6 @@
 #include "Culling.h"
 #include "RenderSystem.h"
 #include "RenderTypes.h"
-#include "StaticMeshRenderGroup.h"
 #include "UIManager.h"
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Game/Tasks.h"
@@ -1922,7 +1921,7 @@ private:
 		return setHandle;
 	}
 
-	friend WorldRendererPipeline;
+	friend class WorldRendererPipeline;
 
 	byte* buffer[MAX_CONCURRENT_FRAMES]; uint32 offsets[MAX_CONCURRENT_FRAMES]{ 0 };
 

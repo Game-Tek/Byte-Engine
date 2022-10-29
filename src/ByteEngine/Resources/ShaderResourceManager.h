@@ -807,9 +807,14 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 				auto shaderJSON = GTSL::Find(sgd.ShaderJSONs, [&shaderName](const GTSL::JSON<BE::TAR>& json){ return json[u8"name"] == shaderName; });
 
 				auto shaderBinaryBuffer = compileShader(*shaderJSON.Get(), pipeline, sgd.SSS[0][shaderJSON.Get() - sgd.ShaderJSONs.begin()]);
-				serializeShader(*shaderJSON.Get(), shaderBinaryBuffer.GetRange());
 
-				UpdateFileHashCache(interestData.Pointer, changeCache, interestData.FileHash); // Update cached hash of file only if shader was actually updated
+				if(shaderBinaryBuffer.GetLength()) { // If succesfully compiled shader
+					serializeShader(*shaderJSON.Get(), shaderBinaryBuffer.GetRange());
+					UpdateFileHashCache(interestData.Pointer, changeCache, interestData.FileHash); // Update cached hash of file only if shader was actually updated
+				} else { // Failed to compile shader
+					BE_LOG_ERROR(u8"Failed to compile shader: ", shaderName, u8".");
+				}
+
 				return;
 			}
 		}
@@ -1010,11 +1015,7 @@ inline void ShaderResourceManager::processShaderGroup(const GTSL::JSON<BE::PAR>&
 	shader_group_data_serialize->RayTraceData = ray_trace_data;
 }
 
-inline void
-ShaderResourceManager::makeShaderGroup(
-	const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation,
-	ShaderGroupDataSerialize* shader_group_data_serialize, const ShaderMap& shader_map) {
-
+inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize* shader_group_data_serialize, const ShaderMap& shader_map) {
 	auto shaderGroupScope = pipeline.GetElementHandle(GPipeline::GLOBAL_SCOPE, json[u8"name"]);
 	auto& scopesPerPermutations = shader_group_data_serialize->SSS;
 

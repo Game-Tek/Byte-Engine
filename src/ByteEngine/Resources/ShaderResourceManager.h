@@ -585,17 +585,17 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	case GTSL::File::OpenResult::ERROR: break;
 	}
 
-	GTSL::HashMap<GTSL::StringView, PermutationManager*, BE::TAR> permutations(8, GetTransientAllocator());
+	GTSL::HashMap<GTSL::StringView, PermutationManager*, BE::PAR> permutationsMap(8, GetPersistentAllocator());
 
 	GTSL::SmartPointer<CommonPermutation, BE::TAR> commonPermutation(GetTransientAllocator(), u8"CommonPermutation");
 
-	permutations.Emplace(u8"CommonPermutation", static_cast<PermutationManager*>(commonPermutation.GetData()));
+	permutationsMap.Emplace(u8"CommonPermutation", static_cast<PermutationManager*>(commonPermutation.GetData()));
 
 
 	{ //configure permutations
-		permutations.Emplace(u8"ForwardRenderingPermutation", commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderingPermutation"));
-		permutations.Emplace(u8"RayTracePermutation", commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation"));
-		permutations.Emplace(u8"UIPermutation", commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation"));
+		permutationsMap.Emplace(u8"ForwardRenderingPermutation", commonPermutation->CreateChild<ForwardRenderPassPermutation>(u8"ForwardRenderingPermutation"));
+		permutationsMap.Emplace(u8"RayTracePermutation", commonPermutation->CreateChild<RayTracePermutation>(u8"RayTracePermutation"));
+		permutationsMap.Emplace(u8"UIPermutation", commonPermutation->CreateChild<UIPermutation>(u8"UIPermutation"));
 	}
 
 	GPipeline pipeline;
@@ -661,7 +661,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			auto json = GTSL::JSON(GTSL::StringView(fileBuffer), GetPersistentAllocator());
 
-			auto permutation = permutations[GTSL::StringView(json[u8"name"])];
+			auto permutation = permutationsMap[GTSL::StringView(json[u8"name"])];
 
 			auto permutationScopeHandle = pipeline.TryDeclareScope(GPipeline::GLOBAL_SCOPE, GTSL::StringView(json[u8"name"]));
 
@@ -764,7 +764,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 			// Do domain to permutation guide matching
 			auto domain = json[u8"domain"];
 
-			for(auto permutation : permutations) {
+			for(auto permutation : permutationsMap) {
 				for(auto d : permutation->GetSupportedDomains()) {
 					if(GTSL::StringView(domain) == d) { // If this permutation guide supports this domain, add
 						dependencyTree[GTSL::Hash(GTSL::StaticString<128>(permutation->InstanceName) + u8".bespg.json")].Connect(node); // Connect permutation guide to shader group
@@ -1027,7 +1027,7 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 
 		// If permutation handles this shader group's domains, evalute shader group for permutation, else check if children can handle this domain and then return
 		if (!Contains(permutation_manager->GetSupportedDomains(), GTSL::StringView(shaderGroupDomain))) {
-			for(auto e : permutation_manager->Children) {
+			for(auto e : permutation_manager->GetChildren()) {
 				self(e, permutationScopes, self);
 			}
 

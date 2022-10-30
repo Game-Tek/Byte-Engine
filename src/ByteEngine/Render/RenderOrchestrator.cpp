@@ -162,6 +162,8 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 	{
 		AddAttachment(u8"Albedo", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
 
+		AddAttachment(u8"UI", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
+
 		if (tag == GTSL::ShortString<16>(u8"Forward")) {
 			AddAttachment(u8"Normal", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);
 			AddAttachment(u8"WorldSpacePosition", 16, 4, GAL::ComponentType::FLOAT, GAL::TextureType::COLOR, false);

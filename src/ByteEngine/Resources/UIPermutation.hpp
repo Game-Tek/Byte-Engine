@@ -6,9 +6,7 @@
 class UIPermutation : public PermutationManager {
 public:
 	UIPermutation(const GTSL::StringView instance_name) : PermutationManager(instance_name, u8"UIPermutation") {
-		//AddTag(u8"RenderTechnique", u8"Forward");
-
-		//AddSupportedDomain(u8"UI");
+		AddSupportedDomain(u8"UI");
 	}
 
 	void Initialize(GPipeline* pipeline, ShaderGenerationData& shader_generation_data) override {
@@ -27,7 +25,6 @@ public:
 		// No vertex declaration as we have no incoming data
 		AddVertexSurfaceInterfaceBlockDeclaration(pipeline, uiScope, { {u8"vec2f", u8"vertexPos"}, {u8"vec2f", u8"vertexUV"}, {u8"uint32", u8"instanceIndex"} });
 		uiRenderPassScopeHandle = pipeline->DeclareStruct(uiScope, u8"RenderPassData", { { u8"TextureReference", u8"Color" } });
-		AddPushConstantDeclaration(pipeline, uiScope, { { u8"GlobalData*", u8"global" }, { u8"RenderPassData*", u8"renderPass" }, { u8"UIData*", u8"ui"}, { u8"UIInstanceData*", u8"uiInstances" }});
 
 		{
 			auto fragmentOutputBlockHandle = pipeline->DeclareScope(uiScope, u8"fragmentOutputBlock");

@@ -1013,6 +1013,7 @@ public:
 	NodeHandle AddSquare(const NodeHandle parent_node_handle) {
 		auto nodeHandle = addInternalNode<DrawData>(0, parent_node_handle);
 		if(!nodeHandle) { return nodeHandle.Get(); }
+		setNodeName(nodeHandle.Get(), u8"Square");
 		getPrivateNode<DrawData>(nodeHandle.Get()).VertexCount = 6;
 		SetNodeState(nodeHandle.Get(), false);
 		return nodeHandle.Get();
@@ -2018,7 +2019,6 @@ public:
 		GetApplicationManager()->EnqueueScheduledTask(tickTaskHandle);
 
 		//TODO: check why setting an end stage stop the whole process
-		//OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &UIRenderManager::OnCreateUIElement, {}, u8"RenderSetup");
 		OnCreateUIElementTaskHandle = GetApplicationManager()->RegisterTask(this, u8"OnCreateUIElement", DependencyBlock(TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<UIManager>(u8"UIManager")), &UIRenderManager::OnCreateUIElement);
 
 		GetApplicationManager()->SubscribeToEvent(u8"UIManager", UIManager::GetOnCreateUIElementEventHandle(), OnCreateUIElementTaskHandle);
@@ -2042,7 +2042,7 @@ public:
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
 			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
-			uiRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"Color"), GTSL::StringView(u8"Color"), GAL::AccessTypes::WRITE);
+			uiRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"UI"), GTSL::StringView(u8"UI"), GAL::AccessTypes::WRITE);
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"UI", u8"UIRenderPass", renderSystem, uiRenderPassData);
 
 			auto uiDataNodeHandle = renderOrchestrator->AddDataNode(renderPassNodeHandle, u8"UIData", uiDataDataKey);

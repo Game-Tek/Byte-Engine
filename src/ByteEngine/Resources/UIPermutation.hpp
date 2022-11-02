@@ -32,6 +32,9 @@ public:
 			pipeline->AddMemberDeductionGuide(uiScope, u8"surfaceColor", { outColorHandle });
 		}
 
+		pipeline->DeclareFunction(uiScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(vertexPos, 0, 1);");
+		pipeline->DeclareFunction(uiScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return vertexUV;");
+
 		auto closestPointOnLineSegmentToPointHandle = pipeline->DeclareFunction(uiScope, u8"vec2f", u8"ClosestPointOnLineSegmentToPoint", { { u8"vec2f", u8"a" }, { u8"vec2f", u8"b" }, { u8"vec2f", u8"p" } }, u8"const vec2f AB = b - a; float32 t = dot(AB, p - a) / dot(AB, AB); return a + AB * clamp(t, 0.0f, 1.0f);");
 
 		auto testPointToLineSideFunctionHandle = pipeline->DeclareFunction(uiScope, u8"float32", u8"TestPointToLineSide", { { u8"vec2f", u8"a" }, { u8"vec2f", u8"b" }, { u8"vec2f", u8"p" } }, u8"return ((a.x - b.x) * (p.y - b.y) - (a.y - b.y) * (p.x - b.x));");

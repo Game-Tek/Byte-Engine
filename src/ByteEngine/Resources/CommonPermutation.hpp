@@ -148,10 +148,6 @@ return (kD * albedo / PI() + specular) * radiance * NdotL;)");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec3f", u8"GetSurfaceViewSpacePosition", {}, u8"return viewSpacePosition;");
 		pipeline->DeclareFunction(fragmentShaderScope, u8"vec4f", u8"GetSurfaceViewSpaceNormal", {}, u8"return vec4(viewSpaceNormal, 0);");
 
-		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
-		pipeline->DeclareFunction(vertexShaderScope, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
-		pipeline->DeclareFunction(vertexShaderScope, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
-
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetThreadIndex", {}, u8"return gl_LocalInvocationID;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetWorkGroupIndex", {}, u8"return gl_WorkGroupID;");
 		pipeline->DeclareFunction(computeShaderScope, u8"uvec3", u8"GetGlobalIndex", {}, u8"return gl_GlobalInvocationID;");

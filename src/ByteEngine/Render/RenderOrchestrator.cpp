@@ -1352,15 +1352,20 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				transparency = r.Get()->Second == GTSL::StringView(u8"true");
 			}
 
-			//BUG: if shader group gets processed before render pass it will fail
-			const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[renderPassesMap[renderPass]]);
+			//TODO: if shader group gets processed before render pass it will fail
+			if(auto renderPassReference = renderPassesMap.TryGet(renderPass)) {
+				const auto& renderPassNode = getPrivateNode<RenderPassData>(renderPasses[renderPassReference.Get()]);
 
-			for (const auto& writeAttachment : renderPassNode.Attachments) {
-				if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
-					auto& attachment = attachments.At(writeAttachment.Name);
-					auto& attachmentState = attachmentStates.EmplaceBack();
-					attachmentState.BlendEnable = transparency; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
+				for (const auto& writeAttachment : renderPassNode.Attachments) {
+					if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
+						auto& attachment = attachments.At(writeAttachment.Name);
+						auto& attachmentState = attachmentStates.EmplaceBack();
+						attachmentState.BlendEnable = transparency; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
+					}
 				}
+			} else {
+				BE_LOG_ERROR(u8"Shader group: ", shader_group_info.Name, u8", references render pass: ", renderPass, u8" which does not exist.");
+				return;
 			}
 
 			context.Attachments = attachmentStates;

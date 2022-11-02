@@ -1,4 +1,4 @@
-#include "WorldRenderPipeline.hpp";
+#include "WorldRenderPipeline.hpp"
 
 WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), spherePositionsAndRadius(16, GetPersistentAllocator()), instances(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), meshToInstanceMap(16, GetPersistentAllocator()), InstanceTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"Instance")) {
 	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");

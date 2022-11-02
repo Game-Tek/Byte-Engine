@@ -411,7 +411,7 @@ private:
 	void processShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize*, const ShaderMap& shader_map);
 	void makeShaderGroup(const GTSL::JSON<BE::PAR>& json, GPipeline& pipeline, PermutationManager* root_permutation, ShaderGroupDataSerialize*, const ShaderMap& shader_map);
 
-	void serializeShaderGroup(const ShaderGroupDataSerialize& shader_group_data_serialize);
+	void serializeShaderGroup(const PermutationManager* permutation_manager, const ShaderGroupDataSerialize& shader_group_data_serialize);
 
 	GTSL::Buffer<BE::TransientAllocatorReference> compileShader(const GTSL::JSON<BE::TAR>& json,
 	                                                            const GPipeline& pipeline,
@@ -728,12 +728,12 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		}
 
 		if(GTSL::IsIn(fileData.Name, u8"besg")) {
-			auto filePath = fileData.Name; RTrimFirst(filePath, u8'.');
+			auto shaderGroupName = fileData.Name; RTrimFirst(shaderGroupName, u8'.');
 
-			ShaderGroupDataSerialize& shaderGroupDataSerialize = shaderGroupMap.Emplace(filePath, GetPersistentAllocator());
+			ShaderGroupDataSerialize& shaderGroupDataSerialize = shaderGroupMap.Emplace(shaderGroupName, GetPersistentAllocator());
 
 			{
-				GTSL::FileQuery shaderGroupInstanceFileQuery(GetUserResourcePath(filePath + u8"_*", u8"json"));
+				GTSL::FileQuery shaderGroupInstanceFileQuery(GetUserResourcePath(shaderGroupName + u8"_*", u8"json"));
 
 				while (auto instanceFileRef = shaderGroupInstanceFileQuery()) {
 					GTSL::File shaderGroupInstanceFile(GetUserResourcePath(instanceFileRef.Get()), GTSL::File::READ, false);
@@ -759,7 +759,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 			GTSL::Buffer shaderGroupBuffer(GetTransientAllocator()); shaderGroupFile.Read(shaderGroupBuffer);
 			
-			const auto& json = shaderGroupJSONsMap.Emplace(filePath, GTSL::StringView(shaderGroupBuffer), GetPersistentAllocator());
+			const auto& json = shaderGroupJSONsMap.Emplace(shaderGroupName, GTSL::StringView(shaderGroupBuffer), GetPersistentAllocator());
 
 			// Do domain to permutation guide matching
 			auto domain = json[u8"domain"];
@@ -793,16 +793,16 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		auto& interestData = processed.GetData(); auto& parentData = node.GetData();
 
 		if(GTSL::IsIn(parentData.Name, match) and state == State::MODIFIED) { // If current node is of the needed type
-			auto filePath = parentData.Name; RTrimFirst(filePath, u8'.');
+			auto shaderGroupName = parentData.Name; RTrimFirst(shaderGroupName, u8'.');
 
-			auto& sgd = shaderGroupMap[filePath]; // TODO: don't remake shader group, only do if first time compiling
+			auto& sgd = shaderGroupMap[shaderGroupName]; // TODO: don't remake shader group, only do if first time compiling
 
 			if(GTSL::IsIn(interestData.Name, u8"besh.txt")) { // If interested node is shader
 				auto shaderName = GTSL::StaticString<128>(interestData.Name);
 				RTrimFirst(shaderName, u8'.');
 				BE_LOG_MESSAGE(u8"Recompiling ", interestData.Name, u8" shader.");
 
-				makeShaderGroup(shaderGroupJSONsMap[filePath], pipeline, commonPermutation, &sgd, shaderMap); // TODO: watch out for shader scope handles, when doing hot reloading as they will still be in the shader group data serialize
+				makeShaderGroup(shaderGroupJSONsMap[shaderGroupName], pipeline, commonPermutation, &sgd, shaderMap); // TODO: watch out for shader scope handles, when doing hot reloading as they will still be in the shader group data serialize
 
 				auto shaderJSON = GTSL::Find(sgd.ShaderJSONs, [&shaderName](const GTSL::JSON<BE::TAR>& json){ return json[u8"name"] == shaderName; });
 
@@ -835,14 +835,21 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		}
 
 		if(GTSL::IsIn(interestData.Name, u8"besg")) {
-			auto filePath = interestData.Name; RTrimFirst(filePath, u8'.');
+			auto shaderGroupName = interestData.Name; RTrimFirst(shaderGroupName, u8'.');
 
-			auto& sgd = shaderGroupMap[filePath];
+			auto& sgd = shaderGroupMap[shaderGroupName];
+			auto& sgdJSON = shaderGroupJSONsMap[shaderGroupName];
 
-			makeShaderGroup(shaderGroupJSONsMap[filePath], pipeline, commonPermutation, &sgd, shaderMap); // TODO: watch out for shader scope handles, when doing hot reloading as they will still be in the shader group data serialize
+			makeShaderGroup(sgdJSON, pipeline, commonPermutation, &sgd, shaderMap); // TODO: watch out for shader scope handles, when doing hot reloading as they will still be in the shader group data serialize
 
-			if(interestData.Name == parentData.Name) {
-				serializeShaderGroup(sgd);
+			if(interestData.Name == parentData.Name) {				
+				for(auto& permutationManager : permutationsMap) {
+					// If permutation guide supports this domain
+					if (Contains(permutationManager->GetSupportedDomains(), GTSL::StringView(sgdJSON[u8"domain"]))) {
+						serializeShaderGroup(permutationManager, sgd);
+						break; // Make it so only one permutation guide can used, TODO: support multiple permutation guides per shader group
+					}
+				}
 			
 				for(const auto& p : sgd.SSS) {
 					BE_ASSERT(p.GetLength() == sgd.ShaderJSONs.GetLength(), u8"");
@@ -1262,7 +1269,7 @@ inline void ShaderResourceManager::makeShaderGroup(const GTSL::JSON<BE::PAR>& js
 	evaluateForPermutation(root_permutation, {GPipeline::GLOBAL_SCOPE}, evaluateForPermutation);
 }
 
-inline void ShaderResourceManager::serializeShaderGroup(const ShaderGroupDataSerialize& shader_group_data_serialize) {
+inline void ShaderResourceManager::serializeShaderGroup(const PermutationManager* permutation_manager, const ShaderGroupDataSerialize& shader_group_data_serialize) {
 	for(auto& e :shader_group_data_serialize.Instances) {
 		WriteIndexEntry(shaderGroupsTableFile, ~0ULL, shaderGroupInfosFile.GetSize(), e.Name); // write offset to shader group for each instance name
 	}
@@ -1278,7 +1285,15 @@ inline void ShaderResourceManager::serializeShaderGroup(const ShaderGroupDataSer
 			shaderGroupInfosFile << p.Type << p.Name << p.Value;
 		}
 
-		shaderGroupInfosFile << shader_group_data_serialize.Tags.GetLength();
+		uint32 tagCount = 0;
+		tagCount += permutation_manager->JSON[u8"tags"].GetCount();
+		tagCount += shader_group_data_serialize.Tags.GetLength();
+		shaderGroupInfosFile << tagCount;
+
+		for(auto e : permutation_manager->JSON[u8"tags"]) {
+			shaderGroupInfosFile << e[u8"name"] << e[u8"value"];
+		}
+
 		for (auto& p : shader_group_data_serialize.Tags) {
 			shaderGroupInfosFile << p.First << p.Second;
 		}

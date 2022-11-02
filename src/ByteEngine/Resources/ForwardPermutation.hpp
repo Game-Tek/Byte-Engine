@@ -21,6 +21,10 @@ struct ForwardRenderPassPermutation : PermutationManager {
 			pipeline->DeclareVariable(vertexBlock, { u8"vec2f", u8"TEXTURE_COORDINATES" });
 		}
 
+		pipeline->DeclareFunction(forwardScopeHandle, u8"vec4f", u8"GetVertexPosition", {}, u8"return vec4(POSITION, 1);");
+		pipeline->DeclareFunction(forwardScopeHandle, u8"vec4f", u8"GetVertexNormal", {}, u8"return vec4(NORMAL, 0);");
+		pipeline->DeclareFunction(forwardScopeHandle, u8"vec2f", u8"GetVertexTextureCoordinates", {}, u8"return TEXTURE_COORDINATES;");
+
 		forwardRenderPassScopeHandle = pipeline->DeclareStruct(forwardScopeHandle, u8"RenderPassData", FORWARD_RENDERPASS_DATA);
 
 		{

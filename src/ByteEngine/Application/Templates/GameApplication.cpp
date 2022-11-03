@@ -11,6 +11,7 @@
 #include "ByteEngine/Render/RenderOrchestrator.h"
 #include "ByteEngine/Render/StaticMeshSystem.h"
 #include "ByteEngine/Network/ConnectionHandler.hpp"
+#include "ByteEngine/Application/ScriptingSystem.hpp"
 
 #include "ByteEngine/Render/RenderSystem.h"
 #include "ByteEngine/Render/WorldRenderPipeline.hpp"
@@ -107,6 +108,8 @@ void GameApplication::PostInitialize()
 	applicationManager->AddSystem<UIRenderManager>(u8"UIRenderManager");
 
 	applicationManager->AddSystem<WorldSystem>(u8"WorldSystem");
+
+	applicationManager->AddSystem<ScriptingSystem>(u8"ScriptingSystem");
 }	
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)

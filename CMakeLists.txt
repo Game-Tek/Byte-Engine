@@ -31,6 +31,7 @@ FetchContent_MakeAvailable(GTSL)
 
 # ByteEngine options
 set(BE_GAPI "vulkan")
+set(BE_CSHARP_SCRIPTING true)
 # ByteEngine options
 
 add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/EntryPoint.h"
@@ -62,7 +63,7 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Utility/Shapes/ConeWithFalloff.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/InputManager.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Debug/Logger.cpp"
-"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Scripting.cpp"
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/ScriptingSystem.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Clock.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Resources/BC7.cpp"
@@ -100,7 +101,12 @@ endif()
 if (WIN32)
 	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_WINDOWS=1)
 
-	target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
+	if(BE_CSHARP_SCRIPTING)
+		target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
+		target_link_libraries(ByteEngine PRIVATE "C:/Program Files/Mono/lib/mono-2.0-sgen.lib")
+		# target_link_libraries(ByteEngine PRIVATE "C:/Program Files/Mono/bin/mono-2.0-sgen.dll")
+		# target_link_libraries(ByteEngine PRIVATE "C:/Program Files/Mono/lib/libmono-static-sgen.lib")
+	endif()
 
 	if (BE_GAPI STREQUAL "vulkan")
 		find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)

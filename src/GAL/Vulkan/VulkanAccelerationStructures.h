@@ -10,7 +10,7 @@ namespace GAL {
 	struct AccelerationStructureBuildInfo;
 
 	struct GeometryTriangles {
-		ShaderDataType VertexPositionFormat; IndexType IndexType; GTSL::uint8 VertexStride;
+		ShaderDataType VertexPositionFormat; IndexType indexType; GTSL::uint8 VertexStride;
 		DeviceAddress VertexData, IndexData;
 		GTSL::uint32 FirstVertex, MaxVertices;
 	};
@@ -61,7 +61,7 @@ namespace GAL {
 				vkGeometry.geometry.triangles.vertexData.deviceAddress = static_cast<GTSL::uint64>(t.VertexData);
 				vkGeometry.geometry.triangles.indexData.deviceAddress = static_cast<GTSL::uint64>(t.IndexData);
 				vkGeometry.geometry.triangles.transformData.deviceAddress = 0;
-				vkGeometry.geometry.triangles.indexType = ToVulkan(t.IndexType);
+				vkGeometry.geometry.triangles.indexType = ToVulkan(t.indexType);
 				vkGeometry.geometry.triangles.maxVertex = t.MaxVertices;
 				vkGeometry.geometry.triangles.vertexFormat = ToVulkan(t.VertexPositionFormat);
 				vkGeometry.geometry.triangles.vertexStride = t.VertexStride;

@@ -83,9 +83,9 @@ UIManager::PrimitiveData& UIManager::updateBranch(decltype(primitives)::iterator
 	GTSL::Vector2 halfSize;
 
 	for(uint8 a = 0; a < 2; ++a) {
-		switch (primitive.ScalingPolicies[a]) {
+		switch (primitive.scalingPolicies[a]) {
 			case ScalingPolicies::FILL: {
-				switch (primitive.SizingPolicies[a]) {
+				switch (primitive.sizingPolicies[a]) {
 				case SizingPolicies::FROM_SCREEN: {
 					if constexpr (WINDOW_SPACE) {
 						halfSize[a] = update_data->WindowSize[a];
@@ -106,7 +106,7 @@ UIManager::PrimitiveData& UIManager::updateBranch(decltype(primitives)::iterator
 				break;
 			}
 			case ScalingPolicies::SET_ASPECT_RATIO: {
-				switch (primitive.SizingPolicies[a]) {
+				switch (primitive.sizingPolicies[a]) {
 				case SizingPolicies::FROM_SCREEN: {
 					if constexpr (WINDOW_SPACE) {
 						halfSize[a] = primitive.HalfSize[a] / update_data->ScreenToWindowSize[a];

@@ -92,7 +92,7 @@ namespace GAL {
 			for(auto& e : renderPassTargetDescriptions) {
 				VkRenderingAttachmentInfoKHR* attachmentInfo;
 
-				if (e.FormatDescriptor.Type == TextureType::COLOR) {
+				if (e.format.Type == TextureType::COLOR) {
 					attachmentInfo = &colorAttachmentInfos.EmplaceBack();
 				} else {
 					attachmentInfo = &depthAttachmentInfo;
@@ -102,8 +102,8 @@ namespace GAL {
 				attachmentInfo->sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
 				attachmentInfo->pNext = nullptr;
 				attachmentInfo->clearValue = { e.ClearValue.R(), e.ClearValue.G(), e.ClearValue.B(), e.ClearValue.A() };
-				attachmentInfo->imageLayout = ToVulkan(e.Start, e.FormatDescriptor);
-				attachmentInfo->imageView = reinterpret_cast<const VulkanTextureView*>(e.TextureView)->GetVkImageView();
+				attachmentInfo->imageLayout = ToVulkan(e.Start, e.format);
+				attachmentInfo->imageView = reinterpret_cast<const VulkanTextureView*>(e.textureView)->GetVkImageView();
 				attachmentInfo->loadOp = ToVkAttachmentLoadOp(e.LoadOperation);
 				attachmentInfo->storeOp = ToVkAttachmentStoreOp(e.StoreOperation);
 				attachmentInfo->resolveMode = VK_RESOLVE_MODE_NONE;
@@ -162,7 +162,7 @@ namespace GAL {
 
 		void BindVertexBuffers(const VulkanRenderDevice* renderDevice, GTSL::Range<const VulkanBuffer*> buffers, GTSL::Range<const GTSL::uint32*> offsets, [[maybe_unused]] GTSL::uint32 size, [[maybe_unused]] GTSL::uint32 stride) const {
 			GTSL::StaticVector<VkBuffer, 16> vkBuffers;
-			GTSL::StaticVector<uint64, 16> vkOffsets;
+			GTSL::StaticVector<VkDeviceSize, 16> vkOffsets;
 
 			for(uint32 i = 0; i < buffers.ElementCount(); ++i) {
 				vkBuffers.EmplaceBack(buffers[i].GetVkBuffer());
@@ -362,8 +362,8 @@ namespace GAL {
 					VkBufferMemoryBarrier2KHR& bufferBarrier = bufferBarriers.EmplaceBack();
 
 					bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2_KHR; bufferBarrier.pNext = nullptr;
-					bufferBarrier.size = barrier.Size;
-					bufferBarrier.buffer = static_cast<const VulkanBuffer*>(barrier.Buffer)->GetVkBuffer();
+					bufferBarrier.size = barrier.size;
+					bufferBarrier.buffer = static_cast<const VulkanBuffer*>(barrier.buffer)->GetVkBuffer();
 					bufferBarrier.srcAccessMask = ToVulkan(b.SourceAccess, b.SourceStage);
 					bufferBarrier.dstAccessMask = ToVulkan(b.DestinationAccess, b.DestinationStage);
 					bufferBarrier.srcQueueFamilyIndex = b.From;
@@ -381,7 +381,7 @@ namespace GAL {
 					textureBarrier.newLayout = ToVulkan(barrier.TargetLayout, barrier.Format);
 					textureBarrier.srcQueueFamilyIndex = b.From;
 					textureBarrier.dstQueueFamilyIndex = b.To;
-					textureBarrier.image = static_cast<const VulkanTexture*>(barrier.Texture)->GetVkImage();
+					textureBarrier.image = static_cast<const VulkanTexture*>(barrier.texture)->GetVkImage();
 					textureBarrier.subresourceRange.aspectMask = ToVulkan(barrier.Format.Type);
 					textureBarrier.subresourceRange.baseMipLevel = 0;
 					textureBarrier.subresourceRange.levelCount = 1;

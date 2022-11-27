@@ -2,6 +2,7 @@
 
 #include "AAL/AudioDevice.h"
 
+#if BE_PLATFORM_WINDOWS
 #include <mmdeviceapi.h>
 #include <Audioclient.h>
 
@@ -261,3 +262,4 @@ namespace AAL
 		}
 	};
 }
+#endif

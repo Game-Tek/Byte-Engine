@@ -88,29 +88,25 @@ namespace GAL
 				}
 			};
 			
-			switch (MakeFormatFromFormatDescriptor(sourceImageFormat))
-			{
-				case Format::RGB_I8:
-				{
+			switch (MakeFormatFromFormatDescriptor(sourceImageFormat)) {
+				case Format::RGB_I8: {
 					switch (MakeFormatFromFormatDescriptor(targetImageFormat))
 					{
 						case Format::RGBA_I8: rgb_i8_to_rgba_i8(); return;
 						
 						default: break;
 					}
+					break;
 				}
-
-				case Format::RGBA_I8:
-				{
+				case Format::RGBA_I8: {
 					switch (MakeFormatFromFormatDescriptor(targetImageFormat))
 					{
 						case Format::RGBA_I8: return;
 
 						default: break;
 					}
+					break;
 				}
-				
-				default: __debugbreak();
 			}
 		}
 	};

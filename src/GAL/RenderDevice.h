@@ -73,7 +73,7 @@ namespace GAL
 			bool PerformanceValidation = false;
 			bool SynchronizationValidation = false;
 			GTSL::Range<const GTSL::Pair<Extension, void*>*> Extensions;
-			AllocationInfo AllocationInfo;
+			AllocationInfo allocation;
 		};
 		
 		RenderDevice(GTSL::Delegate<void(GTSL::StringView, MessageSeverity)> pDelegate) : debugPrintFunction(pDelegate)

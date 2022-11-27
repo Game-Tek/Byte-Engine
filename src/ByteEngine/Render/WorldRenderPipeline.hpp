@@ -12,7 +12,7 @@ class StaticMeshResouceManager;
 
 class WorldRendererPipeline : public RenderPipeline {
 public:
-	MAKE_BE_HANDLE(Instance)
+	DECLARE_BE_TYPE(Instance)
 
 	WorldRendererPipeline(const InitializeInfo& initialize_info);
 
@@ -26,8 +26,6 @@ public:
 	}
 
 private:
-	DECLARE_BE_TYPE(Instance)
-
 	DECLARE_BE_TASK(OnAddRenderGroupMesh, BE_RESOURCES(StaticMeshResourceManager*, RenderOrchestrator*, RenderSystem*, StaticMeshSystem*), StaticMeshSystem::StaticMeshHandle, GTSL::StaticString<64>);
 	DECLARE_BE_TASK(OnUpdateRenderGroupMesh, BE_RESOURCES(RenderSystem*, RenderOrchestrator*), StaticMeshSystem::StaticMeshHandle, GTSL::Matrix3x4);
 
@@ -77,7 +75,7 @@ private:
 		GTSL::Vector3 ScalingFactor = GTSL::Vector3(1.0f);
 		bool Interleaved = true;
 		RenderOrchestrator::NodeHandle nodeHandle;
-		RenderModelHandle RenderModelHandle;
+		RenderModelHandle renderModelHandle;
 	};
 	GTSL::HashMap<GTSL::StringView, Resource, BE::PAR> resources;
 
@@ -109,7 +107,7 @@ private:
 
 		auto key = render_orchestrator->GetBufferWriteKey(render_system, meshDataBuffer);
 
-		instance.MaterialHandle = resource.RenderModelHandle;
+		instance.MaterialHandle = resource.renderModelHandle;
 
 		const uint32 instanceIndex = render_orchestrator->GetInstanceIndex(meshDataNode, instance_handle);
 
@@ -283,7 +281,7 @@ private:
 
 		// Make render pass
 		RenderOrchestrator::PassData pass_data;
-		pass_data.PassType = RenderOrchestrator::PassType::RAY_TRACING;
+		pass_data.type = RenderOrchestrator::PassTypes::RAY_TRACING;
 		pass_data.Attachments = RenderPassStructToAttachments(RT_RENDERPASS_DATA);
 		RenderOrchestrator::NodeHandle chain = renderOrchestrator->GetGlobalDataLayer();
 

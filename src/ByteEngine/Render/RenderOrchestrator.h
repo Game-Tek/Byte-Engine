@@ -84,7 +84,7 @@ class RenderOrchestrator : public BE::System {
 public:
 	MAKE_HANDLE(uint32, ElementData);
 
-	enum class PassType : uint8 {
+	enum class PassTypes : uint8 {
 		RASTER, COMPUTE, RAY_TRACING
 	};
 
@@ -133,7 +133,7 @@ protected:
 	};
 
 	struct APIRenderPassData {
-		RenderPass RenderPass;
+		RenderPass renderPass;
 		uint8 APISubPass = 0, SubPassCount = 0;
 	};
 
@@ -153,7 +153,7 @@ public:
 	MAKE_HANDLE(uint32, Set);
 
 	struct SubSetDescription {
-		SetHandle SetHandle; uint32 Subset;
+		SetHandle setHandle; uint32 Subset;
 		GAL::BindingType Type;
 	};
 
@@ -482,7 +482,7 @@ public:
 		};
 		GTSL::StaticVector<AttachmentReference, 8> Attachments;
 
-		PassType PassType;
+		PassTypes type;
 	};
 	NodeHandle AddRenderPassNode(NodeHandle parent_node_handle, GTSL::StringView instance_name, GTSL::StringView render_pass_name, RenderSystem*
 	                             renderSystem, PassData pass_data, const GTSL::Range<const ND*> innner = {});
@@ -649,12 +649,12 @@ public:
 
 	void PushConstant(const RenderSystem* renderSystem, CommandList commandBuffer, SetLayoutHandle layout, uint32 offset, GTSL::Range<const byte*> range) const {
 		const auto& set = setLayoutDatas[layout()];
-		commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), set.PipelineLayout, offset, range, set.Stage);
+		commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), set.pipelineLayout, offset, range, set.Stage);
 	}
 
 	void BindSet(RenderSystem* renderSystem, CommandList commandBuffer, SetHandle setHandle, GAL::ShaderStage shaderStage) {
 		auto& set = sets[setHandle()];
-		commandBuffer.BindBindingsSets(renderSystem->GetRenderDevice(), shaderStage, GTSL::Range<BindingsSet*>(1, &set.BindingsSet[renderSystem->GetCurrentFrame()]), set.PipelineLayout, set.Level);
+		commandBuffer.BindBindingsSets(renderSystem->GetRenderDevice(), shaderStage, GTSL::Range<BindingsSet*>(1, &set.bindingsSet[renderSystem->GetCurrentFrame()]), set.pipelineLayout, set.Level);
 	}
 
 	void WriteBinding(const RenderSystem* renderSystem, SubSetHandle setHandle, RenderSystem::TextureHandle textureHandle, uint32 bindingIndex, uint8 frameIndex) {
@@ -671,18 +671,18 @@ public:
 
 		BindingsPool::TextureBindingUpdateInfo info;
 		info.TextureView = *renderSystem->GetTextureView(textureHandle);
-		info.TextureLayout = layout;
-		info.FormatDescriptor;
+		info.Layout = layout;
+		info.Format;
 
 		descriptorsUpdates[frameIndex].AddTextureUpdate(setHandle, bindingIndex, info);
 	}
 
-	enum class SubSetType : uint8 {
+	enum class SubSetTypes : uint8 {
 		BUFFER, READ_TEXTURES, WRITE_TEXTURES, RENDER_ATTACHMENT, ACCELERATION_STRUCTURE, SAMPLER
 	};
 
 	struct SubSetDescriptor {
-		SubSetType SubSetType; uint32 BindingsCount;
+		SubSetTypes type; uint32 BindingsCount;
 		SubSetHandle* Handle;
 		GTSL::Range<const TextureSampler*> Sampler;
 	};
@@ -713,7 +713,7 @@ public:
 			for (uint8 i = 0; i < level; ++i) { bindingsSetLayouts.EmplaceBack(); }
 
 			for (uint8 i = 0, l = level - 1; i < level; ++i, --l) {
-				bindingsSetLayouts[l] = setLayoutDatas[lastSet()].BindingsSetLayout;
+				bindingsSetLayouts[l] = setLayoutDatas[lastSet()].bindingsSetLayout;
 				lastSet = setLayoutDatas[lastSet()].Parent;
 			}
 		}
@@ -728,35 +728,35 @@ public:
 			if (e.BindingsCount != 1) { binding_descriptor.Flags = GAL::BindingFlags::PARTIALLY_BOUND; }
 			binding_descriptor.BindingsCount = e.BindingsCount;
 
-			switch (e.SubSetType) {
-			case SubSetType::BUFFER: binding_descriptor.BindingType = GAL::BindingType::STORAGE_BUFFER; break;
-			case SubSetType::READ_TEXTURES: binding_descriptor.BindingType = GAL::BindingType::SAMPLED_IMAGE; break;
-			case SubSetType::WRITE_TEXTURES: binding_descriptor.BindingType = GAL::BindingType::STORAGE_IMAGE; break;
-			case SubSetType::RENDER_ATTACHMENT: binding_descriptor.BindingType = GAL::BindingType::INPUT_ATTACHMENT; break;
-			case SubSetType::SAMPLER: {
-				binding_descriptor.BindingType = GAL::BindingType::SAMPLER;
+			switch (e.type) {
+			case SubSetTypes::BUFFER: binding_descriptor.Type = GAL::BindingType::STORAGE_BUFFER; break;
+			case SubSetTypes::READ_TEXTURES: binding_descriptor.Type = GAL::BindingType::SAMPLED_IMAGE; break;
+			case SubSetTypes::WRITE_TEXTURES: binding_descriptor.Type = GAL::BindingType::STORAGE_IMAGE; break;
+			case SubSetTypes::RENDER_ATTACHMENT: binding_descriptor.Type = GAL::BindingType::INPUT_ATTACHMENT; break;
+			case SubSetTypes::SAMPLER: {
+				binding_descriptor.Type = GAL::BindingType::SAMPLER;
 				binding_descriptor.Samplers = e.Sampler;
 				binding_descriptor.BindingsCount = e.Sampler.ElementCount();
 				break;
 			}
-			case SubSetType::ACCELERATION_STRUCTURE:
-				binding_descriptor.BindingType = GAL::BindingType::ACCELERATION_STRUCTURE;
-				binding_descriptor.ShaderStage = GAL::ShaderStages::RAY_GEN;
+			case SubSetTypes::ACCELERATION_STRUCTURE:
+				binding_descriptor.Type = GAL::BindingType::ACCELERATION_STRUCTURE;
+				binding_descriptor.Stage = GAL::ShaderStages::RAY_GEN;
 				break;
 			}
 
-			binding_descriptor.ShaderStage = setLayoutData.Stage;
+			binding_descriptor.Stage = setLayoutData.Stage;
 
 			subSetDescriptors.EmplaceBack(binding_descriptor);
 		}
 
-		setLayoutData.BindingsSetLayout.Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
-		bindingsSetLayouts.EmplaceBack(setLayoutData.BindingsSetLayout);
+		setLayoutData.bindingsSetLayout.Initialize(renderSystem->GetRenderDevice(), subSetDescriptors);
+		bindingsSetLayouts.EmplaceBack(setLayoutData.bindingsSetLayout);
 
 		GAL::PushConstant pushConstant;
 		pushConstant.Stage = setLayoutData.Stage;
 		pushConstant.NumberOf4ByteSlots = 32;
-		setLayoutData.PipelineLayout.Initialize(renderSystem->GetRenderDevice(), &pushConstant, bindingsSetLayouts);
+		setLayoutData.pipelineLayout.Initialize(renderSystem->GetRenderDevice(), &pushConstant, bindingsSetLayouts);
 
 		return SetLayoutHandle(hash);
 	}
@@ -767,23 +767,23 @@ public:
 		for (auto& ss : setInfo) {
 			GAL::ShaderStage enabledShaderStages = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT | GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::ANY_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::CALLABLE | GAL::ShaderStages::INTERSECTION | GAL::ShaderStages::COMPUTE;
 
-			switch (ss.SubSetType) {
-			case SubSetType::BUFFER:
+			switch (ss.type) {
+			case SubSetTypes::BUFFER:
 				bindingDescriptors.EmplaceBack(GAL::BindingType::STORAGE_BUFFER, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND);
 				break;
-			case SubSetType::READ_TEXTURES:
+			case SubSetTypes::READ_TEXTURES:
 				bindingDescriptors.EmplaceBack(GAL::BindingType::SAMPLED_IMAGE, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND);
 				break;
-			case SubSetType::WRITE_TEXTURES:
+			case SubSetTypes::WRITE_TEXTURES:
 				bindingDescriptors.EmplaceBack(GAL::BindingType::STORAGE_IMAGE, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND);
 				break;
-			case SubSetType::RENDER_ATTACHMENT:
+			case SubSetTypes::RENDER_ATTACHMENT:
 				bindingDescriptors.EmplaceBack(GAL::BindingType::INPUT_ATTACHMENT, enabledShaderStages, ss.BindingsCount, GAL::BindingFlags::PARTIALLY_BOUND);
 				break;
-			case SubSetType::ACCELERATION_STRUCTURE:
+			case SubSetTypes::ACCELERATION_STRUCTURE:
 				bindingDescriptors.EmplaceBack(GAL::BindingType::ACCELERATION_STRUCTURE, enabledShaderStages, ss.BindingsCount, GAL::BindingFlag());
 				break;
-			case SubSetType::SAMPLER:
+			case SubSetTypes::SAMPLER:
 				bindingDescriptors.EmplaceBack(GAL::BindingType::SAMPLER, enabledShaderStages, ss.BindingsCount, GAL::BindingFlag());
 				break;
 			default:;
@@ -795,7 +795,7 @@ public:
 		auto& set = sets[setHandle()];
 		uint32 i = 0;
 		for (auto& ss : setInfo) {
-			*ss.Handle = SubSetHandle({ setHandle, i, bindingDescriptors[i].BindingType });
+			*ss.Handle = SubSetHandle({ setHandle, i, bindingDescriptors[i].Type });
 			++i;
 		}
 
@@ -803,7 +803,7 @@ public:
 	}
 
 	struct BindingsSetData {
-		BindingsSetLayout BindingsSetLayout;
+		BindingsSetLayout Layout;
 		BindingsSet BindingsSets[MAX_CONCURRENT_FRAMES];
 		uint32 DataSize = 0;
 	};
@@ -1106,11 +1106,11 @@ private:
 	};
 
 	struct RenderPassData {
-		PassType Type;
+		PassTypes Type;
 		GTSL::StaticVector<AttachmentData, 16> Attachments;
 		GAL::PipelineStage PipelineStages;
 		MemberHandle RenderTargetReferences;
-		ResourceHandle ResourceHandle;
+		ResourceHandle resourceHandle;
 		DataKeyHandle DataKey;
 	};
 
@@ -1437,30 +1437,30 @@ private:
 
 	struct CreateTextureInfo {
 		GTSL::ShortString<64> TextureName;
-		ApplicationManager* GameInstance = nullptr;
-		RenderSystem* RenderSystem = nullptr;
-		TextureResourceManager* TextureResourceManager = nullptr;
+		ApplicationManager* applicationManager = nullptr;
+		RenderSystem* renderSystem = nullptr;
+		TextureResourceManager* textureResourceManager = nullptr;
 	};
 	uint32 createTexture(const CreateTextureInfo& createTextureInfo);
 
 	struct MaterialLoadInfo {
-		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer<BE::PAR>&& buffer, uint32 index, uint32 instanceIndex, TextureResourceManager* tRM) : RenderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), InstanceIndex(instanceIndex), TextureResourceManager(tRM)
+		MaterialLoadInfo(RenderSystem* renderSystem, GTSL::Buffer<BE::PAR>&& buffer, uint32 index, uint32 instanceIndex, TextureResourceManager* tRM) : renderSystem(renderSystem), Buffer(MoveRef(buffer)), Component(index), InstanceIndex(instanceIndex), textureResourceManager(tRM)
 		{
 		}
 
-		RenderSystem* RenderSystem = nullptr;
+		RenderSystem* renderSystem = nullptr;
 		GTSL::Buffer<BE::PAR> Buffer;
 		uint32 Component, InstanceIndex;
-		TextureResourceManager* TextureResourceManager;
+		TextureResourceManager* textureResourceManager;
 	};
 
 	struct TextureLoadInfo {
 		TextureLoadInfo() = default;
 
-		TextureLoadInfo(RenderAllocation renderAllocation) : RenderAllocation(renderAllocation)
+		TextureLoadInfo(RenderAllocation renderAllocation) : allocation(renderAllocation)
 		{}
 
-		RenderAllocation RenderAllocation;
+		RenderAllocation allocation;
 		RenderSystem::TextureHandle TextureHandle;
 	};
 	void onTextureInfoLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, RenderSystem*, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo);
@@ -1482,7 +1482,7 @@ private:
 		GTSL::StaticString<64> Name;
 		GAL::TextureUse Uses; GAL::TextureLayout Layout[MAX_CONCURRENT_FRAMES];
 		GAL::PipelineStage ConsumingStages; GAL::AccessType AccessType;
-		GTSL::RGBA ClearColor; GAL::FormatDescriptor FormatDescriptor;
+		GTSL::RGBA ClearColor; GAL::FormatDescriptor format;
 		uint32 ImageIndeces[MAX_CONCURRENT_FRAMES];
 		//bool IsMultiFrame = false;
 	};
@@ -1746,7 +1746,7 @@ private:
 	}
 
 	void updateDescriptors(TaskInfo taskInfo) {
-		auto* renderSystem = taskInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
+		auto* renderSystem = taskInfo.AppManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
 		//for (auto& e : queuedSetUpdates) {
 		//	resizeSet(renderSystem, e);
@@ -1764,7 +1764,7 @@ private:
 					for (auto& a : b.GetElements()) {
 						BindingsPool::BindingsUpdateInfo bindingsUpdateInfo;
 						bindingsUpdateInfo.Type = sets[set.First].SubSets[b.First].Type;
-						bindingsUpdateInfo.BindingsSet = &sets[set.First].BindingsSet[renderSystem->GetCurrentFrame()];
+						bindingsUpdateInfo.BindingsSet = &sets[set.First].bindingsSet[renderSystem->GetCurrentFrame()];
 						bindingsUpdateInfo.SubsetIndex = b.First;
 
 						for (auto& t : a) {
@@ -1775,7 +1775,7 @@ private:
 					}
 				}
 
-				sets[set.First].BindingsPool[renderSystem->GetCurrentFrame()].Update(renderSystem->GetRenderDevice(), bindingsUpdateInfos, GetTransientAllocator());
+				sets[set.First].bindingsPool[renderSystem->GetCurrentFrame()].Update(renderSystem->GetRenderDevice(), bindingsUpdateInfos, GetTransientAllocator());
 			}
 		}
 
@@ -1808,8 +1808,8 @@ private:
 
 	private:
 		void addUpdate(SubSetHandle subSetHandle, uint32 binding, BindingsPool::BindingUpdateInfo update) {
-			if (sets.IsSlotOccupied(subSetHandle().SetHandle())) {
-				auto& set = sets[subSetHandle().SetHandle()];
+			if (sets.IsSlotOccupied(subSetHandle().setHandle())) {
+				auto& set = sets[subSetHandle().setHandle()];
 
 				if (set.IsSlotOccupied(subSetHandle().Subset)) {
 					auto& subSet = set[subSetHandle().Subset];
@@ -1828,7 +1828,7 @@ private:
 				}
 			}
 			else { //there isn't set
-				auto& set = sets.EmplaceAt(subSetHandle().SetHandle(), 16, sets.GetAllocator());
+				auto& set = sets.EmplaceAt(subSetHandle().setHandle(), 16, sets.GetAllocator());
 				auto& subSet = set.EmplaceAt(subSetHandle().Subset, 32, sets.GetAllocator());
 				subSet.EmplaceAt(binding, update);
 			}
@@ -1863,10 +1863,10 @@ private:
 		Id Name;
 		//SetHandle Parent;
 		uint32 Level = 0;
-		PipelineLayout PipelineLayout;
-		BindingsSetLayout BindingsSetLayout;
-		BindingsPool BindingsPool[MAX_CONCURRENT_FRAMES];
-		BindingsSet BindingsSet[MAX_CONCURRENT_FRAMES];
+		PipelineLayout pipelineLayout;
+		BindingsSetLayout bindingsSetLayout;
+		BindingsPool bindingsPool[MAX_CONCURRENT_FRAMES];
+		BindingsSet bindingsSet[MAX_CONCURRENT_FRAMES];
 
 		/**
 		 * \brief Stores all data per sub set, and manages managed buffers.
@@ -1887,8 +1887,8 @@ private:
 		uint8 Level = 0;
 
 		SetLayoutHandle Parent;
-		BindingsSetLayout BindingsSetLayout;
-		PipelineLayout PipelineLayout;
+		BindingsSetLayout bindingsSetLayout;
+		PipelineLayout pipelineLayout;
 		GAL::ShaderStage Stage;
 	};
 	GTSL::HashMap<uint64, SetLayoutData, BE::PAR> setLayoutDatas;
@@ -1900,22 +1900,22 @@ private:
 		auto& setLayout = setLayoutDatas[setLayoutHandle()];
 
 		set.Level = setLayout.Level;
-		set.BindingsSetLayout = setLayout.BindingsSetLayout;
-		set.PipelineLayout = setLayout.PipelineLayout;
+		set.bindingsSetLayout = setLayout.bindingsSetLayout;
+		set.pipelineLayout = setLayout.pipelineLayout;
 
 		if (bindingDescriptors.ElementCount()) {
 			GTSL::StaticVector<BindingsPool::BindingsPoolSize, 10> bindingsPoolSizes;
 
 			for (auto& e : bindingDescriptors) {
-				bindingsPoolSizes.EmplaceBack(BindingsPool::BindingsPoolSize{ e.BindingType, e.BindingsCount * renderSystem->GetPipelinedFrames() });
+				bindingsPoolSizes.EmplaceBack(BindingsPool::BindingsPoolSize{ e.Type, e.BindingsCount * renderSystem->GetPipelinedFrames() });
 				set.SubSets.EmplaceBack(); auto& subSet = set.SubSets.back();
-				subSet.Type = e.BindingType;
+				subSet.Type = e.Type;
 				subSet.AllocatedBindings = e.BindingsCount;
 			}
 
 			for (uint8 f = 0; f < renderSystem->GetPipelinedFrames(); ++f) {
-				set.BindingsPool[f].Initialize(renderSystem->GetRenderDevice(), bindingsPoolSizes, 1);
-				set.BindingsSet[f].Initialize(renderSystem->GetRenderDevice(), set.BindingsPool[f], setLayout.BindingsSetLayout);
+				set.bindingsPool[f].Initialize(renderSystem->GetRenderDevice(), bindingsPoolSizes, 1);
+				set.bindingsSet[f].Initialize(renderSystem->GetRenderDevice(), set.bindingsPool[f], setLayout.bindingsSetLayout);
 			}
 		}
 
@@ -2012,8 +2012,8 @@ public:
 	DECLARE_BE_TASK(OnFontLoad, BE_RESOURCES(RenderSystem, RenderOrchestrator), FontResourceManager::FontData, GTSL::Buffer<BE::PAR>);
 
 	UIRenderManager(const InitializeInfo& initializeInfo) : RenderManager(initializeInfo, u8"UIRenderManager"), instancesMap(32, GetPersistentAllocator()), charToGlyphMap(GetPersistentAllocator()), characters(GetPersistentAllocator()) {
-		auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
-		auto* renderOrchestrator = initializeInfo.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
+		auto* renderSystem = initializeInfo.AppManager->GetSystem<RenderSystem>(u8"RenderSystem");
+		auto* renderOrchestrator = initializeInfo.AppManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
 		auto tickTaskHandle = GetApplicationManager()->RegisterTask(this, u8"uiEveryFrame", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<UIManager>(u8"UIManager")), &UIRenderManager::everyFrame, u8"RenderSetup", u8"Render");
 		GetApplicationManager()->EnqueueScheduledTask(tickTaskHandle);
@@ -2041,7 +2041,7 @@ public:
 
 		{
 			RenderOrchestrator::PassData uiRenderPassData;
-			uiRenderPassData.PassType = RenderOrchestrator::PassType::RASTER;
+			uiRenderPassData.type = RenderOrchestrator::PassTypes::RASTER;
 			uiRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"UI"), GTSL::StringView(u8"UI"), GAL::AccessTypes::WRITE);
 			auto renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"UI", u8"UIRenderPass", renderSystem, uiRenderPassData);
 

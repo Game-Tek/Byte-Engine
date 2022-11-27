@@ -39,17 +39,17 @@ namespace GAL {
 					auto& psfs = vkPipelineStageFlags.EmplaceBack();
 
 					for (auto cbi : si.CommandLists) {
-						auto& cb = wucb.EmplaceBack(static_cast<const VulkanCommandList*>(cbi)->GetVkCommandBuffer());
+						wucb.EmplaceBack(static_cast<const VulkanCommandList*>(cbi)->GetVkCommandBuffer());
 					}
 
 					for (auto& cbi : si.Signal) {
-						auto& s = wuss.EmplaceBack(cbi.Synchronizer->GetVkSemaphore());
+						wuss.EmplaceBack(cbi.Synchronizer->GetVkSemaphore());
 						cbi.Synchronizer->Signal();
 					}
 
 					for (auto& cbi : si.Wait) {
-						auto& s = wuws.EmplaceBack(cbi.Synchronizer->GetVkSemaphore());
-						psfs.EmplaceBack(ToVulkan(cbi.PipelineStage));
+						wuws.EmplaceBack(cbi.Synchronizer->GetVkSemaphore());
+						psfs.EmplaceBack(ToVulkan(cbi.stage));
 						cbi.Synchronizer->Release();
 					}
 

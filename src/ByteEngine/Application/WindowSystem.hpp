@@ -8,7 +8,7 @@
 
 class WindowSystem : public BE::System {
 public:
-	WindowSystem(const InitializeInfo& initialize_info) : BE::System(initialize_info, u8"WindowSystem"), WindowTypeIndentifier(initialize_info.ApplicationManager->RegisterType(this, u8"Window")), OnWindowResizeEventHandle(u8"OnWindowResize") {
+	WindowSystem(const InitializeInfo& initialize_info) : BE::System(initialize_info, u8"WindowSystem"), WindowTypeIndentifier(initialize_info.AppManager->RegisterType(this, u8"Window")), OnWindowResizeEventHandle(u8"OnWindowResize") {
 	}
 
 	DECLARE_BE_TYPE(Window);
@@ -17,10 +17,17 @@ public:
 
 #undef CreateWindow
 
-	WindowHandle CreateWindow(const GTSL::StringView, const GTSL::StringView display_name, const GTSL::Extent2D window_extent) {
+	WindowHandle CreateWindow(const GTSL::StringView id_name, const GTSL::StringView display_name, const GTSL::Extent2D window_extent) {
 		uint32 index = windows.GetLength();
 		auto& window = windows.EmplaceBack();
-		window.window.BindToOS(display_name, window_extent, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this));
+
+#if BE_PLATFORM_WINDOWS
+		GTSL::Window::API windowAPI = GTSL::Window::API::WIN32;
+#elif BE_PLATFORM_LINUX
+		GTSL::Window::API windowAPI = GTSL::Window::API::XCB;
+#endif
+
+		window.window.BindToOS(display_name, id_name, windowAPI, window_extent, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this), nullptr);
 
 		window.window.AddDevice(GTSL::Window::DeviceType::MOUSE);
 		window.window.AddDevice(GTSL::Window::DeviceType::GAMEPAD);

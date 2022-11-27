@@ -50,11 +50,11 @@ namespace GAL
 		};
 
 		struct BufferBarrier {
-			const Buffer* Buffer; GTSL::uint32 Size;
+			const Buffer* buffer; GTSL::uint32 size;
 		};
 
 		struct TextureBarrier {
-			const Texture* Texture;
+			const Texture* texture;
 			TextureLayout CurrentLayout, TargetLayout;
 			FormatDescriptor Format;
 		};

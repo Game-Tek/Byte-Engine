@@ -71,7 +71,11 @@ namespace BE
 
 		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
 
+#if BE_PLATFORM_WINDOWS
+		// Set the process DPI awareness so windows' extents match the set resolution and are not scaled by Windows to match size based on DPI.
+		// We are basically saying that we are aware of DPI and we are handling the scaling ourselves.
 		SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+#endif
 
 		{
 			auto threadCount = (uint32)GetUINTOption(u8"threadCount");

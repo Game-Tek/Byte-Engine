@@ -392,7 +392,6 @@ bool StaticMeshResourceManager::loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuff
 
 				for(uint32 i = 0; i < inMesh->mNumVertices; ++i) {
 					if(*reinterpret_cast<GTSL::Vector2*>(meshDataBuffer.begin() + 48 * inMesh->mNumVertices + i * 8) != GTSL::Vector2(ToGTSL(inMesh->mTextureCoords[0][i]))) {
-						__debugbreak();
 					}
 				}
 

@@ -22,7 +22,7 @@ namespace BE {
 	class System : public Object {
 	public:
 		struct InitializeInfo {
-			ApplicationManager* ApplicationManager{ nullptr };
+			ApplicationManager* AppManager = nullptr;
 			/**
 			 * \brief Rough estimate for number of components present during average run of the application.
 			 * Can be used for initialization of data structures to allocate "enough" space during start as to avoid as many re-allocations further down the line.
@@ -31,7 +31,7 @@ namespace BE {
 			uint16 SystemId;
 			Id InstanceName;
 		};
-		System(const InitializeInfo& initializeInfo, const utf8* name) : Object(name), systemId(initializeInfo.SystemId), instanceName(initializeInfo.InstanceName), application_manager_(initializeInfo.ApplicationManager)
+		System(const InitializeInfo& initializeInfo, const utf8* name) : Object(name), systemId(initializeInfo.SystemId), instanceName(initializeInfo.InstanceName), application_manager_(initializeInfo.AppManager)
 		{
 		}
 
@@ -48,11 +48,11 @@ namespace BE {
 		ApplicationManager* GetApplicationManager() const { return application_manager_; }
 
 	private:
+		friend ApplicationManager;
+
 		uint16 systemId;
 		Id instanceName;
 
 		ApplicationManager* application_manager_ = nullptr;
-
-		friend class ApplicationManager;
 	};
 }

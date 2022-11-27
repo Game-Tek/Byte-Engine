@@ -7,7 +7,7 @@ enum class State : uint8 {
 };
 
 struct FileChangeNotification {
-	State State;
+	State state;
 	uint64 FileNameHash = 0ull, FileHash = 0ull;
 	GTSL::String<BE::TAR> Name;
 	uint64 Pointer = 0ull, ParentFileNameHash = 0ull;
@@ -187,7 +187,7 @@ inline GAL::ShaderType ShaderTypeFromString(GTSL::StringView string) {
 	}
 }
 
-#include "ShaderGenerator.h"
+#include "ByteEngine/Render/ShaderGenerator.h"
 
 inline Class ShaderClassFromString(GTSL::StringView string) {
 	switch (GTSL::Hash(string)) {

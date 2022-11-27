@@ -70,15 +70,15 @@ public:
 		commandList.PipelineStages = pipeline_stages;
 
 		if (type & GAL::QueueTypes::GRAPHICS) {
-			commandList.CommandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey(), !isSingleFrame);
+			commandList.commandList.Initialize(GetRenderDevice(), name, graphicsQueue.GetQueueKey(), !isSingleFrame);
 		}
 
 		if (type & GAL::QueueTypes::COMPUTE) {
-			commandList.CommandList.Initialize(GetRenderDevice(), name, computeQueue.GetQueueKey(), !isSingleFrame);
+			commandList.commandList.Initialize(GetRenderDevice(), name, computeQueue.GetQueueKey(), !isSingleFrame);
 		}
 
 		if (type & GAL::QueueTypes::TRANSFER) {
-			commandList.CommandList.Initialize(GetRenderDevice(), name, transferQueue.GetQueueKey(), !isSingleFrame);
+			commandList.commandList.Initialize(GetRenderDevice(), name, transferQueue.GetQueueKey(), !isSingleFrame);
 		}
 
 		return CommandListHandle(index);
@@ -92,18 +92,18 @@ public:
 			commandListData.Fence.Reset(GetRenderDevice());
 		}
 
-		commandListData.CommandList.BeginRecording(GetRenderDevice());
+		commandListData.commandList.BeginRecording(GetRenderDevice());
 
 		{
 			GTSL::Vector<CommandList::BarrierData, BE::TransientAllocatorReference> barriers(commandListData.bufferCopyDatas.GetLength(), GetTransientAllocator());
 
 			for (auto& e : commandListData.bufferCopyDatas) {
-				commandListData.CommandList.CopyBuffer(GetRenderDevice(), buffers[e.SourceBufferHandle()].Buffer, e.SourceOffset, buffers[e.DestinationBufferHandle()].Buffer, e.DestinationOffset, buffers[e.SourceBufferHandle()].Size);
+				commandListData.commandList.CopyBuffer(GetRenderDevice(), buffers[e.SourceBufferHandle()].Buffer, e.SourceOffset, buffers[e.DestinationBufferHandle()].Buffer, e.DestinationOffset, buffers[e.SourceBufferHandle()].Size);
 
 				//auto& barrier = barriers.EmplaceBack(GAL::PipelineStages::TRANSFER, GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::BufferBarrier{ &buffer.Buffer, buffer.Size });
 			}
 
-			commandListData.CommandList.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
+			commandListData.commandList.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
 
 			commandListData.bufferCopyDatas.Resize(0);
 		}
@@ -117,13 +117,13 @@ public:
 				destinationTextureBarriers.EmplaceBack(GAL::PipelineStages::TRANSFER, commandListData.PipelineStages, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::TextureBarrier{ &textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, GAL::TextureLayout::SHADER_READ, textureCopyData[i].Format });
 			}
 
-			commandListData.CommandList.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, GetTransientAllocator());
+			commandListData.commandList.AddPipelineBarrier(GetRenderDevice(), sourceTextureBarriers, GetTransientAllocator());
 
 			for (uint32 i = 0; i < textureCopyData.GetLength(); ++i) {
-				commandListData.CommandList.CopyBufferToTexture(GetRenderDevice(), textureCopyData[i].SourceBuffer, textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, textureCopyData[i].Format, textureCopyData[i].Extent);
+				commandListData.commandList.CopyBufferToTexture(GetRenderDevice(), textureCopyData[i].SourceBuffer, textureCopyData[i].DestinationTexture, GAL::TextureLayout::TRANSFER_DESTINATION, textureCopyData[i].Format, textureCopyData[i].Extent);
 			}
 
-			commandListData.CommandList.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GetTransientAllocator());
+			commandListData.commandList.AddPipelineBarrier(GetRenderDevice(), destinationTextureBarriers, GetTransientAllocator());
 		}
 
 		commandListData.textureCopyDatas.Resize(0);
@@ -147,14 +147,14 @@ public:
 				buildData.DestinationAccelerationStructure = tlas.AccelerationStructures;
 				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 
-				commandListData.CommandList.CopyBuffer(GetRenderDevice(), buffers[tlas.SourceInstancesBuffer()].Buffer, buffers[tlas.DestinationInstancesBuffer()].Buffer, GetBufferSize(tlas.DestinationInstancesBuffer));
+				commandListData.commandList.CopyBuffer(GetRenderDevice(), buffers[tlas.SourceInstancesBuffer()].Buffer, buffers[tlas.DestinationInstancesBuffer()].Buffer, GetBufferSize(tlas.DestinationInstancesBuffer));
 
 				geometries.EmplaceBack().EmplaceBack(GAL::GeometryInstances{ GetBufferAddress(tlas.DestinationInstancesBuffer) }, GAL::GeometryFlag(), as.PrimitiveCount, 0);
 			} else {
 				const auto& as = accelerationStructures[handle()];
 				const auto& blas = accelerationStructures[handle()].BottomLevel;
 
-				buildData.DestinationAccelerationStructure = blas.AccelerationStructure;
+				buildData.DestinationAccelerationStructure = blas.accelerationStructure;
 				buildData.ScratchBufferAddress = GetBufferAddress(as.ScratchBuffer);
 				
 				geometries.EmplaceBack().EmplaceBack(GAL::Geometry{ GAL::GeometryTriangles{ GAL::ShaderDataType::FLOAT3, GAL::IndexType::UINT16, static_cast<uint8>(blas.VertexSize), GetBufferAddress(blas.VertexBuffer) + blas.VertexByteOffset, GetBufferAddress(blas.IndexBuffer) + blas.IndexBufferByteOffset, 0, blas.VertexCount }, GAL::GeometryFlags::OPAQUE, as.PrimitiveCount, 0 });
@@ -167,7 +167,7 @@ public:
 		case GAL::Device::CPU: break;
 		case GAL::Device::GPU:
 		case GAL::Device::GPU_OR_CPU: {
-			commandListData.CommandList.BuildAccelerationStructure(GetRenderDevice(), buildDatas, GetTransientAllocator());
+			commandListData.commandList.BuildAccelerationStructure(GetRenderDevice(), buildDatas, GetTransientAllocator());
 			break;
 		}
 		default:;
@@ -175,17 +175,17 @@ public:
 
 		GTSL::StaticVector<CommandList::BarrierData, 1> barriers;
 		barriers.EmplaceBack(GAL::PipelineStages::ACCELERATION_STRUCTURE_BUILD, GAL::PipelineStages::RAY_TRACING, GAL::AccessTypes::WRITE, GAL::AccessTypes::READ, CommandList::MemoryBarrier{});
-		commandListData.CommandList.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
+		commandListData.commandList.AddPipelineBarrier(GetRenderDevice(), barriers, GetTransientAllocator());
 	}
 
 
 	void StagingCopy(const CommandListHandle command_list, const BufferHandle handle) {
-		commandLists[command_list()].CommandList.CopyBuffer(GetRenderDevice(), buffers[handle()].Buffer, buffers[handle()].Buffer, buffers[handle()].Size);
+		commandLists[command_list()].commandList.CopyBuffer(GetRenderDevice(), buffers[handle()].Buffer, buffers[handle()].Buffer, buffers[handle()].Size);
 	}
 
 	void EndCommandList(const CommandListHandle command_list_handle) {
 		auto& commandListData = commandLists[command_list_handle()];
-		commandListData.CommandList.EndRecording(GetRenderDevice());
+		commandListData.commandList.EndRecording(GetRenderDevice());
 	}
 
 	void Wait(WorkloadHandle workload_handle) {
@@ -223,7 +223,7 @@ public:
 
 			for (auto& e : wu.CommandListHandles) {
 				auto& c = commandLists[e()];
-				cl.EmplaceBack(&c.CommandList);
+				cl.EmplaceBack(&c.commandList);
 			}
 
 			workUnit.CommandLists = cl;
@@ -390,8 +390,8 @@ public:
 		--buffers[handle()].references;
 	}
 	
-	CommandList* GetCommandList(const CommandListHandle handle) { return &commandLists[handle()].CommandList; }
-	const CommandList* GetCommandList(const CommandListHandle handle) const { return &commandLists[handle()].CommandList; }
+	CommandList* GetCommandList(const CommandListHandle handle) { return &commandLists[handle()].commandList; }
+	const CommandList* GetCommandList(const CommandListHandle handle) const { return &commandLists[handle()].commandList; }
 
 	[[nodiscard]] GTSL::Extent2D GetRenderExtent(const RenderContextHandle render_context_handle) const { return renderx[render_context_handle()].renderArea; }
 	
@@ -419,19 +419,19 @@ public:
 	GTSL::Range<byte*> GetTextureRange(TextureHandle textureHandle) {
 		const auto& texture = textures[textureHandle()];
 		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
-		size *= texture.FormatDescriptor.GetSize();
+		size *= texture.format.GetSize();
 		return GTSL::Range<byte*>(size, static_cast<byte*>(texture.ScratchAllocation.Data));
 	}
 	
 	GTSL::Range<const byte*> GetTextureRange(TextureHandle textureHandle) const {
 		const auto& texture = textures[textureHandle()];
 		uint32 size = texture.Extent.Width * texture.Extent.Depth * texture.Extent.Height;
-		size *= texture.FormatDescriptor.GetSize();
+		size *= texture.format.GetSize();
 		return GTSL::Range(size, static_cast<const byte*>(texture.ScratchAllocation.Data));
 	}
 
-	const Texture* GetTexture(const TextureHandle textureHandle) const { return &textures[textureHandle()].Texture; }
-	const TextureView* GetTextureView(const TextureHandle textureHandle) const { return &textures[textureHandle()].TextureView; }
+	const Texture* GetTexture(const TextureHandle textureHandle) const { return &textures[textureHandle()].texture; }
+	const TextureView* GetTextureView(const TextureHandle textureHandle) const { return &textures[textureHandle()].textureView; }
 
 	void OnRenderEnable(TaskInfo taskInfo, bool oldFocus);
 	void OnRenderDisable(TaskInfo taskInfo, bool oldFocus);
@@ -471,7 +471,7 @@ public:
 		as.PrimitiveCount = indexCount / 3; blas.VertexByteOffset = vertex_buffer_byte_offset; blas.IndexBufferByteOffset = index_buffer_byte_offset;
 
 		GAL::GeometryTriangles geometryTriangles; //todo: add buffer references, so it can't be deleted while blas build consumes it
-		geometryTriangles.IndexType = indexType;
+		geometryTriangles.indexType = indexType;
 		geometryTriangles.VertexPositionFormat = GAL::ShaderDataType::FLOAT3;
 		geometryTriangles.MaxVertices = vertexCount;
 		geometryTriangles.VertexData = GAL::DeviceAddress();
@@ -490,9 +490,9 @@ public:
 		acceleration_structure_flag |= !willUpdate and !willRebuild ? GAL::AccelerationStructureFlags::PREFER_FAST_TRACE : 0;
 
 		uint32 bufferSize;
-		blas.AccelerationStructure.GetMemoryRequirements(GetRenderDevice(), GTSL::Range(1, &geometry), GAL::Device::GPU, acceleration_structure_flag, &bufferSize, &as.ScratchSize);
+		blas.accelerationStructure.GetMemoryRequirements(GetRenderDevice(), GTSL::Range(1, &geometry), GAL::Device::GPU, acceleration_structure_flag, &bufferSize, &as.ScratchSize);
 		AllocateLocalBufferMemory(bufferSize, GAL::BufferUses::ACCELERATION_STRUCTURE, &blas.AccelerationStructureBuffer, &blas.AccelerationStructureAllocation);
-		blas.AccelerationStructure.Initialize(GetRenderDevice(), false, blas.AccelerationStructureBuffer, bufferSize, 0);
+		blas.accelerationStructure.Initialize(GetRenderDevice(), false, blas.AccelerationStructureBuffer, bufferSize, 0);
 
 		as.ScratchBuffer = CreateBuffer(1024 * 1204, GAL::BufferUses::BUILD_INPUT_READ | GAL::BufferUses::STORAGE, true, as.ScratchBuffer);
 
@@ -530,7 +530,7 @@ public:
 
 		if (blash) {
 			const auto& blas = accelerationStructures[blash()].BottomLevel;
-			GAL::WriteInstance(blas.AccelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.SourceInstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
+			GAL::WriteInstance(blas.accelerationStructure, instanceIndex, GAL::GeometryFlags::OPAQUE, GetRenderDevice(), GetBufferPointer(tlas.SourceInstancesBuffer), instance_custom_index, accelerationStructureBuildDevice);
 		}
 
 		return BLASInstanceHandle(instanceIndex);
@@ -610,7 +610,7 @@ private:
 		struct BottomLevelAccelerationStructure {
 			GPUBuffer AccelerationStructureBuffer;
 			RenderAllocation AccelerationStructureAllocation;
-			AccelerationStructure AccelerationStructure;
+			AccelerationStructure accelerationStructure;
 			BufferHandle VertexBuffer, IndexBuffer;
 			GTSL::uint32 VertexCount, VertexSize;
 			uint32 VertexByteOffset, IndexBufferByteOffset;
@@ -650,7 +650,7 @@ private:
 	struct CommandListData {
 		CommandListData(const BE::PAR& allocator) : bufferCopyDatas(allocator), textureCopyDatas(allocator) {}
 
-		CommandList CommandList;
+		CommandList commandList;
 		//Fence Fence;
 		Synchronizer Semaphore, Fence;
 		GAL::QueueType Operations;
@@ -691,11 +691,11 @@ private:
 	uint32 scratchBufferOffsetAlignment = 0;
 
 	struct TextureComponent {
-		Texture Texture;
-		TextureView TextureView;
+		Texture texture;
+		TextureView textureView;
 		RenderAllocation Allocation, ScratchAllocation;
 
-		GAL::FormatDescriptor FormatDescriptor;
+		GAL::FormatDescriptor format;
 		GAL::TextureUse Uses;
 		GPUBuffer ScratchBuffer;
 		GAL::TextureLayout Layout;
@@ -711,7 +711,7 @@ public:
 
 	struct SetupInfo {
 		ApplicationManager* GameInstance;
-		RenderSystem* RenderSystem;
+		RenderSystem* renderSystem;
 		//RenderState* RenderState;
 		GTSL::Matrix4 ViewMatrix, ProjectionMatrix;
 	};

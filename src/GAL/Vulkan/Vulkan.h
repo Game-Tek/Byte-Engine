@@ -3,7 +3,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
-#if (_WIN64)
+#if BE_PLATFORM_WINDOWS
 #define VK_USE_PLATFORM_WIN32_KHR
 typedef unsigned long DWORD;
 typedef const wchar_t* LPCWSTR;
@@ -13,6 +13,17 @@ typedef struct HWND__* HWND;
 typedef struct HMONITOR__* HMONITOR;
 typedef struct _SECURITY_ATTRIBUTES SECURITY_ATTRIBUTES;
 #include <vulkan/vulkan_win32.h>
+#undef OPAQUE
+#elif BE_PLATFORM_LINUX
+#define VK_USE_PLATFORM_XCB_KHR
+#define VK_USE_PLATFORM_WAYLAND_KHR
+#include <xcb/xcb.h>
+//#include <wayland-client.h>
+#include <vulkan/vulkan_xcb.h>
+#include <vulkan/vulkan_wayland.h>
+#elif BE_PLATFORM_MACOS
+#define VK_USE_PLATFORM_MACOS_MVK
+#include <vulkan/vulkan_macos.h>
 #endif
 
 #include "GAL/RenderCore.h"
@@ -21,34 +32,31 @@ typedef struct _SECURITY_ATTRIBUTES SECURITY_ATTRIBUTES;
 #include <GTSL/Flags.h>
 #include <GTSL/Range.hpp>
 
-#undef OPAQUE
 
 namespace GAL
 {
 	using VulkanHandle = void*;
 
 	inline VkAttachmentLoadOp ToVkAttachmentLoadOp(const Operations operations) {
-		switch (operations)
-		{
-		case Operations::UNDEFINED: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		case Operations::DO: return VK_ATTACHMENT_LOAD_OP_LOAD;
-		case Operations::CLEAR: return VK_ATTACHMENT_LOAD_OP_CLEAR;
-		default: return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
+		switch (operations) {
+			case Operations::UNDEFINED: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			case Operations::DO: return VK_ATTACHMENT_LOAD_OP_LOAD;
+			case Operations::CLEAR: return VK_ATTACHMENT_LOAD_OP_CLEAR;
+			default: return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
 		}
 	}
 
 	inline VkAttachmentStoreOp ToVkAttachmentStoreOp(const Operations operations) {
-		switch (operations)
-		{
-		case Operations::UNDEFINED: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		case Operations::DO: return VK_ATTACHMENT_STORE_OP_STORE;
-		case Operations::CLEAR: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		default: return VK_ATTACHMENT_STORE_OP_MAX_ENUM;
+		switch (operations) {
+			case Operations::UNDEFINED: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			case Operations::DO: return VK_ATTACHMENT_STORE_OP_STORE;
+			case Operations::CLEAR: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			default: return VK_ATTACHMENT_STORE_OP_MAX_ENUM;
 		}
 	}
 
 	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const PipelineStage pipelineStage) {
-		VkAccessFlags2KHR vkAccessFlags = 0;
+		uint64 vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
 			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
 			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
@@ -60,11 +68,11 @@ namespace GAL
 			TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR, pipelineStage, vkAccessFlags);
 			TranslateMask(PipelineStages::TOP_OF_PIPE, VK_ACCESS_2_MEMORY_READ_BIT_KHR, pipelineStage, vkAccessFlags);
 		}
-		return vkAccessFlags;
+		return (VkAccessFlags2KHR)vkAccessFlags;
 	}
 
 	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const PipelineStage pipelineStage, const FormatDescriptor) {
-		VkAccessFlags2KHR vkAccessFlags = 0;
+		uint64 vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
 			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
 			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
@@ -76,19 +84,19 @@ namespace GAL
 			TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD, VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR, pipelineStage, vkAccessFlags);
 			TranslateMask(PipelineStages::TOP_OF_PIPE, VK_ACCESS_2_MEMORY_READ_BIT_KHR, pipelineStage, vkAccessFlags);
 		}
-		return vkAccessFlags;
+		return static_cast<VkAccessFlags2KHR>(vkAccessFlags);
 	}
 
 	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const FormatDescriptor formatDescriptor) {
 		if (access & AccessTypes::WRITE) {
 			switch (formatDescriptor.Type) {
-			case TextureType::COLOR: return VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR;
-			case TextureType::DEPTH: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR;
+				case TextureType::COLOR: return VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR;
+				case TextureType::DEPTH: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR;
 			}
 		} else { //read
 			switch (formatDescriptor.Type) {
-			case TextureType::COLOR: return VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT_KHR;
-			case TextureType::DEPTH: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT_KHR;
+				case TextureType::COLOR: return VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT_KHR;
+				case TextureType::DEPTH: return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT_KHR;
 			}
 		}
 	}
@@ -103,9 +111,9 @@ namespace GAL
 
 	inline VkImageTiling ToVulkan(const Tiling tiling) {
 		switch (tiling) {
-		case Tiling::OPTIMAL: return VK_IMAGE_TILING_OPTIMAL;
-		case Tiling::LINEAR: return VK_IMAGE_TILING_LINEAR;
-		default: return VK_IMAGE_TILING_MAX_ENUM;
+			case Tiling::OPTIMAL: return VK_IMAGE_TILING_OPTIMAL;
+			case Tiling::LINEAR: return VK_IMAGE_TILING_LINEAR;
+			default: return VK_IMAGE_TILING_MAX_ENUM;
 		}
 	}
 
@@ -141,48 +149,47 @@ namespace GAL
 
 	inline VkImageLayout ToVulkan(const TextureLayout layout, FormatDescriptor formatDescriptor) {
 		switch (layout) {
-		case TextureLayout::UNDEFINED: return VK_IMAGE_LAYOUT_UNDEFINED;
-		case TextureLayout::GENERAL: return VK_IMAGE_LAYOUT_GENERAL;
-		case TextureLayout::ATTACHMENT:
-		{
-			switch (formatDescriptor.Type) {
-			case TextureType::COLOR: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			case TextureType::DEPTH: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-			default: return VK_IMAGE_LAYOUT_MAX_ENUM;
+			case TextureLayout::UNDEFINED: return VK_IMAGE_LAYOUT_UNDEFINED;
+			case TextureLayout::GENERAL: return VK_IMAGE_LAYOUT_GENERAL;
+			case TextureLayout::ATTACHMENT: {
+				switch (formatDescriptor.Type) {
+					case TextureType::COLOR: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+					case TextureType::DEPTH: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+					default: return VK_IMAGE_LAYOUT_MAX_ENUM;
+				}
 			}
-		}
-		case TextureLayout::SHADER_READ: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		case TextureLayout::TRANSFER_SOURCE: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-		case TextureLayout::TRANSFER_DESTINATION: return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		case TextureLayout::PREINITIALIZED: return VK_IMAGE_LAYOUT_PREINITIALIZED;
-		case TextureLayout::PRESENTATION: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-		default: return VK_IMAGE_LAYOUT_MAX_ENUM;
+			case TextureLayout::SHADER_READ: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			case TextureLayout::TRANSFER_SOURCE: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			case TextureLayout::TRANSFER_DESTINATION: return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			case TextureLayout::PREINITIALIZED: return VK_IMAGE_LAYOUT_PREINITIALIZED;
+			case TextureLayout::PRESENTATION: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+			default: return VK_IMAGE_LAYOUT_MAX_ENUM;
 		}
 	}
 	
 	inline VkFormat ToVulkan(const Format format) {
 		switch (format) {
-		case Format::R_I8: return VK_FORMAT_R8_UNORM;
-		case Format::R_SRGB_I8: return VK_FORMAT_R8_SRGB;
-		case Format::RGBA_I8: return VK_FORMAT_R8G8B8A8_UNORM;
-		case Format::RGBA_SRGB_I8: return VK_FORMAT_R8G8B8A8_SRGB;
-		case Format::RGBA_F16: return VK_FORMAT_R16G16B16A16_SFLOAT;
-		case Format::RG_S8: return VK_FORMAT_R8G8_SNORM;
-		case Format::RG_F16: return VK_FORMAT_R16G16_SFLOAT;
-		case Format::RG_I32: return VK_FORMAT_R32G32_UINT;
-		case Format::BGRA_I8: return VK_FORMAT_B8G8R8A8_UNORM;
-		case Format::DEPTH32: return VK_FORMAT_D32_SFLOAT;
-		case Format::RGB_I8: return VK_FORMAT_R8G8B8_UNORM;
-		case Format::BGRA_SRGB_I8: return VK_FORMAT_B8G8R8A8_SRGB;
-		default: return VK_FORMAT_MAX_ENUM;
+			case Format::R_I8: return VK_FORMAT_R8_UNORM;
+			case Format::R_SRGB_I8: return VK_FORMAT_R8_SRGB;
+			case Format::RGBA_I8: return VK_FORMAT_R8G8B8A8_UNORM;
+			case Format::RGBA_SRGB_I8: return VK_FORMAT_R8G8B8A8_SRGB;
+			case Format::RGBA_F16: return VK_FORMAT_R16G16B16A16_SFLOAT;
+			case Format::RG_S8: return VK_FORMAT_R8G8_SNORM;
+			case Format::RG_F16: return VK_FORMAT_R16G16_SFLOAT;
+			case Format::RG_I32: return VK_FORMAT_R32G32_UINT;
+			case Format::BGRA_I8: return VK_FORMAT_B8G8R8A8_UNORM;
+			case Format::DEPTH32: return VK_FORMAT_D32_SFLOAT;
+			case Format::RGB_I8: return VK_FORMAT_R8G8B8_UNORM;
+			case Format::BGRA_SRGB_I8: return VK_FORMAT_B8G8R8A8_SRGB;
+			default: return VK_FORMAT_MAX_ENUM;
 		}
 	}
 
 	inline VkImageAspectFlags TextureAspectToVkImageAspectFlags(const TextureType textureType) {
 		switch (textureType) {
-		case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
-		case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
-		default: return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
+			case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
+			case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
+			default: return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
 		}
 	}
 
@@ -198,7 +205,7 @@ namespace GAL
 	}
 
 	inline VkPipelineStageFlags2KHR ToVulkan(const PipelineStage pipelineStage) {
-		VkPipelineStageFlags2KHR vkPipelineStageFlags = 0;
+		uint64 vkPipelineStageFlags = 0;
 		TranslateMask(PipelineStages::TOP_OF_PIPE,					VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR, pipelineStage, vkPipelineStageFlags);
 		TranslateMask(PipelineStages::DRAW_INDIRECT,					VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR, pipelineStage, vkPipelineStageFlags);
 		TranslateMask(PipelineStages::VERTEX_INPUT,					VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT_KHR, pipelineStage, vkPipelineStageFlags);
@@ -219,44 +226,44 @@ namespace GAL
 		TranslateMask(PipelineStages::ACCELERATION_STRUCTURE_BUILD,	VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, pipelineStage, vkPipelineStageFlags);
 		TranslateMask(PipelineStages::TASK,							VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_NV, pipelineStage, vkPipelineStageFlags);
 		TranslateMask(PipelineStages::MESH,							VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_NV, pipelineStage, vkPipelineStageFlags);
-		return vkPipelineStageFlags;
+		return static_cast<VkPipelineStageFlags2KHR>(vkPipelineStageFlags);
 	}
 
 	inline VkDescriptorType ToVulkan(const BindingType bindingType) {
 		switch (bindingType) {
-		case BindingType::SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
-		case BindingType::COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		case BindingType::SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		case BindingType::STORAGE_IMAGE: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		case BindingType::UNIFORM_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-		case BindingType::STORAGE_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-		case BindingType::UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		case BindingType::STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		case BindingType::UNIFORM_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		case BindingType::STORAGE_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-		case BindingType::INPUT_ATTACHMENT: return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-		case BindingType::ACCELERATION_STRUCTURE: return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-		default: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+			case BindingType::SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
+			case BindingType::COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			case BindingType::SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			case BindingType::STORAGE_IMAGE: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			case BindingType::UNIFORM_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+			case BindingType::STORAGE_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+			case BindingType::UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			case BindingType::STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			case BindingType::UNIFORM_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+			case BindingType::STORAGE_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+			case BindingType::INPUT_ATTACHMENT: return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+			case BindingType::ACCELERATION_STRUCTURE: return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+			default: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 		}
 	}
 
 	inline VkShaderStageFlagBits ToVulkan(const ShaderType shaderType) {
 		switch (shaderType) {
-		case ShaderType::VERTEX: return VK_SHADER_STAGE_VERTEX_BIT;
-		case ShaderType::TESSELLATION_CONTROL: return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-		case ShaderType::TESSELLATION_EVALUATION: return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-		case ShaderType::GEOMETRY: return VK_SHADER_STAGE_GEOMETRY_BIT;
-		case ShaderType::FRAGMENT: return VK_SHADER_STAGE_FRAGMENT_BIT;
-		case ShaderType::COMPUTE: return VK_SHADER_STAGE_COMPUTE_BIT;
-		case ShaderType::TASK: return VK_SHADER_STAGE_TASK_BIT_NV;
-		case ShaderType::MESH: return VK_SHADER_STAGE_MESH_BIT_NV;
-		case ShaderType::RAY_GEN: return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-		case ShaderType::CLOSEST_HIT: return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-		case ShaderType::ANY_HIT: return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-		case ShaderType::INTERSECTION: return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
-		case ShaderType::MISS: return VK_SHADER_STAGE_MISS_BIT_KHR;
-		case ShaderType::CALLABLE: return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
-		default: return VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
+			case ShaderType::VERTEX: return VK_SHADER_STAGE_VERTEX_BIT;
+			case ShaderType::TESSELLATION_CONTROL: return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+			case ShaderType::TESSELLATION_EVALUATION: return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+			case ShaderType::GEOMETRY: return VK_SHADER_STAGE_GEOMETRY_BIT;
+			case ShaderType::FRAGMENT: return VK_SHADER_STAGE_FRAGMENT_BIT;
+			case ShaderType::COMPUTE: return VK_SHADER_STAGE_COMPUTE_BIT;
+			case ShaderType::TASK: return VK_SHADER_STAGE_TASK_BIT_NV;
+			case ShaderType::MESH: return VK_SHADER_STAGE_MESH_BIT_NV;
+			case ShaderType::RAY_GEN: return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+			case ShaderType::CLOSEST_HIT: return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+			case ShaderType::ANY_HIT: return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+			case ShaderType::INTERSECTION: return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+			case ShaderType::MISS: return VK_SHADER_STAGE_MISS_BIT_KHR;
+			case ShaderType::CALLABLE: return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+			default: return VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
 		}
 	}
 
@@ -269,28 +276,27 @@ namespace GAL
 	}
 
 	inline VkRayTracingShaderGroupTypeKHR ToVulkan(const ShaderGroupType type) {
-		switch (type)
-		{
-		case ShaderGroupType::GENERAL: return VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-		case ShaderGroupType::TRIANGLES: return VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-		case ShaderGroupType::PROCEDURAL: return VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
-		default: return VK_RAY_TRACING_SHADER_GROUP_TYPE_MAX_ENUM_KHR;
+		switch (type) {
+			case ShaderGroupType::GENERAL: return VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+			case ShaderGroupType::TRIANGLES: return VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+			case ShaderGroupType::PROCEDURAL: return VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
+			default: return VK_RAY_TRACING_SHADER_GROUP_TYPE_MAX_ENUM_KHR;
 		}
 	}
 
 	inline VkPresentModeKHR ToVulkan(const PresentModes presentModes) {
 		switch (presentModes) {
-		case PresentModes::FIFO: return VK_PRESENT_MODE_FIFO_KHR;
-		case PresentModes::SWAP: return VK_PRESENT_MODE_MAILBOX_KHR;
-		default: return VK_PRESENT_MODE_MAX_ENUM_KHR;
+			case PresentModes::FIFO: return VK_PRESENT_MODE_FIFO_KHR;
+			case PresentModes::SWAP: return VK_PRESENT_MODE_MAILBOX_KHR;
+			default: return VK_PRESENT_MODE_MAX_ENUM_KHR;
 		}
 	}
 
 	inline GTSL::uint32 ImageTypeToVkImageAspectFlagBits(const TextureType imageType) {
 		switch (imageType) {
-		case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
-		case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
-		default: return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
+			case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
+			case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
+			default: return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
 		}
 	}
 
@@ -311,89 +317,89 @@ namespace GAL
 
 	inline VkFormat ToVulkan(const ShaderDataType shaderDataTypes) {
 		switch (shaderDataTypes) {
-		case ShaderDataType::FLOAT: return VK_FORMAT_R32_SFLOAT;
-		case ShaderDataType::FLOAT2: return VK_FORMAT_R32G32_SFLOAT;
-		case ShaderDataType::FLOAT3: return VK_FORMAT_R32G32B32_SFLOAT;
-		case ShaderDataType::FLOAT4: return VK_FORMAT_R32G32B32A32_SFLOAT;
-		case ShaderDataType::INT: return VK_FORMAT_R32_SINT;
-		case ShaderDataType::INT2: return VK_FORMAT_R32G32_SINT;
-		case ShaderDataType::INT3: return VK_FORMAT_R32G32B32_SINT;
-		case ShaderDataType::INT4: return VK_FORMAT_R32G32B32A32_SINT;
-		case ShaderDataType::BOOL: return VK_FORMAT_R32_SINT;
-		case ShaderDataType::U16_SNORM: return VK_FORMAT_R16_SNORM;
-		case ShaderDataType::U16_SNORM2: return VK_FORMAT_R16G16_SNORM;
-		case ShaderDataType::U16_SNORM3: return VK_FORMAT_R16G16B16_SNORM;
-		case ShaderDataType::U16_SNORM4: return VK_FORMAT_R16G16B16A16_SNORM;
-		case ShaderDataType::U16_UNORM: return VK_FORMAT_R16_UNORM;
-		case ShaderDataType::U16_UNORM2: return VK_FORMAT_R16G16_UNORM;
-		case ShaderDataType::U16_UNORM3: return VK_FORMAT_R16G16B16_UNORM;
-		case ShaderDataType::U16_UNORM4: return VK_FORMAT_R16G16B16A16_UNORM;
-		default: return VK_FORMAT_MAX_ENUM;
+			case ShaderDataType::FLOAT: return VK_FORMAT_R32_SFLOAT;
+			case ShaderDataType::FLOAT2: return VK_FORMAT_R32G32_SFLOAT;
+			case ShaderDataType::FLOAT3: return VK_FORMAT_R32G32B32_SFLOAT;
+			case ShaderDataType::FLOAT4: return VK_FORMAT_R32G32B32A32_SFLOAT;
+			case ShaderDataType::INT: return VK_FORMAT_R32_SINT;
+			case ShaderDataType::INT2: return VK_FORMAT_R32G32_SINT;
+			case ShaderDataType::INT3: return VK_FORMAT_R32G32B32_SINT;
+			case ShaderDataType::INT4: return VK_FORMAT_R32G32B32A32_SINT;
+			case ShaderDataType::BOOL: return VK_FORMAT_R32_SINT;
+			case ShaderDataType::U16_SNORM: return VK_FORMAT_R16_SNORM;
+			case ShaderDataType::U16_SNORM2: return VK_FORMAT_R16G16_SNORM;
+			case ShaderDataType::U16_SNORM3: return VK_FORMAT_R16G16B16_SNORM;
+			case ShaderDataType::U16_SNORM4: return VK_FORMAT_R16G16B16A16_SNORM;
+			case ShaderDataType::U16_UNORM: return VK_FORMAT_R16_UNORM;
+			case ShaderDataType::U16_UNORM2: return VK_FORMAT_R16G16_UNORM;
+			case ShaderDataType::U16_UNORM3: return VK_FORMAT_R16G16B16_UNORM;
+			case ShaderDataType::U16_UNORM4: return VK_FORMAT_R16G16B16A16_UNORM;
+			default: return VK_FORMAT_MAX_ENUM;
 		}
 	}
 
 	inline VkQueryType ToVulkan(const QueryType queryType) {
 		switch (queryType) {
-		case QueryType::COMPACT_ACCELERATION_STRUCTURE_SIZE: return VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
-		default: return VK_QUERY_TYPE_MAX_ENUM;
+			case QueryType::COMPACT_ACCELERATION_STRUCTURE_SIZE: return VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+			default: return VK_QUERY_TYPE_MAX_ENUM;
 		}
 	}
 
 	inline VkDescriptorType UniformTypeToVkDescriptorType(const BindingType uniformType) {
 		switch (uniformType) {
-		case BindingType::SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
-		case BindingType::COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		case BindingType::SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		case BindingType::STORAGE_IMAGE: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		case BindingType::UNIFORM_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-		case BindingType::STORAGE_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-		case BindingType::UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		case BindingType::STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		case BindingType::UNIFORM_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		case BindingType::STORAGE_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-		case BindingType::INPUT_ATTACHMENT: return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-		default: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+			case BindingType::SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
+			case BindingType::COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			case BindingType::SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			case BindingType::STORAGE_IMAGE: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			case BindingType::UNIFORM_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+			case BindingType::STORAGE_TEXEL_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+			case BindingType::UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			case BindingType::STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			case BindingType::UNIFORM_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+			case BindingType::STORAGE_BUFFER_DYNAMIC: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+			case BindingType::INPUT_ATTACHMENT: return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+			default: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 		}
 	};
 
 	inline VkAccelerationStructureBuildTypeKHR ToVulkan(const Device device) {
 		switch (device) {
-		case Device::GPU: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
-		case Device::CPU: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_HOST_KHR;
-		case Device::GPU_OR_CPU: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_HOST_OR_DEVICE_KHR;
-		default: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_MAX_ENUM_KHR;
+			case Device::GPU: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
+			case Device::CPU: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_HOST_KHR;
+			case Device::GPU_OR_CPU: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_HOST_OR_DEVICE_KHR;
+			default: return VK_ACCELERATION_STRUCTURE_BUILD_TYPE_MAX_ENUM_KHR;
 		}
 	}
 
 
 	inline VkCullModeFlagBits ToVulkan(const CullMode cullMode) {
 		switch (cullMode) {
-		case CullMode::CULL_BACK: return VK_CULL_MODE_BACK_BIT;
-		case CullMode::CULL_FRONT: return VK_CULL_MODE_FRONT_BIT;
-		case CullMode::CULL_NONE: return VK_CULL_MODE_NONE;
-		default: return VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
+			case CullMode::CULL_BACK: return VK_CULL_MODE_BACK_BIT;
+			case CullMode::CULL_FRONT: return VK_CULL_MODE_FRONT_BIT;
+			case CullMode::CULL_NONE: return VK_CULL_MODE_NONE;
+			default: return VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
 		}
 	}
 
 	inline VkFrontFace ToVulkan(const WindingOrder windingOrder) {
 		switch (windingOrder) {
-		case WindingOrder::CLOCKWISE: return VK_FRONT_FACE_CLOCKWISE;
-		case WindingOrder::COUNTER_CLOCKWISE: return VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		default: return VK_FRONT_FACE_MAX_ENUM;
+			case WindingOrder::CLOCKWISE: return VK_FRONT_FACE_CLOCKWISE;
+			case WindingOrder::COUNTER_CLOCKWISE: return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+			default: return VK_FRONT_FACE_MAX_ENUM;
 		}
 	}
 
 	inline VkCompareOp ToVulkan(const CompareOperation compareOperation) {
 		switch (compareOperation) {
-		case CompareOperation::NEVER: return VK_COMPARE_OP_NEVER;
-		case CompareOperation::LESS: return VK_COMPARE_OP_LESS;
-		case CompareOperation::EQUAL: return VK_COMPARE_OP_EQUAL;
-		case CompareOperation::LESS_OR_EQUAL: return VK_COMPARE_OP_LESS_OR_EQUAL;
-		case CompareOperation::GREATER: return VK_COMPARE_OP_GREATER;
-		case CompareOperation::NOT_EQUAL: return VK_COMPARE_OP_NOT_EQUAL;
-		case CompareOperation::GREATER_OR_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
-		case CompareOperation::ALWAYS: return VK_COMPARE_OP_ALWAYS;
-		default: return VK_COMPARE_OP_MAX_ENUM;
+			case CompareOperation::NEVER: return VK_COMPARE_OP_NEVER;
+			case CompareOperation::LESS: return VK_COMPARE_OP_LESS;
+			case CompareOperation::EQUAL: return VK_COMPARE_OP_EQUAL;
+			case CompareOperation::LESS_OR_EQUAL: return VK_COMPARE_OP_LESS_OR_EQUAL;
+			case CompareOperation::GREATER: return VK_COMPARE_OP_GREATER;
+			case CompareOperation::NOT_EQUAL: return VK_COMPARE_OP_NOT_EQUAL;
+			case CompareOperation::GREATER_OR_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+			case CompareOperation::ALWAYS: return VK_COMPARE_OP_ALWAYS;
+			default: return VK_COMPARE_OP_MAX_ENUM;
 		}
 	}
 
@@ -415,17 +421,17 @@ namespace GAL
 
 	inline VkImageAspectFlags ToVulkan(const TextureType textureType) {
 		switch (textureType) {
-		case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
-		case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
+			case TextureType::COLOR: return VK_IMAGE_ASPECT_COLOR_BIT;
+			case TextureType::DEPTH: return VK_IMAGE_ASPECT_DEPTH_BIT;
 		}
 		return VK_IMAGE_ASPECT_FLAG_BITS_MAX_ENUM;
 	}
 
 	inline VkIndexType ToVulkan(const IndexType indexType) {
 		switch (indexType) {
-		case IndexType::UINT8: return VK_INDEX_TYPE_UINT8_EXT;
-		case IndexType::UINT16: return VK_INDEX_TYPE_UINT16;
-		case IndexType::UINT32: return VK_INDEX_TYPE_UINT32;
+			case IndexType::UINT8: return VK_INDEX_TYPE_UINT8_EXT;
+			case IndexType::UINT16: return VK_INDEX_TYPE_UINT16;
+			case IndexType::UINT32: return VK_INDEX_TYPE_UINT32;
 		}
 		return VK_INDEX_TYPE_MAX_ENUM;
 	}
@@ -434,8 +440,8 @@ namespace GAL
 		VkImageUsageFlags vkUsage = 0;
 		if (uses & TextureUses::ATTACHMENT) {
 			switch (formatDescriptor.Type) {
-			case TextureType::COLOR: vkUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; break;
-			case TextureType::DEPTH: vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; break;
+				case TextureType::COLOR: vkUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; break;
+				case TextureType::DEPTH: vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; break;
 			}
 		}
 		TranslateMask(TextureUses::INPUT_ATTACHMENT, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, uses, vkUsage);
@@ -450,14 +456,14 @@ namespace GAL
 
 	inline VkStencilOp ToVulkan(const StencilCompareOperation stencilCompareOperation) {
 		switch (stencilCompareOperation) {
-		case StencilCompareOperation::KEEP: return VK_STENCIL_OP_KEEP;
-		case StencilCompareOperation::ZERO: return VK_STENCIL_OP_ZERO;
-		case StencilCompareOperation::REPLACE: return VK_STENCIL_OP_REPLACE;
-		case StencilCompareOperation::INCREMENT_AND_CLAMP: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
-		case StencilCompareOperation::DECREMENT_AND_CLAMP: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
-		case StencilCompareOperation::INVERT: return VK_STENCIL_OP_INVERT;
-		case StencilCompareOperation::INCREMENT_AND_WRAP: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
-		case StencilCompareOperation::DECREMENT_AND_WRAP: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+			case StencilCompareOperation::KEEP: return VK_STENCIL_OP_KEEP;
+			case StencilCompareOperation::ZERO: return VK_STENCIL_OP_ZERO;
+			case StencilCompareOperation::REPLACE: return VK_STENCIL_OP_REPLACE;
+			case StencilCompareOperation::INCREMENT_AND_CLAMP: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+			case StencilCompareOperation::DECREMENT_AND_CLAMP: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+			case StencilCompareOperation::INVERT: return VK_STENCIL_OP_INVERT;
+			case StencilCompareOperation::INCREMENT_AND_WRAP: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+			case StencilCompareOperation::DECREMENT_AND_WRAP: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
 		}
 
 		return VK_STENCIL_OP_MAX_ENUM;
@@ -496,15 +502,15 @@ namespace GAL
 
 	inline VkColorSpaceKHR ToVulkan(const ColorSpaces colorSpace) {
 		switch (colorSpace) {
-		case ColorSpaces::LINEAR: return VK_COLOR_SPACE_PASS_THROUGH_EXT;
-		case ColorSpaces::SRGB_NONLINEAR: return VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-		case ColorSpaces::DISPLAY_P3_LINEAR: return VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT;
-		case ColorSpaces::DISPLAY_P3_NONLINEAR: return VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT;
-		case ColorSpaces::HDR10_ST2048: return VK_COLOR_SPACE_HDR10_ST2084_EXT;
-		case ColorSpaces::DOLBY_VISION: return VK_COLOR_SPACE_DOLBYVISION_EXT;
-		case ColorSpaces::HDR10_HLG: return VK_COLOR_SPACE_HDR10_HLG_EXT;
-		case ColorSpaces::ADOBERGB_LINEAR: return VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT;
-		case ColorSpaces::ADOBERGB_NONLINEAR: return VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT;
+			case ColorSpaces::LINEAR: return VK_COLOR_SPACE_PASS_THROUGH_EXT;
+			case ColorSpaces::SRGB_NONLINEAR: return VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+			case ColorSpaces::DISPLAY_P3_LINEAR: return VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT;
+			case ColorSpaces::DISPLAY_P3_NONLINEAR: return VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT;
+			case ColorSpaces::HDR10_ST2048: return VK_COLOR_SPACE_HDR10_ST2084_EXT;
+			case ColorSpaces::DOLBY_VISION: return VK_COLOR_SPACE_DOLBYVISION_EXT;
+			case ColorSpaces::HDR10_HLG: return VK_COLOR_SPACE_HDR10_HLG_EXT;
+			case ColorSpaces::ADOBERGB_LINEAR: return VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT;
+			case ColorSpaces::ADOBERGB_NONLINEAR: return VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT;
 		}
 
 		return VK_COLOR_SPACE_MAX_ENUM_KHR;
@@ -522,13 +528,13 @@ namespace GAL
 
 	inline PresentModes ToGAL(const VkPresentModeKHR presentModes) {
 		switch (presentModes) {
-		case VK_PRESENT_MODE_FIFO_KHR: return PresentModes::FIFO;
-		case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return PresentModes::FIFO;
-		case VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR: return PresentModes::SWAP;
-		case VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR: return PresentModes::SWAP;
-		case VK_PRESENT_MODE_MAX_ENUM_KHR: return PresentModes::SWAP;
-		case VK_PRESENT_MODE_IMMEDIATE_KHR: return PresentModes::FIFO;
-		case VK_PRESENT_MODE_MAILBOX_KHR:  return PresentModes::SWAP;		
+			case VK_PRESENT_MODE_FIFO_KHR: return PresentModes::FIFO;
+			case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return PresentModes::FIFO;
+			case VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR: return PresentModes::SWAP;
+			case VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR: return PresentModes::SWAP;
+			case VK_PRESENT_MODE_MAX_ENUM_KHR: return PresentModes::SWAP;
+			case VK_PRESENT_MODE_IMMEDIATE_KHR: return PresentModes::FIFO;
+			case VK_PRESENT_MODE_MAILBOX_KHR:  return PresentModes::SWAP;		
 		}
 		return PresentModes::SWAP;
 	}
@@ -539,24 +545,22 @@ namespace GAL
 		TranslateMask(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, memoryPropertyFlags, MemoryTypes::HOST_VISIBLE, memoryType);
 		TranslateMask(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, memoryPropertyFlags, MemoryTypes::HOST_COHERENT, memoryType);
 		TranslateMask(VK_MEMORY_PROPERTY_HOST_CACHED_BIT, memoryPropertyFlags, MemoryTypes::HOST_CACHED, memoryType);
-		if (VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT & memoryPropertyFlags) { __debugbreak(); }
+		TranslateMask(VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, memoryPropertyFlags, MemoryTypes::LAZY, memoryType);
 		return memoryType;
 	}
 
 	inline bool IsSupported(const VkFormat format) {
-		switch (format) {
-		case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return false;
-		}
-
-		return true;
+		return !(format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
 	}
 	
 	inline FormatDescriptor ToGAL(const VkFormat format) {
 		switch (format) {
-		case VK_FORMAT_R8G8B8A8_UNORM: return FORMATS::RGBA_I8;
-		case VK_FORMAT_B8G8R8A8_UNORM: return FORMATS::BGRA_I8;
-		case VK_FORMAT_B8G8R8A8_SRGB: return FORMATS::BGRA_SRGB_I8;
-		case VK_FORMAT_R16G16B16A16_SFLOAT: return FORMATS::RGBA_F16;
+			case VK_FORMAT_R8G8B8A8_UNORM: return FORMATS::RGBA_I8;
+			case VK_FORMAT_B8G8R8A8_UNORM: return FORMATS::BGRA_I8;
+			case VK_FORMAT_B8G8R8A8_SRGB: return FORMATS::BGRA_SRGB_I8;
+			case VK_FORMAT_R16G16B16A16_SFLOAT: return FORMATS::RGBA_F16;
+			case VK_FORMAT_UNDEFINED: GAL_DEBUG_BREAK; return FORMATS::RGBA_F16;
+			default: GAL_DEBUG_BREAK; return FORMATS::RGBA_F16;
 		}
 
 		GAL_DEBUG_BREAK;
@@ -564,23 +568,27 @@ namespace GAL
 	
 	inline ColorSpaces ToGAL(const VkColorSpaceKHR colorSpace) {
 		switch (colorSpace) {
-		case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return ColorSpaces::SRGB_NONLINEAR;
-		case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return ColorSpaces::DISPLAY_P3_NONLINEAR;
-		case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: break;
-		case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT: return ColorSpaces::DISPLAY_P3_LINEAR;
-		case VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT: break;
-		case VK_COLOR_SPACE_BT709_LINEAR_EXT: break;
-		case VK_COLOR_SPACE_BT709_NONLINEAR_EXT: break;
-		case VK_COLOR_SPACE_BT2020_LINEAR_EXT: break;
-		case VK_COLOR_SPACE_HDR10_ST2084_EXT: return ColorSpaces::HDR10_ST2048;
-		case VK_COLOR_SPACE_DOLBYVISION_EXT: return ColorSpaces::DOLBY_VISION;
-		case VK_COLOR_SPACE_HDR10_HLG_EXT: return ColorSpaces::HDR10_HLG;
-		case VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT: return ColorSpaces::ADOBERGB_LINEAR;
-		case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT: return ColorSpaces::ADOBERGB_NONLINEAR;
-		case VK_COLOR_SPACE_PASS_THROUGH_EXT: return ColorSpaces::LINEAR;
-		case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT: break;
-		case VK_COLOR_SPACE_DISPLAY_NATIVE_AMD: break;
-		case VK_COLOR_SPACE_MAX_ENUM_KHR: break;
+			case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return ColorSpaces::SRGB_NONLINEAR;
+			case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return ColorSpaces::DISPLAY_P3_NONLINEAR;
+			case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: break;
+			case VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT: return ColorSpaces::DISPLAY_P3_LINEAR;
+			case VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT: break;
+			case VK_COLOR_SPACE_BT709_LINEAR_EXT: break;
+			case VK_COLOR_SPACE_BT709_NONLINEAR_EXT: break;
+			case VK_COLOR_SPACE_BT2020_LINEAR_EXT: break;
+			case VK_COLOR_SPACE_HDR10_ST2084_EXT: return ColorSpaces::HDR10_ST2048;
+			case VK_COLOR_SPACE_DOLBYVISION_EXT: return ColorSpaces::DOLBY_VISION;
+			case VK_COLOR_SPACE_HDR10_HLG_EXT: return ColorSpaces::HDR10_HLG;
+			case VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT: return ColorSpaces::ADOBERGB_LINEAR;
+			case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT: return ColorSpaces::ADOBERGB_NONLINEAR;
+			case VK_COLOR_SPACE_PASS_THROUGH_EXT: return ColorSpaces::LINEAR;
+			case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT: break;
+			case VK_COLOR_SPACE_DISPLAY_NATIVE_AMD: break;
+			case VK_COLOR_SPACE_MAX_ENUM_KHR: break;
 		}
+
+		GAL_DEBUG_BREAK;
+
+		return ColorSpaces::SRGB_NONLINEAR;
 	}
 }

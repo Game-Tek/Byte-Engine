@@ -21,14 +21,14 @@ namespace GAL
 				auto& attachmentDescription = vkAttachmentDescriptions.EmplaceBack();
 
 				attachmentDescription.flags = 0;
-				attachmentDescription.format = ToVulkan(MakeFormatFromFormatDescriptor(attachments[i].FormatDescriptor));
+				attachmentDescription.format = ToVulkan(MakeFormatFromFormatDescriptor(attachments[i].format));
 				attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT; //TODO: Should match that of the SwapChain images.
 				attachmentDescription.loadOp = ToVkAttachmentLoadOp(attachments[i].LoadOperation);
 				attachmentDescription.storeOp = ToVkAttachmentStoreOp(attachments[i].StoreOperation);
 				attachmentDescription.stencilLoadOp = vkAttachmentDescriptions[i].loadOp;
 				attachmentDescription.stencilStoreOp = vkAttachmentDescriptions[i].storeOp;
-				attachmentDescription.initialLayout = ToVulkan(attachments[i].Start, attachments[i].FormatDescriptor);
-				attachmentDescription.finalLayout = ToVulkan(attachments[i].End, attachments[i].FormatDescriptor);
+				attachmentDescription.initialLayout = ToVulkan(attachments[i].Start, attachments[i].format);
+				attachmentDescription.finalLayout = ToVulkan(attachments[i].End, attachments[i].format);
 			}
 
 			GTSL::StaticVector<GTSL::StaticVector<VkAttachmentReference, 16>, 16> writeAttachmentsReferences;
@@ -45,17 +45,17 @@ namespace GAL
 				for (GTSL::uint32 a = 0; a < static_cast<GTSL::uint32>(subPasses[s].Attachments.ElementCount()); ++a) {
 					VkAttachmentReference attachmentReference;
 					attachmentReference.attachment = subPasses[s].Attachments[a].Index;
-					attachmentReference.layout = ToVulkan(subPasses[s].Attachments[a].Layout, attachments[subPasses[s].Attachments[a].Index].FormatDescriptor);
+					attachmentReference.layout = ToVulkan(subPasses[s].Attachments[a].Layout, attachments[subPasses[s].Attachments[a].Index].format);
 					
 					if (subPasses[s].Attachments[a].Access & AccessTypes::WRITE) {
-						if (attachments[subPasses[s].Attachments[a].Index].FormatDescriptor.Type == TextureType::COLOR) {
+						if (attachments[subPasses[s].Attachments[a].Index].format.Type == TextureType::COLOR) {
 							writeAttachmentsReferences[s].EmplaceBack(attachmentReference);
 						} else {
 							depthAttachment.attachment = attachmentReference.attachment;
 							depthAttachment.layout = attachmentReference.layout;
 						}
 					} else {
-						if (attachments[subPasses[s].Attachments[a].Index].FormatDescriptor.Type == TextureType::COLOR) {
+						if (attachments[subPasses[s].Attachments[a].Index].format.Type == TextureType::COLOR) {
 							readAttachmentsReferences[s].EmplaceBack(attachmentReference);
 						} else {
 							depthAttachment.attachment = attachmentReference.attachment;

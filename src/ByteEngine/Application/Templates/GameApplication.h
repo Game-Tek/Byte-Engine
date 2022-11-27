@@ -2,15 +2,14 @@
 
 #include "ByteEngine/Application/Application.h"
 
-#include <GTSL/Window.h>
+#include <GTSL/Window.hpp>
 #include <GTSL/Gamepad.h>
 
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/WindowSystem.hpp"
 #include "ByteEngine/Game/ApplicationManager.h"
 
-class GameApplication : public BE::Application
-{
+class GameApplication : public BE::Application {
 public:
 	GameApplication(GTSL::ShortString<128> name) : Application(name)
 	{

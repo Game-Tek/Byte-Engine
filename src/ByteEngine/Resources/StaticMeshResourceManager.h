@@ -87,7 +87,7 @@ private:
 		StaticMeshInfo static_mesh_info;
 		resource_files_.LoadEntry(GTSL::StringView(meshName), static_mesh_info);
 
-		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(static_mesh_info), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.AppManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(static_mesh_info), GTSL::ForwardRef<ARGS>(args)...);
 	};
 
 	template<typename... ARGS>
@@ -112,7 +112,7 @@ private:
 
 		resource_files_.LoadData(staticMeshInfo, { staticMeshInfo.GetIndexCount() * 2u/*todo: use actual byte offset*/, indexBuffer.begin() + indicesOffset * 2u/*todo: use actual index byte offset*/}, verticesSize, indicesSize);
 
-		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.AppManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(staticMeshInfo), GTSL::ForwardRef<ARGS>(args)...);
 	};
 
 	bool loadMesh(const GTSL::Buffer<BE::TAR>& sourceBuffer, StaticMeshInfo& meshInfo, GTSL::Buffer<BE::TAR>& meshDataBuffer, const GTSL::StringView fileExtension);

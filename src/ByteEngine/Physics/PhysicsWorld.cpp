@@ -4,7 +4,7 @@
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Resources/StaticMeshResourceManager.h"
 
-PhysicsWorld::PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"), physicsObjects(32, GetPersistentAllocator()), PhysicsObjectTypeIndentifier(initialize_info.ApplicationManager->RegisterType(this, u8"PhysicsObject"))
+PhysicsWorld::PhysicsWorld(const InitializeInfo& initialize_info) : System(initialize_info, u8"PhysicsWorld"), physicsObjects(32, GetPersistentAllocator()), PhysicsObjectTypeIndentifier(initialize_info.AppManager->RegisterType(this, u8"PhysicsObject"))
 {
 		//initialize_info.ApplicationManager->AddTask(this, u8"onUpdate", &PhysicsWorld::onUpdate, DependencyBlock(TypedDependency<StaticMeshRenderGroup>(u8"StaticMeshRenderGroup")), u8"GameplayStart", u8"GameplayEnd");
 

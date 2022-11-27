@@ -17,6 +17,12 @@ namespace GAL {
 	class Texture;
 	class TextureView;
 
+#if BE_PLATFORM_WINDOWS
+#define GAL_DEBUG_BREAK __debugbreak();
+#elif BE_PLATFORM_LINUX
+#define GAL_DEBUG_BREAK __builtin_trap();
+#endif
+
 	template<typename T>
 	constexpr void debugClear(T& handle) { if constexpr (BE_DEBUG) { handle = reinterpret_cast<T>(0); } }
 	
@@ -24,7 +30,7 @@ namespace GAL {
 
 	template<typename FVR, class FVT, typename Y, typename Z>
 	void TranslateMask(const GTSL::Flags<FVR, FVT> fromValue, const Y toValue, const GTSL::Flags<FVR, FVT> fromVar, Z& toVar) {
-		GTSL::SetBitAs(GTSL::FFSB(toValue), static_cast<FVR>(fromVar) & static_cast<FVR>(fromValue), toVar);
+		GTSL::SetBitAs(GTSL::FFSB(toValue), static_cast<bool>(static_cast<FVR>(fromVar) & static_cast<FVR>(fromValue)), toVar);
 	}
 
 	template<typename FVR, class FVT, typename Y, typename Z>
@@ -40,7 +46,7 @@ namespace GAL {
 	using MemoryType = GTSL::Flags<GTSL::uint8, struct MemoryTypeTag>;
 
 	namespace MemoryTypes {
-		static constexpr MemoryType GPU(1), HOST_VISIBLE(2), HOST_COHERENT(4), HOST_CACHED(8);
+		static constexpr MemoryType GPU(1), HOST_VISIBLE(2), HOST_COHERENT(4), HOST_CACHED(8), LAZY(16);
 	}
 	
 	struct MemoryRequirements {
@@ -447,9 +453,9 @@ namespace GAL {
 		//AccessType AccessType;
 		Operations LoadOperation, StoreOperation;
 		TextureLayout Start, End;
-		FormatDescriptor FormatDescriptor;
-		const Texture* Texture = nullptr;
-		const TextureView* TextureView = nullptr;
+		FormatDescriptor format;
+		const Texture* texture = nullptr;
+		const TextureView* textureView = nullptr;
 		GTSL::RGBA ClearValue;
 	};
 
@@ -475,7 +481,7 @@ namespace GAL {
 			case ShaderDataType::BOOL: return 1;
 			case ShaderDataType::MAT3: return 36;
 			case ShaderDataType::MAT4: return 64;
-			default: __debugbreak();
+			default: GAL_DEBUG_BREAK;
 		}
 		
 		return 0;
@@ -491,23 +497,21 @@ namespace GAL {
 
 	inline ShaderStage ShaderTypeToShaderStageFlag(ShaderType type) {
 		switch (type) {
-		case ShaderType::VERTEX: return ShaderStages::VERTEX;
-		case ShaderType::FRAGMENT: return ShaderStages::FRAGMENT;
-		case ShaderType::COMPUTE: return ShaderStages::COMPUTE;
-		case ShaderType::TASK: return ShaderStages::TASK;
-		case ShaderType::MESH: return ShaderStages::MESH;
-		case ShaderType::RAY_GEN: return ShaderStages::RAY_GEN;
-		case ShaderType::ANY_HIT: return ShaderStages::ANY_HIT;
-		case ShaderType::CLOSEST_HIT: return ShaderStages::CLOSEST_HIT;
-		case ShaderType::MISS: return ShaderStages::MISS;
-		case ShaderType::INTERSECTION: return ShaderStages::INTERSECTION;
-		case ShaderType::CALLABLE: return ShaderStages::CALLABLE;
+			case ShaderType::VERTEX: return ShaderStages::VERTEX;
+			case ShaderType::FRAGMENT: return ShaderStages::FRAGMENT;
+			case ShaderType::COMPUTE: return ShaderStages::COMPUTE;
+			case ShaderType::TASK: return ShaderStages::TASK;
+			case ShaderType::MESH: return ShaderStages::MESH;
+			case ShaderType::RAY_GEN: return ShaderStages::RAY_GEN;
+			case ShaderType::ANY_HIT: return ShaderStages::ANY_HIT;
+			case ShaderType::CLOSEST_HIT: return ShaderStages::CLOSEST_HIT;
+			case ShaderType::MISS: return ShaderStages::MISS;
+			case ShaderType::INTERSECTION: return ShaderStages::INTERSECTION;
+			case ShaderType::CALLABLE: return ShaderStages::CALLABLE;
+			case ShaderType::TESSELLATION_CONTROL: return ShaderStages::TESSELLATION_CONTROL;
+			case ShaderType::TESSELLATION_EVALUATION: return ShaderStages::TESSELLATION_EVALUATION;
 		}
 
 		return ShaderStage();
 	}
-
-#if (_WIN32)
-#define GAL_DEBUG_BREAK __debugbreak();
-#endif
 }

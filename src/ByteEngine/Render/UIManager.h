@@ -84,11 +84,11 @@ public:
 		//Relative to parent.
 		GTSL::Vector2 Position;
 		Alignments Alignment;
-		ScalingPolicies ScalingPolicies[2/*DIMENSIONS*/];
-		SizingPolicies SizingPolicies[2];
+		ScalingPolicies scalingPolicies[2/*DIMENSIONS*/];
+		SizingPolicies sizingPolicies[2];
 		RenderModelHandle Material;
 		uint32 DerivedTypeIndex;
-		SpacingPolicy SpacingPolicy;
+		SpacingPolicy spacingPolicy;
 		bool isDirty;
 		TaskHandle<UIElementHandle> OnHover, OnPress;
 		GTSL::Vector4 Color;
@@ -360,29 +360,29 @@ public:
 	}
 
 	void SetScalingPolicy(UIElementHandle organizer, ScalingPolicies scaling_policy) {
-		getPrimitive(organizer).ScalingPolicies[0] = scaling_policy;
-		getPrimitive(organizer).ScalingPolicies[1] = scaling_policy;
+		getPrimitive(organizer).scalingPolicies[0] = scaling_policy;
+		getPrimitive(organizer).scalingPolicies[1] = scaling_policy;
 		flagsAsDirty(organizer);
 	}
 
 	void SetScalingPolicy(UIElementHandle organizer, uint8 axis, ScalingPolicies scaling_policy) {
-		getPrimitive(organizer).ScalingPolicies[axis] = scaling_policy;
+		getPrimitive(organizer).scalingPolicies[axis] = scaling_policy;
 		flagsAsDirty(organizer);
 	}
 
 	void SetSizingPolicy(UIElementHandle organizer, SizingPolicies sizing_policy) {
-		getPrimitive(organizer).SizingPolicies[0] = sizing_policy;
-		getPrimitive(organizer).SizingPolicies[1] = sizing_policy;
+		getPrimitive(organizer).sizingPolicies[0] = sizing_policy;
+		getPrimitive(organizer).sizingPolicies[1] = sizing_policy;
 		flagsAsDirty(organizer);
 	}
 
 	void SetSizingPolicy(UIElementHandle organizer, uint8 axis, SizingPolicies sizing_policy) {
-		getPrimitive(organizer).SizingPolicies[axis] = sizing_policy;
+		getPrimitive(organizer).sizingPolicies[axis] = sizing_policy;
 		flagsAsDirty(organizer);
 	}
 
 	void SetElementSpacingPolicy(UIElementHandle organizer, SpacingPolicy spacingPolicy) {
-		getPrimitive(organizer).SpacingPolicy = spacingPolicy;
+		getPrimitive(organizer).spacingPolicy = spacingPolicy;
 		flagsAsDirty(organizer);
 	}
 
@@ -429,11 +429,11 @@ private:
 		primitive.Type = type;
 		primitive.Alignment = Alignments::CENTER;
 		primitive.HalfSize = 1.0f;
-		primitive.SizingPolicies[0] = SizingPolicies::FROM_SCREEN;
-		primitive.SizingPolicies[1] = SizingPolicies::FROM_SCREEN;
-		primitive.ScalingPolicies[0] = ScalingPolicies::FILL;
-		primitive.ScalingPolicies[1] = ScalingPolicies::SET_ASPECT_RATIO;
-		primitive.SpacingPolicy = SpacingPolicy::DISTRIBUTE;
+		primitive.sizingPolicies[0] = SizingPolicies::FROM_SCREEN;
+		primitive.sizingPolicies[1] = SizingPolicies::FROM_SCREEN;
+		primitive.scalingPolicies[0] = ScalingPolicies::FILL;
+		primitive.scalingPolicies[1] = ScalingPolicies::SET_ASPECT_RATIO;
+		primitive.spacingPolicy = SpacingPolicy::DISTRIBUTE;
 		primitive.DerivedTypeIndex = ~0u;
 		primitive.isDirty = true;
 		primitive.Color = 0.5f;
@@ -449,10 +449,10 @@ private:
 		case PrimitiveData::PrimitiveType::ORGANIZER: break;
 		case PrimitiveData::PrimitiveType::SQUARE: break;
 		case PrimitiveData::PrimitiveType::TEXT: {
-			primitive.SizingPolicies[0] = SizingPolicies::FROM_PARENT_CONTAINER;
-			primitive.SizingPolicies[1] = SizingPolicies::FROM_SCREEN;
-			primitive.ScalingPolicies[0] = ScalingPolicies::FILL;
-			primitive.ScalingPolicies[1] = ScalingPolicies::AUTO;
+			primitive.sizingPolicies[0] = SizingPolicies::FROM_PARENT_CONTAINER;
+			primitive.sizingPolicies[1] = SizingPolicies::FROM_SCREEN;
+			primitive.scalingPolicies[0] = ScalingPolicies::FILL;
+			primitive.scalingPolicies[1] = ScalingPolicies::AUTO;
 			primitive.DerivedTypeIndex = textPrimitives.Emplace(GetPersistentAllocator());
 			break;
 		}

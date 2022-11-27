@@ -2,7 +2,7 @@
 
 #include "ByteEngine/Core.h"
 
-#include <GTSL/Allocator.h>
+#include <GTSL/Allocator.hpp>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/String.hpp>
 #include <GTSL/Application.h>

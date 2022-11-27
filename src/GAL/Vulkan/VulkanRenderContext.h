@@ -3,12 +3,12 @@
 #include "GAL/RenderContext.h"
 
 #include "VulkanTexture.h"
-#include <GTSL/Pair.hpp>
-
 #include "VulkanQueue.h"
 #include "VulkanSynchronization.h"
-#include "GTSL/Application.h"
-#include "GTSL/Window.h"
+
+#include <GTSL/Pair.hpp>
+#include <GTSL/Application.h>
+#include <GTSL/Window.hpp>
 
 namespace GAL
 {
@@ -27,16 +27,16 @@ namespace GAL
 			//setName(renderDevice, surface, VK_OBJECT_TYPE_SURFACE_KHR, createInfo.Name);
 #elif BE_PLATFORM_LINUX
 			if(true) { // Use X11 {
-				// Create Vulkan X11 surface
-				VkXlibSurfaceCreateInfoKHR vkXlibSurfaceCreateInfoKhr{ VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR };
-				vkXlibSurfaceCreateInfoKhr.dpy = application.GetDisplay();
-				vkXlibSurfaceCreateInfoKhr.window = window.GetWindow();
-				return renderDevice->VkCreateXlibSurface(renderDevice->GetVkInstance(), &vkXlibSurfaceCreateInfoKhr, renderDevice->GetVkAllocationCallbacks(), &surface) == VK_SUCCESS;
+				// Create Vulkan xcb surface
+				VkXcbSurfaceCreateInfoKHR vkXcbSurfaceCreateInfoKhr{ VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR };
+				vkXcbSurfaceCreateInfoKhr.connection = window.GetXCBConnection();
+				vkXcbSurfaceCreateInfoKhr.window = window.GetXCBWindow();
+				return renderDevice->VkCreateXcbSurface(renderDevice->GetVkInstance(), &vkXcbSurfaceCreateInfoKhr, renderDevice->GetVkAllocationCallbacks(), &surface) == VK_SUCCESS;
 			} else {
 				// Create Vulkan Wayland surface
 				VkWaylandSurfaceCreateInfoKHR vkWaylandSurfaceCreateInfoKhr{ VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR };
-				vkWaylandSurfaceCreateInfoKhr.display = application.GetDisplay();
-				vkWaylandSurfaceCreateInfoKhr.surface = window.GetWindow();
+				//vkWaylandSurfaceCreateInfoKhr.display = window.GetDisplay();
+				//vkWaylandSurfaceCreateInfoKhr.surface = window.GetWindow();
 				return renderDevice->VkCreateWaylandSurface(renderDevice->GetVkInstance(), &vkWaylandSurfaceCreateInfoKhr, renderDevice->GetVkAllocationCallbacks(), &surface) == VK_SUCCESS;
 			}
 #endif
@@ -174,9 +174,10 @@ namespace GAL
 			AcquireState acquire_state;
 
 			switch (result) {
-			case VK_SUCCESS: acquire_state = AcquireState::OK; break;
-			case VK_SUBOPTIMAL_KHR: acquire_state = AcquireState::SUBOPTIMAL; break;
-			case VK_ERROR_OUT_OF_DATE_KHR: acquire_state = AcquireState::BAD; break;
+				case VK_SUCCESS: acquire_state = AcquireState::OK; break;
+				case VK_SUBOPTIMAL_KHR: acquire_state = AcquireState::SUBOPTIMAL; break;
+				case VK_ERROR_OUT_OF_DATE_KHR: acquire_state = AcquireState::BAD; break;
+				default: acquire_state = AcquireState::BAD; break;
 			}
 
 			//if (!semaphore.IsSignaled()) {

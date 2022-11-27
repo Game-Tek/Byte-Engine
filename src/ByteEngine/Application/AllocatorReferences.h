@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ByteEngine/Core.h"
-#include <GTSL/Allocator.h>
+#include <GTSL/Allocator.hpp>
 #include <GTSL/ShortString.hpp>
 
 namespace BE
@@ -45,11 +45,7 @@ namespace BE
 	{
 		void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize) const;
 
-#if(_DEBUG)
 		void Deallocate(uint64 size, uint64 alignment, void* memory) const;
-#else
-		void Deallocate(uint64 size, uint64 alignment, void* memory) const {}
-#endif
 
 		TransientAllocatorReference() = delete;
 

@@ -54,7 +54,7 @@ public:
 	void Connect(Graph& other) {
 		for(uint32 i = 0; i < other.internal->upstreamCount; ++i) {
 			if(other.internal->upstream[i] == other.internal) {
-				__debugbreak();
+				BE_DEBUG_BREAK;
 			}
 		}
 

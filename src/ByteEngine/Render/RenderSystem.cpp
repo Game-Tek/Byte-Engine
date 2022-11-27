@@ -1,13 +1,13 @@
 #include "RenderSystem.h"
 
-#include <GTSL/Window.h>
-
 #include "ByteEngine/Application/Application.h"
 #include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Application/WindowSystem.hpp"
 #include "ByteEngine/Application/Templates/GameApplication.h"
 #include "ByteEngine/Debug/Assert.h"
 #include "ByteEngine/Resources/PipelineCacheResourceManager.h"
+
+#include <GTSL/Window.hpp>
 
 #undef MemoryBarrier
 
@@ -22,8 +22,8 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	textures(16, GetPersistentAllocator()), apiAllocations(128, GetPersistentAllocator()), workloads(16, GetPersistentAllocator())
 {
 	{
-		initializeInfo.ApplicationManager->EnqueueScheduledTask(initializeInfo.ApplicationManager->RegisterTask(this, u8"endCommandLists", DependencyBlock(), &RenderSystem::renderFlush, u8"FrameEnd", u8"FrameEnd"));
-		resizeHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onResize", {}, & RenderSystem::onResize);
+		initializeInfo.AppManager->EnqueueScheduledTask(initializeInfo.AppManager->RegisterTask(this, u8"endCommandLists", DependencyBlock(), &RenderSystem::renderFlush, u8"FrameEnd", u8"FrameEnd"));
+		resizeHandle = initializeInfo.AppManager->RegisterTask(this, u8"onResize", {}, & RenderSystem::onResize);
 	}
 
 	RenderDevice::RayTracingCapabilities rayTracingCapabilities;
@@ -60,10 +60,10 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 		createInfo.PerformanceValidation = true;
 		createInfo.SynchronizationValidation = true;
 		createInfo.DebugPrintFunction = GTSL::Delegate<void(GTSL::StringView, RenderDevice::MessageSeverity)>::Create<RenderSystem, &RenderSystem::printError>(this);
-		createInfo.AllocationInfo.UserData = this;
-		createInfo.AllocationInfo.Allocate = GTSL::Delegate<void* (void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
-		createInfo.AllocationInfo.Reallocate = GTSL::Delegate<void* (void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
-		createInfo.AllocationInfo.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
+		createInfo.allocation.UserData = this;
+		createInfo.allocation.Allocate = GTSL::Delegate<void* (void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::allocateApiMemory>(this);
+		createInfo.allocation.Reallocate = GTSL::Delegate<void* (void*, void*, uint64, uint64)>::Create<RenderSystem, &RenderSystem::reallocateApiMemory>(this);
+		createInfo.allocation.Deallocate = GTSL::Delegate<void(void*, void*)>::Create<RenderSystem, &RenderSystem::deallocateApiMemory>(this);
 
 		if (auto renderDeviceInitializationResult = renderDevice.Initialize(createInfo, GetTransientAllocator())) {
 			BE_LOG_SUCCESS(u8"Started RenderDevice\n	API: Vulkan\n	GPU: ", renderDevice.GetGPUInfo().GPUName, u8"\n	Memory: ", 6, u8" GB\n	API Version: ", renderDevice.GetGPUInfo().APIVersion);
@@ -107,7 +107,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 	}
 
 	bool pipelineCacheAvailable;
-	auto* pipelineCacheManager = initializeInfo.ApplicationManager->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
+	auto* pipelineCacheManager = initializeInfo.AppManager->GetSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 	pipelineCacheManager->DoesCacheExist(pipelineCacheAvailable);
 
 	if (pipelineCacheAvailable) {
@@ -171,16 +171,16 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_
 			AllocateScratchBufferMemory(textureSize, GAL::BufferUses::TRANSFER_SOURCE, &texture.ScratchBuffer, &texture.ScratchAllocation);
 		}
 
-		AllocateLocalTextureMemory(&texture.Texture, name, texture.Uses, texture.FormatDescriptor, extent, GAL::Tiling::OPTIMAL, 1, &texture.Allocation);
-		texture.TextureView.Initialize(GetRenderDevice(), name, texture.Texture, texture.FormatDescriptor, extent, 1);
+		AllocateLocalTextureMemory(&texture.texture, name, texture.Uses, texture.format, extent, GAL::Tiling::OPTIMAL, 1, &texture.Allocation);
+		texture.textureView.Initialize(GetRenderDevice(), name, texture.texture, texture.format, extent, 1);
 	};
 
 	if(texture_handle) {
 		auto& texture = textures[texture_handle()];
 
 		if(extent != texture.Extent) {
-			if(texture.Texture.GetVkImage()) {
-				texture.Texture.Destroy(GetRenderDevice());
+			if(texture.texture.GetVkImage()) {
+				texture.texture.Destroy(GetRenderDevice());
 				DeallocateLocalBufferMemory(texture.Allocation);
 
 				if (texture.ScratchAllocation.Data) {
@@ -188,8 +188,8 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_
 				}
 			}
 
-			if(texture.TextureView.GetVkImageView()) {
-				texture.TextureView.Destroy(GetRenderDevice());
+			if(texture.textureView.GetVkImageView()) {
+				texture.textureView.Destroy(GetRenderDevice());
 			}
 
 			doTexture(texture);
@@ -203,7 +203,7 @@ RenderSystem::TextureHandle RenderSystem::CreateTexture(GTSL::Range<const char8_
 	auto& texture = textures[textureIndex];
 	
 	texture.Extent = extent;	
-	texture.FormatDescriptor = formatDescriptor;
+	texture.format = formatDescriptor;
 	texture.Uses = textureUses;
 	if (updatable) { texture.Uses |= GAL::TextureUses::TRANSFER_DESTINATION; }
 	texture.Layout = GAL::TextureLayout::UNDEFINED;	
@@ -221,10 +221,10 @@ void RenderSystem::UpdateTexture(const CommandListHandle command_list_handle, co
 	textureCopyData.Layout = texture.Layout;
 	textureCopyData.Extent = texture.Extent;
 	textureCopyData.Allocation = texture.Allocation;
-	textureCopyData.DestinationTexture = texture.Texture;
+	textureCopyData.DestinationTexture = texture.texture;
 	textureCopyData.SourceOffset = 0;
 	textureCopyData.SourceBuffer = texture.ScratchBuffer;
-	textureCopyData.Format = texture.FormatDescriptor;
+	textureCopyData.Format = texture.format;
 	AddTextureCopy(command_list_handle, textureCopyData);
 }
 
@@ -392,10 +392,6 @@ void RenderSystem::printError(GTSL::StringView message, const RenderDevice::Mess
 	case RenderDevice::MessageSeverity::WARNING: BE_LOG_WARNING(message); break;
 	case RenderDevice::MessageSeverity::ERROR:   BE_LOG_ERROR(message); breakeablelogLevel = true; break;
 	default: break;
-	}
-
-	if(breakOnError && breakeablelogLevel) {
-		__debugbreak();
 	}
 }
 

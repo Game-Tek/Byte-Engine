@@ -64,7 +64,7 @@ resources(16, GetPersistentAllocator()), dataKeys(16, GetPersistentAllocator()),
 renderingTree(128, GetPersistentAllocator()), renderPassesMap(16, GetPersistentAllocator()), renderPasses(16), pipelines(8, GetPersistentAllocator()),
 shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistentAllocator()), shaderGroupInstanceByName(16, GetPersistentAllocator()), textures(16, GetPersistentAllocator()), attachments(16, GetPersistentAllocator()), elements(16, GetPersistentAllocator()), sets(16, GetPersistentAllocator()), queuedSetUpdates(1, 8, GetPersistentAllocator()), setLayoutDatas(2, GetPersistentAllocator()), pendingWrites(32, GetPersistentAllocator())
 {
-	auto* renderSystem = initializeInfo.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
+	auto* renderSystem = initializeInfo.AppManager->GetSystem<RenderSystem>(u8"RenderSystem");
 
 	tag = BE::Application::Get()->GetConfig()[u8"Rendering"][u8"renderTechnique"];
 
@@ -102,18 +102,18 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 		//GetPersistentAllocator().Allocate(1024 * 8, 32, reinterpret_cast<void**>(&buffer[0]), &allocatedSize); //TODO: free
 	}
 
-	onTextureInfoLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onTextureInfoLoad", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureInfoLoad);
-	onTextureLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"loadTexture", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureLoad);
+	onTextureInfoLoadHandle = initializeInfo.AppManager->RegisterTask(this, u8"onTextureInfoLoad", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureInfoLoad);
+	onTextureLoadHandle = initializeInfo.AppManager->RegisterTask(this, u8"loadTexture", DependencyBlock(TypedDependency<TextureResourceManager>(u8"TextureResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onTextureLoad);
 
-	onShaderInfosLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onShaderGroupInfoLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager")), &RenderOrchestrator::onShaderInfosLoaded);
-	onShaderGroupLoadHandle = initializeInfo.ApplicationManager->RegisterTask(this, u8"onShaderGroupLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onShadersLoaded);
+	onShaderInfosLoadHandle = initializeInfo.AppManager->RegisterTask(this, u8"onShaderGroupInfoLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager")), &RenderOrchestrator::onShaderInfosLoaded);
+	onShaderGroupLoadHandle = initializeInfo.AppManager->RegisterTask(this, u8"onShaderGroupLoad", DependencyBlock(TypedDependency<ShaderResourceManager>(u8"ShaderResourceManager"), TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::onShadersLoaded);
 
-	initializeInfo.ApplicationManager->EnqueueScheduledTask(initializeInfo.ApplicationManager->RegisterTask(this, SETUP_TASK_NAME, DependencyBlock(), &RenderOrchestrator::Setup, u8"GameplayEnd", u8"RenderSetup"));
-	initializeInfo.ApplicationManager->EnqueueScheduledTask(initializeInfo.ApplicationManager->RegisterTask(this, RENDER_TASK_NAME, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::Render, u8"Render", u8"Render"));
+	initializeInfo.AppManager->EnqueueScheduledTask(initializeInfo.AppManager->RegisterTask(this, SETUP_TASK_NAME, DependencyBlock(), &RenderOrchestrator::Setup, u8"GameplayEnd", u8"RenderSetup"));
+	initializeInfo.AppManager->EnqueueScheduledTask(initializeInfo.AppManager->RegisterTask(this, RENDER_TASK_NAME, DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem")), &RenderOrchestrator::Render, u8"Render", u8"Render"));
 
 	{
 		const auto taskDependencies = GTSL::StaticVector<TaskDependency, 4>{ { u8"RenderSystem", AccessTypes::READ_WRITE } };
-		onRenderEnable(initializeInfo.ApplicationManager, taskDependencies);
+		onRenderEnable(initializeInfo.AppManager, taskDependencies);
 	}
 
 	{ //sampler must be built before set layouts, as it is used as inmutable sampler
@@ -123,9 +123,9 @@ shaderGroups(16, GetPersistentAllocator()), shaderGroupsByName(16, GetPersistent
 
 	{
 		GTSL::StaticVector<SubSetDescriptor, 10> subSetInfos;
-		subSetInfos.EmplaceBack(SubSetType::READ_TEXTURES, 128, &textureSubsetsHandle);
-		subSetInfos.EmplaceBack(SubSetType::WRITE_TEXTURES, 128, &imagesSubsetHandle);
-		subSetInfos.EmplaceBack(SubSetType::SAMPLER, 16, &samplersSubsetHandle, samplers);
+		subSetInfos.EmplaceBack(SubSetTypes::READ_TEXTURES, 128, &textureSubsetsHandle);
+		subSetInfos.EmplaceBack(SubSetTypes::WRITE_TEXTURES, 128, &imagesSubsetHandle);
+		subSetInfos.EmplaceBack(SubSetTypes::SAMPLER, 16, &samplersSubsetHandle, samplers);
 
 		globalSetLayout = AddSetLayout(renderSystem, SetLayoutHandle(), subSetInfos);
 		globalBindingsSet = AddSet(renderSystem, u8"GlobalData", globalSetLayout, subSetInfos);
@@ -282,7 +282,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 	}
 
 	{
-		auto* cameraSystem = taskInfo.ApplicationManager->GetSystem<CameraSystem>(u8"CameraSystem");
+		auto* cameraSystem = taskInfo.AppManager->GetSystem<CameraSystem>(u8"CameraSystem");
 
 		auto fovs = cameraSystem->GetFieldOfViews();
 
@@ -493,7 +493,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 					GAL::DeviceAddress address = renderSystem->GetBufferAddress(dataKey.Buffer[1]) + dataKeysMap[dataNode.DataKey()].Second; // Get READ buffer handle
 
 					auto& setLayout = setLayoutDatas[globalSetLayout()]; address += dataKey.Offset;
-					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.PipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
+					commandBuffer.UpdatePushConstant(renderSystem->GetRenderDevice(), setLayout.pipelineLayout, dataStreamHandle() * 8, GTSL::Range(8, reinterpret_cast<const byte*>(&address)), setLayout.Stage);
 
 					if(BE::Application::Get()->GetConfig()[u8"RenderOrchestrator"][u8"debugBuffers"].GetBool()) {
 						PrintMember(dataNode.DataKey, renderSystem);
@@ -588,7 +588,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 				transitionImages(commandBuffer, renderSystem, &renderPassData);
 
 				switch (renderPassData.Type) {
-				case PassType::RASTER: {
+				case PassTypes::RASTER: {
 					renderState.ShaderStages = GAL::ShaderStages::VERTEX | GAL::ShaderStages::FRAGMENT;
 
 					GTSL::StaticVector<GAL::RenderPassTargetDescription, 8> renderPassTargetDescriptions;
@@ -601,20 +601,20 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 							e.End = renderPassData.Attachments[i].Layout;
 							e.LoadOperation = renderPassData.Attachments[i].LoadOperation;
 							e.StoreOperation = GAL::Operations::DO;
-							e.FormatDescriptor = attachment.FormatDescriptor;
-							e.Texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
-							e.TextureView = renderSystem->GetTextureView(attachment.TextureHandle[currentFrame]);
+							e.format = attachment.format;
+							e.texture = renderSystem->GetTexture(attachment.TextureHandle[currentFrame]);
+							e.textureView = renderSystem->GetTextureView(attachment.TextureHandle[currentFrame]);
 						}
 					}
 
 					commandBuffer.BeginRenderPass(renderSystem->GetRenderDevice(), renderArea, renderPassTargetDescriptions);
 					break;
 				}
-				case PassType::COMPUTE: {
+				case PassTypes::COMPUTE: {
 					renderState.ShaderStages = GAL::ShaderStages::COMPUTE;
 					break;
 				}
-				case PassType::RAY_TRACING: {
+				case PassTypes::RAY_TRACING: {
 					renderState.ShaderStages = GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT | GAL::ShaderStages::MISS | GAL::ShaderStages::INTERSECTION | GAL::ShaderStages::CALLABLE;
 					break;
 				}
@@ -649,7 +649,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			}
 			case RTT::GetTypeIndex<RenderPassData>(): {
 				const auto& renderPassData = renderingTree.GetClass<RenderPassData>(key);
-				if (renderPassData.Type == PassType::RASTER) {
+				if (renderPassData.Type == PassTypes::RASTER) {
 					commandBuffer.EndRenderPass(renderSystem->GetRenderDevice());
 				}
 
@@ -673,7 +673,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 			// Transition attachment
 			preTransitions.EmplaceBack(attachment.ConsumingStages, GAL::PipelineStages::TRANSFER, attachment.AccessType,
 					GAL::AccessTypes::READ, CommandList::TextureBarrier{ renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), attachment.Layout[currentFrame],
-					GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor });
+					GAL::TextureLayout::TRANSFER_SOURCE, attachment.format });
 
 			updateImage(currentFrame, attachment, GAL::TextureLayout::TRANSFER_SOURCE, GAL::PipelineStages::TRANSFER, GAL::AccessTypes::READ);
 		}
@@ -684,7 +684,7 @@ void RenderOrchestrator::Render(TaskInfo taskInfo, RenderSystem* renderSystem) {
 		for(auto& dv : views) {
 			auto& attachment = attachments.At(dv.name);
 
-			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.FormatDescriptor, dv.sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
+			commandBuffer.BlitTexture(renderSystem->GetRenderDevice(), *renderSystem->GetTexture(attachment.TextureHandle[currentFrame]), GAL::TextureLayout::TRANSFER_SOURCE, attachment.format, dv.sizeHistory[currentFrame], *renderSystem->GetSwapchainTexture(dv.renderContext), GAL::TextureLayout::TRANSFER_DESTINATION, renderSystem->GetSwapchainFormat(), GTSL::Extent3D(renderSystem->GetRenderExtent(dv.renderContext)));
 		}
 
 		// Do post copy pipeline barriers
@@ -799,12 +799,12 @@ void RenderOrchestrator::AddAttachment(GTSL::StringView attachment_name, uint8 b
 	attachment.Uses |= GAL::TextureUses::SAMPLE;
 
 	if (type == GAL::TextureType::COLOR) {
-		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::COLOR, 0, componentCount >= 2 ? 1 : 0, componentCount >= 3 ? 2 : 0, componentCount >= 4 ? 3 : 0);
+		attachment.format = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::COLOR, 0, componentCount >= 2 ? 1 : 0, componentCount >= 3 ? 2 : 0, componentCount >= 4 ? 3 : 0);
 		attachment.Uses |= GAL::TextureUses::STORAGE;
 		attachment.Uses |= GAL::TextureUses::TRANSFER_SOURCE;
 		attachment.ClearColor = GTSL::RGBA(1, 1, 1, 1);
 	} else {
-		attachment.FormatDescriptor = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::DEPTH, 0, 0, 0, 0);
+		attachment.format = GAL::FormatDescriptor(compType, componentCount, bitDepth, GAL::TextureType::DEPTH, 0, 0, 0, 0);
 		attachment.ClearColor = GTSL::RGBA(INVERSE_Z ? 0.0f: 1.0f, 0, 0, 0);
 	}
 
@@ -854,21 +854,21 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 	renderPassesMap.Emplace(render_pass_name, renderPassIndex);
 	renderPasses.EmplaceBack(renderPassNodeHandle);
 
-	renderPass.ResourceHandle = makeResource(render_pass_name);
-	addDependencyOnResource(renderPass.ResourceHandle); //add dependency on render pass texture creation
+	renderPass.resourceHandle = makeResource(render_pass_name);
+	addDependencyOnResource(renderPass.resourceHandle); //add dependency on render pass texture creation
 
-	BindResourceToNode(renderPassNodeHandle, renderPass.ResourceHandle);
+	BindResourceToNode(renderPassNodeHandle, renderPass.resourceHandle);
 
 	getNode(renderPassNodeHandle).Name = GTSL::StringView(instance_name);
 
-	PassType renderPassType = PassType::RASTER;
+	PassTypes renderPassType = PassTypes::RASTER;
 	GAL::PipelineStage pipelineStage;
 
 	NodeHandle resultHandle = renderPassNodeHandle;
 
-	switch (pass_data.PassType) {
-	case PassType::RASTER: {
-		renderPassType = PassType::RASTER;
+	switch (pass_data.type) {
+	case PassTypes::RASTER: {
+		renderPassType = PassTypes::RASTER;
 		pipelineStage = GAL::PipelineStages::COLOR_ATTACHMENT_OUTPUT;
 
 		for (const auto& e : pass_data.Attachments) {
@@ -896,8 +896,8 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 
 		break;
 	}
-	case PassType::COMPUTE: {
-		renderPassType = PassType::COMPUTE;
+	case PassTypes::COMPUTE: {
+		renderPassType = PassTypes::COMPUTE;
 		pipelineStage = GAL::PipelineStages::COMPUTE;
 
 		for (const auto& e : pass_data.Attachments) {
@@ -930,8 +930,8 @@ RenderOrchestrator::NodeHandle RenderOrchestrator::AddRenderPassNode(NodeHandle 
 
 		break;
 	}
-	case PassType::RAY_TRACING: {
-		renderPassType = PassType::RAY_TRACING;
+	case PassTypes::RAY_TRACING: {
+		renderPassType = PassTypes::RAY_TRACING;
 		pipelineStage = GAL::PipelineStages::RAY_TRACING;
 
 		for (const auto& e : pass_data.Attachments) {
@@ -992,11 +992,11 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 	auto resize = [&](Attachment& attachment) -> void {
 		GTSL::StaticString<64> name; name += GTSL::StringView(attachment.Name); GTSL::ToString(name, currentFrame);
 
-		attachment.TextureHandle[currentFrame] = renderSystem->CreateTexture(name, attachment.FormatDescriptor, newSize, attachment.Uses, false, attachment.TextureHandle[currentFrame]);
+		attachment.TextureHandle[currentFrame] = renderSystem->CreateTexture(name, attachment.format, newSize, attachment.Uses, false, attachment.TextureHandle[currentFrame]);
 
 		for(uint32 i = 0; i < 2u; ++i) {
 			for(uint32 f = 0; f < GTSL::Math::Clamp(2u, 0u, frameIndex + 1u); ++f) {
-				if (attachment.FormatDescriptor.Type == GAL::TextureType::COLOR) {  //if attachment is of type color (not depth), write image descriptor
+				if (attachment.format.Type == GAL::TextureType::COLOR) {  //if attachment is of type color (not depth), write image descriptor
 					WriteBinding(renderSystem, imagesSubsetHandle, attachment.TextureHandle[f], attachment.ImageIndeces[f], i);
 				}
 
@@ -1014,7 +1014,7 @@ void RenderOrchestrator::OnResize(RenderSystem* renderSystem, const GTSL::Extent
 
 	for (const auto apiRenderPassData : renderPasses) {
 		auto& layer = getPrivateNode<RenderPassData>(apiRenderPassData);
-		signalDependencyToResource(layer.ResourceHandle);
+		signalDependencyToResource(layer.resourceHandle);
 		setRenderTreeAsDirty(apiRenderPassData);
 	}
 }
@@ -1026,9 +1026,9 @@ void RenderOrchestrator::ToggleRenderPass(NodeHandle renderPassName, bool enable
 	auto& renderPassNode = getPrivateNode<RenderPassData>(renderPassName);
 
 	switch (renderPassNode.Type) {
-	case PassType::RASTER: break;
-	case PassType::COMPUTE: break;
-	case PassType::RAY_TRACING: enable = enable && BE::Application::Get()->GetBoolOption(u8"rayTracing"); break; // Enable render pass only if function is enaled in settings
+	case PassTypes::RASTER: break;
+	case PassTypes::COMPUTE: break;
+	case PassTypes::RAY_TRACING: enable = enable && BE::Application::Get()->GetBoolOption(u8"rayTracing"); break; // Enable render pass only if function is enaled in settings
 	default: break;
 	}
 
@@ -1063,9 +1063,9 @@ void RenderOrchestrator::transitionImages(CommandList commandBuffer, RenderSyste
 		auto& attachment = attachments.At(attachmentData.Attachment);
 
 		CommandList::TextureBarrier textureBarrier;
-		textureBarrier.Texture = renderSystem->GetTexture(attachment.TextureHandle[renderSystem->GetCurrentFrame()]);
+		textureBarrier.texture = renderSystem->GetTexture(attachment.TextureHandle[renderSystem->GetCurrentFrame()]);
 		textureBarrier.CurrentLayout = attachment.Layout[renderSystem->GetCurrentFrame()];
-		textureBarrier.Format = attachment.FormatDescriptor;
+		textureBarrier.Format = attachment.format;
 		textureBarrier.TargetLayout = attachmentData.Layout;
 		barriers.EmplaceBack(initialStage, renderPass->PipelineStages, attachment.AccessType, access, textureBarrier);
 
@@ -1111,7 +1111,7 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 		}
 	}
 
-	materialResourceManager->LoadShaderGroup(taskInfo.ApplicationManager, GTSL::MoveRef(shader_group_info), onShaderGroupLoadHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
+	materialResourceManager->LoadShaderGroup(taskInfo.AppManager, GTSL::MoveRef(shader_group_info), onShaderGroupLoadHandle, shaderLoadInfo.Buffer.GetRange(), GTSL::MoveRef(shaderLoadInfo));
 }
 
 void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem* renderSystem, ShaderResourceManager::ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
@@ -1360,7 +1360,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 					if (writeAttachment.Access & GAL::AccessTypes::WRITE) {
 						auto& attachment = attachments.At(writeAttachment.Name);
 						auto& attachmentState = attachmentStates.EmplaceBack();
-						attachmentState.BlendEnable = transparency; attachmentState.FormatDescriptor = attachment.FormatDescriptor;
+						attachmentState.BlendEnable = transparency; attachmentState.Format = attachment.format;
 					}
 				}
 			} else {
@@ -1373,13 +1373,13 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			if (!transparency) {
 				GAL::Pipeline::PipelineStateBlock::DepthState depth;
-				depth.CompareOperation = INVERSE_Z ? GAL::CompareOperation::GREATER : GAL::CompareOperation::LESS;
+				depth.compareOperation = INVERSE_Z ? GAL::CompareOperation::GREATER : GAL::CompareOperation::LESS;
 				pipelineStates.EmplaceBack(depth);
 			}
 
 			GAL::Pipeline::PipelineStateBlock::RasterState rasterState;
-			rasterState.CullMode = GAL::CullMode::CULL_BACK;
-			rasterState.WindingOrder = GAL::WindingOrder::CLOCKWISE;
+			rasterState.cullMode = GAL::CullMode::CULL_BACK;
+			rasterState.windingOrder = GAL::WindingOrder::CLOCKWISE;
 			pipelineStates.EmplaceBack(rasterState);
 
 			GAL::Pipeline::PipelineStateBlock::ViewportState viewportState;
@@ -1394,7 +1394,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			vertexState.Vertex.VertexStreams = vertexStreamsRanges;
 
-			pipelines[e.PipelineIndex].pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+			pipelines[e.PipelineIndex].pipeline.InitializeRasterPipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].pipelineLayout, renderSystem->GetPipelineCache());
 		}
 
 		if (e.Stage & GAL::ShaderStages::COMPUTE) {
@@ -1415,7 +1415,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			pipeline.ExecutionString = executionString;
 
-			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+			pipeline.pipeline.InitializeComputePipeline(renderSystem->GetRenderDevice(), pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].pipelineLayout, renderSystem->GetPipelineCache());
 		}
 
 		if (e.Stage & (GAL::ShaderStages::RAY_GEN | GAL::ShaderStages::CLOSEST_HIT)) {
@@ -1501,7 +1501,7 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 
 			pipelineData.ExecutionString = executionString;
 
-			pipelineData.pipeline.InitializeRayTracePipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].PipelineLayout, renderSystem->GetPipelineCache());
+			pipelineData.pipeline.InitializeRayTracePipeline(renderSystem->GetRenderDevice(), pipelineData.pipeline, pipelineStates, shaderInfos, setLayoutDatas[globalSetLayout()].pipelineLayout, renderSystem->GetPipelineCache());
 
 			if (oldPipeline.GetHandle()) { //TODO: defer deletion
 				oldPipeline.Destroy(renderSystem->GetRenderDevice());
@@ -1560,9 +1560,9 @@ void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManage
 				}
 				case GTSL::Hash(u8"TextureReference"): {
 					CreateTextureInfo createTextureInfo;
-					createTextureInfo.RenderSystem = renderSystem;
-					createTextureInfo.GameInstance = taskInfo.ApplicationManager;
-					createTextureInfo.TextureResourceManager = taskInfo.ApplicationManager->GetSystem<TextureResourceManager>(u8"TextureResourceManager");
+					createTextureInfo.renderSystem = renderSystem;
+					createTextureInfo.applicationManager = taskInfo.AppManager;
+					createTextureInfo.textureResourceManager = taskInfo.AppManager->GetSystem<TextureResourceManager>(u8"TextureResourceManager");
 					createTextureInfo.TextureName = parameterValue;
 					auto textureReference = createTexture(createTextureInfo);
 
@@ -1647,7 +1647,7 @@ uint32 RenderOrchestrator::createTexture(const CreateTextureInfo& createTextureI
 	if (auto t = textures.TryEmplace(createTextureInfo.TextureName)) {
 		t.Get().Index = textureIndex++; ++imageIndex;
 		auto textureLoadInfo = TextureLoadInfo(RenderAllocation());
-		createTextureInfo.TextureResourceManager->LoadTextureInfo(createTextureInfo.GameInstance, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
+		createTextureInfo.textureResourceManager->LoadTextureInfo(createTextureInfo.applicationManager, Id(createTextureInfo.TextureName), onTextureInfoLoadHandle, GTSL::MoveRef(textureLoadInfo));
 		t.Get().Resource = makeResource(createTextureInfo.TextureName);
 		return t.Get().Index;
 	}
@@ -1665,7 +1665,7 @@ void RenderOrchestrator::onTextureInfoLoad(TaskInfo taskInfo, TextureResourceMan
 
 	auto dataBuffer = renderSystem->GetTextureRange(loadInfo.TextureHandle);
 
-	resourceManager->LoadTexture(taskInfo.ApplicationManager, textureInfo, dataBuffer, onTextureLoadHandle, GTSL::MoveRef(loadInfo));
+	resourceManager->LoadTexture(taskInfo.AppManager, textureInfo, dataBuffer, onTextureLoadHandle, GTSL::MoveRef(loadInfo));
 }
 
 void RenderOrchestrator::onTextureLoad(TaskInfo taskInfo, TextureResourceManager* resourceManager, RenderSystem* renderSystem, TextureResourceManager::TextureInfo textureInfo, TextureLoadInfo loadInfo)

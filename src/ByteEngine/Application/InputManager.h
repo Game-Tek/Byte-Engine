@@ -107,21 +107,29 @@ public:
 		//inputSource.Get().Pos = inputSourcesRecords.GetLength();
 
 		switch (type) {
-		case Type::BOOL: {
-			//*inputSourcesRecords.AllocateStructure<bool>() = false;
-		}
-		case Type::CHAR: {
-			//*inputSourcesRecords.AllocateStructure<char32_t>() = 0;
-		}
-		case Type::LINEAR: {
-			//*inputSourcesRecords.AllocateStructure<float32>() = 0.0f;
-		}
-		case Type::VECTOR2D: {
-			//inputSourcesRecords.AllocateStructure<GTSL::Vector2>();
-		}
-		case Type::VECTOR3D: {
-			//inputSourcesRecords.AllocateStructure<GTSL::Vector3>();
-		}
+			case Type::NONE: {
+				break;
+			}
+			case Type::BOOL: {
+				//*inputSourcesRecords.AllocateStructure<bool>() = false;
+				break;
+			}
+			case Type::CHAR: {
+				//*inputSourcesRecords.AllocateStructure<char32_t>() = 0;
+				break;
+			}
+			case Type::LINEAR: {
+				//*inputSourcesRecords.AllocateStructure<float32>() = 0.0f;
+				break;
+			}
+			case Type::VECTOR2D: {
+				//inputSourcesRecords.AllocateStructure<GTSL::Vector2>();
+				break;
+			}
+			case Type::VECTOR3D: {
+				//inputSourcesRecords.AllocateStructure<GTSL::Vector3>();
+				break;
+			}
 		}
 	}
 
@@ -441,7 +449,6 @@ protected:
 						}
 						break;
 					}
-					default: __debugbreak();
 					}
 				}
 			}

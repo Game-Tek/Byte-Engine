@@ -5,7 +5,7 @@
 #include <GTSL/Mutex.h>
 #include <GTSL/Vector.hpp>
 #include <GTSL/Algorithm.hpp>
-#include <GTSL/Allocator.h>
+#include <GTSL/Allocator.hpp>
 #include <GTSL/SmartPointer.hpp>
 #include <GTSL/Semaphore.h>
 #include <GTSL/Atomic.hpp>
@@ -21,6 +21,8 @@
 #include "ByteEngine/Application/Handle.hpp"
 
 #include "ByteEngine/Game/System.hpp"
+
+#include "ByteEngine/Application/Application.h"
 
 class World;
 class ComponentCollection;
@@ -307,7 +309,7 @@ public:
 			if (task.EndStageIndex != 0xFFFF) { gameInstance->semaphores[task.EndStageIndex].Post(); }
 
 			if (info->Signals) {
-				GTSL::WriteLock lock(gameInstance->liveInstancesMutex);
+				GTSL::WriteLock<GTSL::ReadWriteMutex> lock(gameInstance->liveInstancesMutex);
 				++gameInstance->liveInstances[info->InstanceHandle.InstanceIndex].Counter;
 			}
 
@@ -352,7 +354,7 @@ public:
 		//assertTask(taskName, {}, )
 
 		{
-			GTSL::ReadLock lock(stagesNamesMutex);
+			GTSL::ReadLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 			decomposeTaskDescriptor(dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes, accesses);
 		}
 
@@ -446,7 +448,7 @@ public:
 	}
 
 	BE::TypeIdentifier getTypeIdentifier(const TypeErasedHandleHandle type_erased_handle_handle) const {
-		GTSL::ReadLock mutex{ liveInstancesMutex };
+		GTSL::ReadLock<GTSL::ReadWriteMutex> mutex(liveInstancesMutex);
 		const auto& e = liveInstances[type_erased_handle_handle.InstanceIndex];
 		return { e.SystemID, e.ComponentID };
 	}
@@ -489,7 +491,7 @@ public:
 
 	template<typename... ARGS>
 	EventHandle<ARGS...> RegisterEvent(const BE::System* caller, const GTSL::StringView event_name, bool priority = false) {
-		GTSL::WriteLock lock(eventsMutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (events.Find(Id(event_name))) { BE_LOG_ERROR(u8"An event by the name ", event_name, u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return EventHandle<ARGS...>(u8""); } }
 		Event& eventData = events.Emplace(Id(event_name), GetPersistentAllocator());
 
@@ -502,7 +504,7 @@ public:
 
 	template<typename... ARGS>
 	void AddEvent(const GTSL::StringView caller, const EventHandle<ARGS...> eventHandle, bool priority = false) {
-		GTSL::WriteLock lock(eventsMutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"An event by the name ", GTSL::StringView(eventHandle.Name), u8" already exists, skipping adition. ", BE::FIX_OR_CRASH_STRING); return; } }
 		Event& eventData = events.Emplace(eventHandle.Name, GetPersistentAllocator());
 
@@ -513,7 +515,7 @@ public:
 
 	template<typename... ARGS>
 	void SubscribeToEvent(const GTSL::StringView caller, const EventHandle<ARGS...> eventHandle, TaskHandle<ARGS...> taskHandle) {
-		GTSL::WriteLock lock(eventsMutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping subscription. ", BE::FIX_OR_CRASH_STRING); return; } }
 		auto& vector = events.At(eventHandle.Name).Functions;
 		vector.EmplaceBack(taskHandle.Reference);
@@ -521,7 +523,7 @@ public:
 
 	template<typename... ARGS>
 	void DispatchEvent(const BE::System*, const EventHandle<ARGS...> eventHandle, ARGS&&... args) {
-		GTSL::ReadLock lock(eventsMutex);
+		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(eventsMutex);
 		if constexpr (BE_DEBUG) { if (!events.Find(eventHandle.Name)) { BE_LOG_ERROR(u8"No event found by that name, skipping dispatch. ", BE::FIX_OR_CRASH_STRING); return; } }
 
 		Event& eventData = events.At(eventHandle.Name);
@@ -539,7 +541,7 @@ public:
 
 	template<typename T>
 	T MakeHandle(BE::TypeIdentifier type_identifier, uint32 index) {
-		GTSL::WriteLock lock(liveInstancesMutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(liveInstancesMutex);
 
 		auto instanceIndex = liveInstances.Emplace(type_identifier.SystemId, type_identifier.TypeId);
 
@@ -583,7 +585,7 @@ private:
 		}
 
 		template<typename T, typename... FULL_ARGS>
-		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), uint32 sysCount, ARGS&&... args) requires static_cast<bool>(sizeof...(ARGS)) : ResourceCount(sysCount) {
+		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), uint32 sysCount, ARGS&&... args) requires (static_cast<bool>(sizeof...(ARGS))) : ResourceCount(sysCount) {
 			static_assert(sizeof(decltype(function)) == 8);
 			WriteDelegate<T>(function);
 			UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
@@ -593,7 +595,9 @@ private:
 		TaskDispatchInfo(TaskDispatchInfo&&) = delete;
 
 		~TaskDispatchInfo() {
-			[&] <uint64... I>(GTSL::Indices<I...>) { (GetPointer<I>()->~GTSL::template GetTypeAt<I, ARGS...>::type(), ...); } (GTSL::BuildIndices<sizeof...(ARGS)>{});
+			[&] <uint64... I>(GTSL::Indices<I...>) {
+				(GTSL::Destroy<typename GTSL::TypeAt<I, ARGS...>::type>(*GetPointer<I>()), ...);
+			} (GTSL::BuildIndices<sizeof...(ARGS)>{});
 
 #if BE_DEBUG
 			Callee = nullptr;
@@ -720,7 +724,7 @@ private:
 	template<typename T, typename... RESOURCES, typename... ARGS>
 	static void call(TaskInfo task_info, const TaskData* task_data, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
 		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
-			(static_cast<T*>(dispatch_task_info->Callee)->*task_data->GetDelegate<T, RESOURCES*..., ARGS...>())(task_info, dispatch_task_info->GetResource<RI, RESOURCES>()..., GTSL::MoveRef(dispatch_task_info->GetArgument<AI>())...);
+			(static_cast<T*>(dispatch_task_info->Callee)->*task_data->template GetDelegate<T, RESOURCES*..., ARGS...>())(task_info, dispatch_task_info->template GetResource<RI, RESOURCES>()..., GTSL::MoveRef(dispatch_task_info->template GetArgument<AI>())...);
 		} (GTSL::BuildIndices<sizeof...(RESOURCES)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
 	}
 
@@ -755,7 +759,7 @@ private:
 
 	[[nodiscard]] bool assertTask(const Id taskName, const Id startGoal, const Id endGoal, const uint64 len, const Id* names, const AccessType* access) const {
 		{
-			GTSL::ReadLock lock(stagesNamesMutex);
+			GTSL::ReadLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 
 			if (!stagesNames.Find(startGoal).State()) {
 				BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" to stage ", GTSL::StringView(startGoal), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
@@ -919,7 +923,7 @@ public:
 
 		{
 			BE::System::InitializeInfo initializeInfo;
-			initializeInfo.ApplicationManager = this;
+			initializeInfo.AppManager = this;
 			initializeInfo.ScalingFactor = scalingFactor;
 			initializeInfo.InstanceName = Id(systemName);
 

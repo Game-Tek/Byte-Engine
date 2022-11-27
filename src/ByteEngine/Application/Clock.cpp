@@ -1,12 +1,12 @@
 #include "Clock.h"
 
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 #include <Windows.h>
 #endif
 
 Clock::Clock()
 {
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 	LARGE_INTEGER WinProcessorFrequency;
 	LARGE_INTEGER WinProcessorTicks;
 
@@ -21,9 +21,8 @@ Clock::Clock()
 
 Clock::~Clock() = default;
 
-void Clock::OnUpdate()
-{
-#ifdef BE_PLATFORM_WIN
+void Clock::OnUpdate() {
+#if BE_PLATFORM_WINDOWS
 	LARGE_INTEGER current_ticks;
 	QueryPerformanceCounter(&current_ticks);
 
@@ -47,15 +46,30 @@ void Clock::OnUpdate()
 	
 	//Set system ticks as this frame's ticks so in the next update we can work with it.
 	performanceCounterTicks = current_ticks.QuadPart;
+#elif BE_PLATFORM_LINUX
+	timespec time;
+	clock_gettime(CLOCK_MONOTONIC, &time);
+
+	auto absoluteNanoseconds = GTSL::Nanoseconds(time.tv_nsec);
+	const auto deltaTime = absoluteNanoseconds - elapsedTime;
+
+	if(deltaTime > GTSL::Microseconds(GTSL::Seconds(1))) {
+		this->deltaTime = static_cast<GTSL::Microseconds>(GTSL::Milliseconds(16));
+	} else {
+		this->deltaTime = deltaTime;
+	}
+
+	elapsedTime += deltaTime;
 #endif
 }
 
 
 #undef GetCurrentTime
-GTSL::Microseconds Clock::GetCurrentMicroseconds() const
-{
-#ifdef BE_PLATFORM_WIN
+GTSL::Microseconds Clock::GetCurrentMicroseconds() const {
+#if BE_PLATFORM_WINDOWS
 	LARGE_INTEGER win_processor_ticks; QueryPerformanceCounter(&win_processor_ticks); return GTSL::Microseconds(win_processor_ticks.QuadPart * 1000000 / processorFrequency);
+#elif BE_PLATFORM_LINUX
+	timespec time; clock_gettime(CLOCK_MONOTONIC, &time); return GTSL::Microseconds(GTSL::Nanoseconds(time.tv_nsec));
 #endif
 }
 
@@ -64,16 +78,16 @@ GTSL::Microseconds Clock::GetCurrentMicroseconds() const
 
 uint16 Clock::GetYear()
 {
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return WinTimeStructure.wYear;
 #endif
 }
 
-Months Clock::GetMonth()
+Clock::Months Clock::GetMonth()
 {
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return static_cast<Months>(WinTimeStructure.wMonth);
@@ -82,25 +96,25 @@ Months Clock::GetMonth()
 
 uint8 Clock::GetDayOfMonth()
 {
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return WinTimeStructure.wDay;
 #endif
 }
 
-Days Clock::GetDayOfWeek()
+Clock::Days Clock::GetDayOfWeek()
 {
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return (WinTimeStructure.wDayOfWeek == 0) ? Days::Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
 #endif
 }
 
-Time Clock::GetTime()
+Clock::Time Clock::GetTime()
 {
-#ifdef BE_PLATFORM_WIN
+#if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };

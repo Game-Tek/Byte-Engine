@@ -86,7 +86,7 @@ namespace GAL
 			}
 		}
 
-		static void Wait(const VulkanRenderDevice* render_device, const GTSL::Range<const VulkanSynchronizer*> semaphores, const GTSL::Range<const uint64*> values) {
+		static void Wait(const VulkanRenderDevice* render_device, const GTSL::Range<const VulkanSynchronizer*> semaphores, const GTSL::Range<const uint64_t*> values) {
 			GTSL::StaticVector<VkSemaphore, 8> vk_semaphores;
 
 			for (auto& e : semaphores) {

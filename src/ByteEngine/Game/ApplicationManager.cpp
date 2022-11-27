@@ -99,7 +99,7 @@ void ApplicationManager::OnUpdate(BE::Application* application) {
 					uint32 l = 0;
 
 					{
-						GTSL::ReadLock lock{ liveInstancesMutex };
+						GTSL::ReadLock<GTSL::ReadWriteMutex> lock(liveInstancesMutex);
 						auto& e = liveInstances[taskInstance.InstanceHandle.InstanceIndex];
 						val = e.Counter;
 						l = e.SystemID;
@@ -244,7 +244,7 @@ void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {
 	uint16 i = 0;
 
 	if constexpr (BE_DEBUG) {
-		GTSL::ReadLock lock(stagesNamesMutex);
+		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 		
 		if(!stagesNames.Find(startOn).State()) {
 			BE_LOG_ERROR(u8"Tried to remove task ", GTSL::StringView(taskName), u8" from stage ", GTSL::StringView(startOn), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
@@ -255,7 +255,7 @@ void ApplicationManager::RemoveTask(const Id taskName, const Id startOn) {
 	}
 	
 	{
-		GTSL::ReadLock lock(stagesNamesMutex);
+		GTSL::ReadLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 		i = getStageIndex(startOn);
 	}
 
@@ -267,7 +267,7 @@ void ApplicationManager::AddStage(GTSL::StringView stageName)
 	auto hashedName = Id(stageName);
 
 	if constexpr (BE_DEBUG) {
-		GTSL::WriteLock lock(stagesNamesMutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 		if (stagesNames.Find(hashedName).State()) {
 			BE_LOG_ERROR(u8"Tried to add stage ", stageName, u8" which already exists. Resolve this issue as it leads to undefined behavior in release builds!")
 			return;
@@ -275,7 +275,7 @@ void ApplicationManager::AddStage(GTSL::StringView stageName)
 	}
 
 	{
-		GTSL::WriteLock lock(stagesNamesMutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 		stagesNames.EmplaceBack(hashedName);
 	}
 

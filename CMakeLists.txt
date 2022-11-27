@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 include(FetchContent)
 
+if(UNIX)
+	add_compile_options(-mavx2)
+endif()
+
 project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
 
 # assimp download
@@ -25,7 +29,7 @@ FetchContent_MakeAvailable(stb)
 # stb
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "43d42bce59edd0ffb6644971a00c5a567d481f3d")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "e0c36cf3bdbb888bdd1995103ada4c889da513f1")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 
@@ -100,12 +104,11 @@ endif()
 
 if (WIN32)
 	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_WINDOWS=1)
+	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_LINUX=0)
 
 	if(BE_CSHARP_SCRIPTING)
 		target_include_directories(ByteEngine PUBLIC "C:/Program Files/Mono/include/mono-2.0")
 		target_link_libraries(ByteEngine PRIVATE "C:/Program Files/Mono/lib/mono-2.0-sgen.lib")
-		# target_link_libraries(ByteEngine PRIVATE "C:/Program Files/Mono/bin/mono-2.0-sgen.dll")
-		# target_link_libraries(ByteEngine PRIVATE "C:/Program Files/Mono/lib/libmono-static-sgen.lib")
 	endif()
 
 	if (BE_GAPI STREQUAL "vulkan")
@@ -127,14 +130,37 @@ if (WIN32)
 	target_link_libraries(ByteEngine INTERFACE Hid.lib)
 	target_link_libraries(ByteEngine INTERFACE XInput.lib)
 	
-	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_WIN=1)
 	target_compile_definitions(ByteEngine PUBLIC NOMINMAX)
 	target_compile_definitions(ByteEngine PUBLIC VC_EXTRALEAN)
 	target_compile_definitions(ByteEngine PUBLIC WIN32_LEAN_AND_MEAN)
 endif()
 
 if (UNIX)
+	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_WINDOWS=0)
 	target_compile_definitions(ByteEngine PUBLIC BE_PLATFORM_LINUX=1)
+
+	if(BE_CSHARP_SCRIPTING)
+		target_include_directories(ByteEngine PUBLIC "/usr/include/mono-2.0")
+		target_link_libraries(ByteEngine PRIVATE "/bin/mono")
+	endif()
+
+	find_package(ALSA REQUIRED)
+	target_include_directories(ByteEngine PUBLIC ALSA::ALSA)
+	target_link_libraries(ByteEngine PUBLIC ALSA::ALSA)
+
+	if (BE_GAPI STREQUAL "vulkan")
+		find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
+
+		target_include_directories(ByteEngine PUBLIC Vulkan::Vulkan)
+		target_link_libraries(ByteEngine PUBLIC Vulkan::Vulkan)
+		target_link_libraries(ByteEngine PUBLIC Vulkan::shaderc_combined)
+
+		target_compile_definitions(ByteEngine PUBLIC BE_VULKAN=1)
+		target_compile_definitions(ByteEngine PUBLIC BE_DX12=0)
+	elseif(BE_GAPI STREQUAL "dx12")
+		target_compile_definitions(ByteEngine PUBLIC BE_VULKAN=0)
+		target_compile_definitions(ByteEngine PUBLIC BE_DX12=0)
+	endif()	
 endif()
 
 install(TARGETS ByteEngine DESTINATION lib)

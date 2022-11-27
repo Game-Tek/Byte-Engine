@@ -1,33 +1,33 @@
 #include "WorldRenderPipeline.hpp"
 
 WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_info) : RenderPipeline(initialize_info, u8"WorldRendererPipeline"), spherePositionsAndRadius(16, GetPersistentAllocator()), instances(16, GetPersistentAllocator()), resources(16, GetPersistentAllocator()), meshToInstanceMap(16, GetPersistentAllocator()), InstanceTypeIndentifier(GetApplicationManager()->RegisterType(this, u8"Instance")) {
-	auto* renderSystem = initialize_info.ApplicationManager->GetSystem<RenderSystem>(u8"RenderSystem");
-	auto* renderOrchestrator = initialize_info.ApplicationManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
+	auto* renderSystem = initialize_info.AppManager->GetSystem<RenderSystem>(u8"RenderSystem");
+	auto* renderOrchestrator = initialize_info.AppManager->GetSystem<RenderOrchestrator>(u8"RenderOrchestrator");
 
 	rayTracing = BE::Application::Get()->GetBoolOption(u8"rayTracing");
 
-	onStaticMeshInfoLoadHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ_WRITE), TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator", AccessTypes::READ_WRITE)), &WorldRendererPipeline::onStaticMeshInfoLoaded);
+	onStaticMeshInfoLoadHandle = initialize_info.AppManager->RegisterTask(this, u8"OnStaticMeshInfoLoad", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager", AccessTypes::READ_WRITE), TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator", AccessTypes::READ_WRITE)), &WorldRendererPipeline::onStaticMeshInfoLoaded);
 
-	onStaticMeshLoadHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnStaticMeshLoad", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<StaticMeshSystem>(u8"StaticMeshSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onStaticMeshLoaded);
+	onStaticMeshLoadHandle = initialize_info.AppManager->RegisterTask(this, u8"OnStaticMeshLoad", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem", AccessTypes::READ_WRITE), TypedDependency<StaticMeshSystem>(u8"StaticMeshSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onStaticMeshLoaded);
 
-	OnAddMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem")), &WorldRendererPipeline::OnAddMesh);
+	OnAddMeshTaskHandle = initialize_info.AppManager->RegisterTask(this, u8"OnAddMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem")), &WorldRendererPipeline::OnAddMesh);
 
-	OnAddRenderGroupMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnAddRenderGroupMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<StaticMeshSystem>(u8"StaticMeshSystem")), &WorldRendererPipeline::OnAddRenderGroupMesh);
+	OnAddRenderGroupMeshTaskHandle = initialize_info.AppManager->RegisterTask(this, u8"OnAddRenderGroupMesh", DependencyBlock(TypedDependency<StaticMeshResourceManager>(u8"StaticMeshResourceManager"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator"), TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<StaticMeshSystem>(u8"StaticMeshSystem")), &WorldRendererPipeline::OnAddRenderGroupMesh);
 
-	OnUpdateMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateMesh);
+	OnUpdateMeshTaskHandle = initialize_info.AppManager->RegisterTask(this, u8"OnUpdateMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateMesh);
 
-	OnUpdateRenderGroupMeshTaskHandle = initialize_info.ApplicationManager->RegisterTask(this, u8"OnUpdateRenderGroupMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateRenderGroupMesh);
+	OnUpdateRenderGroupMeshTaskHandle = initialize_info.AppManager->RegisterTask(this, u8"OnUpdateRenderGroupMesh", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::OnUpdateRenderGroupMesh);
 
 	GetApplicationManager()->SetTaskReceiveOnlyLast(OnUpdateRenderGroupMeshTaskHandle);
 
 	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshSystem::GetOnAddMeshEventHandle(), OnAddRenderGroupMeshTaskHandle);
 	GetApplicationManager()->SubscribeToEvent(u8"SMGR", StaticMeshSystem::GetOnUpdateMeshEventHandle(), OnUpdateRenderGroupMeshTaskHandle);
 
-	initialize_info.ApplicationManager->EnqueueScheduledTask(initialize_info.ApplicationManager->RegisterTask(this, u8"renderSetup", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::preRender, u8"RenderSetup", u8"Render"));
+	initialize_info.AppManager->EnqueueScheduledTask(initialize_info.AppManager->RegisterTask(this, u8"renderSetup", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::preRender, u8"RenderSetup", u8"Render"));
 
-	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"));
-	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"));
-	initialize_info.ApplicationManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnRemovePointLight"));
+	initialize_info.AppManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"));
+	initialize_info.AppManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3>(u8"OnUpdatePointLight"));
+	initialize_info.AppManager->AddEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnRemovePointLight"));
 
 	GetApplicationManager()->AddTypeSetupDependency(this, InstanceTypeIndentifier, OnAddMeshTaskHandle, true);
 	GetApplicationManager()->AddTypeSetupDependency(this, InstanceTypeIndentifier, OnUpdateMeshTaskHandle, false);
@@ -36,9 +36,9 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	GetApplicationManager()->AddTypeSetupDependency(this, GetApplicationManager()->GetSystem<StaticMeshSystem>(u8"StaticMeshSystem")->GetStaticMeshTypeIdentifier(), OnUpdateRenderGroupMeshTaskHandle, false);
 
 	auto addLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"addPointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), &WorldRendererPipeline::onAddLight);
-	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);
+	initialize_info.AppManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle>(u8"OnAddPointLight"), addLightTaskHandle);
 	auto updateLightTaskHandle = GetApplicationManager()->RegisterTask(this, u8"updatePointLight", DependencyBlock(TypedDependency<RenderSystem>(u8"RenderSystem"), TypedDependency<RenderOrchestrator>(u8"RenderOrchestrator")), & WorldRendererPipeline::updateLight);
-	initialize_info.ApplicationManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
+	initialize_info.AppManager->SubscribeToEvent(u8"WorldRendererPipeline", EventHandle<LightsRenderGroup::PointLightHandle, GTSL::Vector3, GTSL::RGB, float32, float32>(u8"OnUpdatePointLight"), updateLightTaskHandle);
 
 	sourceVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX, true, {});
 	destinationVertexBuffer = renderSystem->CreateBuffer(1024 * 1024 * 4, GAL::BufferUses::VERTEX | GAL::BufferUses::BUILD_INPUT_READ, false, {});
@@ -51,13 +51,13 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 	if (renderTechniqueName == GTSL::ShortString<16>(u8"Forward")) {
 		RenderOrchestrator::PassData geoRenderPass;
-		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		geoRenderPass.type = RenderOrchestrator::PassTypes::RASTER;
 		geoRenderPass.Attachments = RenderPassStructToAttachments(FORWARD_RENDERPASS_DATA);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Geometry Pass", u8"ForwardRenderPass", renderSystem, geoRenderPass);
 	}
 	else if (renderTechniqueName == GTSL::ShortString<16>(u8"Visibility")) {
 		RenderOrchestrator::PassData geoRenderPass;
-		geoRenderPass.PassType = RenderOrchestrator::PassType::RASTER;
+		geoRenderPass.type = RenderOrchestrator::PassTypes::RASTER;
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"),GTSL::StringView(u8"Visibility"), GAL::AccessTypes::WRITE);
 		geoRenderPass.Attachments.EmplaceBack(GTSL::StringView(u8"Depth"),GTSL::StringView(u8"Depth"), GAL::AccessTypes::WRITE);
 		renderPassNodeHandle = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Geometry Pass", u8"VisibilityRenderPass", renderSystem, geoRenderPass);
@@ -99,7 +99,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 
 		//Counts how many pixels each shader group uses
 		RenderOrchestrator::PassData countPixelsRenderPassData;
-		countPixelsRenderPassData.PassType = RenderOrchestrator::PassType::COMPUTE;
+		countPixelsRenderPassData.type = RenderOrchestrator::PassTypes::COMPUTE;
 		countPixelsRenderPassData.Attachments.EmplaceBack(GTSL::StringView(u8"Visibility"), GTSL::StringView(u8"Visibility"), GAL::AccessTypes::READ);
 		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"CountPixels", u8"CountPixels", renderSystem, countPixelsRenderPassData);
 
@@ -155,7 +155,7 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 	}
 
 	{
-		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"AO", u8"SSAO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"AO", u8"SSAO", renderSystem, { RenderPassStructToAttachments(AO_RENDERPASS_DATA), RenderOrchestrator::PassTypes::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
 	}
 
 	{
@@ -165,16 +165,16 @@ WorldRendererPipeline::WorldRendererPipeline(const InitializeInfo& initialize_in
 			RenderOrchestrator::PassData::AttachmentReference{ GTSL::StringView(u8"Variance"), GTSL::StringView(u8"Variance"), GAL::AccessTypes::WRITE }
 		};
 
-		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Calculate AO Variance", u8"CalculateVariance", renderSystem, { l, RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
+		renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Calculate AO Variance", u8"CalculateVariance", renderSystem, { l, RenderOrchestrator::PassTypes::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle } });
 	}
 
 	{
-		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Lighting", u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassType::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle }, { u8"Lighting Data", lightsDataKey } });
+		auto s = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"Lighting", u8"Lighting", renderSystem, { RenderPassStructToAttachments(LIGHTING_RENDERPASS_DATA), RenderOrchestrator::PassTypes::COMPUTE }, { { u8"Camera Data", renderOrchestrator->cameraDataKeyHandle }, { u8"Lighting Data", lightsDataKey } });
 	}
 
 	{
 		RenderOrchestrator::PassData gammaCorrectionPass;
-		gammaCorrectionPass.PassType = RenderOrchestrator::PassType::COMPUTE;
+		gammaCorrectionPass.type = RenderOrchestrator::PassTypes::COMPUTE;
 		gammaCorrectionPass.Attachments.EmplaceBack(GTSL::StringView(u8"Lighting"), GTSL::StringView(u8"Lighting"), GAL::AccessTypes::WRITE); //result attachment
 		auto gcrpnh = renderOrchestrator->AddRenderPassNode(renderOrchestrator->GetGlobalDataLayer(), u8"GammaCorrection", u8"GammaCorrection", renderSystem, gammaCorrectionPass);
 	}
@@ -196,7 +196,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 	for (uint32 i = 0; i < staticMeshInfo.GetSubMeshes().Length; ++i) {
 		auto& sm = staticMeshInfo.GetSubMeshes().array[i];
 		auto shaderGroupHandle = render_orchestrator->CreateShaderGroup(sm.ShaderGroupName);
-		resource.RenderModelHandle = shaderGroupHandle;
+		resource.renderModelHandle = shaderGroupHandle;
 
 		if (renderTechniqueName == u8"Forward") {
 			RenderOrchestrator::NodeHandle materialNodeHandle = render_orchestrator->AddMaterial(meshDataNode, shaderGroupHandle);
@@ -234,7 +234,7 @@ void WorldRendererPipeline::onStaticMeshInfoLoaded(TaskInfo taskInfo, StaticMesh
 		resource.ScalingFactor = staticMeshInfo.GetBoundingBox();
 	}
 
-	staticMeshResourceManager->LoadStaticMesh(taskInfo.ApplicationManager, staticMeshInfo, vertexComponentsPerStream, render_system->GetBufferRange(sourceVertexBuffer), indicesInBuffer, render_system->GetBufferRange(sourceIndexBuffer), onStaticMeshLoadHandle);
+	staticMeshResourceManager->LoadStaticMesh(taskInfo.AppManager, staticMeshInfo, vertexComponentsPerStream, render_system->GetBufferRange(sourceVertexBuffer), indicesInBuffer, render_system->GetBufferRange(sourceIndexBuffer), onStaticMeshLoadHandle);
 
 	vertexComponentsPerStream += staticMeshInfo.GetVertexCount();
 	indicesInBuffer += staticMeshInfo.GetIndexCount();
@@ -276,7 +276,7 @@ void WorldRendererPipeline::OnAddRenderGroupMesh(TaskInfo task_info, StaticMeshR
 	meshToInstanceMap.Emplace(static_mesh_handle, instanceHandle);
 
 	if (resource) { // If resource isn't already loaded 
-		static_mesh_resource_manager->LoadStaticMeshInfo(task_info.ApplicationManager, resourceName, onStaticMeshInfoLoadHandle);
+		static_mesh_resource_manager->LoadStaticMeshInfo(task_info.AppManager, resourceName, onStaticMeshInfoLoadHandle);
 	} else {
 		if (resource.Get().Loaded) {
 			AddMeshInstance(Id(resourceName), instanceHandle);

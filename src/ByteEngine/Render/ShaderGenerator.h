@@ -1168,6 +1168,7 @@ inline void AddVertexBlockDeclaration(GPipeline* pipeline, GPipeline::ElementHan
 // GPipeline: defines environment for shader to operate in. Defines how common data is accessed so that the shader generator knows how to
 // seamlessly translate Classes to TargetSemantics
 
+/* #include <spirv/1.2/spirv.hpp>
 #include <spirv-headers/spirv.hpp>
 
 inline void GenSPIRV() {
@@ -1233,7 +1234,7 @@ inline void GenSPIRV() {
 	//referenced by the entry point�s call tree.
 	//Interface <id> are forward references.Before version 1.4, duplication of these <id> is tolerated.Starting with version 1.4,
 	//an <id> must not appear more than once.
-	addInst(spv::OpEntryPoint, spv::ExecutionModelVertex, 0/*Result<id> of an OpFunction*/, 0/*literal name*/);
+	addInst(spv::OpEntryPoint, spv::ExecutionModelVertex, 0, 0);
 	//execution modes section
 
 	auto declStruct = [&](const GTSL::StringView name, const GTSL::Range<const StructElement*> params) {
@@ -1278,7 +1279,7 @@ inline void GenSPIRV() {
 		addInst(spv::OpReturn);
 		addInst(spv::OpFunctionEnd);
 	};
-}
+} */
 
 //GTSL::StaticVector<uint32, 16> stack, queue;
 //

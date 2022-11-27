@@ -13,7 +13,7 @@ namespace GAL {
 		struct WorkUnit final {
 			struct SynchronizerOperationInfo {
 				S* Synchronizer = nullptr;
-				PipelineStage PipelineStage;
+				PipelineStage stage;
 			};
 
 			GTSL::Range<SynchronizerOperationInfo*> Signal, Wait;

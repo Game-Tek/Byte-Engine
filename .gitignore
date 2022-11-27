@@ -16,3 +16,4 @@ build/
 *.sln.DotSettings.user
 *.log
 *.ifc
+*.cmake

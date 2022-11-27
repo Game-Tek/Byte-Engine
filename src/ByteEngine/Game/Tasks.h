@@ -21,9 +21,9 @@ namespace AccessTypes {
 }
 
 struct TaskInfo {
-	TaskInfo(ApplicationManager* application_manager) : ApplicationManager(application_manager) {}
+	TaskInfo(ApplicationManager* application_manager) : AppManager(application_manager) {}
 
-	class ApplicationManager* ApplicationManager = nullptr;
+	class ApplicationManager* AppManager = nullptr;
 	uint8 InvocationID = 0;
 };
 
@@ -53,7 +53,7 @@ struct TaskSorter {
 		uint32 res = 0;
 
 		{
-			GTSL::WriteLock lock(mutex);
+			GTSL::WriteLock<GTSL::ReadWriteMutex> lock(mutex);
 			
 			for (uint32 i = 0; i < elementCount; ++i) {
 				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ_WRITE) { return GTSL::Result<DispatchedTaskHandle>(false); }
@@ -76,7 +76,7 @@ struct TaskSorter {
 	}
 
 	void ReleaseResources(const DispatchedTaskHandle taskIndex) {
-		GTSL::WriteLock lock(mutex);
+		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(mutex);
 
 		const auto count = ongoingTasksAccesses[taskIndex()].GetLength();
 		auto& accesses = ongoingTasksAccesses[taskIndex()];
@@ -85,9 +85,6 @@ struct TaskSorter {
 			BE_ASSERT(currentObjectAccessCount[accesses[i].First] != 0, "Oops :/");
 			if (--currentObjectAccessCount[accesses[i].First] == 0) { //if object is no longer accessed
 				currentObjectAccessState[accesses[i].First] = AccessType();
-			} else {
-				uint32 no = 0;
-				printf(nullptr);
 			}
 		}
 		
@@ -96,7 +93,7 @@ struct TaskSorter {
 	}
 
 	void AddSystem(Id objectName) {
-		GTSL::WriteLock lock(mutex);
+		auto lock = GTSL::WriteLock<GTSL::ReadWriteMutex>(mutex);
 		currentObjectAccessState.Emplace(0);
 		currentObjectAccessCount.Emplace(0);
 	}

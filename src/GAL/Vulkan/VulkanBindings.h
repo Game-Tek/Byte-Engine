@@ -23,7 +23,7 @@ namespace GAL
 
 			for (GTSL::uint32 i = 0; i < static_cast<GTSL::uint32>(bindingsPoolSizes.ElementCount()); ++i) {
 				auto& descriptorPoolSize = vkDescriptorPoolSizes.EmplaceBack();
-				descriptorPoolSize.type = ToVulkan(bindingsPoolSizes[i].BindingType);
+				descriptorPoolSize.type = ToVulkan(bindingsPoolSizes[i].Type);
 				//Max number of descriptors of VkDescriptorPoolSize::type we can allocate.
 				descriptorPoolSize.descriptorCount = bindingsPoolSizes[&descriptorPoolSize - vkDescriptorPoolSizes.begin()].Count;
 			}
@@ -53,8 +53,8 @@ namespace GAL
 		struct TextureBindingUpdateInfo {
 			VulkanSampler Sampler;
 			VulkanTextureView TextureView;
-			TextureLayout TextureLayout;
-			FormatDescriptor FormatDescriptor;
+			TextureLayout Layout;
+			FormatDescriptor Format;
 		};
 
 		struct BufferBindingUpdateInfo {
@@ -68,13 +68,13 @@ namespace GAL
 
 		union BindingUpdateInfo
 		{
-			BindingUpdateInfo(TextureBindingUpdateInfo info) : TextureBindingUpdateInfo(info) {}
-			BindingUpdateInfo(BufferBindingUpdateInfo info) : BufferBindingUpdateInfo(info) {}
-			BindingUpdateInfo(AccelerationStructureBindingUpdateInfo info) : AccelerationStructureBindingUpdateInfo(info) {}
+			BindingUpdateInfo(TextureBindingUpdateInfo info) : TextureBinding(info) {}
+			BindingUpdateInfo(BufferBindingUpdateInfo info) : BufferBinding(info) {}
+			BindingUpdateInfo(AccelerationStructureBindingUpdateInfo info) : AccelerationStructure(info) {}
 
-			TextureBindingUpdateInfo TextureBindingUpdateInfo;
-			BufferBindingUpdateInfo BufferBindingUpdateInfo;
-			AccelerationStructureBindingUpdateInfo AccelerationStructureBindingUpdateInfo;
+			TextureBindingUpdateInfo TextureBinding;
+			BufferBindingUpdateInfo BufferBinding;
+			AccelerationStructureBindingUpdateInfo AccelerationStructure;
 		};
 
 		struct BindingsUpdateInfo
@@ -106,8 +106,8 @@ namespace GAL
 		};
 
 		struct BindingDescriptor {
-			BindingType BindingType;
-			ShaderStage ShaderStage;
+			BindingType Type;
+			ShaderStage Stage;
 			GTSL::uint32 BindingsCount;
 			BindingFlag Flags;
 			GTSL::Range<const VulkanSampler*> Samplers;
@@ -132,8 +132,8 @@ namespace GAL
 				auto& binding = vkDescriptorSetLayoutBindings.EmplaceBack();
 				binding.binding = i;
 				binding.descriptorCount = bindingsDescriptors[i].BindingsCount;
-				binding.descriptorType = ToVulkan(bindingsDescriptors[i].BindingType);
-				binding.stageFlags = ToVulkan(bindingsDescriptors[i].ShaderStage);
+				binding.descriptorType = ToVulkan(bindingsDescriptors[i].Type);
+				binding.stageFlags = ToVulkan(bindingsDescriptors[i].Stage);
 
 				if(bindingsDescriptors[i].Samplers.ElementCount()) {
 					for(auto& e : bindingsDescriptors[i].Samplers) {
@@ -226,9 +226,9 @@ namespace GAL
 
 				for (auto e : info.BindingUpdateInfos) {
 					auto& vkDescriptorImageInfo = imagesPerSubSetUpdate.back().EmplaceBack();
-					vkDescriptorImageInfo.sampler = e.TextureBindingUpdateInfo.Sampler.GetVkSampler();
-					vkDescriptorImageInfo.imageView = e.TextureBindingUpdateInfo.TextureView.GetVkImageView();
-					vkDescriptorImageInfo.imageLayout = ToVulkan(e.TextureBindingUpdateInfo.TextureLayout, e.TextureBindingUpdateInfo.FormatDescriptor);
+					vkDescriptorImageInfo.sampler = e.TextureBinding.Sampler.GetVkSampler();
+					vkDescriptorImageInfo.imageView = e.TextureBinding.TextureView.GetVkImageView();
+					vkDescriptorImageInfo.imageLayout = ToVulkan(e.TextureBinding.Layout, e.TextureBinding.Format);
 				}
 
 				writeSet.pImageInfo = imagesPerSubSetUpdate.back().begin();
@@ -245,9 +245,9 @@ namespace GAL
 
 				for (auto e : info.BindingUpdateInfos) {
 					auto& vkDescriptorBufferInfo = buffersPerSubSetUpdate.back().EmplaceBack();
-					vkDescriptorBufferInfo.buffer = e.BufferBindingUpdateInfo.Buffer.GetVkBuffer();
-					vkDescriptorBufferInfo.offset = e.BufferBindingUpdateInfo.Offset;
-					vkDescriptorBufferInfo.range = e.BufferBindingUpdateInfo.Range;
+					vkDescriptorBufferInfo.buffer = e.BufferBinding.Buffer.GetVkBuffer();
+					vkDescriptorBufferInfo.offset = e.BufferBinding.Offset;
+					vkDescriptorBufferInfo.range = e.BufferBinding.Range;
 				}
 
 				writeSet.pBufferInfo = buffersPerSubSetUpdate.back().begin();
@@ -265,7 +265,7 @@ namespace GAL
 				accelerationStructuresPerSubSetUpdate.EmplaceBack(8, allocator);
 
 				for (auto e : info.BindingUpdateInfos) {
-					auto& vkAcc = accPerSubSetUpdate.back().EmplaceBack(e.AccelerationStructureBindingUpdateInfo.AccelerationStructure);
+					auto& vkAcc = accPerSubSetUpdate.back().EmplaceBack(e.AccelerationStructure.AccelerationStructure);
 				}
 
 				vkwds.pAccelerationStructures = accelerationStructuresPerSubSetUpdate.back().GetData();

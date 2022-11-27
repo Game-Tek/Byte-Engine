@@ -204,17 +204,17 @@ public:
 		uint64 Size = 0;
 
 		union {
-			VertexShader VertexShader;
-			FragmentShader FragmentShader;
-			ComputeShader ComputeShader;
-			TaskShader TaskShader;
-			MeshShader MeshShader;
-			RayGenShader RayGenShader;
-			ClosestHitShader ClosestHitShader;
-			MissShader MissShader;
-			AnyHitShader AnyHitShader;
-			IntersectionShader IntersectionShader;
-			CallableShader CallableShader;
+			VertexShader vertexShader;
+			FragmentShader fragmentShader;
+			ComputeShader computeShader;
+			TaskShader taskShader;
+			MeshShader meshShader;
+			RayGenShader rayGenShader;
+			ClosestHitShader closestHitShader;
+			MissShader missShader;
+			AnyHitShader anyHitShader;
+			IntersectionShader intersectionShader;
+			CallableShader callableShader;
 		};
 
 		//ShaderInfo(const BE::PAR& allocator) : DebugData(allocator) {}
@@ -224,60 +224,58 @@ public:
 			Type = type;
 
 			switch (Type) {
-			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(); break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: break;
-			case GAL::ShaderType::COMPUTE: ::new(&ComputeShader) struct ComputeShader(); break;
-			case GAL::ShaderType::TASK: break;
-			case GAL::ShaderType::MESH: break;
-			case GAL::ShaderType::RAY_GEN: ::new(&RayGenShader) struct RayGenShader(); break;
-			case GAL::ShaderType::ANY_HIT: break;
-			case GAL::ShaderType::CLOSEST_HIT: break;
-			case GAL::ShaderType::MISS: break;
-			case GAL::ShaderType::INTERSECTION: break;
-			case GAL::ShaderType::CALLABLE: break;
-			default: __debugbreak();
+				case GAL::ShaderType::VERTEX: ::new(&vertexShader) VertexShader(); break;
+				case GAL::ShaderType::TESSELLATION_CONTROL: break;
+				case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+				case GAL::ShaderType::GEOMETRY: break;
+				case GAL::ShaderType::FRAGMENT: break;
+				case GAL::ShaderType::COMPUTE: ::new(&computeShader) ComputeShader(); break;
+				case GAL::ShaderType::TASK: break;
+				case GAL::ShaderType::MESH: break;
+				case GAL::ShaderType::RAY_GEN: ::new(&rayGenShader) RayGenShader(); break;
+				case GAL::ShaderType::ANY_HIT: break;
+				case GAL::ShaderType::CLOSEST_HIT: break;
+				case GAL::ShaderType::MISS: break;
+				case GAL::ShaderType::INTERSECTION: break;
+				case GAL::ShaderType::CALLABLE: break;
 			}
 		}
 
 		ShaderInfo(const ShaderInfo& shader_info) : Name(shader_info.Name), Type(shader_info.Type), Hash(shader_info.Hash), Parameters(shader_info.Parameters), Tags(shader_info.Tags), DebugData(shader_info.DebugData), Size(shader_info.Size) {
 			switch (Type) {
-			case GAL::ShaderType::VERTEX: ::new(&VertexShader) struct VertexShader(shader_info.VertexShader); break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: ::new(&FragmentShader) struct FragmentShader(shader_info.FragmentShader); break;
-			case GAL::ShaderType::COMPUTE: ::new(&ComputeShader) struct ComputeShader(shader_info.ComputeShader); break;
-			case GAL::ShaderType::TASK: break;
-			case GAL::ShaderType::MESH: break;
-			case GAL::ShaderType::RAY_GEN: ::new(&RayGenShader) struct RayGenShader(shader_info.RayGenShader); break;
-			case GAL::ShaderType::ANY_HIT: break;
-			case GAL::ShaderType::CLOSEST_HIT: break;
-			case GAL::ShaderType::MISS: break;
-			case GAL::ShaderType::INTERSECTION: break;
-			case GAL::ShaderType::CALLABLE: break;
+				case GAL::ShaderType::VERTEX: ::new(&vertexShader) VertexShader(shader_info.vertexShader); break;
+				case GAL::ShaderType::TESSELLATION_CONTROL: break;
+				case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+				case GAL::ShaderType::GEOMETRY: break;
+				case GAL::ShaderType::FRAGMENT: ::new(&fragmentShader) FragmentShader(shader_info.fragmentShader); break;
+				case GAL::ShaderType::COMPUTE: ::new(&computeShader) ComputeShader(shader_info.computeShader); break;
+				case GAL::ShaderType::TASK: break;
+				case GAL::ShaderType::MESH: break;
+				case GAL::ShaderType::RAY_GEN: ::new(&rayGenShader) RayGenShader(shader_info.rayGenShader); break;
+				case GAL::ShaderType::ANY_HIT: break;
+				case GAL::ShaderType::CLOSEST_HIT: break;
+				case GAL::ShaderType::MISS: break;
+				case GAL::ShaderType::INTERSECTION: break;
+				case GAL::ShaderType::CALLABLE: break;
 			}
 		}
 
 		~ShaderInfo() {
 			switch (Type) {
-			case GAL::ShaderType::VERTEX: GTSL::Destroy(VertexShader); break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: GTSL::Destroy(FragmentShader); break;
-			case GAL::ShaderType::COMPUTE: GTSL::Destroy(ComputeShader); break;
-			case GAL::ShaderType::TASK: GTSL::Destroy(TaskShader); break;
-			case GAL::ShaderType::MESH: GTSL::Destroy(MeshShader); break;
-			case GAL::ShaderType::RAY_GEN: GTSL::Destroy(RayGenShader); break;
-			case GAL::ShaderType::ANY_HIT: GTSL::Destroy(AnyHitShader); break;
-			case GAL::ShaderType::CLOSEST_HIT: GTSL::Destroy(ClosestHitShader); break;
-			case GAL::ShaderType::MISS: GTSL::Destroy(MissShader); break;
-			case GAL::ShaderType::INTERSECTION: GTSL::Destroy(IntersectionShader); break;
-			case GAL::ShaderType::CALLABLE: GTSL::Destroy(CallableShader); break;
-			default:;
+				case GAL::ShaderType::VERTEX: GTSL::Destroy(vertexShader); break;
+				case GAL::ShaderType::TESSELLATION_CONTROL: break;
+				case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+				case GAL::ShaderType::GEOMETRY: break;
+				case GAL::ShaderType::FRAGMENT: GTSL::Destroy(fragmentShader); break;
+				case GAL::ShaderType::COMPUTE: GTSL::Destroy(computeShader); break;
+				case GAL::ShaderType::TASK: GTSL::Destroy(taskShader); break;
+				case GAL::ShaderType::MESH: GTSL::Destroy(meshShader); break;
+				case GAL::ShaderType::RAY_GEN: GTSL::Destroy(rayGenShader); break;
+				case GAL::ShaderType::ANY_HIT: GTSL::Destroy(anyHitShader); break;
+				case GAL::ShaderType::CLOSEST_HIT: GTSL::Destroy(closestHitShader); break;
+				case GAL::ShaderType::MISS: GTSL::Destroy(missShader); break;
+				case GAL::ShaderType::INTERSECTION: GTSL::Destroy(intersectionShader); break;
+				case GAL::ShaderType::CALLABLE: GTSL::Destroy(callableShader); break;
 			}
 		}
 
@@ -291,20 +289,20 @@ public:
 			DebugData = other.DebugData;
 
 			switch (Type) {
-			case GAL::ShaderType::VERTEX: VertexShader = other.VertexShader; break;
-			case GAL::ShaderType::TESSELLATION_CONTROL: break;
-			case GAL::ShaderType::TESSELLATION_EVALUATION: break;
-			case GAL::ShaderType::GEOMETRY: break;
-			case GAL::ShaderType::FRAGMENT: FragmentShader = other.FragmentShader; break;
-			case GAL::ShaderType::COMPUTE: ComputeShader = other.ComputeShader; break;
-			case GAL::ShaderType::TASK: break;
-			case GAL::ShaderType::MESH: break;
-			case GAL::ShaderType::RAY_GEN: RayGenShader = other.RayGenShader; break;
-			case GAL::ShaderType::ANY_HIT: break;
-			case GAL::ShaderType::CLOSEST_HIT: break;
-			case GAL::ShaderType::MISS: break;
-			case GAL::ShaderType::INTERSECTION: break;
-			case GAL::ShaderType::CALLABLE: break;
+				case GAL::ShaderType::VERTEX: vertexShader = other.vertexShader; break;
+				case GAL::ShaderType::TESSELLATION_CONTROL: break;
+				case GAL::ShaderType::TESSELLATION_EVALUATION: break;
+				case GAL::ShaderType::GEOMETRY: break;
+				case GAL::ShaderType::FRAGMENT: fragmentShader = other.fragmentShader; break;
+				case GAL::ShaderType::COMPUTE: computeShader = other.computeShader; break;
+				case GAL::ShaderType::TASK: break;
+				case GAL::ShaderType::MESH: break;
+				case GAL::ShaderType::RAY_GEN: rayGenShader = other.rayGenShader; break;
+				case GAL::ShaderType::ANY_HIT: break;
+				case GAL::ShaderType::CLOSEST_HIT: break;
+				case GAL::ShaderType::MISS: break;
+				case GAL::ShaderType::INTERSECTION: break;
+				case GAL::ShaderType::CALLABLE: break;
 			}
 
 			return *this;
@@ -320,9 +318,9 @@ public:
 			Insert(shader.DebugData, buffer);
 
 			switch (shader.Type) {
-			case GAL::ShaderType::VERTEX: Insert(shader.VertexShader, buffer); break;
-			case GAL::ShaderType::FRAGMENT: Insert(shader.FragmentShader, buffer); break;
-			case GAL::ShaderType::COMPUTE: Insert(shader.ComputeShader, buffer); break;
+			case GAL::ShaderType::VERTEX: Insert(shader.vertexShader, buffer); break;
+			case GAL::ShaderType::FRAGMENT: Insert(shader.fragmentShader, buffer); break;
+			case GAL::ShaderType::COMPUTE: Insert(shader.computeShader, buffer); break;
 			}
 		}
 
@@ -336,9 +334,9 @@ public:
 			Extract(shader.DebugData, buffer);
 
 			switch (shader.Type) {
-			case GAL::ShaderType::VERTEX: Extract(shader.VertexShader, buffer); break;
-			case GAL::ShaderType::FRAGMENT: Extract(shader.FragmentShader, buffer); break;
-			case GAL::ShaderType::COMPUTE: Extract(shader.ComputeShader, buffer); break;
+			case GAL::ShaderType::VERTEX: Extract(shader.vertexShader, buffer); break;
+			case GAL::ShaderType::FRAGMENT: Extract(shader.fragmentShader, buffer); break;
+			case GAL::ShaderType::COMPUTE: Extract(shader.computeShader, buffer); break;
 			}
 		}
 	};
@@ -528,7 +526,7 @@ private:
 			}
 		}
 
-		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(shaderGroupInfo), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.AppManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(shaderGroupInfo), GTSL::ForwardRef<ARGS>(args)...);
 	};
 
 	template<typename... ARGS>
@@ -541,7 +539,7 @@ private:
 			offset += s.Size;
 		}
 
-		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.AppManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(shader_group_info), GTSL::MoveRef(buffer), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	using Result = GTSL::StaticVector<PermutationManager::ShaderPermutation, 8>;
@@ -625,22 +623,22 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 		GTSL::StaticString<128> Name;
 		uint64 FileHash = 0;
 		uint64 Pointer = 0ull;
-		State State;
+		State state;
 	};
 
 	GTSL::HashMap<uint64, Graph<IFile>, BE::TAR> dependencyTree(128, GetTransientAllocator());
 
 	for(auto& e : fileTree) { // Add files from the cache to the map
-		dependencyTree.Emplace(e.GetData().FileNameHash, IFile{ GTSL::StringView(e.GetData().Name), e.GetData().FileHash, e.GetData().Pointer, e.GetData().State });
+		dependencyTree.Emplace(e.GetData().FileNameHash, IFile{ GTSL::StringView(e.GetData().Name), e.GetData().FileHash, e.GetData().Pointer, e.GetData().state });
 	}
 
 	// Add new files to the map and update properties for files added from the cache.
 	for (auto& e : changedFiles) {
-		switch (e.State) {
-		case State::ADDED: BE_LOG_MESSAGE(u8"Created ", e.Name); dependencyTree.Emplace(GTSL::Hash(e.Name), IFile{ GTSL::StaticString<128>(e.Name), e.FileHash, 0ull, e.State }); break;
+		switch (e.state) {
+		case State::ADDED: BE_LOG_MESSAGE(u8"Created ", e.Name); dependencyTree.Emplace(GTSL::Hash(e.Name), IFile{ GTSL::StaticString<128>(e.Name), e.FileHash, 0ull, e.state }); break;
 		case State::MODIFIED: BE_LOG_MESSAGE(u8"Modified ", e.Name);
 			dependencyTree[GTSL::Hash(e.Name)].GetData().FileHash = e.FileHash;
-			dependencyTree[GTSL::Hash(e.Name)].GetData().State = e.State;
+			dependencyTree[GTSL::Hash(e.Name)].GetData().state = e.state;
 			break;
 		case State::DELETED: BE_LOG_MESSAGE(u8"Deleted ", e.Name); break;
 		}
@@ -870,12 +868,12 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 
 	if(changedFiles) { // If there are any changed files, load all info
 		for(auto& e : fileTree) { // Visit file tree to build all state
-			populateTree(dependencyTree[GTSL::Hash(e.GetData().Name)], e.GetData().State);
+			populateTree(dependencyTree[GTSL::Hash(e.GetData().Name)], e.GetData().state);
 		}
 
 		for(auto& e : changedFiles) { // Visit new files and add them to the tree
-			if(fileTree.Find(GTSL::Hash(e.Name)) and e.State != State::DELETED) { continue; }
-			populateTree(dependencyTree[GTSL::Hash(e.Name)], e.State);
+			if(fileTree.Find(GTSL::Hash(e.Name)) and e.state != State::DELETED) { continue; }
+			populateTree(dependencyTree[GTSL::Hash(e.Name)], e.state);
 		}
 	}
 
@@ -905,7 +903,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	// Visit the tree once more now compiling everything based on the data that was generated earlier
 
 	for(auto& node : dependencyTree) {
-		processTree(node, node, u8"xxxxxxxxxxx", node.GetData().State, processTree);
+		processTree(node, node, u8"xxxxxxxxxxx", node.GetData().state, processTree);
 	}
 
 	auto printDependencyTree = [&](uint64 parent_file_name_hash, const Graph<IFile>& node, auto&& self) -> void {
@@ -925,7 +923,7 @@ inline ShaderResourceManager::ShaderResourceManager(const InitializeInfo& initia
 	}
 
 	for (auto& e : changedFiles) {
-		if(e.State != State::DELETED) { continue; }
+		if(e.state != State::DELETED) { continue; }
 		// TODO: delete
 	}
 

@@ -1,11 +1,12 @@
 #include "PoolAllocator.h"
 
+#include <new>
+
 #include <GTSL/Bitman.h>
 #include <GTSL/Math/Math.hpp>
-#include <new>
 #include <GTSL/Memory.h>
-
 #include <GTSL/BitTracker.h>
+#include <GTSL/Assert.h>
 
 #include "ByteEngine/Debug/Assert.h"
 
@@ -101,7 +102,7 @@ void PoolAllocator::Pool::Allocate(const uint64 size, const uint64 alignment, vo
 			if (slot_address[i] != 0xCA) { isCorrect = false; break; }
 		}
 
-		BE_ASSERT(isCorrect);
+		BE_ASSERT(isCorrect, u8"Memory was written to after deallocation.");
 	}
 
 #if BE_DEBUG

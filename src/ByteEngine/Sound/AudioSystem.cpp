@@ -9,7 +9,7 @@
 #include "ByteEngine/Game/ApplicationManager.h"
 #include "ByteEngine/Resources/AudioResourceManager.h"
 
-AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"AudioSystem"), sourceAudioDatas(16, GetPersistentAllocator()), audioBuffer(4 * 2 * 48000, 16, GetPersistentAllocator())
+AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initializeInfo, u8"AudioSystem"), sourceAudioDatas(16, GetPersistentAllocator()), audioBuffer(4u * 2u * 48000u, 16u, GetPersistentAllocator())
 {
 	AudioDevice::CreateInfo createInfo;
 

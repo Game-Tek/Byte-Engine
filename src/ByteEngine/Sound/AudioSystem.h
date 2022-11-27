@@ -3,7 +3,12 @@
 #include "ByteEngine/Handle.hpp"
 
 #include "ByteEngine/Game/System.hpp"
-#include <AAL/Platform/Windows/WindowsAudioDevice.h>
+
+#include "AAL/AudioDevice.h"
+#if BE_PLATFORM_WINDOWS
+#include "AAL/Platform/Windows/WindowsAudioDevice.h"
+#endif
+
 #include <GTSL/Vector.hpp>
 #include <GTSL/Buffer.hpp>
 #include <GTSL/Math/Quaternion.h>
@@ -46,7 +51,11 @@ public:
 	MAKE_HANDLE(uint8, SoundSource);
 
 private:
+	using AudioDevice = AAL::AudioDevice;
+#if BE_PLATFORM_WINDOWS
 	using AudioDevice = AAL::WindowsAudioDevice;
+#elif BE_PLATFORM_LINUX
+#endif
 	
 	AudioDevice audioDevice;
 	AudioDevice::MixFormat mixFormat;

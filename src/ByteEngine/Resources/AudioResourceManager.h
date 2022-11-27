@@ -73,7 +73,7 @@ private:
 
 		AudioInfo audioInfo(audioName, audioInfoSerialize);
 
-		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.AppManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	template<typename... ARGS>
@@ -83,7 +83,7 @@ private:
 		packageFiles[getThread()].SetPointer(audioInfo.ByteOffset);
 		packageFiles[getThread()].Read(bytes, buffer.begin());
 		
-		taskInfo.ApplicationManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::Range(bytes, buffer.begin()), GTSL::ForwardRef<ARGS>(args)...);
+		taskInfo.AppManager->EnqueueTask(dynamicTaskHandle, GTSL::MoveRef(audioInfo), GTSL::Range(bytes, buffer.begin()), GTSL::ForwardRef<ARGS>(args)...);
 	}
 
 	GTSL::File indexFile;

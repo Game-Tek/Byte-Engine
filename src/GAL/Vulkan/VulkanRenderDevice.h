@@ -5,28 +5,26 @@
 #include "Vulkan.h"
 
 #include <GTSL/Pair.hpp>
-
-#include "GTSL/Buffer.hpp"
-#include "GTSL/Allocator.h"
-#include "GTSL/DataSizes.h"
-#include "GTSL/DLL.h"
-#include "GTSL/HashMap.hpp"
-#include "GTSL/Vector.hpp"
-#include <GTSL/Id.h>
+#include <GTSL/Buffer.hpp>
+#include <GTSL/Allocator.hpp>
+#include <GTSL/DataSizes.h>
+#include <GTSL/DLL.h>
 #include <GTSL/HashMap.hpp>
+#include <GTSL/Vector.hpp>
+#include <GTSL/Id.h>
+
+#undef ERROR
 
 namespace GAL
 {
 	class VulkanRenderDevice;
-#undef ERROR
 
 	template<typename T>
 	void setName(const VulkanRenderDevice* renderDevice, T handle, const VkObjectType objectType, const GTSL::Range<const char8_t*> text);
 
 	class VulkanRenderDevice final : public RenderDevice {
 	public:
-		struct RayTracingCapabilities
-		{
+		struct RayTracingCapabilities {
 			GTSL::uint32 RecursionDepth = 0, ShaderGroupHandleAlignment = 0, ShaderGroupBaseAlignment = 0, ShaderGroupHandleSize = 0, ScratchBuildOffsetAlignment = 0;
 			Device BuildDevice;
 		};
@@ -44,12 +42,12 @@ namespace GAL
 			vulkanDLL.LoadDynamicFunction(u8"vkGetInstanceProcAddr", &VkGetInstanceProcAddr);
 			if (!VkGetInstanceProcAddr) { return InitRes(GTSL::Range(u8"vkGetInstanceProcAddr function could not be loaded."), false); }
 			
-			auto vkAllocate = [](void* data, GTSL::uint64 size, GTSL::uint64 alignment, VkSystemAllocationScope) {
+			auto vkAllocate = [](void* data, size_t size, size_t alignment, VkSystemAllocationScope) -> void* {
 				auto* allocation_info = static_cast<AllocationInfo*>(data);
 				return allocation_info->Allocate(allocation_info->UserData, size, alignment);
 			};
 
-			auto vkReallocate = [](void* data, void* originalAlloc, const GTSL::uint64 size, const GTSL::uint64 alignment, VkSystemAllocationScope) -> void* {
+			auto vkReallocate = [](void* data, void* originalAlloc, size_t size, size_t alignment, VkSystemAllocationScope) -> void* {
 				auto* allocation_info = static_cast<AllocationInfo*>(data);
 
 				if (originalAlloc && size) {
@@ -72,10 +70,12 @@ namespace GAL
 			};
 			
 			allocationCallbacks.pUserData = &allocationInfo;
-			allocationCallbacks.pfnAllocation = vkAllocate; allocationCallbacks.pfnReallocation = vkReallocate; allocationCallbacks.pfnFree = vkFree;
+			allocationCallbacks.pfnAllocation = vkAllocate;
+			allocationCallbacks.pfnReallocation = vkReallocate;
+			allocationCallbacks.pfnFree = vkFree;
 			allocationCallbacks.pfnInternalAllocation = nullptr; allocationCallbacks.pfnInternalFree = nullptr;
 
-			allocationInfo = createInfo.AllocationInfo; debug = createInfo.Debug;
+			allocationInfo = createInfo.allocation; debug = createInfo.Debug;
 
 			{
 				GTSL::HashMap<GTSL::StringView, uint32, ALLOC> availableInstanceExtensions(32, alloc);
@@ -136,9 +136,21 @@ namespace GAL
 						if(!tryAddExtension(u8"VK_KHR_surface")) {
 							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_surface\" is not available."), false);
 						}
-#if (_WIN32)
+#if BE_PLATFORM_WINDOWS
 						if(!tryAddExtension(u8"VK_KHR_win32_surface")) {
 							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_win32_surface\" is not available."), false);
+						}
+#elif BE_PLATFORM_LINUX
+						if(!tryAddExtension(u8"VK_KHR_xcb_surface")) {
+							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_xcb_surface\" is not available."), false);
+						}
+
+						if(!tryAddExtension(u8"VK_KHR_xlib_surface")) {
+							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_xlib_surface\" is not available."), false);
+						}
+
+						if(!tryAddExtension(u8"VK_KHR_wayland_surface")) {
+							return InitRes(GTSL::Range(u8"Required instance extension: \nVK_KHR_wayland_surface\" is not available."), false);
 						}
 #endif
 						break;
@@ -147,7 +159,7 @@ namespace GAL
 					}
 				}
 
-#if (_DEBUG)
+#if BE_DEBUG
 				GTSL::StaticVector<VkValidationFeatureEnableEXT, 8> enables;
 				if (createInfo.SynchronizationValidation) { enables.EmplaceBack(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT); }
 				if (createInfo.PerformanceValidation) { enables.EmplaceBack(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT); }
@@ -177,7 +189,7 @@ namespace GAL
 					return InitRes(GTSL::Range(u8"Failed to create instance."), false);
 				}
 				
-#if (_DEBUG)
+#if BE_DEBUG
 				if (debug) {
 					getInstanceProcAddr<PFN_vkCreateDebugUtilsMessengerEXT>(u8"vkCreateDebugUtilsMessengerEXT")(instance, &vkDebugUtilsMessengerCreateInfoExt, GetVkAllocationCallbacks(), &debugMessenger);
 				}
@@ -296,13 +308,15 @@ namespace GAL
 					GTSL::Buffer buffer(8192, 8, alloc);
 
 					auto placePropertiesStructure = [&]<typename T>(T** structure, VkStructureType structureType) {
-						auto* newStructure = buffer.AllocateStructure<T>(); *lastProperty = static_cast<void*>(newStructure);
+						auto* newStructure = buffer.template AllocateStructure<T>();
+						*lastProperty = static_cast<void*>(newStructure);
 						*structure = newStructure; newStructure->sType = structureType;
 						lastProperty = &newStructure->pNext;
 					};
 
 					auto placeFeaturesStructure = [&]<typename T>(T** structure, VkStructureType structureType) {
-						auto* newStructure = buffer.AllocateStructure<T>(); *lastFeature = static_cast<void*>(newStructure);
+						auto* newStructure = buffer.template AllocateStructure<T>();
+						*lastFeature = static_cast<void*>(newStructure);
 						*structure = newStructure; newStructure->sType = structureType;
 						lastFeature = &newStructure->pNext;
 					};
@@ -489,8 +503,11 @@ namespace GAL
 			getInstanceProcAddr(u8"vkGetSwapchainImagesKHR", &VkGetSwapchainImages);
 			getInstanceProcAddr(u8"vkAcquireNextImageKHR", &VkAcquireNextImage);
 			getInstanceProcAddr(u8"vkDestroySwapchainKHR", &VkDestroySwapchain);
-#if (_WIN64)
+#if BE_PLATFORM_WINDOWS
 			getInstanceProcAddr(u8"vkCreateWin32SurfaceKHR", &VkCreateWin32Surface);
+#elif BE_PLATFORM_LINUX
+			getInstanceProcAddr(u8"vkCreateXcbSurfaceKHR", &VkCreateXcbSurface);
+			getInstanceProcAddr(u8"vkCreateWaylandSurfaceKHR", &VkCreateWaylandSurface);
 #endif
 			getInstanceProcAddr(u8"vkDestroySurfaceKHR", &VkDestroySurface);
 			getInstanceProcAddr(u8"vkGetPhysicalDeviceSurfaceCapabilitiesKHR", &VkGetPhysicalDeviceSurfaceCapabilities);
@@ -595,30 +612,29 @@ namespace GAL
 
 			for (auto e : createInfo.Extensions) {
 				switch (e.First) {
-				case Extension::RAY_TRACING: {
-					getDeviceProcAddr(u8"vkCreateAccelerationStructureKHR", &vkCreateAccelerationStructureKHR);
-					getDeviceProcAddr(u8"vkDestroyAccelerationStructureKHR", &vkDestroyAccelerationStructureKHR);
-					getDeviceProcAddr(u8"vkCreateRayTracingPipelinesKHR", &vkCreateRayTracingPipelinesKHR);
-					getDeviceProcAddr(u8"vkGetAccelerationStructureBuildSizesKHR", &vkGetAccelerationStructureBuildSizesKHR);
-					getDeviceProcAddr(u8"vkGetRayTracingShaderGroupHandlesKHR", &vkGetRayTracingShaderGroupHandlesKHR);
-					getDeviceProcAddr(u8"vkBuildAccelerationStructuresKHR", &vkBuildAccelerationStructuresKHR);
-					getDeviceProcAddr(u8"vkCmdBuildAccelerationStructuresKHR", &vkCmdBuildAccelerationStructuresKHR);
-					getDeviceProcAddr(u8"vkGetAccelerationStructureDeviceAddressKHR", &vkGetAccelerationStructureDeviceAddressKHR);
-					getDeviceProcAddr(u8"vkCreateDeferredOperationKHR", &vkCreateDeferredOperationKHR);
-					getDeviceProcAddr(u8"vkDeferredOperationJoinKHR", &vkDeferredOperationJoinKHR);
-					getDeviceProcAddr(u8"vkGetDeferredOperationResultKHR", &vkGetDeferredOperationResultKHR);
-					getDeviceProcAddr(u8"vkGetDeferredOperationMaxConcurrencyKHR", &vkGetDeferredOperationMaxConcurrencyKHR);
-					getDeviceProcAddr(u8"vkDestroyDeferredOperationKHR", &vkDestroyDeferredOperationKHR);
-					getDeviceProcAddr(u8"vkCmdCopyAccelerationStructureKHR", &vkCmdCopyAccelerationStructureKHR);
-					getDeviceProcAddr(u8"vkCmdCopyAccelerationStructureToMemoryKHR", &vkCmdCopyAccelerationStructureToMemoryKHR);
-					getDeviceProcAddr(u8"vkCmdCopyMemoryToAccelerationStructureKHR", &vkCmdCopyMemoryToAccelerationStructureKHR);
-					getDeviceProcAddr(u8"vkCmdWriteAccelerationStructuresPropertiesKHR", &vkCmdWriteAccelerationStructuresPropertiesKHR);
-					getDeviceProcAddr(u8"vkCmdTraceRaysKHR", &vkCmdTraceRaysKHR);
-					getDeviceProcAddr(u8"vkCmdSetRayTracingPipelineStackSizeKHR", &vkCmdSetRayTracingPipelineStackSizeKHR);
-					getDeviceProcAddr(u8"vkGetRayTracingShaderGroupStackSizeKHR", &vkGetRayTracingShaderGroupStackSizeKHR);
-					break;
-				}
-				default:;
+					case Extension::RAY_TRACING: {
+						getDeviceProcAddr(u8"vkCreateAccelerationStructureKHR", &vkCreateAccelerationStructureKHR);
+						getDeviceProcAddr(u8"vkDestroyAccelerationStructureKHR", &vkDestroyAccelerationStructureKHR);
+						getDeviceProcAddr(u8"vkCreateRayTracingPipelinesKHR", &vkCreateRayTracingPipelinesKHR);
+						getDeviceProcAddr(u8"vkGetAccelerationStructureBuildSizesKHR", &vkGetAccelerationStructureBuildSizesKHR);
+						getDeviceProcAddr(u8"vkGetRayTracingShaderGroupHandlesKHR", &vkGetRayTracingShaderGroupHandlesKHR);
+						getDeviceProcAddr(u8"vkBuildAccelerationStructuresKHR", &vkBuildAccelerationStructuresKHR);
+						getDeviceProcAddr(u8"vkCmdBuildAccelerationStructuresKHR", &vkCmdBuildAccelerationStructuresKHR);
+						getDeviceProcAddr(u8"vkGetAccelerationStructureDeviceAddressKHR", &vkGetAccelerationStructureDeviceAddressKHR);
+						getDeviceProcAddr(u8"vkCreateDeferredOperationKHR", &vkCreateDeferredOperationKHR);
+						getDeviceProcAddr(u8"vkDeferredOperationJoinKHR", &vkDeferredOperationJoinKHR);
+						getDeviceProcAddr(u8"vkGetDeferredOperationResultKHR", &vkGetDeferredOperationResultKHR);
+						getDeviceProcAddr(u8"vkGetDeferredOperationMaxConcurrencyKHR", &vkGetDeferredOperationMaxConcurrencyKHR);
+						getDeviceProcAddr(u8"vkDestroyDeferredOperationKHR", &vkDestroyDeferredOperationKHR);
+						getDeviceProcAddr(u8"vkCmdCopyAccelerationStructureKHR", &vkCmdCopyAccelerationStructureKHR);
+						getDeviceProcAddr(u8"vkCmdCopyAccelerationStructureToMemoryKHR", &vkCmdCopyAccelerationStructureToMemoryKHR);
+						getDeviceProcAddr(u8"vkCmdCopyMemoryToAccelerationStructureKHR", &vkCmdCopyMemoryToAccelerationStructureKHR);
+						getDeviceProcAddr(u8"vkCmdWriteAccelerationStructuresPropertiesKHR", &vkCmdWriteAccelerationStructuresPropertiesKHR);
+						getDeviceProcAddr(u8"vkCmdTraceRaysKHR", &vkCmdTraceRaysKHR);
+						getDeviceProcAddr(u8"vkCmdSetRayTracingPipelineStackSizeKHR", &vkCmdSetRayTracingPipelineStackSizeKHR);
+						getDeviceProcAddr(u8"vkGetRayTracingShaderGroupStackSizeKHR", &vkGetRayTracingShaderGroupStackSizeKHR);
+						break;
+					}
 				}
 			}
 
@@ -659,7 +675,7 @@ namespace GAL
 			Wait();
 			getDeviceProcAddr<PFN_vkDestroyDevice>(u8"vkDestroyDevice")(device, GetVkAllocationCallbacks());
 
-#if (_DEBUG)
+#if BE_DEBUG
 			if (debug) {
 				getInstanceProcAddr<PFN_vkDestroyDebugUtilsMessengerEXT>(u8"vkDestroyDebugUtilsMessengerEXT")(instance, debugMessenger, GetVkAllocationCallbacks());
 			}
@@ -698,11 +714,10 @@ namespace GAL
 			return 0xFFFFFFFF;
 		}
 
-		struct FindSupportedImageFormat
-		{
+		struct FindSupportedImageFormat {
 			GTSL::Range<FormatDescriptor*> Candidates;
 			TextureUse TextureUses;
-			FormatDescriptor FormatDescriptor;
+			FormatDescriptor Format;
 			Tiling TextureTiling;
 		};
 		[[nodiscard]] FormatDescriptor FindNearestSupportedImageFormat(const FindSupportedImageFormat& findSupportedImageFormat) const {
@@ -715,7 +730,7 @@ namespace GAL
 			TranslateMask(TextureUses::SAMPLE, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, findSupportedImageFormat.TextureUses, features);
 			TranslateMask(TextureUses::STORAGE, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT, findSupportedImageFormat.TextureUses, features);
 			if(findSupportedImageFormat.TextureUses & TextureUses::ATTACHMENT) {
-				switch (findSupportedImageFormat.FormatDescriptor.Type) {
+				switch (findSupportedImageFormat.Format.Type) {
 				case TextureType::COLOR: features |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT; break;
 				case TextureType::DEPTH: features |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT; break;
 				}
@@ -733,7 +748,7 @@ namespace GAL
 					if (format_properties.optimalTilingFeatures & features) { return e; }
 					break;
 				}
-				default: __debugbreak();
+				default: GAL_DEBUG_BREAK;
 				}
 			}
 
@@ -810,7 +825,7 @@ namespace GAL
 				break;
 			}
 			case VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT: break;
-			default: __debugbreak(); break;
+			default: GAL_DEBUG_BREAK; break;
 			}
 
 			return VK_FALSE;
@@ -901,13 +916,16 @@ namespace GAL
 
 		PFN_vkCmdExecuteCommands VkCmdExecuteCommands;
 
-		//PFN_vkGetDeviceBuffer
 		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceBufferMemoryRequirements;
 		//PFN_vkGetDeviceBufferMemoryRequirementsKHR VkGetDeviceImageMemoryRequirements;
 
-#if (_WIN64)
+#if BE_PLATFORM_WINDOWS
 		PFN_vkCreateWin32SurfaceKHR VkCreateWin32Surface;
+#elif BE_PLATFORM_LINUX
+		PFN_vkCreateXcbSurfaceKHR VkCreateXcbSurface;
+		PFN_vkCreateWaylandSurfaceKHR VkCreateWaylandSurface;
 #endif
+
 		PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR VkGetPhysicalDeviceSurfaceCapabilities;
 		PFN_vkGetPhysicalDeviceSurfaceFormatsKHR VkGetPhysicalDeviceSurfaceFormats;
 		PFN_vkGetPhysicalDeviceSurfacePresentModesKHR VkGetPhysicalDeviceSurfacePresentModes;
@@ -943,7 +961,7 @@ namespace GAL
 
 		PFN_vkCmdDrawMeshTasksNV VkCmdDrawMeshTasks;
 		
-#if (_DEBUG)
+#if BE_DEBUG
 		PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectNameEXT = nullptr;
 		PFN_vkCmdInsertDebugUtilsLabelEXT vkCmdInsertDebugUtilsLabelEXT = nullptr;
 		PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabelEXT = nullptr;
@@ -951,7 +969,7 @@ namespace GAL
 #endif
 
 	private:
-#if (_DEBUG)
+#if BE_DEBUG
 		VkDebugUtilsMessengerEXT debugMessenger = nullptr;
 #endif
 		bool debug = false;

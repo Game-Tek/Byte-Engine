@@ -41,7 +41,7 @@ public:
 		
 		free_slots_type* freeSlotsBitTrack{ nullptr };
 		
-#ifdef _DEBUG
+#if BE_DEBUG
 		free_slots_type* freeSlotsBitTrack2{ nullptr };
 		uint8* allocCounter{ nullptr };
 #endif

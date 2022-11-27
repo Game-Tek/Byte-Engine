@@ -9,8 +9,10 @@
 #include "GTSL/Buffer.hpp"
 #include "GTSL/ShortString.hpp"
 
+#if BE_PLATFORM_WINDOWS
 #include <dxgi.h>
 #include <dxc/dxcapi.h>
+#endif
 
 namespace GAL
 {
@@ -21,7 +23,7 @@ namespace GAL
 			StencilCompareOperation FailOperation = StencilCompareOperation::ZERO;
 			StencilCompareOperation PassOperation = StencilCompareOperation::ZERO;
 			StencilCompareOperation DepthFailOperation = StencilCompareOperation::ZERO;
-			CompareOperation CompareOperation = CompareOperation::NEVER;
+			CompareOperation compareOperation = CompareOperation::NEVER;
 			GTSL::uint32 CompareMask;
 			GTSL::uint32 WriteMask;
 			GTSL::uint32 Reference;
@@ -74,17 +76,17 @@ namespace GAL
 			};
 
 			struct RasterState {				
-				WindingOrder WindingOrder = WindingOrder::CLOCKWISE;
-				CullMode CullMode = CullMode::CULL_BACK;
+				WindingOrder windingOrder = WindingOrder::CLOCKWISE;
+				CullMode cullMode = CullMode::CULL_BACK;
 			};
 
 			struct DepthState {
-				CompareOperation CompareOperation = CompareOperation::LESS;
+				CompareOperation compareOperation = CompareOperation::LESS;
 			};
 
 			struct RenderContext {
 				struct AttachmentState {
-					FormatDescriptor FormatDescriptor;
+					FormatDescriptor Format;
 					bool BlendEnable = true;
 				};
 
@@ -152,13 +154,11 @@ namespace GAL
 		
 		GraphicsPipeline() = default;
 		
-		static GTSL::uint32 GetVertexSize(GTSL::Range<const ShaderDataType*> vertex)
-		{
+		static GTSL::uint32 GetVertexSize(GTSL::Range<const ShaderDataType*> vertex) {
 			GTSL::uint32 size{ 0 };	for (const auto& e : vertex) { size += ShaderDataTypesSize(e); } return size;
 		}
 
-		static GTSL::uint32 GetByteOffsetToMember(const GTSL::uint8 member, GTSL::Range<const ShaderDataType*> vertex)
-		{
+		static GTSL::uint32 GetByteOffsetToMember(const GTSL::uint8 member, GTSL::Range<const ShaderDataType*> vertex) {
 			GTSL::uint32 offset{ 0 };
 			for (GTSL::uint8 i = 0; i < member; ++i) { offset += ShaderDataTypesSize(vertex[i]); }
 			return offset;
@@ -171,6 +171,7 @@ namespace GAL
 
 	template<class ALLOCATOR>
 	std::tuple<bool, GTSL::String<ALLOCATOR>, GTSL::Buffer<ALLOCATOR>> CompileShader2(GTSL::Range<const char8_t*> code, GTSL::Range<const char8_t*> shaderName, ShaderType shaderType, ShaderLanguage shaderLanguage, const ALLOCATOR& allocator) {
+#if BE_PLATFORM_WINDOWS
 		IDxcUtils* pUtils;
 		DxcCreateInstance(CLSID_DxcUtils, __uuidof(IDxcUtils), reinterpret_cast<void**>(&pUtils));
 		IDxcBlobEncoding* pSource;
@@ -220,6 +221,8 @@ namespace GAL
 		dxc_buffer.Encoding = DXC_CP_UTF8;
 		dxc_buffer.Ptr = code.GetData();
 		compiler3->Compile(&dxc_buffer, arguments.GetData(), arguments.GetLength(), nullptr, __uuidof(IDxcResult), reinterpret_cast<void**>(&result));
+#endif
+		return { false, GTSL::String<ALLOCATOR>(allocator), GTSL::Buffer<ALLOCATOR>(allocator) };
 	}
 
 	struct ShaderCompiler {

@@ -170,11 +170,9 @@ public:
 		auto processElement = [&](UIElementHandle parent_element_handle, const GTSL::StringView name, const GTSL::JSON<BE::PAR>& element, auto&& self) -> void {
 			if(const auto e = element[u8"enabled"]; e && !e.GetBool()) { return; }
 
-			auto typeString = element[u8"type"].GetStringView();
-
 			PrimitiveData::PrimitiveType type = PrimitiveData::PrimitiveType::NONE;
 
-			switch(GTSL::Hash(typeString)) {
+			switch(GTSL::Hash(element[u8"type"].GetStringView())) {
 			case GTSL::Hash(u8"Box"): type = PrimitiveData::PrimitiveType::SQUARE; break;
 			case GTSL::Hash(u8"Organizer"): type = PrimitiveData::PrimitiveType::ORGANIZER; break;
 			case GTSL::Hash(u8"Text"): type = PrimitiveData::PrimitiveType::TEXT; break;

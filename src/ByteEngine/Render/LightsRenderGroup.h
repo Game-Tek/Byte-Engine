@@ -1,9 +1,11 @@
 #pragma once
+
+#include "ByteEngine/Game/System.hpp"
+#include "ByteEngine/Handle.hpp"
+
 #include <GTSL/FixedVector.hpp>
 #include <GTSL/RGB.hpp>
 #include <GTSL/Math/Rotator.h>
-
-#include "ByteEngine/Game/System.hpp"
 
 class LightsRenderGroup : public BE::System {
 public:

@@ -37,7 +37,11 @@ namespace GAL
 		[[nodiscard]] InitRes Initialize(const CreateInfo& createInfo, const ALLOC& alloc) {
 			debugPrintFunction = createInfo.DebugPrintFunction;
 			
-			if (!vulkanDLL.LoadLibrary(u8"vulkan-1")) { return InitRes(GTSL::Range(u8"Dynamic library could not be loaded."), false); }
+#if BE_PLATFORM_WINDOWS
+			if (!vulkanDLL.LoadLibrary(u8"vulkan-1")) { return InitRes(GTSL::Range(u8"Vulkan dynamic library could not be loaded."), false); }
+#elif BE_PLATFORM_LINUX
+			if (!vulkanDLL.LoadLibrary(u8"libvulkan.so.1")) { return InitRes(GTSL::Range(u8"Vulkan dynamic library could not be loaded."), false); }
+#endif
 
 			vulkanDLL.LoadDynamicFunction(u8"vkGetInstanceProcAddr", &VkGetInstanceProcAddr);
 			if (!VkGetInstanceProcAddr) { return InitRes(GTSL::Range(u8"vkGetInstanceProcAddr function could not be loaded."), false); }
@@ -226,6 +230,7 @@ namespace GAL
 
 					if(currentScore > bestScore) {
 						bestPhysicalDevice = i;
+						bestScore = currentScore;
 					}
 				}
 

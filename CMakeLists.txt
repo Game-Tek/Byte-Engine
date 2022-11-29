@@ -141,7 +141,7 @@ if (UNIX)
 
 	if(BE_CSHARP_SCRIPTING)
 		target_include_directories(ByteEngine PUBLIC "/usr/include/mono-2.0")
-		target_link_libraries(ByteEngine PRIVATE "/bin/mono")
+		target_link_libraries(ByteEngine PRIVATE "/lib/libmono-2.0.a")
 	endif()
 
 	find_package(ALSA REQUIRED)

@@ -34,13 +34,21 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 		mixFormat.BitsPerSample = static_cast<uint8>(bits);
 		mixFormat.NumberOfChannels = static_cast<uint8>(numChannels);
 		mixFormat.SamplesPerSecond = samplesPerSecond;
+		mixFormat.bufferSamplePlacement = AudioDevice::BufferSamplePlacement::BLOCKS;
 
 		onAudioInfoLoadHandle = GetApplicationManager()->RegisterTask(this, u8"onAudioInfoLoad", DependencyBlock(TypedDependency<AudioResourceManager>(u8"AudioResourceManager")), &AudioSystem::onAudioInfoLoad);
 		onAudioLoadHandle = GetApplicationManager()->RegisterTask(this, u8"onAudioLoad", DependencyBlock(), &AudioSystem::onAudioLoad);
 
+		//auto preferredMixFormat = audioDevice.GetMixFormat();
+
 		if (audioDevice.IsMixFormatSupported(AAL::StreamShareMode::SHARED, mixFormat)) {
 			if (audioDevice.CreateAudioStream(AAL::StreamShareMode::SHARED, mixFormat)) {
 				if (audioDevice.Start()) {
+					if(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED) {
+						BE_LOG_ERROR(u8"Create audio device requires interleaved sample placment, which isn't supported. Oudio output will be disabled.")
+						error = true;
+					}
+
 					audioBuffer.Allocate(GTSL::Byte(GTSL::MegaByte(1)).GetCount(), mixFormat.GetFrameSize());
 					auto renderTaskHandle = GetApplicationManager()->RegisterTask(this, u8"renderAudio", DependencyBlock(), &AudioSystem::render, u8"RenderDo", u8"RenderEnd");
 
@@ -48,11 +56,8 @@ AudioSystem::AudioSystem(const InitializeInfo& initializeInfo) : System(initiali
 
 					BE_LOG_SUCCESS(u8"Started Audio Device\n	Bits per Sample: ", (uint32)mixFormat.BitsPerSample, u8"\n	Khz: ", mixFormat.SamplesPerSecond, u8"\n	Channels: ", (uint32)mixFormat.NumberOfChannels)
 
-					if(audioDevice.GetBufferSamplePlacement() == AudioDevice::BufferSamplePlacement::INTERLEAVED) {
-						BE_LOG_ERROR(u8"Create audio device requires interleaved sample placment, which isn't supported. Oudio output will be disabled.")
-						error = true;
-					}
 
+					mixFormat.bufferSamplePlacement = audioDevice.GetBufferSamplePlacement();
 				} else { error = true; }
 			} else { error = true; }
 		} else { error = true; }

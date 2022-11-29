@@ -25,6 +25,7 @@ namespace AAL
 			GTSL::uint8 NumberOfChannels;
 			GTSL::uint32 SamplesPerSecond;
 			GTSL::uint8 BitsPerSample;
+			BufferSamplePlacement bufferSamplePlacement;
 			
 			GTSL::uint8 GetBytesPerSample() const { return BitsPerSample / 8; }
 			
@@ -56,9 +57,9 @@ namespace AAL
 
 			return true;
 #elif BE_PLATFORM_LINUX
-			if(snd_pcm_open(&device, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) { return false; }
-			snd_pcm_hw_params_alloca(&hwParams);
-
+			if(snd_pcm_open(&device, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) { return false; } //Open default device for playback
+			if(snd_pcm_hw_params_malloc(&hwParams) < 0) { return false; } // Allocate the hardware parameters object.
+			if(snd_pcm_hw_params_any(device, hwParams) < 0) { return false; } // Initialize hwParams with full configuration space
 			return true;
 #endif
 		}
@@ -87,9 +88,10 @@ namespace AAL
 
 			return GTSL::Result(GTSL::MoveRef(mixFormat), true);
 #elif BE_PLATFORM_LINUX
-			snd_pcm_hw_params_any(device, hwParams);
+			if(snd_pcm_hw_params(device, hwParams) < 0) { return GTSL::Result<MixFormat>(false); }
 			int bits = snd_pcm_hw_params_get_sbits(hwParams);
-			uint32 sampleRate = 0;
+			if(bits < 0) { return GTSL::Result<MixFormat>(false); }
+			uint32 sampleRate = 0;			
 			snd_pcm_hw_params_get_rate(hwParams, &sampleRate, nullptr);
 			uint32 channels = 0;
 			snd_pcm_hw_params_get_channels(hwParams, &channels);
@@ -97,7 +99,24 @@ namespace AAL
 #endif
 		}
 
-		BufferSamplePlacement GetBufferSamplePlacement() const { return BufferSamplePlacement::BLOCKS; }
+		BufferSamplePlacement GetBufferSamplePlacement() const { 
+#if BE_PLATFORM_WINDOWS
+			return BufferSamplePlacement::BLOCKS;
+#elif BE_PLATFORM_LINUX
+			snd_pcm_access_t access = SND_PCM_ACCESS_RW_INTERLEAVED;
+			if(snd_pcm_hw_params_get_access(hwParams, &access) < 0) { return BufferSamplePlacement::BLOCKS; }
+
+			BufferSamplePlacement bufferSamplePlacement = BufferSamplePlacement::BLOCKS;
+
+			switch (access) {
+				case SND_PCM_ACCESS_RW_INTERLEAVED: bufferSamplePlacement = BufferSamplePlacement::INTERLEAVED; break;
+				case SND_PCM_ACCESS_RW_NONINTERLEAVED: bufferSamplePlacement = BufferSamplePlacement::BLOCKS; break;
+				default: break;
+			}
+
+			return bufferSamplePlacement;
+#endif
+		}
 
 		/**
 		 * \brief Queries the audio device for support of the specified format with the specified share mode.
@@ -177,10 +196,18 @@ namespace AAL
 
 			return true;
 #elif BE_PLATFORM_LINUX
-			uint32 resample = 1;
-			snd_pcm_hw_params_set_rate_resample(device, hwParams, resample);
+			// Disable resampling
+			if(snd_pcm_hw_params_set_rate_resample(device, hwParams, 0) < 0) { return false; }
 
-			if(snd_pcm_hw_params_set_access(device, hwParams, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) { return false; }
+			snd_pcm_access_t access = SND_PCM_ACCESS_RW_INTERLEAVED;
+
+			switch (mixFormat.bufferSamplePlacement) {
+				case BufferSamplePlacement::INTERLEAVED: access = SND_PCM_ACCESS_MMAP_INTERLEAVED; break;
+				case BufferSamplePlacement::BLOCKS: access = SND_PCM_ACCESS_MMAP_NONINTERLEAVED; break;
+				default: break;
+			}
+
+			if(snd_pcm_hw_params_set_access(device, hwParams, access) < 0) { return false; }
 
 			snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
@@ -191,14 +218,14 @@ namespace AAL
 				case 32: format = SND_PCM_FORMAT_S32_LE; break;
 			}
 
-			if(snd_pcm_hw_params_set_format(device, hwParams, format) < 0) { return false; }
+			if(snd_pcm_hw_params_set_format(device, hwParams, format) < 0) { return false; } // Set sample format
 
-			if(snd_pcm_hw_params_set_channels(device, hwParams, mixFormat.NumberOfChannels) < 0) { return false; }
+			if(snd_pcm_hw_params_set_channels(device, hwParams, mixFormat.NumberOfChannels) < 0) { return false; } // Set the number of channels
 
 			uint32 exactRate = mixFormat.SamplesPerSecond;
-			if(snd_pcm_hw_params_set_rate_near(device, hwParams, &exactRate, nullptr) < 0) { return false; }
+			if(snd_pcm_hw_params_set_rate_near(device, hwParams, &exactRate, nullptr) < 0) { return false; } // Set the sample rate to the nearest supported rate.
 
-			snd_pcm_hw_params(device, hwParams); // Write the parameters to the driver
+			if(snd_pcm_hw_params(device, hwParams) < 0) { return false; } // Write the parameters to the driver
 
 			return true;
 #endif

@@ -40,7 +40,8 @@ namespace BE
 
 	bool Application::BaseInitialize(int argc, utf8* argv[])
 	{
-		if (!checkPlatformSupport()) {
+		//if (!checkPlatformSupport() ) {
+		if(false) {
 			Close(CloseMode::ERROR, GTSL::StaticString<128>(u8"No platform support."));
 			return false;
 		}
@@ -187,6 +188,10 @@ namespace BE
 		ReplaceAll(ret, u8'\\', u8'/');
 		RTrimLast(ret, u8'/');
 		return ret;
+#else
+		auto path = GTSL::Application::GetPathToExecutable();
+		RTrimLast(path, u8'/');
+		return path;
 #endif
 	}
 

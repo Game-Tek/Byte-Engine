@@ -69,6 +69,7 @@ RenderSystem::RenderSystem(const InitializeInfo& initializeInfo) : System(initia
 			BE_LOG_SUCCESS(u8"Started RenderDevice\n	API: Vulkan\n	GPU: ", renderDevice.GetGPUInfo().GPUName, u8"\n	Memory: ", 6, u8" GB\n	API Version: ", renderDevice.GetGPUInfo().APIVersion);
 		} else {
 			BE_LOG_ERROR(u8"Failed to initialize RenderDevice!\n	API: Vulkan\n	Reason: \"", renderDeviceInitializationResult.Get(), u8"\n");
+			return;
 		}
 
 		graphicsQueue.Initialize(GetRenderDevice(), queueKeys[0]); computeQueue.Initialize(GetRenderDevice(), queueKeys[1]); transferQueue.Initialize(GetRenderDevice(), queueKeys[2]);

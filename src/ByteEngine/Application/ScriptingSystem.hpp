@@ -12,7 +12,9 @@
 struct ScriptingSystem : public BE::System
 {
 	ScriptingSystem(const InitializeInfo& initialize_info) : System(initialize_info, u8"ScriptingEngine") {
+#if BE_PLATFORM_WINDOWS
 		mono_set_dirs("C:/Program Files/Mono/lib", "C:/Program Files/Mono/etc");
+#endif
 
 		domain = mono_jit_init_version("ByteEngine", "v4.0.30319");
 
@@ -65,7 +67,7 @@ struct ScriptingSystem : public BE::System
 
 	~ScriptingSystem() {
 		mono_jit_cleanup(domain);
-		//Note that for current versions of Mono, the mono runtime can’t be reloaded into the same process, so call mono_jit_cleanup() only if you’re never going to initialize it again.
+		//Note that for current versions of Mono, the mono runtime canï¿½t be reloaded into the same process, so call mono_jit_cleanup() only if youï¿½re never going to initialize it again.
 	}
 
 	void InvokeMethod() {

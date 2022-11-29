@@ -292,6 +292,12 @@ public:
 
 			auto startTime = BE::Application::Get()->GetClock()->GetCurrentMicroseconds();
 
+			T* system = (T*)gameInstance->systems[info->SystemId].GetData();
+
+			if(info->Callee != system) {
+				BE_DEBUG_BREAK;
+			}
+
 			call<T, typename ACC::type...>(TaskInfo(gameInstance), &task, info);
 
 			GTSL::StaticString<512> args(u8"\"Start stage\":{ "); args += u8"\"Name\":\""; ToString(args, task.StartStage); args += u8"\", \"Index\":"; ToString(args, task.StartStageIndex); args += u8" },";
@@ -657,9 +663,11 @@ private:
 		 */
 		FunctionType TaskDispatcher;
 
+		static constexpr size_t TASK_POINTER_BUFFER_SIZE = 16ull;
+
 		GTSL::StaticVector<TaskAccess, 16> Access;
 		void* Callee;
-		byte TaskFunction[8];
+		byte TaskFunction[TASK_POINTER_BUFFER_SIZE];
 
 		uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
 
@@ -698,8 +706,9 @@ private:
 
 		template<typename F>
 		void SetDelegate(F delegate) {
+			static_assert(sizeof(F) <= TASK_POINTER_BUFFER_SIZE, "Delegate size is bigger than buffer available.");
 			auto* d = reinterpret_cast<byte*>(&delegate);
-			for (uint64 i = 0; i < 8; ++i) {
+			for (uint64 i = 0; i < sizeof(F); ++i) {
 				TaskFunction[i] = d[i];
 			}
 		}
@@ -724,7 +733,7 @@ private:
 	template<typename T, typename... RESOURCES, typename... ARGS>
 	static void call(TaskInfo task_info, const TaskData* task_data, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
 		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
-			(static_cast<T*>(dispatch_task_info->Callee)->*task_data->template GetDelegate<T, RESOURCES*..., ARGS...>())(task_info, dispatch_task_info->template GetResource<RI, RESOURCES>()..., GTSL::MoveRef(dispatch_task_info->template GetArgument<AI>())...);
+			(static_cast<T*>(dispatch_task_info->Callee)->*(task_data->template GetDelegate<T, RESOURCES*..., ARGS...>()))(task_info, dispatch_task_info->template GetResource<RI, RESOURCES>()..., GTSL::MoveRef(dispatch_task_info->template GetArgument<AI>())...);
 		} (GTSL::BuildIndices<sizeof...(RESOURCES)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
 	}
 

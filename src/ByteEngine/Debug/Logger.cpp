@@ -2,10 +2,9 @@
 
 #include "ByteEngine/Application/Clock.h"
 #include "ByteEngine/Debug/FunctionTimer.h"
-
-#include <GTSL/System.h>
-
 #include "ByteEngine/Application/Application.h"
+
+#include <GTSL/System.hpp>
 
 using namespace BE;
 
@@ -87,14 +86,13 @@ void Logger::log(const VerbosityLevel verbosityLevel, const GTSL::Range<const ch
 	logMutex.Unlock();
 }
 
-void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const
-{
+void Logger::SetTextColorOnLogLevel(const VerbosityLevel level) const {
 	switch (level) {
-	case VerbosityLevel::MESSAGE: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
-	case VerbosityLevel::SUCCESS: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::GREEN); break;
-	case VerbosityLevel::WARNING: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::ORANGE); break;
-	case VerbosityLevel::FATAL: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::RED); break;
-	default: GTSL::Console::SetTextColor(GTSL::Console::ConsoleTextColor::WHITE); break;
+		case VerbosityLevel::MESSAGE: GTSL::Console::SetTextColor(GTSL::Console::TextColor::WHITE); break;
+		case VerbosityLevel::SUCCESS: GTSL::Console::SetTextColor(GTSL::Console::TextColor::GREEN); break;
+		case VerbosityLevel::WARNING: GTSL::Console::SetTextColor(GTSL::Console::TextColor::ORANGE); break;
+		case VerbosityLevel::FATAL: GTSL::Console::SetTextColor(GTSL::Console::TextColor::RED); break;
+		default: GTSL::Console::SetTextColor(GTSL::Console::TextColor::WHITE); break;
 	}
 }
 

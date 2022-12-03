@@ -2130,7 +2130,7 @@ public:
 			auto windowSize = GTSL::Vector2(static_cast<float32>(windowExtent.Width), static_cast<float32>(windowExtent.Height));
 			auto windowNormalizedSize = GTSL::Vector2(float32(windowExtent.Width) / static_cast<float32>(windowExtent.Height), 1.0f);
 
-			auto screenExtent = GTSL::System::GetScreenExtent();
+			auto screenExtent = GTSL::Extent2D(1920, 1080);
 			auto screenSize = GTSL::Vector2(screenExtent.Width, screenExtent.Height);
 			auto screenNormalizedSize = GTSL::Vector2(screenSize.X() / screenSize.Y(), 1.0f);
 			

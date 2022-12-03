@@ -19,14 +19,22 @@ auto GetChangedFiles(const auto& allocator, const GTSL::File& file, const GTSL::
 	file.Read(cacheBuffer);
 
 	uint32 cacheEntryCount = cacheBuffer.GetLength() / 512;
-	uint64* cacheEntries = reinterpret_cast<uint64*>(cacheBuffer.begin());
+	byte* buffer = cacheBuffer.begin();
 
 	GTSL::HashMap<uint64, GTSL::Tuple<uint64, bool, uint64, uint64>, BE::TAR> entriesMap(64, allocator);
 
 	GTSL::Vector<FileChangeNotification, BE::TAR> files(64, allocator);
 
 	for(uint32 i = 0; i < cacheEntryCount; ++i) {
-		entriesMap.Emplace(cacheEntries[i * 64], GTSL::MoveRef(cacheEntries[i * 64 + 1]), false, GTSL::MoveRef(cacheEntries[i * 64 + 2]), i * 512ull);
+		byte* entry = buffer + 512 * i;
+
+		auto currentNodeHash = *reinterpret_cast<const uint64*>(entry);
+		auto currentNodeFileHash = *(reinterpret_cast<const uint64*>(entry) + 1);
+		auto parentHash = *(reinterpret_cast<const uint64*>(entry) + 2);
+
+		GTSL::StaticString<256> fileName(GTSL::StringView{ reinterpret_cast<const char8_t*>(entry + 24) });
+
+		entriesMap.Emplace(currentNodeHash, GTSL::MoveRef(currentNodeFileHash), false, GTSL::MoveRef(parentHash), i * 512ull);
 	}
 
 	for(auto path : paths) {

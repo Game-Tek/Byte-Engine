@@ -44,7 +44,7 @@ public:
 	template<typename... ARGS>
 	void LoadFont(const GTSL::StringView font_name, const TaskHandle<FontData, GTSL::Buffer<BE::PAR>, ARGS...> task_handle) {
 		FontData fontData;
-		resource_files_.LoadEntry(font_name, fontData);
+		resource_files_.LoadEntry(font_name, fontData); // TODO: handle non existant resources
 		GTSL::Buffer buffer(GetPersistentAllocator());
 		resource_files_.LoadData(fontData, buffer);
 		GetApplicationManager()->EnqueueTask(task_handle, GTSL::MoveRef(fontData), MoveRef(buffer));

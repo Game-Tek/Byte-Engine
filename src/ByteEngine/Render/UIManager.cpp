@@ -15,7 +15,7 @@ uint32 pixels(uint32 points_display_size, uint32 glyph_em_units, uint32 units_pe
 }
 
 void UIManager::ProcessUpdates() {
-	auto screenExtent = GTSL::System::GetScreenExtent();
+	auto screenExtent = GTSL::Extent2D(1920, 1080);
 	auto screenSize = GTSL::Vector2(screenExtent.Width, screenExtent.Height);
 
 	auto windowSystem = GetApplicationManager()->GetSystem<WindowSystem>(u8"WindowSystem");

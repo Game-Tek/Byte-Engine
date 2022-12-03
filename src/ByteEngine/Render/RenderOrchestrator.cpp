@@ -1084,6 +1084,19 @@ void RenderOrchestrator::transitionImages(CommandList commandBuffer, RenderSyste
 void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceManager* materialResourceManager,
 	ShaderResourceManager::ShaderGroupInfo shader_group_info, ShaderLoadInfo shaderLoadInfo)
 {
+	if constexpr (BE_DEBUG) {
+		bool valid = true;
+
+		for(auto& e : shader_group_info.Shaders) { //If any shader is size zero, then shader group cannot be used.
+			if(e.Size == 0u) { valid = false; break; }
+		}
+
+		if (!valid or !shader_group_info.Shaders) {
+			BE_LOG_ERROR(u8"Tried to load shader group ", shader_group_info.Name, u8" which is not valid. ", BE::FIX_OR_CRASH_STRING);
+			return;
+		}
+	}
+
 	uint32 size = 0;
 
 	for (auto& s : shader_group_info.Shaders) { size += s.Size; }
@@ -1116,19 +1129,6 @@ void RenderOrchestrator::onShaderInfosLoaded(TaskInfo taskInfo, ShaderResourceMa
 
 void RenderOrchestrator::onShadersLoaded(TaskInfo taskInfo, ShaderResourceManager*, RenderSystem* renderSystem, ShaderResourceManager::ShaderGroupInfo shader_group_info, GTSL::Range<byte*> buffer, ShaderLoadInfo shaderLoadInfo)
 {
-	if constexpr (BE_DEBUG) {
-		bool valid = true;
-
-		for(auto& e : shader_group_info.Shaders) { //If any shader is size zero, then shader group cannot be used.
-			if(e.Size == 0u) { valid = false; break; }
-		}
-
-		if (!valid) {
-			BE_LOG_ERROR(u8"Tried to load shader group ", shader_group_info.Name, u8" which is not valid. ", BE::FIX_OR_CRASH_STRING);
-			return;
-		}
-	}
-
 	auto& shaderGroup = shaderGroups[shaderGroupsByName[shader_group_info.Name]];
 
 	if(shaderGroup.Loaded) { return; }

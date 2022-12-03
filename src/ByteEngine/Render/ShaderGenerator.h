@@ -102,7 +102,7 @@ void tokenizeCode(const GTSL::StringView string, auto& statements) {
 				else if (c == U'>') {
 					type = ShaderNode::Type::GREATER_THAN;
 				}
-				else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%', U'^', U'&')) {
+				else if (IsAnyOf(c, U'=', U'*', U'+', U'-', U'/', U'%', U'^', U'&', U'|', U'~', U'?')) {
 					type = ShaderNode::Type::OP;
 				}
 

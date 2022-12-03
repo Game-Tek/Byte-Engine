@@ -26,7 +26,8 @@
 #include "ByteEngine/Resources/CurvesResourceManager.hpp"
 
 #include "ByteEngine/Sound/AudioSystem.h"
-#include "GTSL/System.h"
+
+#include <GTSL/System.hpp>
 
 class RenderOrchestrator;
 
@@ -78,7 +79,7 @@ void GameApplication::PostInitialize()
 		GTSL::Extent2D screenSize;
 
 		if(fullscreen) {
-			screenSize = GTSL::System::GetScreenExtent();			
+			screenSize = GTSL::Extent2D(1920, 1080);			
 		} else {
 			screenSize = GetExtent2DOption(u8"resolution");
 		}

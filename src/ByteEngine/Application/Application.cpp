@@ -1,23 +1,20 @@
 #include "ByteEngine/Application/Application.h"
-#include "GTSL/Application.h"
-
-#include <GTSL/Buffer.hpp>
-#include <GTSL/DataSizes.h>
-#include <GTSL/HashMap.hpp>
-#include <GTSL/String.hpp>
 
 #include "ByteEngine/Application/InputManager.h"
 #include "ByteEngine/Application/ThreadPool.h"
 #include "ByteEngine/Application/Clock.h"
-
 #include "ByteEngine/Game/ApplicationManager.h"
-
 #include "ByteEngine/Debug/Logger.h"
 
-#include <GTSL/System.h>
-#include <GTSL/Math/Math.hpp>
-
 #include <filesystem>
+
+#include <GTSL/Application.h>
+#include <GTSL/Buffer.hpp>
+#include <GTSL/DataSizes.h>
+#include <GTSL/HashMap.hpp>
+#include <GTSL/String.hpp>
+#include <GTSL/Math/Math.hpp>
+#include <GTSL/System.hpp>
 
 #if (_DEBUG)
 void onAssert(const bool condition, const char* text, int line, const char* file, const char* function)
@@ -40,8 +37,7 @@ namespace BE
 
 	bool Application::BaseInitialize(int argc, utf8* argv[])
 	{
-		//if (!checkPlatformSupport() ) {
-		if(false) {
+		if (!checkPlatformSupport() ) {
 			Close(CloseMode::ERROR, GTSL::StaticString<128>(u8"No platform support."));
 			return false;
 		}
@@ -218,8 +214,7 @@ namespace BE
 	}
 	
 	bool Application::checkPlatformSupport() {
-		GTSL::SystemInfo systemInfo;
-		GTSL::System::GetSystemInfo(systemInfo);
+		GTSL::SystemInfo systemInfo = GTSL::System::GetSystemInfo();
 
 		bool avx2 = systemInfo.CPU.VectorInfo.HW_AVX2;
 		bool totalMemory = systemInfo.RAM.TotalPhysicalMemory.GetCount() >= GTSL::Byte(GTSL::GigaByte(12)).GetCount();

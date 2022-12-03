@@ -255,12 +255,13 @@ namespace GAL
 			{
 				GTSL::StaticVector<VkDeviceQueueCreateInfo, 8> vkDeviceQueueCreateInfos; GTSL::uint32 queueFamiliesCount = 32;
 				
+				GTSL::float32 familiesPriorities[8][8]{ 0.5f }; // THIS ARRAY MUST BE KEPT ALIVE UNTIL vkCreateDevice IS CALLED, IT MUST NOT GO OUT OF SCOPE
+
 				{
 					VkQueueFamilyProperties vkQueueFamiliesProperties[32];
 					//Get the amount of queue families there are in the physical device.
 					getInstanceProcAddr<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(u8"vkGetPhysicalDeviceQueueFamilyProperties")(physicalDevice, &queueFamiliesCount, vkQueueFamiliesProperties);
 
-					GTSL::float32 familiesPriorities[8][8]{ 0.5f };
 
 					GTSL::StaticMap<GTSL::uint64, GTSL::uint8, 16> familyMap;
 						

@@ -3,9 +3,10 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+
 #include <GTSL/Buffer.hpp>
 #include <GTSL/DataSizes.h>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 #include <GTSL/Serialize.hpp>
 
 static GTSL::Matrix4 assimpMatrixToMatrix(const aiMatrix4x4 assimpMatrix)

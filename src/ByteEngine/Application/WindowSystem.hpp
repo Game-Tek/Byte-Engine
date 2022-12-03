@@ -27,7 +27,7 @@ public:
 		GTSL::Window::API windowAPI = GTSL::Window::API::XCB;
 #endif
 
-		window.window.BindToOS(display_name, id_name, windowAPI, window_extent, this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this), nullptr);
+		window.window.BindToOS(id_name, display_name, windowAPI, window_extent, this, GTSL::Delegate<void(GTSL::Window*, void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this), nullptr);
 
 		window.window.AddDevice(GTSL::Window::DeviceType::MOUSE);
 		window.window.AddDevice(GTSL::Window::DeviceType::GAMEPAD);
@@ -52,7 +52,7 @@ public:
 
 	void Update() {
 		for(auto& window : windows) {
-			window.window.Update(this, GTSL::Delegate<void(void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this));
+			window.window.Update(this, GTSL::Delegate<void(GTSL::Window*, void*, GTSL::Window::WindowEvents, void*)>::Create<WindowSystem, &WindowSystem::windowUpdateFunction>(this));
 		}
 	}
 
@@ -65,15 +65,15 @@ private:
 	};
 	GTSL::StaticVector<WindowData, 16> windows;
 
-	void windowUpdateFunction(void* userData, GTSL::Window::WindowEvents event, void* eventData) {
+	void windowUpdateFunction(GTSL::Window* window, void* userData, GTSL::Window::WindowEvents event, void* eventData) {
 		auto* app = static_cast<WindowSystem*>(userData);
 
 		auto* inputManager = BE::Application::Get()->GetInputManager();
 
 		switch (event) {
 		case GTSL::Window::WindowEvents::FOCUS: {
-			auto* focusEventData = static_cast<GTSL::Window::FocusEventData*>(eventData);
-			if(focusEventData->Focus) {
+			auto* focusEventData = static_cast<GTSL::Window::FocusEvent*>(eventData);
+			if(focusEventData->hasFocus) {
 				//app->GetApplicationManager()->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusGain"), GTSL::MoveRef(focusEventData->HadFocus));
 			} else {
 				//app->GetApplicationManager()->DispatchEvent(u8"Application", EventHandle<bool>(u8"OnFocusLoss"), GTSL::MoveRef(focusEventData->HadFocus));
@@ -82,53 +82,53 @@ private:
 		}
 		case GTSL::Window::WindowEvents::CLOSE: BE::Application::Get()->Close(BE::Application::CloseMode::OK, u8"User closed window."); break;
 		case GTSL::Window::WindowEvents::KEYBOARD_KEY: {
-			auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEventData*>(eventData);
+			auto* keyboardEventData = static_cast<GTSL::Window::KeyboardKeyEvent*>(eventData);
 
 			auto keyboardEvent = [&](const GTSL::Window::KeyboardKeys key, const bool state, bool isFirstkeyOfType) {
 				GTSL::StaticString<64> id;
 				
 				switch (key) {
-				case GTSL::Window::KeyboardKeys::Q: id = u8"Q_Key"; break; case GTSL::Window::KeyboardKeys::W: id = u8"W_Key"; break;
-				case GTSL::Window::KeyboardKeys::E: id = u8"E_Key"; break; case GTSL::Window::KeyboardKeys::R: id = u8"R_Key"; break;
-				case GTSL::Window::KeyboardKeys::T: id = u8"T_Key"; break; case GTSL::Window::KeyboardKeys::Y: id = u8"Y_Key"; break;
-				case GTSL::Window::KeyboardKeys::U: id = u8"U_Key"; break; case GTSL::Window::KeyboardKeys::I: id = u8"I_Key"; break;
-				case GTSL::Window::KeyboardKeys::O: id = u8"O_Key"; break; case GTSL::Window::KeyboardKeys::P: id = u8"P_Key"; break;
-				case GTSL::Window::KeyboardKeys::A: id = u8"A_Key"; break; case GTSL::Window::KeyboardKeys::S: id = u8"S_Key"; break;
-				case GTSL::Window::KeyboardKeys::D: id = u8"D_Key"; break; case GTSL::Window::KeyboardKeys::F: id = u8"F_Key"; break;
-				case GTSL::Window::KeyboardKeys::G: id = u8"G_Key"; break; case GTSL::Window::KeyboardKeys::H: id = u8"H_Key"; break;
-				case GTSL::Window::KeyboardKeys::J: id = u8"J_Key"; break; case GTSL::Window::KeyboardKeys::K: id = u8"K_Key"; break;
-				case GTSL::Window::KeyboardKeys::L: id = u8"L_Key"; break; case GTSL::Window::KeyboardKeys::Z: id = u8"Z_Key"; break;
-				case GTSL::Window::KeyboardKeys::X: id = u8"X_Key"; break; case GTSL::Window::KeyboardKeys::C: id = u8"C_Key"; break;
-				case GTSL::Window::KeyboardKeys::V: id = u8"V_Key"; break; case GTSL::Window::KeyboardKeys::B: id = u8"B_Key"; break;
-				case GTSL::Window::KeyboardKeys::N: id = u8"N_Key"; break; case GTSL::Window::KeyboardKeys::M: id = u8"M_Key"; break;
-				case GTSL::Window::KeyboardKeys::Keyboard0: id = u8"0_Key"; break; case GTSL::Window::KeyboardKeys::Keyboard1: id = u8"1_Key"; break;
-				case GTSL::Window::KeyboardKeys::Keyboard2: id = u8"2_Key"; break; case GTSL::Window::KeyboardKeys::Keyboard3: id = u8"3_Key"; break;
-				case GTSL::Window::KeyboardKeys::Keyboard4: id = u8"4_Key"; break; case GTSL::Window::KeyboardKeys::Keyboard5: id = u8"5_Key"; break;
-				case GTSL::Window::KeyboardKeys::Keyboard6: id = u8"6_Key"; break; case GTSL::Window::KeyboardKeys::Keyboard7: id = u8"7_Key"; break;
-				case GTSL::Window::KeyboardKeys::Keyboard8: id = u8"8_Key"; break; case GTSL::Window::KeyboardKeys::Keyboard9: id = u8"9_Key"; break;
-				case GTSL::Window::KeyboardKeys::Backspace: id = u8"Backspace_Key"; break;
-				case GTSL::Window::KeyboardKeys::Enter: id = u8"Enter_Key"; break;
-				case GTSL::Window::KeyboardKeys::Supr: id = u8"Supr_Key"; break;
-				case GTSL::Window::KeyboardKeys::Tab: id = u8"Tab_Key"; break;
-				case GTSL::Window::KeyboardKeys::CapsLock: id = u8"CapsLock_Key"; break;
-				case GTSL::Window::KeyboardKeys::Esc: id = u8"Esc_Key"; break;
-				case GTSL::Window::KeyboardKeys::RShift: id = u8"RightShift_Key"; break; case GTSL::Window::KeyboardKeys::LShift: id = u8"LeftShift_Key"; break;
-				case GTSL::Window::KeyboardKeys::RControl: id = u8"RightControl_Key"; break; case GTSL::Window::KeyboardKeys::LControl: id = u8"LeftControl_Key"; break;
-				case GTSL::Window::KeyboardKeys::Alt: id = u8"LeftAlt_Key"; break; case GTSL::Window::KeyboardKeys::AltGr: id = u8"RightAlt_Key"; break;
-				case GTSL::Window::KeyboardKeys::UpArrow: id = u8"Up_Key"; break; case GTSL::Window::KeyboardKeys::RightArrow: id = u8"Right_Key"; break;
-				case GTSL::Window::KeyboardKeys::DownArrow: id = u8"Down_Key"; break; case GTSL::Window::KeyboardKeys::LeftArrow: id = u8"Left_Key"; break;
-				case GTSL::Window::KeyboardKeys::SpaceBar: id = u8"SpaceBar_Key"; break;
-				case GTSL::Window::KeyboardKeys::Numpad0: id = u8"Numpad0_Key"; break; case GTSL::Window::KeyboardKeys::Numpad1: id = u8"Numpad1_Key"; break;
-				case GTSL::Window::KeyboardKeys::Numpad2: id = u8"Numpad2_Key"; break; case GTSL::Window::KeyboardKeys::Numpad3: id = u8"Numpad3_Key"; break;
-				case GTSL::Window::KeyboardKeys::Numpad4: id = u8"Numpad4_Key"; break; case GTSL::Window::KeyboardKeys::Numpad5: id = u8"Numpad5_Key"; break;
-				case GTSL::Window::KeyboardKeys::Numpad6: id = u8"Numpad6_Key"; break; case GTSL::Window::KeyboardKeys::Numpad7: id = u8"Numpad7_Key"; break;
-				case GTSL::Window::KeyboardKeys::Numpad8: id = u8"Numpad8_Key"; break; case GTSL::Window::KeyboardKeys::Numpad9: id = u8"Numpad9_Key"; break;
-				case GTSL::Window::KeyboardKeys::F1: id = u8"F1_Key"; break; case GTSL::Window::KeyboardKeys::F2: id = u8"F2_Key"; break;
-				case GTSL::Window::KeyboardKeys::F3: id = u8"F3_Key"; break; case GTSL::Window::KeyboardKeys::F4: id = u8"F4_Key"; break;
-				case GTSL::Window::KeyboardKeys::F5: id = u8"F5_Key"; break; case GTSL::Window::KeyboardKeys::F6: id = u8"F6_Key"; break;
-				case GTSL::Window::KeyboardKeys::F7: id = u8"F7_Key"; break; case GTSL::Window::KeyboardKeys::F8: id = u8"F8_Key"; break;
-				case GTSL::Window::KeyboardKeys::F9: id = u8"F9_Key"; break; case GTSL::Window::KeyboardKeys::F10: id = u8"F10_Key"; break;
-				case GTSL::Window::KeyboardKeys::F11: id = u8"F11_Key"; break; case GTSL::Window::KeyboardKeys::F12: id = u8"F12_Key"; break;
+					case GTSL::Window::KeyboardKeys::Q: id = u8"Q_Key"; break; case GTSL::Window::KeyboardKeys::W: id = u8"W_Key"; break;
+					case GTSL::Window::KeyboardKeys::E: id = u8"E_Key"; break; case GTSL::Window::KeyboardKeys::R: id = u8"R_Key"; break;
+					case GTSL::Window::KeyboardKeys::T: id = u8"T_Key"; break; case GTSL::Window::KeyboardKeys::Y: id = u8"Y_Key"; break;
+					case GTSL::Window::KeyboardKeys::U: id = u8"U_Key"; break; case GTSL::Window::KeyboardKeys::I: id = u8"I_Key"; break;
+					case GTSL::Window::KeyboardKeys::O: id = u8"O_Key"; break; case GTSL::Window::KeyboardKeys::P: id = u8"P_Key"; break;
+					case GTSL::Window::KeyboardKeys::A: id = u8"A_Key"; break; case GTSL::Window::KeyboardKeys::S: id = u8"S_Key"; break;
+					case GTSL::Window::KeyboardKeys::D: id = u8"D_Key"; break; case GTSL::Window::KeyboardKeys::F: id = u8"F_Key"; break;
+					case GTSL::Window::KeyboardKeys::G: id = u8"G_Key"; break; case GTSL::Window::KeyboardKeys::H: id = u8"H_Key"; break;
+					case GTSL::Window::KeyboardKeys::J: id = u8"J_Key"; break; case GTSL::Window::KeyboardKeys::K: id = u8"K_Key"; break;
+					case GTSL::Window::KeyboardKeys::L: id = u8"L_Key"; break; case GTSL::Window::KeyboardKeys::Z: id = u8"Z_Key"; break;
+					case GTSL::Window::KeyboardKeys::X: id = u8"X_Key"; break; case GTSL::Window::KeyboardKeys::C: id = u8"C_Key"; break;
+					case GTSL::Window::KeyboardKeys::V: id = u8"V_Key"; break; case GTSL::Window::KeyboardKeys::B: id = u8"B_Key"; break;
+					case GTSL::Window::KeyboardKeys::N: id = u8"N_Key"; break; case GTSL::Window::KeyboardKeys::M: id = u8"M_Key"; break;
+					case GTSL::Window::KeyboardKeys::KEYBOARD_0: id = u8"0_Key"; break; case GTSL::Window::KeyboardKeys::KEYBOARD_1: id = u8"1_Key"; break;
+					case GTSL::Window::KeyboardKeys::KEYBOARD_2: id = u8"2_Key"; break; case GTSL::Window::KeyboardKeys::KEYBOARD_3: id = u8"3_Key"; break;
+					case GTSL::Window::KeyboardKeys::KEYBOARD_4: id = u8"4_Key"; break; case GTSL::Window::KeyboardKeys::KEYBOARD_5: id = u8"5_Key"; break;
+					case GTSL::Window::KeyboardKeys::KEYBOARD_6: id = u8"6_Key"; break; case GTSL::Window::KeyboardKeys::KEYBOARD_7: id = u8"7_Key"; break;
+					case GTSL::Window::KeyboardKeys::KEYBOARD_8: id = u8"8_Key"; break; case GTSL::Window::KeyboardKeys::KEYBOARD_9: id = u8"9_Key"; break;
+					case GTSL::Window::KeyboardKeys::BACKSPACE: id = u8"Backspace_Key"; break;
+					case GTSL::Window::KeyboardKeys::ENTER: id = u8"Enter_Key"; break;
+					case GTSL::Window::KeyboardKeys::DELETE: id = u8"Supr_Key"; break;
+					case GTSL::Window::KeyboardKeys::TAB: id = u8"Tab_Key"; break;
+					case GTSL::Window::KeyboardKeys::CAPS_LOCK: id = u8"CapsLock_Key"; break;
+					case GTSL::Window::KeyboardKeys::ESCAPE: id = u8"Esc_Key"; break;
+					case GTSL::Window::KeyboardKeys::RIGHT_SHIFT: id = u8"RightShift_Key"; break; case GTSL::Window::KeyboardKeys::LEFT_SHIFT: id = u8"LeftShift_Key"; break;
+					case GTSL::Window::KeyboardKeys::RIGHT_CONTROL: id = u8"RightControl_Key"; break; case GTSL::Window::KeyboardKeys::LEFT_CONTROL: id = u8"LeftControl_Key"; break;
+					case GTSL::Window::KeyboardKeys::LEFT_ALT: id = u8"LeftAlt_Key"; break; case GTSL::Window::KeyboardKeys::RIGHT_ALT: id = u8"RightAlt_Key"; break;
+					case GTSL::Window::KeyboardKeys::UP: id = u8"Up_Key"; break; case GTSL::Window::KeyboardKeys::RIGHT: id = u8"Right_Key"; break;
+					case GTSL::Window::KeyboardKeys::DOWN: id = u8"Down_Key"; break; case GTSL::Window::KeyboardKeys::LEFT: id = u8"Left_Key"; break;
+					case GTSL::Window::KeyboardKeys::SPACE_BAR: id = u8"SpaceBar_Key"; break;
+					case GTSL::Window::KeyboardKeys::NUMPAD_0: id = u8"Numpad0_Key"; break; case GTSL::Window::KeyboardKeys::NUMPAD_1: id = u8"Numpad1_Key"; break;
+					case GTSL::Window::KeyboardKeys::NUMPAD_2: id = u8"Numpad2_Key"; break; case GTSL::Window::KeyboardKeys::NUMPAD_3: id = u8"Numpad3_Key"; break;
+					case GTSL::Window::KeyboardKeys::NUMPAD_4: id = u8"Numpad4_Key"; break; case GTSL::Window::KeyboardKeys::NUMPAD_5: id = u8"Numpad5_Key"; break;
+					case GTSL::Window::KeyboardKeys::NUMPAD_6: id = u8"Numpad6_Key"; break; case GTSL::Window::KeyboardKeys::NUMPAD_7: id = u8"Numpad7_Key"; break;
+					case GTSL::Window::KeyboardKeys::NUMPAD_8: id = u8"Numpad8_Key"; break; case GTSL::Window::KeyboardKeys::NUMPAD_9: id = u8"Numpad9_Key"; break;
+					case GTSL::Window::KeyboardKeys::F1: id = u8"F1_Key"; break; case GTSL::Window::KeyboardKeys::F2: id = u8"F2_Key"; break;
+					case GTSL::Window::KeyboardKeys::F3: id = u8"F3_Key"; break; case GTSL::Window::KeyboardKeys::F4: id = u8"F4_Key"; break;
+					case GTSL::Window::KeyboardKeys::F5: id = u8"F5_Key"; break; case GTSL::Window::KeyboardKeys::F6: id = u8"F6_Key"; break;
+					case GTSL::Window::KeyboardKeys::F7: id = u8"F7_Key"; break; case GTSL::Window::KeyboardKeys::F8: id = u8"F8_Key"; break;
+					case GTSL::Window::KeyboardKeys::F9: id = u8"F9_Key"; break; case GTSL::Window::KeyboardKeys::F10: id = u8"F10_Key"; break;
+					case GTSL::Window::KeyboardKeys::F11: id = u8"F11_Key"; break; case GTSL::Window::KeyboardKeys::F12: id = u8"F12_Key"; break;
 				default: break;
 				}
 			
@@ -137,17 +137,17 @@ private:
 				}
 			};
 
-			keyboardEvent(keyboardEventData->Key, keyboardEventData->State, keyboardEventData->IsFirstTime);
+			keyboardEvent(keyboardEventData->key, keyboardEventData->state, keyboardEventData->isFirstTime);
 			break;
 		}
 		case GTSL::Window::WindowEvents::CHAR: inputManager->RecordInputSource(app->keyboard, u8"Character", static_cast<char32_t>(*static_cast<GTSL::Window::CharEventData*> (eventData))); break;
 		case GTSL::Window::WindowEvents::SIZE: {
-			auto* sizingEventData = static_cast<GTSL::Window::WindowSizeEventData*>(eventData);
+			auto* sizingEventData = static_cast<GTSL::Window::WindowSizeEvent*>(eventData);
 			app->GetApplicationManager()->DispatchEvent(this, GetOnWindowResizeEventHandle(), GTSL::MoveRef(app->windows[0].windowHandle), GTSL::MoveRef(*sizingEventData));
 			break;
 		}
 		case GTSL::Window::WindowEvents::MOVING: {
-			auto* moveData = static_cast<GTSL::Window::WindowMoveEventData*>(eventData);
+			auto* moveData = static_cast<GTSL::Window::WindowMoveEvent*>(eventData);
 
 			windows.front().position.X() = moveData->X;
 			windows.front().position.Y() = moveData->Y;
@@ -155,24 +155,25 @@ private:
 			break;
 		}
 		case GTSL::Window::WindowEvents::MOUSE_MOVE: {
-			auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEventData*>(eventData);
-			inputManager->RecordInputSource(app->mouse, u8"MouseMove", *mouseMoveEventData);
+			auto* mouseMoveEventData = static_cast<GTSL::Window::MouseMoveEvent*>(eventData);
+			inputManager->RecordInputSource(app->mouse, u8"MouseMove", mouseMoveEventData->absolutePosition);
 			break;
 		}
 		case GTSL::Window::WindowEvents::MOUSE_WHEEL: {
-			auto* mouseWheelEventData = static_cast<GTSL::Window::MouseWheelEventData*>(eventData);
+			auto* mouseWheelEventData = static_cast<GTSL::Window::MouseWheelEvent*>(eventData);
 			inputManager->RecordInputSource(app->mouse, u8"MouseWheel", *mouseWheelEventData);
 			break;
 		}
 		case GTSL::Window::WindowEvents::MOUSE_BUTTON: {
-			auto* mouseButtonEventData = static_cast<GTSL::Window::MouseButtonEventData*>(eventData);
+			auto* mouseButtonEventData = static_cast<GTSL::Window::MouseButtonEvent*>(eventData);
 
-			switch (mouseButtonEventData->Button) {
-			case GTSL::Window::MouseButton::LEFT_BUTTON: inputManager->RecordInputSource(app->mouse, u8"LeftMouseButton", mouseButtonEventData->State);	break;
-			case GTSL::Window::MouseButton::RIGHT_BUTTON: inputManager->RecordInputSource(app->mouse, u8"RightMouseButton", mouseButtonEventData->State); break;
-			case GTSL::Window::MouseButton::MIDDLE_BUTTON: inputManager->RecordInputSource(app->mouse, u8"MiddleMouseButton", mouseButtonEventData->State); break;
-			default:;
+			switch (mouseButtonEventData->button) {
+				case GTSL::Window::MouseButtons::LEFT_BUTTON: inputManager->RecordInputSource(app->mouse, u8"LeftMouseButton", mouseButtonEventData->state); break;
+				case GTSL::Window::MouseButtons::RIGHT_BUTTON: inputManager->RecordInputSource(app->mouse, u8"RightMouseButton", mouseButtonEventData->state); break;
+				case GTSL::Window::MouseButtons::MIDDLE_BUTTON: inputManager->RecordInputSource(app->mouse, u8"MiddleMouseButton", mouseButtonEventData->state); break;
+				default: break;
 			}
+
 			break;
 		}
 		case GTSL::Window::WindowEvents::DEVICE_CHANGE: {

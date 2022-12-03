@@ -10,7 +10,7 @@
 #include <GTSL/File.hpp>
 #include <GTSL/HashMap.hpp>
 #include <GTSL/Serialize.hpp>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 #include <GAL/Serialize.hpp>
 
 #include "ResourceManager.h"

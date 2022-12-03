@@ -12,7 +12,7 @@
 
 #include <GTSL/Buffer.hpp>
 #include <GAL/RenderCore.h>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 #include <GTSL/Serialize.hpp>
 #include <GTSL/Math/Math.hpp>
 #include <GTSL/Math/Vectors.hpp>

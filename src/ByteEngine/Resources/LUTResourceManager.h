@@ -1,6 +1,6 @@
 #pragma once
 #include <GTSL/Buffer.hpp>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 #include <GTSL/RGB.h>
 #include <GTSL/StaticString.hpp>
 #include <GTSL/Math/Vectors.h>

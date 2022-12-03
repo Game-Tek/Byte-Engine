@@ -3,7 +3,7 @@
 #include <GTSL/Buffer.hpp>
 
 #include <GTSL/File.hpp>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
 //#define STBI_NO_STDIO

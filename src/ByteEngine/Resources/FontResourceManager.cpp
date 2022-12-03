@@ -3,7 +3,7 @@
 #include "ByteEngine/Core.h"
 
 #include <GTSL/Buffer.hpp>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 #include <GTSL/TTF.hpp>
 #include <GTSL/Math/Vectors.hpp>
 

@@ -29,7 +29,7 @@ FetchContent_MakeAvailable(stb)
 # stb
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "5ca7acfa82c1c6ac8cb841f0c9fd1c16ba045565")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "8277242209c09e922b144caed424f62b4601f6a2")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 

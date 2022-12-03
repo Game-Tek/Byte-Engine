@@ -1,7 +1,7 @@
 #include "AudioResourceManager.h"
 
 #include <GTSL/Buffer.hpp>
-#include <GTSL/Filesystem.h>
+#include <GTSL/Filesystem.hpp>
 
 #include "ByteEngine/Debug/Assert.h"
 

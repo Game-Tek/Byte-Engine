@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.24)
-include(FetchContent)
 
 if(UNIX)
 	add_compile_options(-mavx2)
@@ -7,35 +6,17 @@ endif()
 
 project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
 
-# assimp download
-FetchContent_Declare(assimp GIT_REPOSITORY "https://github.com/assimp/assimp" GIT_TAG "141c6ca270aa4d344bdccff4b5387bc55cbeb95c")
-
-set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_TESTS OFF CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_ZLIB ON CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE INTERNAL "" FORCE)
-set(ASSIMP_INSTALL_PDB OFF CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_OBJ_IMPORTER ON CACHE INTERNAL "" FORCE)
-set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE INTERNAL "" FORCE)
-
-FetchContent_MakeAvailable(assimp)
-# assimp download
-
-# stb
-FetchContent_Declare(stb GIT_REPOSITORY "https://github.com/nothings/stb" GIT_TAG "af1a5bc352164740c1cc1354942b1c6b72eacb8a")
-FetchContent_MakeAvailable(stb)
-# stb
+include(FetchContent)
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "8277242209c09e922b144caed424f62b4601f6a2")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "889283d1d17aaa0b7478a4cfa68e8781d2dff28e")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 
 # ByteEngine options
 set(BE_GAPI "vulkan")
 set(BE_CSHARP_SCRIPTING true)
+set(BE_DEBUG true)
 # ByteEngine options
 
 add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/EntryPoint.h"
@@ -82,19 +63,34 @@ target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/ext")
 
 # assimp
-target_link_libraries(ByteEngine INTERFACE assimp)
-target_include_directories(ByteEngine PUBLIC "${assimp_SOURCE_DIR}/include")
-target_include_directories(ByteEngine PUBLIC "${assimp_BINARY_DIR}/include")
+find_package(assimp CONFIG REQUIRED)
+
+set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_TESTS OFF CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_ZLIB ON CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE INTERNAL "" FORCE)
+set(ASSIMP_INSTALL_PDB OFF CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_OBJ_IMPORTER ON CACHE INTERNAL "" FORCE)
+set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE INTERNAL "" FORCE)
+
+target_link_libraries(ByteEngine INTERFACE assimp::assimp)
+target_include_directories(ByteEngine PUBLIC assimp::assimp)
+target_include_directories(ByteEngine INTERFACE assimp_INCLUDE_DIRS)
 # assimp
 
-# stb
-target_include_directories(ByteEngine PUBLIC "${stb_SOURCE_DIR}")
-# stb
+find_package(stb REQUIRED)
+target_include_directories(ByteEngine PUBLIC stb::stb)
 
 # GTSL
 target_include_directories(ByteEngine PUBLIC "${gtsl_SOURCE_DIR}")
 target_link_libraries(ByteEngine INTERFACE GTSL)
 # GTSL
+
+enable_testing()
+
+add_subdirectory(tests)
 
 if (CMAKE_BUILD_TYPE MATCHES Debug)
 	target_compile_definitions(ByteEngine PUBLIC BE_DEBUG=1)
@@ -162,6 +158,3 @@ if (UNIX)
 		target_compile_definitions(ByteEngine PUBLIC BE_DX12=0)
 	endif()	
 endif()
-
-install(TARGETS ByteEngine DESTINATION lib)
-install(FILES "${PROJECT_SOURCE_DIR}/src/ByteEngine.h" DESTINATION include)

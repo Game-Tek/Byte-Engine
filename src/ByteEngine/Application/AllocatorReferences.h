@@ -10,7 +10,7 @@ namespace BE
 
 	struct BEAllocatorReference : GTSL::AllocatorReference
 	{
-		GTSL::ShortString<128> Name;
+		GTSL::ShortString<16> Name = u8"-";
 		bool IsDebugAllocation = false;
 
 		BEAllocatorReference() = default;
@@ -22,7 +22,7 @@ namespace BE
 			Name = other.Name; IsDebugAllocation = other.IsDebugAllocation; return *this;
 		}
 		
-		explicit BEAllocatorReference(const GTSL::ShortString<128>& name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
+		explicit BEAllocatorReference(const GTSL::ShortString<16>& name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
 		explicit BEAllocatorReference(const utf8* name, const bool isDebugAllocation = false) : Name(name), IsDebugAllocation(isDebugAllocation) {}
 	};
 
@@ -34,11 +34,9 @@ namespace BE
 
 		SystemAllocatorReference() = default;
 		
-		SystemAllocatorReference(BE::Application* application, const utf8* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation), application(application)
+		SystemAllocatorReference(const utf8* name, const bool isDebugAllocation = false) : BEAllocatorReference(name, isDebugAllocation)
 		{
 		}
-		
-		BE::Application* application = nullptr;
 	};
 
 	struct TransientAllocatorReference : BEAllocatorReference

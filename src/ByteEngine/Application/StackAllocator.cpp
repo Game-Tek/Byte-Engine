@@ -3,11 +3,11 @@
 #include <GTSL/Math/Math.hpp>
 #include "ByteEngine/Debug/Assert.h"
 
-void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, BE::SystemAllocatorReference* allocatorReference, uint64& allocatedSize)
+void StackAllocator::Block::initialize(const uint64 minimumSize, BE::SystemAllocatorReference allocatorReference, uint64& allocatedSize)
 {
 	uint64 allocated_size{ 0 };
 
-	allocatorReference->Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
+	allocatorReference.Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
 
 	allocatedSize = allocated_size;
 
@@ -15,9 +15,9 @@ void StackAllocator::Block::AllocateBlock(const uint64 minimumSize, BE::SystemAl
 	end = start + allocated_size;
 }
 
-void StackAllocator::Block::DeallocateBlock(BE::SystemAllocatorReference* allocatorReference, uint64& deallocatedBytes) const
+void StackAllocator::Block::deinitialize(BE::SystemAllocatorReference allocatorReference, uint64& deallocatedBytes) const
 {
-	allocatorReference->Deallocate(end - start, alignof(byte), start);
+	allocatorReference.Deallocate(end - start, alignof(byte), start);
 	deallocatedBytes += end - start;
 }
 
@@ -40,4 +40,4 @@ bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 a
 	return false;
 }
 
-void StackAllocator::Block::Clear() { at = start; }
+void StackAllocator::Block::clear() { at = start; }

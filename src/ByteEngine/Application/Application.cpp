@@ -23,50 +23,41 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 }
 #endif
 
+uint32 ShitTracker::shitCount = 0;
+
 namespace BE
 {
-	Application::Application(GTSL::ShortString<128> applicationName) : Object(applicationName.begin()), systemAllocator(), systemAllocatorReference(this, applicationName.begin()), transientAllocator(&systemAllocatorReference, 2, 2, 2048 * 2048 * 8),
-		jsonBuffer(GetPersistentAllocator()), systemApplication({})
-	{
+	Application::Application(GTSL::StringView applicationName) : Object(applicationName) {
 		applicationInstance = this;
 	}
 
-	Application::~Application()
-	{
-	}
+	Application::~Application() {}
 
-	bool Application::BaseInitialize(int argc, utf8* argv[])
-	{
+	bool Application::base_initialize(GTSL::Range<const GTSL::StringView*> arguments) {
 		if (!checkPlatformSupport() ) {
 			Close(CloseMode::ERROR, GTSL::StaticString<128>(u8"No platform support."));
 			return false;
 		}
 
-		::new(&poolAllocator) PoolAllocator(&systemAllocatorReference);
-
 		GTSL::Thread::SetThreadId(0);
 
-		//systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
+		poolAllocator.initialize();
+		stackAllocator.initialize(BE::SystemAllocatorReference(u8"StackAllocator", false));
 
-		jsonBuffer.Allocate(4096, 16);
+		//systemApplication.SetProcessPriority(GTSL::Application::Priority::HIGH);
 
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = GetPathToApplication();
 		logger_create_info.AbsolutePathToLogDirectory = path;
-		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(systemAllocatorReference, logger_create_info);
+		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(BE::SystemAllocatorReference(u8"Logger", true), logger_create_info);
 
-		if (!parseConfig()) {
+		if (!parseConfig()) { // TODO. create config file if it doesn't exist.
 			return false;
 		}
 
-		logger->SetTrace(GetBoolOption(u8"trace"));
+		//logger->SetTrace(GetBoolOption(u8"trace"));
 
-		if(!exists(std::filesystem::path((GetPathToApplication() + u8"/resources").c_str()))) {
-			Close(CloseMode::ERROR, GTSL::StaticString<64>(u8"Resources folder not found."));
-			return false;
-		}
-
-		inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
+		// inputManagerInstance = GTSL::SmartPointer<InputManager, SystemAllocatorReference>(systemAllocatorReference);
 
 #if BE_PLATFORM_WINDOWS
 		// Set the process DPI awareness so windows' extents match the set resolution and are not scaled by Windows to match size based on DPI.
@@ -75,22 +66,21 @@ namespace BE
 #endif
 
 		{
-			auto threadCount = (uint32)GetUINTOption(u8"threadCount");
+			auto threadCount = 1u;
+			//auto threadCount = (uint32)GetUINTOption(u8"threadCount");
 			threadCount = GTSL::Math::Limit(threadCount, static_cast<uint32>(GTSL::Thread::ThreadCount() - 1/*main thread*/));
 			threadCount = threadCount ? static_cast<uint8>(threadCount) : GTSL::Thread::ThreadCount();
-			threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(systemAllocatorReference, threadCount);
+			threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(BE::SystemAllocatorReference(u8"ThreadPool"), threadCount);
 		}
 		
 		initialized = true;
 
 		BE_LOG_SUCCESS(u8"Succesfully initialized Byte Engine module!");
 		
-		if (argc > 0) {	
-			GTSL::StaticString<2048> string(u8"Application started with parameters:\n");
+		if (arguments.ElementCount() > 0) {	
+			GTSL::StaticString<2048> string(u8"Application started with parameters:\n\t");
 
-			for (uint32 p = 0; p < argc; ++p) {
-				string += '	'; string += argv[p];
-			}
+			string += GTSL::Join{ arguments, u8" " };
 
 			BE_LOG_MESSAGE(string);
 		} else {
@@ -100,13 +90,13 @@ namespace BE
 		return true;
 	}
 
-	bool Application::Initialize() {
-		applicationManager = GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference>(systemAllocatorReference);
+	bool Application::initialize() {
+		applicationManager = GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference>(BE::SystemAllocatorReference(u8"ApplicationManager"));
 
 		return true;
 	}
 
-	void Application::Shutdown() {
+	void Application::shutdown() {
 		if(logger) { // If logger instance was successfully initialized report shutting down reason
 			if (closeMode != CloseMode::OK) {
 				if (closeMode == CloseMode::WARNING) {
@@ -121,47 +111,38 @@ namespace BE
 		}
 
 		if (initialized) {
-			applicationManager.TryFree();
-			
-			threadPool.TryFree(); //must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
-			inputManagerInstance.TryFree();
-			
-			transientAllocator.LockedClear();
-			transientAllocator.Free();
-			StackAllocator::DebugData stack_allocator_debug_data(&systemAllocatorReference);
-			transientAllocator.GetDebugData(stack_allocator_debug_data);
-			BE_LOG_MESSAGE(u8"Debug data: ", static_cast<GTSL::StaticString<1024>>(stack_allocator_debug_data));
+			//must free manually or else these smart pointers get freed on destruction, which is after the allocators (which this classes depend on) are destroyed.
 
-			logger.TryFree();
-			
-			poolAllocator.Free();
+			applicationManager.TryFree();
+			threadPool.TryFree();
+			//inputManagerInstance.TryFree();
+			logger.TryFree();			
+			stackAllocator.clear();
+			poolAllocator.free();
 		}
 	}
 
-	uint8 Application::GetNumberOfThreads() { return threadPool->GetNumberOfThreads() + 1/*main thread*/; }
+	//uint8 Application::GetNumberOfThreads() { return threadPool->GetNumberOfThreads() + 1/*main thread*/; }
+	uint8 Application::GetNumberOfThreads() { return 1/*main thread*/; }
 
-	void Application::OnUpdate(const OnUpdateInfo& updateInfo)
-	{		
-		inputManagerInstance->Update();
-		applicationManager->OnUpdate(this);
+	void Application::OnUpdate(const OnUpdateInfo& updateInfo) {
+		// inputManagerInstance->Update();
+		// applicationManager->OnUpdate(this);
 	}
 
-	int Application::Run(int argc, char** argv)
-	{
-		applicationManager->AddEvent(u8"Application", EventHandle(u8"OnPromptClose"));
+	void Application::run() {
+		//applicationManager->AddEvent(u8"Application", EventHandle(u8"OnPromptClose"));
 		
 		while (!flaggedForClose) {			
-			clockInstance.OnUpdate();
+			//clockInstance.OnUpdate();
 			
 			OnUpdateInfo update_info{};
 			OnUpdate(update_info);
 			
-			transientAllocator.LockedClear();
+			//transientAllocator.LockedClear();
 
 			++applicationTicks;
 		}
-
-		return static_cast<int>(closeMode);
 	}
 
 	void Application::PromptClose() {

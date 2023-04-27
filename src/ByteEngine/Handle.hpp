@@ -46,5 +46,4 @@ private:
 	C handle = static_cast<C>(~0);
 };
 
-#define MAKE_HANDLE(type, name)\
-	using name##Handle = Handle<type, struct name##_tag>;
+#define MAKE_HANDLE(type, name) using name##Handle = Handle<type, struct name##_tag>;

@@ -16,3 +16,9 @@ sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list http://packages.l
 sudo apt update
 sudo apt install vulkan-sdk
 # Install Vulkan SDK
+
+conan install . --output-folder=build --build=missing
+
+meson setup --native-file ./build/conan_meson_native.ini build
+
+meson compile -C build

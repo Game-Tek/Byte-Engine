@@ -6,51 +6,57 @@
 
 #include <GTSL/Mutex.h>
 #include <GTSL/Range.hpp>
+#include <GTSL/Vector.hpp>
 
 #include "ByteEngine/Game/System.hpp"
 
-class PoolAllocator
-{
+class PoolAllocator {
 public:
 	PoolAllocator() = default;
 	PoolAllocator(BE::SystemAllocatorReference* allocatorReference);
 
 	~PoolAllocator() = default;
 
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, GTSL::Range<const char8_t*> name) const;
+	void initialize();
 
+	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, GTSL::Range<const char8_t*> name) const;
 	void Deallocate(uint64 size, uint64 alignment, void* memory, const GTSL::Range<const char8_t*> name) const;
 
-	void Free() const;
+	void free();
 
-	class Pool
-	{
+	class Pool {
 	public:
 		Pool() = default;
-		
-		Pool(uint32 slotsCount, uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference);
 
-		void Allocate(uint64 size, uint64 alignment, void** data, uint64* allocatedSize);
+		// Intialize pool with slotsCount slots of size slotsSize
+		void initialize(uint32 slotsCount, uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference);
 
-		void Deallocate(uint64 size, uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference);
+		// Allocate memory from pool
+		void allocate(uint64 size, uint64 alignment, void** data, uint64* allocatedSize) const;
 
-		void Free(uint64& freedBytes, BE::SystemAllocatorReference* allocatorReference) const;
+		// Deallocate memory from pool
+		void deallocate(uint64 size, uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference) const;
+
+		// Free pool
+		void free(uint64& freedBytes, BE::SystemAllocatorReference* allocatorReference);
 
 	private:
 		using free_slots_type = uint64;
 		
-		free_slots_type* freeSlotsBitTrack{ nullptr };
+		free_slots_type* freeSlots = nullptr;
 		
 #if BE_DEBUG
 		free_slots_type* freeSlotsBitTrack2{ nullptr };
 		uint8* allocCounter{ nullptr };
 #endif
 		
-		byte* slotsData{ nullptr };
+		byte* slotsData = nullptr;
 		
-		const uint32 SLOTS_SIZE{ 0 };
-		const uint32 MAX_SLOTS_COUNT{ 0 };
-		mutable GTSL::Mutex poolLock;
+		uint32 SLOTS_SIZE = 0;
+		uint32 MAX_SLOTS_COUNT = 0;
+
+		//mutable GTSL::Mutex poolLock;
+		
 		uint32 bitNums = 0;
 		
 		[[nodiscard]] byte* getSlotAddress(const uint32 slotIndex) const { return slotsData + (slotIndex * SLOTS_SIZE); }
@@ -60,18 +66,27 @@ public:
 		static uint64 slotsDataAllocationAlignment() { return alignof(uint64); }
 	};
 
-
 	static constexpr bool USE_MALLOC = false;
 	static constexpr bool MEMORY_PATTERN = false;
 	static constexpr bool DEALLOC_COUNT = false;
 
 private:
-	Pool* poolsData{ nullptr };
-	const uint32 POOL_COUNT{ 0 };
+	uint64 minimumPoolSize = 16ull; // Minumum default size of a pool, 16 bytes
+	uint64 maximumPoolSize = 1024ull * 1024ull * 4ull; // Maximum default size of a pool, 4 MB
+
+	uint64 minimumPoolSizeBits = 0ull;
+	uint64 maximumPoolSizeBits = 0ull;
+
+	//GTSL::StaticVector<Pool, 16> pools;
+
+	uint32 poolCount = 0;
+	Pool pools[32];
+
 	BE::SystemAllocatorReference* systemAllocatorReference{ nullptr };
 
-	mutable GTSL::Mutex debugLock;
-	mutable std::unordered_map<void*, uint32> allocMap;	
+	// mutable GTSL::Mutex debugLock;
 
-	[[nodiscard]] GTSL::Range<Pool*> pools() const { return GTSL::Range<Pool*>(POOL_COUNT, poolsData); }
+	// mutable std::unordered_map<void*, uint32> allocMap;
+
+	// [[nodiscard]] GTSL::Range<Pool*> pools() const { return GTSL::Range<Pool*>(poolCount, pools); }
 };

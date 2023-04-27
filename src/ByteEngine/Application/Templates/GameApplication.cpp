@@ -31,9 +31,9 @@
 
 class RenderOrchestrator;
 
-bool GameApplication::Initialize()
+bool GameApplication::initialize()
 {
-	if(!Application::Initialize()) { return false; } 
+	if(!Application::initialize()) { return false; } 
 	
 	SetupInputSources();
 	
@@ -44,11 +44,6 @@ bool GameApplication::Initialize()
 	applicationManager->AddSystem<PipelineCacheResourceManager>(u8"PipelineCacheResourceManager");
 	applicationManager->AddSystem<FontResourceManager>(u8"FontResourceManager");
 
-	return true;
-}
-
-void GameApplication::PostInitialize()
-{
 	//FRAME START
 	applicationManager->AddStage(u8"FrameStart");
 
@@ -111,7 +106,9 @@ void GameApplication::PostInitialize()
 	applicationManager->AddSystem<WorldSystem>(u8"WorldSystem");
 
 	applicationManager->AddSystem<ScriptingSystem>(u8"ScriptingSystem");
-}	
+
+	return true;
+}
 
 void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 {
@@ -210,9 +207,9 @@ void GameApplication::OnUpdate(const OnUpdateInfo& updateInfo)
 	}
 }
 
-void GameApplication::Shutdown()
+void GameApplication::shutdown()
 {	
-	Application::Shutdown();
+	Application::shutdown();
 }
 
 void GameApplication::SetupInputSources() {

@@ -1,7 +1,7 @@
 [requires]
 assimp/5.2.2
-stb/cci.20210910
+stb/cci.20220909
 
 [generators]
-cmake_find_package_multi
-cmake_find_package
+PkgConfigDeps
+MesonToolchain

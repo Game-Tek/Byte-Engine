@@ -2,7 +2,7 @@
 
 #include "GTSL/JSON.hpp"
 
-World::World()
+World::World() : Object(u8"World")
 {
 }
 

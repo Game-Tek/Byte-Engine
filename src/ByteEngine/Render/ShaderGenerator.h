@@ -190,7 +190,7 @@ struct GPipeline : Object {
 		bool IsConst = false;
 	};
 
-	GPipeline() : elements(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), structs(64, BE::TAR(u8"Shader")), Functions(128, BE::TAR(u8"Shader")) {
+	GPipeline() : Object(u8"GPipeline"), elements(32, BE::TAR(u8"Shader")), deductionGuides(16, BE::TAR(u8"Shader")), members(32, BE::TAR(u8"Shader")), structs(64, BE::TAR(u8"Shader")), Functions(128, BE::TAR(u8"Shader")) {
 		auto handle = elements.Emplace(0, BE::TAR(u8"Shader"));
 		auto& e = elements[handle];
 		e.Type = LanguageElement::ElementType::SCOPE;

@@ -2,9 +2,14 @@
 
 #include "Application.h"
 
-void BE::SystemAllocatorReference::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize) const { (*allocatedSize) = size; application->GetSystemAllocator()->Allocate(size, alignment, memory); }
+void BE::SystemAllocatorReference::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize) const {
+	(*allocatedSize) = size;
+	BE::Application::Get()->GetSystemAllocator()->Allocate(size, alignment, memory);
+}
 
-void BE::SystemAllocatorReference::Deallocate(const uint64 size, const uint64 alignment, void* memory) const { application->GetSystemAllocator()->Deallocate(size, alignment, memory); }
+void BE::SystemAllocatorReference::Deallocate(const uint64 size, const uint64 alignment, void* memory) const {
+	BE::Application::Get()->GetSystemAllocator()->Deallocate(size, alignment, memory);
+}
 
 void BE::TransientAllocatorReference::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize) const { BE::Application::Get()->GetTransientAllocator()->Allocate(size, alignment, memory, allocatedSize, Name); }
 

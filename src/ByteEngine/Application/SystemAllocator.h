@@ -21,10 +21,10 @@ public:
 		uint64 TotalDeallocationCount{ 0 };
 	};
 protected:
-	GTSL::Mutex allocatorMutex;
+	// GTSL::Mutex allocatorMutex;
 	
 #if BE_DEBUG
-	GTSL::Mutex debugDataMutex;
+	// GTSL::Mutex debugDataMutex;
 	uint64 allocatedBytes{ 0 };
 	uint64 deallocatedBytes{ 0 };
 	uint64 totalAllocatedBytes{ 0 };
@@ -36,15 +36,12 @@ protected:
 #endif
 	
 public:
-	SystemAllocator()
-	{
-		
-	}
+	SystemAllocator() = default;
 
 #if BE_DEBUG
 	void GetDebugData(DebugData& debugData)
 	{
-		GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
+		// GTSL::Lock<GTSL::Mutex> lock(debugDataMutex);
 		debugData.AllocationCount = allocationCount;
 		debugData.AllocatedBytes = allocatedBytes;
 		debugData.DeallocatedBytes = deallocatedBytes;

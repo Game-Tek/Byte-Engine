@@ -4,6 +4,8 @@
 #include <Windows.h>
 #endif
 
+#include <chrono>
+
 Clock::Clock()
 {
 #if BE_PLATFORM_WINDOWS
@@ -83,6 +85,13 @@ uint16 Clock::GetYear()
 	GetLocalTime(&WinTimeStructure);
 	return WinTimeStructure.wYear;
 #endif
+
+	const time_t now = time(NULL);
+	struct tm here;
+
+	localtime_r(&now, &here);
+	
+	return here.tm_year + 1900;
 }
 
 Clock::Months Clock::GetMonth()
@@ -92,6 +101,13 @@ Clock::Months Clock::GetMonth()
 	GetLocalTime(&WinTimeStructure);
 	return static_cast<Months>(WinTimeStructure.wMonth);
 #endif
+
+	const time_t now = time(NULL);
+	struct tm here;
+
+	localtime_r(&now, &here);
+
+	return static_cast<Months>(here.tm_mon + 1);
 }
 
 uint8 Clock::GetDayOfMonth()
@@ -101,6 +117,13 @@ uint8 Clock::GetDayOfMonth()
 	GetLocalTime(&WinTimeStructure);
 	return WinTimeStructure.wDay;
 #endif
+
+	const time_t now = time(NULL);
+	struct tm here;
+
+	localtime_r(&now, &here);
+
+	return here.tm_mday;
 }
 
 Clock::Days Clock::GetDayOfWeek()
@@ -110,6 +133,13 @@ Clock::Days Clock::GetDayOfWeek()
 	GetLocalTime(&WinTimeStructure);
 	return (WinTimeStructure.wDayOfWeek == 0) ? Days::Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
 #endif
+
+	const time_t now = time(NULL);
+	struct tm here;
+
+	localtime_r(&now, &here);
+
+	return static_cast<Days>(here.tm_wday);
 }
 
 Clock::Time Clock::GetTime()
@@ -119,4 +149,11 @@ Clock::Time Clock::GetTime()
 	GetLocalTime(&WinTimeStructure);
 	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };
 #endif
+
+	const time_t now = time(NULL);
+	struct tm here;
+
+	localtime_r(&now, &here);
+
+	return { static_cast<uint8>(here.tm_hour), static_cast<uint8>(here.tm_min), static_cast<uint8>(here.tm_sec) };
 }

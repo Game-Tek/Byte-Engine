@@ -24,34 +24,53 @@ class Clock;
 
 #include <GTSL/JSON.hpp>
 
+class ShitTracker {
+public:
+	ShitTracker() {
+		void* data  = nullptr;
+		GTSL::Allocate(8ull, &data);
+		++shitCount;
+	}
+
+	~ShitTracker() {
+		--shitCount;
+	}
+
+	static uint32 shitCount;
+};
+
 namespace BE
 {	
 	class Logger;
 	
 	class Application : public Object {
-	public:
+	public:		
+		explicit Application(GTSL::StringView applicationName);
+		Application(const Application&) = delete; // Explicitly delete copy constructor because we have a static pointer to this object.
+		Application(Application&&) = delete; // Explicitly delete move constructor because we have a static pointer to this object.
+		virtual ~Application();
+
 		[[nodiscard]] static const char* GetEngineName() { return "Byte Engine"; }
 		static const char* GetEngineVersion() { return "0.0.1"; }
 
 		static Application* Get() { return applicationInstance; }
-		
-		explicit Application(GTSL::ShortString<128> applicationName);
-		virtual ~Application();
 
-		bool BaseInitialize(int argc, utf8* argv[]);
-		virtual bool Initialize() = 0;
-		virtual void PostInitialize() = 0;
-		virtual void Shutdown() = 0;
-		uint8 GetNumberOfThreads();
+		bool base_initialize(GTSL::Range<const GTSL::StringView*> arguments);
+
+		virtual bool initialize() = 0;
+
+		void run();
 
 		enum class UpdateContext : uint8 {
 			NORMAL, BACKGROUND
 		};
-		
+
 		struct OnUpdateInfo {};
 		virtual void OnUpdate(const OnUpdateInfo& updateInfo);
-		
-		int Run(int argc, char** argv);
+
+		virtual void shutdown() = 0;
+
+		uint8 GetNumberOfThreads();	
 		
 		virtual GTSL::ShortString<128> GetApplicationName() = 0;
 
@@ -66,7 +85,7 @@ namespace BE
 
 		//Immediately closes the application and logs the reason
 		void Exit(const GTSL::Range<const utf8*> reason) {
-			GTSL::Lock lock(crashLogMutex);
+			// GTSL::Lock lock(crashLogMutex);
 			
 			if(!crashLog) {
 				auto crashLogFileOpenResult = crashLog.Open(GTSL::ShortString<32>(u8"crash.log"), GTSL::File::WRITE, true);
@@ -80,17 +99,16 @@ namespace BE
 		}
 		
 		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const;
-
-//		[[nodiscard]] GTSL::StaticString<260> GetPathToApplication() const {
-	//		auto path = systemApplication.GetPathToExecutable();
-		//	path.Drop(FindLast(path, u8'/').Get()); return path;
-		//}
 		
-		[[nodiscard]] const Clock* GetClock() const { return &clockInstance; }
-		[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance.GetData(); }
-		[[nodiscard]] Logger* GetLogger() const { return logger.GetData(); }
-		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
+		//[[nodiscard]] const Clock* GetClock() const { return &clockInstance; }
+		[[nodiscard]] const Clock* GetClock() const { return nullptr; }
+		//[[nodiscard]] InputManager* GetInputManager() const { return inputManagerInstance.GetData(); }
+		[[nodiscard]] InputManager* GetInputManager() const { return nullptr; }
+		[[nodiscard]] Logger* GetLogger() const { return logger; }
+		// [[nodiscard]] const GTSL::Application* GetSystemApplication() const { return &systemApplication; }
+		[[nodiscard]] const GTSL::Application* GetSystemApplication() const { return nullptr; }
 		[[nodiscard]] class ApplicationManager* GetGameInstance() const { return applicationManager; }
+		[[nodiscard]] class ApplicationManager* get_orchestrator() const { return applicationManager; }
 		
 		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
 		
@@ -98,7 +116,7 @@ namespace BE
 		
 		[[nodiscard]] SystemAllocator* GetSystemAllocator() { return &systemAllocator; }
 		[[nodiscard]] PoolAllocator* GetPersistantAllocator() { return &poolAllocator; }
-		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &transientAllocator; }
+		[[nodiscard]] StackAllocator* GetTransientAllocator() { return &stackAllocator; }
 
 		bool GetBoolOption(const GTSL::StringView optionName) const {
 			return JSON[optionName].GetBool();
@@ -124,32 +142,33 @@ namespace BE
 		inline static Application* applicationInstance{ nullptr };
 		
 		SystemAllocator systemAllocator;
-		SystemAllocatorReference systemAllocatorReference;
+
+		// GTSL::Application systemApplication;
+
+		Clock clockInstance;
 
 		GTSL::File crashLog;
-		GTSL::Mutex crashLogMutex;
 		
 		GTSL::SmartPointer<Logger, SystemAllocatorReference> logger;
-		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> applicationManager;
-		
-		PoolAllocator poolAllocator;
-		StackAllocator transientAllocator;
 
-		GTSL::Application systemApplication;
+		GTSL::SmartPointer<ApplicationManager, BE::SystemAllocatorReference> applicationManager;
+		//ApplicationManager* applicationManager = nullptr;
+
+		InputManager* inputManagerInstance = nullptr;
+
+		PoolAllocator poolAllocator;
+		StackAllocator stackAllocator;
 
 		bool initialized = false;
-		
-		Clock clockInstance;
-		GTSL::SmartPointer<InputManager, BE::SystemAllocatorReference> inputManagerInstance;
+
 		GTSL::SmartPointer<ThreadPool, BE::SystemAllocatorReference> threadPool;
 
 		bool flaggedForClose = false;
 		CloseMode closeMode{ CloseMode::OK };
-		BE_DEBUG_ONLY(GTSL::StaticString<1024> closeReason);
+		GTSL::StaticString<1024> closeReason;
 
 		uint64 applicationTicks{ 0 };
 
-		GTSL::Buffer<BE::PAR> jsonBuffer;
 		GTSL::JSON<GTSL::DefaultAllocatorReference> JSON;
 
 		bool parseConfig();

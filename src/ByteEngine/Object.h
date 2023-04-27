@@ -1,5 +1,6 @@
 #pragma once
 
+#include <GTSL/StringCommon.h>
 #include <GTSL/ShortString.hpp>
 
 #include "Application/AllocatorReferences.h"
@@ -15,7 +16,9 @@ class Object {
 public:
 	Object() = default;
 	
-	Object(const utf8* objectName) : objectName(objectName) {}
+	// Object(const utf8* objectName = u8"Object") : objectName(objectName) {}
+
+	Object(const GTSL::StringView name) : objectName(name) {}
 	
 	~Object() = default;
 

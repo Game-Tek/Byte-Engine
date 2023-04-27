@@ -17,10 +17,9 @@ public:
 
 	~GameApplication() = default;
 	
-	bool Initialize() override;
-	void PostInitialize() override;
+	bool initialize() override;
 	void OnUpdate(const OnUpdateInfo& updateInfo) override;
-	void Shutdown() override;
+	void shutdown() override;
 
 	auto GetWindowHandle() const { return windowHandle; }
 

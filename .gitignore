@@ -1,12 +1,16 @@
 # Directories
 .vs/
-bin/
-bin-int/
+.idea/
+
+[Bb]in/
+[Bb]in-int/
+[Oo]bj
+[Ii]ntermediate
 .git/
 .github/
-ext/
-out/
-build/
+[Ee]xt/
+[Oo]ut/
+[Bb]uild/
 
 # Files
 *.user

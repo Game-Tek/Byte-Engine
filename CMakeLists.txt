@@ -5,14 +5,14 @@ if(UNIX)
 endif()
 
 # ByteEngine options
-option(BE_GAPI "Graphics API to Build with (vulkan or dx12)" "vulkan")
-option(BE_CSHARP_SCRIPTING "Build CSharp Wrapper" ON)
-option(BE_DEBUG "Enable Debug" ON)
-option(BE_BUILD_TESTS "Build Tests" OFF)
-option(USE_XREPO_FOR_DEPS "Use XRepo to pull dependencies" OFF)
+set(BE_GAPI "vulkan" CACHE STRING "Graphics API to Build with (vulkan or dx12)")
+set(BE_CSHARP_SCRIPTING ON CACHE BOOL "Build CSharp Wrapper")
+set(BE_DEBUG ON CACHE BOOL "Enable Debug")
+set(BE_BUILD_TESTS OFF CACHE BOOL "Build Tests")
+set(ENABLE_XREPO OFF CACHE BOOL "Use XRepo to pull dependencies")
 # ByteEngine options
 
-if(${USE_XREPO_FOR_DEPS})
+if(${ENABLE_XREPO})
 	if(NOT EXISTS "${CMAKE_BINARY_DIR}/xrepo.cmake")
 		message(STATUS "Downloading xrepo.cmake from https://github.com/xmake-io/xrepo-cmake/")
 		file(DOWNLOAD "https://raw.githubusercontent.com/xmake-io/xrepo-cmake/main/xrepo.cmake"
@@ -76,7 +76,7 @@ target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/ext")
 
 # assimp
-if(${USE_XREPO_FOR_DEPS})
+if(${ENABLE_XREPO})
 	xrepo_package("assimp 5.2.5")
 endif()
 
@@ -97,7 +97,7 @@ target_include_directories(ByteEngine PUBLIC assimp::assimp)
 target_include_directories(ByteEngine INTERFACE assimp_INCLUDE_DIRS)
 # assimp
 
-if(${USE_XREPO_FOR_DEPS})
+if(${ENABLE_XREPO})
 	xrepo_package("stb 2023.01.30")
 	xrepo_target_packages(ByteEngine PUBLIC stb)
 else()

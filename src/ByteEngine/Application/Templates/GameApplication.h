@@ -33,7 +33,7 @@ protected:
 
 	SystemHandle windowSystemHandle;
 
-	uint32 mouseCount = 0;
+	GTSL::uint32 mouseCount = 0;
 
 	void SetupInputSources();
 	void RegisterMouse();

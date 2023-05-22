@@ -1,9 +1,0 @@
-{
-    "version": 4,
-    "vendor": {
-        "conan": {}
-    },
-    "include": [
-        "/home/facundovilla/development/Byte-Engine/build/CMakePresets.json"
-    ]
-}

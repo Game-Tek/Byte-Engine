@@ -236,7 +236,8 @@ namespace GAL
 			vkGraphicsPipelineCreateInfo.pDepthStencilState = nullptr; vkGraphicsPipelineCreateInfo.pMultisampleState = &vkPipelineMultisampleStateCreateInfo;
 			vkGraphicsPipelineCreateInfo.layout = pipelineLayout.GetVkPipelineLayout();
 
-			GTSL::StaticVector<VkSpecializationMapEntry, 8> specializationMapEntries; const byte* specializationData = nullptr; uint64 specializationDataSize = 0;
+			GTSL::StaticVector<VkSpecializationMapEntry, 8> specializationMapEntries; const byte* specializationData = nullptr;
+			GTSL::uint64 specializationDataSize = 0;
 
 			GTSL::Buffer<GTSL::StaticAllocator<8192>> buffer(8192, 8);
 
@@ -452,7 +453,8 @@ namespace GAL
 		}
 		
 		void InitializeComputePipeline(const VulkanRenderDevice* renderDevice, const GTSL::Range<const PipelineStateBlock*> pipeline_states, GTSL::Range<const ShaderInfo*> stages, const VulkanPipelineLayout pipelineLayout, const VulkanPipelineCache pipelineCache) {
-			GTSL::StaticVector<VkSpecializationMapEntry, 8> specializationMapEntries; const byte* specializationData = nullptr; uint64 specializationDataSize = 0;
+			GTSL::StaticVector<VkSpecializationMapEntry, 8> specializationMapEntries; const byte* specializationData = nullptr;
+			GTSL::uint64 specializationDataSize = 0;
 
 			GTSL::StaticBuffer<8192> buffer;
 

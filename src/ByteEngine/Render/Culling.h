@@ -20,16 +20,17 @@ struct vec4;
 //	GTSL::Vector3 halfSize();
 //}
 
-inline float32 projectSphere(GTSL::Vector3 cameraPosition, GTSL::Vector3 spherePosition, const float32 radius) {
+inline GTSL::float32 projectSphere(GTSL::Vector3 cameraPosition, GTSL::Vector3 spherePosition, const GTSL::float32 radius) {
 	return GTSL::Math::Tangent(radius * radius / GTSL::Math::DistanceSquared(spherePosition, cameraPosition));
 }
 
-inline void projectSpheres(const GTSL::Vector3 cameraPosition, GTSL::MultiRange<float32, float32, float32, float32> spherePositions, auto& results) {
-	using float8x = GTSL::SIMD<float32, 8>;
+inline void projectSpheres(const GTSL::Vector3 cameraPosition, GTSL::MultiRange<GTSL::float32, GTSL::float32, GTSL::float32, GTSL::float32> spherePositions, auto& results)
+{
+	using float8x = GTSL::SIMD<GTSL::float32, 8>;
 
 	float8x cameraX(cameraPosition[0]), cameraY(cameraPosition[1]), cameraZ(cameraPosition[2]);
 
-	for(uint32 i = 0; i < spherePositions.GetLength(); i += 8) {
+	for(GTSL::uint32 i = 0; i < spherePositions.GetLength(); i += 8) {
 		float8x sphereX(spherePositions.GetPointer<0>(i)), sphereY(spherePositions.GetPointer<1>(i)), sphereZ(spherePositions.GetPointer<2>(i)), sphereRadiuses(spherePositions.GetPointer<3>(i));
 
 		float8x distanceX = cameraX - sphereX, distanceY = cameraY - sphereY, distanceZ = cameraZ - sphereZ;
@@ -38,21 +39,21 @@ inline void projectSpheres(const GTSL::Vector3 cameraPosition, GTSL::MultiRange<
 		auto result = (sphereRadiuses * sphereRadiuses) / distanceSquared;
 		//auto result = GTSL::Math::Tangent((sphereRadiuses * sphereRadiuses) / distanceSquared);
 
-		float32 res[8];
+		GTSL::float32 res[8];
 		result.CopyTo(res);
 
 		for (auto j = 0; j < 8; ++j) { results.EmplaceBack(res[j]); }
 	}
 }
 
-inline float32 test(const GTSL::Vector3 cameraPosition, const GTSL::Vector3 spherePosition, const float32 radius, const float32 fov)
+inline GTSL::float32 test(const GTSL::Vector3 cameraPosition, const GTSL::Vector3 spherePosition, const GTSL::float32 radius, const GTSL::float32 fov)
 {
 	auto size = projectSphere(cameraPosition, spherePosition, radius);
 	return GTSL::Math::MapToRangeZeroToOne(fov, 180.f, 1.0f);
 }
 
-inline uint8 SelectLOD(const float32 percentage, const uint8 minLOD, const uint8 maxLOD) {
-	return static_cast<uint8>(GTSL::Math::MapToRange(percentage, 0, 1, minLOD, maxLOD));
+inline GTSL::uint8 SelectLOD(const GTSL::float32 percentage, const GTSL::uint8 minLOD, const GTSL::uint8 maxLOD) {
+	return static_cast<GTSL::uint8>(GTSL::Math::MapToRange(percentage, 0, 1, minLOD, maxLOD));
 }
 
 
@@ -62,7 +63,7 @@ using AABB = GTSL::Vector3;
 inline void ScreenCull(const GTSL::Range<const AABB*> aabbs) {
 	GTSL::StaticVector<AABB, 16> front; front.EmplaceBack();
 
-	for(uint32 i = 0; i < aabbs.ElementCount(); ++i) {
+	for(GTSL::uint32 i = 0; i < aabbs.ElementCount(); ++i) {
 		
 	}
 }

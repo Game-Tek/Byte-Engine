@@ -4,21 +4,39 @@ if(UNIX)
 	add_compile_options(-mavx2)
 endif()
 
+# ByteEngine options
+set(BE_GAPI "vulkan" CACHE STRING "Graphics API to Build with (vulkan or dx12)")
+set(BE_CSHARP_SCRIPTING OFF CACHE BOOL "Build CSharp Wrapper")
+set(BE_DEBUG ON CACHE BOOL "Enable Debug")
+set(BE_BUILD_TESTS OFF CACHE BOOL "Build Tests")
+set(BE_BUILD_EXAMPLES ON CACHE BOOL "Build Examples")
+set(ENABLE_XREPO ON CACHE BOOL "Use XRepo to pull dependencies")
+# ByteEngine options
+
+if(${ENABLE_XREPO})
+	if(NOT EXISTS "${CMAKE_BINARY_DIR}/xrepo.cmake")
+		message(STATUS "Downloading xrepo.cmake from https://github.com/xmake-io/xrepo-cmake/")
+		file(DOWNLOAD "https://raw.githubusercontent.com/xmake-io/xrepo-cmake/main/xrepo.cmake"
+                  "${CMAKE_BINARY_DIR}/xrepo.cmake"
+                  TLS_VERIFY ON)
+	endif()
+
+	include(${CMAKE_BINARY_DIR}/xrepo.cmake)
+endif()
+
 project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
 
 include(FetchContent)
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "889283d1d17aaa0b7478a4cfa68e8781d2dff28e")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/GodOfMemes/Game-Tek-Standard-Library" GIT_TAG "dev")
+#FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "889283d1d17aaa0b7478a4cfa68e8781d2dff28e")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 
-# ByteEngine options
-set(BE_GAPI "vulkan")
-set(BE_CSHARP_SCRIPTING true)
-set(BE_DEBUG true)
-# ByteEngine options
-
+file(GLOB_RECURSE PROJ_FILES "src/ByteEngine/*.*")
+add_library(ByteEngine STATIC ${PROJ_FILES})
+#[[
 add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/EntryPoint.h"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Physics/PhysicsWorld.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/RenderOrchestrator.cpp"
@@ -52,7 +70,7 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Clock.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Resources/BC7.cpp"
-"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/WorldRenderPipeline.cpp")
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/WorldRenderPipeline.cpp")]]
 
 set_target_properties(ByteEngine PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 set_target_properties(ByteEngine PROPERTIES PUBLIC_HEADER "${PROJECT_SOURCE_DIR}/src/ByteEngine.h")
@@ -63,6 +81,10 @@ target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(ByteEngine PUBLIC "${PROJECT_SOURCE_DIR}/ext")
 
 # assimp
+if(${ENABLE_XREPO})
+	xrepo_package("assimp 5.2.5")
+endif()
+
 find_package(assimp CONFIG REQUIRED)
 
 set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "" FORCE)
@@ -77,20 +99,31 @@ set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE INTERNAL "" FORCE)
 
 target_link_libraries(ByteEngine INTERFACE assimp::assimp)
 target_include_directories(ByteEngine PUBLIC assimp::assimp)
-target_include_directories(ByteEngine INTERFACE assimp_INCLUDE_DIRS)
+target_include_directories(ByteEngine INTERFACE ${assimp_INCLUDE_DIRS})
+
 # assimp
 
-find_package(stb REQUIRED)
-target_include_directories(ByteEngine PUBLIC stb::stb)
+if(${ENABLE_XREPO})
+	xrepo_package("stb 2023.01.30")
+	xrepo_target_packages(ByteEngine PUBLIC stb)
+else()
+	find_package(stb REQUIRED)
+	target_include_directories(ByteEngine PUBLIC stb::stb)
+endif()
 
 # GTSL
 target_include_directories(ByteEngine PUBLIC "${gtsl_SOURCE_DIR}")
 target_link_libraries(ByteEngine INTERFACE GTSL)
 # GTSL
 
-enable_testing()
+if(${BE_BUILD_TESTS})
+	enable_testing()
+	add_subdirectory(tests)
+endif()
 
-add_subdirectory(tests)
+if(${BE_BUILD_EXAMPLES})
+	add_subdirectory(examples)
+endif()
 
 if (CMAKE_BUILD_TYPE MATCHES Debug)
 	target_compile_definitions(ByteEngine PUBLIC BE_DEBUG=1)

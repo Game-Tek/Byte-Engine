@@ -66,7 +66,7 @@ namespace GAL {
 		//  0x1000 and 0x10001
 		//This allows everyone to convert by just multiplying by 32767 instead
 		//of multiplying the negative values by 32768 and 32767 for positive.
-		return static_cast<int16>(GTSL::Math::Clamp(x >= 0.0f ? (x * 32767.0f + 0.5f) : (x * 32767.0f - 0.5f), -32768.0f, 32767.0f));
+		return static_cast<GTSL::int16>(GTSL::Math::Clamp(x >= 0.0f ? (x * 32767.0f + 0.5f) : (x * 32767.0f - 0.5f), -32768.0f, 32767.0f));
 	}
 	
 	namespace PipelineStages {
@@ -105,7 +105,7 @@ namespace GAL {
 		explicit operator GTSL::uint64() const { return address; }
 		explicit operator bool() const { return address; }
 		DeviceAddress operator+(const GTSL::uint64 add) const { return DeviceAddress(address + add); }
-		DeviceAddress& operator+=(uint32 offset) { address += offset; return *this; }
+		DeviceAddress& operator+=(GTSL::uint32 offset) { address += offset; return *this; }
 	private:
 		GTSL::uint64 address = 0;
 	};
@@ -172,7 +172,8 @@ namespace GAL {
 		static constexpr auto DEPTH_F32 = FormatDescriptor(ComponentType::FLOAT, 1, 32, TextureType::DEPTH, 0, 0, 0, 0);
 	}
 	
-	enum class Format {
+	enum class Format : GTSL::uint64
+	{
 		R_I8 = FORMATS::R_I8,
 		R_SRGB_I8 = FORMATS::R_SRGB_I8,
 		RGB_I8 = FORMATS::RGB_I8,
@@ -445,8 +446,8 @@ namespace GAL {
 
 	enum class IndexType { UINT8 = 1, UINT16 = 2, UINT32 = 4 };
 
-	inline uint32 IndexSize(const IndexType indexType) {
-		return static_cast<uint32>(indexType);
+	inline GTSL::uint32 IndexSize(const IndexType indexType) {
+		return static_cast<GTSL::uint32>(indexType);
 	}
 
 	struct RenderPassTargetDescription {

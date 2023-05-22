@@ -3,11 +3,11 @@
 #include <GTSL/Math/Math.hpp>
 #include "ByteEngine/Debug/Assert.h"
 
-void StackAllocator::Block::initialize(const uint64 minimumSize, BE::SystemAllocatorReference allocatorReference, uint64& allocatedSize)
+void StackAllocator::Block::initialize(const GTSL::uint64 minimumSize, BE::SystemAllocatorReference allocatorReference, GTSL::uint64& allocatedSize)
 {
-	uint64 allocated_size{ 0 };
+	GTSL::uint64 allocated_size{ 0 };
 
-	allocatorReference.Allocate(minimumSize, alignof(byte), reinterpret_cast<void**>(&start), &allocated_size);
+	allocatorReference.Allocate(minimumSize, alignof(GTSL::uint8), reinterpret_cast<void**>(&start), &allocated_size);
 
 	allocatedSize = allocated_size;
 
@@ -15,19 +15,19 @@ void StackAllocator::Block::initialize(const uint64 minimumSize, BE::SystemAlloc
 	end = start + allocated_size;
 }
 
-void StackAllocator::Block::deinitialize(BE::SystemAllocatorReference allocatorReference, uint64& deallocatedBytes) const
+void StackAllocator::Block::deinitialize(BE::SystemAllocatorReference allocatorReference, GTSL::uint64& deallocatedBytes) const
 {
-	allocatorReference.Deallocate(end - start, alignof(byte), start);
+	allocatorReference.Deallocate(end - start, alignof(GTSL::uint8), start);
 	deallocatedBytes += end - start;
 }
 
-void StackAllocator::Block::AllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
+void StackAllocator::Block::AllocateInBlock(const GTSL::uint64 size, const GTSL::uint64 alignment, void** data, GTSL::uint64& allocatedSize)
 {
 	allocatedSize = GTSL::Math::RoundUpByPowerOf2(size, alignment);
 	*data = GTSL::AlignPointer(alignment, at); at += allocatedSize;
 }
 
-bool StackAllocator::Block::TryAllocateInBlock(const uint64 size, const uint64 alignment, void** data, uint64& allocatedSize)
+bool StackAllocator::Block::TryAllocateInBlock(const GTSL::uint64 size, const GTSL::uint64 alignment, void** data, GTSL::uint64& allocatedSize)
 {
 	allocatedSize = GTSL::Math::RoundUpByPowerOf2(size, alignment);
 	if (at + allocatedSize < end)

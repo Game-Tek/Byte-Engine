@@ -1,7 +1,8 @@
 #pragma once
 
 #include "PermutationManager.hpp"
-
+#include <GTSL/String.hpp>
+#include "ByteEngine/Render/ShaderGenerator.h"
 #include "ByteEngine/Render/Types.hpp"
 
 struct ForwardRenderPassPermutation : PermutationManager {

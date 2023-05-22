@@ -1,8 +1,7 @@
 #pragma once
 
 #include <concepts>
-
-#include "ByteEngine/Core.h"
+#include "Core.h"
 
 template<typename C, typename TAG>
 class Handle
@@ -11,16 +10,16 @@ public:
 	Handle() = default;
 	~Handle() = default;
 
-	explicit Handle(C value) noexcept : handle(value) {}
-	
-	explicit operator C() const { return handle; }
+	explicit Handle(C value) noexcept : m_handle(value) {}
 
-	C operator()() const { return handle; }
-	
-	bool operator==(const Handle& other) const { return handle == other.handle; }
-	bool operator!=(const Handle& other) const { return handle != other.handle; }
+	explicit operator C() const { return m_handle; }
+
+	C operator()() const { return m_handle; }
+
+	bool operator==(const Handle& other) const { return m_handle == other.m_handle; }
+	bool operator!=(const Handle& other) const { return m_handle != other.m_handle; }
 private:
-	C handle;
+	C m_handle;
 
 	friend Handle;
 };
@@ -32,18 +31,18 @@ public:
 	Handle() = default;
 	~Handle() = default;
 
-	explicit Handle(C value) noexcept : handle(value) {}
+	explicit Handle(C value) noexcept : m_handle(value) {}
 
-	explicit operator C() const { return handle; }
+	explicit operator C() const { return m_handle; }
 
-	C operator()() const { return handle; }
+	C operator()() const { return m_handle; }
 
-	bool operator==(const Handle & other) const { return handle == other.handle; }
-	bool operator!=(const Handle & other) const { return handle != other.handle; }
+	bool operator==(const Handle& other) const { return m_handle == other.m_handle; }
+	bool operator!=(const Handle& other) const { return m_handle != other.m_handle; }
 
-	explicit operator bool() const { return handle != static_cast<C>(~0); }
+	explicit operator bool() const { return m_handle != static_cast<C>(~0); }
 private:
-	C handle = static_cast<C>(~0);
+	C m_handle = static_cast<C>(~0);
 };
 
 #define MAKE_HANDLE(type, name) using name##Handle = Handle<type, struct name##_tag>;

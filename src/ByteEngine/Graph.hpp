@@ -1,87 +1,92 @@
 #pragma once
 
+#include "Debug/Assert.h"
+#include <GTSL/Core.h>
+#include <GTSL/Vector.hpp>
+
 template<typename T>
-struct Graph {
+struct Graph
+{
 private:
+	struct Internal
+	{
+		Internal(T t) : data(t) {}
 
-	struct Internal	{
-		Internal(T d) : data(d) {}
-
-		~Internal() {
-			for(uint32 i = 0; i < downstreamCount; ++i) {
+		~Internal()
+		{
+			for (auto i = 0; i < downstreamCount; i++)
 				downstream[i] = nullptr;
-			}
-
-			downstreamCount = 0u;
-			upstreamCount = 0u;
 		}
 
 		T data;
-		Internal* downstream[64] = { nullptr };
-		Internal* upstream[64] = { nullptr };
-		uint32 downstreamCount = 0, upstreamCount = 0;
-	}* internal = nullptr;
+		Internal* downstream[64]{};
+		Internal* upstream[64]{};
+		GTSL::uint32 downstreamCount = 0, upstreamCount = 0;
+	};
 
-	bool shared = false;
-
+	Internal* m_internal = nullptr;
+	bool m_shared = false;
 public:
-	explicit Graph(T d) : internal(new Internal(d)) {}
+	explicit Graph(T t) : m_internal(t) {}
+	Graph(Internal* internal) : m_internal(internal),m_shared(true) {}
 
-	Graph(Internal* internal) : internal(internal), shared(true) {}
-
-	Graph(Graph&& other) noexcept : internal(other.internal) {
-		other.internal = nullptr;
+	Graph(Graph&& other) noexcept
+		: m_internal(other.m_internal)
+	{
+		other.m_internal = nullptr;
 	}
 
-	Graph(const Graph& other) : internal(new Internal(other.GetData())) {
-		internal->downstreamCount = other.internal->downstreamCount;
-		internal->upstreamCount = other.internal->upstreamCount;
+	Graph(const Graph& other)
+		: m_internal(other.GetData())
+	{
+		m_internal->downstreamCount = other.m_internal->downstreamCount;
+		m_internal->upstreamCount = other.m_internal->upstreamCount;
 
-		for(uint32 i = 0; i < internal->downstreamCount; ++i) {
-			internal->downstream[i] = other.internal->downstream[i];
-		}
+		for (auto i = 0; i < m_internal->downstreamCount; ++i)
+			m_internal->downstream[i] = other.m_internal->downstream[i];
 
-		for(uint32 i = 0; i < internal->upstreamCount; ++i) {
-			internal->upstream[i] = other.internal->upstream[i];
-		}
+		for (auto i = 0; i < m_internal->upstreamCount; ++i)
+			m_internal->upstream[i] = other.m_internal->upstream[i];
 	}
 
-	~Graph() {
-		if(internal && !shared) { delete internal; }
-		internal = nullptr;
+	~Graph()
+	{
+		if (m_internal && !m_shared) delete m_internal;
+		m_internal = nullptr;
 	}
 
-	void Connect(Graph& other) {
-		for(uint32 i = 0; i < other.internal->upstreamCount; ++i) {
-			if(other.internal->upstream[i] == other.internal) {
+	void Connect(Graph& other)
+	{
+		for(auto i = 0; i < other.m_internal->upstreamCount; ++i)
+		{
+			if (other.m_internal->upstream[i] == other.m_internal)
 				BE_DEBUG_BREAK;
-			}
 		}
 
-		internal->downstream[internal->downstreamCount++] = other.internal;
-		other.internal->upstream[other.internal->upstreamCount++] = internal;
+		m_internal->downstream[m_internal->downstreamCount++] = other.m_internal;
+		other.m_internal->upstream[other.m_internal->upstreamCount++] = m_internal;
 	}
 
-	auto GetParents() const {
+	auto GetParents() const
+	{
+		GTSL::StaticVector<Graph, 64> parent;
+
+		for (auto i = 0; i < m_internal->upstreamCount; ++i)
+			parent.EmplaceBack(m_internal->upstream[i]);
+
+		return parent;
+	}
+
+	auto GetChildren() const
+	{
 		GTSL::StaticVector<Graph, 64> children;
 
-		for(uint32 i = 0; i < internal->upstreamCount; ++i) {
-			children.EmplaceBack(internal->upstream[i]);
-		}
+		for (auto i = 0; i < m_internal->downstreamCount; ++i)
+			children.EmplaceBack(m_internal->downstream[i]);
 
 		return children;
 	}
 
-	auto GetChildren() const {
-		GTSL::StaticVector<Graph, 64> children;
-
-		for(uint32 i = 0; i < internal->downstreamCount; ++i) {
-			children.EmplaceBack(internal->downstream[i]);
-		}
-
-		return children;
-	}
-
-	T& GetData() { return internal->data; }
-	const T& GetData() const { return internal->data; }
+	T& GetData() { return m_internal->data; }
+	const T& GetData() { return m_internal->data; }
 };

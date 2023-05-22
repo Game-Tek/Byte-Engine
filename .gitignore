@@ -1,12 +1,17 @@
 # Directories
 .vs/
-bin/
-bin-int/
+.idea/
+
+cmake-build-debug/
+[Bb]in/
+[Bb]in-int/
+[Oo]bj
+[Ii]ntermediate
 .git/
 .github/
-ext/
-out/
-build/
+[Ee]xt/
+[Oo]ut/
+[Bb]uild/
 
 # Files
 *.user

@@ -12,11 +12,11 @@
 
 PoolAllocator::PoolAllocator(BE::SystemAllocatorReference* allocatorReference) : systemAllocatorReference(allocatorReference) {}
 
-void PoolAllocator::Pool::initialize(const uint32 slotsCount, const uint32 slotsSize, uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference)
+void PoolAllocator::Pool::initialize(const GTSL::uint32 slotsCount, const GTSL::uint32 slotsSize, GTSL::uint64& allocatedSize, BE::SystemAllocatorReference* allocatorReference)
 {
 	SLOTS_SIZE = slotsSize; MAX_SLOTS_COUNT = GTSL::Math::RoundUpByPowerOf2(slotsCount, 8);
 
-	uint64 pool_allocated_size{ 0 };
+	GTSL::uint64 pool_allocated_size{ 0 };
 
 	// Allocate memory for slots, this memory is where allocations will be placed
 	allocatorReference->Allocate(slotsDataAllocationSize(), slotsDataAllocationAlignment(), reinterpret_cast<void**>(&slotsData), &pool_allocated_size);
@@ -35,10 +35,10 @@ void PoolAllocator::Pool::initialize(const uint32 slotsCount, const uint32 slots
 
 		GTSL::InitializeBits(GTSL::Range<free_slots_type*>(bitNums, freeSlotsBitTrack2));
 		
-		allocatorReference->Allocate(MAX_SLOTS_COUNT * sizeof(uint8), alignof(uint8), reinterpret_cast<void**>(&allocCounter), &pool_allocated_size);
+		allocatorReference->Allocate(MAX_SLOTS_COUNT * sizeof(GTSL::uint8), alignof(GTSL::uint8), reinterpret_cast<void**>(&allocCounter), &pool_allocated_size);
 		allocatedSize += pool_allocated_size;
 
-		for (uint32 i = 0; i < MAX_SLOTS_COUNT; ++i) {
+		for (GTSL::uint32 i = 0; i < MAX_SLOTS_COUNT; ++i) {
 			allocCounter[i] = 0;
 		}
 	}
@@ -48,7 +48,7 @@ void PoolAllocator::Pool::initialize(const uint32 slotsCount, const uint32 slots
 	GTSL::InitializeBits(GTSL::Range<free_slots_type*>(bitNums, freeSlots));
 	
 	if constexpr (MEMORY_PATTERN) {
-		for (uint32 i = 0; i < SLOTS_SIZE * MAX_SLOTS_COUNT; ++i) {
+		for (GTSL::uint32 i = 0; i < SLOTS_SIZE * MAX_SLOTS_COUNT; ++i) {
 			slotsData[i] = 0xCA;
 		}
 	}
@@ -60,14 +60,14 @@ void PoolAllocator::initialize() {
 	BE_ASSERT(GTSL::Math::IsPowerOfTwo(minimumPoolSize), "Minimum pool size must be a power of 2.");
 	BE_ASSERT(GTSL::Math::IsPowerOfTwo(maximumPoolSize), "Maximum pool size must be a power of 2.");
 
-	uint64 allocator_allocated_size{ 0 }; // Accumulated size of all allocations of underlying pools
+	GTSL::uint64 allocator_allocated_size{ 0 }; // Accumulated size of all allocations of underlying pools
 
 	minimumPoolSizeBits = GTSL::FindFirstSetBit(minimumPoolSize).Get();
 	maximumPoolSizeBits = GTSL::FindFirstSetBit(maximumPoolSize).Get();
 
-	uint64 poolCount = maximumPoolSizeBits - minimumPoolSizeBits + 1;
+	GTSL::uint64 poolCount = maximumPoolSizeBits - minimumPoolSizeBits + 1;
 
-	for(uint64 i = 0, poolSizeBits = minimumPoolSizeBits; i < poolCount; ++poolSizeBits, ++i) {
+	for(GTSL::uint64 i = 0, poolSizeBits = minimumPoolSizeBits; i < poolCount; ++poolSizeBits, ++i) {
 		const auto slot_count = (poolCount - i) * 60; //pools with smaller slot sizes get more slots
 		const auto slot_size = 1 << poolSizeBits; // 2^poolSize, all pools have power of 2 slot sizes
 
@@ -81,10 +81,10 @@ void PoolAllocator::initialize() {
 
 // ALLOCATE //
 
-void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** memory, uint64* allocatedSize, GTSL::Range<const char8_t*> name) const
+void PoolAllocator::Allocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void** memory, GTSL::uint64* allocatedSize, GTSL::Range<const char8_t*> name) const
 {
 	// Find the smallest pool size that can fit the allocation
-	uint64 allocationMinSize = GTSL::NextPowerOfTwo(GTSL::Math::RoundUpByPowerOf2(size, alignment));
+	GTSL::uint64 allocationMinSize = GTSL::NextPowerOfTwo(GTSL::Math::RoundUpByPowerOf2(size, alignment));
 	allocationMinSize = GTSL::Math::Max(allocationMinSize, minimumPoolSize); //
 
 	BE_ASSERT(allocationMinSize <= maximumPoolSize, "Allocation is too big!");
@@ -95,7 +95,7 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 		*allocatedSize = size;
 	} else {
 		auto set_bit = GTSL::FindFirstSetBit(allocationMinSize);
-		uint64 poolIndex = set_bit.Get() - minimumPoolSizeBits;
+		GTSL::uint64 poolIndex = set_bit.Get() - minimumPoolSizeBits;
 		pools[poolIndex].allocate(size, alignment, memory, allocatedSize);
 	}
 
@@ -105,18 +105,18 @@ void PoolAllocator::Allocate(const uint64 size, const uint64 alignment, void** m
 	}
 }
 
-void PoolAllocator::Pool::allocate(const uint64 size, const uint64 alignment, void** data, uint64* allocatedSize) const
+void PoolAllocator::Pool::allocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void** data, GTSL::uint64* allocatedSize) const
 {
 	//GTSL::Lock lock(poolLock);
 	
 	auto slot = GTSL::OccupyFirstFreeSlot(GTSL::Range<free_slots_type*>(bitNums, freeSlots));
 
-	byte* const slot_address = getSlotAddress(slot.Get());
+	GTSL::byte* const slot_address = getSlotAddress(slot.Get());
 	
 	if constexpr (MEMORY_PATTERN) {
 		bool isCorrect = true;
 
-		for (uint32 i = 0; i < SLOTS_SIZE; ++i) {
+		for (GTSL::uint32 i = 0; i < SLOTS_SIZE; ++i) {
 			if (slot_address[i] != 0xCA) { isCorrect = false; break; }
 		}
 
@@ -136,16 +136,16 @@ void PoolAllocator::Pool::allocate(const uint64 size, const uint64 alignment, vo
 	
 	//*data = GTSL::AlignPointer(alignment, slot_address);
 	*data = slot_address;
-	*allocatedSize = (slot_address + SLOTS_SIZE) - static_cast<byte*>(*data);
+	*allocatedSize = (slot_address + SLOTS_SIZE) - static_cast<GTSL::byte*>(*data);
 	
 	BE_ASSERT(*data >= slotsData && *data <= slotsData + slotsDataAllocationSize(), "Allocation does not belong to pool!")
 }
 
 // DEALLOCATE //
 
-void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* memory, GTSL::Range<const char8_t*> name) const
+void PoolAllocator::Deallocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void* memory, GTSL::Range<const char8_t*> name) const
 {
-	uint64 allocationMinSize = GTSL::NextPowerOfTwo(size);
+	GTSL::uint64 allocationMinSize = GTSL::NextPowerOfTwo(size);
 	allocationMinSize = GTSL::Math::Max(allocationMinSize, minimumPoolSize); //
 
 	BE_ASSERT(allocationMinSize <= maximumPoolSize, "Allocation is too big!");
@@ -155,7 +155,7 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 		::free(memory);
 	} else {
 		auto set_bit = GTSL::FindFirstSetBit(allocationMinSize);
-		uint64 poolIndex = set_bit.Get() - minimumPoolSizeBits;
+		GTSL::uint64 poolIndex = set_bit.Get() - minimumPoolSizeBits;
 		pools[poolIndex].deallocate(size, alignment, memory, systemAllocatorReference);
 	}
 
@@ -166,7 +166,7 @@ void PoolAllocator::Deallocate(const uint64 size, const uint64 alignment, void* 
 	}
 }
 
-void PoolAllocator::Pool::deallocate(uint64 size, const uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference) const
+void PoolAllocator::Pool::deallocate(GTSL::uint64 size, const GTSL::uint64 alignment, void* memory, BE::SystemAllocatorReference* allocatorReference) const
 {
 	//GTSL::Lock lock(poolLock);
 	
@@ -175,8 +175,8 @@ void PoolAllocator::Pool::deallocate(uint64 size, const uint64 alignment, void* 
 	const auto index = getSlotIndexFromPointer(memory);
 
 	if constexpr (MEMORY_PATTERN) {
-		for (uint32 i = 0; i < SLOTS_SIZE; ++i) {
-			static_cast<byte*>(memory)[i] = 0xCA;
+		for (GTSL::uint32 i = 0; i < SLOTS_SIZE; ++i) {
+			static_cast<GTSL::byte*>(memory)[i] = 0xCA;
 		}
 	}
 
@@ -194,12 +194,12 @@ void PoolAllocator::Pool::deallocate(uint64 size, const uint64 alignment, void* 
 // FREE //
 
 void PoolAllocator::free() {
-	uint64 freed_bytes{ 0 };
+	GTSL::uint64 freed_bytes{ 0 };
 
 	for (auto& pool : pools) { pool.free(freed_bytes, systemAllocatorReference); }
 }
 
-void PoolAllocator::Pool::free(uint64& freedBytes, BE::SystemAllocatorReference* allocatorReference) {
+void PoolAllocator::Pool::free(GTSL::uint64& freedBytes, BE::SystemAllocatorReference* allocatorReference) {
 	if (slotsData) allocatorReference->Deallocate(slotsDataAllocationSize(), slotsDataAllocationAlignment(), slotsData);	
 	if(freeSlots) allocatorReference->Deallocate(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT), alignof(free_slots_type), freeSlots);
 
@@ -208,8 +208,8 @@ void PoolAllocator::Pool::free(uint64& freedBytes, BE::SystemAllocatorReference*
 		allocatorReference->Deallocate(GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT), alignof(free_slots_type), freeSlotsBitTrack2);
 		freedBytes += GTSL::GetAllocationSize<free_slots_type>(MAX_SLOTS_COUNT);
 
-		allocatorReference->Deallocate(MAX_SLOTS_COUNT * sizeof(uint8), alignof(uint32), allocCounter);
-		freedBytes += MAX_SLOTS_COUNT * sizeof(uint8);
+		allocatorReference->Deallocate(MAX_SLOTS_COUNT * sizeof(GTSL::uint8), alignof(GTSL::uint32), allocCounter);
+		freedBytes += MAX_SLOTS_COUNT * sizeof(GTSL::uint8);
 	}
 #endif
 }

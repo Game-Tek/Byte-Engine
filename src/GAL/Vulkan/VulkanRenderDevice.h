@@ -82,13 +82,13 @@ namespace GAL
 			allocationInfo = createInfo.allocation; debug = createInfo.Debug;
 
 			{
-				GTSL::HashMap<GTSL::StringView, uint32, ALLOC> availableInstanceExtensions(32, alloc);
+				GTSL::HashMap<GTSL::StringView, GTSL::uint32, ALLOC> availableInstanceExtensions(32, alloc);
 				VkExtensionProperties extension_properties[64];
 				
-				uint32 extensionCount = 64;
+				GTSL::uint32 extensionCount = 64;
 				getInstanceProcAddr<PFN_vkEnumerateInstanceExtensionProperties>(u8"vkEnumerateInstanceExtensionProperties")(nullptr, &extensionCount, extension_properties);
 
-				for (uint32 i = 0; i < extensionCount; ++i) {
+				for (GTSL::uint32 i = 0; i < extensionCount; ++i) {
 					availableInstanceExtensions.Emplace(GTSL::StringView(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
 				}				
 
@@ -206,15 +206,15 @@ namespace GAL
 
 				if (!physicalDeviceCount) { return InitRes(GTSL::Range(u8"Physical device count returned was 0."), false); }
 
-				uint32 bestScore = 0, bestPhysicalDevice = ~0U;
+				GTSL::uint32 bestScore = 0, bestPhysicalDevice = ~0U;
 
-				for(uint32 i = 0; i < physicalDeviceCount; ++i) {
+				for(GTSL::uint32 i = 0; i < physicalDeviceCount; ++i) {
 					VkPhysicalDeviceProperties physical_device_properties;
 					getInstanceProcAddr<PFN_vkGetPhysicalDeviceProperties>(u8"vkGetPhysicalDeviceProperties")(vkPhysicalDevices[i], &physical_device_properties);
 					VkPhysicalDeviceFeatures physical_device_features;
 					getInstanceProcAddr<PFN_vkGetPhysicalDeviceFeatures>(u8"vkGetPhysicalDeviceFeatures")(vkPhysicalDevices[i], &physical_device_features);
 
-					uint64 currentScore = 0;
+					GTSL::uint64 currentScore = 0;
 
 					switch (physical_device_properties.deviceType) {
 					case VK_PHYSICAL_DEVICE_TYPE_OTHER: currentScore += 1000; break;
@@ -239,15 +239,15 @@ namespace GAL
 				physicalDevice = vkPhysicalDevices[bestPhysicalDevice];
 			}
 
-			GTSL::HashMap<GTSL::StringView, uint32, ALLOC> availableDeviceExtensions(256, 0.25f, alloc);
+			GTSL::HashMap<GTSL::StringView, GTSL::uint32, ALLOC> availableDeviceExtensions(256, 0.25f, alloc);
 			VkExtensionProperties extension_properties[256];
 			GTSL::StaticVector<const char*, 32> deviceExtensions;
 
 			{
-				uint32 extensionCount = 256;
+				GTSL::uint32 extensionCount = 256;
 				getInstanceProcAddr<PFN_vkEnumerateDeviceExtensionProperties>(u8"vkEnumerateDeviceExtensionProperties")(physicalDevice, nullptr, &extensionCount, extension_properties);
 
-				for (uint32 i = 0; i < extensionCount; ++i) {
+				for (GTSL::uint32 i = 0; i < extensionCount; ++i) {
 					availableDeviceExtensions.Emplace(GTSL::StringView(reinterpret_cast<const char8_t*>(extension_properties[i].extensionName)), i);
 				}
 			}
@@ -266,9 +266,9 @@ namespace GAL
 					GTSL::StaticMap<GTSL::uint64, GTSL::uint8, 16> familyMap;
 						
 					for (GTSL::uint8 queueIndex = 0; auto & queue : createInfo.Queues) {
-						uint32 bestFamilyIndex = 0xFFFFFFFF, lessSetBits = 0xFFFFFFFF;
+						GTSL::uint32 bestFamilyIndex = 0xFFFFFFFF, lessSetBits = 0xFFFFFFFF;
 
-						for (uint32 i = 0; i < queueFamiliesCount; ++i) {
+						for (GTSL::uint32 i = 0; i < queueFamiliesCount; ++i) {
 							auto setBits = GTSL::NumberOfSetBits(vkQueueFamiliesProperties[i].queueFlags);
 							if (setBits < lessSetBits && vkQueueFamiliesProperties[i].queueFlags & ToVulkan(queue) && vkQueueFamiliesProperties[i].queueCount) {
 								bestFamilyIndex = i;
@@ -673,7 +673,7 @@ namespace GAL
 			return InitRes(true);
 		}
 
-		static constexpr uint32 NVIDIA_VENDOR_ID = 0x10DE;
+		static constexpr GTSL::uint32 NVIDIA_VENDOR_ID = 0x10DE;
 
 		void Wait() const { getDeviceProcAddr<PFN_vkDeviceWaitIdle>(u8"vkDeviceWaitIdle")(device); }
 		

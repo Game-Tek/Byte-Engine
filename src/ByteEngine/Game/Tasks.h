@@ -1,20 +1,17 @@
 #pragma once
 
 #include "ByteEngine/Core.h"
-
 #include <GTSL/Vector.hpp>
 #include <GTSL/Flags.h>
 #include <GTSL/FixedVector.hpp>
 #include <GTSL/Result.h>
-
 #include "ByteEngine/Id.h"
 #include "ByteEngine/Debug/Assert.h"
-
 #include "ByteEngine/Handle.hpp"
 
 class ApplicationManager;
-using AccessType = GTSL::Flags<uint8, struct AccessTypeTag>;
-using TaskAccess = GTSL::Pair<uint16, AccessType>;
+using AccessType = GTSL::Flags<GTSL::uint8, struct AccessTypeTag>;
+using TaskAccess = GTSL::Pair<GTSL::uint16, AccessType>;
 
 namespace AccessTypes {
 	static constexpr AccessType READ(1), READ_WRITE(4);
@@ -23,8 +20,8 @@ namespace AccessTypes {
 struct TaskInfo {
 	TaskInfo(ApplicationManager* application_manager) : AppManager(application_manager) {}
 
-	class ApplicationManager* AppManager = nullptr;
-	uint8 InvocationID = 0;
+	ApplicationManager* AppManager = nullptr;
+	GTSL::uint8 InvocationID = 0;
 };
 
 struct TaskDependency
@@ -37,30 +34,30 @@ struct TaskDependency
 	AccessType Access;
 };
 
-MAKE_HANDLE(uint32, DispatchedTask);
+MAKE_HANDLE(GTSL::uint32, DispatchedTask);
 
 template<class ALLOCATOR>
 struct TaskSorter {
-	explicit TaskSorter(const uint32 num, const ALLOCATOR& allocator) :
-	currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
-	ongoingTasksAccesses(num, allocator), instances(num, allocator)
+	explicit TaskSorter(const GTSL::uint32 num, const ALLOCATOR& allocator) :
+		currentObjectAccessState(num, allocator), currentObjectAccessCount(num, allocator),
+		ongoingTasksAccesses(num, allocator), instances(num, allocator)
 	{
 	}
 
 	GTSL::Result<DispatchedTaskHandle> CanRunTask(const GTSL::Range<const TaskAccess*> accesses) {
 		const auto elementCount = accesses.ElementCount();
 
-		uint32 res = 0;
+		GTSL::uint32 res = 0;
 
 		{
 			GTSL::WriteLock<GTSL::ReadWriteMutex> lock(mutex);
-			
-			for (uint32 i = 0; i < elementCount; ++i) {
+
+			for (GTSL::uint32 i = 0; i < elementCount; ++i) {
 				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ_WRITE) { return GTSL::Result<DispatchedTaskHandle>(false); }
 				if (currentObjectAccessState[accesses[i].First] == AccessTypes::READ && accesses[i].Second == AccessTypes::READ_WRITE) { return GTSL::Result<DispatchedTaskHandle>(false); }
 			}
-			
-			for (uint32 i = 0; i < elementCount; ++i) {
+
+			for (GTSL::uint32 i = 0; i < elementCount; ++i) {
 				currentObjectAccessState[accesses[i].First] = accesses[i].Second;
 				++currentObjectAccessCount[accesses[i].First];
 			}
@@ -80,14 +77,14 @@ struct TaskSorter {
 
 		const auto count = ongoingTasksAccesses[taskIndex()].GetLength();
 		auto& accesses = ongoingTasksAccesses[taskIndex()];
-		
-		for (uint32 i = 0; i < count; ++i) {
+
+		for (GTSL::uint32 i = 0; i < count; ++i) {
 			BE_ASSERT(currentObjectAccessCount[accesses[i].First] != 0, "Oops :/");
 			if (--currentObjectAccessCount[accesses[i].First] == 0) { //if object is no longer accessed
 				currentObjectAccessState[accesses[i].First] = AccessType();
 			}
 		}
-		
+
 		ongoingTasksAccesses.Pop(taskIndex());
 		instances.Pop(taskIndex());
 	}
@@ -108,7 +105,7 @@ struct TaskSorter {
 
 private:
 	GTSL::FixedVector<AccessType, ALLOCATOR> currentObjectAccessState;
-	GTSL::FixedVector<uint16, ALLOCATOR> currentObjectAccessCount;
+	GTSL::FixedVector<GTSL::uint16, ALLOCATOR> currentObjectAccessCount;
 
 	GTSL::FixedVector<GTSL::StaticVector<TaskAccess, 32>, ALLOCATOR> ongoingTasksAccesses;
 

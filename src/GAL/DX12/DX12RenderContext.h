@@ -11,7 +11,7 @@
 #include <wrl.h>
 
 #include "GTSL/Application.h"
-#include "GTSL/Window.h"
+#include "GTSL/Window.hpp"
 
 namespace GAL
 {

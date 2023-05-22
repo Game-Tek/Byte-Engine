@@ -78,13 +78,13 @@ GTSL::Microseconds Clock::GetCurrentMicroseconds() const {
 //UTILITY GETTERS
 
 
-uint16 Clock::GetYear()
+GTSL::uint16 Clock::GetYear()
 {
 #if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return WinTimeStructure.wYear;
-#endif
+#elif BE_PLATFORM_LINUX
 
 	const time_t now = time(NULL);
 	struct tm here;
@@ -92,6 +92,8 @@ uint16 Clock::GetYear()
 	localtime_r(&now, &here);
 	
 	return here.tm_year + 1900;
+#endif
+	return 0;
 }
 
 Clock::Months Clock::GetMonth()
@@ -100,7 +102,7 @@ Clock::Months Clock::GetMonth()
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return static_cast<Months>(WinTimeStructure.wMonth);
-#endif
+#elif BE_PLATFORM_LINUX
 
 	const time_t now = time(NULL);
 	struct tm here;
@@ -108,15 +110,17 @@ Clock::Months Clock::GetMonth()
 	localtime_r(&now, &here);
 
 	return static_cast<Months>(here.tm_mon + 1);
+#endif
+	return {};
 }
 
-uint8 Clock::GetDayOfMonth()
+GTSL::uint8 Clock::GetDayOfMonth()
 {
 #if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return WinTimeStructure.wDay;
-#endif
+#elif BE_PLATFORM_LINUX
 
 	const time_t now = time(NULL);
 	struct tm here;
@@ -124,6 +128,8 @@ uint8 Clock::GetDayOfMonth()
 	localtime_r(&now, &here);
 
 	return here.tm_mday;
+#endif
+	return 0;
 }
 
 Clock::Days Clock::GetDayOfWeek()
@@ -132,7 +138,7 @@ Clock::Days Clock::GetDayOfWeek()
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
 	return (WinTimeStructure.wDayOfWeek == 0) ? Days::Sunday : static_cast<Days>(WinTimeStructure.wDayOfWeek);
-#endif
+#elif BE_PLATFORM_LINUX
 
 	const time_t now = time(NULL);
 	struct tm here;
@@ -140,6 +146,8 @@ Clock::Days Clock::GetDayOfWeek()
 	localtime_r(&now, &here);
 
 	return static_cast<Days>(here.tm_wday);
+#endif
+	return {};
 }
 
 Clock::Time Clock::GetTime()
@@ -147,13 +155,15 @@ Clock::Time Clock::GetTime()
 #if BE_PLATFORM_WINDOWS
 	SYSTEMTIME WinTimeStructure;
 	GetLocalTime(&WinTimeStructure);
-	return { static_cast<uint8>(WinTimeStructure.wHour), static_cast<uint8>(WinTimeStructure.wMinute), static_cast<uint8>(WinTimeStructure.wSecond) };
-#endif
+	return { static_cast<GTSL::uint8>(WinTimeStructure.wHour), static_cast<GTSL::uint8>(WinTimeStructure.wMinute), static_cast<GTSL::uint8>(WinTimeStructure.wSecond) };
+#elif BE_PLATFORM_LINUX
 
 	const time_t now = time(NULL);
 	struct tm here;
 
 	localtime_r(&now, &here);
 
-	return { static_cast<uint8>(here.tm_hour), static_cast<uint8>(here.tm_min), static_cast<uint8>(here.tm_sec) };
+	return { static_cast<GTSL::uint8>(here.tm_hour), static_cast<GTSL::uint8>(here.tm_min), static_cast<GTSL::uint8>(here.tm_sec) };
+#endif
+	return {};
 }

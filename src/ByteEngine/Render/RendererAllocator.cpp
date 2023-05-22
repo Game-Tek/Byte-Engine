@@ -2,10 +2,10 @@
 
 #include "ByteEngine/Debug/Assert.h"
 
-static constexpr uint8 ALLOC_IS_ISOLATED = 0;
-static constexpr uint8 IS_PRE_BLOCK_CONTIGUOUS = 1;
-static constexpr uint8 IS_POST_BLOCK_CONTIGUOUS = 2;
-static constexpr uint8 IS_PRE_AND_POST_BLOCK_CONTIGUOUS = IS_PRE_BLOCK_CONTIGUOUS | IS_POST_BLOCK_CONTIGUOUS;
+static constexpr GTSL::uint8 ALLOC_IS_ISOLATED = 0;
+static constexpr GTSL::uint8 IS_PRE_BLOCK_CONTIGUOUS = 1;
+static constexpr GTSL::uint8 IS_POST_BLOCK_CONTIGUOUS = 2;
+static constexpr GTSL::uint8 IS_PRE_AND_POST_BLOCK_CONTIGUOUS = IS_PRE_BLOCK_CONTIGUOUS | IS_POST_BLOCK_CONTIGUOUS;
 
 void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const BE::PersistentAllocatorReference& allocatorReference)
 {
@@ -30,7 +30,7 @@ void ScratchMemoryAllocator::Initialize(const RenderDevice& renderDevice, const 
 	granularity = renderDevice.GetLinearNonLinearGranularity();
 }
 
-void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
+void ScratchMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, GTSL::uint32 size, GTSL::uint32* offset)
 {
 	BE_ASSERT(GTSL::Byte(size).GetCount() > 0 && GTSL::Byte(size).GetCount() <= ALLOCATION_SIZE.GetCount(), "Invalid size!")
 	
@@ -95,9 +95,9 @@ void MemoryBlock::Free(const RenderDevice& renderDevice, const BE::PersistentAll
 	deviceMemory.Destroy(&renderDevice);
 }
 
-bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, AllocationInfo& allocationInfo, void** data)
+bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const GTSL::uint32 size, AllocationInfo& allocationInfo, void** data)
 {
-	uint32 i = 0;
+	GTSL::uint32 i = 0;
 	
 	for (auto& e : freeSpaces)
 	{
@@ -125,7 +125,7 @@ bool MemoryBlock::TryAllocate(DeviceMemory* deviceMemory, const uint32 size, All
 	return false;
 }
 
-void MemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, AllocationInfo& allocationInfo, void** data)
+void MemoryBlock::Allocate(DeviceMemory* deviceMemory, const GTSL::uint32 size, AllocationInfo& allocationInfo, void** data)
 {
 	*data = static_cast<byte*>(mappedMemory) + freeSpaces[0].Offset;
 	allocationInfo.Offset = freeSpaces[0].Offset;
@@ -135,9 +135,9 @@ void MemoryBlock::Allocate(DeviceMemory* deviceMemory, const uint32 size, Alloca
 	freeSpaces[0].Offset += size;
 }
 
-void MemoryBlock::Deallocate(const uint32 size, const uint32 offset, AllocationInfo id)
+void MemoryBlock::Deallocate(const GTSL::uint32 size, const GTSL::uint32 offset, AllocationInfo id)
 {
-	uint8 info = 0; uint32 i = 0;
+	GTSL::uint8 info = 0; GTSL::uint32 i = 0;
 
 	if (freeSpaces[0].Offset > offset)
 	{
@@ -229,7 +229,7 @@ void LocalMemoryAllocator::Free(const RenderDevice& renderDevice, const BE::Pers
 	for(auto& e : textureMemoryBlocks) { e.Free(renderDevice, allocatorReference); }
 }
 
-void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
+void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, GTSL::uint32 size, GTSL::uint32* offset)
 {
 	BE_ASSERT(size > 0 && size <= ALLOCATION_SIZE.GetCount(), "Invalid size!")
 
@@ -273,7 +273,7 @@ void LocalMemoryAllocator::AllocateLinearMemory(const RenderDevice& renderDevice
 	//BE_LOG_MESSAGE("Allocation. Size: ", renderAllocation->Size, " Offset: ", renderAllocation->Offset);
 }
 
-void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, uint32 size, uint32* offset)
+void LocalMemoryAllocator::AllocateNonLinearMemory(const RenderDevice& renderDevice, DeviceMemory* deviceMemory, RenderAllocation* renderAllocation, GTSL::uint32 size, GTSL::uint32* offset)
 {
 	const auto alignedSize = GTSL::Math::RoundUpByPowerOf2(size, granularity);
 

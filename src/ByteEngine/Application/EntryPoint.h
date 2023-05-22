@@ -1,45 +1,28 @@
 #pragma once
 
 #include "Application.h"
+#include <GTSL/String.hpp>
 
-extern int CreateApplication(GTSL::Range<const GTSL::StringView*> arguments); //Is defined in another translation unit.
-//extern int CreateApplication(); //Is defined in another translation unit.
+//extern int CreateApplication(GTSL::Range<const GTSL::StringView*> arguments);
+extern int CreateApplication() ;
 
-inline bool BasicCompatibilityTest() {
-	return sizeof(utf8) == 1 && sizeof(uint8) == 1 && sizeof(uint16) == 2 && sizeof(uint32) == 4 && sizeof(uint64) == 8;
-}
-
-int main(int argc, char** argv)
+inline bool BasicCompatibilityTest()
 {
-	int exitCode = 0;
-	
-	if (!BasicCompatibilityTest()) { exitCode = -1; return exitCode; }
-	
-	GTSL::StringView arguments[32];
-
-	for (uint8 i = 0; i < argc; ++i) {
-		arguments[i] = GTSL::StringView((const utf8*)argv[i]);
-	}
-
-	// When CreateApplication() is defined it must return a new object of it class, effectively letting us manage that instance from here.
-	exitCode = CreateApplication({ argc, arguments });
-
-	return exitCode;
+	return sizeof(char8_t) == 1 && sizeof(GTSL::uint8) == 1 && sizeof(GTSL::uint16) == 2 && sizeof(GTSL::uint32) == 4 && sizeof(GTSL::uint64) == 8;
 }
 
-inline int do_default_flow(BE::Application* application) {
-	int exitCode = -1;
-	
-	if (application->base_initialize({})) //call BE::Application initialize, which does basic universal startup
-	{
-		if (application->initialize()) //call BE::Application virtual initialize which will call the chain of initialize's
-		{
-			//Call Run() on Application. There lies the actual application code, like the Engine SubSystems' initialization, the game loop, etc.
-			application->run();
-		}
-	}
+#ifndef CUSTOM_MAIN
+int main(int argc,char** argv)
+{
+	if (!BasicCompatibilityTest()) return -1;
 
-	application->shutdown();
+	return CreateApplication();
+	/*GTSL::StringView arguments[32];
 
-	return exitCode; //Return and exit.
+	for (auto i = 0; i < argc; ++i)
+		arguments[i] = GTSL::StringView(argv[i]);
+
+
+	return CreateApplication({argc,argv});*/
 }
+#endif 

@@ -6,10 +6,11 @@ endif()
 
 # ByteEngine options
 set(BE_GAPI "vulkan" CACHE STRING "Graphics API to Build with (vulkan or dx12)")
-set(BE_CSHARP_SCRIPTING ON CACHE BOOL "Build CSharp Wrapper")
+set(BE_CSHARP_SCRIPTING OFF CACHE BOOL "Build CSharp Wrapper")
 set(BE_DEBUG ON CACHE BOOL "Enable Debug")
 set(BE_BUILD_TESTS OFF CACHE BOOL "Build Tests")
-set(ENABLE_XREPO OFF CACHE BOOL "Use XRepo to pull dependencies")
+set(BE_BUILD_EXAMPLES ON CACHE BOOL "Build Examples")
+set(ENABLE_XREPO ON CACHE BOOL "Use XRepo to pull dependencies")
 # ByteEngine options
 
 if(${ENABLE_XREPO})
@@ -28,10 +29,14 @@ project(ByteEngine LANGUAGES CXX VERSION 1.0.0)
 include(FetchContent)
 
 # GTSL
-FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "889283d1d17aaa0b7478a4cfa68e8781d2dff28e")
+FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/GodOfMemes/Game-Tek-Standard-Library" GIT_TAG "dev")
+#FetchContent_Declare(GTSL GIT_REPOSITORY "https://github.com/Game-Tek/Game-Tek-Standard-Library" GIT_TAG "889283d1d17aaa0b7478a4cfa68e8781d2dff28e")
 FetchContent_MakeAvailable(GTSL)
 # GTSL
 
+file(GLOB_RECURSE PROJ_FILES "src/ByteEngine/*.*")
+add_library(ByteEngine STATIC ${PROJ_FILES})
+#[[
 add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/EntryPoint.h"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Physics/PhysicsWorld.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/RenderOrchestrator.cpp"
@@ -65,7 +70,7 @@ add_library(ByteEngine STATIC "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Clock.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Application/Application.cpp"
 "${PROJECT_SOURCE_DIR}/src/ByteEngine/Resources/BC7.cpp"
-"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/WorldRenderPipeline.cpp")
+"${PROJECT_SOURCE_DIR}/src/ByteEngine/Render/WorldRenderPipeline.cpp")]]
 
 set_target_properties(ByteEngine PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
 set_target_properties(ByteEngine PROPERTIES PUBLIC_HEADER "${PROJECT_SOURCE_DIR}/src/ByteEngine.h")
@@ -94,7 +99,8 @@ set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE INTERNAL "" FORCE)
 
 target_link_libraries(ByteEngine INTERFACE assimp::assimp)
 target_include_directories(ByteEngine PUBLIC assimp::assimp)
-target_include_directories(ByteEngine INTERFACE assimp_INCLUDE_DIRS)
+target_include_directories(ByteEngine INTERFACE ${assimp_INCLUDE_DIRS})
+
 # assimp
 
 if(${ENABLE_XREPO})
@@ -110,9 +116,13 @@ target_include_directories(ByteEngine PUBLIC "${gtsl_SOURCE_DIR}")
 target_link_libraries(ByteEngine INTERFACE GTSL)
 # GTSL
 
-enable_testing()
 if(${BE_BUILD_TESTS})
+	enable_testing()
 	add_subdirectory(tests)
+endif()
+
+if(${BE_BUILD_EXAMPLES})
+	add_subdirectory(examples)
 endif()
 
 if (CMAKE_BUILD_TYPE MATCHES Debug)

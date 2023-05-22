@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ByteEngine/Debug/Logger.h"
+#include "Logger.h"
 
 #if BE_PLATFORM_WINDOWS
 #define BE_DEBUG_BREAK __debugbreak()
@@ -9,7 +9,6 @@
 #define BE_DEBUG_BREAK raise(SIGTRAP)
 #endif
 
-//Assert
 #if BE_DEBUG
 #define BE_ASSERT(func, text) if (!(func)) [[unlikely]] { BE_DEBUG_BREAK; }
 #else

@@ -18,11 +18,11 @@ public:
 #undef CreateWindow
 
 	WindowHandle CreateWindow(const GTSL::StringView id_name, const GTSL::StringView display_name, const GTSL::Extent2D window_extent) {
-		uint32 index = windows.GetLength();
+		GTSL::uint32 index = windows.GetLength();
 		auto& window = windows.EmplaceBack();
 
 #if BE_PLATFORM_WINDOWS
-		GTSL::Window::API windowAPI = GTSL::Window::API::WIN32;
+		GTSL::Window::API windowAPI = GTSL::Window::API::WIN;
 #elif BE_PLATFORM_LINUX
 		GTSL::Window::API windowAPI = GTSL::Window::API::XCB;
 #endif
@@ -108,7 +108,7 @@ private:
 					case GTSL::Window::KeyboardKeys::KEYBOARD_8: id = u8"8_Key"; break; case GTSL::Window::KeyboardKeys::KEYBOARD_9: id = u8"9_Key"; break;
 					case GTSL::Window::KeyboardKeys::BACKSPACE: id = u8"Backspace_Key"; break;
 					case GTSL::Window::KeyboardKeys::ENTER: id = u8"Enter_Key"; break;
-					case GTSL::Window::KeyboardKeys::DELETE: id = u8"Supr_Key"; break;
+					case GTSL::Window::KeyboardKeys::DEL: id = u8"Supr_Key"; break;
 					case GTSL::Window::KeyboardKeys::TAB: id = u8"Tab_Key"; break;
 					case GTSL::Window::KeyboardKeys::CAPS_LOCK: id = u8"CapsLock_Key"; break;
 					case GTSL::Window::KeyboardKeys::ESCAPE: id = u8"Esc_Key"; break;

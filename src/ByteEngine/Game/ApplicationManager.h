@@ -12,45 +12,45 @@
 
 #include "Tasks.h"
 #include "ByteEngine/Id.h"
-
 #include "ByteEngine/Debug/Assert.h"
-
 #include "ByteEngine/Handle.hpp"
 #include "ByteEngine/Debug/FunctionTimer.h"
-
-#include "ByteEngine/Application/Handle.hpp"
-
 #include "ByteEngine/Game/System.hpp"
-
 #include "ByteEngine/Application/Application.h"
 
 class World;
+// TODO: Implement
 class ComponentCollection;
 
-namespace BE {
+namespace BE
+{
 	class Application;
 	class System;
 }
 
-template<typename... ARGS>
-using Task = GTSL::Delegate<void(TaskInfo, ARGS...)>;
+template<typename... Args>
+using Task = GTSL::Delegate<void(TaskInfo, Args...)>;
 
-inline const char8_t* AccessTypeToString(const AccessType access) {
-	switch (static_cast<uint8>(access)) {
-	case static_cast<uint8>(AccessTypes::READ): return u8"READ";
-	case static_cast<uint8>(AccessTypes::READ_WRITE): return u8"READ_WRITE";
+inline const char8_t* AccessTypeToString(const AccessType& type)
+{
+	switch(static_cast<GTSL::uint8>(type))
+	{
+	case AccessTypes::READ: return u8"READ";
+	case AccessTypes::READ_WRITE: return u8"READ WRITE";
+	default: ;
 	}
-
 	return u8"NULL";
 }
 
 template<class T>
-struct TypedDependency {
-	TypedDependency(GTSL::StringView name) : Name(name) {}
-	TypedDependency(GTSL::StringView name, AccessType at) : Name(name), Access(at) {}
+struct TypedDependency
+{
+	TypedDependency(const GTSL::StringView& name) : Name(name) {}
+	TypedDependency(const GTSL::StringView& name, const AccessType& type) : Name(name),Access(type) {}
 
 	using type = T;
-	Id Name; AccessType Access = AccessTypes::READ_WRITE;
+	Id Name;
+	AccessType Access = AccessTypes::READ_WRITE;
 };
 
 template<class... C>
@@ -59,7 +59,7 @@ struct DependencyBlock {
 
 	Id Names[1 + sizeof...(C)];
 	AccessType AccessTypes[1 + sizeof...(C)];
-	uint64 Length = sizeof...(C);
+	GTSL::uint64 Length = sizeof...(C);
 };
 
 template<typename... ACCESSES>
@@ -68,13 +68,13 @@ struct Resources {};
 template<typename... ARGS>
 struct TaskHandle {
 	TaskHandle() = default;
-	TaskHandle(uint32 reference) : Reference(reference) {}
+	TaskHandle(GTSL::uint32 reference) : Reference(reference) {}
 
-	uint32 Reference = ~0U;
+	GTSL::uint32 Reference = ~0U;
 
 	operator bool() const { return Reference != ~0U; }
 
-	uint32 operator()() const { return Reference; }
+	GTSL::uint32 operator()() const { return Reference; }
 };
 
 template<typename... ARGS>
@@ -84,47 +84,47 @@ struct EventHandle {
 	Id Name;
 };
 
-MAKE_HANDLE(uint32, System)
+MAKE_HANDLE(GTSL::uint32, System)
 
 namespace BE {
 	struct TypeIdentifier {
 		TypeIdentifier() = delete;
-		TypeIdentifier(const uint16 sysid, const uint16 tid) : SystemId(sysid), TypeId(tid) {}
+		TypeIdentifier(const GTSL::uint16 sysid, const GTSL::uint16 tid) : SystemId(sysid), TypeId(tid) {}
 
 		bool operator==(const TypeIdentifier&) const = default;
 
-		uint16 SystemId = 0xFFFF, TypeId = 0xFFFF;
+		GTSL::uint16 SystemId = 0xFFFF, TypeId = 0xFFFF;
 
-		uint32 operator()() const { return (SystemId | TypeId << 16); }
+		GTSL::uint32 operator()() const { return (SystemId | TypeId << 16); }
 	};
 
 	template <size_t L>
 	struct fixed_string {
-		constexpr fixed_string(const char8_t (&s)[L + 1]) {
-			for(uint32 i = 0; i < L; ++i) {
+		constexpr fixed_string(const char8_t(&s)[L + 1]) {
+			for (GTSL::uint32 i = 0; i < L; ++i) {
 				_chars[i] = s[i];
 			}
 		}
 
-		const char8_t _chars[L+1] = {}; // +1 for null terminator
+		const char8_t _chars[L + 1] = {}; // +1 for null terminator
 	};
 
 	template <size_t N>
-	fixed_string(const char8_t (&arr)[N]) -> fixed_string<N-1>;  // Drop the null terminator
+	fixed_string(const char8_t(&arr)[N]) -> fixed_string<N - 1>;  // Drop the null terminator
 
 	struct BaseHandle {
 	protected:
 		friend ApplicationManager;
-		BaseHandle(uint32 a, uint32 handle) : InstanceIndex(a), EntityIndex(handle) {}
-		
-		uint32 InstanceIndex = 0xFFFFFFFF, EntityIndex = 0xFFFFFFFF;
+		BaseHandle(GTSL::uint32 a, GTSL::uint32 handle) : InstanceIndex(a), EntityIndex(handle) {}
+
+		GTSL::uint32 InstanceIndex = 0xFFFFFFFF, EntityIndex = 0xFFFFFFFF;
 
 	public:
 		BaseHandle() = default;
 
-		uint32 operator()() const { return EntityIndex; }
+		GTSL::uint32 operator()() const { return EntityIndex; }
 
-		explicit operator uint64() const { return EntityIndex; }
+		explicit operator GTSL::uint64() const { return EntityIndex; }
 		explicit operator bool() const { return EntityIndex != 0xFFFFFFFF; }
 	};
 
@@ -139,12 +139,13 @@ namespace BE {
 		//}
 	private:
 		friend ApplicationManager;
-		Handle(uint32 a, uint32 handle) : BaseHandle(a, handle) {}
+		Handle(GTSL::uint32 a, GTSL::uint32 handle) : BaseHandle(a, handle) {}
 	};
 	//static_assert(sizeof(Handle<struct RRRR {}> ) <= 8);
 }
 
-namespace GTSL {
+namespace GTSL
+{
 	template<>
 	struct Hash<BE::BaseHandle> {
 		uint64 value = 0;
@@ -152,10 +153,9 @@ namespace GTSL {
 		operator uint64() const { return value; }
 	};
 
-	Hash(BE::BaseHandle) -> GTSL::Hash<BE::BaseHandle>;
+	Hash(BE::BaseHandle)->GTSL::Hash<BE::BaseHandle>;
 }
 
-#define LSTR(x) u8 ## x
 
 #define MAKE_BE_HANDLE(name)\
 	using name##Handle = BE::Handle<struct name##_tag>;
@@ -172,8 +172,8 @@ template <class T, template <class> class U>
 struct is_instance<U<T>, U> : public std::true_type {};
 
 class ApplicationManager : public Object {
-	MAKE_HANDLE(uint32, TypeErasedTask)
-	using TypeErasedHandleHandle = BE::BaseHandle;
+	MAKE_HANDLE(GTSL::uint32, TypeErasedTask)
+		using TypeErasedHandleHandle = BE::BaseHandle;
 	using FunctionType = GTSL::Delegate<void(ApplicationManager*, const DispatchedTaskHandle, TypeErasedTaskHandle)>;
 public:
 	ApplicationManager();
@@ -181,7 +181,7 @@ public:
 
 	void OnUpdate(BE::Application* application);
 
-	using WorldReference = uint8;
+	using WorldReference = GTSL::uint8;
 
 	struct CreateNewWorldInfo {};
 	template<typename T>
@@ -246,21 +246,21 @@ public:
 	void AddTypeSetupDependency(BE::System* system_pointer, BE::TypeIdentifier type_identifier, TaskHandle<ARGS...> dynamic_task_handle, bool is_required = true) {
 		auto& registeringSystem = systemsData[system_pointer->GetSystemId()];
 
-		if(type_identifier.SystemId != system_pointer->systemId) { // If type is not own, add to observed types
-			if(!registeringSystem.ObservedTypes.Find(type_identifier)) {
+		if (type_identifier.SystemId != system_pointer->m_systemId) { // If type is not own, add to observed types
+			if (!registeringSystem.ObservedTypes.Find(type_identifier)) {
 				registeringSystem.ObservedTypes.EmplaceBack(type_identifier);
 			}
 		}
 
 		auto& observedSystem = systemsData[type_identifier.SystemId];
 
-		if(!observedSystem.ObservingSystems.Find(SystemHandle(system_pointer->GetSystemId()))) {
+		if (!observedSystem.ObservingSystems.Find(SystemHandle(system_pointer->GetSystemId()))) {
 			observedSystem.ObservingSystems.EmplaceBack(SystemHandle(system_pointer->GetSystemId()));
 		}
 
 		auto& type = registeringSystem.Types.TryEmplace(type_identifier(), GetPersistentAllocator()).Get();
 
-		if(type.SetupSteps) {
+		if (type.SetupSteps) {
 			SpecifyTaskCoDependency(type.SetupSteps.back().TaskHandle, TypeErasedTaskHandle(dynamic_task_handle()));
 		}
 
@@ -271,7 +271,7 @@ public:
 		task.AssociatedType = type_identifier;
 	}
 
-	MAKE_HANDLE(uint32, Resource);
+	MAKE_HANDLE(GTSL::uint32, Resource);
 
 	ResourceHandle AddResource(BE::System* system_pointer, BE::TypeIdentifier type_identifier) {
 		auto& system = systemsData[system_pointer->GetSystemId()];
@@ -294,7 +294,7 @@ public:
 
 			T* system = (T*)gameInstance->systems[info->SystemId].GetData();
 
-			if(info->Callee != system) {
+			if (info->Callee != system) {
 				BE_DEBUG_BREAK;
 			}
 
@@ -303,9 +303,9 @@ public:
 			GTSL::StaticString<512> args(u8"\"Start stage\":{ "); args += u8"\"Name\":\""; ToString(args, task.StartStage); args += u8"\", \"Index\":"; ToString(args, task.StartStageIndex); args += u8" },";
 			args += u8"\"End stage\":{ "; args += u8"\"Name\":\""; ToString(args, task.EndStage); args += u8"\", \"Index\":"; ToString(args, task.EndStageIndex); args += u8" },";
 			args += u8"\"Accesses\":[ ";
-			for (uint32 i = 0; i < task.Access; ++i) {
+			for (GTSL::uint32 i = 0; i < task.Access; ++i) {
 				auto& [name, access] = task.Access[i];
-				if(i) { args+=u8", "; }
+				if (i) { args += u8", "; }
 				args += u8"{ \"System\":\""; args += GTSL::StringView(gameInstance->systemNames[name]); args += u8"\", \"Access type\":\""; args += AccessTypeToString(access); args += u8"\" }";
 			}
 			args += u8" ]";
@@ -330,7 +330,7 @@ public:
 		gameInstance->taskSorter.ReleaseResources(dispatched_task_handle);
 	}
 
-	static constexpr uint32 MAX_SYSTEMS = 8u;
+	static constexpr GTSL::uint32 MAX_SYSTEMS = 8u;
 
 	/**
 	 * \brief Registers a task with the application manager.
@@ -352,7 +352,7 @@ public:
 		//if (const auto r = functionToTaskMap.TryGet(fPointer)) {
 		//	return[&]<typename... ARGS>(void(T:: * d)(TaskInfo, typename ACC::type*..., ARGS...)) { return TaskHandle<ARGS...>(r.Get()()); }(delegate);
 		//}
-	   
+
 		GTSL::StaticVector<TaskAccess, 16> accesses;
 
 		dependencies.Names[0] = caller->instanceName; dependencies.AccessTypes[0] = AccessTypes::READ_WRITE; // Add a default access to the caller system since we also have to sync access to the caller and we don't expect the user to do so, access is assumed to be read_write
@@ -364,25 +364,25 @@ public:
 			decomposeTaskDescriptor(dependencies.Length + 1, dependencies.Names, dependencies.AccessTypes, accesses);
 		}
 
-		uint32 taskIndex = tasks.GetLength(); // Task index in tasks vector
+		GTSL::uint32 taskIndex = tasks.GetLength(); // Task index in tasks vector
 
 		TaskData& task = tasks.EmplaceBack();
 
-		uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
+		GTSL::uint16 startStageIndex = 0xFFFF, endStageIndex = 0xFFFF;
 
 		if (start_stage != GTSL::StringView()) { // Store start stage indices if a start stage is specified
-			startStageIndex = (uint32)stagesNames.Find(Id(start_stage)).Get();
+			startStageIndex = (GTSL::uint32)stagesNames.Find(Id(start_stage)).Get();
 		}
 
 		if (end_stage != GTSL::StringView()) { // Store end stage indices if an end stage is specified
-			endStageIndex = (uint32)stagesNames.Find(Id(end_stage)).Get();
+			endStageIndex = (GTSL::uint32)stagesNames.Find(Id(end_stage)).Get();
 		}
 
 		systemsData[caller->GetSystemId()].Tasks.EmplaceBack(taskIndex); // Add task handle to list of system owned tasks
 
 		static_assert(sizeof...(ACC) <= MAX_SYSTEMS);
 
-		return [&]<typename... ARGS>(void(T:: * d)(TaskInfo, typename ACC::type*..., ARGS...)) {
+		return[&]<typename... ARGS>(void(T:: * d)(TaskInfo, typename ACC::type*..., ARGS...)) {
 			//static_assert((GTSL::IsSame<GTSL::TypeAt<sizeof...(ACC), FARGS>, ARGS>() && ...), "Provided parameter types for task are not compatible with those required.");
 
 			using TDI = TaskDispatchInfo<ARGS...>;
@@ -461,13 +461,13 @@ public:
 
 	template<typename... ARGS>
 	void EnqueueTask(const TaskHandle<ARGS...> task_handle, ARGS&&... args) {
-		if(!task_handle) { BE_LOG_ERROR(u8"Tried to dispatch task but handle was invalid."); return; }
+		if (!task_handle) { BE_LOG_ERROR(u8"Tried to dispatch task but handle was invalid."); return; }
 
 		TaskData& task = tasks[task_handle()]; //TODO: locks
 		task.Scheduled = false;
 
 		if constexpr (sizeof...(ARGS)) {
-			if(task.Signals) {
+			if (task.Signals) {
 				if constexpr (is_instance<typename GTSL::TypeAt<0, ARGS...>::type, BE::Handle>{}) {
 					auto& invokedSystem = systemsData[task.Access.front().First];
 
@@ -475,18 +475,22 @@ public:
 
 					auto handle = makeTypeErasedHandle(typedHandle);
 
-					if(invokedSystem.Types.Find(getTypeIdentifier(typedHandle)())) { // Check if entity identifier is associated with receiving task
-					} else {
+					if (invokedSystem.Types.Find(getTypeIdentifier(typedHandle)())) { // Check if entity identifier is associated with receiving task
+					}
+					else {
 					}
 
 					allocateTaskDispatchInfo(task, task.Access.front().First, handle, GTSL::ForwardRef<ARGS>(args)...);
-				} else {
+				}
+				else {
 					allocateTaskDispatchInfo(task, task.Access.front().First, TypeErasedHandleHandle(), GTSL::ForwardRef<ARGS>(args)...);
 				}
-			} else {
+			}
+			else {
 				allocateTaskDispatchInfo(task, task.Access.front().First, TypeErasedHandleHandle(), GTSL::ForwardRef<ARGS>(args)...);
 			}
-		} else {
+		}
+		else {
 			allocateTaskDispatchInfo(task, task.Access.front().First, TypeErasedHandleHandle(), GTSL::ForwardRef<ARGS>(args)...);
 		}
 
@@ -546,7 +550,7 @@ public:
 	void AddStage(GTSL::StringView stageName);
 
 	template<typename T>
-	T MakeHandle(BE::TypeIdentifier type_identifier, uint32 index) {
+	T MakeHandle(BE::TypeIdentifier type_identifier, GTSL::uint32 index) {
 		GTSL::WriteLock<GTSL::ReadWriteMutex> lock(liveInstancesMutex);
 
 		auto instanceIndex = liveInstances.Emplace(type_identifier.SystemId, type_identifier.TypeId);
@@ -555,7 +559,7 @@ public:
 		//s.Types[type_identifier()].Entities.EmplaceAt(instanceIndex, TypeErasedHandleHandle(index, instanceIndex));
 
 		{
-			for(auto osh : s.ObservingSystems) {
+			for (auto osh : s.ObservingSystems) {
 				liveInstances.Emplace(type_identifier.SystemId, type_identifier.TypeId);
 			}
 		}
@@ -570,7 +574,7 @@ private:
 	GTSL::FixedVector<GTSL::SmartPointer<BE::System, BE::PersistentAllocatorReference>, BE::PersistentAllocatorReference> systems;
 	GTSL::FixedVector<Id, BE::PersistentAllocatorReference> systemNames;
 	GTSL::HashMap<GTSL::StringView, BE::System*, BE::PersistentAllocatorReference> systemsMap;
-	GTSL::HashMap<GTSL::StringView, uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
+	GTSL::HashMap<GTSL::StringView, GTSL::uint32, BE::PersistentAllocatorReference> systemsIndirectionTable;
 
 	/**
 	 * \brief Stores all data necessary to invoke a dispatch.
@@ -585,13 +589,13 @@ private:
 		TaskDispatchInfo() : Arguments{ 0 } {}
 
 		template<typename T, typename... FULL_ARGS>
-		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), uint32 sysCount) : ResourceCount(sysCount) {
+		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), GTSL::uint32 sysCount) : ResourceCount(sysCount) {
 			static_assert(sizeof(decltype(function)) == 8);
 			WriteDelegate<T>(function);
 		}
 
 		template<typename T, typename... FULL_ARGS>
-		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), uint32 sysCount, ARGS&&... args) requires (static_cast<bool>(sizeof...(ARGS))) : ResourceCount(sysCount) {
+		TaskDispatchInfo(void(T::* function)(TaskInfo, FULL_ARGS...), GTSL::uint32 sysCount, ARGS&&... args) requires (static_cast<bool>(sizeof...(ARGS))) : ResourceCount(sysCount) {
 			static_assert(sizeof(decltype(function)) == 8);
 			WriteDelegate<T>(function);
 			UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
@@ -601,7 +605,7 @@ private:
 		TaskDispatchInfo(TaskDispatchInfo&&) = delete;
 
 		~TaskDispatchInfo() {
-			[&] <uint64... I>(GTSL::Indices<I...>) {
+			[&] <GTSL::uint64... I>(GTSL::Indices<I...>) {
 				(GTSL::Destroy<typename GTSL::TypeAt<I, ARGS...>::type>(*GetPointer<I>()), ...);
 			} (GTSL::BuildIndices<sizeof...(ARGS)>{});
 
@@ -609,32 +613,32 @@ private:
 			Callee = nullptr;
 #endif
 		}
-		
+
 		void* Callee;
-		uint32 ResourceCount = 0;
-		uint16 SystemId;
+		GTSL::uint32 ResourceCount = 0;
+		GTSL::uint16 SystemId;
 
 		// Index of the entity to signal as being updated by the task.
 		bool Signals = false;
-		byte Arguments[sizeof(BE::System*) * MAX_SYSTEMS + GTSL::PackSize<ARGS...>()];
+		GTSL::uint8 Arguments[sizeof(BE::System*) * MAX_SYSTEMS + GTSL::PackSize<ARGS...>()];
 
-		uint32 D_CallCount = 0;
+		GTSL::uint32 D_CallCount = 0;
 
 		TypeErasedHandleHandle InstanceHandle;
 
-		void SetResource(const uint64 pos, BE::System* pointer) { *reinterpret_cast<BE::System**>(Arguments + pos * 8) = pointer; }
+		void SetResource(const GTSL::uint64 pos, BE::System* pointer) { *reinterpret_cast<BE::System**>(Arguments + pos * 8) = pointer; }
 
-		template<uint64 POS, typename T>
+		template<GTSL::uint64 POS, typename T>
 		T* GetResource() { return *reinterpret_cast<T**>(Arguments + POS * 8); }
 
-		template<uint64 POS>
+		template<GTSL::uint64 POS>
 		auto GetPointer() { return reinterpret_cast<typename GTSL::TypeAt<POS, ARGS...>::type*>(Arguments + ResourceCount * 8 + GTSL::PackSizeAt<POS, ARGS...>()); }
 
-		template<uint64 POS>
+		template<GTSL::uint64 POS>
 		auto& GetArgument() { return *GetPointer<POS>(); }
 
 		void UpdateArguments(ARGS&&... args) {
-			[&] <uint64... I>(GTSL::Indices<I...>) {
+			[&] <GTSL::uint64... I>(GTSL::Indices<I...>) {
 				(::new(GetPointer<I>()) ARGS(GTSL::ForwardRef<ARGS>(args)), ...);
 			} (GTSL::BuildIndices<sizeof...(ARGS)>{});
 		}
@@ -645,12 +649,12 @@ private:
 	struct Event {
 		Event(const BE::PAR& allocator) : Functions(allocator) {}
 
-		uint32 priorityEntry = ~0U;
+		GTSL::uint32 priorityEntry = ~0U;
 		GTSL::Vector<TypeErasedTaskHandle, BE::PAR> Functions;
 	};
 	GTSL::HashMap<Id, Event, BE::PersistentAllocatorReference> events;
 
-	GTSL::Atomic<uint32> taskCounter{ 0u };
+	GTSL::Atomic<GTSL::uint32> taskCounter{ 0u };
 
 	// TASKS
 	mutable GTSL::ReadWriteMutex tasksMutex;
@@ -667,16 +671,16 @@ private:
 
 		GTSL::StaticVector<TaskAccess, 16> Access;
 		void* Callee;
-		byte TaskFunction[TASK_POINTER_BUFFER_SIZE];
+		GTSL::uint8 TaskFunction[TASK_POINTER_BUFFER_SIZE];
 
-		uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
+		GTSL::uint16 StartStageIndex = 0xFFFF, EndStageIndex = 0xFFFF;
 
 #if BE_DEBUG
 		GTSL::StaticString<64> Name, StartStage, EndStage;
 #endif
 
 		//Task that has to be called before this
-		uint32 Pre = 0xFFFFFFFF;
+		GTSL::uint32 Pre = 0xFFFFFFFF;
 
 		bool IsDependedOn = false;
 
@@ -687,10 +691,10 @@ private:
 		BE::TypeIdentifier AssociatedType{ 0xFFFF, 0xFFFF };
 
 		struct InstanceData {
-			uint32 TaskNumber = 0;
+			GTSL::uint32 TaskNumber = 0;
 
 			// System index which the entity to update corresponds to.
-			uint16 SystemId;
+			GTSL::uint16 SystemId;
 
 			// Index of the entity to signal as being updated by the task.
 			TypeErasedHandleHandle InstanceHandle;
@@ -698,7 +702,7 @@ private:
 
 			bool Signals = false;
 
-			uint16 DispatchAttempts = 0;
+			GTSL::uint16 DispatchAttempts = 0;
 		};
 		GTSL::StaticVector<InstanceData, 16> Instances;
 
@@ -707,8 +711,8 @@ private:
 		template<typename F>
 		void SetDelegate(F delegate) {
 			static_assert(sizeof(F) <= TASK_POINTER_BUFFER_SIZE, "Delegate size is bigger than buffer available.");
-			auto* d = reinterpret_cast<byte*>(&delegate);
-			for (uint64 i = 0; i < sizeof(F); ++i) {
+			auto* d = reinterpret_cast<GTSL::uint8*>(&delegate);
+			for (GTSL::uint64 i = 0; i < sizeof(F); ++i) {
 				TaskFunction[i] = d[i];
 			}
 		}
@@ -724,7 +728,7 @@ private:
 	};
 	GTSL::Vector<TaskData, BE::PAR> tasks;
 
-	GTSL::HashMap<uint64, TypeErasedTaskHandle, BE::PAR> functionToTaskMap;
+	GTSL::HashMap<GTSL::uint64, TypeErasedTaskHandle, BE::PAR> functionToTaskMap;
 
 	GTSL::StaticVector<GTSL::StaticVector<TypeErasedTaskHandle, 16>, 16> stages;
 
@@ -732,7 +736,8 @@ private:
 
 	template<typename T, typename... RESOURCES, typename... ARGS>
 	static void call(TaskInfo task_info, const TaskData* task_data, TaskDispatchInfo<ARGS...>* dispatch_task_info) {
-		[&] <uint64... RI, uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>) {
+		[&] <GTSL::uint64... RI, GTSL::uint64... AI>(GTSL::Indices<RI...>, GTSL::Indices<AI...>)
+		{
 			(static_cast<T*>(dispatch_task_info->Callee)->*(task_data->template GetDelegate<T, RESOURCES*..., ARGS...>()))(task_info, dispatch_task_info->template GetResource<RI, RESOURCES>()..., GTSL::MoveRef(dispatch_task_info->template GetArgument<AI>())...);
 		} (GTSL::BuildIndices<sizeof...(RESOURCES)>{}, GTSL::BuildIndices<sizeof...(ARGS)>{});
 	}
@@ -740,7 +745,7 @@ private:
 	// TASKS
 
 	GTSL::Semaphore resourcesUpdated;
-	GTSL::Atomic<uint32> tasksInFlight;
+	GTSL::Atomic<GTSL::uint32> tasksInFlight;
 
 	mutable GTSL::ReadWriteMutex stagesNamesMutex;
 	GTSL::Vector<Id, BE::PersistentAllocatorReference> stagesNames;
@@ -749,24 +754,25 @@ private:
 
 	GTSL::Semaphore semaphores[64];
 
-	uint32 scalingFactor = 16;
+	GTSL::uint32 scalingFactor = 16;
 
-	uint64 frameNumber = 0;
+	GTSL::uint64 frameNumber = 0;
 
-	uint16 getStageIndex(const Id stageName) const {
+	GTSL::uint16 getStageIndex(const Id stageName) const
+	{
 		auto findRes = GTSL::Find(stagesNames, [&](const Id& goal_name) { return goal_name == stageName; });
 		BE_ASSERT(findRes, "No stage found with that name!");
-		return static_cast<uint16>(findRes.Get() - stagesNames.begin());
+		return static_cast<GTSL::uint16>(findRes.Get() - stagesNames.begin());
 	}
 
 	template<typename U>
-	void decomposeTaskDescriptor(uint64 len, const Id* names, const AccessType* accessTypes, U& access) {
-		for (uint16 i = 0; i < len; ++i) { //for each dependency
+	void decomposeTaskDescriptor(GTSL::uint64 len, const Id* names, const AccessType* accessTypes, U& access) {
+		for (GTSL::uint16 i = 0; i < len; ++i) { //for each dependency
 			access.EmplaceBack(getSystemIndex(names[i]), accessTypes[i]);
 		}
 	}
 
-	[[nodiscard]] bool assertTask(const Id taskName, const Id startGoal, const Id endGoal, const uint64 len, const Id* names, const AccessType* access) const {
+	[[nodiscard]] bool assertTask(const Id taskName, const Id startGoal, const Id endGoal, const GTSL::uint64 len, const Id* names, const AccessType* access) const {
 		{
 			GTSL::ReadLock<GTSL::ReadWriteMutex> lock(stagesNamesMutex);
 
@@ -794,8 +800,10 @@ private:
 		{
 			GTSL::Lock lock(systemsMutex);
 
-			for (auto i = 0ull; i < len; ++i) {
-				if (!doesSystemExist(names[i])) {
+			for (auto i = 0ull; i < len; ++i) 
+			{
+				if (!DoesSystemExist(names[i])) 
+				{
 					BE_LOG_ERROR(u8"Tried to add task ", GTSL::StringView(taskName), u8" to stage ", GTSL::StringView(startGoal), u8" with a dependency on ", GTSL::StringView(names[i]), u8" which doesn't exist. Resolve this issue as it leads to undefined behavior in release builds!")
 						return true;
 				}
@@ -806,13 +814,15 @@ private:
 	}
 
 	template<typename... ARGS>
-	auto allocateTaskDispatchInfo(TaskData& task, uint16 task_owner_system_id, TypeErasedHandleHandle instance_handle, ARGS&&... args) {
+	auto allocateTaskDispatchInfo(TaskData& task, GTSL::uint16 task_owner_system_id, TypeErasedHandleHandle instance_handle, ARGS&&... args)
+	{
 		TaskDispatchInfo<ARGS...>* dispatchTaskInfo = GTSL::New<TaskDispatchInfo<ARGS...>>(GetPersistentAllocator());
 
 		dispatchTaskInfo->ResourceCount = task.Access.GetLength() - 1;
 		dispatchTaskInfo->UpdateArguments(GTSL::ForwardRef<ARGS>(args)...);
 
-		for (uint32 i = 1; i < task.Access; ++i) { // Skip first resource because it's the system being called for which we don't send a pointer for
+		for (GTSL::uint32 i = 1; i < task.Access; ++i) 
+		{ // Skip first resource because it's the system being called for which we don't send a pointer for
 			dispatchTaskInfo->SetResource(i - 1, systems[task.Access[i].First]);
 		}
 
@@ -820,29 +830,39 @@ private:
 
 		const bool signals = task.Signals;
 
-		const uint32 taskNumber = taskCounter++;
+		const GTSL::uint32 taskNumber = taskCounter++;
 
 		auto h = instance_handle.InstanceIndex;
 
-		if(task.OnlyLast) {
+		if (task.OnlyLast) 
+		{
 			//TODO: match system index, and everything
-			auto taskForSameInstanceExists = task.Instances.LookFor([&](const TaskData::InstanceData& instance_data){ return instance_data.InstanceHandle.InstanceIndex == h; });
-			if(taskForSameInstanceExists) {
+			if (auto taskForSameInstanceExists = task.Instances.LookFor([&](const TaskData::InstanceData& instance_data) { return instance_data.InstanceHandle.InstanceIndex == h; })) {
 				TaskData::InstanceData& instance = task.Instances[taskForSameInstanceExists.Get()];
 				GTSL::Delete(reinterpret_cast<TaskDispatchInfo<ARGS...>**>(&instance.TaskInfo), GetPersistentAllocator()); // Free overwritten task data
 				instance.TaskInfo = dispatchTaskInfo;
 				instance.TaskNumber = taskNumber;
-			} else {
-				if(task_owner_system_id == 0xFFFF) {
+			}
+			else 
+			
+			{
+				if (task_owner_system_id == 0xFFFF) 
+				{
 					task.Instances.EmplaceBack(taskNumber, task_owner_system_id, instance_handle, dispatchTaskInfo, signals);
-				} else {
+				}
+				else 
+				{
 					task.Instances.EmplaceBack(taskNumber, task_owner_system_id, instance_handle, dispatchTaskInfo, signals);
 				}
 			}
-		} else {
-			if(task_owner_system_id == 0xFFFF) {
+		}
+		else {
+			if (task_owner_system_id == 0xFFFF) 
+			{
 				task.Instances.EmplaceBack(taskNumber, task_owner_system_id, instance_handle, dispatchTaskInfo, signals);
-			} else {
+			}
+			else 
+			{
 				task.Instances.EmplaceBack(taskNumber, task_owner_system_id, instance_handle, dispatchTaskInfo, signals);
 			}
 		}
@@ -853,13 +873,15 @@ private:
 		return dispatchTaskInfo;
 	}
 
-	void initWorld(uint8 worldId);
+	void initWorld(GTSL::uint8 worldId);
 
-	uint32 getSystemIndex(Id systemName) {
+	GTSL::uint32 getSystemIndex(Id systemName)
+	{
 		return systemsIndirectionTable[GTSL::StringView(systemName)];
 	}
 
-	bool doesSystemExist(const Id systemName) const {
+	bool DoesSystemExist(const Id systemName) const
+	{
 		return systemsIndirectionTable.Find(GTSL::StringView(systemName));
 	}
 
@@ -868,14 +890,17 @@ private:
 	//};
 	//GTSL::Vector<EntityClassData, BE::PAR> entityClasses;
 
-	struct SystemData {
+	struct SystemData
+	{
 		SystemData(const BE::PAR& allocator) : Types(allocator) {}
 
-		struct TypeData {
-			uint32 Target = 0;
+		struct TypeData
+		{
+			GTSL::uint32 Target = 0;
 			TypeErasedTaskHandle DeletionTaskHandle;
 
-			struct DependencyData {
+			struct DependencyData
+			{
 				DependencyData(TypeErasedTaskHandle task_handle, bool is_required) : TaskHandle(task_handle), IsReq(is_required) {}
 
 				TypeErasedTaskHandle TaskHandle;
@@ -886,14 +911,14 @@ private:
 
 			TypeData(const BE::PAR& allocator) {}
 		};
-		GTSL::HashMap<uint32, TypeData, BE::PAR> Types;
+		GTSL::HashMap<GTSL::uint32, TypeData, BE::PAR> Types;
 
 		GTSL::StaticVector<BE::TypeIdentifier, 4> ObservedTypes;
 		GTSL::StaticVector<SystemHandle, 4> ObservingSystems;
 
 		GTSL::StaticVector<TypeErasedTaskHandle, 32> Tasks;
 
-		uint32 TypeCount = 0; // Owned types count
+		GTSL::uint32 TypeCount = 0; // Owned types count
 
 		Id Name;
 	};
@@ -902,8 +927,8 @@ private:
 	mutable GTSL::ReadWriteMutex liveInstancesMutex;
 
 	struct InstanceData {
-		uint16 SystemID, ComponentID;
-		uint32 Counter = 0;
+		GTSL::uint16 SystemID, ComponentID;
+		GTSL::uint32 Counter = 0;
 	};
 	GTSL::FixedVector<InstanceData, BE::PAR> liveInstances;
 
@@ -922,13 +947,13 @@ public:
 	template<typename T>
 	T* AddSystem(const GTSL::StringView systemName) {
 		if constexpr (BE_DEBUG) {
-			if (doesSystemExist(Id(systemName))) {
+			if (DoesSystemExist(Id(systemName))) {
 				BE_LOG_ERROR(u8"System by that name already exists! Returning existing instance.", BE::FIX_OR_CRASH_STRING);
 				return reinterpret_cast<T*>(systemsMap.At(systemName));
 			}
 		}
 
-		T* systemPointer = nullptr; uint16 systemIndex = 0xFFFF;
+		T* systemPointer = nullptr; GTSL::uint16 systemIndex = 0xFFFF;
 
 		{
 			BE::System::InitializeInfo initializeInfo;

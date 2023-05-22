@@ -164,7 +164,7 @@ namespace GAL {
 			GTSL::StaticVector<VkBuffer, 16> vkBuffers;
 			GTSL::StaticVector<VkDeviceSize, 16> vkOffsets;
 
-			for(uint32 i = 0; i < buffers.ElementCount(); ++i) {
+			for(GTSL::uint32 i = 0; i < buffers.ElementCount(); ++i) {
 				vkBuffers.EmplaceBack(buffers[i].GetVkBuffer());
 				vkOffsets.EmplaceBack(offsets[i]);
 			}
@@ -181,7 +181,7 @@ namespace GAL {
 			renderDevice->VkCmdDraw(commandBuffer, vertex_count, instance_count, 0, base_instance_index);
 		}
 
-		void DrawIndexed(const VulkanRenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount, uint32_t first_instance_index, uint32 index_offset, uint32 vertex_offset) const {
+		void DrawIndexed(const VulkanRenderDevice* renderDevice, uint32_t indexCount, uint32_t instanceCount, uint32_t first_instance_index, GTSL::uint32 index_offset, GTSL::uint32 vertex_offset) const {
 			renderDevice->VkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, index_offset, vertex_offset, first_instance_index);
 		}
 
@@ -236,7 +236,7 @@ namespace GAL {
 			renderDevice->VkCmdDispatch(commandBuffer, workGroups.Width, workGroups.Height, workGroups.Depth);
 		}
 
-		void DispatchIndirect(const VulkanRenderDevice* render_device, const VulkanBuffer buffer, const uint64 offset) {
+		void DispatchIndirect(const VulkanRenderDevice* render_device, const VulkanBuffer buffer, const GTSL::uint64 offset) {
 			render_device->VkCmdDispatchIndirect(commandBuffer, buffer.GetVkBuffer(), offset);
 		}
 

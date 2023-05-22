@@ -50,7 +50,7 @@ namespace GAL
 		struct VertexElement {
 			GTSL::ShortString<32> Identifier;
 			ShaderDataType Type;
-			uint8 Location = 0xFF;
+			GTSL::uint8 Location = 0xFF;
 		};
 
 		static constexpr auto POSITION = GTSL::ShortString<32>(u8"POSITION");
@@ -106,7 +106,7 @@ namespace GAL
 
 			struct SpecializationData {
 				struct SpecializationEntry {
-					uint64 Size, Offset, ID;
+					GTSL::uint64 Size, Offset, ID;
 				};
 
 				GTSL::Range<const SpecializationEntry*> Entries;

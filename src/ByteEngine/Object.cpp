@@ -1,10 +1,15 @@
-#include "ByteEngine/Object.h"
+#include "Object.h"
 
 #include <GTSL/Thread.hpp>
 
+#include "Application/Application.h"
 
-#include "ByteEngine/Application/Application.h"
+BE::Logger* Object::GetLogger() const
+{
+	return BE::Application::Get()->GetLogger();
+}
 
-BE::Logger* Object::getLogger() const { return BE::Application::Get()->GetLogger(); }
-
-uint8 Object::getThread() const { return GTSL::Thread::ThisTreadID(); }
+GTSL::uint8 Object::GetThread() const
+{
+	return GTSL::Thread::ThisTreadID();
+}

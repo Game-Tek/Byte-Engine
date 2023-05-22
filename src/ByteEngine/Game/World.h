@@ -6,25 +6,22 @@ class World : public Object
 {
 public:
 	World();
-	~World() = default;
+	~World();
 
 	struct InitializeInfo
 	{
 		class ApplicationManager* GameInstance{ nullptr };
 	};
-	virtual void InitializeWorld(const InitializeInfo& initializeInfo);
 
 	struct DestroyInfo
 	{
 		class ApplicationManager* GameInstance{ nullptr };
 	};
+
+	virtual void InitializeWorld(const InitializeInfo& info);
 	virtual void DestroyWorld(const DestroyInfo& destroyInfo);
-	
 	virtual void Pause();
-
-	void SetWorldTimeMultiplier(const float multiplier) { worldTimeMultiplier = multiplier; }
-
+	void SetWorldTimeMultiplier(const float multiplier) { m_worldTimeMult = multiplier; }
 protected:
-	float worldTimeMultiplier = 1;
-
+	float m_worldTimeMult = 1;
 };

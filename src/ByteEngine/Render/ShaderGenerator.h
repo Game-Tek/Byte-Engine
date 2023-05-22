@@ -52,7 +52,7 @@ void tokenizeCode(const GTSL::StringView string, auto& statements) {
 	auto parseLine = [&](const GTSL::StringView code) {
 		if(GTSL::IsIn(code, u8"//")) { return; }
 
-		for (uint32 i = 0; i < code.GetCodepoints(); ++i) {
+		for (GTSL::uint32 i = 0; i < code.GetCodepoints(); ++i) {
 			auto c = code[i];
 
 			ShaderNode::Type type;
@@ -145,11 +145,11 @@ struct GPipeline : Object {
 	struct ElementHandle {
 		constexpr ElementHandle() = default;
 
-		explicit constexpr ElementHandle(const uint32 n) : Handle(n) {
+		explicit constexpr ElementHandle(const GTSL::uint32 n) : Handle(n) {
 			
 		}
 
-		uint32 Handle = 0xFFFFFFFF;
+		GTSL::uint32 Handle = 0xFFFFFFFF;
 	};
 
 	inline static const ElementHandle GLOBAL_SCOPE{ 1u };
@@ -165,7 +165,7 @@ struct GPipeline : Object {
 		//Every function gets assigned an id which is unique per pipeline
 		//It aides in identifying functions when dealing with overloads, which share name and thus does not allow to uniquely identify them
 		//Id can also be used to access the element which represents this function
-		uint32 Id = 0;
+		GTSL::uint32 Id = 0;
 	};
 
 	struct LanguageElement {
@@ -177,16 +177,16 @@ struct GPipeline : Object {
 			NONE, MODEL, SCOPE, KEYWORD, TYPE, STRUCT, MEMBER, FUNCTION, DEDUCTION_GUIDE, DISABLED, SHADER, CONSTANT, SHARED
 		} Type = ElementType::NONE;
 
-		GTSL::HashMap<GTSL::StringView, GTSL::StaticVector<uint32, 8>, BE::TAR> map;
-		GTSL::Vector<uint32, BE::TAR> symbols;
+		GTSL::HashMap<GTSL::StringView, GTSL::StaticVector<GTSL::uint32, 8>, BE::TAR> map;
+		GTSL::Vector<GTSL::uint32, BE::TAR> symbols;
 		GTSL::StaticString<64> Name;
-		uint16 Level = 0;
-		uint32 Reference = 0xFFFFFFFF;
+		GTSL::uint16 Level = 0;
+		GTSL::uint32 Reference = 0xFFFFFFFF;
 	};
 
 
 	struct StructData {
-		uint8 GenerationType = 2;
+		GTSL::uint8 GenerationType = 2;
 		bool IsConst = false;
 	};
 
@@ -209,7 +209,7 @@ struct GPipeline : Object {
 		//add(ElementHandle(), u8"vec2u", LanguageElement::ElementType::TYPE);
 	}
 
-	uint32 GetLevel(const ElementHandle element_handle) const { return elements[element_handle.Handle].Level; }
+	GTSL::uint32 GetLevel(const ElementHandle element_handle) const { return elements[element_handle.Handle].Level; }
 
 	auto GetElement(const ElementHandle element_handle) -> LanguageElement& { return elements[element_handle.Handle]; }
 	const LanguageElement& GetElement(const ElementHandle element_handle) const { return elements[element_handle.Handle]; }
@@ -281,7 +281,7 @@ public:
 	}
 
 	auto TryGetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) -> GTSL::Result<LanguageElement&> {
-		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
+		for (GTSL::uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
 			if (auto res = TryGetElement(parents[i], name)) {
 				return res;
 			}
@@ -291,7 +291,7 @@ public:
 	}
 
 	auto TryGetElement(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) const -> GTSL::Result<const LanguageElement&> {
-		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
+		for (GTSL::uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
 			if (auto res = TryGetElement(parents[i], name)) {
 				return res;
 			}
@@ -301,7 +301,7 @@ public:
 	}
 
 	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
-		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
+		for (GTSL::uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
 			if (auto res = TryGetElementHandle(parents[i], name)) {
 				return res;
 			}
@@ -311,7 +311,7 @@ public:
 	}
 
 	auto TryGetElementHandle(const GTSL::Range<const ElementHandle*> parents, const ElementHandle current_scope, const GTSL::StringView name) const -> GTSL::Result<ElementHandle> {
-		for (uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
+		for (GTSL::uint32 i = parents.ElementCount() - 1, j = 0; j < parents.ElementCount(); --i, ++j) {
 			if (auto res = TryGetElementHandle(parents[i], name); res && GetLevel(res.Get()) <= GetLevel(current_scope)) {
 				return res;
 			}
@@ -680,25 +680,25 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		GTSL::StaticString<64> result = name;
 
 		switch (GTSL::Hash(name)) {
-		case GTSL::Hash(u8"float32"): result = u8"float"; break;
-		case GTSL::Hash(u8"vec2f"):   result = u8"vec2"; break;
-		case GTSL::Hash(u8"vec2i"):   result = u8"ivec2"; break;
-		case GTSL::Hash(u8"vec2u"):   result = u8"uvec2"; break;
-		case GTSL::Hash(u8"vec3u"):   result = u8"uvec3"; break;
-		case GTSL::Hash(u8"vec3f"):   result = u8"vec3"; break;
-		case GTSL::Hash(u8"vec4f"):   result = u8"vec4"; break;
-		case GTSL::Hash(u8"mat2f"):   result = u8"mat2"; break;
-		case GTSL::Hash(u8"mat3f"):   result = u8"mat3"; break;
-		case GTSL::Hash(u8"matrix4f"):   result = u8"mat4"; break;
-		case GTSL::Hash(u8"matrix3x4f"): result = u8"mat4x3"; break; // row-columns to columns-rows
-		case GTSL::Hash(u8"matrix4x3f"): result = u8"mat3x4"; break;
-		case GTSL::Hash(u8"uint8"):   result = u8"uint8_t"; break;
-		case GTSL::Hash(u8"uint64"):  result = u8"uint64_t"; break;
-		case GTSL::Hash(u8"int32"):  result = u8"int"; break;
-		case GTSL::Hash(u8"uint32"):  result = u8"uint"; break;
-		case GTSL::Hash(u8"uint16"):  result = u8"uint16_t"; break;
-		case GTSL::Hash(u8"ptr_t"):   result = u8"uint64_t"; break;
-		case GTSL::Hash(u8"return"):   result = u8"return "; break;
+		case u8"float32": result = u8"float"; break;
+		case u8"vec2f":   result = u8"vec2"; break;
+		case u8"vec2i":   result = u8"ivec2"; break;
+		case u8"vec2u":   result = u8"uvec2"; break;
+		case u8"vec3u":   result = u8"uvec3"; break;
+		case u8"vec3f":   result = u8"vec3"; break;
+		case u8"vec4f":   result = u8"vec4"; break;
+		case u8"mat2f":   result = u8"mat2"; break;
+		case u8"mat3f":   result = u8"mat3"; break;
+		case u8"matrix4f":   result = u8"mat4"; break;
+		case u8"matrix3x4f": result = u8"mat4x3"; break; // row-columns to columns-rows
+		case u8"matrix4x3f": result = u8"mat3x4"; break;
+		case u8"uint8":   result = u8"uint8_t"; break;
+		case u8"uint64":  result = u8"uint64_t"; break;
+		case u8"int32":  result = u8"int"; break;
+		case u8"uint32":  result = u8"uint"; break;
+		case u8"uint16":  result = u8"uint16_t"; break;
+		case u8"ptr_t":   result = u8"uint64_t"; break;
+		case u8"return":   result = u8"return "; break;
 		}
 
 		if (*(name.end() - 1) == u8'*') {
@@ -717,7 +717,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		if (auto res = FindFirst(struct_element.Type, U'[')) {
 			result.Type.Drop(res.Get());
 			auto last = FindLast(struct_element.Type, U']'); //TODO: boom no bracket pair
-			for (uint32 o = res.Get(); o < last.Get() + 1; ++o) {
+			for (GTSL::uint32 o = res.Get(); o < last.Get() + 1; ++o) {
 				result.Name += struct_element.Type[o];
 			}
 		}
@@ -730,7 +730,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 	{
 		auto constants = pipeline.GetElements(GPipeline::LanguageElement::ElementType::CONSTANT, scopes);
 
-		uint32 i = 0;
+		GTSL::uint32 i = 0;
 		for(auto& c : constants) {
 			const auto& member = pipeline.GetMember(c);
 
@@ -752,8 +752,8 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		auto descriptorSetBlockHandle = pipeline.TryGetElementHandle(scopes, u8"descriptorSetBlock");
 		if (!descriptorSetBlockHandle) { addErrorCode(u8"Descriptor set block declaration was not found."); return; }
 
-		for (uint32 s = 0; const auto & l : pipeline.GetChildren(descriptorSetBlockHandle.Get())) {
-			for (uint32 ss = 0; const auto & m : pipeline.GetChildren(l)) {
+		for (GTSL::uint32 s = 0; const auto & l : pipeline.GetChildren(descriptorSetBlockHandle.Get())) {
+			for (GTSL::uint32 ss = 0; const auto & m : pipeline.GetChildren(l)) {
 				declarationBlock += u8"layout(set="; ToString(declarationBlock, s); declarationBlock += u8",binding="; ToString(declarationBlock, ss); declarationBlock += u8") uniform ";
 				writeStructElement(declarationBlock, pipeline.GetMember(m)); declarationBlock += u8"\n";
 				++ss;
@@ -762,7 +762,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 		}
 	}();
 
-	GTSL::HashMap<uint32, bool, ALLOCATOR> usedFunctions(16, allocator);
+	GTSL::HashMap<GTSL::uint32, bool, ALLOCATOR> usedFunctions(16, allocator);
 	GTSL::HashMap<Id, bool, ALLOCATOR> usedStructs(16, allocator); //TODO: try emplace return is a reference which might be invalidated if map is resized during recursive call
 
 	auto addBlockDeclaration = [&](GTSL::String<ALLOCATOR>& string, const GTSL::StringView name, const GTSL::StringView type, const GTSL::Range<const GTSL::StringView*> vars, const GTSL::Range<const StructElement*> struct_elements) {
@@ -875,9 +875,9 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			string += u8"(";
 
-			uint32 paramCount = function.Parameters.GetLength();
+			GTSL::uint32 paramCount = function.Parameters.GetLength();
 
-			for (uint32 i = 0; i < paramCount; ++i) {
+			for (GTSL::uint32 i = 0; i < paramCount; ++i) {
 				auto param = resolveTypeName(function.Parameters[i]);
 				string += param.Type; string += u8' '; string += param.Name;
 				if (i != paramCount - 1) { string += u8", "; }
@@ -885,7 +885,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 			string += u8") { ";
 
-			for (uint32 i = 0; i < function.Tokens;) {
+			for (GTSL::uint32 i = 0; i < function.Tokens;) {
 				auto makeStatement = [&] {
 					GTSL::StaticString<4096> statementString;
 
@@ -907,7 +907,7 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 									statementString += node.Name;
 								}
 								else if (element.Type == GPipeline::LanguageElement::ElementType::DEDUCTION_GUIDE) {
-									for (uint32 i = 0; auto f : pipeline.GetMemberDeductionGuide(elementResult.Get())) {
+									for (GTSL::uint32 i = 0; auto f : pipeline.GetMemberDeductionGuide(elementResult.Get())) {
 										if (i) { statementString += u8"."; }
 										statementString += resolve(pipeline.GetName(f));
 										++i;
@@ -1020,9 +1020,9 @@ GTSL::Result<GTSL::Pair<GTSL::String<ALLOCATOR>, GTSL::StaticString<1024>>> Gene
 
 		const auto& arr = pipeline.GetChildren(interfaceBlockHandle.Get());
 
-		uint32 locationIndex = 0;
+		GTSL::uint32 locationIndex = 0;
 
-		for (uint32 i = 0; i < arr; ++i) {
+		for (GTSL::uint32 i = 0; i < arr; ++i) {
 			declarationBlock += u8"layout(location="; ToString(declarationBlock, locationIndex); declarationBlock += u8") ";
 			declarationBlock += type;
 

@@ -11,7 +11,7 @@ namespace GAL
 	public:
 		VulkanSynchronizer() = default;
 
-		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, Type syncType, bool isSignaled = false, uint64 initialValue = ~0ULL) {
+		void Initialize(const VulkanRenderDevice* renderDevice, const GTSL::StringView name, Type syncType, bool isSignaled = false, GTSL::uint64 initialValue = ~0ULL) {
 			SyncType = syncType;
 
 			switch (SyncType) {

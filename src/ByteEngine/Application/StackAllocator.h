@@ -24,10 +24,10 @@ public:
 		struct PerNameData
 		{
 			GTSL::ShortString<128> Name;
-			uint64 AllocationCount{ 0 };
-			uint64 DeallocationCount{ 0 };
-			uint64 BytesAllocated{ 0 };
-			uint64 BytesDeallocated{ 0 };
+			GTSL::uint64 AllocationCount{ 0 };
+			GTSL::uint64 DeallocationCount{ 0 };
+			GTSL::uint64 BytesAllocated{ 0 };
+			GTSL::uint64 BytesDeallocated{ 0 };
 		};
 		
 		std::unordered_map<GTSL::Id64::HashType, PerNameData> PerNameAllocationsData;
@@ -38,31 +38,31 @@ public:
 		 * Don't make it so big that in the event that a new block has to be allocated it takes up too much space.
 		 * Reset to 0 on every call to GetDebugInfo()
 		 */
-		uint64 BlockMisses{ 0 };
+		GTSL::uint64 BlockMisses{ 0 };
 
-		uint64 BytesAllocated{ 0 };
-		uint64 TotalBytesAllocated{ 0 };
+		GTSL::uint64 BytesAllocated{ 0 };
+		GTSL::uint64 TotalBytesAllocated{ 0 };
 		
-		uint64 BytesDeallocated{ 0 };
-		uint64 TotalBytesDeallocated{ 0 };
+		GTSL::uint64 BytesDeallocated{ 0 };
+		GTSL::uint64 TotalBytesDeallocated{ 0 };
 		
-		uint64 AllocatorAllocatedBytes{ 0 };
-		uint64 TotalAllocatorAllocatedBytes{ 0 };
+		GTSL::uint64 AllocatorAllocatedBytes{ 0 };
+		GTSL::uint64 TotalAllocatorAllocatedBytes{ 0 };
 
-		uint64 AllocatorDeallocatedBytes{ 0 };
-		uint64 TotalAllocatorDeallocatedBytes{ 0 };
+		GTSL::uint64 AllocatorDeallocatedBytes{ 0 };
+		GTSL::uint64 TotalAllocatorDeallocatedBytes{ 0 };
+
+		GTSL::uint64 AllocationsCount{ 0 };
+		GTSL::uint64 TotalAllocationsCount{ 0 };
+
+		GTSL::uint64 DeallocationsCount{ 0 };
+		GTSL::uint64 TotalDeallocationsCount{ 0 };
 		
-		uint64 AllocationsCount{ 0 };
-		uint64 TotalAllocationsCount{ 0 };
+		GTSL::uint64 AllocatorAllocationsCount{ 0 };
+		GTSL::uint64 TotalAllocatorAllocationsCount{ 0 };
 		
-		uint64 DeallocationsCount{ 0 };
-		uint64 TotalDeallocationsCount{ 0 };
-		
-		uint64 AllocatorAllocationsCount{ 0 };
-		uint64 TotalAllocatorAllocationsCount{ 0 };
-		
-		uint64 AllocatorDeallocationsCount{ 0 };
-		uint64 TotalAllocatorDeallocationsCount{ 0 };
+		GTSL::uint64 AllocatorDeallocationsCount{ 0 };
+		GTSL::uint64 TotalAllocatorDeallocationsCount{ 0 };
 
 		operator GTSL::StaticString<1024>() const
 		{
@@ -81,7 +81,7 @@ public:
 
 	StackAllocator() = default;
 
-	void initialize(BE::SystemAllocatorReference allocatorReference, const uint8 stackCount = 8, const uint8 defaultBlocksPerStackCount = 2, const uint64 blockSizes = 512)
+	void initialize(BE::SystemAllocatorReference allocatorReference, const GTSL::uint8 stackCount = 8, const GTSL::uint8 defaultBlocksPerStackCount = 2, const GTSL::uint64 blockSizes = 512)
 	{
 		this->blockSize = blockSizes;
 		//this->stacks = GTSL::Vector<GTSL::Vector<Block, BE::SystemAllocatorReference>, BE::SystemAllocatorReference>(stackCount, allocatorReference);
@@ -89,13 +89,13 @@ public:
 		this->MAX_STACKS = stackCount;
 		this->blocksPerStack = defaultBlocksPerStackCount;
 
-		uint64 allocated_size = 0;
+		GTSL::uint64 allocated_size = 0;
 
-		for (uint8 stack = 0; stack < stackCount; ++stack)
+		for (GTSL::uint8 stack = 0; stack < stackCount; ++stack)
 		{
 			//stacks.EmplaceBack(defaultBlocksPerStackCount, allocatorReference);
 
-			for (uint32 block = 0; block < defaultBlocksPerStackCount; ++block)
+			for (GTSL::uint32 block = 0; block < defaultBlocksPerStackCount; ++block)
 			{
 				//stacks[stack].EmplaceBack(); //construct a default block
 
@@ -174,21 +174,21 @@ public:
 #endif
 
 	void clear() {
-		for(uint32 s = 0; s < MAX_STACKS; ++s) {
-			for(uint32 b = 0; b < blocksPerStack; ++b) {
+		for(GTSL::uint32 s = 0; s < MAX_STACKS; ++s) {
+			for(GTSL::uint32 b = 0; b < blocksPerStack; ++b) {
 				stacks[s][b].clear();
 			}
 		}
 	}
 
-	void Allocate(uint64 size, uint64 alignment, void** memory, uint64* allocatedSize, const GTSL::Range<const char8_t*> name)
+	void Allocate(GTSL::uint64 size, GTSL::uint64 alignment, void** memory, GTSL::uint64* allocatedSize, const GTSL::Range<const char8_t*> name)
 	{
 		const auto i{ stackIndex % MAX_STACKS }; ++stackIndex;
 
 		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 		BE_ASSERT(size <= blockSize, "Single allocation is larger than block sizes! An allocation larger than block size can't happen.");
 
-		uint64 allocated_size{ 0 };
+		GTSL::uint64 allocated_size{ 0 };
 
 #if BE_DEBUG
 		{
@@ -254,7 +254,7 @@ public:
 #endif
 	}
 
-	void Deallocate(uint64 size, uint64 alignment, void*, const GTSL::Range<const char8_t*> name)
+	void Deallocate(GTSL::uint64 size, GTSL::uint64 alignment, void*, const GTSL::Range<const char8_t*> name)
 	{
 		BE_ASSERT((alignment & (alignment - 1)) == 0, "Alignment is not power of two!");
 		BE_ASSERT(size <= blockSize, "Deallocation size is larger than block size! An allocation larger than block size can't happen. Trying to deallocate more bytes than allocated!");
@@ -274,7 +274,7 @@ public:
 
 	void Free()
 	{
-		uint64 freed_bytes{ 0 };
+		GTSL::uint64 freed_bytes{ 0 };
 
 		for (auto& stack : stacks)
 		{
@@ -300,60 +300,60 @@ protected:
 	{
 		Block() = default;
 
-		byte* start{ nullptr };
-		byte* at{ nullptr };
-		byte* end{ nullptr };
+		GTSL::uint8* start{ nullptr };
+		GTSL::uint8* at{ nullptr };
+		GTSL::uint8* end{ nullptr };
 
-		void initialize(uint64 minimumSize, BE::SystemAllocatorReference allocatorReference, uint64& allocatedSize);
+		void initialize(GTSL::uint64 minimumSize, BE::SystemAllocatorReference allocatorReference, GTSL::uint64& allocatedSize);
 
-		void deinitialize(BE::SystemAllocatorReference allocatorReference, uint64& deallocatedBytes) const;
+		void deinitialize(BE::SystemAllocatorReference allocatorReference, GTSL::uint64& deallocatedBytes) const;
 
-		void AllocateInBlock(uint64 size, uint64 alignment, void** data, uint64& allocatedSize);
+		void AllocateInBlock(GTSL::uint64 size, GTSL::uint64 alignment, void** data, GTSL::uint64& allocatedSize);
 
-		bool TryAllocateInBlock(uint64 size, uint64 alignment, void** data, uint64& allocatedSize);
+		bool TryAllocateInBlock(GTSL::uint64 size, GTSL::uint64 alignment, void** data, GTSL::uint64& allocatedSize);
 
 		void clear();
 
-		[[nodiscard]] uint64 GetBlockSize() const { return end - start; }
-		[[nodiscard]] uint64 GetRemainingSize() const { return end - at; }
+		[[nodiscard]] GTSL::uint64 GetBlockSize() const { return end - start; }
+		[[nodiscard]] GTSL::uint64 GetRemainingSize() const { return end - at; }
 	};
 
-	uint64 blockSize{ 0 };
+	GTSL::uint64 blockSize{ 0 };
 	std::atomic_uint32_t stackIndex = 0;
 	Block stacks[16][8];
-	uint32 blocksPerStack = 0;
+	GTSL::uint32 blocksPerStack = 0;
 	// GTSL::Mutex stacksMutexes[32];
 	// BE::SystemAllocatorReference allocatorReference;
 
 #if BE_DEBUG
-	uint64 blockMisses{ 0 };
+	GTSL::uint64 blockMisses{ 0 };
 	std::unordered_map<GTSL::Id64::HashType, DebugData::PerNameData> perNameData;
 	//GTSL::Mutex debugDataMutex;
 
-	uint64 bytesAllocated{ 0 };
-	uint64 bytesDeallocated{ 0 };
+	GTSL::uint64 bytesAllocated{ 0 };
+	GTSL::uint64 bytesDeallocated{ 0 };
 
-	uint64 totalAllocatorAllocatedBytes{ 0 };
-	uint64 totalAllocatorDeallocatedBytes{ 0 };
+	GTSL::uint64 totalAllocatorAllocatedBytes{ 0 };
+	GTSL::uint64 totalAllocatorDeallocatedBytes{ 0 };
 
-	uint64 allocationsCount{ 0 };
-	uint64 deallocationsCount{ 0 };
+	GTSL::uint64 allocationsCount{ 0 };
+	GTSL::uint64 deallocationsCount{ 0 };
 
-	uint64 allocatorAllocationsCount{ 0 };
-	uint64 allocatorDeallocationsCount{ 0 };
+	GTSL::uint64 allocatorAllocationsCount{ 0 };
+	GTSL::uint64 allocatorDeallocationsCount{ 0 };
 
-	uint64 allocatorAllocatedBytes{ 0 };
-	uint64 allocatorDeallocatedBytes{ 0 };
+	GTSL::uint64 allocatorAllocatedBytes{ 0 };
+	GTSL::uint64 allocatorDeallocatedBytes{ 0 };
 
-	uint64 totalBytesAllocated{ 0 };
-	uint64 totalBytesDeallocated{ 0 };
+	GTSL::uint64 totalBytesAllocated{ 0 };
+	GTSL::uint64 totalBytesDeallocated{ 0 };
 
-	uint64 totalAllocationsCount{ 0 };
-	uint64 totalDeallocationsCount{ 0 };
+	GTSL::uint64 totalAllocationsCount{ 0 };
+	GTSL::uint64 totalDeallocationsCount{ 0 };
 
-	uint64 totalAllocatorAllocationsCount{ 0 };
-	uint64 totalAllocatorDeallocationsCount{ 0 };
+	GTSL::uint64 totalAllocatorAllocationsCount{ 0 };
+	GTSL::uint64 totalAllocatorDeallocationsCount{ 0 };
 #endif
 
-	uint8 MAX_STACKS{ 8 };
+	GTSL::uint8 MAX_STACKS{ 8 };
 };

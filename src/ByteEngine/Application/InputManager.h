@@ -20,7 +20,7 @@ namespace GTSL {
 }
 
 struct InputDeviceHandle {
-	uint32 DeviceHandle, DeviceIndex;
+	GTSL::uint32 DeviceHandle, DeviceIndex;
 };
 
 template<typename E, typename T>
@@ -37,14 +37,14 @@ public:
 		Datatypes() : Color(0, 0, 0, 0) {}
 		Datatypes(bool b) : Action(b) {}
 		Datatypes(char32_t c) : Unicode(c) {}
-		Datatypes(float32 f) : Linear(f) {}
+		Datatypes(GTSL::float32 f) : Linear(f) {}
 		Datatypes(GTSL::Vector2 v) : Vector2D(v) {}
 		Datatypes(GTSL::Vector3 v) : Vector3D(v) {}
 		Datatypes(GTSL::RGBA r) : Color(r) {}
 		Datatypes(GTSL::Quaternion q) : Quaternion(q) {}
 
 		GTSL::RGBA Color;
-		bool Action; char32_t Unicode; float32 Linear;
+		bool Action; char32_t Unicode; GTSL::float32 Linear;
 		GTSL::Vector2 Vector2D; GTSL::Vector3 Vector3D;
 		GTSL::Quaternion Quaternion;
 	};
@@ -64,10 +64,10 @@ public:
 		InputEvent(InputDeviceHandle device_handle, GTSL::StringView inputSource, GTSL::Microseconds lastEvent, T val, T lastVal) : DeviceIndex(device_handle), InputSource(inputSource), LastEventTime(lastEvent), Value(val), LastValue(lastVal) {}
 	};
 
-	MAKE_HANDLE(uint32, InputLayer)
+	MAKE_HANDLE(GTSL::uint32, InputLayer)
 	
 	using ActionInputEvent = InputEvent<bool>;
-	using LinearInputEvent = InputEvent<float32>;
+	using LinearInputEvent = InputEvent<GTSL::float32>;
 	using CharacterInputEvent = InputEvent<char32_t>;
 	using Vector2DInputEvent = InputEvent<GTSL::Vector2>;
 	using Vector3DInputEvent = InputEvent<GTSL::Vector3>;
@@ -77,7 +77,7 @@ public:
 	~InputManager();
 
 	InputLayerHandle RegisterInputLayer(const GTSL::StringView) {
-		uint32 index = inputLayers.GetLength();
+		GTSL::uint32 index = inputLayers.GetLength();
 		return InputLayerHandle(index);
 	}
 	
@@ -119,7 +119,7 @@ public:
 				break;
 			}
 			case Type::LINEAR: {
-				//*inputSourcesRecords.AllocateStructure<float32>() = 0.0f;
+				//*inputSourcesRecords.AllocateStructure<GTSL::float32>() = 0.0f;
 				break;
 			}
 			case Type::VECTOR2D: {
@@ -153,7 +153,7 @@ public:
 			//	*inputSourcesRecords.AllocateStructure<char32_t>() = 0;
 			//}
 			//case InputSource::Type::LINEAR: {
-			//	*inputSourcesRecords.AllocateStructure<float32>() = 0.0f;
+			//	*inputSourcesRecords.AllocateStructure<GTSL::float32>() = 0.0f;
 			//}
 			//case InputSource::Type::VECTOR2D: {
 			//	inputSourcesRecords.AllocateStructure<GTSL::Vector2>();
@@ -225,7 +225,7 @@ public:
 	
 	void Update();
 	
-	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, GTSL::StringView parameterName, float32 value) {
+	void SetInputDeviceParameter(InputDeviceHandle deviceHandle, GTSL::StringView parameterName, GTSL::float32 value) {
 		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName).Linear = value;
 	}
 
@@ -233,7 +233,7 @@ public:
 		inputDevices[deviceHandle.DeviceHandle].Parameters.At(parameterName).Color = value;
 	}
 
-	[[nodiscard]] float32 GetInputDeviceParameter(InputDeviceHandle inputDeviceHandle, GTSL::StringView parameterName) const {
+	[[nodiscard]] GTSL::float32 GetInputDeviceParameter(InputDeviceHandle inputDeviceHandle, GTSL::StringView parameterName) const {
 		return inputDevices[inputDeviceHandle.DeviceHandle].Parameters.At(parameterName).Linear;
 	}
 
@@ -245,11 +245,11 @@ protected:
 	struct InputSource {		
 		GTSL::Microseconds LastTime;
 		Datatypes LastValue;
-		float32 Threshold = 0, DeadZone = 0.1f;
+		GTSL::float32 Threshold = 0, DeadZone = 0.1f;
 
 		Type SourceType;
 		
-		GTSL::StaticVector<uint32, 8> BoundInputEvents;
+		GTSL::StaticVector<GTSL::uint32, 8> BoundInputEvents;
 
 		InputSource() = default;
 
@@ -261,13 +261,13 @@ protected:
 
 	struct InputEventData {
 		Type EventType;
-		uint32 Handle = ~0U;
+		GTSL::uint32 Handle = ~0U;
 
 		bool P = false;
 
 		struct Action {
 			Datatypes TargetValue;
-			uint32_t StackEntry = ~0U;
+			GTSL::uint32 StackEntry = ~0U;
 		};
 		GTSL::StaticMap<GTSL::StringView, Action, 4> InputSources{ 4, 0.75f };
 
@@ -277,7 +277,7 @@ protected:
 
 	struct InputDevice {
 		GTSL::StaticString<64> Name;
-		GTSL::StaticVector<uint32, 8> ActiveIndeces;
+		GTSL::StaticVector<GTSL::uint32, 8> ActiveIndeces;
 		GTSL::StaticMap<GTSL::StringView, Datatypes, 8> Parameters;
 	};
 	GTSL::Vector<InputDevice, BE::PAR> inputDevices;
@@ -311,7 +311,7 @@ protected:
 	GTSL::Vector<InputSourceRecord, BE::PersistentAllocatorReference> inputSourceRecords;
 
 	InputLayerHandle activeInputLayer;
-	GTSL::SemiVector<uint32, 8, BE::PAR> inputLayers;
+	GTSL::SemiVector<GTSL::uint32, 8, BE::PAR> inputLayers;
 
 	void updateInput(ApplicationManager* application_manager, GTSL::Microseconds time) {
 		for (const auto& record : inputSourceRecords) {
@@ -371,7 +371,7 @@ protected:
 						break;
 					}
 					case Type::LINEAR: {
-						float32 newVal = 0.0f, oldVal = 0.0f;
+						GTSL::float32 newVal = 0.0f, oldVal = 0.0f;
 
 						bool update = false;
 
@@ -422,14 +422,14 @@ protected:
 						if (inputEventData.P) {
 							if (newVal != 0.0f) {
 								if (update) {
-									application_manager->RemoveScheduledTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle));
+									application_manager->RemoveScheduledTask(TaskHandle<InputEvent<GTSL::float32>>(inputEventData.Handle));
 								}
-								application_manager->EnqueueScheduledTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));
+								application_manager->EnqueueScheduledTask(TaskHandle<InputEvent<GTSL::float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));
 							} else {
-								application_manager->RemoveScheduledTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle));
+								application_manager->RemoveScheduledTask(TaskHandle<InputEvent<GTSL::float32>>(inputEventData.Handle));
 							}
 						} else {
-							application_manager->EnqueueTask(TaskHandle<InputEvent<float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));						
+							application_manager->EnqueueTask(TaskHandle<InputEvent<GTSL::float32>>(inputEventData.Handle), InputEvent(record.DeviceIndex, record.InputSource, inputSource.LastTime, newVal, oldVal));						
 						}
 
 						break;
@@ -468,7 +468,7 @@ template<>
 constexpr InputManager::Type GetType<InputManager::Type, char32_t>() { return InputManager::Type::CHAR; }
 
 template<>
-constexpr InputManager::Type GetType<InputManager::Type, float32>() { return InputManager::Type::LINEAR; }
+constexpr InputManager::Type GetType<InputManager::Type, GTSL::float32>() { return InputManager::Type::LINEAR; }
 
 template<>
 constexpr InputManager::Type GetType<InputManager::Type, GTSL::Vector2>() { return InputManager::Type::VECTOR2D; }

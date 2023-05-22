@@ -3,9 +3,9 @@
 #include <GTSL/Memory.h>
 #include <GTSL/Math/Math.hpp>
 
-void SystemAllocator::Allocate(const uint64 size, const uint64 alignment, void** data)
+void SystemAllocator::Allocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void** data)
 {
-	const uint64 allocated_size{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
+	const GTSL::uint64 allocated_size{ GTSL::Math::RoundUpByPowerOf2(size, alignment) };
 
 	//allocatorMutex.Lock();
 	GTSL::Allocate(allocated_size, data);
@@ -20,12 +20,12 @@ void SystemAllocator::Allocate(const uint64 size, const uint64 alignment, void**
 	BE_DEBUG_ONLY(++totalAllocationCount)
 }
 
-void SystemAllocator::Deallocate(const uint64 size, const uint64 alignment, void* data)
+void SystemAllocator::Deallocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void* data)
 {
-	const uint64 allocation_size{GTSL::Math::RoundUpByPowerOf2(size, alignment)};
+	const GTSL::uint64 allocation_size{GTSL::Math::RoundUpByPowerOf2(size, alignment)};
 
 	//byte* dealigned_pointer = static_cast<byte*>(data) - (allocation_size - size);
-	byte* dealigned_pointer = static_cast<byte*>(data);
+	GTSL::uint8* dealigned_pointer = static_cast<GTSL::uint8*>(data);
 	
 	//allocatorMutex.Lock();
 	GTSL::Deallocate(allocation_size, dealigned_pointer);

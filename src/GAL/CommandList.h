@@ -87,7 +87,7 @@ namespace GAL
 			AccessType SourceAccess, DestinationAccess;
 			PipelineStage SourceStage, DestinationStage;
 
-			uint32 From = 0xFFFFFFFF, To = 0xFFFFFFFF;
+			GTSL::uint32 From = 0xFFFFFFFF, To = 0xFFFFFFFF;
 
 			void SetMemoryBarrier(MemoryBarrier memoryBarrier) { Type = BarrierType::MEMORY; Memory = memoryBarrier; }
 			void SetTextureBarrier(TextureBarrier textureBarrier) { Type = BarrierType::TEXTURE; Texture = textureBarrier; }

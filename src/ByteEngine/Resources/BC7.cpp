@@ -7,9 +7,9 @@
 
 #include "ByteEngine/Core.h"
 
-static constexpr uint8 BC7ENC_BLOCK_SIZE = 16;
-static constexpr uint8 BC7ENC_MAX_PARTITIONS = 64;
-static constexpr uint8 BC7ENC_MAX_UBER_LEVEL = 4;
+static constexpr GTSL::uint8 BC7ENC_BLOCK_SIZE = 16;
+static constexpr GTSL::uint8 BC7ENC_MAX_PARTITIONS = 64;
+static constexpr GTSL::uint8 BC7ENC_MAX_UBER_LEVEL = 4;
 
 struct color_rgba { uint8_t m_c[4]; };
 

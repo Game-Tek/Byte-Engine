@@ -5,52 +5,47 @@
 
 #include "Application/AllocatorReferences.h"
 
-namespace BE {
+namespace BE
+{
 	class Logger;
 }
 
 /**
  * \brief Base class for most non-data only classes in the engine.
  */
-class Object {
+class Object
+{
 public:
 	Object() = default;
-	
-	// Object(const utf8* objectName = u8"Object") : objectName(objectName) {}
+	Object(const GTSL::StringView name) : m_objectName(name) {}
 
-	Object(const GTSL::StringView name) : objectName(name) {}
-	
 	~Object() = default;
 
-	[[nodiscard]] auto& GetName() const { return objectName; }
+	[[nodiscard]] const GTSL::ShortString<128>& GetName() const { return m_objectName; }
 
-	[[nodiscard]] BE::PersistentAllocatorReference GetPersistentAllocator() const {
-		return BE::PersistentAllocatorReference(GetName());
+	[[nodiscard]] BE::PersistentAllocatorReference GetPersistentAllocator() const
+	{
+		return {GetName()};
 	}
 
-	[[nodiscard]] BE::TransientAllocatorReference GetTransientAllocator() const {
-		return BE::TransientAllocatorReference(GetName());
+	[[nodiscard]] BE::TransientAllocatorReference GetTransientAllocator() const
+	{
+		return {GetName()};
 	}
 
 protected:
-	[[nodiscard]] BE::Logger* getLogger() const;
-	uint8 getThread() const;
-	
+	[[nodiscard]] BE::Logger* GetLogger() const;
+	[[nodiscard]] GTSL::uint8 GetThread() const;
 private:
-	GTSL::ShortString<128> objectName = u8"Object";
+	GTSL::ShortString<128> m_objectName{u8"Object"};
 };
 
 #ifdef BE_DEBUG
-#define BE_LOG_SUCCESS(...)		this->getLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
-#define BE_LOG_MESSAGE(...)		this->getLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
-#define BE_LOG_WARNING(...)		this->getLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
-#define BE_LOG_ERROR(...)		this->getLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
-#define BE_LOG_LEVEL(Level)		this->getLogger()->SetMinLogLevel(Level);
-
-//#define BE_BASIC_LOG_SUCCESS(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
-//#define BE_BASIC_LOG_MESSAGE(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
-//#define BE_BASIC_LOG_WARNING(...)	BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
-//#define BE_BASIC_LOG_ERROR(...)		BE::Application::Get()->GetLogger()->PrintBasicLog(BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
+#define BE_LOG_SUCCESS(...)		this->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::SUCCESS, __VA_ARGS__);
+#define BE_LOG_MESSAGE(...)		this->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::MESSAGE, __VA_ARGS__);
+#define BE_LOG_WARNING(...)		this->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::WARNING, __VA_ARGS__);
+#define BE_LOG_ERROR(...)		this->GetLogger()->PrintObjectLog(this, BE::Logger::VerbosityLevel::FATAL, __VA_ARGS__);
+#define BE_LOG_LEVEL(Level)		this->GetLogger()->SetMinLogLevel(Level);
 #else
 #define BE_LOG_SUCCESS(Text, ...)
 #define BE_LOG_MESSAGE(Text, ...)

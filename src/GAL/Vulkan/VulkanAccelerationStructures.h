@@ -211,7 +211,7 @@ namespace GAL {
 		inst.instanceShaderBindingTableRecordOffset = 0;
 	}
 
-	inline void WriteInstanceIndex(const uint32 index, void* data, GTSL::uint32 instance_index) {
+	inline void WriteInstanceIndex(const GTSL::uint32 index, void* data, GTSL::uint32 instance_index) {
 		auto& inst = *(static_cast<VkAccelerationStructureInstanceKHR*>(data) + index);
 		inst.instanceCustomIndex = index;
 	}

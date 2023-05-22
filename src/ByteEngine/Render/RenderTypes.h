@@ -33,7 +33,7 @@
 #include <GAL/DX12/DX12AccelerationStructure.hpp>
 #endif
 
-MAKE_HANDLE(uint32, RenderModel);
+MAKE_HANDLE(GTSL::uint32, RenderModel);
 
 /**
  * \brief Defines the maximum number of frames that can be processed concurrently in the CPU and GPU.
@@ -43,7 +43,7 @@ MAKE_HANDLE(uint32, RenderModel);
  *
  * This number was chosen since we consider that under normal conditions no more than two frames will ever be worked on concurrently.
  */
-static constexpr uint8 MAX_CONCURRENT_FRAMES = 3;
+static constexpr GTSL::uint8 MAX_CONCURRENT_FRAMES = 3;
 
 /**
  * \brief Handle to a GPU allocation. This handle refers to a GPU local allocation.
@@ -53,7 +53,7 @@ struct RenderAllocation
 	/**
 	 * \brief An opaque ID which MIGHT be used to keep track of some allocator internal data.
 	 */
-	uint64 AllocationId = 0;
+	GTSL::uint64 AllocationId = 0;
 
 	/**
 	* \brief Pointer to a mapped memory section.

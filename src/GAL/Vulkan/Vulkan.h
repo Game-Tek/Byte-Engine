@@ -56,7 +56,7 @@ namespace GAL
 	}
 
 	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const PipelineStage pipelineStage) {
-		uint64 vkAccessFlags = 0;
+		GTSL::uint64 vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
 			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
 			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
@@ -72,7 +72,7 @@ namespace GAL
 	}
 
 	inline VkAccessFlags2KHR ToVulkan(const AccessType access, const PipelineStage pipelineStage, const FormatDescriptor) {
-		uint64 vkAccessFlags = 0;
+		GTSL::uint64 vkAccessFlags = 0;
 		if (access & AccessTypes::WRITE) {
 			TranslateMask(PipelineStages::TRANSFER, VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
 			TranslateMask(PipelineStages::COLOR_ATTACHMENT_OUTPUT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR, pipelineStage, vkAccessFlags);
@@ -205,7 +205,7 @@ namespace GAL
 	}
 
 	inline VkPipelineStageFlags2KHR ToVulkan(const PipelineStage pipelineStage) {
-		uint64 vkPipelineStageFlags = 0;
+		GTSL::uint64 vkPipelineStageFlags = 0;
 		TranslateMask(PipelineStages::TOP_OF_PIPE,					VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR, pipelineStage, vkPipelineStageFlags);
 		TranslateMask(PipelineStages::DRAW_INDIRECT,					VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR, pipelineStage, vkPipelineStageFlags);
 		TranslateMask(PipelineStages::VERTEX_INPUT,					VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT_KHR, pipelineStage, vkPipelineStageFlags);

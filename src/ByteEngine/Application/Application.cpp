@@ -23,7 +23,7 @@ void onAssert(const bool condition, const char* text, int line, const char* file
 }
 #endif
 
-uint32 ShitTracker::shitCount = 0;
+GTSL::uint32 ShitTracker::shitCount = 0;
 
 namespace BE
 {
@@ -48,7 +48,7 @@ namespace BE
 
 		Logger::LoggerCreateInfo logger_create_info;
 		auto path = GetPathToApplication();
-		logger_create_info.AbsolutePathToLogDirectory = path;
+		logger_create_info.LogDirAbsolutePath = path;
 		logger = GTSL::SmartPointer<Logger, SystemAllocatorReference>(BE::SystemAllocatorReference(u8"Logger", true), logger_create_info);
 
 		if (!parseConfig()) { // TODO. create config file if it doesn't exist.
@@ -68,8 +68,8 @@ namespace BE
 		{
 			auto threadCount = 1u;
 			//auto threadCount = (uint32)GetUINTOption(u8"threadCount");
-			threadCount = GTSL::Math::Limit(threadCount, static_cast<uint32>(GTSL::Thread::ThreadCount() - 1/*main thread*/));
-			threadCount = threadCount ? static_cast<uint8>(threadCount) : GTSL::Thread::ThreadCount();
+			threadCount = GTSL::Math::Limit(threadCount, static_cast<GTSL::uint32>(GTSL::Thread::ThreadCount() - 1/*main thread*/));
+			threadCount = threadCount ? static_cast<GTSL::uint8>(threadCount) : GTSL::Thread::ThreadCount();
 			threadPool = GTSL::SmartPointer<ThreadPool, SystemAllocatorReference>(BE::SystemAllocatorReference(u8"ThreadPool"), threadCount);
 		}
 		
@@ -123,7 +123,7 @@ namespace BE
 	}
 
 	//uint8 Application::GetNumberOfThreads() { return threadPool->GetNumberOfThreads() + 1/*main thread*/; }
-	uint8 Application::GetNumberOfThreads() { return 1/*main thread*/; }
+	GTSL::uint8 Application::GetNumberOfThreads() { return 1/*main thread*/; }
 
 	void Application::OnUpdate(const OnUpdateInfo& updateInfo) {
 		// inputManagerInstance->Update();
@@ -149,7 +149,7 @@ namespace BE
 		//applicationManager->DispatchEvent(this, EventHandle(u8"OnPromptClose"));
 	}
 
-	void Application::Close(const CloseMode closeMode, const GTSL::Range<const utf8*> reason)
+	void Application::Close(const CloseMode closeMode, const GTSL::Range<const char8_t*> reason)
 	{
 		closeReason += reason;
 		flaggedForClose = true;

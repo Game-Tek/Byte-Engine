@@ -1,0 +1,20 @@
+Files That Are Missing
+Light.h Light.cpp
+WorldSystem.hpp
+ResourceData.h
+
+Network Folder
+Physics Folder
+Audio Folder
+
+Files To Fix
+TextureResourceManager.cpp
+StaticMeshResourceManager.cpp
+AminationResourceManager.cpp
+ScriptingSystem.hpp/.cpp
+
+Entire Render Folder
+
+
+
+Move GTSL and other deps to a be a git submodule

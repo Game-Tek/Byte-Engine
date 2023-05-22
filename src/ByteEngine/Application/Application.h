@@ -12,7 +12,7 @@
 #include "StackAllocator.h"
 #include "SystemAllocator.h"
 #include "ByteEngine/Id.h"
-#include "ByteEngine/Resources/ResourceManager.h"
+#include "ByteEngine/System/Resource/ResourceManager.h"
 #include "GTSL/SmartPointer.hpp"
 
 class ApplicationManager;
@@ -36,7 +36,7 @@ public:
 		--shitCount;
 	}
 
-	static uint32 shitCount;
+	static GTSL::uint32 shitCount;
 };
 
 namespace BE
@@ -61,7 +61,7 @@ namespace BE
 
 		void run();
 
-		enum class UpdateContext : uint8 {
+		enum class UpdateContext : GTSL::uint8 {
 			NORMAL, BACKGROUND
 		};
 
@@ -70,21 +70,21 @@ namespace BE
 
 		virtual void shutdown() = 0;
 
-		uint8 GetNumberOfThreads();	
+		GTSL::uint8 GetNumberOfThreads();	
 		
 		virtual GTSL::ShortString<128> GetApplicationName() = 0;
 
 		//Fires a Delegate to signal that the application has been requested to close.
 		void PromptClose();
 
-		enum class CloseMode : uint8 {
+		enum class CloseMode : GTSL::uint8 {
 			OK, WARNING, ERROR
 		};
 		//Flags the application to close on the next update.
-		void Close(CloseMode closeMode, GTSL::Range<const utf8*> reason);
+		void Close(CloseMode closeMode, GTSL::Range<const char8_t*> reason);
 
 		//Immediately closes the application and logs the reason
-		void Exit(const GTSL::Range<const utf8*> reason) {
+		void Exit(const GTSL::Range<const char8_t*> reason) {
 			// GTSL::Lock lock(crashLogMutex);
 			
 			if(!crashLog) {
@@ -110,7 +110,7 @@ namespace BE
 		[[nodiscard]] class ApplicationManager* GetGameInstance() const { return applicationManager; }
 		[[nodiscard]] class ApplicationManager* get_orchestrator() const { return applicationManager; }
 		
-		[[nodiscard]] uint64 GetApplicationTicks() const { return applicationTicks; }
+		[[nodiscard]] GTSL::uint64 GetApplicationTicks() const { return applicationTicks; }
 		
 		[[nodiscard]] ThreadPool* GetThreadPool() const { return threadPool; }
 		
@@ -122,7 +122,7 @@ namespace BE
 			return JSON[optionName].GetBool();
 		}
 
-		uint64 GetUINTOption(const GTSL::StringView optionName) const {
+		GTSL::uint64 GetUINTOption(const GTSL::StringView optionName) const {
 			return JSON[optionName].GetUint();
 		}
 
@@ -131,7 +131,7 @@ namespace BE
 		}
 
 		GTSL::Extent2D GetExtent2DOption(const GTSL::StringView optionName) const {
-			return { static_cast<uint16>(JSON[optionName][0].GetUint()), static_cast<uint16>(JSON[optionName][1].GetUint()) };
+			return { static_cast<GTSL::uint16>(JSON[optionName][0].GetUint()), static_cast<GTSL::uint16>(JSON[optionName][1].GetUint()) };
 		}
 
 		const auto& GetConfig() const {
@@ -167,7 +167,7 @@ namespace BE
 		CloseMode closeMode{ CloseMode::OK };
 		GTSL::StaticString<1024> closeReason;
 
-		uint64 applicationTicks{ 0 };
+		GTSL::uint64 applicationTicks{ 0 };
 
 		GTSL::JSON<GTSL::DefaultAllocatorReference> JSON;
 

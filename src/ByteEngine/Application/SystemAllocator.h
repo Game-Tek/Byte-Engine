@@ -11,28 +11,28 @@ class SystemAllocator
 public:
 	struct DebugData
 	{
-		uint64 AllocatedBytes{ 0 };
-		uint64 DeallocatedBytes{ 0 };
-		uint64 TotalAllocatedBytes{ 0 };
-		uint64 TotalDeallocatedBytes{ 0 };
-		uint64 AllocationCount{ 0 };
-		uint64 TotalAllocationCount{ 0 };
-		uint64 DeallocationCount{ 0 };
-		uint64 TotalDeallocationCount{ 0 };
+		GTSL::uint64 AllocatedBytes{ 0 };
+		GTSL::uint64 DeallocatedBytes{ 0 };
+		GTSL::uint64 TotalAllocatedBytes{ 0 };
+		GTSL::uint64 TotalDeallocatedBytes{ 0 };
+		GTSL::uint64 AllocationCount{ 0 };
+		GTSL::uint64 TotalAllocationCount{ 0 };
+		GTSL::uint64 DeallocationCount{ 0 };
+		GTSL::uint64 TotalDeallocationCount{ 0 };
 	};
 protected:
 	// GTSL::Mutex allocatorMutex;
 	
 #if BE_DEBUG
 	// GTSL::Mutex debugDataMutex;
-	uint64 allocatedBytes{ 0 };
-	uint64 deallocatedBytes{ 0 };
-	uint64 totalAllocatedBytes{ 0 };
-	uint64 totalDeallocatedBytes{ 0 };
-	uint64 allocationCount{ 0 };
-	uint64 deallocationCount{ 0 };
-	uint64 totalAllocationCount{ 0 };
-	uint64 totalDeallocationCount{ 0 };
+	GTSL::uint64 allocatedBytes{ 0 };
+	GTSL::uint64 deallocatedBytes{ 0 };
+	GTSL::uint64 totalAllocatedBytes{ 0 };
+	GTSL::uint64 totalDeallocatedBytes{ 0 };
+	GTSL::uint64 allocationCount{ 0 };
+	GTSL::uint64 deallocationCount{ 0 };
+	GTSL::uint64 totalAllocationCount{ 0 };
+	GTSL::uint64 totalDeallocationCount{ 0 };
 #endif
 	
 public:
@@ -55,7 +55,7 @@ public:
 	}
 #endif
 
-	void Allocate(const uint64 size, const uint64 alignment, void** data);
+	void Allocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void** data);
 
-	void Deallocate(const uint64 size, const uint64 alignment, void* data);
+	void Deallocate(const GTSL::uint64 size, const GTSL::uint64 alignment, void* data);
 };

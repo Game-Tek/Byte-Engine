@@ -1,0 +1,30 @@
+[package]
+name = "byte_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x11 = "2.21.0"
+xcb = { version = "1.2.1", features=['xtest'] }
+# ash = { version = "0.37.2", features=['linked'] }
+ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
+futures = "0.3.28"
+shaderc = "0.8.2"
+bitflags = "2.2.1"
+renderdoc = "0.11.0"
+png = "0.17.8"
+json = "0.12.4"
+polodb_core = "4.4.0"
+intel_tex_2 = "0.2.2"
+gltf = "1.1.0"
+ureq = "2.6.2"
+libdeflater = "0.14.0"
+notify = "6.0.0"
+serde_json = "1.0.96"
+cooked-waker = "5.0.0"
+half = "2.2.1"
+dual_quaternion = "0.2.0"
+cgmath = "0.18.0"
+
+[profile.dev]
+incremental = true

@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-x11 = "2.21.0"
 xcb = { version = "1.2.1", features=['xtest'] }
 # ash = { version = "0.37.2", features=['linked'] }
 ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
@@ -21,8 +20,6 @@ ureq = "2.6.2"
 libdeflater = "0.14.0"
 notify = "6.0.0"
 serde_json = "1.0.96"
-cooked-waker = "5.0.0"
-half = "2.2.1"
 dual_quaternion = "0.2.0"
 cgmath = "0.18.0"
 

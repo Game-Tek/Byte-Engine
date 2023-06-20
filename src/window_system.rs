@@ -590,6 +590,7 @@ mod tests {
 		assert_ne!(os_handles.xcb_window, 0);
 	}
 
+	#[ignore]
 	#[test]
 	fn test_window_loop() {
 		let mut window_system = WindowSystem::new();

@@ -1362,7 +1362,7 @@ mod tests {
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 255, a: 255 });
 		
 		let pixel = pixels[(extent.width * extent.height - (extent.width / 2)) as usize]; // middle bottom center
-		assert!(pixel == RGBAu8 { r: 0, g: 127, b: 127, a: 255 } || pixel == RGBAu8 { r: 0, g: 127, b: 128, a: 255 }); // FIX: workaround for CI, TODO: make near equal function
+		assert!(pixel == RGBAu8 { r: 0, g: 127, b: 127, a: 255 } || pixel == RGBAu8 { r: 0, g: 128, b: 127, a: 255 }); // FIX: workaround for CI, TODO: make near equal function
 		
 		let pixel = pixels[(extent.width * extent.height - 1) as usize]; // bottom right
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });

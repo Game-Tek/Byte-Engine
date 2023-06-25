@@ -24,5 +24,17 @@ jobs:
         vulkan-query-version: latest
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
+    - name: Set up cargo cache
+      uses: actions/cache@v3
+      continue-on-error: false
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/            
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
     - name: Build & Run tests
       run: cargo test --verbose -- --test-threads 1

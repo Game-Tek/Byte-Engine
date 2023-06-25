@@ -21,7 +21,6 @@ libdeflater = "0.14.0"
 notify = "6.0.0"
 serde_json = "1.0.96"
 dual_quaternion = "0.2.0"
-cgmath = "0.18.0"
 maths-rs = "0.2.3"
 
 [profile.dev]

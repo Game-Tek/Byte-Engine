@@ -40,15 +40,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "approx"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f2a05fd1bd10b2527e20a2cd32d8873d115b8b39fe219ee25f42a8aca6ba278"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "ash"
 version = "0.37.0+1.3.254"
 source = "git+https://github.com/ash-rs/ash?branch=master#a0f8b9cf3ef5fb4eb766e51b54e90c50df405d5a"
@@ -137,7 +128,6 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "bitflags 2.3.2",
- "cgmath",
  "dual_quaternion",
  "futures",
  "gltf",
@@ -178,16 +168,6 @@ name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
-
-[[package]]
-name = "cgmath"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a98d30140e3296250832bbaaff83b27dcd6fa3cc70fb6f1f3e5c9c0023b5317"
-dependencies = [
- "approx",
- "num-traits",
-]
 
 [[package]]
 name = "cmake"

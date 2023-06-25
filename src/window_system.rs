@@ -655,6 +655,7 @@ impl WindowSystem {
 mod tests {
 	use super::*;
 
+	#[ignore = "Ignore until we have a way to disable this test in CI where windows are not supported"]
 	#[test]
 	fn create_window() {
 		let mut window_system = WindowSystem::new();

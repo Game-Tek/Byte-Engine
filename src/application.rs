@@ -192,6 +192,7 @@ mod tests {
 		app.deinitialize();
 	}
 
+	#[ignore = "Ignore until we have a way to disable this test in CI where windows are not supported"]
 	#[test]
 	fn create_graphics_application() {
 		let mut app = GraphicsApplication::new("Test");

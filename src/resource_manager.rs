@@ -179,6 +179,8 @@ fn vec3f_from_json(field: &polodb_core::bson::Bson) -> Option<[f32; 3]> {
 impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new() -> Self {
+		std::fs::create_dir_all("assets").unwrap();
+
 		let db_res = polodb_core::Database::open_file("assets/resources.db");
 
 		let db = match db_res {

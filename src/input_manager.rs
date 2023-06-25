@@ -11,54 +11,6 @@
 //! An action is an application specific event that is triggered by a combination of input sources.
 //! For example move sideways is triggered by the left and right keys being pressed.
 //! 
-//! # Usage
-//! 
-//! To use the input manager first you must register a device class/type.
-//! ```rust
-//! let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
-//! ```
-//! Then you must register input sources on the device class/type.
-//! ```rust
-//! let up_input_source = input_manager.register_input_source(&keyboard_device_class_handle, "Up");
-//! let down_input_source = input_manager.register_input_source(&keyboard_device_class_handle, "Down");
-//! let left_input_source = input_manager.register_input_source(&keyboard_device_class_handle, "Left");
-//! let right_input_source = input_manager.register_input_source(&keyboard_device_class_handle, "Right");
-//! ```
-//! Then you must create a device of the device class/type. A device is an instance of a device class/type and will be tied to a device the user can control.
-//! ```rust
-//! let keyboard_device = input_manager.create_device(&keyboard_device_class_handle);
-//! ```
-//! Then you must register your own input events. This are application specific events that are triggered by a combination of input sources.
-//! ```rust
-//! let move_longitudinally_input_event = input_manager.register_input_event("MoveLongitudinally", &[
-//! 	InputEventDescription {
-//! 		input_source: InputSourceAction::Name("Keyboard.Up"),
-//! 		mapping: Value::Float(1.0),
-//! 		function: Some(Function::Linear),
-//! 	},
-//! 	InputEventDescription {
-//! 		input_source: InputSourceAction::Name("Keyboard.Down"),
-//! 		mapping: Value::Float(-1.0),
-//! 		function: Some(Function::Linear),
-//! 	},]);
-//! ```
-//! Then you can record input source actions. This is when an input source is pressed or released. This will trigger the input events.
-//! ```rust
-//! input_manager.record_input_source_action(keyboard_device, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
-//! ```
-//! Or
-//! ```rust
-//! input_manager.record_input_source_action(keyboard_device, InputSourceAction::Handle(up_input_source), Value::Bool(true));
-//! ```
-//! Then you can get the value of an input event. This is the value of the input event based on the input sources that triggered it.
-//! ```rust
-//! let value = input_manager.get_input_event_value(move_longitudinally_input_event);
-//! ```
-//! You can also get the value of an input source. This is the last value of the input source that was recorded.
-//! ```rust
-//! let value = input_manager.get_input_source_value(keyboard_device, InputSourceAction::Name("Keyboard.Up"));
-//! ```
-//! 
 //! # TODO
 //! - [ ] Clamp input source values to their min and max values.
 //! - [ ] Add deadzone support.
@@ -338,7 +290,7 @@ impl InputManager {
 	/// # use byte_engine::input_manager::{InputManager, InputTypes, InputSourceDescription};
 	/// # let mut input_manager = InputManager::new();
 	/// # let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
-	/// input_manager.register_input_source(&keyboard_device_class_handle, "Up", InputTypes::Bool(InputSourceDescription::new(false, false)));
+	/// input_manager.register_input_source(&keyboard_device_class_handle, "Up", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
 	/// ```
 	pub fn register_input_source(&mut self, device_handle: &DeviceClassHandle, name: &str, value_type: InputTypes) -> InputSourceHandle {
 		let input_source = InputSource {

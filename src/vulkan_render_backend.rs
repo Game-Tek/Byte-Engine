@@ -5,7 +5,7 @@ use ash::{vk, Entry};
 use crate::render_backend;
 
 #[derive(Clone, Copy)]
-pub struct Surface {
+pub(crate) struct Surface {
 	surface: vk::SurfaceKHR,
 	surface_capabilities: vk::SurfaceCapabilitiesKHR,
 	surface_format: vk::SurfaceFormatKHR,
@@ -13,78 +13,78 @@ pub struct Surface {
 }
 
 #[derive(Clone, Copy)]
-pub struct Swapchain {
+pub(crate) struct Swapchain {
 	swapchain: vk::SwapchainKHR,
 }
 
 #[derive(Clone, Copy)]
-pub struct DescriptorSetLayout {
+pub(crate) struct DescriptorSetLayout {
 	descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
 #[derive(Clone, Copy)]
-pub struct DescriptorSet {
+pub(crate) struct DescriptorSet {
 	descriptor_set: vk::DescriptorSet,
 }
 
 #[derive(Clone, Copy)]
-pub struct PipelineLayout {
+pub(crate) struct PipelineLayout {
 	pipeline_layout: vk::PipelineLayout,
 }
 
 #[derive(Clone, Copy)]
-pub struct Pipeline {
+pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 }
 
 #[derive(Clone, Copy)]
-pub struct CommandBuffer {
+pub(crate) struct CommandBuffer {
 	command_buffer: vk::CommandBuffer,
 }
 
 #[derive(Clone, Copy)]
-pub struct Allocation {
+pub(crate) struct Allocation {
 	memory: vk::DeviceMemory,
 }
 
 #[derive(Clone, Copy)]
-pub struct Buffer {
+pub(crate) struct Buffer {
 	buffer: vk::Buffer,
 	device_address: vk::DeviceAddress,
 }
 
 #[derive(Clone, Copy)]
-pub struct Synchronizer {
+pub(crate) struct Synchronizer {
 	fence: vk::Fence,
 	semaphore: vk::Semaphore,
 }
 
 #[derive(Clone, Copy)]
-pub struct Sampler {
+pub(crate) struct Sampler {
 	sampler: vk::Sampler,
 }
 
 #[derive(Clone, Copy)]
-pub struct Texture {
+pub(crate) struct Texture {
 	image: vk::Image,
 }
 
 #[derive(Clone, Copy)]
-pub struct TextureView {
+pub(crate) struct TextureView {
 	image_view: vk::ImageView,
 }
 
 #[derive(Clone, Copy)]
-pub struct Shader {
+pub(crate) struct Shader {
 	shader_module: vk::ShaderModule,
 	stage: vk::ShaderStageFlags
 }
 #[derive(Clone, Copy)]
-struct AccelerationStructure {
+pub(crate) struct AccelerationStructure {
 	acceleration_structure: vk::AccelerationStructureKHR,
 }
 
-pub struct VulkanRenderBackend {
+pub(crate) struct VulkanRenderBackend {
 	entry: ash::Entry,
 	instance: ash::Instance,
 	debug_utils: ash::extensions::ext::DebugUtils,
@@ -108,7 +108,12 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
     let ty = format!("{:?}", message_type).to_lowercase();
     println!("[Debug][{}][{}] {:?}", severity, ty, message);
 
-	counter += 1;
+	match message_severity {
+		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+			counter += 1;
+		}
+		_ => {}
+	}
 
     vk::FALSE
 }
@@ -717,7 +722,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		}
 	}
 
-	fn allocate_memory(&self, size: u64, device_accesses: crate::render_system::DeviceAccesses) -> crate::render_backend::Allocation {
+	fn allocate_memory(&self, size: usize, device_accesses: crate::render_system::DeviceAccesses) -> crate::render_backend::Allocation {
 		// get memory types
 		let memory_properties = unsafe { self.instance.get_physical_device_memory_properties(self.physical_device) };
 
@@ -746,7 +751,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		let mut memory_allocate_flags_info = vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
 
 		let memory_allocate_info = vk::MemoryAllocateInfo::default()
-			.allocation_size(size)
+			.allocation_size(size as u64)
 			.memory_type_index(memory_type_index)
 			.push_next(&mut memory_allocate_flags_info)
 			/* .build() */;
@@ -756,7 +761,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		let mut mapped_memory = std::ptr::null_mut();
 
 		if device_accesses.intersects(crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::CpuWrite) {
-			mapped_memory = unsafe { self.device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()).expect("No mapped memory") as *mut u8 };
+			mapped_memory = unsafe { self.device.map_memory(memory, 0, size as u64, vk::MemoryMapFlags::empty()).expect("No mapped memory") as *mut u8 };
 		}
 
 		crate::render_backend::Allocation {
@@ -771,9 +776,9 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		allocation.pointer
 	}
 
-	fn create_buffer(&self, size: u64, resource_uses: render_backend::Uses) -> crate::render_backend::MemoryBackedResourceCreationResult<crate::render_backend::Buffer> {
+	fn create_buffer(&self, size: usize, resource_uses: render_backend::Uses) -> crate::render_backend::MemoryBackedResourceCreationResult<crate::render_backend::Buffer> {
 		let buffer_create_info = vk::BufferCreateInfo::default()
-			.size(size)
+			.size(size as u64)
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.usage(
 				if resource_uses.contains(render_backend::Uses::Vertex) { vk::BufferUsageFlags::VERTEX_BUFFER } else { vk::BufferUsageFlags::empty() }
@@ -797,7 +802,8 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 					device_address: 0,
 				},
 			},
-			size: memory_requirements.size
+			size: memory_requirements.size as usize,
+			alignment: memory_requirements.alignment as usize,
 		}
 	}
 
@@ -849,7 +855,8 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 					image,
 				},
 			},
-			size: memory_requirements.size
+			size: memory_requirements.size as usize,
+			alignment: memory_requirements.alignment as usize,
 		}
 	}
 
@@ -899,11 +906,11 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 	}
 
 	fn bind_buffer_memory(&self, memory: crate::render_backend::Memory, resource_creation_info: &crate::render_backend::MemoryBackedResourceCreationResult<crate::render_backend::Buffer>) {
-		unsafe { self.device.bind_buffer_memory(resource_creation_info.resource.vulkan_buffer.buffer, memory.allocation.vulkan_allocation.memory, memory.offset).expect("No buffer memory binding") };
+		unsafe { self.device.bind_buffer_memory(resource_creation_info.resource.vulkan_buffer.buffer, memory.allocation.vulkan_allocation.memory, memory.offset as u64).expect("No buffer memory binding") };
 	}
 
 	fn bind_texture_memory(&self, memory: crate::render_backend::Memory, resource_creation_info: &crate::render_backend::MemoryBackedResourceCreationResult<crate::render_backend::Texture>) {
-		unsafe { self.device.bind_image_memory(resource_creation_info.resource.vulkan_texture.image, memory.allocation.vulkan_allocation.memory, memory.offset).expect("No image memory binding") };
+		unsafe { self.device.bind_image_memory(resource_creation_info.resource.vulkan_texture.image, memory.allocation.vulkan_allocation.memory, memory.offset as u64).expect("No image memory binding") };
 		//let image_view = unsafe { self.device.create_image_view(&image_view_create_info, None).expect("No image view") };
 		//resource_creation_info.resource.vulkan_texture.image_view = image_view;
 	}
@@ -1239,7 +1246,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		}
 	}
 
-	fn execute(&self, command_buffer: &crate::render_backend::CommandBuffer, wait_for: Option<&crate::render_backend::Synchronizer>, signal: &crate::render_backend::Synchronizer) {
+	fn execute(&self, command_buffer: &crate::render_backend::CommandBuffer, wait_for: Option<&crate::render_backend::Synchronizer>, signal: Option<&crate::render_backend::Synchronizer>, execution_completion: &crate::render_backend::Synchronizer) {
 		let command_buffers = [unsafe { command_buffer.vulkan_command_buffer.command_buffer }];
 
 		let command_buffer_infos = [
@@ -1261,11 +1268,15 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			vec![]
 		};
 
-		let signal_semaphores = [
-			vk::SemaphoreSubmitInfo::default()
-				.semaphore(unsafe { signal.vulkan_synchronizer.semaphore })
+		let signal_semaphores = if let Some(signal) = signal {
+			vec![
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(unsafe { signal.vulkan_synchronizer.semaphore })
 				/* .build() */
-		];
+			]
+		} else {
+			vec![]
+		};
 
 		let submit_info = vk::SubmitInfo2::default()
 			.command_buffer_infos(&command_buffer_infos)
@@ -1273,7 +1284,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.signal_semaphore_infos(&signal_semaphores)
 			/* .build() */;
 
-		unsafe { self.device.queue_submit2(self.queue, &[submit_info], signal.vulkan_synchronizer.fence); }
+		unsafe { self.device.queue_submit2(self.queue, &[submit_info], execution_completion.vulkan_synchronizer.fence); }
 	}
 
 	fn acquire_swapchain_image(&self, swapchain: &crate::render_backend::Swapchain, image_available: &crate::render_backend::Synchronizer) -> (u32, render_backend::SwapchainStates) {

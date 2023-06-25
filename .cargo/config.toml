@@ -1,2 +1,2 @@
 [build]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-Clink-arg=-fuse-ld=mold", "-Ctarget-feature=+avx2"]

@@ -7,8 +7,8 @@
 //! An input source is a source of input on a device class/type. Such as the UP key on a keyboard or the left trigger on a gamepad.
 //! ## Input Destination
 //! An input destination is a destination of input on a device. Such as the rumble motors on a gamepad.
-//! ## Input Event
-//! An input event is an application specific event that is triggered by a combination of input sources.
+//! ## Action
+//! An action is an application specific event that is triggered by a combination of input sources.
 //! For example move sideways is triggered by the left and right keys being pressed.
 //! 
 //! # Usage
@@ -160,7 +160,8 @@ pub enum Function {
 	Linear,
 }
 
-pub struct InputEventDescription {
+/// An action binding description is a description of how an input source is mapped to a value for an action.
+pub struct ActionBindingDescription {
 	pub input_source: InputSourceAction,
 	pub mapping: Value,
 	pub function: Option<Function>
@@ -214,8 +215,6 @@ enum Types {
 struct InputEvent {
 	name: String,
 	type_: Types,
-	min: Value,
-	max: Value,
 	input_event_descriptions: Vec<InputSourceMapping>,
 	/// The stack is a list of input source records that simultaneous, connected, and currently active.
 	/// The stack is used to determine the value of the input event.
@@ -255,7 +254,7 @@ pub struct InputEventState {
 	/// The device that triggered the input event.
 	device_handle: DeviceHandle,
 	/// The handle to the input event.
-	input_event_handle: InputEventHandle,
+	input_event_handle: ActionHandle,
 	/// The value of the input event.
 	value: Value,
 }
@@ -274,7 +273,7 @@ pub struct DeviceHandle(u32);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 /// Handle to an input event.
-pub struct InputEventHandle(u32);
+pub struct ActionHandle(u32);
 
 /// The input manager is responsible for managing input devices and input events.
 pub struct InputManager {
@@ -282,7 +281,7 @@ pub struct InputManager {
 	input_sources: Vec<InputSource>,
 	devices: Vec<Device>,
 	records: Vec<InputSourceRecord>,
-	input_events: Vec<InputEvent>,
+	actions: Vec<InputEvent>,
 }
 
 impl InputManager {
@@ -293,7 +292,7 @@ impl InputManager {
 			input_sources: Vec::new(),
 			devices: Vec::new(),
 			records: Vec::new(),
-			input_events: Vec::new(),
+			actions: Vec::new(),
 		}
 	}
 
@@ -491,23 +490,10 @@ impl InputManager {
 	/// 	- 3D: Returns a 3D point when the RGBA color is reached.
 	/// 	- Quaternion: Returns a quaternion when the RGBA color is reached.
 	/// 	- RGBA: Returns the RGBA color.
-	fn register_input_event(&mut self, name: &str, min: Value, max: Value, input_events: &[InputEventDescription]) -> InputEventHandle {
-		let type_ = match (min, max) {
-			(Value::Bool(_), Value::Bool(_)) => Types::Bool,
-			(Value::Unicode(_), Value::Unicode(_)) => Types::Unicode,
-			(Value::Float(_), Value::Float(_)) => Types::Float,
-			(Value::Int(_), Value::Int(_)) => Types::Int,
-			(Value::Rgba(_), Value::Rgba(_)) => Types::Rgba,
-			(Value::Vector2(_), Value::Vector2(_)) => Types::Vector2,
-			(Value::Vector3(_), Value::Vector3(_)) => Types::Vector3,
-			(Value::Quaternion(_), Value::Quaternion(_)) => Types::Quaternion,
-			_ => panic!("Min and max value types do not match!"),
-		};
-
+	fn create_action(&mut self, name: &str, type_: Types, input_events: &[ActionBindingDescription]) -> ActionHandle {
 		let input_event = InputEvent {
 			name: name.to_string(),
 			type_,
-			min, max,
 			input_event_descriptions: input_events.iter().map(|input_event| {
 				InputSourceMapping {
 					input_source_handle: self.to_input_source_handle(&input_event.input_source),
@@ -518,7 +504,7 @@ impl InputManager {
 			stack: Vec::new(),
 		};
 
-		InputEventHandle(insert_return_length(&mut self.input_events, input_event) as u32)
+		ActionHandle(insert_return_length(&mut self.actions, input_event) as u32)
 	}
 
 	/// Records an input source action.
@@ -570,7 +556,7 @@ impl InputManager {
 		self.records.push(record);
 
 		if let Value::Bool(boo) = value {
-			let input_events = self.input_events.iter_mut().filter(|ie| ie.input_event_descriptions.iter().any(|ied| ied.input_source_handle == input_source_handle));
+			let input_events = self.actions.iter_mut().filter(|ie| ie.input_event_descriptions.iter().any(|ied| ied.input_source_handle == input_source_handle));
 	
 			if boo {
 				for input_event in input_events {
@@ -621,8 +607,8 @@ impl InputManager {
 	}
 
 	/// Gets the value of an input event.
-	pub fn get_input_event_value(&self, input_event_handle: InputEventHandle, device_handle: &DeviceHandle) -> InputEventState {
-		let input_event = &self.input_events[input_event_handle.0 as usize];
+	pub fn get_action_value(&self, input_event_handle: ActionHandle, device_handle: &DeviceHandle) -> InputEventState {
+		let input_event = &self.actions[input_event_handle.0 as usize];
 
 		let input_sources_values = input_event.input_event_descriptions.iter().map(|input_event_description| {
 			(self.get_input_source_record(device_handle, InputSourceAction::Handle(input_event_description.input_source_handle)), input_event_description.input_source_handle, input_event_description)
@@ -632,11 +618,6 @@ impl InputManager {
 
 		let value = match input_event.type_ {
 			Types::Float => {
-				let (min, max) = match (input_event.min, input_event.max) {
-					(Value::Float(min), Value::Float(max)) => (min, max),
-					_ => panic!("Min and max value types do not match!"),
-				};
-
 				let (input_source_value, input_source_mapping_value) = if let Some(last) = input_event.stack.last() {
 					if let Value::Bool(value) = last.value {
 						let event_description_for_input_source = input_event.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
@@ -1098,13 +1079,13 @@ mod tests {
 
 		declare_keyboard_input_device_class(&mut input_manager);
 
-		let input_event = input_manager.register_input_event("MoveLongitudinally", Value::Float(-1f32), Value::Float(1f32), &[
-			InputEventDescription {
+		input_manager.create_action("MoveLongitudinally", Types::Float, &[
+			ActionBindingDescription {
 				input_source: InputSourceAction::Name("Keyboard.Up"),
 				mapping: Value::Float(1.0),
 				function: Some(Function::Linear),
 			},
-			InputEventDescription {
+			ActionBindingDescription {
 				input_source: InputSourceAction::Name("Keyboard.Down"),
 				mapping: Value::Float(-1.0),
 				function: Some(Function::Linear),
@@ -1117,13 +1098,13 @@ mod tests {
 
 		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
 
-		let input_event = input_manager.register_input_event("MoveLongitudinally", Value::Float(-1f32), Value::Float(1f32), &[
-			InputEventDescription {
+		let input_event = input_manager.create_action("MoveLongitudinally", Types::Float, &[
+			ActionBindingDescription {
 				input_source: InputSourceAction::Name("Keyboard.Up"),
 				mapping: Value::Float(1.0),
 				function: Some(Function::Linear),
 			},
-			InputEventDescription {
+			ActionBindingDescription {
 				input_source: InputSourceAction::Name("Keyboard.Down"),
 				mapping: Value::Float(-1.0),
 				function: Some(Function::Linear),
@@ -1131,46 +1112,46 @@ mod tests {
 
 		let device_handle = input_manager.create_device(&device_class_handle);
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.device_handle, device_handle);
 		assert_eq!(value.value, Value::Float(0f32)); // Default value must be 0.
 
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after recording.
 
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording.
 
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after recording.
 
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording.
 
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after recording down after up while up is still pressed.
 
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording
 
@@ -1178,7 +1159,7 @@ mod tests {
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after releasing up while down down is still pressed.
 
@@ -1186,7 +1167,7 @@ mod tests {
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
 		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
 
-		let value = input_manager.get_input_event_value(input_event, &device_handle);
+		let value = input_manager.get_action_value(input_event, &device_handle);
 
 		assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after releasing down while up is still pressed.
 	}

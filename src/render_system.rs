@@ -99,7 +99,7 @@ struct Buffer {
 	frame_handle: Option<FrameHandle>,
 	next: Option<BufferHandle>,
 	buffer: crate::render_backend::Buffer,
-	size: u64,
+	size: usize,
 	pointer: *mut u8,
 }
 
@@ -377,10 +377,10 @@ impl CommandBufferRecording<'_> {
 
 		let texture = self.render_system.get_texture(self.frame_handle, texture_handle);
 
-		let copy_dst_texture = self.render_system.textures.iter().enumerate().find(|(_, texture)| texture.parent == Some(texture_handle) && texture.role == "CPU_READ");
+		let copy_dst_texture = self.render_system.textures.iter().enumerate().find(|(_, texture)| texture.parent == Some(texture_handle) && texture.role == "CPU_READ").expect("No CPU_READ texture found. Texture must be created with the CPU read access flag.");
 		
 		let source_texture_handle = texture_handle;
-		let destination_texture_handle = TextureHandle(copy_dst_texture.unwrap().0 as u32);
+		let destination_texture_handle = TextureHandle(copy_dst_texture.0 as u32);
 		
 		let transitions = [
 			(source_texture_handle, true, crate::render_backend::Layouts::Transfer, crate::render_backend::Stages::TRANSFER, crate::render_backend::AccessPolicies::READ),
@@ -391,7 +391,7 @@ impl CommandBufferRecording<'_> {
 
 		texture_copies.push(crate::render_backend::TextureCopy {
 			source: texture.texture,
-			destination: copy_dst_texture.unwrap().1.texture,
+			destination: copy_dst_texture.1.texture,
 			extent: texture.extent,
 		});
 
@@ -525,7 +525,7 @@ impl RenderSystem {
 	}
 
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
-	pub fn create_allocation(&mut self, size: u64, _resource_uses: render_backend::Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {
+	pub fn create_allocation(&mut self, size: usize, _resource_uses: render_backend::Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {
 		let allocation = self.render_backend.allocate_memory(size, resource_device_accesses);
 
 		let allocation_handle = AllocationHandle(self.allocations.len() as u64);
@@ -546,14 +546,15 @@ impl RenderSystem {
 
 		let vertex_layout_hash = hasher.finish();
 
-		let vertex_buffer_size = vertices.len() as u64;
-		let vertex_buffer_offset = 0;
+		let vertex_buffer_size = vertices.len();
 		let vertex_buffer_creation_result = self.render_backend.create_buffer(vertex_buffer_size, render_backend::Uses::Vertex);
-		let index_buffer_size = indices.len() as u64;
-		let index_buffer_offset = vertices.len() as u64 + 15 & !15;
+		let index_buffer_size = indices.len();
 		let index_buffer_creation_result = self.render_backend.create_buffer(index_buffer_size, render_backend::Uses::Index);
 
-		let allocation_handle = self.create_allocation(vertex_buffer_creation_result.size + index_buffer_creation_result.size + 64, render_backend::Uses::Vertex | render_backend::Uses::Index, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+		let vertex_buffer_offset = 0usize;
+		let index_buffer_offset = vertices.len().next_multiple_of(index_buffer_creation_result.alignment);
+
+		let allocation_handle = self.create_allocation(vertex_buffer_creation_result.size.next_multiple_of(index_buffer_creation_result.alignment) + index_buffer_creation_result.size, render_backend::Uses::Vertex | render_backend::Uses::Index, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
 
 		let allocation = &self.allocations[allocation_handle.0 as usize];
 
@@ -777,13 +778,13 @@ impl RenderSystem {
 			for i in 0..self.frames.len() {
 				let buffer_handle = BufferHandle(self.buffers.len() as u32);
 
-				let buffer_creation_result = self.render_backend.create_buffer(size as u64, resource_uses);
+				let buffer_creation_result = self.render_backend.create_buffer(size, resource_uses);
 
 				let allocation_handle = self.create_allocation(buffer_creation_result.size, resource_uses, device_accesses);
 
 				let allocation = &self.allocations[allocation_handle.0 as usize];
 
-				self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size as u64 }, &buffer_creation_result);
+				self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &buffer_creation_result);
 
 				let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
 
@@ -820,58 +821,73 @@ impl RenderSystem {
 		}
 	}
 
+	/// Creates a texture.
 	pub fn create_texture(&mut self, extent: crate::Extent, format: crate::render_backend::TextureFormats, resource_uses: render_backend::Uses, device_accesses: DeviceAccesses) -> TextureHandle {
-		let size = extent.width as u64 * extent.height as u64 * extent.depth as u64 * 4;
-
-		dbg!(device_accesses);
+		let size = (extent.width * extent.height * extent.depth * 4) as usize;
 
 		// CPU readeble render target
 		if device_accesses == DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite {
-			let texture_creation_result = self.render_backend.create_texture(extent, format, render_backend::Uses::TransferDestination, DeviceAccesses::CpuRead, crate::render_backend::AccessPolicies::READ, 1);
+			let texture_handle = TextureHandle(self.textures.len() as u32);
+			let mut previous_texture_handle: Option<TextureHandle> = None;
+			let mut previous_cpu_texture_handle: Option<TextureHandle> = None;
 
-			let allocation_handle = self.create_allocation(texture_creation_result.size, resource_uses, DeviceAccesses::CpuRead);
+			for i in 0..self.frames.len() {
+				let texture_creation_result = self.render_backend.create_texture(extent, format, resource_uses | render_backend::Uses::TransferSource, DeviceAccesses::GpuWrite, crate::render_backend::AccessPolicies::WRITE, 1);
 
-			let allocation = &self.allocations[allocation_handle.0 as usize];
+				let allocation_handle = self.create_allocation(texture_creation_result.size, resource_uses, DeviceAccesses::GpuWrite);
 
-			self.render_backend.bind_texture_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &texture_creation_result);
+				let allocation = &self.allocations[allocation_handle.0 as usize];
 
-			//let texture_view = self.render_backend.create_texture_view(&texture_creation_result.resource, format, 1);
+				self.render_backend.bind_texture_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &texture_creation_result);
 
-			let proxy_texture_handle = TextureHandle(self.textures.len() as u32);
+				let texture_view = self.render_backend.create_texture_view(&texture_creation_result.resource, format, 1);
 
-			self.textures.push(Texture {
-				frame_handle: Some(FrameHandle(0)),
-				next: None,
-				parent: None,
-				texture: texture_creation_result.resource,
-				texture_view: None,
-				allocation_handle,
-				extent,
-				role: String::from("CPU_READ"),
-			});
+				let texture_handle = TextureHandle(self.textures.len() as u32);
 
-			let texture_creation_result = self.render_backend.create_texture(extent, format, resource_uses | render_backend::Uses::TransferSource, DeviceAccesses::GpuWrite, crate::render_backend::AccessPolicies::WRITE, 1);
+				self.textures.push(Texture {
+					frame_handle: Some(FrameHandle(i as u32)),
+					next: None,
+					parent: None,
+					texture: texture_creation_result.resource,
+					texture_view: Some(texture_view),
+					allocation_handle,
+					extent,
+					role: String::from("GPU_WRITE"),
+				});
 
-			let allocation_handle = self.create_allocation(texture_creation_result.size, resource_uses, DeviceAccesses::GpuWrite);
-	
-			let allocation = &self.allocations[allocation_handle.0 as usize];
-	
-			self.render_backend.bind_texture_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &texture_creation_result);
-	
-			let texture_view = self.render_backend.create_texture_view(&texture_creation_result.resource, format, 1);
-	
-			let texture_handle = self.create_texture_internal(Texture {
-				frame_handle: Some(FrameHandle(0)),
-				next: None,
-				parent: None,
-				texture: texture_creation_result.resource,
-				texture_view: Some(texture_view),
-				allocation_handle,
-				extent,
-				role: String::from("GPU_WRITE"),
-			});
-	
-			self.textures[proxy_texture_handle.0 as usize].parent = Some(texture_handle);
+				if let Some(previous_texture_handle) = previous_texture_handle {
+					self.textures[previous_texture_handle.0 as usize].next = Some(texture_handle);
+				}
+
+				previous_texture_handle = Some(texture_handle);
+
+				let texture_creation_result = self.render_backend.create_texture(extent, format, render_backend::Uses::TransferDestination, DeviceAccesses::CpuRead, crate::render_backend::AccessPolicies::READ, 1);
+
+				let allocation_handle = self.create_allocation(texture_creation_result.size, resource_uses, DeviceAccesses::CpuRead);
+
+				let allocation = &self.allocations[allocation_handle.0 as usize];
+
+				self.render_backend.bind_texture_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &texture_creation_result);
+
+				let cpu_texture_handle = TextureHandle(self.textures.len() as u32);
+
+				self.textures.push(Texture {
+					frame_handle: Some(FrameHandle(i as u32)),
+					next: None,
+					parent: Some(texture_handle),
+					texture: texture_creation_result.resource,
+					texture_view: None,
+					allocation_handle,
+					extent,
+					role: String::from("CPU_READ"),
+				});
+
+				if let Some(previous_texture_handle) = previous_cpu_texture_handle {
+					self.textures[previous_texture_handle.0 as usize].next = Some(cpu_texture_handle);
+				}
+
+				previous_cpu_texture_handle = Some(cpu_texture_handle);
+			}
 
 			texture_handle
 		} else if device_accesses == DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead {
@@ -1085,7 +1101,7 @@ impl RenderSystem {
 		surface.textures[frame_handle.unwrap().0 as usize]
 	}
 
-	pub fn execute(&self, frame_handle: Option<FrameHandle>, command_buffer_recording: CommandBufferRecording, wait_for_synchronizer_handle: Option<SynchronizerHandle>, signal_synchronizer_handle: SynchronizerHandle) {
+	pub fn execute(&self, frame_handle: Option<FrameHandle>, command_buffer_recording: CommandBufferRecording, wait_for_synchronizer_handle: Option<SynchronizerHandle>, signal_synchronizer_handle: Option<SynchronizerHandle>, execution_synchronizer_handle: SynchronizerHandle) {
 		let command_buffer = self.get_command_buffer(frame_handle, command_buffer_recording.command_buffer);
 
 		let wait_for_synchronizer = if let Some(wait_for_synchronizer) = wait_for_synchronizer_handle {
@@ -1094,9 +1110,15 @@ impl RenderSystem {
 			None
 		};
 
-		let signal_synchronizer = self.get_synchronizer(frame_handle, signal_synchronizer_handle);
+		let signal_synchronizer = if let Some(signal_synchronizer) = signal_synchronizer_handle {
+			Some(&self.get_synchronizer(frame_handle, signal_synchronizer).synchronizer)
+		} else {
+			None
+		};
 
-		self.render_backend.execute(&command_buffer.command_buffer, wait_for_synchronizer, &signal_synchronizer.synchronizer);
+		let execution_synchronizer = self.get_synchronizer(frame_handle, execution_synchronizer_handle);
+
+		self.render_backend.execute(&command_buffer.command_buffer, wait_for_synchronizer, signal_synchronizer, &execution_synchronizer.synchronizer);
 	}
 
 	pub fn present(&self, frame_handle: Option<FrameHandle>, image_index: u32, synchronizer_handle: SynchronizerHandle) {
@@ -1280,7 +1302,7 @@ mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let texture = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
+		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1290,7 +1312,7 @@ mod tests {
 
 		let attachments = [
 			crate::render_system::AttachmentInfo {
-				texture: texture,
+				texture: render_target,
 				format: crate::render_backend::TextureFormats::RGBAu8,
 				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
@@ -1306,18 +1328,18 @@ mod tests {
 
 		command_buffer_recording.end_render_pass();
 
-		command_buffer_recording.synchronize_texture(texture);
+		command_buffer_recording.synchronize_texture(render_target);
 
 		command_buffer_recording.end();
 
-		renderer.execute(Some(frame_handle), command_buffer_recording, None, signal);
+		renderer.execute(Some(frame_handle), command_buffer_recording, None, None, signal);
 
 		renderer.end_frame_capture();
 
 		renderer.wait(Some(frame_handle), signal); // Wait for the render to finish before accessing the texture data
 
 		// assert colored triangle was drawn to texture
-		let pixels = renderer.get_texture_data::<RGBAu8>(texture);
+		let pixels = renderer.get_texture_data::<RGBAu8>(render_target);
 
 		// let mut file = std::fs::File::create("test.png").unwrap();
 
@@ -1354,6 +1376,7 @@ mod tests {
 		assert!(!renderer.has_errors())
 	}
 
+	#[ignore = "Ignore until we have a way to disable this test in CI where presentation is not supported"]
 	#[test]
 	fn present() {
 		let mut renderer = RenderSystem::new();
@@ -1460,7 +1483,7 @@ mod tests {
 
 		command_buffer_recording.end();
 
-		renderer.execute(Some(frame_handle), command_buffer_recording, Some(image_ready), render_finished_synchronizer);
+		renderer.execute(Some(frame_handle), command_buffer_recording, Some(image_ready), Some(render_finished_synchronizer), render_finished_synchronizer);
 
 		renderer.present(Some(frame_handle), image_index, render_finished_synchronizer);
 
@@ -1482,14 +1505,8 @@ mod tests {
 
 		let mut renderer = RenderSystem::new();
 
-		let mut window_system = window_system::WindowSystem::new();
-
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
-
-		let window_handle = window_system.create_window("Renderer Test", extent, "test");
-
-		renderer.bind_to_window(window_system.get_os_handles(window_handle));
 
 		let frames = (0..FRAMES_IN_FLIGHT).map(|_| renderer.create_frame()).collect::<Vec<_>>();
 
@@ -1545,17 +1562,14 @@ mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let texture = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::GpuWrite);
+		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
 		let render_finished_synchronizer = renderer.create_synchronizer(true);
-		let image_ready = renderer.create_synchronizer(false);
 
 		for i in 0..FRAMES_IN_FLIGHT*10 {
 			renderer.wait(Some(frames[i % FRAMES_IN_FLIGHT]), render_finished_synchronizer);
-
-			let image_index = renderer.acquire_swapchain_image(Some(frames[i % FRAMES_IN_FLIGHT]), image_ready);
 
 			renderer.start_frame_capture();
 
@@ -1563,7 +1577,7 @@ mod tests {
 
 			let attachments = [
 				crate::render_system::AttachmentInfo {
-					texture: texture,
+					texture: render_target,
 					format: crate::render_backend::TextureFormats::RGBAu8,
 					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
@@ -1579,20 +1593,11 @@ mod tests {
 
 			command_buffer_recording.end_render_pass();
 
-			let swapchain_texture_handle = renderer.get_swapchain_texture_handle(Some(frames[i % FRAMES_IN_FLIGHT]));
-
-			command_buffer_recording.copy_textures(&[
-				(
-					texture, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::READ,
-					swapchain_texture_handle, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::WRITE
-				)
-			]);
+			command_buffer_recording.synchronize_texture(render_target);
 
 			command_buffer_recording.end();
 
-			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, Some(image_ready), render_finished_synchronizer);
-
-			renderer.present(Some(frames[i % FRAMES_IN_FLIGHT]), image_index, render_finished_synchronizer);
+			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, None, None, render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 		}
@@ -1611,14 +1616,8 @@ mod tests {
 
 		let mut renderer = RenderSystem::new();
 
-		let mut window_system = window_system::WindowSystem::new();
-
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
-
-		let window_handle = window_system.create_window("Renderer Test", extent, "test");
-
-		renderer.bind_to_window(window_system.get_os_handles(window_handle));
 
 		let frames = (0..FRAMES_IN_FLIGHT).map(|_| renderer.create_frame()).collect::<Vec<_>>();
 
@@ -1680,14 +1679,13 @@ mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let texture = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::GpuWrite);
+		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
 
 		let buffer = renderer.create_buffer(64, crate::render_backend::Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
 		let render_finished_synchronizer = renderer.create_synchronizer(true);
-		let image_ready = renderer.create_synchronizer(false);
 
 		for i in 0..FRAMES_IN_FLIGHT*10 {
 			renderer.wait(Some(frames[i % FRAMES_IN_FLIGHT]), render_finished_synchronizer);
@@ -1696,15 +1694,13 @@ mod tests {
 
 			//unsafe { std::ptr::copy_nonoverlapping(matrix.as_ptr(), pointer as *mut f32, 16); }
 
-			let image_index = renderer.acquire_swapchain_image(Some(frames[i % FRAMES_IN_FLIGHT]), image_ready);
-
 			renderer.start_frame_capture();
 
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_handle);
 
 			let attachments = [
 				crate::render_system::AttachmentInfo {
-					texture: texture,
+					texture: render_target,
 					format: crate::render_backend::TextureFormats::RGBAu8,
 					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
@@ -1732,20 +1728,11 @@ mod tests {
 
 			command_buffer_recording.end_render_pass();
 
-			let swapchain_texture_handle = renderer.get_swapchain_texture_handle(Some(frames[i % FRAMES_IN_FLIGHT]));
-
-			command_buffer_recording.copy_textures(&[
-				(
-					texture, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::READ,
-					swapchain_texture_handle, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::WRITE
-				)
-			]);
+			command_buffer_recording.synchronize_texture(render_target);
 
 			command_buffer_recording.end();
 
-			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, Some(image_ready), render_finished_synchronizer);
-
-			renderer.present(Some(frames[i % FRAMES_IN_FLIGHT]), image_index, render_finished_synchronizer);
+			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, None, None, render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 		}
@@ -1900,7 +1887,7 @@ mod tests {
 
 		command_buffer_recording.end();
 
-		renderer.execute(Some(frame_handle), command_buffer_recording, None, signal);
+		renderer.execute(Some(frame_handle), command_buffer_recording, None, None, signal);
 
 		renderer.end_frame_capture();
 

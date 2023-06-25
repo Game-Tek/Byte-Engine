@@ -51,7 +51,7 @@ dependencies = [
 [[package]]
 name = "ash"
 version = "0.37.0+1.3.254"
-source = "git+https://github.com/ash-rs/ash?branch=master#eb1712944e6fc860168297741532bc1c85b8f09e"
+source = "git+https://github.com/ash-rs/ash?branch=master#a0f8b9cf3ef5fb4eb766e51b54e90c50df405d5a"
 dependencies = [
  "libloading",
 ]
@@ -144,6 +144,7 @@ dependencies = [
  "intel_tex_2",
  "json",
  "libdeflater",
+ "maths-rs",
  "notify",
  "png",
  "polodb_core",
@@ -663,6 +664,12 @@ checksum = "8b8c72594ac26bfd34f2d99dfced2edfaddfe8a476e3ff2ca0eb293d925c4f83"
 dependencies = [
  "twox-hash",
 ]
+
+[[package]]
+name = "maths-rs"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86562883d365f2b08fcf6bdfe9b64a9b6758c9a955be64c14353c012d6528669"
 
 [[package]]
 name = "memchr"

@@ -64,14 +64,14 @@ pub enum TextureFormats {
 /// Stores the information of a buffer.
 pub union Buffer {
 	/// The information of a buffer.
-	pub vulkan_buffer: vulkan_render_backend::Buffer,
+	pub(crate) vulkan_buffer: vulkan_render_backend::Buffer,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a descriptor set layout.
 pub union DescriptorSetLayout {
 	/// The information of a descriptor set layout.
-	pub vulkan_descriptor_set_layout: vulkan_render_backend::DescriptorSetLayout,
+	pub(crate) vulkan_descriptor_set_layout: vulkan_render_backend::DescriptorSetLayout,
 }
 
 #[derive(Clone, Copy)]
@@ -90,49 +90,49 @@ pub union TextureView {
 /// Stores the information of a shader.
 pub union Shader {
 	/// The information of a shader.
-	pub vulkan_shader: vulkan_render_backend::Shader,
+	pub(crate) vulkan_shader: vulkan_render_backend::Shader,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a swapchain.
 pub union Swapchain {
 	/// The information of a swapchain.
-	pub vulkan_swapchain: vulkan_render_backend::Swapchain,
+	pub(crate) vulkan_swapchain: vulkan_render_backend::Swapchain,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a surface.
 pub union Surface {
 	/// The information of a surface.
-	pub vulkan_surface: vulkan_render_backend::Surface,
+	pub(crate) vulkan_surface: vulkan_render_backend::Surface,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a synchronizer.
 pub union Synchronizer {
 	/// The information of a synchronizer.
-	pub vulkan_synchronizer: vulkan_render_backend::Synchronizer,
+	pub(crate) vulkan_synchronizer: vulkan_render_backend::Synchronizer,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a pipeline layout.
 pub union PipelineLayout {
 	/// The information of a pipeline layout.
-	pub vulkan_pipeline_layout: vulkan_render_backend::PipelineLayout,
+	pub(crate) vulkan_pipeline_layout: vulkan_render_backend::PipelineLayout,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a pipeline.
 pub union Pipeline {
 	/// The information of a pipeline.
-	pub vulkan_pipeline: vulkan_render_backend::Pipeline,
+	pub(crate) vulkan_pipeline: vulkan_render_backend::Pipeline,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a command buffer.
 pub union CommandBuffer {
 	/// The information of a command buffer.
-	pub vulkan_command_buffer: vulkan_render_backend::CommandBuffer,
+	pub(crate) vulkan_command_buffer: vulkan_render_backend::CommandBuffer,
 }
 
 #[derive(Clone, Copy)]
@@ -148,9 +148,9 @@ pub struct Memory<'a> {
 	/// The allocation that the memory region is associated with.
 	pub allocation: &'a Allocation,
 	/// The offset of the memory region.
-	pub offset: u64,
+	pub offset: usize,
 	/// The size of the memory region.
-	pub size: u64,
+	pub size: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -186,8 +186,12 @@ pub struct TextureCopy {
 #[derive(Clone, Copy)]
 /// Stores the information of a memory backed resource.
 pub struct MemoryBackedResourceCreationResult<T> {
-	pub(crate) resource: T,
-	pub(crate) size: u64,
+	/// The resource.
+	pub resource: T,
+	/// The final size of the resource.
+	pub size: usize,
+	/// Tha alignment the resources needs when bound to a memory region.
+	pub alignment: usize,
 }
 
 use bitflags::bitflags;
@@ -311,7 +315,7 @@ pub enum DescriptorType {
 /// Stores the information of a sampler.
 pub struct Sampler {
 	/// The Vulkan backend implementation object for a sampler.
-	pub vulkan_sampler: vulkan_render_backend::Sampler,
+	pub(crate) vulkan_sampler: vulkan_render_backend::Sampler,
 }
 
 /// Stores the information of a descriptor set layout binding.
@@ -332,7 +336,7 @@ pub struct DescriptorSetLayoutBinding {
 /// Stores the information of a descriptor set.
 pub union DescriptorSet {
 	/// The Vulkan backend implementation object for a descriptor set.
-	pub vulkan_descriptor_set: vulkan_render_backend::DescriptorSet,
+	pub(crate) vulkan_descriptor_set: vulkan_render_backend::DescriptorSet,
 }
 
 /// Stores the information of a descriptor.
@@ -454,7 +458,7 @@ pub trait RenderBackend {
 	/// 
 	/// # Returns
 	/// * `Allocation` - The allocated memory region.
-	fn allocate_memory(&self, size: u64, device_accesses: crate::render_system::DeviceAccesses) -> Allocation;
+	fn allocate_memory(&self, size: usize, device_accesses: crate::render_system::DeviceAccesses) -> Allocation;
 
 	/// Returns a pointer to the start of the memory region.
 	/// 
@@ -474,7 +478,7 @@ pub trait RenderBackend {
 	/// 
 	/// # Returns
 	/// * `MemoryBackedResourceCreationResult<Buffer>` - The created buffer.
-	fn create_buffer(&self, size: u64, resource_uses: Uses) -> MemoryBackedResourceCreationResult<Buffer>;
+	fn create_buffer(&self, size: usize, resource_uses: Uses) -> MemoryBackedResourceCreationResult<Buffer>;
 
 	/// Creates a texture.
 	/// Textures are used to store images on the GPU.
@@ -696,7 +700,7 @@ pub trait RenderBackend {
 	/// * `command_buffer` - The command buffer to execute.
 	/// * `wait_for` - The synchronizer to wait for.
 	/// * `signal` - The synchronizer to signal.
-	fn execute(&self, command_buffer: &CommandBuffer, wait_for: Option<&crate::render_backend::Synchronizer>, signal: &crate::render_backend::Synchronizer);
+	fn execute(&self, command_buffer: &CommandBuffer, wait_for: Option<&crate::render_backend::Synchronizer>, signal: Option<&crate::render_backend::Synchronizer>, execution_completion: &crate::render_backend::Synchronizer);
 
 	/// Acquires an image from a swapchain.
 	/// 

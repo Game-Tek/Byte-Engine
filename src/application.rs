@@ -19,12 +19,16 @@ pub trait Application {
 	/// Returns the name of the application.
 	fn get_name(&self) -> String;
 
+	/// Performs a tick of the application.
 	fn tick(&mut self);
 
 	/// Deinitializes the application.
 	fn deinitialize(&mut self);
 }
 
+/// The most basic implementation of the application trait.
+/// It has no functionality and is only used as a base for other implementations.
+/// It just stores the name of the application.
 pub struct BaseApplication {
 	name: String,
 }
@@ -54,6 +58,8 @@ impl Application for BaseApplication {
 
 use crate::{orchestrator, window_system, render_system};
 
+/// An orchestrated application is an application that uses the orchestrator to manage systems.
+/// It is the recommended way to create a simple application.
 pub struct OrchestratedApplication {
 	application: BaseApplication,
 	orchestrator: orchestrator::Orchestrator,
@@ -96,16 +102,20 @@ impl Application for OrchestratedApplication {
 }
 
 impl OrchestratedApplication {
+	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.close = true;
 	}
 
-	pub fn get_name(&self) -> String { self.application.get_name() }
-
+	/// Returns a reference to the orchestrator.
 	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { &self.orchestrator }
+
+	/// Returns a mutable reference to the orchestrator.
 	pub fn get_mut_orchestrator(&mut self) -> &mut orchestrator::Orchestrator { &mut self.orchestrator }
 }
 
+/// A graphics application is the base for all applications that use the graphics functionality of the engine.
+/// It uses the orchestrated application as a base and adds rendering and windowing functionality.
 pub struct GraphicsApplication {
 	application: OrchestratedApplication,
 	file_tracker: crate::file_tracker::FileTracker,
@@ -149,9 +159,13 @@ impl Application for GraphicsApplication {
 }
 
 impl GraphicsApplication {
+	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.application.close();
 	}
+
+	/// Returns a reference to the orchestrator.
+	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { &self.application.get_orchestrator() }
 }
 
 #[cfg(test)]

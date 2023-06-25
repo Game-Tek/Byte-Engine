@@ -5,12 +5,12 @@
 //! # Example beShader
 //! 
 //! ```glsl
-//! struct Light {
+//! Light: struct {
 //! 	position: vec3,
 //! 	color: vec3,
 //! }
 //! 
-//! fn main() -> void {
+//! main: fn () -> void {
 //! 	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
 //! }
 //! ```

@@ -2,7 +2,7 @@
 //! Handles loading assets or resources from different origins (network, local, etc.).
 //! It also handles caching of resources.
 
-use std::{io::prelude::*, f32::consts::E};
+use std::{io::prelude::*};
 
 use polodb_core::bson::{Document, bson, doc};
 

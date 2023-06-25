@@ -4,6 +4,9 @@
 #![feature(int_roundings)]
 #![feature(ptr_sub_ptr)]
 #![feature(iter_advance_by)]
+#![feature(inherent_associated_types)]
+#![feature(downcast_unchecked)]
+#![feature(const_mut_refs)]
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 
@@ -21,6 +24,10 @@ pub mod file_tracker;
 pub mod beshader_compiler;
 pub mod executor;
 //pub mod gdeflate;
+
+use maths_rs;
+
+pub use maths_rs::Vec2f;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Extent {

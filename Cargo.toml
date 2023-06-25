@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 xcb = { version = "1.2.1", features=['xtest'] }
-# ash = { version = "0.37.2", features=['linked'] }
+# ash = { version = "0.37.3", features=['linked'] }
 ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
 futures = "0.3.28"
 shaderc = "0.8.2"
@@ -22,6 +22,13 @@ notify = "6.0.0"
 serde_json = "1.0.96"
 dual_quaternion = "0.2.0"
 cgmath = "0.18.0"
+maths-rs = "0.2.3"
 
 [profile.dev]
 incremental = true
+lto="off"
+
+[profile.release]
+lto="fat"
+panic="abort"
+codegen-units = 1

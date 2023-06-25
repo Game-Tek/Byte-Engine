@@ -24,7 +24,5 @@ jobs:
         vulkan-query-version: latest
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
-    - name: Build
-      run: cargo build
-    - name: Run tests
+    - name: Build & Run tests
       run: cargo test --verbose -- --test-threads 1

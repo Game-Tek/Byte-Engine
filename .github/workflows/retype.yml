@@ -49,11 +49,11 @@ jobs:
     steps:
       - name: Setup Pages
         uses: actions/configure-pages@v3
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v1
-        # with:
-        #   # Upload entire repository
-        #   path: '.'
+    #   - name: Upload artifact
+    #     uses: actions/upload-pages-artifact@v1
+    #     with:
+    #       # Upload entire repository
+    #       path: ${{ steps.build.outputs.retype-output-path }}
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v2 # or the latest "vX.X.X" version tag for this action

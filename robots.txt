@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://game-tek.github.io/Byte-Engine/sitemap.xml.gz

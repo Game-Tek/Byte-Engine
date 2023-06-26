@@ -26,9 +26,9 @@ jobs:
         id: build
         with:
           config: docs
-      - uses: actions/upload-artifact@v2
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v1
         with:
-          name: retype-output
           path: ${{ steps.build.outputs.retype-output-path }}
   # Deploy job
   deploy:
@@ -49,13 +49,6 @@ jobs:
     steps:
       - name: Setup Pages
         uses: actions/configure-pages@v3
-    #   - name: Upload artifact
-    #     uses: actions/upload-pages-artifact@v1
-    #     with:
-    #       # Upload entire repository
-    #       path: ${{ steps.build.outputs.retype-output-path }}
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v2 # or the latest "vX.X.X" version tag for this action
-        with:
-          artifact_name: retype-output

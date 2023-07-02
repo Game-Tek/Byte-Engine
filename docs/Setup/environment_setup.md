@@ -1,3 +1,11 @@
+---
+icon: tools
+---
+
+# Environment Setup
+
+---
+
 Byte depends on a few external tools to work properly. You will need to install them before you can start using Byte.
 
 ### Vulkan SDK
@@ -14,6 +22,7 @@ Byte is written in Rust. You will need to install Rust to be able to compile and
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
+---
 
 ## Optional
 

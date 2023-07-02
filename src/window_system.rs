@@ -198,7 +198,7 @@ pub enum Keys {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum MouseKeys {
+pub enum MouseKeys {
 	Left,
 	Middle,
 	Right,
@@ -208,7 +208,7 @@ enum MouseKeys {
 
 #[derive(Debug, Clone, Copy)]
 /// The events that can be received from a window.
-enum WindowEvents {
+pub enum WindowEvents {
 	/// The window has been resized.
 	Resize,
 	/// The window has been minimized.
@@ -508,46 +508,36 @@ impl Window {
 				xcb::Event::X(x::Event::KeyPress(ev)) => {
 					let key: Result<Keys, _> = ev.detail().try_into();
 
-					if let Ok(key) = key {
+					key.ok().and_then(|key| {
 						Some(WindowEvents::Key { pressed: true, key })
-					} else {
-						None
-					}
+					})
 				},
 				xcb::Event::X(x::Event::KeyRelease(ev)) => {
 					let key: Result<Keys, _> = ev.detail().try_into();
 
-					if let Ok(key) = key {
-						println!("release {:?}", key);
+					key.ok().and_then(|key| {
 						Some(WindowEvents::Key { pressed: false, key })
-					} else {
-						None
-					}
+					})
 				},
 				xcb::Event::X(x::Event::ButtonPress(ev)) => {
 					let key: Result<MouseKeys, _> = ev.detail().try_into();
 
-					if let Ok(key) = key {
+					key.ok().and_then(|key| {
 						Some(WindowEvents::Button { pressed: true, button: key })
-					} else {
-						None
-					}
+					})
 				},
 				xcb::Event::X(x::Event::ButtonRelease(ev)) => {
 					let key: Result<MouseKeys, _> = ev.detail().try_into();
 
-					if let Ok(key) = key {
+					key.ok().and_then(|key| {
 						Some(WindowEvents::Button { pressed: false, button: key })
-					} else {
-						None
-					}
+					})
 				},
 				xcb::Event::X(x::Event::ClientMessage(ev)) => {
 					// We have received a message from the server
 					if let x::ClientMessageData::Data32([atom, ..]) = ev.data() {
 						if atom == self.wm_del_window.resource_id() {
 							let event = WindowEvents::Close;
-							println!("Window event: {:?}", event);
 							Some(event)
 						} else {
 							None
@@ -573,9 +563,7 @@ pub struct WindowSystem {
 	windows: Vec<Window>,
 }
 
-impl System for WindowSystem {
-	fn as_any(&self) -> &dyn std::any::Any { self }
-}
+impl System for WindowSystem {}
 
 /// The handle of a window.
 pub struct WindowHandle(u64);
@@ -599,8 +587,6 @@ impl WindowSystem {
 	pub fn update(&mut self) -> bool {
 		for window in &self.windows {
 			for event in window.poll() {
-				println!("event {:?}", event);
-
 				match event {
 					WindowEvents::Close => {
 						return false;
@@ -611,6 +597,10 @@ impl WindowSystem {
 		}
 
 		return true;
+	}
+
+	pub fn update_window(&self, window_handle: &WindowHandle) -> Option<WindowEvents> {
+		self.windows[window_handle.0 as usize].update()
 	}
 
 	/// Creates a new OS window.
@@ -638,7 +628,7 @@ impl WindowSystem {
 	/// 
 	/// # Returns
 	/// The operationg system handles for the window.
-	pub fn get_os_handles(&self, window_handle: WindowHandle,) -> WindowOsHandles {
+	pub fn get_os_handles(&self, window_handle: &WindowHandle,) -> WindowOsHandles {
 		if window_handle.0 > self.windows.len() as u64 { return WindowOsHandles{ xcb_connection: std::ptr::null_mut(), xcb_window: 0 }; }
 
 		let window = &self.windows[window_handle.0 as usize];
@@ -662,7 +652,7 @@ mod tests {
 
 		let window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 
-		let os_handles = window_system.get_os_handles(window_handle);
+		let os_handles = window_system.get_os_handles(&window_handle);
 
 		assert_ne!(os_handles.xcb_connection, std::ptr::null_mut());
 		assert_ne!(os_handles.xcb_window, 0);

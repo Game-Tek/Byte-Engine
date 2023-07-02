@@ -1,3 +1,11 @@
+---
+order: 0
+---
+
+# Project Setup
+
+---
+
 Our application needs a place to start.
 
 Create a file called `main.rs`.

@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::hash::Hasher;
 
+use crate::render_backend::RenderBackend;
 use crate::{window_system, orchestrator::System, Extent};
 use crate::{render_backend, insert_return_length, render_debugger};
 
@@ -53,6 +54,7 @@ struct Texture {
 	texture: crate::render_backend::Texture,
 	texture_view: Option<crate::render_backend::TextureView>,
 	allocation_handle: AllocationHandle,
+	format: render_backend::TextureFormats,
 	extent: Extent,
 	role: String,
 }
@@ -69,7 +71,7 @@ pub enum ShaderSourceType {
 	SPIRV,
 }
 
-#[derive(Hash)]
+#[derive(Hash, Clone, Copy)]
 pub enum DataTypes {
 	Float,
 	Float2,
@@ -102,6 +104,9 @@ struct Buffer {
 	size: usize,
 	pointer: *mut u8,
 }
+
+unsafe impl Send for Buffer {} // Needed for pointer field
+unsafe impl Sync for Buffer {} // Needed for pointer field
 
 struct Mesh {
 	vertex_buffer: Buffer,
@@ -170,6 +175,13 @@ pub struct CommandBufferRecording<'a> {
 	in_render_pass: bool,
 	/// `texture_states` is used to perform resource tracking on textures.\ It is mainly useful for barriers and transitions and copies.
 	texture_states: HashMap<TextureHandle, crate::render_backend::TransitionState>,
+}
+
+pub struct BufferDescriptor {
+	pub buffer: BufferHandle,
+	pub offset: u64,
+	pub range: u64,
+	pub slot: u32,
 }
 
 impl CommandBufferRecording<'_> {
@@ -268,10 +280,52 @@ impl CommandBufferRecording<'_> {
 	pub fn draw_mesh(&mut self, mesh_handle: &MeshHandle) {
 		let mesh = &self.render_system.meshes[mesh_handle.0 as usize];
 
-		self.render_system.render_backend.bind_vertex_buffer(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &mesh.vertex_buffer.buffer);
-		self.render_system.render_backend.bind_index_buffer(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &mesh.index_buffer.buffer);
+		let vertex_buffer_descriptors = [
+			render_backend::BufferDescriptor {
+				buffer: mesh.vertex_buffer.buffer,
+				offset: 0,
+				range: 0,
+				slot: 0,
+			}
+		];
+
+		let index_buffer_descritor = render_backend::BufferDescriptor {
+			buffer: mesh.index_buffer.buffer,
+			offset: 0,
+			range: 0,
+			slot: 0,
+		};
+
+		self.render_system.render_backend.bind_vertex_buffers(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &vertex_buffer_descriptors);
+		self.render_system.render_backend.bind_index_buffer(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &index_buffer_descritor);
 
 		self.render_system.render_backend.draw_indexed(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, mesh.index_count, 1, 0, 0, 0);
+	}
+
+	pub fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]) {
+		let buffer_descriptors = buffer_descriptors.iter().map(|buffer_descriptor| crate::render_backend::BufferDescriptor {
+			buffer: self.render_system.buffers[buffer_descriptor.buffer.0 as usize].buffer,
+			offset: buffer_descriptor.offset,
+			range: buffer_descriptor.range,
+			slot: buffer_descriptor.slot,
+		}).collect::<Vec<_>>();
+
+		self.render_system.render_backend.bind_vertex_buffers(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &buffer_descriptors);
+	}
+
+	pub fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor) {
+		let buffer_descriptor = crate::render_backend::BufferDescriptor {
+			buffer: self.render_system.buffers[buffer_descriptor.buffer.0 as usize].buffer,
+			offset: buffer_descriptor.offset,
+			range: buffer_descriptor.range,
+			slot: buffer_descriptor.slot,
+		};
+
+		self.render_system.render_backend.bind_index_buffer(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &buffer_descriptor);
+	}
+
+	pub fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
+		self.render_system.render_backend.draw_indexed(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, index_count, instance_count, first_index, vertex_offset, first_instance);
 	}
 
 	/// Performs a transition on a series of textures.
@@ -336,7 +390,9 @@ impl CommandBufferRecording<'_> {
 
 		let texture_copy = crate::render_backend::TextureCopy {
 			source: source_texture.texture,
+			source_format: source_texture.format,
 			destination: destination_texture.texture,
+			destination_format: destination_texture.format,
 			extent: source_texture.extent,
 		};
 
@@ -361,10 +417,14 @@ impl CommandBufferRecording<'_> {
 		let mut texture_copies = Vec::new();
 
 		for (f, _, _, _, t, _, _, _) in copies {
+			let source_texture = self.render_system.get_texture(self.frame_handle, *f);
+			let destination_texture = self.render_system.get_texture(self.frame_handle, *t);
 			texture_copies.push(crate::render_backend::TextureCopy {
-				source: self.render_system.get_texture(self.frame_handle, *f).texture,
-				destination: self.render_system.get_texture(self.frame_handle, *t).texture,
-				extent: self.render_system.get_texture(self.frame_handle, *f).extent,
+				source: source_texture.texture,
+				source_format: source_texture.format,
+				destination: destination_texture.texture,
+				destination_format: destination_texture.format,
+				extent: source_texture.extent,
 			});
 		}
 
@@ -391,7 +451,9 @@ impl CommandBufferRecording<'_> {
 
 		texture_copies.push(crate::render_backend::TextureCopy {
 			source: texture.texture,
+			source_format: texture.format,
 			destination: copy_dst_texture.1.texture,
+			destination_format: copy_dst_texture.1.format,
 			extent: texture.extent,
 		});
 
@@ -469,7 +531,7 @@ pub struct DescriptorSetLayoutBinding {
 /// It is responsible for creating and managing resources.
 /// It also provides a [`CommandBufferRecording`] struct that can be used to record commands.
 pub struct RenderSystem {
-	render_backend: Box<dyn crate::render_backend::RenderBackend>,
+	render_backend: crate::vulkan_render_backend::VulkanRenderBackend,
 	debugger: crate::render_debugger::RenderDebugger,
 	allocations: Vec<Allocation>,
 	buffers: Vec<Buffer>,
@@ -490,7 +552,7 @@ pub struct RenderSystem {
 impl RenderSystem {
 	/// Creates a new [`RenderSystem`].
 	pub fn new() -> RenderSystem {
-		let render_backend = Box::new(crate::vulkan_render_backend::VulkanRenderBackend::new());
+		let render_backend = crate::vulkan_render_backend::VulkanRenderBackend::new();
 
 		let render_system = RenderSystem {
 			render_backend,
@@ -704,12 +766,20 @@ impl RenderSystem {
 		PipelineLayoutHandle(insert_return_length(&mut self.pipeline_layouts, PipelineLayout{ pipeline_layout }) as u32)
 	}
 
-	pub fn create_pipeline(&mut self, pipeline_layout_handle: PipelineLayoutHandle, shader_handles: &[ShaderHandle]) -> PipelineHandle {
+	pub fn create_pipeline(&mut self, pipeline_layout_handle: PipelineLayoutHandle, shader_handles: &[&ShaderHandle], vertex_layout: &[VertexElement]) -> PipelineHandle {
 		let shaders = shader_handles.iter().map(|shader_handle| self.shaders[shader_handle.0 as usize].shader).collect::<Vec<_>>();
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
-		let pipeline = self.render_backend.create_pipeline(&pipeline_layout.pipeline_layout, shaders.as_slice());
+		let pipeline_configuration_blocks = [
+			render_backend::PipelineConfigurationBlocks::Shaders { 
+				shaders: shaders.as_slice(),
+			},
+			render_backend::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout.pipeline_layout },
+			render_backend::PipelineConfigurationBlocks::VertexInput { vertex_elements: vertex_layout },
+		];
+
+		let pipeline = self.render_backend.create_pipeline(&pipeline_configuration_blocks);
 
 		let pipeline_handle = PipelineHandle(self.pipelines.len() as u32);
 
@@ -783,7 +853,7 @@ impl RenderSystem {
 				let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
 
 				self.buffers.push(Buffer {
-					frame_handle: Some(FrameHandle(i as u32)),
+					frame_handle: None,
 					next: None,
 					buffer: buffer_creation_result.resource,
 					size: buffer_creation_result.size,
@@ -801,6 +871,12 @@ impl RenderSystem {
 		buffer_handle
 	}
 
+	pub fn get_buffer_address(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
+		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
+		let buffer = &self.buffers[buffer_handle.0 as usize];
+		self.render_backend.get_buffer_address(&buffer.buffer)
+	}
+
 	pub fn get_buffer_pointer(&mut self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> *mut u8 {
 		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
 		let buffer = &mut self.buffers[buffer_handle.0 as usize];
@@ -812,6 +888,15 @@ impl RenderSystem {
 		let buffer = &mut self.buffers[buffer_handle.0 as usize];
 		unsafe {
 			std::slice::from_raw_parts(buffer.pointer, buffer.size as usize)
+		}
+	}
+
+	// Return a mutable slice to the buffer data.
+	pub fn get_mut_buffer_slice(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &mut [u8] {
+		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
+		let buffer = &self.buffers[buffer_handle.0 as usize];
+		unsafe {
+			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size as usize)
 		}
 	}
 
@@ -842,6 +927,7 @@ impl RenderSystem {
 					frame_handle: Some(FrameHandle(i as u32)),
 					next: None,
 					parent: None,
+					format,
 					texture: texture_creation_result.resource,
 					texture_view: Some(texture_view),
 					allocation_handle,
@@ -869,6 +955,7 @@ impl RenderSystem {
 					frame_handle: Some(FrameHandle(i as u32)),
 					next: None,
 					parent: Some(texture_handle),
+					format,
 					texture: texture_creation_result.resource,
 					texture_view: None,
 					allocation_handle,
@@ -901,6 +988,7 @@ impl RenderSystem {
 				frame_handle: Some(FrameHandle(0)),
 				next: None,
 				parent: None,
+				format,
 				texture: texture_creation_result.resource,
 				texture_view: Some(texture_view),
 				allocation_handle,
@@ -922,6 +1010,7 @@ impl RenderSystem {
 				frame_handle: Some(FrameHandle(0)),
 				next: None,
 				parent: None,
+				format,
 				texture: texture_creation_result.resource,
 				texture_view: Some(texture_view),
 				allocation_handle,
@@ -952,6 +1041,7 @@ impl RenderSystem {
 					frame_handle: Some(FrameHandle(i as u32)),
 					next: None,
 					parent: None,
+					format,
 					texture: texture_creation_result.resource,
 					texture_view: Some(texture_view),
 					allocation_handle,
@@ -1008,6 +1098,7 @@ impl RenderSystem {
 				frame_handle: Some(FrameHandle(i as u32)),
 				next: previous_texture_handle,
 				parent: None,
+				format: crate::render_backend::TextureFormats::BGRAu8,
 				texture: *image,
 				texture_view: Some(texture_view),
 				allocation_handle: AllocationHandle(0xFFFFFFFFFFFFFFFF),
@@ -1125,11 +1216,11 @@ impl RenderSystem {
 		self.render_backend.wait(&synchronizer.synchronizer);
 	}
 
-	pub fn start_frame_capture(&mut self) {
+	pub fn start_frame_capture(&self) {
 		self.debugger.start_frame_capture();
 	}
 
-	pub fn end_frame_capture(&mut self) {
+	pub fn end_frame_capture(&self) {
 		self.debugger.end_frame_capture();
 	}
 
@@ -1220,9 +1311,7 @@ impl RenderSystem {
 
 // TODO: handle resizing
 
-impl System for RenderSystem {
-	fn as_any(&self) -> &dyn std::any::Any { self }
-}
+impl System for RenderSystem {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RGBAu8 {
@@ -1250,13 +1339,15 @@ mod tests {
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+		];
+
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
-				&[
-					crate::render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-					crate::render_system::VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
-				]
+				&vertex_layout
 			) };
 
 		let vertex_shader_code = "
@@ -1291,7 +1382,7 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[vertex_shader, fragment_shader]);
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1382,7 +1473,7 @@ mod tests {
 
 		let window_handle = window_system.create_window("Renderer Test", extent, "test");
 
-		renderer.bind_to_window(window_system.get_os_handles(window_handle));
+		renderer.bind_to_window(window_system.get_os_handles(&window_handle));
 
 		let frame_handle = renderer.create_frame();
 
@@ -1392,13 +1483,15 @@ mod tests {
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+		];
+
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
-				&[
-					crate::render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-					crate::render_system::VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
-				]
+				&vertex_layout
 			) };
 
 		let vertex_shader_code = "
@@ -1433,7 +1526,7 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[vertex_shader, fragment_shader]);
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		let texture = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::GpuWrite);
 
@@ -1510,13 +1603,15 @@ mod tests {
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+		];
+
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
-				&[
-					crate::render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-					crate::render_system::VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
-				]
+				&vertex_layout
 			) };
 
 		let vertex_shader_code = "
@@ -1551,7 +1646,7 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[vertex_shader, fragment_shader]);
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1621,13 +1716,15 @@ mod tests {
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+		];
+
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
-				&[
-					crate::render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-					crate::render_system::VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
-				]
+				&vertex_layout
 			) };
 
 		let vertex_shader_code = "
@@ -1668,7 +1765,7 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[vertex_shader, fragment_shader]);
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1748,13 +1845,15 @@ mod tests {
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+		];
+
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
-				&[
-					crate::render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-					crate::render_system::VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
-				]
+				&vertex_layout
 			) };
 
 		let vertex_shader_code = "
@@ -1842,7 +1941,7 @@ mod tests {
 		]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[vertex_shader, fragment_shader]);
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };

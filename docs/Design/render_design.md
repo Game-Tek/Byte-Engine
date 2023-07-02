@@ -4,9 +4,29 @@ Keep this in mind when reading this document:
 
 ```mermaid
 graph LR
-	RenderWorld --> ColorMapping
+	RenderMeshes --> RenderWorld
+	RenderParticles --> RenderWorld
+	RenderGI --> RenderWorld
+	RenderShadows --> RenderWorld
+	RenderSkinnedMeshes --> RenderWorld
+
+	ChromaticAberration --> PostProcessing
+	DepthOfField --> PostProcessing
+	SSAO --> PostProcessing
+	Bloom --> PostProcessing
+
+	RenderWorld --> PostProcessing
+
+	PostProcessing --> ColorMapping
+
 	RenderUI --> ColorMapping
+
+	ColorMapping --> Present
 ```
+
+### Render orchestrator
+The render orchestrator is coordinates the rendering of the different render domains.
+It manages the global render graph.
 
 ### Render system
 The render system provides easy to use abstractions over the render backend.
@@ -15,9 +35,6 @@ It abstracts details like staging buffers, memory allocation, etc. away from the
 
 Each render system is backed by a render backend. The render backend is responsible for creating the actual resources and executing the commands.
 This render backend can be chosen when creating the render system (e.g. Vulkan, OpenGL, DirectX, etc.)
-
-### Render pipeline
-A render pipeline is a collection of ...
 
 ### Render domain
 A render domain is collection of renderables that all live in the same space and we'd want to be managed by a common cohesive rendering technique.

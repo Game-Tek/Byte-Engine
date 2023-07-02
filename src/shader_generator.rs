@@ -139,7 +139,7 @@ impl ShaderGenerator {
 			}
 
 			for e in structs {
-				shader_string.push_str("layout(buffer_reference,scalar,buffer_reference_align=2) ");
+				shader_string.push_str("layout(buffer_reference,scalar,buffer_reference_align=2) buffer ");
 				shader_string.push_str(&e["name"].as_str().unwrap());
 				shader_string.push_str("Pointer {\n");
 
@@ -607,7 +607,7 @@ struct Light {
 vec3 position;
 vec3 color;
 };
-layout(buffer_reference,scalar,buffer_reference_align=2) LightPointer {
+layout(buffer_reference,scalar,buffer_reference_align=2) buffer LightPointer {
 vec3 position;
 vec3 color;
 };

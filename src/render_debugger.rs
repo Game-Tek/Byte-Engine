@@ -8,27 +8,33 @@ use renderdoc::{RenderDoc, V141};
 /// It provides an abstraction over different render debugging tools.
 /// It supports RenderDoc.
 pub struct RenderDebugger {
-	renderdoc: Option<RenderDoc<V141>>,
+	renderdoc: Option<std::sync::Mutex<RenderDoc<V141>>>,
 }
 
 impl RenderDebugger {
 	/// Creates a new render debugger instance.
 	/// It will automatically detect any available render debugger and connect to it.
 	pub fn new() -> RenderDebugger {
-		RenderDebugger { renderdoc: RenderDoc::new().ok() }
+		let renderdoc = if let Some(renderdoc) =  RenderDoc::new().ok() {
+			Some(std::sync::Mutex::new(renderdoc))
+		} else {
+			None
+		};
+
+		RenderDebugger { renderdoc }
 	}
 
 	/// Starts a frame capture on the render debugger.
-	pub fn start_frame_capture(&mut self) {
-		if let Some(renderdoc) = &mut self.renderdoc {
-			renderdoc.start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
+	pub fn start_frame_capture(&self) {
+		if let Some(renderdoc) = &self.renderdoc {
+			renderdoc.lock().unwrap().start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 		}
 	}
 
 	/// Ends a frame capture on the render debugger.
-	pub fn end_frame_capture(&mut self) {
-		if let Some(renderdoc) = &mut self.renderdoc {
-			renderdoc.end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
+	pub fn end_frame_capture(&self) {
+		if let Some(renderdoc) = &self.renderdoc {
+			renderdoc.lock().unwrap().end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 		}
 	}
 }

@@ -18,10 +18,11 @@ intel_tex_2 = "0.2.2"
 gltf = "1.1.0"
 ureq = "2.6.2"
 libdeflater = "0.14.0"
-notify = "6.0.0"
+notify-debouncer-full = { version = "0.2.0", default-features = false }
 serde_json = "1.0.96"
 dual_quaternion = "0.2.0"
 maths-rs = "0.2.3"
+serde = "1.0.164"
 
 [profile.dev]
 incremental = true

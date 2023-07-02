@@ -3,7 +3,7 @@
 //! It is used by the engine to create and manage resources, and to submit commands to the GPU.\
 //! It is the lowest level abstraction for performing graphics operations.
 
-use crate::vulkan_render_backend;
+use crate::{vulkan_render_backend, render_system::VertexElement};
 
 /// Enumerates the types of command buffers that can be created.
 pub enum CommandBufferType {
@@ -142,6 +142,9 @@ pub struct Allocation {
 	pub(crate) pointer: *mut u8,
 }
 
+unsafe impl Send for Allocation {}
+unsafe impl Sync for Allocation {}
+
 #[derive(Clone, Copy)]
 /// Stores the information of a memory region.
 pub struct Memory<'a> {
@@ -177,8 +180,10 @@ pub struct AttachmentInformation {
 pub struct TextureCopy {
 	/// The source texture.
 	pub source: Texture,
+	pub source_format: TextureFormats,
 	/// The destination texture.
 	pub destination: Texture,
+	pub destination_format: TextureFormats,
 	/// The images extent.
 	pub extent: crate::Extent,
 }
@@ -411,6 +416,31 @@ pub enum SwapchainStates {
 	Invalid,
 }
 
+pub struct BufferDescriptor {
+	pub buffer: Buffer,
+	pub offset: u64,
+	pub range: u64,
+	pub slot: u32,
+}
+
+pub enum PipelineConfigurationBlocks<'a> {
+	VertexInput {
+		vertex_elements: &'a [VertexElement]
+	},
+	InputAssembly {
+
+	},
+	RenderTargets {
+		targets: &'a [TextureView],
+	},
+	Shaders {
+		shaders: &'a [Shader],
+	},
+	Layout {
+		layout: &'a PipelineLayout,
+	}
+}
+
 /// The RenderBackend trait is the interface between the engine and the graphics API.
 /// It provides an abstraction layer for the graphics API(Vulkan, DX12, etc).
 /// It is used by the engine to create and manage resources, and to submit commands to the GPU.\
@@ -448,7 +478,7 @@ pub trait RenderBackend {
 	/// # Arguments
 	/// * `pipeline_layout` - The pipeline layout to use.
 	/// * `shaders` - The shaders to use.
-	fn create_pipeline(&self, pipeline_layout: &PipelineLayout, shaders: &[Shader]) -> Pipeline;
+	fn create_pipeline(&self, blocks: &[PipelineConfigurationBlocks]) -> Pipeline;
 
 	/// Allocates a region of memory.
 	/// 
@@ -479,6 +509,8 @@ pub trait RenderBackend {
 	/// # Returns
 	/// * `MemoryBackedResourceCreationResult<Buffer>` - The created buffer.
 	fn create_buffer(&self, size: usize, resource_uses: Uses) -> MemoryBackedResourceCreationResult<Buffer>;
+
+	fn get_buffer_address(&self, buffer: &Buffer) -> u64;
 
 	/// Creates a texture.
 	/// Textures are used to store images on the GPU.
@@ -659,14 +691,14 @@ pub trait RenderBackend {
 	/// # Arguments
 	/// * `command_buffer` - The command buffer to bind the vertex buffer to.
 	/// * `buffer` - The buffer to bind.
-	fn bind_vertex_buffer(&self, command_buffer: &CommandBuffer, buffer: &Buffer);
+	fn bind_vertex_buffers(&self, command_buffer: &CommandBuffer, buffer_descriptors: &[BufferDescriptor]);
 
 	/// Binds an index buffer to a command buffer.
 	/// 
 	/// # Arguments
 	/// * `command_buffer` - The command buffer to bind the index buffer to.
 	/// * `buffer` - The buffer to bind.
-	fn bind_index_buffer(&self, command_buffer: &CommandBuffer, buffer: &Buffer);
+	fn bind_index_buffer(&self, command_buffer: &CommandBuffer, buffer_descriptor: &BufferDescriptor);
 
 	/// Performs a draw call.
 	/// 

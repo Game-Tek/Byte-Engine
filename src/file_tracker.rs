@@ -3,13 +3,13 @@
 
 use std::path::Path;
 
-use notify::{Watcher, RecursiveMode};
+use notify_debouncer_full::{notify::{*}, new_debouncer, DebounceEventResult, FileIdMap, DebouncedEvent};
 use polodb_core;
 
 pub struct FileTracker {
 	db: polodb_core::Database,
-	watcher: notify::RecommendedWatcher,
-	rx: std::sync::mpsc::Receiver<std::result::Result<notify::Event, notify::Error>>,
+	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, FileIdMap>,
+	rx: std::sync::mpsc::Receiver<notify_debouncer_full::DebouncedEvent>,
 }
 
 impl FileTracker {
@@ -18,7 +18,22 @@ impl FileTracker {
 
 		let (tx, rx) = std::sync::mpsc::channel();
 
-		let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
+		let mut debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |event: DebounceEventResult| {
+			match event {
+				Ok(events) => {
+					for event in events {
+						tx.send(event).unwrap();
+					}
+				}
+				Err(errors) => {
+					for error in errors {
+						println!("Error: {:?}", error);
+					}
+				}
+			}
+		}).unwrap();
+
+		let mut watcher = debouncer.watcher();
 
 		let col = db.collection::<polodb_core::bson::Document>("files");
 
@@ -57,37 +72,39 @@ impl FileTracker {
 
 		FileTracker {
 			db,
-			watcher,
+			debouncer,
 			rx,
 		}
 	}
 
 	pub fn watch(&mut self, path: &Path) -> bool {
-		let result = self.watcher.watch(path, RecursiveMode::Recursive);
+		let result = self.debouncer.watcher().watch(path, RecursiveMode::Recursive);
 
 		if result.is_err() {
 			println!("Failed to watch path: {:?}", path);
 			return false;
 		}
 
-		let metadata = std::fs::metadata(path).unwrap();
-		let time = metadata.modified().unwrap();
-		let _m = time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+		if !path.ends_with("*") { // TODO. when watching a directory, the directory itself is not added to the database, the files inside are.
+			let metadata = std::fs::metadata(path).unwrap();
+			let time = metadata.modified().unwrap();
+			let _m = time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
 
-		let res = self.db.collection::<polodb_core::bson::Document>("files").find_one(polodb_core::bson::doc! { "path": path.to_str().unwrap(),}).unwrap();
+			let res = self.db.collection::<polodb_core::bson::Document>("files").find_one(polodb_core::bson::doc! { "path": path.to_str().unwrap(),}).unwrap();
 
-		if !res.is_some() {
-			self.db.collection("files").insert_one(polodb_core::bson::doc! {
-				"path": path.to_str().unwrap(),
-				"last_modified": _m as i64,
-			}).unwrap();
+			if !res.is_some() {
+				self.db.collection("files").insert_one(polodb_core::bson::doc! {
+					"path": path.to_str().unwrap(),
+					"last_modified": _m as i64,
+				}).unwrap();
+			}
 		}
 		
 		true
 	}
 
 	pub fn unwatch(&mut self, path: &Path) -> bool {
-		let result = self.watcher.unwatch(path);
+		let result = self.debouncer.watcher().unwatch(path);
 
 		if result.is_err() {
 			return false;
@@ -100,7 +117,7 @@ impl FileTracker {
 		true
 	}
 
-	pub fn poll(&self) -> () {
+	pub fn poll(&self) -> Vec<DebouncedEvent> {
 		let mut events = Vec::new();
 
 		loop {
@@ -112,5 +129,7 @@ impl FileTracker {
 				Err(_) => break,
 			}
 		}
+
+		events
 	}
 }

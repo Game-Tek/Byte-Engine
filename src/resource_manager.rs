@@ -5,14 +5,16 @@
 use std::{io::prelude::*};
 
 use polodb_core::bson::{Document, bson, doc};
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug)]
-struct Texture {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Texture {
+	pub compression: String,
 	pub extent: crate::Extent,
 }
 
-#[derive(Debug, PartialEq)]
-enum VertexSemantics {
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum VertexSemantics {
 	Position,
 	Normal,
 	Tangent,
@@ -21,8 +23,8 @@ enum VertexSemantics {
 	Color,
 }
 
-#[derive(Debug, PartialEq)]
-enum IntegralTypes {
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum IntegralTypes {
 	U8,
 	I8,
 	U16,
@@ -36,15 +38,15 @@ enum IntegralTypes {
 
 // https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
 
-#[derive(Debug)]
-struct VertexComponent {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
 	pub channel: u32,
 }
 
-#[derive(Debug)]
-struct Mesh {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Mesh {
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_components: Vec<VertexComponent>,
 	pub index_type: IntegralTypes,
@@ -52,10 +54,16 @@ struct Mesh {
 	pub index_count: u32,
 }
 
-#[derive(Debug)]
-enum Resource {
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ResourceContainer {
 	Texture(Texture),
 	Mesh(Mesh),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Resource {
+	id: String,
+	resource: ResourceContainer,
 }
 
 // fn qtangent(normal: Vector3<f32>, tangent: Vector3<f32>, bi_tangent: Vector3<f32>) -> Quaternion<f32> {
@@ -99,9 +107,8 @@ enum Resource {
 /// It also handles caching of resources.
 /// 
 /// When in a debug build it will lazily load resources from source and cache them.
-struct ResourceManager {
+pub struct ResourceManager {
 	db: polodb_core::Database,
-	collection: polodb_core::Collection<Document>,
 }
 
 fn extension_to_file_type(extension: &str) -> &str {
@@ -120,6 +127,7 @@ impl From<polodb_core::Error> for LoadResults {
 	}
 }
 
+#[derive(Debug)]
 enum LoadResults {
 	ResourceNotFound,
 	LoadFailed,
@@ -174,12 +182,26 @@ fn vec3f_from_json(field: &polodb_core::bson::Bson) -> Option<[f32; 3]> {
 	}
 }
 
+pub struct Request {
+	pub resource: ResourceContainer,
+	id: String,
+}
+
 impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new() -> Self {
 		std::fs::create_dir_all("assets").unwrap();
 
-		let db_res = polodb_core::Database::open_file("assets/resources.db");
+		let mut args = std::env::args();
+
+		let memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
+
+		let db_res = if !memory_only {
+			polodb_core::Database::open_file("assets/resources.db")
+		} else {
+			println!("\x1B[WARNING]Using memory database instead of file database.");
+			polodb_core::Database::open_memory()
+		};
 
 		let db = match db_res {
 			Ok(db) => db,
@@ -204,145 +226,25 @@ impl ResourceManager {
 			}
 		};
 
-		let collection = db.collection::<Document>("resources");
-
 		ResourceManager {
 			db,
-			collection,
 		}
 	}
 
-	/// Tries to read a resource from the cache.\
-	/// If the resource is not in the cache, it will return an error.
-	/// If the resource is in the cache, it will return the resource and the bytes associated to it.\
-	/// If the resource is in cache but it's data cannot be parsed, it will return an error. (This is useful if the data layout changed and you want to trigger a reload from source).
-	fn load_from_cache(&mut self, path: &str) -> Result<(Resource, Vec<u8>), LoadResults> {
-		let result = self.collection.find_one(doc!{ "id": path })?;
-
-		if let Some(resource) = result {
-			let native_db_resource_id =	if let Some(polodb_core::bson::Bson::ObjectId(id)) = resource.get("_id") {
-				id
-			} else {
-				return Err(LoadResults::LoadFailed);
-			};
-
-			let native_db_resource_id = native_db_resource_id.to_string();
-
-			let mut file = match std::fs::File::open("assets/".to_string() + native_db_resource_id.as_str()) {
-				Ok(it) => it,
-				Err(reason) => {
-					match reason { // TODO: handle specific errors
-						_ => return Err(LoadResults::CacheFileNotFound { document: resource }),
-					}
-				}
-			};
-
-			let mut bytes = Vec::new();
-
-			let res = file.read_to_end(&mut bytes);
-
-			if res.is_err() { return Err(LoadResults::LoadFailed); }
-
-			match resource.get("type").unwrap().as_str().unwrap() {
-				"texture" => {
-					let texture_object = if let Some(polodb_core::bson::Bson::Document(texture_object)) = resource.get("texture") {
-						texture_object
-					} else {
-						return Err(LoadResults::LoadFailed);
-					};
-
-					let _ = texture_object.get("compression").unwrap().as_str().unwrap();
-
-					if let Some(extent) = extent_from_json(&texture_object.get("extent").unwrap()) {
-						return Ok((Resource::Texture(Texture { extent }), bytes))
-					} else {
-						return Err(LoadResults::LoadFailed);
-					}
-				},
-				"mesh" => {
-					let bounding_box = if let Some(polodb_core::bson::Bson::Document(bbox)) = resource.get("bounding_box"){
-						let min = if let Some(v) = bbox.get("min") {
-							vec3f_from_json(v)
-						} else {
-							return Err(LoadResults::LoadFailed);
-						};
-
-						let max = if let Some(v) = bbox.get("max") {
-							vec3f_from_json(v)
-						} else {
-							return Err(LoadResults::LoadFailed);
-						};
-
-						[min.unwrap(), max.unwrap()]
-					} else {
-						return Err(LoadResults::LoadFailed);
-					};
-
-					let vertex_components = if let Some(vertex_components_document) = resource.get("vertex_components") {
-						let mut vertex_components = Vec::new();
-						for vertex_component in vertex_components_document.as_array().unwrap() {
-							let vertex_component = vertex_component.as_document().unwrap();
-							vertex_components.push(VertexComponent {
-								semantic: match vertex_component.get("semantic").unwrap().as_str().unwrap() {
-									"Position" => VertexSemantics::Position,
-									"Normal" => VertexSemantics::Normal,
-									"Tangent" => VertexSemantics::Tangent,
-									"BiTangent" => VertexSemantics::BiTangent,
-									"UV" => VertexSemantics::Uv,
-									"Color" => VertexSemantics::Color,
-									_ => return Err(LoadResults::LoadFailed),
-								},
-								format: vertex_component.get("format").unwrap().as_str().unwrap().to_string(),
-								channel: vertex_component.get("channel").unwrap().as_i32().unwrap() as u32,
-							});
-						}
-						vertex_components
-					} else {
-						return Err(LoadResults::LoadFailed);
-					};
-
-					let vertex_count = if let Some(polodb_core::bson::Bson::Int32(vertex_count)) = resource.get("vertex_count") {
-						*vertex_count as u32
-					} else {
-						return Err(LoadResults::LoadFailed);
-					};
-
-					let index_count = if let Some(polodb_core::bson::Bson::Int32(index_count)) = resource.get("index_count") {
-						*index_count as u32
-					} else {
-						return Err(LoadResults::LoadFailed);
-					};
-
-					let index_type = if let Some(polodb_core::bson::Bson::String(index_type)) = resource.get("index_type") {
-						match index_type.as_str() {
-							"U8" => IntegralTypes::U8,
-							"U16" => IntegralTypes::U16,
-							"U32" => IntegralTypes::U32,
-							_ => return Err(LoadResults::LoadFailed),
-						}
-					} else {
-						return Err(LoadResults::LoadFailed);
-					};
-
-					return Ok((Resource::Mesh(Mesh { bounding_box, vertex_components, vertex_count, index_count, index_type }), bytes))
-				},
-				_ => {
-					return Err(LoadResults::UnsuportedResourceType);
-				}
-			}
-		}
-
-		return Err(LoadResults::ResourceNotFound);
+	fn resolve_resource_path(&mut self, path: &str) -> String {
+		return "resources/".to_string() + path;
 	}
 
-	/// Tries to load a resource from source.\
-	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
-	fn load_from_source(&mut self, path: &str) -> Option<(Resource, Vec<u8>)> {
-		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") {
-			"network"
-		} else {
-			"local"
-		};
+	fn get_resource_from_cache(&mut self, path: &str) -> Option<Resource> {
+		self.db.collection::<Resource>("resources").find_one(doc!{ "id": path }).unwrap()
+	}
+
+	fn get_document_from_cache(&mut self, path: &str) -> Option<Document> {
+		self.db.collection::<Document>("resources").find_one(doc!{ "id": path }).unwrap()
+	}
+
+	fn load_resource_into_cache(&mut self, path: &str) -> Option<Resource> {
+		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };
 
 		// Bytes to be stored associated to resource
 		let mut bytes;
@@ -351,11 +253,7 @@ impl ResourceManager {
 
 		match resource_origin {
 			"network" => {
-				let request = ureq::get(path).call();
-
-				if let Err(_) = request { return None; }
-
-				let request = request.unwrap();
+				let request = if let Ok(request) = ureq::get(path).call() { request } else { return None; };
 
 				let content_type = request.header("content-type").unwrap();
 
@@ -378,7 +276,8 @@ impl ResourceManager {
 				
 			},
 			"local" => {
-				let mut file = std::fs::File::open(path).unwrap();
+				let resolved_path = self.resolve_resource_path(path);
+				let mut file = std::fs::File::open(resolved_path).unwrap();
 				let extension = &path[(path.rfind(".").unwrap() + 1)..];
 				resource_type = extension_to_file_type(extension);
 				format = extension;
@@ -395,7 +294,7 @@ impl ResourceManager {
 			}
 		}
 
-		let resource: Resource;
+		let resource: ResourceContainer;
 
 		match format {
 			"png" => {
@@ -407,7 +306,7 @@ impl ResourceManager {
 
 				let extent = crate::Extent { width: info.width, height: info.height, depth: 1, };
 
-				resource = Resource::Texture(Texture { extent });
+				resource = ResourceContainer::Texture(Texture { compression: "".to_string(), extent });
 
 				let mut buf: Vec<u8> = Vec::with_capacity(extent.width as usize * extent.height as usize * 4);
 
@@ -496,22 +395,15 @@ impl ResourceManager {
 
 					bytes = buf;
 	
-					Resource::Mesh(Mesh { bounding_box, vertex_components, index_type, vertex_count, index_count })
+					ResourceContainer::Mesh(Mesh { bounding_box, vertex_components, index_type, vertex_count, index_count })
 				};
 			}
 			_ => { return None; }
 		}
 
-		let mut document = polodb_core::bson::doc! {
-			"id": path,
-			"type": resource_type,
-		};
-
 		match resource_type {
 			"texture" => {
-				let extent = if let Resource::Texture(texture) = &resource { texture.extent } else { return None; };
-
-				document.insert("texture", bson!({ "compression": "BC7", "extent": [extent.width, extent.height, extent.depth] }));
+				let extent = if let ResourceContainer::Texture(texture) = &resource { texture.extent } else { return None; };
 
 				assert_eq!(extent.depth, 1); // TODO: support 3D textures
 
@@ -527,49 +419,18 @@ impl ResourceManager {
 				bytes = intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface);
 			},
 			"mesh" => {
-				let mesh = if let Resource::Mesh(mesh) = &resource { mesh } else { return None; };
-
-				let bounding_box = bson!({
-					"min": [mesh.bounding_box[0][0], mesh.bounding_box[0][1], mesh.bounding_box[0][2]],
-					"max": [mesh.bounding_box[1][0], mesh.bounding_box[1][1], mesh.bounding_box[1][2]],
-				});
-
-				document.insert("bounding_box", bounding_box);
-				document.insert("vertex_count", mesh.vertex_count);
-				document.insert("index_count", mesh.index_count);
-
-				let comps = mesh.vertex_components.iter().map(
-					|vertex_component| {
-						bson!({
-							"semantic": match vertex_component.semantic {
-								VertexSemantics::Position => "Position",
-								VertexSemantics::Normal => "Normal",
-								VertexSemantics::Tangent => "Tangent",
-								VertexSemantics::BiTangent => "BiTangent",
-								VertexSemantics::Uv => "UV",
-								VertexSemantics::Color => "Color",
-							},
-							"format": vertex_component.format.as_str(),
-							"channel": vertex_component.channel,
-						})
-					}
-				).collect::<Vec<_>>();
-
-				document.insert("vertex_components", comps);
-
-				document.insert("index_type", match mesh.index_type {
-					IntegralTypes::U8 => "U8",
-					IntegralTypes::U16 => "U16",
-					IntegralTypes::U32 => "U32",
-					_ => return None,
-				});
+				let mesh = if let ResourceContainer::Mesh(mesh) = &resource { mesh } else { return None; };
 			}
 			_ => { return None; }
 		}
 
-		let insert_result = self.collection.insert_one(document);
+		let resource = Resource{ id: path.to_string(), resource };
 
-		let insert_result = insert_result.unwrap();
+		let insert_result = if let Ok(insert_result) = self.db.collection::<Resource>("resources").insert_one(&resource) {
+			insert_result
+		} else {
+			return None;
+		};
 
 		let resource_id = insert_result.inserted_id.as_object_id().unwrap();
 
@@ -580,46 +441,91 @@ impl ResourceManager {
 
 		file.write_all(bytes.as_slice()).unwrap();
 
-		return Some((resource, bytes));
+		return Some(resource);
+	}
+
+	fn load_data_from_cache(&mut self, path: &str) -> Result<Vec<u8>, LoadResults> {
+		let result = self.db.collection::<Document>("resources").find_one(doc!{ "id": path })?;
+
+		if let Some(resource) = result {
+			let native_db_resource_id =	if let Some(polodb_core::bson::Bson::ObjectId(id)) = resource.get("_id") {
+				id
+			} else {
+				return Err(LoadResults::LoadFailed);
+			};
+
+			let native_db_resource_id = native_db_resource_id.to_string();
+
+			let mut file = match std::fs::File::open("assets/".to_string() + native_db_resource_id.as_str()) {
+				Ok(it) => it,
+				Err(reason) => {
+					match reason { // TODO: handle specific errors
+						_ => return Err(LoadResults::CacheFileNotFound { document: resource }),
+					}
+				}
+			};
+
+			let mut bytes = Vec::new();
+
+			let res = file.read_to_end(&mut bytes);
+
+			if res.is_err() { return Err(LoadResults::LoadFailed); }
+
+			return Ok(bytes);
+		}
+
+		return Err(LoadResults::ResourceNotFound);
 	}
 
 	/// Tries to load a resource from cache or source.\
 	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
 	/// If the resource is in cache but it's data cannot be parsed, it will return None.
-	pub fn get(&mut self, path: &str) -> Option<(Resource, Vec<u8>)> {
-		let load_result = self.load_from_cache(path);
+	pub fn get(&mut self, path: &str) -> Option<(ResourceContainer, Vec<u8>)> {
+		let doc = self.get_resource_from_cache(path);
 
-		match load_result {
-			Ok(load_result) => return Some(load_result),
-			Err(LoadResults::ResourceNotFound) => return self.load_from_source(path),
-			Err(LoadResults::CacheFileNotFound { document }) => {
-				println!("\x1B[WARNING]Resource load failed, cache file not found. Could have been deleted, renamed, or moved. Loading from source.");
-
-				let _result = self.collection.delete_many(doc!{ "id": path }); // Delete all documents that point to non existent file
-
-				return self.load_from_source(path) // If load from cache fails, try loading from source. Can happen mostly if resource fields/layout changed or if data was corrupted during debugging.
+		let resource = if let Some(r) = doc {
+			r
+		} else {
+			if let Some(r) = self.load_resource_into_cache(path) {
+				r
+			} else {
+				return None;
 			}
-			Err(LoadResults::LoadFailed) => {
-				println!("\x1B[WARNING]Resource load failed, trying to load from source.");
-				let result = self.collection.find_one(doc!{ "id": path }).unwrap().unwrap();
-				let file_deletion_result = std::fs::remove_file(result.get("_id").unwrap().as_object_id().unwrap().to_string());
+		};
 
-				if let Err(_) = file_deletion_result {
-					println!("\x1B[WARNING]Could not delete resource file! This may leave a dangling file in the resources folder.");
-				}
+		let data = self.load_data_from_cache(path);
 
-				let result = self.collection.delete_many(doc!{ "id": path });
-
-				if let Ok(a) = result {
-					if a.deleted_count != 1 {
-						println!("\x1B[WARNING]Could not delete resource from database! This may leave a dangling file in the resources folder.");
-					}
-				}
-
-				return self.load_from_source(path) // If load from cache fails, try loading from source. Can happen mostly if resource fields/layout changed or if data was corrupted during debugging.
-			}
-			Err(LoadResults::UnsuportedResourceType) => return None,
+		if data.is_err() {
+			return None;
 		}
+
+		let data = data.unwrap();
+
+		return Some((resource.resource, data));
+	}
+
+	pub fn get_resource_info(&mut self, path: &str) -> Option<Request> {
+		let doc = self.get_resource_from_cache(path);
+
+		let resource = if doc.is_none() {
+			if let Some(r) = self.load_resource_into_cache(path) {
+				r
+			} else {
+				return None;
+			}
+		} else {
+			return None;
+		};
+
+		return Some(Request { resource: resource.resource, id: path.to_string() });
+	}
+
+	pub fn load_resource_into_buffer<'a>(&mut self, request: Request, buffer: &mut [u8]) {
+		let doc = self.get_document_from_cache(request.id.as_str()).unwrap();
+
+		let mut file = std::fs::File::open("assets/".to_string() + doc.get("_id").unwrap().as_object_id().unwrap().to_string().as_str()).unwrap();
+
+		file.read(buffer).unwrap();
 	}
 }
 
@@ -637,32 +543,35 @@ mod tests {
 	fn load_net_image() {
 		let mut resource_manager = ResourceManager::new();
 
+		// Test loading from source
+
 		let resource_result = resource_manager.get("https://camo.githubusercontent.com/dca6cdb597abc9c7ff4a0e066e6c35eb70b187683fbff2208d0440b4ef6c5a30/68747470733a2f2f692e696d6775722e636f6d2f56525261434f702e706e67");
 
 		assert!(resource_result.is_some());
 
 		let resource = resource_result.unwrap();
 
-		assert!(matches!(resource.0, Resource::Texture(_)));
+		assert!(matches!(resource.0, ResourceContainer::Texture(_)));
 
 		let texture_info = match &resource.0 {
-			Resource::Texture(texture) => texture,
+			ResourceContainer::Texture(texture) => texture,
 			_ => panic!("")
 		};
 
 		assert_eq!(texture_info.extent, crate::Extent{ width: 4096, height: 1024, depth: 1 });
 
-		//let bytes = resource_manager.get("https://upload.wikimedia.org/wikipedia/commons/6/6a/PNG_Test.png");
+		// Test loading from cache
+
 		let resource_result = resource_manager.get("https://camo.githubusercontent.com/dca6cdb597abc9c7ff4a0e066e6c35eb70b187683fbff2208d0440b4ef6c5a30/68747470733a2f2f692e696d6775722e636f6d2f56525261434f702e706e67");
 
 		assert!(resource_result.is_some());
 
 		let resource = resource_result.unwrap();
 
-		assert!(matches!(resource.0, Resource::Texture(_)));
+		assert!(matches!(resource.0, ResourceContainer::Texture(_)));
 
 		let texture_info = match &resource.0 {
-			Resource::Texture(texture) => texture,
+			ResourceContainer::Texture(texture) => texture,
 			_ => panic!("")
 		};
 
@@ -674,16 +583,16 @@ mod tests {
 	fn load_local_image() {
 		let mut resource_manager = ResourceManager::new();
 
-		let resource_result = resource_manager.get("resources/test.png");
+		let resource_result = resource_manager.get("test.png");
 
 		assert!(resource_result.is_some());
 
 		let resource = resource_result.unwrap();
 
-		assert!(matches!(resource.0, Resource::Texture(_)));
+		assert!(matches!(resource.0, ResourceContainer::Texture(_)));
 
 		let texture_info = match &resource.0 {
-			Resource::Texture(texture) => texture,
+			ResourceContainer::Texture(texture) => texture,
 			_ => panic!("")
 		};
 
@@ -694,13 +603,15 @@ mod tests {
 	fn load_local_mesh() {
 		let mut resource_manager = ResourceManager::new();
 
-		let resource_result = resource_manager.get("resources/Box.gltf");
+		// Test loading from source
+
+		let resource_result = resource_manager.get("Box.gltf");
 
 		assert!(resource_result.is_some());
 
 		let resource = resource_result.unwrap();
 
-		assert!(matches!(resource.0, Resource::Mesh(_)));
+		assert!(matches!(resource.0, ResourceContainer::Mesh(_)));
 
 		dbg!(&resource.0);
 
@@ -708,7 +619,7 @@ mod tests {
 
 		assert_eq!(bytes.len(), (24 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
 
-		if let Resource::Mesh(mesh) = &resource.0 {
+		if let ResourceContainer::Mesh(mesh) = &resource.0 {
 			assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
 			assert_eq!(mesh.vertex_count, 24);
 			assert_eq!(mesh.index_count, 36);
@@ -722,19 +633,21 @@ mod tests {
 			assert_eq!(mesh.vertex_components[1].channel, 1);
 		}
 
-		let resource_result = resource_manager.get("resources/Box.gltf");
+		// Test loading from cache
+
+		let resource_result = resource_manager.get("Box.gltf");
 
 		assert!(resource_result.is_some());
 
 		let resource = resource_result.unwrap();
 
-		assert!(matches!(resource.0, Resource::Mesh(_)));
+		assert!(matches!(resource.0, ResourceContainer::Mesh(_)));
 
 		let bytes = &resource.1;
 
 		assert_eq!(bytes.len(), (24 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
 
-		if let Resource::Mesh(mesh) = &resource.0 {
+		if let ResourceContainer::Mesh(mesh) = &resource.0 {
 			assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
 			assert_eq!(mesh.vertex_count, 24);
 			assert_eq!(mesh.index_count, 36);

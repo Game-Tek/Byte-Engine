@@ -2,7 +2,7 @@
 
 use ash::{vk, Entry};
 
-use crate::render_backend;
+use crate::{render_backend, render_system};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Surface {
@@ -243,6 +243,48 @@ impl Into<vk::ShaderStageFlags> for render_backend::Stages {
 		}
 
 		shader_stage_flags
+	}
+}
+
+impl Into<vk::Format> for render_system::DataTypes {
+	fn into(self) -> vk::Format {
+		match self {
+			render_system::DataTypes::Float => vk::Format::R32_SFLOAT,
+			render_system::DataTypes::Float2 => vk::Format::R32G32_SFLOAT,
+			render_system::DataTypes::Float3 => vk::Format::R32G32B32_SFLOAT,
+			render_system::DataTypes::Float4 => vk::Format::R32G32B32A32_SFLOAT,
+			render_system::DataTypes::Int => vk::Format::R32_SINT,
+			render_system::DataTypes::Int2 => vk::Format::R32G32_SINT,
+			render_system::DataTypes::Int3 => vk::Format::R32G32B32_SINT,
+			render_system::DataTypes::Int4 => vk::Format::R32G32B32A32_SINT,
+			render_system::DataTypes::UInt => vk::Format::R32_UINT,
+			render_system::DataTypes::UInt2 => vk::Format::R32G32_UINT,
+			render_system::DataTypes::UInt3 => vk::Format::R32G32B32_UINT,
+			render_system::DataTypes::UInt4 => vk::Format::R32G32B32A32_UINT,
+		}
+	}
+}
+
+trait Size {
+	fn size(&self) -> usize;
+}
+
+impl Size for render_system::DataTypes {
+	fn size(&self) -> usize {
+		match self {
+			render_system::DataTypes::Float => std::mem::size_of::<f32>(),
+			render_system::DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
+			render_system::DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
+			render_system::DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
+			render_system::DataTypes::Int => std::mem::size_of::<i32>(),
+			render_system::DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
+			render_system::DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
+			render_system::DataTypes::Int4 => std::mem::size_of::<i32>() * 4,
+			render_system::DataTypes::UInt => std::mem::size_of::<u32>(),
+			render_system::DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
+			render_system::DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
+			render_system::DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
+		}
 	}
 }
 
@@ -572,17 +614,112 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		}
 	}
 
-	fn create_pipeline(&self, pipeline_layout: &render_backend::PipelineLayout, shaders: &[render_backend::Shader]) -> crate::render_backend::Pipeline {
-		let stages = shaders
-			.iter()
-			.map(|shader| {
-				vk::PipelineShaderStageCreateInfo::default()
-					.stage(unsafe { shader.vulkan_shader.stage })
-					.module(unsafe { shader.vulkan_shader.shader_module })
-					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
-					/* .build() */
-			})
-			.collect::<Vec<_>>();
+	fn create_pipeline(&self, blocks: &[render_backend::PipelineConfigurationBlocks]) -> render_backend::Pipeline {
+		/// This function calls itself recursively to build the pipeline the pipeline states.
+		/// This is done because this way we can "dynamically" allocate on the stack the needed structs because the recursive call keep them alive.
+		fn pipu<'a>(vulkan_render_backend: &VulkanRenderBackend, pipeline_create_info: vk::GraphicsPipelineCreateInfo<'a>, mut block_iterator: std::slice::Iter<'a, render_backend::PipelineConfigurationBlocks>) -> vk::Pipeline {
+			if let Some(block) = block_iterator.next() {
+				match block {
+					render_backend::PipelineConfigurationBlocks::VertexInput { vertex_elements } => {
+						let mut vertex_input_attribute_descriptions = vec![];
+	
+						let mut offset = 0;
+	
+						for (i, vertex_element) in vertex_elements.iter().enumerate() {
+							let ve = vk::VertexInputAttributeDescription::default()
+								.binding(0)
+								.location(i as u32)
+								.format(vertex_element.format.into())
+								.offset(offset);
+	
+							vertex_input_attribute_descriptions.push(ve);
+	
+							offset += vertex_element.format.size() as u32;
+						}
+	
+						let vertex_binding_descriptions = [
+							vk::VertexInputBindingDescription::default()
+								.binding(0)
+								.stride(offset)
+								.input_rate(vk::VertexInputRate::VERTEX)
+						];
+	
+						let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
+							.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
+							.vertex_binding_descriptions(&vertex_binding_descriptions);
+
+						let pipeline_create_info = pipeline_create_info.vertex_input_state(&vertex_input_state);
+
+						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+					}
+					render_backend::PipelineConfigurationBlocks::InputAssembly {  } => {
+						let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
+							.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+							.primitive_restart_enable(false);
+
+						let pipeline_create_info = pipeline_create_info.input_assembly_state(&input_assembly_state);
+
+						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+					}
+					render_backend::PipelineConfigurationBlocks::RenderTargets { targets } => {
+						let attachments = targets.iter().map(|_| {
+							vk::PipelineColorBlendAttachmentState::default()
+								.color_write_mask(vk::ColorComponentFlags::RGBA)
+								.blend_enable(false)
+								.src_color_blend_factor(vk::BlendFactor::ONE)
+								.dst_color_blend_factor(vk::BlendFactor::ZERO)
+								.color_blend_op(vk::BlendOp::ADD)
+								.src_alpha_blend_factor(vk::BlendFactor::ONE)
+								.dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+								.alpha_blend_op(vk::BlendOp::ADD)
+						}).collect::<Vec<_>>();
+	
+						let color_blend_state = &vk::PipelineColorBlendStateCreateInfo::default()
+							.logic_op_enable(false)
+							.logic_op(vk::LogicOp::COPY)
+							.attachments(&attachments)
+							.blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+						let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+							.color_attachment_formats(&[vk::Format::R8G8B8A8_UNORM])
+							.depth_attachment_format(vk::Format::UNDEFINED);
+
+						let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info).color_blend_state(&color_blend_state);
+
+						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+					}
+					render_backend::PipelineConfigurationBlocks::Shaders { shaders } => {
+						let stages = shaders
+							.iter()
+							.map(|shader| {
+								vk::PipelineShaderStageCreateInfo::default()
+									.stage(unsafe { shader.vulkan_shader.stage })
+									.module(unsafe { shader.vulkan_shader.shader_module })
+									.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+									/* .build() */
+							})
+							.collect::<Vec<_>>();
+
+						let pipeline_create_info = pipeline_create_info.stages(&stages);
+
+						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+					}
+					render_backend::PipelineConfigurationBlocks::Layout { layout } => {
+						let pipeline_layout = unsafe { layout.vulkan_pipeline_layout.pipeline_layout };
+
+						let pipeline_create_info = pipeline_create_info.layout(pipeline_layout);
+
+						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+					}
+				}
+			} else {
+				let pipeline_create_infos = [pipeline_create_info];
+
+				let pipelines = unsafe { vulkan_render_backend.device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None).expect("No pipeline") };
+
+				return pipelines[0];
+			}
+		}
 
 		let viewports = [vk::Viewport::default()
 			.x(0.0)
@@ -603,85 +740,8 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.scissors(&scissors)
 			/* .build() */;
 
-		let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-			.color_attachment_formats(&[vk::Format::R8G8B8A8_UNORM])
-			.depth_attachment_format(vk::Format::UNDEFINED)
-			/* .build() */;
-
 		let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-			.dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
-			/* .build() */;
-
-		let attachments = [
-			vk::PipelineColorBlendAttachmentState::default()
-				.color_write_mask(vk::ColorComponentFlags::RGBA)
-				.blend_enable(false)
-				.src_color_blend_factor(vk::BlendFactor::ONE)
-				.dst_color_blend_factor(vk::BlendFactor::ZERO)
-				.color_blend_op(vk::BlendOp::ADD)
-				.src_alpha_blend_factor(vk::BlendFactor::ONE)
-				.dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-				.alpha_blend_op(vk::BlendOp::ADD)
-				/* .build() */,
-		];
-
-		let color_blend_state = &vk::PipelineColorBlendStateCreateInfo::default()
-			.logic_op_enable(false)
-			.logic_op(vk::LogicOp::COPY)
-			.attachments(&attachments)
-			.blend_constants([0.0, 0.0, 0.0, 0.0])
-			/* .build() */;
-
-		let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
-			.sample_shading_enable(false)
-			.rasterization_samples(vk::SampleCountFlags::TYPE_1)
-			.min_sample_shading(1.0)
-			.alpha_to_coverage_enable(false)
-			.alpha_to_one_enable(false)
-			/* .build() */;
-
-		let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-			.depth_test_enable(false)
-			.depth_write_enable(false)
-			.depth_compare_op(vk::CompareOp::ALWAYS)
-			.depth_bounds_test_enable(false)
-			.stencil_test_enable(false)
-			.front(vk::StencilOpState::default()/* .build() */)
-			.back(vk::StencilOpState::default()/* .build() */)
-			/* .build() */;
-
-		let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
-			.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-			.primitive_restart_enable(false)
-			/* .build() */;
-
-		let vertex_input_attribute_descriptions = [
-			vk::VertexInputAttributeDescription::default()
-				.binding(0)
-				.location(0)
-				.format(vk::Format::R32G32B32_SFLOAT)
-				.offset(0)
-				/* .build() */,
-			vk::VertexInputAttributeDescription::default()
-				.binding(0)
-				.location(1)
-				.format(vk::Format::R32G32B32A32_SFLOAT)
-				.offset(12)
-				/* .build() */,
-		];
-
-		let vertex_binding_descriptions = [
-			vk::VertexInputBindingDescription::default()
-				.binding(0)
-				.stride(28)
-				.input_rate(vk::VertexInputRate::VERTEX)
-				/* .build() */,
-		];
-
-		let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
-			.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
-			.vertex_binding_descriptions(&vertex_binding_descriptions)
-			/* .build() */;
+			.dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
 
 		let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
 			.depth_clamp_enable(false)
@@ -695,29 +755,43 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.depth_bias_slope_factor(0.0)
 			.line_width(1.0);
 
-		let mut pipeline_create_infos = [vk::GraphicsPipelineCreateInfo::default()
-			.push_next(&mut rendering_info)
-			.layout(unsafe { pipeline_layout.vulkan_pipeline_layout.pipeline_layout })
+		let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
+			.sample_shading_enable(false)
+			.rasterization_samples(vk::SampleCountFlags::TYPE_1)
+			.min_sample_shading(1.0)
+			.alpha_to_coverage_enable(false)
+			.alpha_to_one_enable(false)
+			/* .build() */;
+
+		let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
+				.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+				.primitive_restart_enable(false);
+
+		let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
 			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering
-			.color_blend_state(&color_blend_state)
-			.depth_stencil_state(&depth_stencil_state)
 			.dynamic_state(&dynamic_state)
-			.input_assembly_state(&input_assembly_state)
-			.vertex_input_state(&vertex_input_state)
-			.rasterization_state(&rasterization_state)
 			.viewport_state(&viewport_state)
+			.rasterization_state(&rasterization_state)
 			.multisample_state(&multisample_state)
-			.stages(&stages)
-			/* .build() */
-		];
+			.input_assembly_state(&input_assembly_state)
+			;
 
-		pipeline_create_infos[0].p_viewport_state = &viewport_state;
 
-		let pipeline = unsafe { self.device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None).expect("No pipeline") };
+		let pipeline = pipu(self, pipeline_create_info, blocks.iter());
+
+		// let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+		// 	.depth_test_enable(false)
+		// 	.depth_write_enable(false)
+		// 	.depth_compare_op(vk::CompareOp::ALWAYS)
+		// 	.depth_bounds_test_enable(false)
+		// 	.stencil_test_enable(false)
+		// 	.front(vk::StencilOpState::default()/* .build() */)
+		// 	.back(vk::StencilOpState::default()/* .build() */)
+		// 	/* .build() */;
 
 		crate::render_backend::Pipeline {
 			vulkan_pipeline: Pipeline {
-				pipeline: pipeline[0],
+				pipeline: pipeline,
 			},
 		}
 	}
@@ -805,6 +879,10 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			size: memory_requirements.size as usize,
 			alignment: memory_requirements.alignment as usize,
 		}
+	}
+
+	fn get_buffer_address(&self, buffer: &render_backend::Buffer) -> u64 {
+		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.vulkan_buffer.buffer)) }
 	}
 
 	fn create_texture(&self, extent: crate::Extent, format: crate::render_backend::TextureFormats, resource_uses: render_backend::Uses, device_accesses: crate::render_system::DeviceAccesses, _access_policies: crate::render_backend::AccessPolicies, mip_levels: u32) -> crate::render_backend::MemoryBackedResourceCreationResult<crate::render_backend::Texture> {
@@ -1138,12 +1216,15 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		unsafe { self.device.cmd_bind_descriptor_sets(command_buffer.vulkan_command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline_layout.vulkan_pipeline_layout.pipeline_layout, index, &[descriptor_set.vulkan_descriptor_set.descriptor_set], &[]); }
 	}
 
-	fn bind_vertex_buffer(&self, command_buffer: &crate::render_backend::CommandBuffer, buffer: &crate::render_backend::Buffer) {
-		unsafe { self.device.cmd_bind_vertex_buffers(command_buffer.vulkan_command_buffer.command_buffer, 0, &[buffer.vulkan_buffer.buffer], &[0 as u64]); }
+	fn bind_vertex_buffers(&self, command_buffer: &crate::render_backend::CommandBuffer, buffer_descriptors: &[crate::render_backend::BufferDescriptor]) {
+		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| unsafe { buffer_descriptor.buffer.vulkan_buffer.buffer }).collect::<Vec<_>>();
+		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset as u64).collect::<Vec<_>>();
+		// TOOD: implent slot splitting
+		unsafe { self.device.cmd_bind_vertex_buffers(command_buffer.vulkan_command_buffer.command_buffer, 0, &buffers, &offsets); }
 	}
 
-	fn bind_index_buffer(&self, command_buffer: &crate::render_backend::CommandBuffer, buffer: &crate::render_backend::Buffer) {
-		unsafe { self.device.cmd_bind_index_buffer(command_buffer.vulkan_command_buffer.command_buffer, buffer.vulkan_buffer.buffer, 0, vk::IndexType::UINT32); }
+	fn bind_index_buffer(&self, command_buffer: &crate::render_backend::CommandBuffer, buffer_descriptor: &crate::render_backend::BufferDescriptor) {
+		unsafe { self.device.cmd_bind_index_buffer(command_buffer.vulkan_command_buffer.command_buffer, buffer_descriptor.buffer.vulkan_buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT32); }
 	}
 
 	fn draw_indexed(&self, command_buffer: &crate::render_backend::CommandBuffer, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
@@ -1211,38 +1292,73 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 	}
 
 	fn copy_textures(&self, command_buffer: &crate::render_backend::CommandBuffer, copies: &[crate::render_backend::TextureCopy]) {
-		let regions = copies.iter().map(|copy| {
-			vk::ImageCopy2::default()
-				.src_subresource(vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1)
-					/* .build() */
-				)
-				.src_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-				.dst_subresource(vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1)
-					/* .build() */
-				)
-				.dst_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-				.extent(vk::Extent3D::default().width(copy.extent.width).height(copy.extent.height).depth(1)/* .build() */)
-				/* .build() */
-		}).collect::<Vec<_>>();
-
 		for copy in copies {
-			let copy_image_info = vk::CopyImageInfo2::default()
-				.src_image(unsafe { copy.source.vulkan_texture.image })
-				.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-				.dst_image(unsafe { copy.destination.vulkan_texture.image })
-				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.regions(&regions)
-				/* .build() */;
+			if copy.source_format == copy.destination_format {
+				let image_copies = [vk::ImageCopy2::default()
+					.src_subresource(vk::ImageSubresourceLayers::default()
+						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.mip_level(0)
+						.base_array_layer(0)
+						.layer_count(1)
+						/* .build() */
+					)
+					.src_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
+					.dst_subresource(vk::ImageSubresourceLayers::default()
+						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.mip_level(0)
+						.base_array_layer(0)
+						.layer_count(1)
+						/* .build() */
+					)
+					.dst_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
+					.extent(vk::Extent3D::default().width(copy.extent.width).height(copy.extent.height).depth(1)/* .build() */)
+				];
 
-			unsafe { self.device.cmd_copy_image2(command_buffer.vulkan_command_buffer.command_buffer, &copy_image_info); }
+				let copy_image_info = vk::CopyImageInfo2::default()
+					.src_image(unsafe { copy.source.vulkan_texture.image })
+					.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+					.dst_image(unsafe { copy.destination.vulkan_texture.image })
+					.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+					.regions(&image_copies);
+					/* .build() */
+
+				unsafe { self.device.cmd_copy_image2(command_buffer.vulkan_command_buffer.command_buffer, &copy_image_info); }
+			} else {
+				let regions = [
+					vk::ImageBlit2::default()
+					.src_offsets([
+						vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
+						vk::Offset3D::default().x(copy.extent.width as i32).y(copy.extent.height as i32).z(1)/* .build() */,
+					])
+					.src_subresource(vk::ImageSubresourceLayers::default()
+						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.mip_level(0)
+						.base_array_layer(0)
+						.layer_count(1)
+						/* .build() */
+					)
+					.dst_offsets([
+						vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
+						vk::Offset3D::default().x(copy.extent.width as i32).y(copy.extent.height as i32).z(1)/* .build() */,
+					])
+					.dst_subresource(vk::ImageSubresourceLayers::default()
+						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.mip_level(0)
+						.base_array_layer(0)
+						.layer_count(1)
+						/* .build() */
+					)
+				];
+
+				let blit_image_info = vk::BlitImageInfo2::default()
+					.src_image(unsafe { copy.source.vulkan_texture.image })
+					.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+					.dst_image(unsafe { copy.destination.vulkan_texture.image })
+					.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+					.regions(&regions);
+					/* .build() */
+				unsafe { self.device.cmd_blit_image2(command_buffer.vulkan_command_buffer.command_buffer, &blit_image_info); }
+			}
 		}
 	}
 

@@ -1,42 +1,6 @@
 //! The orchestrator synchronizes and manages most of the application data.
 //! It contains systems and task to accomplish that feat.
 
-// pub struct Arc<T: ?Sized> {
-// 	inner: *mut u8,
-// 	p: std::marker::PhantomData<T>,
-// }
-
-// impl <T: ?Sized> Arc<T> {
-// 	fn new<U: Sized>(inner: U) -> Arc<T> {
-// 		unsafe {
-// 			let u = std::boxed::Box::new(inner);
-// 			Arc { 
-// 				inner: std::boxed::Box::into_raw(u) as *mut u8,
-// 				p: std::marker::PhantomData,
-// 			}
-// 		}
-// 	}
-
-// 	fn jesus<U>(&self) -> Arc<U> {
-// 		unsafe {
-// 			Arc {
-// 				inner: self.inner,
-// 				p: std::marker::PhantomData,
-// 			}
-// 		}
-// 	}
-// }
-
-// impl <T> std::ops::Deref for Arc<T> {
-// 	type Target = T;
-
-// 	fn deref(&self) -> &Self::Target {
-// 		unsafe { &*(self.inner as *const T) }
-// 	}
-// }
-
-// TODO: implement Drop
-
 use std::collections::HashMap;
 
 /// System handle is a handle to a system in an [`Orchestrator`]
@@ -44,14 +8,25 @@ pub struct SystemHandle(u32);
 
 /// A system is a collection of components and logic to operate on them.
 pub trait System {
-	/// Casts a system to a [`std::any::Any`] reference.
-	fn as_any(&self) -> &dyn std::any::Any;
+	fn class() -> &'static str { std::any::type_name::<Self>() }
 }
 
+#[derive(Clone, Copy)]
 pub struct ComponentHandle<T> {
 	internal_id: u32,
 	external_id: u32,
 	phantom: std::marker::PhantomData<T>,
+}
+
+impl <T> ComponentHandle<T> {
+	pub fn get_external_key(&self) -> u32 { self.external_id }
+	pub fn copy(&self) -> Self {
+		Self {
+			internal_id: self.internal_id,
+			external_id: self.external_id,
+			phantom: std::marker::PhantomData,
+		}
+	}
 }
 
 pub trait Component<T> {
@@ -125,10 +100,16 @@ impl Orchestrator {
 		self.tasks.clear();
 	}
 
-	pub fn add_system<T: System + Sync + Send + 'static>(&mut self, system: T) -> SystemHandle {
-		let system_handle = SystemHandle(self.systems_data.systems.len() as u32);
+	pub fn add_system<T: System + Sync + Send + 'static>(&mut self, system: T) -> ComponentHandle<T> {
+		let system_handle = self.systems_data.systems.len() as u32;
 		self.systems_data.systems.push(std::sync::Arc::new(std::sync::Mutex::new(system)));
-		system_handle
+		self.systems_data.systems_by_name.insert(T::class(), system_handle);
+		ComponentHandle::<T> { internal_id: system_handle, external_id: 0, phantom: std::marker::PhantomData }
+	}
+
+	pub fn make<C: Send + Sync + 'static>(&self, name: &'static str, external_id: u32) -> ComponentHandle<C> {
+		let internal_id = self.systems_data.systems_by_name[name];
+		ComponentHandle::<C> { internal_id, external_id, phantom: std::marker::PhantomData }
 	}
 
 	pub fn make_object<C: Send + Sync + 'static>(&mut self, c: C) -> ComponentHandle<C> {
@@ -152,6 +133,7 @@ impl Orchestrator {
 		ComponentHandle::<C> { internal_id: component_handle.internal_id, external_id, phantom: std::marker::PhantomData }
 	}
 
+	/// Ties a property of a component to a property of another component.
 	pub fn tie<'a, 'b, T: 'static, U: 'b, V: 'static, S0: 'static, S1: 'static>(&mut self, receiver_component_handle: &ComponentHandle<T>, i: fn() -> Property<S0, T, V>, sender_component_handle: &ComponentHandle<U>, j: fn() -> Property<S1, U, V>) {
 		let property_function_pointer = j as *const (); // Use the property function pointer as a key to the ties hashmap.
 
@@ -218,6 +200,18 @@ impl Orchestrator {
 		function(component.downcast_ref::<C>().unwrap())
 	}
 
+	pub fn get_mut_and<C: 'static, F, R>(&self, component_handle: &ComponentHandle<C>, function: F) -> R where F: FnOnce(&mut C) -> R {
+		let mut component = self.systems_data.systems[component_handle.internal_id as usize].lock().unwrap();
+		function(component.downcast_mut::<C>().unwrap())
+	}
+
+	pub fn get_2_mut_and<C0: 'static, C1: 'static, F, R>(&self, component_handle_0: &ComponentHandle<C0>, component_handle_1: &ComponentHandle<C1>, function: F) -> R where F: FnOnce(&mut C0, &mut C1) -> R {
+		let mut component_0 = self.systems_data.systems[component_handle_0.internal_id as usize].lock().unwrap();
+		let mut component_1 = self.systems_data.systems[component_handle_1.internal_id as usize].lock().unwrap();
+
+		function(component_0.downcast_mut::<C0>().unwrap(), component_1.downcast_mut::<C1>().unwrap())
+	}
+
 	pub fn get_mut_by_name_and<C: 'static, F, R>(&self, name: &'static str, function: F) -> R where F: FnOnce(&mut C) -> R {
 		let mut component = self.systems_data.systems[self.systems_data.systems_by_name[name] as usize].lock().unwrap();
 		function(component.downcast_mut::<C>().unwrap())
@@ -255,11 +249,7 @@ mod tests {
 		value: u32,
 	}
 
-	impl System for TestSystem {
-		fn as_any(&self) -> &dyn std::any::Any {
-			self
-		}
-	}
+	impl System for TestSystem {}
 
 	impl TestSystem {
 		fn new() -> TestSystem {
@@ -460,11 +450,7 @@ mod tests {
 			}
 		}
 
-		impl super::System for System {
-			fn as_any(&self) -> &dyn std::any::Any {
-				self
-			}
-		}
+		impl super::System for System {}
 
 		impl Component {
 			fn new(orchestrator: &mut Orchestrator) -> ComponentHandle<Component> {

@@ -2,14 +2,30 @@ input: .
 output: .retype
 url: https://game-tek.github.io/Byte-Engine/
 branding:
-  # title: Byte Engine
-  logo: logo.png
+  title: Byte Engine
+  logo: BE_Logo.png
+  #label: Docs
   
   colors:
     label:
       text: "#ffffff"
+      background: "#41d967"
 links:
-- text: Installation
-  link: https://retype.com/guides/getting-started/
+- text: Setup
+  link: /setup/
+  icon: tools
+- text: Sample
+  link: /sample-project/
+  icon: code
+
 footer:
-  copyright: "&copy; Copyright {{ year }}. All rights reserved."
+  copyright: "&copy; Copyright Facundo Villa {{ year }}. All rights reserved."
+
+favicon: BE_Logo.png
+
+meta:
+  title: " | Byte Engine"
+
+snippets:
+  lineNumbers:
+    - rs

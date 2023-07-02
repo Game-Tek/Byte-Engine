@@ -56,7 +56,9 @@ impl Application for BaseApplication {
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
-use crate::{orchestrator, window_system, render_system};
+use maths_rs::prelude::Base;
+
+use crate::{orchestrator, window_system, render_system, input_manager, Vector2, rendering, render_domain};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -90,7 +92,7 @@ impl Application for OrchestratedApplication {
 		let elapsed = self.last_tick_time.elapsed();
 
 		if elapsed < target_tick_duration {
-			std::thread::sleep(target_tick_duration - elapsed);
+			//std::thread::sleep(target_tick_duration - elapsed);
 		}
 
 		self.last_tick_time = std::time::Instant::now();
@@ -118,32 +120,69 @@ impl OrchestratedApplication {
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
 pub struct GraphicsApplication {
 	application: OrchestratedApplication,
+	tick_count: u64,
 	file_tracker: crate::file_tracker::FileTracker,
-	window_system_handle: Option<orchestrator::SystemHandle>,
-	render_system_handle: Option<orchestrator::SystemHandle>,
+	window_system_handle: orchestrator::ComponentHandle<window_system::WindowSystem>,
+	window_handle: window_system::WindowHandle,
+	//render_system_handle: orchestrator::ComponentHandle<render_system::RenderSystem>,
+	mouse_device_handle: input_manager::DeviceHandle,
+	input_system_handle: orchestrator::ComponentHandle<crate::input_manager::InputManager>,
+	visibility_render_domain_handle: orchestrator::ComponentHandle<render_domain::VisibilityWorldRenderDomain>,
+	render_system_handle: orchestrator::ComponentHandle<render_system::RenderSystem>,
 }
 
 impl Application for GraphicsApplication {
 	fn new(name: &str) -> Self {
-		let application = OrchestratedApplication::new(name);
+		let mut application = OrchestratedApplication::new(name);
 
-		GraphicsApplication { application, file_tracker: crate::file_tracker::FileTracker::new(), window_system_handle: None, render_system_handle: None }
-	}
-
-	fn initialize(&mut self, arguments: std::env::Args) {
-		self.application.initialize(arguments);
+		application.initialize(std::env::args()); // TODO: take arguments
 
 		let mut window_system = window_system::WindowSystem::new();
 		let mut render_system = render_system::RenderSystem::new();
 
 		let window_handle = window_system.create_window("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 
-		render_system.bind_to_window(window_system.get_os_handles(window_handle));
+		render_system.bind_to_window(window_system.get_os_handles(&window_handle));
 
-		self.window_system_handle = Some(self.application.get_mut_orchestrator().add_system(window_system));
-		//self.render_system_handle = Some(self.application.get_mut_orchestrator().add_system(render_system));
+		let window_system_handle = application.get_mut_orchestrator().make_object(window_system);
+		//let render_system_handle = application.get_mut_orchestrator().add_system(render_system);
 
-		self.file_tracker.watch(std::path::Path::new("configuration.json"));
+		let mut input_system = crate::input_manager::InputManager::new();
+
+		let mouse_device_class_handle = input_system.register_device_class("Mouse");
+
+		input_system.register_input_source(&mouse_device_class_handle, "Position", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+		input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input_manager::InputTypes::Bool(input_manager::InputSourceDescription::new(false, false, false, true)));
+		input_system.register_input_source(&mouse_device_class_handle, "RightButton", input_manager::InputTypes::Bool(input_manager::InputSourceDescription::new(false, false, false, true)));
+
+		let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
+
+		input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+		input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+
+		let mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
+
+		let input_system_handle = application.get_mut_orchestrator().add_system(input_system);
+
+		let mut file_tracker = crate::file_tracker::FileTracker::new();
+
+		file_tracker.watch(std::path::Path::new("configuration.json"));
+		file_tracker.watch(std::path::Path::new("resources/shaders/fragment.glsl"));
+
+		let mut render_orchestrator = rendering::render_orchestrator::RenderOrchestrator::new();
+
+		render_orchestrator.add_render_pass("RenderWorld", &[]);
+
+		let visibility_render_domain_handle = render_domain::VisibilityWorldRenderDomain::new(&mut render_system);
+
+		application.get_mut_orchestrator().add_system(render_orchestrator);
+		let visibility_render_domain_handle = application.get_mut_orchestrator().add_system(visibility_render_domain_handle);
+		let render_system_handle = application.get_mut_orchestrator().add_system(render_system);
+
+		GraphicsApplication { application, file_tracker, window_system_handle, window_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
+	}
+
+	fn initialize(&mut self, arguments: std::env::Args) {
 	}
 
 	fn get_name(&self) -> String { self.application.get_name() }
@@ -154,7 +193,44 @@ impl Application for GraphicsApplication {
 
 	fn tick(&mut self) {
 		self.application.tick();
-		self.file_tracker.poll();
+		let changed_files = self.file_tracker.poll();
+
+		let window_res = self.application.get_orchestrator().get_2_mut_and(&self.window_system_handle, &self.input_system_handle, |window_system, input_system| {
+			while let Some(event) = window_system.update_window(&self.window_handle) {
+				match event {
+					window_system::WindowEvents::Close => return false,
+					window_system::WindowEvents::Button { pressed, button } => {
+						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
+					}
+					_ => {}
+				}
+			}
+
+			true
+		});
+
+		self.application.get_orchestrator().get_2_mut_and(&self.render_system_handle, &self.visibility_render_domain_handle, |render_system, visibility_render_domain| {
+			let files = changed_files.iter().filter(|event| {
+				println!("File changed: {:?}", event.event.paths);
+				event.kind.is_modify()
+			}).for_each(|event| {
+				println!("File changed: {:?}", event.event.paths);
+
+				let shader_source = std::fs::read_to_string(event.event.paths[0].to_str().unwrap()).unwrap();
+
+				println!("Shader source: {}", shader_source);
+
+				visibility_render_domain.update_shader(render_system, event.paths[0].to_str().unwrap(), shader_source.as_str());
+			});
+
+			visibility_render_domain.render(render_system, self.tick_count as u32);
+		});
+
+		if !window_res {
+			self.application.close();
+		}
+
+		self.tick_count += 1;
 	}
 }
 
@@ -165,7 +241,18 @@ impl GraphicsApplication {
 	}
 
 	/// Returns a reference to the orchestrator.
-	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { &self.application.get_orchestrator() }
+	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { self.application.get_orchestrator() }
+	pub fn get_mut_orchestrator(&mut self) -> &mut orchestrator::Orchestrator { self.application.get_mut_orchestrator() }
+
+	pub fn get_input_system_handle(&self) -> orchestrator::ComponentHandle<crate::input_manager::InputManager> {
+		self.input_system_handle.copy()
+	}
+
+	pub fn do_loop(&mut self) {
+		while !self.application.close {
+			self.tick();
+		}
+	}
 }
 
 #[cfg(test)]

@@ -167,8 +167,6 @@ pub struct AttachmentInformation {
 	pub layout: Layouts,
 	/// The clear color of the attachment.
 	pub clear: Option<crate::RGBA>,
-	/// The resource uses of the attachment.
-	pub resource_use: Layouts,
 	/// Whether to load the contents of the attchment when starting a render pass.
 	pub load: bool,
 	/// Whether to store the contents of the attachment when ending a render pass.
@@ -245,6 +243,8 @@ pub struct TransitionState {
 	pub access: AccessPolicies,
 	/// The layout of the resource.
 	pub layout: Layouts,
+	/// The format of the resource.
+	pub format: TextureFormats,
 }
 
 /// Stores the information of a barrier descriptor.
@@ -428,10 +428,10 @@ pub enum PipelineConfigurationBlocks<'a> {
 		vertex_elements: &'a [VertexElement]
 	},
 	InputAssembly {
-
+	
 	},
 	RenderTargets {
-		targets: &'a [TextureView],
+		targets: &'a [AttachmentInformation],
 	},
 	Shaders {
 		shaders: &'a [Shader],

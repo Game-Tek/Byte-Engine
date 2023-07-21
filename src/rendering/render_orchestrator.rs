@@ -1,17 +1,19 @@
 //! The render orchestrator is responsible for managing the render passes and the render domains.
 
-use crate::{insert_return_length, orchestrator::System};
+use crate::{insert_return_length, orchestrator::{System, self, Entity}};
 
+#[derive(Clone)]
 pub struct RenderPass {
 	name: String,
 }
 
+#[derive(Clone)]
 pub struct RenderOrchestrator {
 	render_passes: Vec<RenderPass>,
 }
 
 impl RenderOrchestrator {
-	pub fn new() -> Self {
+	pub fn new(orchestrator: orchestrator::OrchestratorReference) -> Self {
 		Self {
 			render_passes: Vec::new(),
 		}
@@ -28,5 +30,6 @@ impl RenderOrchestrator {
 	}
 }
 
+impl Entity for RenderOrchestrator {}
 impl System for RenderOrchestrator {}
 	

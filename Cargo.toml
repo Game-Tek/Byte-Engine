@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+component_derive = { path = "component_derive" }
+
 xcb = { version = "1.2.1", features=['xtest'] }
 # ash = { version = "0.37.3", features=['linked'] }
 ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }

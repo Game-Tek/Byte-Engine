@@ -1,4 +1,7 @@
-use byte_engine::{self, application::Application, Vec3f, Vector2, input_manager, Vector3, orchestrator::{Orchestrator, ComponentHandle, Component}, mesh::Mesh};
+#![feature(const_mut_refs)]
+
+use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self}, render_domain::{Mesh, MeshParameters}, Vector2, math};
+use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
 #[test]
@@ -6,50 +9,86 @@ fn gallery_shooter() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
 	app.initialize(std::env::args());
 
-	let input_system = app.get_input_system_handle();
+	let orchestrator = app.get_mut_orchestrator();
 
-	let lookaround_action = app.get_orchestrator().get_mut_and(&input_system, |input_system| {
-		byte_engine::input_manager::Action::<Vector3>::new(app.get_orchestrator(), input_system, "Lookaround", &[
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")),
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
-		])
-	});
+	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn_entity(input_manager::Action::<Vector3>::new("Lookaround", &[
+		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")).mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
+		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
+	]));
 
-	let camera = byte_engine::camera::Camera::new(app.get_mut_orchestrator(), Vec3f::new(0.0, 0.0, 0.0),90.0,);
+	let trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn_entity(input_manager::Action::<bool>::new("Trigger", &[
+		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton"))
+	]));
 
-	app.get_mut_orchestrator().tie(&camera, byte_engine::camera::Camera::orientation, &lookaround_action, input_manager::Action::value);
+	let player: EntityHandle<Player> = orchestrator.spawn_component((lookaround_action_handle));
 
-	let trigger_action = app.get_orchestrator().get_mut_and(&input_system, |input_system| {
-		byte_engine::input_manager::Action::<bool>::new(app.get_orchestrator(), input_system, "Trigger", &[
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton"))
-		])		
-	});
+	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
-	//app.get_orchestrator().tie(&weapon, byte_engine::camera::Weapon::trigger, &trigger_action, byte_engine::input_manager::Action::value);
-
-	let weapon = Weapon::new(app.get_mut_orchestrator());
+	let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-0.5, 0.5, 2.0)) * scale, });
+	let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.5, 2.0)) * scale, });
+	let duck_3: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.5, 2.0)) * scale, });
 
 	app.do_loop();
 
 	app.deinitialize();
 }
 
-struct Weapon {
-	mesh: ComponentHandle<Mesh>,
+struct Player {
+	mesh: EntityHandle<Mesh>,
+	camera: EntityHandle<byte_engine::camera::Camera>,
 }
 
-impl Component<Weapon> for Weapon {
-	fn new(orchestrator: &mut Orchestrator) -> ComponentHandle<Weapon> {
-		let weapon = Self {
-			mesh: Mesh::new(orchestrator, "cube"),
-		};
+impl orchestrator::Entity for Player {}
 
-		orchestrator.make_object(weapon)
+impl Component for Player {
+	type Parameters = EntityHandle<input_manager::Action<Vec3f>>;
+	fn new(orchestrator: orchestrator::OrchestratorReference, params: Self::Parameters) -> Self {
+		let mut transform = maths_rs::Mat4f::identity();
+
+		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.4f32));
+		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
+
+		let camera_handle = orchestrator.spawn_component(byte_engine::camera::CameraParameters{
+			position: Vec3f::new(0.0, 0.0, 0.0),
+			direction: Vec3f::new(0.0, 0.0, 1.0),
+			fov: 90.0,
+			aspect_ratio: 1.0,
+			aperture: 0.0,
+			focus_distance: 0.0,
+		});
+
+		orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &params, input_manager::Action::value);
+
+		orchestrator.tie_self(Player::lookaround, &params, input_manager::Action::value);
+
+		Self {
+			camera: camera_handle,
+			mesh: orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform, }),
+		}
 	}
 }
 
-impl Weapon {
-	pub fn fire(&self) {
+impl Player {
+	pub const fn lookaround() -> orchestrator::Property<(), Player, Vec3f> { orchestrator::Property::Component { getter: Self::get_lookaround, setter: Self::set_lookaround } }
 
+	fn get_lookaround(&self) -> Vec3f {
+		Vec3f::new(0.0, 0.0, 0.0)
+	}
+
+	fn set_lookaround(&mut self, orchestrator: orchestrator::OrchestratorReference, direction: Vec3f) {
+		let old_direction = orchestrator.get_property(&self.camera, byte_engine::camera::Camera::orientation);
+		let new_direction = direction;
+
+		let direction_delta = new_direction - old_direction;
+
+		let rotation = math::look_at(Vector3::new(-new_direction.x, -new_direction.y, new_direction.z));
+
+		let mut transform = maths_rs::Mat4f::identity();
+
+		transform *= rotation;
+		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 0.9f32));
+		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
+
+		orchestrator.set_property(&self.mesh, Mesh::transform, transform);
 	}
 }

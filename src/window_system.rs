@@ -4,7 +4,7 @@ use std::ffi::c_void;
 
 use xcb::{Xid, x};
 
-use crate::{Extent, orchestrator::System};
+use crate::{Extent, orchestrator::{System, self}};
 
 #[derive(Debug, Clone, Copy)]
 /// The keys that can be pressed on a keyboard.
@@ -226,7 +226,11 @@ pub enum WindowEvents {
 	Button {
 		pressed: bool,
 		button: MouseKeys,
-	}
+	},
+	MouseMove {
+		x: u32,
+		y: u32,
+	},
 }
 
 impl TryFrom<u8> for Keys {
@@ -546,6 +550,12 @@ impl Window {
 						None
 					}
 				},
+				xcb::Event::X(x::Event::MotionNotify(ev)) => {
+					let x = ev.event_x();
+					let y = ev.event_y();
+
+					Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32) })
+				},
 				_ => { None }
 			};
 
@@ -563,6 +573,7 @@ pub struct WindowSystem {
 	windows: Vec<Window>,
 }
 
+impl orchestrator::Entity for WindowSystem {}
 impl System for WindowSystem {}
 
 /// The handle of a window.
@@ -584,6 +595,10 @@ impl WindowSystem {
 		WindowSystem { windows: Vec::new() }
 	}
 
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> Self {
+		Self::new()
+	}
+
 	pub fn update(&mut self) -> bool {
 		for window in &self.windows {
 			for event in window.poll() {
@@ -599,8 +614,8 @@ impl WindowSystem {
 		return true;
 	}
 
-	pub fn update_window(&self, window_handle: &WindowHandle) -> Option<WindowEvents> {
-		self.windows[window_handle.0 as usize].update()
+	pub fn update_window(&self, window_handle: u32) -> Option<WindowEvents> {
+		self.windows[window_handle as usize].update()
 	}
 
 	/// Creates a new OS window.

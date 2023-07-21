@@ -1,3 +1,4 @@
 **/target
 **/assets
 *.db
+*.db.*

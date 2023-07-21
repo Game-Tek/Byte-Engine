@@ -5,6 +5,8 @@
 #![feature(ptr_sub_ptr)]
 #![feature(iter_advance_by)]
 #![feature(inherent_associated_types)]
+#![feature(arbitrary_self_types)]
+#![feature(non_lifetime_binders)]
 #![feature(downcast_unchecked)]
 #![feature(const_mut_refs)]
 #![warn(missing_docs)]
@@ -25,8 +27,10 @@ pub mod beshader_compiler;
 pub mod executor;
 pub mod camera;
 pub mod render_domain;
-pub mod mesh;
+
+pub mod math;
 pub mod rendering;
+pub mod gameplay;
 //pub mod gdeflate;
 
 pub use maths_rs::{Vec2f, Vec3f, Quatf, prelude::Base};

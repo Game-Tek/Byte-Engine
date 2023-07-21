@@ -7,7 +7,7 @@ use std::hash::Hasher;
 
 use crate::render_backend::RenderBackend;
 use crate::{window_system, orchestrator::System, Extent};
-use crate::{render_backend, insert_return_length, render_debugger};
+use crate::{render_backend, insert_return_length, render_debugger, orchestrator};
 
 /// Returns the best value from a slice of values based on a score function.
 pub fn select_by_score<T>(values: &[T], score: impl Fn(&T) -> i64) -> Option<&T> {
@@ -115,6 +115,7 @@ struct Mesh {
 	index_count: u32,
 }
 
+#[derive(Clone)]
 struct Allocation {
 	allocation: crate::render_backend::Allocation,
 }
@@ -229,6 +230,7 @@ impl CommandBufferRecording<'_> {
 			source: self.get_texture_state(attachment.texture),
 			destination: self.upsert_texture_state(attachment.texture, crate::render_backend::TransitionState {
 				layout: crate::render_backend::Layouts::RenderTarget,
+				format: attachment.format,
 				stage: crate::render_backend::Stages::FRAGMENT,
 				access: crate::render_backend::AccessPolicies::WRITE,
 			}),
@@ -244,7 +246,6 @@ impl CommandBufferRecording<'_> {
 				format: attachment.format,
 				layout: crate::render_backend::Layouts::RenderTarget,
 				clear: attachment.clear,
-				resource_use: crate::render_backend::Layouts::RenderTarget,
 				load: attachment.load,
 				store: attachment.store,
 			});
@@ -339,10 +340,12 @@ impl CommandBufferRecording<'_> {
 		let mut barriers = Vec::new();
 
 		for (texture_handle, keep_old, layout, stage, access) in transitions {
+			let texture = self.render_system.get_texture(self.frame_handle, *texture_handle);
+
 			barriers.push(crate::render_backend::BarrierDescriptor {
-				barrier: crate::render_backend::Barrier::Texture(self.render_system.get_texture(self.frame_handle, *texture_handle).texture),
+				barrier: crate::render_backend::Barrier::Texture(texture.texture),
 				source: if *keep_old { self.get_texture_state(*texture_handle) } else { None },
-				destination: self.upsert_texture_state(*texture_handle, crate::render_backend::TransitionState { layout: *layout, stage: *stage, access: *access, }),
+				destination: self.upsert_texture_state(*texture_handle, crate::render_backend::TransitionState { layout: *layout, format: texture.format, stage: *stage, access: *access, }),
 			});
 		}
 
@@ -404,19 +407,19 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Performs a series of texture copies.
-	pub fn copy_textures(&mut self, copies: &[(TextureHandle, crate::render_backend::Layouts, crate::render_backend::Stages, crate::render_backend::AccessPolicies, TextureHandle, crate::render_backend::Layouts, crate::render_backend::Stages, crate::render_backend::AccessPolicies)]) {
+	pub fn copy_textures(&mut self, copies: &[(TextureHandle, TextureHandle)]) {
 		let mut transitions = Vec::new();
 
-		for (f, fl, fs, fap, t, tl, ts, tap) in copies {
-			transitions.push((*f, true, *fl, *fs, *fap));
-			transitions.push((*t, false, *tl, *ts, *tap));
+		for (f, t) in copies {
+			transitions.push((*f, true, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::READ));
+			transitions.push((*t, false, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::WRITE));
 		}
 
 		self.transition_textures(&transitions);
 
 		let mut texture_copies = Vec::new();
 
-		for (f, _, _, _, t, _, _, _) in copies {
+		for (f, t,) in copies {
 			let source_texture = self.render_system.get_texture(self.frame_handle, *f);
 			let destination_texture = self.render_system.get_texture(self.frame_handle, *t);
 			texture_copies.push(crate::render_backend::TextureCopy {
@@ -551,7 +554,7 @@ pub struct RenderSystem {
 
 impl RenderSystem {
 	/// Creates a new [`RenderSystem`].
-	pub fn new() -> RenderSystem {
+	fn new() -> RenderSystem {
 		let render_backend = crate::vulkan_render_backend::VulkanRenderBackend::new();
 
 		let render_system = RenderSystem {
@@ -574,6 +577,11 @@ impl RenderSystem {
 		};
 
 		render_system
+	}
+
+	/// Creates a new [`RenderSystem`].
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> RenderSystem {
+		Self::new()
 	}
 
 	pub fn has_errors(&self) -> bool {
@@ -766,10 +774,19 @@ impl RenderSystem {
 		PipelineLayoutHandle(insert_return_length(&mut self.pipeline_layouts, PipelineLayout{ pipeline_layout }) as u32)
 	}
 
-	pub fn create_pipeline(&mut self, pipeline_layout_handle: PipelineLayoutHandle, shader_handles: &[&ShaderHandle], vertex_layout: &[VertexElement]) -> PipelineHandle {
+	pub fn create_pipeline(&mut self, pipeline_layout_handle: PipelineLayoutHandle, shader_handles: &[&ShaderHandle], vertex_layout: &[VertexElement], targets: &[AttachmentInfo]) -> PipelineHandle {
 		let shaders = shader_handles.iter().map(|shader_handle| self.shaders[shader_handle.0 as usize].shader).collect::<Vec<_>>();
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
+
+		let targets = targets.iter().map(|target| render_backend::AttachmentInformation {
+			format: target.format,
+			texture_view: self.textures[target.texture.0 as usize].texture_view.unwrap(),
+			layout: render_backend::Layouts::RenderTarget,
+			clear: target.clear,
+			load: target.load,
+			store: target.store,
+		}).collect::<Vec<_>>();
 
 		let pipeline_configuration_blocks = [
 			render_backend::PipelineConfigurationBlocks::Shaders { 
@@ -777,6 +794,7 @@ impl RenderSystem {
 			},
 			render_backend::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout.pipeline_layout },
 			render_backend::PipelineConfigurationBlocks::VertexInput { vertex_elements: vertex_layout },
+			render_backend::PipelineConfigurationBlocks::RenderTargets { targets: &targets },
 		];
 
 		let pipeline = self.render_backend.create_pipeline(&pipeline_configuration_blocks);
@@ -1311,6 +1329,7 @@ impl RenderSystem {
 
 // TODO: handle resizing
 
+impl orchestrator::Entity for RenderSystem {}
 impl System for RenderSystem {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1382,12 +1401,23 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
+
+		let attachments = [
+			crate::render_system::AttachmentInfo {
+				texture: render_target,
+				format: crate::render_backend::TextureFormats::RGBAu8,
+				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				load: false,
+				store: true,
+			}
+		];
+
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1526,9 +1556,20 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
-		let texture = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::GpuWrite);
+		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::GpuWrite);
+
+		let attachments = [
+			crate::render_system::AttachmentInfo {
+				texture: render_target,
+				format: crate::render_backend::TextureFormats::BGRAu8,
+				clear: None,
+				load: false,
+				store: true,
+			}
+		];
+
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1543,7 +1584,7 @@ mod tests {
 
 		let attachments = [
 			crate::render_system::AttachmentInfo {
-				texture: texture,
+				texture: render_target,
 				format: crate::render_backend::TextureFormats::RGBAu8,
 				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
@@ -1561,12 +1602,7 @@ mod tests {
 
 		let swapchain_texture_handle = renderer.get_swapchain_texture_handle(Some(frame_handle));
 
-		command_buffer_recording.copy_textures(&[
-			(
-				texture, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::READ,
-				swapchain_texture_handle, render_backend::Layouts::Transfer, render_backend::Stages::TRANSFER, render_backend::AccessPolicies::WRITE
-			)
-		]);
+		command_buffer_recording.copy_textures(&[(render_target, swapchain_texture_handle,)]);
 
 		command_buffer_recording.end();
 
@@ -1646,12 +1682,23 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
+
+		let attachments = [
+			crate::render_system::AttachmentInfo {
+				texture: render_target,
+				format: crate::render_backend::TextureFormats::RGBAu8,
+				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				load: false,
+				store: true,
+			}
+		];
+
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1765,12 +1812,23 @@ mod tests {
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
+
+		let attachments = [
+			crate::render_system::AttachmentInfo {
+				texture: render_target,
+				format: crate::render_backend::TextureFormats::RGBAu8,
+				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				load: false,
+				store: true,
+			}
+		];
+
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
 		let buffer = renderer.create_buffer(64, crate::render_backend::Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
 
@@ -1941,12 +1999,23 @@ mod tests {
 		]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle]);
-		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let render_target = renderer.create_texture(extent, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::RenderTarget, crate::render_system::DeviceAccesses::CpuRead | crate::render_system::DeviceAccesses::GpuWrite);
+
+		let attachments = [
+			crate::render_system::AttachmentInfo {
+				texture: render_target,
+				format: crate::render_backend::TextureFormats::RGBAu8,
+				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				load: false,
+				store: true,
+			}
+		];
+
+		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 

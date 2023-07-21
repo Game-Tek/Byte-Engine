@@ -7,6 +7,8 @@ use std::{io::prelude::*};
 use polodb_core::bson::{Document, bson, doc};
 use serde::{Serialize, Deserialize};
 
+use crate::orchestrator::{System, self};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Texture {
 	pub compression: String,
@@ -66,6 +68,51 @@ struct Resource {
 	resource: ResourceContainer,
 }
 
+trait Size {
+	fn size(&self) -> usize;
+}
+
+impl Size for VertexSemantics {
+	fn size(&self) -> usize {
+		match self {
+			VertexSemantics::Position => 3 * 4,
+			VertexSemantics::Normal => 3 * 4,
+			VertexSemantics::Tangent => 3 * 4,
+			VertexSemantics::BiTangent => 3 * 4,
+			VertexSemantics::Uv => 2 * 4,
+			VertexSemantics::Color => 4 * 4,
+		}
+	}
+}
+
+impl Size for Vec<VertexComponent> {
+	fn size(&self) -> usize {
+		let mut size = 0;
+
+		for component in self {
+			size += component.semantic.size();
+		}
+
+		size
+	}
+}
+
+impl Size for IntegralTypes {
+	fn size(&self) -> usize {
+		match self {
+			IntegralTypes::U8 => 1,
+			IntegralTypes::I8 => 1,
+			IntegralTypes::U16 => 2,
+			IntegralTypes::I16 => 2,
+			IntegralTypes::U32 => 4,
+			IntegralTypes::I32 => 4,
+			IntegralTypes::F16 => 2,
+			IntegralTypes::F32 => 4,
+			IntegralTypes::F64 => 8,
+		}
+	}
+}
+
 // fn qtangent(normal: Vector3<f32>, tangent: Vector3<f32>, bi_tangent: Vector3<f32>) -> Quaternion<f32> {
 // 	let tbn: Matrix3<f32> = Matrix3::from_cols(normal, tangent, bi_tangent);
 
@@ -110,6 +157,9 @@ struct Resource {
 pub struct ResourceManager {
 	db: polodb_core::Database,
 }
+
+impl orchestrator::Entity for ResourceManager {}
+impl System for ResourceManager {}
 
 fn extension_to_file_type(extension: &str) -> &str {
 	match extension {
@@ -229,6 +279,10 @@ impl ResourceManager {
 		ResourceManager {
 			db,
 		}
+	}
+
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> ResourceManager {
+		Self::new()
 	}
 
 	fn resolve_resource_path(&mut self, path: &str) -> String {
@@ -507,25 +561,33 @@ impl ResourceManager {
 	pub fn get_resource_info(&mut self, path: &str) -> Option<Request> {
 		let doc = self.get_resource_from_cache(path);
 
-		let resource = if doc.is_none() {
+		let resource = if let Some(r) = doc {
+			r
+		} else {
 			if let Some(r) = self.load_resource_into_cache(path) {
 				r
 			} else {
 				return None;
 			}
-		} else {
-			return None;
 		};
 
 		return Some(Request { resource: resource.resource, id: path.to_string() });
 	}
 
-	pub fn load_resource_into_buffer<'a>(&mut self, request: Request, buffer: &mut [u8]) {
+	pub fn load_resource_into_buffer<'a>(&mut self, request: &Request, vertex_buffer: &mut [u8], index_buffer: &mut [u8]) {
 		let doc = self.get_document_from_cache(request.id.as_str()).unwrap();
 
 		let mut file = std::fs::File::open("assets/".to_string() + doc.get("_id").unwrap().as_object_id().unwrap().to_string().as_str()).unwrap();
 
-		file.read(buffer).unwrap();
+		let mesh_info = match &request.resource {
+			ResourceContainer::Mesh(mesh) => mesh,
+			_ => panic!(""),
+		};
+		let vertex_size = mesh_info.vertex_components.size();
+
+		file.read(&mut vertex_buffer[..(vertex_size * mesh_info.vertex_count as usize)]).unwrap();
+		file.seek(std::io::SeekFrom::Start((vertex_size * mesh_info.vertex_count as usize).next_multiple_of(16) as u64)).unwrap();
+		file.read(&mut index_buffer[..(mesh_info.index_count as usize * mesh_info.index_type.size())]).unwrap();
 	}
 }
 

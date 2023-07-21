@@ -2,7 +2,7 @@
 
 use ash::{vk, Entry};
 
-use crate::{render_backend, render_system};
+use crate::{render_backend::{self, TextureFormats}, render_system};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Surface {
@@ -84,6 +84,7 @@ pub(crate) struct AccelerationStructure {
 	acceleration_structure: vk::AccelerationStructureKHR,
 }
 
+#[derive(Clone)]
 pub(crate) struct VulkanRenderBackend {
 	entry: ash::Entry,
 	instance: ash::Instance,
@@ -129,7 +130,7 @@ fn to_clear_value(clear: crate::RGBA) -> vk::ClearValue {
 fn texture_format_and_resource_use_to_image_layout(_texture_format: render_backend::TextureFormats, layout: render_backend::Layouts, access: Option<crate::render_backend::AccessPolicies>) -> vk::ImageLayout {
 	match layout {
 		render_backend::Layouts::Undefined => vk::ImageLayout::UNDEFINED,
-		render_backend::Layouts::RenderTarget => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+		render_backend::Layouts::RenderTarget => if _texture_format != render_backend::TextureFormats::Depth32 { vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL } else { vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
 		render_backend::Layouts::Transfer => {
 			match access {
 				Some(a) => {
@@ -386,14 +387,20 @@ impl VulkanRenderBackend {
 
 		let mut buffer_device_address_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
 		let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
-		let mut synchronization2_features = vk::PhysicalDeviceSynchronization2FeaturesKHR::default().synchronization2(true);
+		let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+		let mut physical_device_8bit_storage_features = vk::PhysicalDevice8BitStorageFeatures::default().storage_buffer8_bit_access(true);
+		let mut physical_device_16bit_storage_features = vk::PhysicalDevice16BitStorageFeatures::default().storage_buffer16_bit_access(true);
+		let mut physical_device_scalar_block_layout_features = vk::PhysicalDeviceScalarBlockLayoutFeatures::default().scalar_block_layout(true);
 
-		let enabled_physical_device_features = vk::PhysicalDeviceFeatures::default();
+		let enabled_physical_device_features = vk::PhysicalDeviceFeatures::default().shader_int64(true);
 
   		let device_create_info = vk::DeviceCreateInfo::default()
 			.push_next(&mut buffer_device_address_features/* .build() */)
 			.push_next(&mut dynamic_rendering_features/* .build() */)
 			.push_next(&mut synchronization2_features/* .build() */)
+			.push_next(&mut physical_device_8bit_storage_features/* .build() */)
+			.push_next(&mut physical_device_16bit_storage_features/* .build() */)
+			.push_next(&mut physical_device_scalar_block_layout_features/* .build() */)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features/* .build() */)
@@ -617,7 +624,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 	fn create_pipeline(&self, blocks: &[render_backend::PipelineConfigurationBlocks]) -> render_backend::Pipeline {
 		/// This function calls itself recursively to build the pipeline the pipeline states.
 		/// This is done because this way we can "dynamically" allocate on the stack the needed structs because the recursive call keep them alive.
-		fn pipu<'a>(vulkan_render_backend: &VulkanRenderBackend, pipeline_create_info: vk::GraphicsPipelineCreateInfo<'a>, mut block_iterator: std::slice::Iter<'a, render_backend::PipelineConfigurationBlocks>) -> vk::Pipeline {
+		fn pipu(vulkan_render_backend: &VulkanRenderBackend, mut pipeline_create_info: vk::GraphicsPipelineCreateInfo<'_>, mut block_iterator: std::slice::Iter<'_, render_backend::PipelineConfigurationBlocks>) -> vk::Pipeline {
 			if let Some(block) = block_iterator.next() {
 				match block {
 					render_backend::PipelineConfigurationBlocks::VertexInput { vertex_elements } => {
@@ -627,10 +634,10 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 	
 						for (i, vertex_element) in vertex_elements.iter().enumerate() {
 							let ve = vk::VertexInputAttributeDescription::default()
-								.binding(0)
+								.binding(i as u32) // TODO: change
 								.location(i as u32)
 								.format(vertex_element.format.into())
-								.offset(offset);
+								.offset(0); // TODO: change
 	
 							vertex_input_attribute_descriptions.push(ve);
 	
@@ -640,8 +647,12 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 						let vertex_binding_descriptions = [
 							vk::VertexInputBindingDescription::default()
 								.binding(0)
-								.stride(offset)
-								.input_rate(vk::VertexInputRate::VERTEX)
+								.stride(12)
+								.input_rate(vk::VertexInputRate::VERTEX),
+							vk::VertexInputBindingDescription::default()
+								.binding(1)
+								.stride(12)
+								.input_rate(vk::VertexInputRate::VERTEX),
 						];
 	
 						let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
@@ -662,7 +673,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
 					}
 					render_backend::PipelineConfigurationBlocks::RenderTargets { targets } => {
-						let attachments = targets.iter().map(|_| {
+						let pipeline_color_blend_attachments = targets.iter().filter(|a| a.format != TextureFormats::Depth32).map(|_| {
 							vk::PipelineColorBlendAttachmentState::default()
 								.color_write_mask(vk::ColorComponentFlags::RGBA)
 								.blend_enable(false)
@@ -674,19 +685,42 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 								.alpha_blend_op(vk::BlendOp::ADD)
 						}).collect::<Vec<_>>();
 	
-						let color_blend_state = &vk::PipelineColorBlendStateCreateInfo::default()
+						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != TextureFormats::Depth32).map(|a| to_format(a.format)).collect::<Vec<_>>();
+
+						let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
 							.logic_op_enable(false)
 							.logic_op(vk::LogicOp::COPY)
-							.attachments(&attachments)
+							.attachments(&pipeline_color_blend_attachments)
 							.blend_constants([0.0, 0.0, 0.0, 0.0]);
 
 						let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-							.color_attachment_formats(&[vk::Format::R8G8B8A8_UNORM])
+							.color_attachment_formats(&color_attachement_formats)
 							.depth_attachment_format(vk::Format::UNDEFINED);
 
-						let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info).color_blend_state(&color_blend_state);
+						let pipeline_create_info = pipeline_create_info.color_blend_state(&color_blend_state);
 
-						return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+						if let Some(_) = targets.iter().find(|a| a.format == TextureFormats::Depth32) {
+							let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+								.depth_test_enable(true)
+								.depth_write_enable(true)
+								.depth_compare_op(vk::CompareOp::LESS)
+								.depth_bounds_test_enable(false)
+								.stencil_test_enable(false)
+								.front(vk::StencilOpState::default()/* .build() */)
+								.back(vk::StencilOpState::default()/* .build() */)
+								/* .build() */;
+
+							rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
+
+							let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
+							let pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
+
+							return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+						} else {
+							let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
+
+							return pipu(vulkan_render_backend, pipeline_create_info, block_iterator);
+						}
 					}
 					render_backend::PipelineConfigurationBlocks::Shaders { shaders } => {
 						let stages = shaders
@@ -747,7 +781,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.depth_clamp_enable(false)
 			.rasterizer_discard_enable(false)
 			.polygon_mode(vk::PolygonMode::FILL)
-			.cull_mode(vk::CullModeFlags::NONE)
+			.cull_mode(vk::CullModeFlags::BACK)
 			.front_face(vk::FrontFace::CLOCKWISE)
 			.depth_bias_enable(false)
 			.depth_bias_constant_factor(0.0)
@@ -773,21 +807,9 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.viewport_state(&viewport_state)
 			.rasterization_state(&rasterization_state)
 			.multisample_state(&multisample_state)
-			.input_assembly_state(&input_assembly_state)
-			;
-
+			.input_assembly_state(&input_assembly_state);
 
 		let pipeline = pipu(self, pipeline_create_info, blocks.iter());
-
-		// let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-		// 	.depth_test_enable(false)
-		// 	.depth_write_enable(false)
-		// 	.depth_compare_op(vk::CompareOp::ALWAYS)
-		// 	.depth_bounds_test_enable(false)
-		// 	.stencil_test_enable(false)
-		// 	.front(vk::StencilOpState::default()/* .build() */)
-		// 	.back(vk::StencilOpState::default()/* .build() */)
-		// 	/* .build() */;
 
 		crate::render_backend::Pipeline {
 			vulkan_pipeline: Pipeline {
@@ -911,9 +933,9 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.usage(
 				if resource_uses.intersects(render_backend::Uses::Texture) { vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::empty() }
 				|
-				if resource_uses.intersects(render_backend::Uses::RenderTarget) { vk::ImageUsageFlags::COLOR_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
+				if resource_uses.intersects(render_backend::Uses::RenderTarget) && format != render_backend::TextureFormats::Depth32 { vk::ImageUsageFlags::COLOR_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
 				|
-				if resource_uses.intersects(render_backend::Uses::DepthStencil) { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
+				if resource_uses.intersects(render_backend::Uses::DepthStencil) || format == render_backend::TextureFormats::Depth32 { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
 				|
 				if resource_uses.intersects(render_backend::Uses::TransferSource) { vk::ImageUsageFlags::TRANSFER_SRC } else { vk::ImageUsageFlags::empty() }
 				|
@@ -1027,7 +1049,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 				a: vk::ComponentSwizzle::IDENTITY,
 			})
 			.subresource_range(vk::ImageSubresourceRange {
-				aspect_mask: vk::ImageAspectFlags::COLOR,
+				aspect_mask: if format != render_backend::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
 				base_mip_level: 0,
 				level_count: 1,
 				base_array_layer: 0,
@@ -1153,10 +1175,10 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			.extent(vk::Extent2D::default().width(extent.width).height(extent.height)/* .build() */)
 			/* .build() */;
 
-		let color_attchments = attachments.iter().map(|attachment| {
+		let color_attchments = attachments.iter().filter(|a| a.format != render_backend::TextureFormats::Depth32).map(|attachment| {
 			vk::RenderingAttachmentInfo::default()
 				.image_view(unsafe { attachment.texture_view.vulkan_texture_view.image_view })
-				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.resource_use, None))
+				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))
 				.clear_value(to_clear_value(attachment.clear.expect("No clear value")))
@@ -1166,7 +1188,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		let depth_attachment = attachments.iter().find(|attachment| attachment.format == render_backend::TextureFormats::Depth32).map(|attachment| {
 			vk::RenderingAttachmentInfo::default()
 				.image_view(unsafe { attachment.texture_view.vulkan_texture_view.image_view })
-				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.resource_use, None))
+				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))
 				.clear_value(to_clear_value(attachment.clear.expect("No clear value")))
@@ -1224,7 +1246,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 	}
 
 	fn bind_index_buffer(&self, command_buffer: &crate::render_backend::CommandBuffer, buffer_descriptor: &crate::render_backend::BufferDescriptor) {
-		unsafe { self.device.cmd_bind_index_buffer(command_buffer.vulkan_command_buffer.command_buffer, buffer_descriptor.buffer.vulkan_buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT32); }
+		unsafe { self.device.cmd_bind_index_buffer(command_buffer.vulkan_command_buffer.command_buffer, buffer_descriptor.buffer.vulkan_buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); }
 	}
 
 	fn draw_indexed(&self, command_buffer: &crate::render_backend::CommandBuffer, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
@@ -1254,7 +1276,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 				crate::render_backend::Barrier::Texture(texture_barrier) => {
 					let image_memory_barrier = if let Some(source) = barrier.source {
 							vk::ImageMemoryBarrier2KHR::default()
-							.old_layout(texture_format_and_resource_use_to_image_layout(crate::render_backend::TextureFormats::RGBAu8, source.layout, Some(source.access)))
+							.old_layout(texture_format_and_resource_use_to_image_layout(source.format, source.layout, Some(source.access)))
 							.src_stage_mask(to_pipeline_stage_flags(source.stage))
 							.src_access_mask(to_access_flags(source.access, source.stage))
 						} else {
@@ -1264,13 +1286,13 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 							.src_access_mask(vk::AccessFlags2KHR::empty())
 						}
 						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(texture_format_and_resource_use_to_image_layout(crate::render_backend::TextureFormats::RGBAu8, barrier.destination.layout, Some(barrier.destination.access)))
+						.new_layout(texture_format_and_resource_use_to_image_layout(barrier.destination.format, barrier.destination.layout, Some(barrier.destination.access)))
 						.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
 						.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
 						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 						.image(unsafe { texture_barrier.vulkan_texture.image })
 						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: vk::ImageAspectFlags::COLOR,
+							aspect_mask: if barrier.destination.format != render_backend::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
 							base_mip_level: 0,
 							level_count: vk::REMAINING_MIP_LEVELS,
 							base_array_layer: 0,

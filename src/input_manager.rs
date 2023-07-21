@@ -17,7 +17,9 @@
 //! - [ ] Remove panics.
 //! - [ ] Add device class and device grouping.
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{Orchestrator, ComponentHandle, Property, System}};
+use std::f32::consts::PI;
+
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{Orchestrator, EntityHandle, Property, System, self, Entity}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -110,6 +112,8 @@ pub enum Function {
 	Boolean,
 	Threshold,
 	Linear,
+	/// Maps a 2D point to a 3D point on a sphere.
+	Sphere,
 }
 
 /// An action binding description is a description of how an input source is mapped to a value for an action.
@@ -127,16 +131,22 @@ impl ActionBindingDescription {
 			function: None,
 		}
 	}
+
+	pub fn mapped(mut self, mapping: Value, function: Function) -> Self {
+		self.mapping = mapping;
+		self.function = Some(function);
+		self
+	}
 }
 
 #[derive(Copy, Clone, PartialEq)]
-pub struct InputSourceRecord {
+pub struct Record {
 	input_source_handle: InputSourceHandle,
 	value: Value,
 	time: std::time::SystemTime,
 }
 
-impl PartialOrd for InputSourceRecord {
+impl PartialOrd for Record {
 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
 		self.time.partial_cmp(&other.time)
 	}
@@ -174,7 +184,7 @@ pub enum Types {
 }
 
 /// An input event is an application specific event that is triggered by a combination of input sources.
-struct InputEvent {
+struct InputAction {
 	name: String,
 	type_: Types,
 	input_event_descriptions: Vec<InputSourceMapping>,
@@ -195,7 +205,7 @@ struct InputEvent {
 	/// 		(Value is B)
 	/// 	- Input source `B` is released.
 	/// 		(Value is None)
-	stack: Vec<InputSourceRecord>,
+	stack: Vec<Record>,
 }
 
 /// A device represents a particular instance of a device class. Such as the current keyboard, or a specific gamepad.
@@ -242,8 +252,8 @@ pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
 	input_sources: Vec<InputSource>,
 	devices: Vec<Device>,
-	records: Vec<InputSourceRecord>,
-	actions: Vec<InputEvent>,
+	records: Vec<Record>,
+	actions: Vec<InputAction>,
 }
 
 impl InputManager {
@@ -256,6 +266,10 @@ impl InputManager {
 			records: Vec::new(),
 			actions: Vec::new(),
 		}
+	}
+
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> Self {
+		Self::new()
 	}
 
 	/// Registers a device class/type.
@@ -453,7 +467,7 @@ impl InputManager {
 	/// 	- Quaternion: Returns a quaternion when the RGBA color is reached.
 	/// 	- RGBA: Returns the RGBA color.
 	pub fn create_action(&mut self, name: &str, type_: Types, input_events: &[ActionBindingDescription]) -> ActionHandle {
-		let input_event = InputEvent {
+		let input_event = InputAction {
 			name: name.to_string(),
 			type_,
 			input_event_descriptions: input_events.iter().map(|input_event| {
@@ -519,7 +533,7 @@ impl InputManager {
 		input_source_state.value = value;
 		input_source_state.time = time;
 
-		let record = InputSourceRecord {
+		let record = Record {
 			input_source_handle,
 			value,
 			time,
@@ -542,14 +556,41 @@ impl InputManager {
 		}
 	}
 
+	pub fn update(&mut self, orchestrator: orchestrator::OrchestratorReference) {
+		let records = &self.records;
+
+		if records.len() == 0 { return; }
+
+		for record in records {
+			let actions_for_input_source = self.actions.iter().enumerate().filter(|(i, a)| { a.input_event_descriptions.iter().any(|ied| ied.input_source_handle == record.input_source_handle) });
+
+			for (i, action) in actions_for_input_source {
+				match action.type_ {
+					Types::Vector2 => {
+						let v = if let Value::Vector2(v) = record.value.clone() { v } else { panic!("Not a vector2!") };
+						orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
+					}
+					Types::Vector3 => {
+						let value = self.get_action_state(ActionHandle(i as u32), &DeviceHandle(0));
+						let v = if let Value::Vector3(v) = value.value { v } else { panic!("Not a vector3!") };
+						orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector3>::value, v);
+					}
+					_ => {}
+				}
+			}
+		}
+
+		self.records.clear();
+	}
+
 	/// Gets the input source action from the input source action.
-	pub fn get_input_source_record(&self, device_handle: &DeviceHandle, input_source_action: InputSourceAction) -> InputSourceRecord {
+	pub fn get_input_source_record(&self, device_handle: &DeviceHandle, input_source_action: InputSourceAction) -> Record {
 		let input_source = self.get_input_source_from_input_source_action(&input_source_action);
 
 		let device = self.get_device(device_handle);
 		let state = &device.input_source_states[&self.to_input_source_handle(&input_source_action).unwrap()];
 
-		InputSourceRecord {
+		Record {
 			input_source_handle: InputSourceHandle(0),
 			value: state.value,
 			time: state.time
@@ -580,23 +621,51 @@ impl InputManager {
 
 	/// Gets the value of an input event.
 	pub fn get_action_state(&self, input_event_handle: ActionHandle, device_handle: &DeviceHandle) -> InputEventState {
-		let input_event = &self.actions[input_event_handle.0 as usize];
+		let action = &self.actions[input_event_handle.0 as usize];
 
-		let input_sources_values = input_event.input_event_descriptions.iter().map(|input_event_description| {
-			(self.get_input_source_record(device_handle, InputSourceAction::Handle(input_event_description.input_source_handle)), input_event_description.input_source_handle, input_event_description)
-		}).collect::<Vec<_>>();
+		// let input_sources_values = action.input_event_descriptions.iter().map(|input_event_description| {
+		// 	(self.get_input_source_record(device_handle, InputSourceAction::Handle(input_event_description.input_source_handle)), input_event_description.input_source_handle, input_event_description)
+		// }).collect::<Vec<_>>();
 
 		// Assume linear event, boolean input sources, last event takes precedence
 
-		let value = match input_event.type_ {
-			Types::Float => {
-				let (input_source_value, input_source_mapping_value) = if let Some(last) = input_event.stack.last() {
-					if let Value::Bool(value) = last.value {
-						let event_description_for_input_source = input_event.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
+		let record = self.records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time).unwrap();
 
-						(
-							if value { 1f32 } else { 0f32 },
-							match event_description_for_input_source.mapping {
+		let value = self.resolve_action_value_from_record(action, record);
+
+		InputEventState {
+			device_handle: device_handle.clone(),
+			input_event_handle,
+			value,
+		}
+	}
+
+	fn resolve_action_value_from_record(&self, action: &InputAction, record: &Record) -> Value {
+		let mapping = action.input_event_descriptions.iter().find(|ied| ied.input_source_handle == record.input_source_handle).unwrap();
+
+		match action.type_ {
+			Types::Float => {
+				let float = match record.value {
+					Value::Bool(value) => {
+						if let Some(last) = action.stack.last() {
+							if let Value::Bool(value) = last.value {
+								let event_description_for_input_source = action.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
+		
+								match event_description_for_input_source.mapping {
+									Value::Bool(value) => if value { 1f32 } else { 0f32 },
+									Value::Unicode(_) => 0f32,
+									Value::Float(value) => value,
+									Value::Int(value) => value as f32,
+									Value::Rgba(value) => value.r,
+									Value::Vector2(value) => value.x,
+									Value::Vector3(value) => value.x,
+									Value::Quaternion(value) => value[0],
+								}
+							} else {
+								panic!("Last value is not a boolean!");
+							}
+						} else {
+							match mapping.mapping {
 								Value::Bool(value) => if value { 1f32 } else { 0f32 },
 								Value::Unicode(_) => 0f32,
 								Value::Float(value) => value,
@@ -606,44 +675,44 @@ impl InputManager {
 								Value::Vector3(value) => value.x,
 								Value::Quaternion(value) => value[0],
 							}
-						)
-					} else {
-						panic!("Last value is not a boolean!");
+						}
 					}
-				} else {
-					let mapping_for_most_recent_input_source = input_sources_values.iter().max_by_key(|x| x.0.time).unwrap();
-
-					(match mapping_for_most_recent_input_source.0.value {
-						Value::Bool(value) => if value { 1f32 } else { 0f32 },
-						Value::Unicode(_) => 0f32,
-						Value::Float(value) => value,
-						Value::Int(value) => value as f32,
-						Value::Rgba(value) => value.r,
-						Value::Vector2(value) => value.x,
-						Value::Vector3(value) => value.x,
-						Value::Quaternion(value) => value[0],
-					},
-					match mapping_for_most_recent_input_source.2.mapping {
-						Value::Bool(value) => if value { 1f32 } else { 0f32 },
-						Value::Unicode(_) => 0f32,
-						Value::Float(value) => value,
-						Value::Int(value) => value as f32,
-						Value::Rgba(value) => value.r,
-						Value::Vector2(value) => value.x,
-						Value::Vector3(value) => value.x,
-						Value::Quaternion(value) => value[0],
-					})
+					_ => panic!("Not implemented!"),
 				};
 
-				Value::Float(input_source_value * input_source_mapping_value)
+				Value::Float(float)
+			}
+			Types::Vector3 => {
+				match record.value {
+					Value::Bool(_) => panic!("Not implemented!"),
+					Value::Unicode(_) => panic!("Not implemented!"),
+					Value::Float(_) => panic!("Not implemented!"),
+					Value::Int(_) => panic!("Not implemented!"),
+					Value::Rgba(_) => panic!("Not implemented!"),
+					Value::Vector2(record_value) => {
+						if let Some(function) = mapping.function {
+							if let Function::Sphere = function {
+								let r = record_value;
+
+								let x = r.x;
+								let y = r.y;
+								let z = (1f32 - (x * x + y * y)).sqrt();
+
+								let transformation = if let Value::Vector3(transformation) = mapping.mapping { transformation } else { panic!("Not implemented!"); };
+
+								Value::Vector3(Vector3 { x, y, z } * transformation)
+							} else {
+								panic!("Not implemented!");
+							}
+						} else {
+							Value::Vector3(Vector3 { x: record_value.x, y: record_value.y, z: 0f32 })
+						}
+					},
+					Value::Vector3(value) => Value::Vector3(value),
+					Value::Quaternion(_) => panic!("Not implemented!"),
+				}
 			}
 			_ => panic!("Not implemented!"),
-		};
-
-		InputEventState {
-			device_handle: device_handle.clone(),
-			input_event_handle,
-			value,
 		}
 	}
 
@@ -1179,26 +1248,28 @@ impl Extract<Vector3> for Value {
 }
 
 impl InputManager {
-	pub fn make_action<T: Send + Sync + 'static>(&mut self, orchestrator: &Orchestrator, name: &str, types: Types, bindings: &[ActionBindingDescription]) -> ComponentHandle<Action<T>> {
+	pub fn make_action<T: Clone + Send>(&mut self, name: &str, types: Types, bindings: &[ActionBindingDescription]) -> orchestrator::InternalId {
 		let handle = self.create_action(name, types, bindings);
-		orchestrator.make("InputSystem", handle.0)
+		orchestrator::InternalId(handle.0)
 	}
 
-	pub fn get_action_value<T: GetType>(&self, action_handle: &ComponentHandle<Action<T>>) -> T where Value: Extract<T> {
+	pub fn get_action_value<T: GetType + Clone>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
 		let state = self.get_action_state(ActionHandle(action_handle.get_external_key()), &DeviceHandle(0));
 		state.value.extract()
 	}
 
-	pub fn set_action_value<T>(&mut self, action_handle: &ComponentHandle<Action<T>>, value: T) {
+	pub fn set_action_value<T: Clone>(&mut self, action_handle: &EntityHandle<Action<T>>, value: T) {
 
 	}
 }
 
-impl System for InputManager {
-	fn class() -> &'static str { "InputSystem" }
-}
+impl Entity for InputManager {}
+impl System for InputManager {}
 
-pub struct Action<T> { phantom: std::marker::PhantomData<T>, }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Action<T: Clone> { phantom: std::marker::PhantomData<T>, }
+
+impl <T: GetType + Clone> orchestrator::Entity for Action<T> {}
 
 pub trait GetType {
 	fn get_type() -> Types;
@@ -1216,9 +1287,11 @@ impl GetType for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
-impl <T: Send + Sync + GetType + 'static> Action<T> {
-	pub fn new(orchestrator: &Orchestrator, input_system: &mut InputManager, name: &str, bindings: &[ActionBindingDescription]) -> ComponentHandle<Self> {
-		input_system.make_action(orchestrator, name, T::get_type(), bindings)
+impl <T: Clone + Send + GetType> Action<T> {
+	pub fn new<'a>(name: &'a str, bindings: &'a [ActionBindingDescription]) -> (fn(orchestrator::OrchestratorReference, &mut InputManager, &'a str, &'a [ActionBindingDescription]) -> orchestrator::InternalId, &'a str, &'a [ActionBindingDescription]) {
+		(|_: orchestrator::OrchestratorReference, input_system: &mut InputManager, name: &'a str, bindings: &'a [ActionBindingDescription]| {
+			input_system.make_action::<T>(name, T::get_type(), bindings)
+		}, name, bindings)
 	}
 
 	pub const fn value() -> Property<InputManager, Self, T> where T: GetType, Value: Extract<T> { Property::System { getter: InputManager::get_action_value, setter: InputManager::set_action_value } }

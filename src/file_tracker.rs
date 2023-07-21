@@ -6,6 +6,8 @@ use std::path::Path;
 use notify_debouncer_full::{notify::{*}, new_debouncer, DebounceEventResult, FileIdMap, DebouncedEvent};
 use polodb_core;
 
+use crate::orchestrator;
+
 pub struct FileTracker {
 	db: polodb_core::Database,
 	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, FileIdMap>,
@@ -13,7 +15,7 @@ pub struct FileTracker {
 }
 
 impl FileTracker {
-	pub fn new() -> FileTracker {
+	pub fn new(orchestrator: orchestrator::OrchestratorReference) -> FileTracker {
 		let db = polodb_core::Database::open_file("files.db").unwrap();
 
 		let (tx, rx) = std::sync::mpsc::channel();
@@ -133,3 +135,6 @@ impl FileTracker {
 		events
 	}
 }
+
+impl orchestrator::Entity for FileTracker {}
+impl orchestrator::System for FileTracker {}

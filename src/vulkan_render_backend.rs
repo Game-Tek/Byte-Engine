@@ -1,6 +1,6 @@
 //! The Vulkan render backend.
 
-use ash::{vk, Entry};
+use ash::{vk::{self, ValidationFeatureEnableEXT}, Entry};
 
 use crate::{render_backend::{self, TextureFormats}, render_system};
 
@@ -39,6 +39,7 @@ pub(crate) struct Pipeline {
 
 #[derive(Clone, Copy)]
 pub(crate) struct CommandBuffer {
+	command_pool: vk::CommandPool,
 	command_buffer: vk::CommandBuffer,
 }
 
@@ -98,7 +99,6 @@ pub(crate) struct VulkanRenderBackend {
 	surface: ash::extensions::khr::Surface,
 	acceleration_structure: ash::extensions::khr::AccelerationStructure,
 	ray_tracing_pipeline: ash::extensions::khr::RayTracingPipeline,
-	dynamic_rendering: ash::extensions::khr::DynamicRendering,
 }
 
 static mut counter: u32 = 0;
@@ -206,6 +206,10 @@ fn to_pipeline_stage_flags(stages: crate::render_backend::Stages) -> vk::Pipelin
 		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
 	}
 
+	if stages.contains(crate::render_backend::Stages::PRESENTATION) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
+	}
+
 	pipeline_stage_flags
 }
 
@@ -215,6 +219,9 @@ fn to_access_flags(accesses: crate::render_backend::AccessPolicies, stages: crat
 	if accesses.contains(crate::render_backend::AccessPolicies::READ) {
 		if stages.intersects(crate::render_backend::Stages::TRANSFER) {
 			access_flags |= vk::AccessFlags2::TRANSFER_READ
+		}
+		if stages.intersects(render_backend::Stages::PRESENTATION) {
+			access_flags |= vk::AccessFlags2::NONE
 		}
 	}
 
@@ -309,12 +316,17 @@ impl VulkanRenderBackend {
 			ash::extensions::khr::XcbSurface::NAME.as_ptr(),
 		];
 
+		let enabled_validation_features = [ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION, ValidationFeatureEnableEXT::BEST_PRACTICES];
+
+		let mut validation_features = vk::ValidationFeaturesEXT::default()
+			.enabled_validation_features(&enabled_validation_features);
+
 		let instance_create_info = vk::InstanceCreateInfo::default()
+			.push_next(&mut validation_features/* .build() */)
 			.application_info(&application_info)
 			.enabled_layer_names(&layer_names)
 			.enabled_extension_names(&extension_names)
 			/* .build() */;
-
 
 		let instance = unsafe { entry.create_instance(&instance_create_info, None).expect("No instance") };
 
@@ -322,13 +334,10 @@ impl VulkanRenderBackend {
 
 		let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
 			.message_severity(
-				vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-					| vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+				vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
 			)
 			.message_type(
-				vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-					| vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
-					| vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+				vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
 			)
 			.pfn_user_callback(Some(vulkan_debug_utils_callback));
 
@@ -341,6 +350,11 @@ impl VulkanRenderBackend {
 		{
 			let best_physical_device = crate::render_system::select_by_score(physical_devices.as_slice(), |physical_device| {
 				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+				let features = unsafe { instance.get_physical_device_features(*physical_device) };
+
+				if features.sample_rate_shading == vk::FALSE {
+					return 0;
+				}
 
 				let mut device_score = 0 as i64;
 
@@ -377,13 +391,12 @@ impl VulkanRenderBackend {
 
 		let device_extension_names = [
 			ash::extensions::khr::Swapchain::NAME.as_ptr(),
-			ash::extensions::khr::DynamicRendering::NAME.as_ptr(),
 		];
 
 		let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
-				.queue_family_index(queue_family_index)
-				.queue_priorities(&[1.0])
-				/* .build() */];
+			.queue_family_index(queue_family_index)
+			.queue_priorities(&[1.0])
+			/* .build() */];
 
 		let mut buffer_device_address_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
 		let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
@@ -412,7 +425,6 @@ impl VulkanRenderBackend {
 
 		let acceleration_structure = ash::extensions::khr::AccelerationStructure::new(&instance, &device);
 		let ray_tracing_pipeline = ash::extensions::khr::RayTracingPipeline::new(&instance, &device);
-		let dynamic_rendering = ash::extensions::khr::DynamicRendering::new(&instance, &device);
 
 		let swapchain = ash::extensions::khr::Swapchain::new(&instance, &device);
 		let surface = ash::extensions::khr::Surface::new(&entry, &instance);
@@ -430,7 +442,6 @@ impl VulkanRenderBackend {
 			surface,
 			acceleration_structure,
 			ray_tracing_pipeline,
-			dynamic_rendering,
 		}
 	}
 }
@@ -567,7 +578,6 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 
 	fn create_command_buffer(&self) -> crate::render_backend::CommandBuffer {
 		let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-			.flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
 			.queue_family_index(self.queue_family_index)
 			/* .build() */;
 
@@ -583,6 +593,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 
 		crate::render_backend::CommandBuffer {
 			vulkan_command_buffer: CommandBuffer {
+				command_pool,
 				command_buffer: command_buffer[0],
 			},
 		}
@@ -883,6 +894,12 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 				|
 				if resource_uses.contains(render_backend::Uses::Uniform) { vk::BufferUsageFlags::UNIFORM_BUFFER } else { vk::BufferUsageFlags::empty() }
 				|
+				if resource_uses.contains(render_backend::Uses::Storage) { vk::BufferUsageFlags::STORAGE_BUFFER } else { vk::BufferUsageFlags::empty() }
+				|
+				if resource_uses.contains(render_backend::Uses::TransferSource) { vk::BufferUsageFlags::TRANSFER_SRC } else { vk::BufferUsageFlags::empty() }
+				|
+				if resource_uses.contains(render_backend::Uses::TransferDestination) { vk::BufferUsageFlags::TRANSFER_DST } else { vk::BufferUsageFlags::empty() }
+				|
 				vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS /*We allways use this feature so include constantly*/
 			)
 			/* .build() */;
@@ -1157,7 +1174,9 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		}).collect::<Vec<_>>()
 	}
 
-	fn begin_command_buffer_recording(&self, command_buffer: &crate::render_backend::CommandBuffer) {
+	fn begin_command_buffer_recording(&self, command_buffer: &render_backend::CommandBuffer) {
+		unsafe { self.device.reset_command_pool(command_buffer.vulkan_command_buffer.command_pool, vk::CommandPoolResetFlags::empty()); } 
+
 		let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
 			/* .build() */;
@@ -1213,13 +1232,13 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 			}
 		];
 
-		unsafe { self.dynamic_rendering.cmd_begin_rendering(command_buffer.vulkan_command_buffer.command_buffer, &rendering_info); }
+		unsafe { self.device.cmd_begin_rendering(command_buffer.vulkan_command_buffer.command_buffer, &rendering_info); }
 		unsafe { self.device.cmd_set_viewport(command_buffer.vulkan_command_buffer.command_buffer, 0, &viewports); }
 		unsafe { self.device.cmd_set_scissor(command_buffer.vulkan_command_buffer.command_buffer, 0, &[render_area]); }
 	}
 
 	fn end_render_pass(&self, command_buffer: &crate::render_backend::CommandBuffer) {
-		unsafe { self.dynamic_rendering.cmd_end_rendering(command_buffer.vulkan_command_buffer.command_buffer); }
+		unsafe { self.device.cmd_end_rendering(command_buffer.vulkan_command_buffer.command_buffer); }
 	}
 
 	fn bind_shader(&self, _command_buffer: &crate::render_backend::CommandBuffer, _shader: &crate::render_backend::Shader) {
@@ -1255,30 +1274,67 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 
 	fn execute_barriers(&self, command_buffer: &crate::render_backend::CommandBuffer, barriers: &[crate::render_backend::BarrierDescriptor]) {
 		let mut image_memory_barriers = Vec::new();
+		let mut buffer_memory_barriers = Vec::new();
+		let mut memory_barriers = Vec::new();
 
 		for barrier in barriers {
 			match barrier.barrier {
-				// crate::render_backend::Barrier::BufferBarrier(buffer_barrier) => {
-				// 	let buffer_memory_barrier = vk::BufferMemoryBarrier2KHR::default()
-				// 		.src_stage_mask(to_pipeline_stage_flags(buffer_barrier.source_stage))
-				// 		.dst_stage_mask(to_pipeline_stage_flags(buffer_barrier.destination_stage))
-				// 		.src_access_mask(to_access_flags(buffer_barrier.source_access))
-				// 		.dst_access_mask(to_access_flags(buffer_barrier.destination_access))
-				// 		.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				// 		.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				// 		.buffer(unsafe { buffer_barrier.buffer.vulkan_buffer.buffer })
-				// 		.offset(0)
-				// 		.size(vk::WHOLE_SIZE)
-				// 		/* .build() */;
-
-				// 	unsafe { self.device.cmd_pipeline_barrier2(command_buffer.vulkan_command_buffer.command_buffer, &vk::DependencyInfo::default().buffer_memory_barriers(&[buffer_memory_barrier])) };
-				// },
-				crate::render_backend::Barrier::Texture(texture_barrier) => {
-					let image_memory_barrier = if let Some(source) = barrier.source {
-							vk::ImageMemoryBarrier2KHR::default()
-							.old_layout(texture_format_and_resource_use_to_image_layout(source.format, source.layout, Some(source.access)))
+				render_backend::Barrier::Buffer(buffer_barrier) => {
+					let buffer_memory_barrier = if let Some(source) = barrier.source {
+							vk::BufferMemoryBarrier2KHR::default()
 							.src_stage_mask(to_pipeline_stage_flags(source.stage))
 							.src_access_mask(to_access_flags(source.access, source.stage))
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						} else {
+							vk::BufferMemoryBarrier2KHR::default()
+							.src_stage_mask(vk::PipelineStageFlags2::empty())
+							.src_access_mask(vk::AccessFlags2KHR::empty())
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						}
+						.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
+						.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
+						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.buffer(unsafe { buffer_barrier.vulkan_buffer.buffer })
+						.offset(0)
+						.size(vk::WHOLE_SIZE)
+						/* .build() */;
+
+					buffer_memory_barriers.push(buffer_memory_barrier);
+				},
+				render_backend::Barrier::Memory() => {
+					let memory_barrier = if let Some(source) = barrier.source {
+						vk::MemoryBarrier2::default()
+							//.src_stage_mask(to_pipeline_stage_flags(source.stage))
+							//.src_access_mask(to_access_flags(source.access, source.stage))
+							.src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+							.src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+
+					} else {
+						vk::MemoryBarrier2::default()
+							.src_stage_mask(vk::PipelineStageFlags2::empty())
+							.src_access_mask(vk::AccessFlags2KHR::empty())
+					}
+					//.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
+					//.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
+					.dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
+					.dst_access_mask(vk::AccessFlags2::MEMORY_READ)
+					/* .build() */;
+
+					memory_barriers.push(memory_barrier);
+				}
+				render_backend::Barrier::Texture{ source, destination, texture } => {
+					let image_memory_barrier = if let Some(barrier_source) = barrier.source {
+							if let Some(texture_source) = source {
+								vk::ImageMemoryBarrier2KHR::default()
+								.old_layout(texture_format_and_resource_use_to_image_layout(texture_source.format, texture_source.layout, Some(barrier_source.access)))
+								.src_stage_mask(to_pipeline_stage_flags(barrier_source.stage))
+								.src_access_mask(to_access_flags(barrier_source.access, barrier_source.stage))
+							} else {
+								vk::ImageMemoryBarrier2KHR::default()
+								.old_layout(vk::ImageLayout::UNDEFINED)
+								.src_stage_mask(vk::PipelineStageFlags2::empty())
+								.src_access_mask(vk::AccessFlags2KHR::empty())
+							}
 						} else {
 							vk::ImageMemoryBarrier2KHR::default()
 							.old_layout(vk::ImageLayout::UNDEFINED)
@@ -1286,13 +1342,13 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 							.src_access_mask(vk::AccessFlags2KHR::empty())
 						}
 						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(texture_format_and_resource_use_to_image_layout(barrier.destination.format, barrier.destination.layout, Some(barrier.destination.access)))
+						.new_layout(texture_format_and_resource_use_to_image_layout(destination.format, destination.layout, Some(barrier.destination.access)))
 						.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
 						.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
 						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.image(unsafe { texture_barrier.vulkan_texture.image })
+						.image(unsafe { texture.vulkan_texture.image })
 						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: if barrier.destination.format != render_backend::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
+							aspect_mask: if destination.format != render_backend::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
 							base_mip_level: 0,
 							level_count: vk::REMAINING_MIP_LEVELS,
 							base_array_layer: 0,
@@ -1307,10 +1363,32 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 
 		let dependency_info = vk::DependencyInfo::default()
 			.image_memory_barriers(&image_memory_barriers)
+			.buffer_memory_barriers(&buffer_memory_barriers)
+			.memory_barriers(&memory_barriers)
 			.dependency_flags(vk::DependencyFlags::BY_REGION)
 			/* .build() */;
 
 		unsafe { self.device.cmd_pipeline_barrier2(command_buffer.vulkan_command_buffer.command_buffer, &dependency_info) };
+	}
+
+	fn copy_buffers(&self, command_buffer: &render_backend::CommandBuffer, copies: &[render_backend::BufferCopy]) {
+		for copy in copies {
+			let buffer_copy = vk::BufferCopy2KHR::default()
+				.src_offset(0)
+				.dst_offset(0)
+				.size(copy.size as u64)
+				/* .build() */;
+
+			let regions = [buffer_copy];
+
+			let copy_buffer_info = vk::CopyBufferInfo2KHR::default()
+				.src_buffer(unsafe { copy.source.vulkan_buffer.buffer })
+				.dst_buffer(unsafe { copy.destination.vulkan_buffer.buffer })
+				.regions(&regions)
+				/* .build() */;
+
+			unsafe { self.device.cmd_copy_buffer2(command_buffer.vulkan_command_buffer.command_buffer, &copy_buffer_info); }
+		}
 	}
 
 	fn copy_textures(&self, command_buffer: &crate::render_backend::CommandBuffer, copies: &[crate::render_backend::TextureCopy]) {
@@ -1384,7 +1462,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		}
 	}
 
-	fn execute(&self, command_buffer: &crate::render_backend::CommandBuffer, wait_for: Option<&crate::render_backend::Synchronizer>, signal: Option<&crate::render_backend::Synchronizer>, execution_completion: &crate::render_backend::Synchronizer) {
+	fn execute(&self, command_buffer: &crate::render_backend::CommandBuffer, wait_for: &[render_backend::Synchronizer], signal: &[render_backend::Synchronizer], execution_completion: &crate::render_backend::Synchronizer) {
 		let command_buffers = [unsafe { command_buffer.vulkan_command_buffer.command_buffer }];
 
 		let command_buffer_infos = [
@@ -1395,26 +1473,21 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 				/* .build() */
 		];
 
-		let wait_semaphores = if let Some(wait_for) = wait_for {
-			vec![
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(unsafe { wait_for.vulkan_synchronizer.semaphore })
-					.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-					/* .build() */
-			]
-		} else {
-			vec![]
-		};
+		// TODO: Take actual stage masks
 
-		let signal_semaphores = if let Some(signal) = signal {
-			vec![
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(unsafe { signal.vulkan_synchronizer.semaphore })
+		let wait_semaphores = wait_for.iter().map(|wait_for| {
+			vk::SemaphoreSubmitInfo::default()
+				.semaphore(unsafe { wait_for.vulkan_synchronizer.semaphore })
+				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
 				/* .build() */
-			]
-		} else {
-			vec![]
-		};
+		}).collect::<Vec<_>>();
+
+		let signal_semaphores = signal.iter().map(|signal| {
+			vk::SemaphoreSubmitInfo::default()
+				.semaphore(unsafe { signal.vulkan_synchronizer.semaphore })
+				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+				/* .build() */
+		}).collect::<Vec<_>>();
 
 		let submit_info = vk::SubmitInfo2::default()
 			.command_buffer_infos(&command_buffer_infos)

@@ -1,7 +1,7 @@
 #![feature(const_mut_refs)]
 
 use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self}, render_domain::{Mesh, MeshParameters}, Vector2, math};
-use maths_rs::prelude::{MatTranslate, MatScale};
+use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
 #[test]
@@ -24,9 +24,10 @@ fn gallery_shooter() {
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
-	let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-0.5, 0.5, 2.0)) * scale, });
-	let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.5, 2.0)) * scale, });
-	let duck_3: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.5, 2.0)) * scale, });
+	let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
+	let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
+	let duck_3: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
+	let duck_4: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
 
 	app.do_loop();
 
@@ -76,18 +77,14 @@ impl Player {
 	}
 
 	fn set_lookaround(&mut self, orchestrator: orchestrator::OrchestratorReference, direction: Vec3f) {
-		let old_direction = orchestrator.get_property(&self.camera, byte_engine::camera::Camera::orientation);
-		let new_direction = direction;
-
-		let direction_delta = new_direction - old_direction;
-
-		let rotation = math::look_at(Vector3::new(-new_direction.x, -new_direction.y, new_direction.z));
-
 		let mut transform = maths_rs::Mat4f::identity();
 
-		transform *= rotation;
-		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 0.9f32));
+		transform *= maths_rs::Mat4f::from_translation(direction);
+		transform *= math::look_at(direction).inverse();
+		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.0f32));
 		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
+
+		println!("Position {:?}", Vec3f::new(transform[3], transform[7], transform[11]));
 
 		orchestrator.set_property(&self.mesh, Mesh::transform, transform);
 	}

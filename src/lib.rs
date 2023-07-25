@@ -9,6 +9,7 @@
 #![feature(non_lifetime_binders)]
 #![feature(downcast_unchecked)]
 #![feature(const_mut_refs)]
+#![feature(extract_if)]
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 

@@ -539,6 +539,17 @@ impl InputManager {
 			time,
 		};
 
+		{
+			let mut i = 0;
+			while i < self.records.len() {
+				if self.records[i].input_source_handle == input_source_handle {
+					self.records.remove(i);
+				} else {
+					i += 1;
+				}
+			}
+		}
+
 		self.records.push(record);
 
 		if let Value::Bool(boo) = value {
@@ -561,18 +572,19 @@ impl InputManager {
 
 		if records.len() == 0 { return; }
 
-		for record in records {
-			let actions_for_input_source = self.actions.iter().enumerate().filter(|(i, a)| { a.input_event_descriptions.iter().any(|ied| ied.input_source_handle == record.input_source_handle) });
+		for (i, action) in self.actions.iter().enumerate() {
+			let action_records = records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle));
 
-			for (i, action) in actions_for_input_source {
-				match action.type_ {
-					Types::Vector2 => {
-						let v = if let Value::Vector2(v) = record.value.clone() { v } else { panic!("Not a vector2!") };
+			let most_recent_record = action_records.max_by_key(|r| r.time);
+
+			if let Some(record) = most_recent_record {
+				let value = self.resolve_action_value_from_record(action, record);
+
+				match value {
+					Value::Vector2(v) => {
 						orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
 					}
-					Types::Vector3 => {
-						let value = self.get_action_state(ActionHandle(i as u32), &DeviceHandle(0));
-						let v = if let Value::Vector3(v) = value.value { v } else { panic!("Not a vector3!") };
+					Value::Vector3(v) => {
 						orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector3>::value, v);
 					}
 					_ => {}
@@ -694,9 +706,12 @@ impl InputManager {
 							if let Function::Sphere = function {
 								let r = record_value;
 
-								let x = r.x;
-								let y = r.y;
-								let z = (1f32 - (x * x + y * y)).sqrt();
+								let x_pi = r.x * PI;
+								let y_pi = r.y * PI * 0.5f32;
+
+								let x = x_pi.sin() * y_pi.cos();
+								let y = y_pi.sin();
+								let z = x_pi.cos() * y_pi.cos();
 
 								let transformation = if let Value::Vector3(transformation) = mapping.mapping { transformation } else { panic!("Not implemented!"); };
 

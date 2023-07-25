@@ -218,7 +218,10 @@ impl Orchestrator {
 
 		if ties.contains_key(&(property_function_pointer as usize)) {
 			let ties = ties.get_mut(&(property_function_pointer as usize)).unwrap();
-			ties.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
+
+			if !ties.iter().any(|tie| tie.destination_system_handle == receiver_component_handle.internal_id) {
+				ties.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
+			}
 		} else {
 			let mut ties_new = Vec::new();
 			ties_new.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });

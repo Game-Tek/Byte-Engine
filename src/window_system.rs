@@ -230,6 +230,7 @@ pub enum WindowEvents {
 	MouseMove {
 		x: u32,
 		y: u32,
+		time: u64,
 	},
 }
 
@@ -554,7 +555,7 @@ impl Window {
 					let x = ev.event_x();
 					let y = ev.event_y();
 
-					Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32) })
+					Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32), time: ev.time() as u64 })
 				},
 				_ => { None }
 			};

@@ -1,6 +1,6 @@
 pub fn look_at(direction: crate::Vector3) -> maths_rs::Mat4f {
-	let x_axis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 1f32, 0f32), direction));
-	let y_axis = maths_rs::normalize(maths_rs::cross(direction, x_axis));
+	let x_axis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(direction)));
+	let y_axis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(direction), x_axis));
 
 	maths_rs::Mat4f::from((
 		maths_rs::Vec4f::from((x_axis, 0f32)),

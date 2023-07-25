@@ -195,7 +195,7 @@ impl Application for GraphicsApplication {
 					window_system::WindowEvents::Button { pressed, button } => {
 						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
 					},
-					window_system::WindowEvents::MouseMove { x, y } => {
+					window_system::WindowEvents::MouseMove { x, y, time } => {
 						let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
 						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
 					},

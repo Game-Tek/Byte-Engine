@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::hash::Hasher;
 
-use crate::render_backend::RenderBackend;
+use crate::render_backend::{RenderBackend, Uses};
 use crate::{window_system, orchestrator::System, Extent};
 use crate::{render_backend, insert_return_length, render_debugger, orchestrator};
 
@@ -98,11 +98,12 @@ pub struct VertexElement {
 pub struct BufferHandle(u32);
 
 struct Buffer {
+	common_handle: usize,
 	frame_handle: Option<FrameHandle>,
-	next: Option<BufferHandle>,
 	buffer: crate::render_backend::Buffer,
 	size: usize,
 	pointer: *mut u8,
+	role: String,
 }
 
 unsafe impl Send for Buffer {} // Needed for pointer field
@@ -175,7 +176,7 @@ pub struct CommandBufferRecording<'a> {
 	frame_handle: Option<FrameHandle>,
 	in_render_pass: bool,
 	/// `texture_states` is used to perform resource tracking on textures.\ It is mainly useful for barriers and transitions and copies.
-	texture_states: HashMap<TextureHandle, crate::render_backend::TransitionState>,
+	texture_states: HashMap<TextureHandle, (render_backend::TransitionState, render_backend::TextureState)>,
 }
 
 pub struct BufferDescriptor {
@@ -199,7 +200,7 @@ impl CommandBufferRecording<'_> {
 	/// Retrieves the current state of a texture.\
 	/// If the texture has no known state, it will return a default state with undefined layout. This is useful for the first transition of a texture.\
 	/// If the texture has a known state, it will return the known state.
-	fn get_texture_state(&self, texture_handle: TextureHandle) -> Option<crate::render_backend::TransitionState> {
+	fn get_texture_state(&self, texture_handle: TextureHandle) -> Option<(render_backend::TransitionState, render_backend::TextureState)> {
 		if let Some(state) = self.texture_states.get(&texture_handle) {
 			Some(*state)
 		} else {
@@ -212,7 +213,7 @@ impl CommandBufferRecording<'_> {
 	/// If the texture has a known state, it will update it with the given state.
 	/// It will return the given state.
 	/// This is useful to perform a transition on a texture.
-	fn upsert_texture_state(&mut self, texture_handle: TextureHandle, texture_state: crate::render_backend::TransitionState) -> crate::render_backend::TransitionState {
+	fn upsert_texture_state(&mut self, texture_handle: TextureHandle, texture_state: (render_backend::TransitionState, render_backend::TextureState)) -> (render_backend::TransitionState, render_backend::TextureState) {
 		self.texture_states.insert(texture_handle, texture_state);
 		texture_state
 	}
@@ -225,15 +226,23 @@ impl CommandBufferRecording<'_> {
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
 	pub fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInfo]) {
-		let barriers = attachments.iter().map(|attachment| crate::render_backend::BarrierDescriptor {
-			barrier: crate::render_backend::Barrier::Texture(self.render_system.get_texture(self.frame_handle, attachment.texture).texture),
-			source: self.get_texture_state(attachment.texture),
-			destination: self.upsert_texture_state(attachment.texture, crate::render_backend::TransitionState {
-				layout: crate::render_backend::Layouts::RenderTarget,
-				format: attachment.format,
-				stage: crate::render_backend::Stages::FRAGMENT,
-				access: crate::render_backend::AccessPolicies::WRITE,
-			}),
+		let barriers = attachments.iter().map(|attachment| {
+				let state = self.get_texture_state(attachment.texture, );
+
+				render_backend::BarrierDescriptor {
+					barrier: render_backend::Barrier::Texture{ texture: self.render_system.get_texture(self.frame_handle, attachment.texture).texture, source: state.and_then(|s| Some(s.1)), destination: render_backend::TextureState{ layout: render_backend::Layouts::RenderTarget, format: attachment.format } },
+					source: self.get_texture_state(attachment.texture).and_then(|f| Some(f.0)),
+					destination: self.upsert_texture_state(attachment.texture, (render_backend::TransitionState {
+						stage: render_backend::Stages::FRAGMENT,
+						access: render_backend::AccessPolicies::WRITE,
+					},
+					render_backend::TextureState {
+						layout: render_backend::Layouts::RenderTarget,
+						format: attachment.format,
+					}
+					)
+				).0,
+			}
 		}).collect::<Vec<_>>();
 
 		self.render_system.render_backend.execute_barriers(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &barriers);
@@ -336,16 +345,20 @@ impl CommandBufferRecording<'_> {
 	/// The `stage` parameter determines the new stage of the texture.
 	/// The `access` parameter determines the new access of the texture.
 	/// The resource states are automatically tracked.
-	pub fn transition_textures(&mut self, transitions: &[(TextureHandle, bool, crate::render_backend::Layouts, crate::render_backend::Stages, crate::render_backend::AccessPolicies)]) {
+	pub fn transition_textures(&mut self, transitions: &[(TextureHandle, bool, render_backend::Layouts, render_backend::Stages, render_backend::AccessPolicies)]) {
 		let mut barriers = Vec::new();
 
 		for (texture_handle, keep_old, layout, stage, access) in transitions {
 			let texture = self.render_system.get_texture(self.frame_handle, *texture_handle);
 
-			barriers.push(crate::render_backend::BarrierDescriptor {
-				barrier: crate::render_backend::Barrier::Texture(texture.texture),
-				source: if *keep_old { self.get_texture_state(*texture_handle) } else { None },
-				destination: self.upsert_texture_state(*texture_handle, crate::render_backend::TransitionState { layout: *layout, format: texture.format, stage: *stage, access: *access, }),
+			barriers.push(render_backend::BarrierDescriptor {
+				barrier: render_backend::Barrier::Texture{
+					source: if *keep_old { self.get_texture_state(*texture_handle).and_then(|s| Some(s.1)) } else { None },
+					destination: render_backend::TextureState { layout: *layout, format: texture.format },
+					texture: texture.texture
+				},
+				source: if *keep_old { self.get_texture_state(*texture_handle).and_then(|s| Some(s.0)) } else { None },
+				destination: self.upsert_texture_state(*texture_handle, (render_backend::TransitionState { stage: *stage, access: *access, }, render_backend::TextureState{ layout: *layout, format: texture.format })).0,
 			});
 		}
 
@@ -473,7 +486,7 @@ impl CommandBufferRecording<'_> {
 			//barrier: crate::render_backend::Barrier::Texture(self.render_system.textures[surface.textures[self.frame_handle.unwrap().0 as usize].0 as usize].texture),
 
 			let transitions = [
-				(surface.textures[self.frame_handle.unwrap().0 as usize], true, crate::render_backend::Layouts::Present, crate::render_backend::Stages::TRANSFER, crate::render_backend::AccessPolicies::READ),
+				(surface.textures[self.frame_handle.unwrap().0 as usize], true, crate::render_backend::Layouts::Present, crate::render_backend::Stages::PRESENTATION, crate::render_backend::AccessPolicies::READ),
 			];
 
 			self.transition_textures(&transitions);
@@ -486,12 +499,45 @@ impl CommandBufferRecording<'_> {
 	pub fn bind_descriptor_set(&self, pipeline_layout: PipelineLayoutHandle, arg: u32, descriptor_set_handle: &DescriptorSetHandle) {
 		self.render_system.render_backend.bind_descriptor_set(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &self.render_system.pipeline_layouts[pipeline_layout.0 as usize].pipeline_layout, &self.render_system.descriptor_sets[descriptor_set_handle.0 as usize].descriptor_set, arg);
 	}
+
+	pub(crate) fn synchronize_buffers(&self) {
+		let mut copies = Vec::new();
+		let mut barriers = Vec::new();
+
+		for buffer in &self.render_system.buffers {
+			if buffer.role == "GPU_READ" {
+				let source_buffer = self.render_system.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer.common_handle).unwrap();
+
+				copies.push(
+					render_backend::BufferCopy {
+						source: source_buffer.buffer,
+						destination: buffer.buffer,
+						size: buffer.size,
+					}
+				);
+				
+				barriers.push(render_backend::BarrierDescriptor {
+					barrier: render_backend::Barrier::Memory(),
+					source: Some(render_backend::TransitionState { stage: render_backend::Stages::TRANSFER, access: render_backend::AccessPolicies::WRITE, }),
+					destination: render_backend::TransitionState {
+						stage: render_backend::Stages::VERTEX,
+						access: render_backend::AccessPolicies::READ,
+					},
+				});
+			}
+		}
+		
+		let command_buffer = self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer;
+
+		self.render_system.render_backend.copy_buffers(&command_buffer, &copies);
+		self.render_system.render_backend.execute_barriers(&command_buffer, &barriers);
+	}
 }
 
 pub struct AllocationHandle(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FrameHandle(u32);
+pub struct FrameHandle(pub u32);
 
 struct Frame {}
 
@@ -515,10 +561,10 @@ pub enum Descriptor {
 }
 
 pub struct DescriptorWrite {
-	descriptor_set: DescriptorSetHandle,
-	binding: u32,
-	array_element: u32,
-	descriptor: Descriptor,
+	pub descriptor_set: DescriptorSetHandle,
+	pub binding: u32,
+	pub array_element: u32,
+	pub descriptor: Descriptor,
 }
 
 pub struct DescriptorSetLayoutBinding {
@@ -527,6 +573,11 @@ pub struct DescriptorSetLayoutBinding {
 	pub descriptor_count: u32,
 	pub stage_flags: render_backend::Stages,
 	pub immutable_samplers: Option<Vec<SamplerHandle>>,
+}
+
+pub enum UseCases {
+	STATIC,
+	DYNAMIC
 }
 
 /// The [`RenderSystem`] implements easy to use rendering functionality.
@@ -642,15 +693,17 @@ impl RenderSystem {
 
 		self.meshes.push(Mesh {
 			vertex_buffer: Buffer {
+				common_handle: 0,
+				role: "VERTEX".to_string(),
 				frame_handle: None,
-				next: None,
 				buffer: vertex_buffer_creation_result.resource,
 				size: vertex_buffer_creation_result.size,
 				pointer: std::ptr::null_mut(),
 			},
 			index_buffer: Buffer {
+				common_handle: 1,
+				role: "INDEX".to_string(),
 				frame_handle: None,
-				next: None,
 				buffer: index_buffer_creation_result.resource,
 				size: index_buffer_creation_result.size,
 				pointer: std::ptr::null_mut(),
@@ -757,12 +810,16 @@ impl RenderSystem {
 			binding: descriptor_write.binding,
 			array_element: descriptor_write.array_element,
 			descriptor_type: match descriptor_write.descriptor {
-				Descriptor::Buffer(_) => crate::render_backend::DescriptorType::UniformBuffer,
-				Descriptor::Texture(_) => crate::render_backend::DescriptorType::SampledImage,
+				Descriptor::Buffer(_) => render_backend::DescriptorType::UniformBuffer,
+				Descriptor::Texture(_) => render_backend::DescriptorType::SampledImage,
 			},
 			descriptor_info: match descriptor_write.descriptor {
-				Descriptor::Buffer(buffer_handle) => crate::render_backend::DescriptorInfo::Buffer{ buffer: self.buffers[buffer_handle.0 as usize].buffer, offset: 0, range: 64 },
-				Descriptor::Texture(texture_handle) => crate::render_backend::DescriptorInfo::Texture{ texture: self.textures[texture_handle.0 as usize].texture_view.unwrap(), format: render_backend::TextureFormats::RGBAu8, layout: render_backend::Layouts::Texture, },
+				Descriptor::Buffer(buffer_handle) => {
+					let buffer = &self.buffers[buffer_handle.0 as usize];
+					assert!(buffer.role == "GPU_READ");
+					render_backend::DescriptorInfo::Buffer{ buffer: buffer.buffer, offset: 0, range: 128 }
+				}
+				Descriptor::Texture(texture_handle) => render_backend::DescriptorInfo::Texture{ texture: self.textures[texture_handle.0 as usize].texture_view.unwrap(), format: render_backend::TextureFormats::RGBAu8, layout: render_backend::Layouts::Texture, },
 			},
 		}).collect::<Vec<_>>();
 
@@ -851,59 +908,109 @@ impl RenderSystem {
 	/// # Returns
 	/// 
 	/// The handle of the buffer.
-	pub fn create_buffer(&mut self, size: usize, resource_uses: render_backend::Uses, device_accesses: DeviceAccesses) -> BufferHandle {
-		let buffer_handle = BufferHandle(self.buffers.len() as u32);
+	pub fn create_buffer(&mut self, size: usize, resource_uses: render_backend::Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle {
+		let buffer_index = self.buffers.len();
 
-		let mut previous_buffer_handle: Option<BufferHandle> = None;
+		let buffer_handle = BufferHandle(buffer_index as u32);
 
 		if device_accesses.contains(DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead) {
-			for i in 0..self.frames.len() {
-				let buffer_handle = BufferHandle(self.buffers.len() as u32);
+			match use_case {
+				UseCases::STATIC => {
+					let buffer_creation_result = self.render_backend.create_buffer(size, resource_uses);
 
-				let buffer_creation_result = self.render_backend.create_buffer(size, resource_uses);
+					let allocation_handle = self.create_allocation(buffer_creation_result.size, resource_uses, device_accesses);
 
-				let allocation_handle = self.create_allocation(buffer_creation_result.size, resource_uses, device_accesses);
+					let allocation = &self.allocations[allocation_handle.0 as usize];
 
-				let allocation = &self.allocations[allocation_handle.0 as usize];
+					self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &buffer_creation_result);
 
-				self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &buffer_creation_result);
+					let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
 
-				let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
-
-				self.buffers.push(Buffer {
-					frame_handle: None,
-					next: None,
-					buffer: buffer_creation_result.resource,
-					size: buffer_creation_result.size,
-					pointer,
-				});
-
-				if let Some(previous_buffer_handle) = previous_buffer_handle {
-					self.buffers[previous_buffer_handle.0 as usize].next = Some(buffer_handle);
+					self.buffers.push(Buffer {
+						common_handle: buffer_index,
+						role: String::from("CPU_WRITE"),
+						frame_handle: None,
+						buffer: buffer_creation_result.resource,
+						size: buffer_creation_result.size,
+						pointer,
+					});
 				}
+				UseCases::DYNAMIC => {	
+					let buffer_creation_result = self.render_backend.create_buffer(size, resource_uses | Uses::TransferDestination);
+	
+					let allocation_handle = self.create_allocation(buffer_creation_result.size, resource_uses, DeviceAccesses::GpuRead);
+	
+					let allocation = &self.allocations[allocation_handle.0 as usize];
+	
+					self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &buffer_creation_result);
+	
+					let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
+	
+					self.buffers.push(Buffer {
+						common_handle: buffer_index,
+						frame_handle: None,
+						role: String::from("GPU_READ"),
+						buffer: buffer_creation_result.resource,
+						size: buffer_creation_result.size,
+						pointer,
+					});
 
-				previous_buffer_handle = Some(buffer_handle);
+					let buffer_creation_result = self.render_backend.create_buffer(size, resource_uses | Uses::TransferSource);
+
+					let allocation_handle = self.create_allocation(buffer_creation_result.size, resource_uses, DeviceAccesses::CpuWrite);
+
+					let allocation = &self.allocations[allocation_handle.0 as usize];
+
+					self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &buffer_creation_result);
+
+					let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
+
+					self.buffers.push(Buffer {
+						common_handle: buffer_index,
+						frame_handle: None,
+						role: String::from("CPU_WRITE"),
+						buffer: buffer_creation_result.resource,
+						size: buffer_creation_result.size,
+						pointer,
+					});
+				}
 			}
+		} else if device_accesses.contains(DeviceAccesses::GpuWrite) {
+			let buffer_creation_result = self.render_backend.create_buffer(size, resource_uses);
+
+			let allocation_handle = self.create_allocation(buffer_creation_result.size, resource_uses, device_accesses);
+
+			let allocation = &self.allocations[allocation_handle.0 as usize];
+
+			self.render_backend.bind_buffer_memory(crate::render_backend::Memory{ allocation: &allocation.allocation, offset: 0, size: size }, &buffer_creation_result);
+
+			let pointer = self.render_backend.get_allocation_pointer(&allocation.allocation);
+
+			self.buffers.push(Buffer {
+				common_handle: buffer_index,
+				role: String::new(),
+				frame_handle: None,
+				buffer: buffer_creation_result.resource,
+				size: buffer_creation_result.size,
+				pointer,
+			});
 		}
 
 		buffer_handle
 	}
 
 	pub fn get_buffer_address(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
-		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
-		let buffer = &self.buffers[buffer_handle.0 as usize];
+		let buffer = self.buffers.iter().find(|b| b.role == "GPU_READ" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		self.render_backend.get_buffer_address(&buffer.buffer)
 	}
 
-	pub fn get_buffer_pointer(&mut self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> *mut u8 {
-		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
-		let buffer = &mut self.buffers[buffer_handle.0 as usize];
-		buffer.pointer
+	pub fn cheat_get_buffer_address(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
+		let buffer = self.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer_handle.0 as usize).unwrap();
+		self.render_backend.get_buffer_address(&buffer.buffer)
 	}
 
 	pub fn get_buffer_slice(&mut self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &[u8] {
-		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
-		let buffer = &mut self.buffers[buffer_handle.0 as usize];
+		let buffer = self.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		unsafe {
 			std::slice::from_raw_parts(buffer.pointer, buffer.size as usize)
 		}
@@ -911,8 +1018,7 @@ impl RenderSystem {
 
 	// Return a mutable slice to the buffer data.
 	pub fn get_mut_buffer_slice(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &mut [u8] {
-		let buffer_handle = self.get_buffer_handle(frame_handle, buffer_handle);
-		let buffer = &self.buffers[buffer_handle.0 as usize];
+		let buffer = self.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		unsafe {
 			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size as usize)
 		}
@@ -1188,7 +1294,7 @@ impl RenderSystem {
 	/// # Panics
 	///
 	/// Panics if .
-	pub fn acquire_swapchain_image(&mut self, frame_handle: Option<FrameHandle>, synchronizer_handle: SynchronizerHandle) -> u32 {
+	pub fn acquire_swapchain_image(&self, frame_handle: Option<FrameHandle>, synchronizer_handle: SynchronizerHandle) -> u32 {
 		let synchronizer = self.get_synchronizer(frame_handle, synchronizer_handle);
 		let (index, swapchain_state) = self.render_backend.acquire_swapchain_image(&self.surface.as_ref().unwrap().swapchain, &synchronizer.synchronizer);
 
@@ -1204,24 +1310,18 @@ impl RenderSystem {
 		surface.textures[frame_handle.unwrap().0 as usize]
 	}
 
-	pub fn execute(&self, frame_handle: Option<FrameHandle>, command_buffer_recording: CommandBufferRecording, wait_for_synchronizer_handle: Option<SynchronizerHandle>, signal_synchronizer_handle: Option<SynchronizerHandle>, execution_synchronizer_handle: SynchronizerHandle) {
+	pub fn execute(&self, frame_handle: Option<FrameHandle>, mut command_buffer_recording: CommandBufferRecording, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle) {
+		command_buffer_recording.end();
+
 		let command_buffer = self.get_command_buffer(frame_handle, command_buffer_recording.command_buffer);
 
-		let wait_for_synchronizer = if let Some(wait_for_synchronizer) = wait_for_synchronizer_handle {
-			Some(&self.get_synchronizer(frame_handle, wait_for_synchronizer).synchronizer)
-		} else {
-			None
-		};
+		let wait_for_synchronizers = wait_for_synchronizer_handles.iter().map(|wait_for_synchronizer_handle| self.get_synchronizer(frame_handle, *wait_for_synchronizer_handle).synchronizer).collect::<Vec<_>>();
 
-		let signal_synchronizer = if let Some(signal_synchronizer) = signal_synchronizer_handle {
-			Some(&self.get_synchronizer(frame_handle, signal_synchronizer).synchronizer)
-		} else {
-			None
-		};
+		let signal_synchronizers = signal_synchronizer_handles.iter().map(|signal_synchronizer_handle| self.get_synchronizer(frame_handle, *signal_synchronizer_handle).synchronizer).collect::<Vec<_>>();
 
 		let execution_synchronizer = self.get_synchronizer(frame_handle, execution_synchronizer_handle);
 
-		self.render_backend.execute(&command_buffer.command_buffer, wait_for_synchronizer, signal_synchronizer, &execution_synchronizer.synchronizer);
+		self.render_backend.execute(&command_buffer.command_buffer, &wait_for_synchronizers, &signal_synchronizers, &execution_synchronizer.synchronizer);
 	}
 
 	pub fn present(&self, frame_handle: Option<FrameHandle>, image_index: u32, synchronizer_handle: SynchronizerHandle) {
@@ -1280,17 +1380,6 @@ impl RenderSystem {
 		let mut resource = &self.buffers[resource_handle.0 as usize];
 		let mut buffer_handle = resource_handle;
 
-		loop {
-			if resource.frame_handle == frame_handle { break; }
-
-			if let Some(next) = resource.next {
-				resource = &self.buffers[next.0 as usize];
-				buffer_handle = next;
-			} else {
-				panic!("Resource not found");
-			}
-		}
-
 		buffer_handle
 	}
 
@@ -1324,6 +1413,22 @@ impl RenderSystem {
 		}
 
 		resource
+	}
+
+	fn copy_buffers(&self, command_buffer_handle: CommandBufferHandle, buffer_handles: &[BufferHandle]) {
+		let command_buffer = self.get_command_buffer(None, command_buffer_handle);
+
+		let copies = buffer_handles.iter().map(|buffer_handle| {
+			let buffer = self.get_buffer_handle(None, *buffer_handle);
+			let buffer = &self.buffers[buffer.0 as usize];
+			crate::render_backend::BufferCopy {
+				source: buffer.buffer,
+				destination: buffer.buffer,
+				size: buffer.size,
+			}
+		}).collect::<Vec<_>>();
+
+		self.render_backend.copy_buffers(&command_buffer.command_buffer, &copies);
 	}
 }
 
@@ -1447,7 +1552,7 @@ mod tests {
 
 		command_buffer_recording.end();
 
-		renderer.execute(Some(frame_handle), command_buffer_recording, None, None, signal);
+		renderer.execute(Some(frame_handle), command_buffer_recording, &[], &[], signal);
 
 		renderer.end_frame_capture();
 
@@ -1606,7 +1711,7 @@ mod tests {
 
 		command_buffer_recording.end();
 
-		renderer.execute(Some(frame_handle), command_buffer_recording, Some(image_ready), Some(render_finished_synchronizer), render_finished_synchronizer);
+		renderer.execute(Some(frame_handle), command_buffer_recording, &[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
 
 		renderer.present(Some(frame_handle), image_index, render_finished_synchronizer);
 
@@ -1733,7 +1838,7 @@ mod tests {
 
 			command_buffer_recording.end();
 
-			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, None, None, render_finished_synchronizer);
+			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 		}
@@ -1830,7 +1935,7 @@ mod tests {
 
 		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
-		let buffer = renderer.create_buffer(64, crate::render_backend::Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+		let buffer = renderer.create_buffer(64, crate::render_backend::Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1881,7 +1986,7 @@ mod tests {
 
 			command_buffer_recording.end();
 
-			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, None, None, render_finished_synchronizer);
+			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 		}
@@ -1952,7 +2057,7 @@ mod tests {
 		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
-		let buffer = renderer.create_buffer(64, render_backend::Uses::Uniform, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+		let buffer = renderer.create_buffer(64, render_backend::Uses::Uniform, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let sampled_texture = renderer.create_texture(crate::Extent { width: 2, height: 2, depth: 1 }, crate::render_backend::TextureFormats::RGBAu8, crate::render_backend::Uses::Texture, crate::render_system::DeviceAccesses::CpuWrite | crate::render_system::DeviceAccesses::GpuRead);
 
@@ -2049,7 +2154,7 @@ mod tests {
 
 		command_buffer_recording.end();
 
-		renderer.execute(Some(frame_handle), command_buffer_recording, None, None, signal);
+		renderer.execute(Some(frame_handle), command_buffer_recording, &[], &[], signal);
 
 		renderer.end_frame_capture();
 

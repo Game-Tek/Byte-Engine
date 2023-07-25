@@ -187,6 +187,17 @@ pub struct TextureCopy {
 }
 
 #[derive(Clone, Copy)]
+/// Stores the information of a buffer copy.
+pub struct BufferCopy {
+	/// The source buffer.
+	pub source: Buffer,
+	/// The destination buffer.
+	pub destination: Buffer,
+	/// The size of the copy.
+	pub size: usize,
+}
+
+#[derive(Clone, Copy)]
 /// Stores the information of a memory backed resource.
 pub struct MemoryBackedResourceCreationResult<T> {
 	/// The resource.
@@ -211,10 +222,27 @@ bitflags! {
 }
 
 #[derive(Clone, Copy)]
+pub struct TextureState {
+	/// The layout of the resource.
+	pub layout: Layouts,
+	/// The format of the resource.
+	pub format: TextureFormats,
+}
+
+#[derive(Clone, Copy)]
 /// Stores the information of a barrier.
 pub enum Barrier {
 	/// A texture barrier.
-	Texture(Texture),
+	Texture {
+		source: Option<TextureState>,
+		destination: TextureState,
+		/// The texture of the barrier.
+		texture: Texture,
+	},
+	/// A buffer barrier.
+	Buffer(Buffer),
+	/// A memory barrier.
+	Memory(),
 }
 
 bitflags! {
@@ -231,6 +259,18 @@ bitflags! {
 		const COMPUTE = 0b00000100;
 		/// The transfer stage.
 		const TRANSFER = 0b00001000;
+		/// The acceleration structure stage.
+		const ACCELERATION_STRUCTURE = 0b00010000;
+		/// The presentation stage.
+		const PRESENTATION = 0b00100000;
+		/// The host stage.
+		const HOST = 0b01000000;
+		/// The all graphics stage.
+		const ALL_GRAPHICS = 0b10000000;
+		/// The all stage.
+		const ALL = 0b11111111;
+		/// The shader read stage.
+		const SHADER_READ = 0b00000001;
 	}
 }
 
@@ -241,10 +281,6 @@ pub struct TransitionState {
 	pub stage: Stages,
 	/// The type of access that will be done on the resource by the process the operation that requires this transition.
 	pub access: AccessPolicies,
-	/// The layout of the resource.
-	pub layout: Layouts,
-	/// The format of the resource.
-	pub format: TextureFormats,
 }
 
 /// Stores the information of a barrier descriptor.
@@ -726,13 +762,15 @@ pub trait RenderBackend {
 	/// * `copies` - The copies to perform.
 	fn copy_textures(&self, command_buffer: &CommandBuffer, copies: &[TextureCopy]);
 
+	fn copy_buffers(&self, command_buffer: &CommandBuffer, copies: &[BufferCopy]);
+
 	/// Executes a command buffer.
 	/// 
 	/// # Arguments
 	/// * `command_buffer` - The command buffer to execute.
 	/// * `wait_for` - The synchronizer to wait for.
 	/// * `signal` - The synchronizer to signal.
-	fn execute(&self, command_buffer: &CommandBuffer, wait_for: Option<&crate::render_backend::Synchronizer>, signal: Option<&crate::render_backend::Synchronizer>, execution_completion: &crate::render_backend::Synchronizer);
+	fn execute(&self, command_buffer: &CommandBuffer, wait_for: &[Synchronizer], signal: &[Synchronizer], execution_completion: &crate::render_backend::Synchronizer);
 
 	/// Acquires an image from a swapchain.
 	/// 

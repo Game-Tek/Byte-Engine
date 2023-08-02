@@ -1,28 +1,42 @@
 //! The shader_generator module provides utilities to generate shaders.
 
+use std::fmt::format;
+
 use json;
 
 pub struct ShaderGenerator {
 
 }
 
-fn translate_type(value: &str) -> &str {
-	match value {
-		"vec3f" => "vec3",
-		"vec4f" => "vec4",
-		"mat3f" => "mat3",
-		"mat4f" => "mat4",
-		"mat3x4f" => "mat4x3",
-		"mat4x3f" => "mat3x4",
-		"mat3x4" => "mat4x3",
-		"mat4x3" => "mat3x4",
-		_ => value
-	}
-}
-
 impl ShaderGenerator {
-	fn new() -> ShaderGenerator {
+	pub fn new() -> ShaderGenerator {
 		ShaderGenerator {}
+	}
+
+	fn generate_glsl_extension_block(shader_type: &str) -> String {
+		let mut shader_string = String::with_capacity(1024);
+
+		shader_string.push_str("#extension GL_EXT_shader_16bit_storage : enable\n");
+		shader_string.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n");
+		shader_string.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n");
+		shader_string.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n");
+		shader_string.push_str("#extension GL_EXT_nonuniform_qualifier : enable\n");
+		shader_string.push_str("#extension GL_EXT_scalar_block_layout : enable\n");
+		shader_string.push_str("#extension GL_EXT_buffer_reference : enable\n");
+		shader_string.push_str("#extension GL_EXT_buffer_reference2 : enable\n");
+		shader_string.push_str("#extension GL_EXT_shader_image_load_formatted : enable\n");
+
+		match shader_type {
+			"compute" => {
+				shader_string.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
+				shader_string.push_str("#extension GL_KHR_shader_subgroup_arithmetic  : enable\n");
+				shader_string.push_str("#extension GL_KHR_shader_subgroup_ballot : enable\n");
+				shader_string.push_str("#extension GL_KHR_shader_subgroup_shuffle : enable\n");
+			}
+			_ => {}
+		}
+
+		shader_string
 	}
 
 	/// Generates a shader from a source string and an environment\
@@ -90,25 +104,7 @@ impl ShaderGenerator {
 
 		// extensions
 
-		shader_string.push_str("#extension GL_EXT_shader_16bit_storage : enable\n");
-		shader_string.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n");
-		shader_string.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n");
-		shader_string.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n");
-		shader_string.push_str("#extension GL_EXT_nonuniform_qualifier : enable\n");
-		shader_string.push_str("#extension GL_EXT_scalar_block_layout : enable\n");
-		shader_string.push_str("#extension GL_EXT_buffer_reference : enable\n");
-		shader_string.push_str("#extension GL_EXT_buffer_reference2 : enable\n");
-		shader_string.push_str("#extension GL_EXT_shader_image_load_formatted : enable\n");
-
-		match shader_type {
-			"compute" => {
-				shader_string.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
-				shader_string.push_str("#extension GL_KHR_shader_subgroup_arithmetic  : enable\n");
-				shader_string.push_str("#extension GL_KHR_shader_subgroup_ballot : enable\n");
-				shader_string.push_str("#extension GL_KHR_shader_subgroup_shuffle : enable\n");
-			}
-			_ => {}
-		}
+		shader_string += Self::generate_glsl_extension_block(shader_type).as_str();
 
 		// memory layout declarations
 
@@ -128,7 +124,7 @@ impl ShaderGenerator {
 
 				if let json::JsonValue::Array(members) = members {
 					for e in members {
-						shader_string.push_str(translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -147,7 +143,7 @@ impl ShaderGenerator {
 
 				if let json::JsonValue::Array(members) = members {
 					for e in members {
-						shader_string.push_str(translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -169,7 +165,7 @@ impl ShaderGenerator {
 				shader_string.push_str(", binding=");
 				shader_string.push_str(&e["binding"].to_string());
 				shader_string.push_str(") uniform ");
-				shader_string.push_str(translate_type(&e["value"]["type"].as_str().unwrap()));
+				shader_string.push_str(&translate_type(&e["value"]["type"].as_str().unwrap()));
 				shader_string.push_str(" ");
 				shader_string.push_str(&e["value"]["name"].as_str().unwrap());
 				shader_string.push_str(";\n");
@@ -184,7 +180,7 @@ impl ShaderGenerator {
 			shader_string.push_str("layout(push_constant) uniform push_constants {\n");
 
 			for e in push_constants {
-				shader_string.push_str(translate_type(&e["type"].as_str().unwrap()));
+				shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
 				shader_string.push_str(" ");
 				shader_string.push_str(&e["name"].as_str().unwrap());
 				shader_string.push_str(";\n");
@@ -206,7 +202,7 @@ impl ShaderGenerator {
 						shader_string.push_str("layout(location=");
 						shader_string.push_str(&pos.to_string());
 						shader_string.push_str(") in ");
-						shader_string.push_str(translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -225,7 +221,7 @@ impl ShaderGenerator {
 						shader_string.push_str("layout(location=");
 						shader_string.push_str(&pos.to_string());
 						shader_string.push_str(") in ");
-						shader_string.push_str(translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -274,6 +270,153 @@ impl ShaderGenerator {
 
 		shader_string
 	}
+
+	pub fn generate(&self, program_spec: &json::JsonValue, compilation_settings: &json::JsonValue) -> String {
+		let mut shader_string = String::new();
+
+		let glsl_version = &program_spec["glsl"]["version"];
+
+		if let json::JsonValue::String(glsl_version) = glsl_version {
+			shader_string.push_str("#version ");
+			shader_string.push_str(&glsl_version); // TODO: Get only first number
+			shader_string.push_str(" core\n");
+		} else {
+			shader_string.push_str("#version 450 core\n");
+		}
+
+		// shader type
+
+		let shader_type = &compilation_settings["type"];
+
+		let shader_type = shader_type.as_str().unwrap_or("");
+
+		match shader_type {
+			"vertex" => shader_string.push_str("#pragma shader_stage(vertex)\n"),
+			"fragment" => shader_string.push_str("#pragma shader_stage(fragment)\n"),
+			"compute" => shader_string.push_str("#pragma shader_stage(compute)\n"),
+			_ => shader_string.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
+		}
+
+		// extensions
+
+		shader_string += Self::generate_glsl_extension_block(shader_type).as_str();
+
+		// memory layout declarations
+
+		shader_string.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
+
+		let root = &program_spec["root"];
+
+		let root = root.entries().next().unwrap();
+
+		fn process_node(shader_string: &mut String, (name, node): (&str, &json::JsonValue), compilation_settings: &json::JsonValue) {
+			if !matches!(node, json::JsonValue::Object(_)) { return; }
+
+			if let Some(only_under) = (&node["__only_under"]).as_str() {
+				if only_under != compilation_settings["type"].as_str().unwrap() { return; }
+			}
+
+			let node_type = if let Some(ty) = node["type"].as_str() { ty } else { return; };
+
+			match node_type {
+				"scope" => {
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+				}
+				"struct" => {
+					shader_string.push_str(format!("struct {name} {{").as_str());
+
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+
+					shader_string.push_str(" };\n");
+
+					shader_string.push_str(&format!("layout(buffer_reference,scalar,buffer_reference_align=2) buffer {name}Pointer {{"));
+
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+
+					shader_string.push_str(" }\n");
+				}
+				"in" => {
+					shader_string.push_str(format!("layout(location=0) in").as_str());
+
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+
+					shader_string.push_str("\n");
+				}
+				"out" => {
+					shader_string.push_str(format!("layout(location=0) out").as_str());
+
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+
+					shader_string.push_str("\n");
+				}
+				"function" => {
+					let return_type = node["data_type"].as_str().unwrap();
+
+					shader_string.push_str(format!("{return_type} {name}() {{").as_str());
+
+					let statements = &node["statements"];
+
+					for statement in statements.members() {
+						shader_string.push_str("\n\t");
+						for token in statement.members() {
+							shader_string.push_str(token.as_str().unwrap());
+						}
+					}
+
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+
+					shader_string.push_str("\n}");
+				}
+				"member" => {
+					let data_type = node["data_type"].as_str().unwrap();
+					let data_type = translate_type(data_type);
+					shader_string.push_str(format!(" {data_type} {name};").as_str());
+				}
+				_ => {
+					for entry in node.entries() {
+						process_node(shader_string, entry, compilation_settings);
+					}
+				}
+			}
+		}
+
+		process_node(&mut shader_string, root, &compilation_settings);
+
+		shader_string
+	}
+}
+
+/// Translates a type from the json format to the glsl format.
+fn translate_type(value: &str) -> String {
+	let mut r = String::from(value);
+
+	if r.ends_with('*') {
+		r.pop();
+	}
+
+	match r.as_str() {
+		"vec3f" => "vec3",
+		"vec4f" => "vec4",
+		"mat3f" => "mat3",
+		"mat4f" => "mat4",
+		"mat3x4f" => "mat4x3",
+		"mat4x3f" => "mat3x4",
+		"mat3x4" => "mat4x3",
+		"mat4x3" => "mat3x4",
+		_ => r.as_str()
+	}.to_string()
 }
 
 #[cfg(test)]
@@ -617,4 +760,124 @@ void main() {
 
 	assert_eq!(shader, final_shader);
 }
+
+	#[test]
+	fn test_generate() {
+		let shader_generator = ShaderGenerator::new();
+
+		let program_spec = json::object! {
+			glsl: { version: "450" },
+			root: {
+				Common: {
+					type: "scope",
+					Camera: {
+						type: "struct",
+						__only_under: "vertex",
+						view_projection: {
+							type: "member",
+							data_type: "mat4f"
+						}
+					},
+					Forward:{
+						type: "scope",
+						Light: {
+							type: "struct",
+							__only_under: "fragment",
+							position: {
+								type: "member",
+								data_type: "vec3f"
+							},
+							color: {
+								type: "member",
+								data_type: "vec3f"
+							}
+						},
+						MyShader: {
+							type: "scope",
+							Vertex: {
+								type: "scope",
+								__only_under: "vertex",
+								main: {
+									type: "function",
+									data_type: "void",
+									statements: [
+										["gl_Position", "=", "vec4", "(", "0", ",", "0", ",", "0", ",", "1", ")", ";"]
+									]
+								}
+							},
+							Fragment: {
+								type: "scope",
+								__only_under: "fragment",
+								out_Color: {
+									type: "out",
+									out_Color: {
+										type: "member",
+										data_type: "vec4f"
+									}
+								},
+								main: {
+									type: "function",
+									data_type: "void",
+									statements: [
+										["out_Color", "=", "vec4", "(", "0", ",", "0", ",", "0", ",", "1", ")", ";"]
+									]
+								}
+							}
+						}
+					}
+				}
+			}
+		};
+
+		let generated_vertex_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", type: "vertex" });
+
+		let expected_vertex_shader_string =
+"#version 450 core
+#pragma shader_stage(vertex)
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_buffer_reference : enable
+#extension GL_EXT_buffer_reference2 : enable
+#extension GL_EXT_shader_image_load_formatted : enable
+layout(row_major) uniform; layout(row_major) buffer;
+struct Camera { mat4 view_projection; };
+layout(buffer_reference,scalar,buffer_reference_align=2) buffer CameraPointer { mat4 view_projection; }
+void main() {
+	gl_Position=vec4(0,0,0,1);
+}";
+
+		println!("{}", &generated_vertex_shader);
+
+		assert_eq!(generated_vertex_shader, expected_vertex_shader_string);
+
+		let expected_fragment_shader_string =
+"#version 450 core
+#pragma shader_stage(fragment)
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_buffer_reference : enable
+#extension GL_EXT_buffer_reference2 : enable
+#extension GL_EXT_shader_image_load_formatted : enable
+layout(row_major) uniform; layout(row_major) buffer;
+struct Light { vec3 position; vec3 color; };
+layout(buffer_reference,scalar,buffer_reference_align=2) buffer LightPointer { vec3 position; vec3 color; }
+layout(location=0) out vec4 out_Color;
+void main() {
+	out_Color=vec4(0,0,0,1);
+}";
+
+		let generated_fragment_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", type: "fragment" });
+
+		println!("{}", &generated_fragment_shader);
+
+		assert_eq!(generated_fragment_shader, expected_fragment_shader_string);
+	}
 }

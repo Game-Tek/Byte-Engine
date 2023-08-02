@@ -167,6 +167,22 @@ impl Orchestrator {
 		handle
 	}
 
+	pub fn spawn_system<T>(&self, function: fn(OrchestratorReference) -> T) -> EntityHandle<T> where T: System + Send + 'static {
+		{
+			let mut systems_data = self.systems_data.write().unwrap();
+
+			let internal_id = systems_data.counter;
+
+			let system = function(OrchestratorReference { orchestrator: self, internal_id });
+
+			systems_data.systems.insert(internal_id, std::sync::Arc::new(std::sync::RwLock::new(system)));
+
+			systems_data.counter += 1;
+
+			EntityHandle{ internal_id, external_id: 0, phantom: std::marker::PhantomData }
+		}
+	}
+
 	pub fn spawn_component<C: Component + Send + 'static>(&self, parameters: C::Parameters) -> EntityHandle<C> {
 		let internal_id = {
 			let mut systems_data = self.systems_data.write().unwrap();

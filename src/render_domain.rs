@@ -7,7 +7,6 @@ use crate::{resource_manager, render_system::{RenderSystem, self, FrameHandle}, 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	pipeline_layout_handle: render_system::PipelineLayoutHandle,
-	pipeline: render_system::PipelineHandle,
 	vertices_buffer: render_system::BufferHandle,
 	indices_buffer: render_system::BufferHandle,
 	render_target: render_system::TextureHandle,
@@ -29,122 +28,24 @@ pub struct VisibilityWorldRenderDomain {
 
 	meshes_data_buffer: render_system::BufferHandle,
 
-	shaders_by_name: std::collections::HashMap<String, render_system::ShaderHandle>,
-
 	camera: Option<EntityHandle<crate::camera::Camera>>,
 
 	meshes: HashMap<EntityHandle<Mesh>, u32>,
 
 	mesh_resources: HashMap<&'static str, u32>,
+
+	/// Maps resource ids to shaders
+	shaders: std::collections::HashMap<u64, render_system::ShaderHandle>,
 }
 
 impl VisibilityWorldRenderDomain {
 	pub fn new(mut orchestrator: orchestrator::OrchestratorReference, render_system: &mut RenderSystem) -> Self {
 		let frames = (0..2).map(|_| render_system.create_frame()).collect::<Vec<_>>();
 
-		let vertex_shader_code = "
-			#version 450 core
-			#pragma shader_stage(vertex)
-			#extension GL_EXT_shader_16bit_storage : enable
-			#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
-			#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
-			#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
-			#extension GL_EXT_nonuniform_qualifier : enable
-			#extension GL_EXT_scalar_block_layout : enable
-			#extension GL_EXT_buffer_reference : enable
-			#extension GL_EXT_buffer_reference2 : enable
-			#extension GL_EXT_shader_image_load_formatted : enable
-
-			layout(row_major) uniform; layout(row_major) buffer;
-
-			layout(buffer_reference,scalar,buffer_reference_align=2) buffer Camera {
-				mat4 view;
-				mat4 projection;
-				mat4 view_projection;
-			};
-
-			layout(buffer_reference,scalar,buffer_reference_align=2) buffer Mesh {
-				mat4 model;
-			};
-
-			layout(set = 0, binding = 0) uniform CameraBuffer {
-				mat4 view;
-				mat4 projection;
-				mat4 view_projection;
-			} camera;
-
-			layout(set = 0, binding = 1) uniform MeshBuffer {
-				mat4 model;
-			} meshes;
-
-			layout(push_constant) uniform push_constants {
-				Camera camera;
-				Mesh meshes;
-			} pc;
-
-			layout(location = 0) in vec3 in_position;
-			layout(location = 1) in vec3 in_normal;
-
-			layout(location=0) out vec3 out_position;
-			layout(location=1) flat out int out_instance_index;
-
-			//layout(max_vertices=128, max_primitives=64) out;
-			void main() {
-				vec4 position = pc.camera.projection * pc.camera.view * pc.meshes[gl_InstanceIndex].model * vec4(in_position, 1.0);
-				gl_Position = position;
-				out_instance_index = gl_InstanceIndex;
-				out_position = pc.meshes[gl_InstanceIndex].model[3].xyz;
-			}
-		";
-
-		let fragment_shader_code = "
-			#version 450 core
-			#pragma shader_stage(fragment)
-
-			layout(row_major) uniform; layout(row_major) buffer;
-
-			layout(location=0) in vec3 in_position;
-			layout(location=1) flat in int in_instance_index;
-
-			layout(location=0) out vec4 out_color;
-
-			vec4 get_debug_color(int i) {
-				vec4 colors[16] = vec4[16](
-					vec4(0.16863, 0.40392, 0.77647, 1),
-					vec4(0.32941, 0.76863, 0.21961, 1),
-					vec4(0.81961, 0.16078, 0.67451, 1),
-					vec4(0.96863, 0.98824, 0.45490, 1),
-					vec4(0.75294, 0.09020, 0.75686, 1),
-					vec4(0.30588, 0.95686, 0.54510, 1),
-					vec4(0.66667, 0.06667, 0.75686, 1),
-					vec4(0.78824, 0.91765, 0.27451, 1),
-					vec4(0.40980, 0.12745, 0.48627, 1),
-					vec4(0.89804, 0.28235, 0.20784, 1),
-					vec4(0.93725, 0.67843, 0.33725, 1),
-					vec4(0.95294, 0.96863, 0.00392, 1),
-					vec4(1.00000, 0.27843, 0.67843, 1),
-					vec4(0.29020, 0.90980, 0.56863, 1),
-					vec4(0.30980, 0.70980, 0.27059, 1),
-					vec4(0.69804, 0.16078, 0.39216, 1)
-				);
-
-				return colors[i % 16];
-			}
-
-			void main() {
-				out_color = get_debug_color(in_instance_index);
-			}
-		";
-
 		let vertex_layout = [
 			render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
 			render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
 		];
-
-		let vertex_shader = render_system.add_shader(render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = render_system.add_shader(render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
-
-		let mut shaders_by_name = std::collections::HashMap::new();
 
 		let bindings = [
 			render_system::DescriptorSetLayoutBinding {
@@ -192,15 +93,10 @@ impl VisibilityWorldRenderDomain {
 			},
 		];
 
-		let pipeline = render_system.create_pipeline(pipeline_layout_handle, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
-
-		shaders_by_name.insert("vertex".to_string(), vertex_shader);
-		shaders_by_name.insert("fragment".to_string(), fragment_shader);
-
 		let render_finished_synchronizer = render_system.create_synchronizer(true);
 		let image_ready = render_system.create_synchronizer(false);
 
-		let transfer_synchronizer = render_system.create_synchronizer(true);
+		let transfer_synchronizer = render_system.create_synchronizer(false);
 
 		let render_command_buffer = render_system.create_command_buffer();
 		let transfer_command_buffer = render_system.create_command_buffer();
@@ -230,7 +126,6 @@ impl VisibilityWorldRenderDomain {
 
 		Self {
 			pipeline_layout_handle,
-			pipeline,
 			vertices_buffer: vertices_buffer_handle,
 			indices_buffer: indices_buffer_handle,
 
@@ -256,7 +151,7 @@ impl VisibilityWorldRenderDomain {
 
 			meshes_data_buffer,
 
-			shaders_by_name,
+			shaders: HashMap::new(),
 
 			camera: None,
 
@@ -266,28 +161,28 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn update_shader(&mut self, render_system: &mut RenderSystem, shader_name: &str, shader_source: &str) {
-		println!("Updating shader: {}", shader_name);
+	// pub fn update_shader(&mut self, render_system: &mut RenderSystem, shader_name: &str, shader_source: &str) {
+	// 	println!("Updating shader: {}", shader_name);
 
-		let shader_source = shader_source.as_bytes();
+	// 	let shader_source = shader_source.as_bytes();
 
-		let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::GLSL, shader_source);
+	// 	let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::GLSL, shader_source);
 
-		let vertex_layout = [
-			render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
-			render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
-		];
+	// 	let vertex_layout = [
+	// 		render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
+	// 		render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
+	// 	];
 
-		let attachments = self.get_attachments();
+	// 	let attachments = self.get_attachments();
 
-		let vertex_shader_handle = self.shaders_by_name.get("vertex").unwrap().clone();
+	// 	let vertex_shader_handle = self.shaders_by_name.get("vertex").unwrap().clone();
 
-		let pipeline = render_system.create_pipeline(self.pipeline_layout_handle, &[vertex_shader_handle, &new_shader], &vertex_layout, &attachments);
+	// 	let pipeline = render_system.create_pipeline(self.pipeline_layout_handle, &[vertex_shader_handle, &new_shader], &vertex_layout, &attachments);
 
-		self.pipeline = pipeline;
+	// 	self.pipeline = pipeline;
 
-		self.shaders_by_name.insert("fragment".to_string(), new_shader);
-	}
+	// 	self.shaders_by_name.insert("fragment".to_string(), new_shader);
+	// }
 
 	fn listen_to_camera(&mut self, orchestrator: orchestrator::OrchestratorReference, camera_handle: EntityHandle<camera::Camera>, camera: &Camera) {
 		self.camera = Some(camera_handle);
@@ -332,8 +227,6 @@ impl VisibilityWorldRenderDomain {
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
-			let resource_info = if let resource_manager::ResourceContainer::Mesh(s) = &resource_request.resource { s } else { return; };
-
 			let vertex_buffer = render_system.get_mut_buffer_slice(None, self.vertices_buffer);
 			let index_buffer = render_system.get_mut_buffer_slice(None, self.indices_buffer);
 
@@ -341,7 +234,17 @@ impl VisibilityWorldRenderDomain {
 
 			self.mesh_resources.insert(mesh.resource_id, self.index_count);
 
+			let resource_info = resource_request.resource;
+
 			self.index_count += resource_info.index_count;
+
+			let material = resource_manager.get("cube.json");
+
+			let material = if let Some(s) = material { s } else { return; };
+
+			let result = resource_manager.get("cube");
+
+			let result = if let Some(s) = result { s } else { return; };
 		}
 
 		let closed_frame_index = self.current_frame % 2;
@@ -382,7 +285,7 @@ impl VisibilityWorldRenderDomain {
 
 		render_system.wait(frame_handle_option, self.render_finished_synchronizer);
 
-		render_system.start_frame_capture();
+		//render_system.start_frame_capture();
 
 		let camera_data_buffer = render_system.get_mut_buffer_slice(frame_handle_option, self.camera_data_buffer_handle);
 
@@ -415,7 +318,8 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_render_pass(Extent::new(1920, 1080, 1), &attachments);
 
-		command_buffer_recording.bind_pipeline(&self.pipeline);
+		//command_buffer_recording.bind_pipeline(&self.pipeline);
+		// TODO: bind pipelines
 
 		let vertex_buffer_descriptors = [
 			render_system::BufferDescriptor {
@@ -465,7 +369,7 @@ impl VisibilityWorldRenderDomain {
 
 		render_system.execute(frame_handle_option, command_buffer_recording, &[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 
-		render_system.end_frame_capture();
+		//render_system.end_frame_capture();
 
 		render_system.present(frame_handle_option, image_index, self.render_finished_synchronizer);
 

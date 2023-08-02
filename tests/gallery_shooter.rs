@@ -84,8 +84,6 @@ impl Player {
 		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.0f32));
 		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
 
-		println!("Position {:?}", Vec3f::new(transform[3], transform[7], transform[11]));
-
 		orchestrator.set_property(&self.mesh, Mesh::transform, transform);
 	}
 }

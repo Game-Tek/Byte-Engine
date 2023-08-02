@@ -770,7 +770,7 @@ pub trait RenderBackend {
 	/// * `command_buffer` - The command buffer to execute.
 	/// * `wait_for` - The synchronizer to wait for.
 	/// * `signal` - The synchronizer to signal.
-	fn execute(&self, command_buffer: &CommandBuffer, wait_for: &[Synchronizer], signal: &[Synchronizer], execution_completion: &crate::render_backend::Synchronizer);
+	fn execute(&self, command_buffer: &CommandBuffer, wait_for: &[Synchronizer], signal: &[Synchronizer], execution_completion: &Synchronizer);
 
 	/// Acquires an image from a swapchain.
 	/// 

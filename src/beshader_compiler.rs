@@ -15,7 +15,7 @@
 //! }
 //! ```
 
-fn tokenize(source: &str) -> Vec<String> {
+pub fn tokenize(source: &str) -> Vec<String> {
 	let interrupt = |c: char| -> bool {
 		return c.is_whitespace();
 	};
@@ -28,7 +28,7 @@ fn tokenize(source: &str) -> Vec<String> {
 		if last.is_alphabetic() {
 			return c.is_alphanumeric() || c == '_';
 		} else if last.is_numeric() {
-			return c.is_numeric() || c == '.';
+			return c.is_numeric() || c == '.' || c.is_alphabetic();
 		} else if last == '.' {
 			return c.is_numeric();
 		} else if last == '_' {
@@ -78,13 +78,6 @@ fn tokenize(source: &str) -> Vec<String> {
 	return tokens;
 }
 
-struct Node {
-	class: String,
-	name: String,
-	children: Vec<Node>,
-	properties: std::collections::HashMap<String, Vec<Node>>,
-}
-
 enum ParsingFailReasons {
 	/// The parser does not handle this type of syntax.
 	NotMine,
@@ -92,7 +85,7 @@ enum ParsingFailReasons {
 	BadSyntax,
 }
 
-type ParsingResult<'a> = Result<(Node, std::slice::Iter<'a, String>), ParsingFailReasons>;
+type ParsingResult<'a> = Result<(json::JsonValue, std::slice::Iter<'a, String>), ParsingFailReasons>;
 
 fn parse_macro(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 	let mut iter = iterator;
@@ -113,14 +106,10 @@ fn parse_macro(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 
 	if close_square_bracket != "]" { return Err(ParsingFailReasons::BadSyntax); }
 
-	let root_node = Node { class: "macro".to_owned(), name: name.to_owned(), children: Vec::new(), properties: std::collections::HashMap::new() };
-
-	return Ok((root_node, iter));
+	return Ok((json::object! {}, iter));
 }
 
 fn parse_struct(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
-	let mut root_node = Node { class: "struct".to_owned(), name: String::new(), children: Vec::new(), properties: std::collections::HashMap::new() };
-
 	let mut iter = iterator;
 
 	let name = iter.next().unwrap();
@@ -135,15 +124,13 @@ fn parse_struct(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 
 	if struct_token != "struct" { return Err(ParsingFailReasons::NotMine); }
 
-	root_node.name = name.to_owned();
-
 	let open_brace = iter.next().unwrap();
 
 	if open_brace != "{" { return Err(ParsingFailReasons::BadSyntax); }
 
-	let mut current_node = &mut root_node;
+	let mut members = json::JsonValue::new_object();
 
-	'field: while let Some(v) = iter.next() {
+	while let Some(v) = iter.next() {
 		if v == "}" {
 			break;
 		} else if v == "," {
@@ -158,33 +145,44 @@ fn parse_struct(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 
 		if !type_name.chars().next().unwrap().is_alphabetic() { return Err(ParsingFailReasons::BadSyntax); }
 
-		root_node.children.push(Node { class: "field".to_owned(), name: v.to_owned(), children: Vec::new(), properties: std::collections::HashMap::new() });
+		members[v] = json::object! {
+			type: "member",
+			data_type: type_name.as_str()
+		};
 	}
+
+	let mut root_node = json::JsonValue::new_object();
+
+	let mut struct_node = json::object! {
+		type: "struct",
+	};
+
+	for entry in members.entries() {
+		struct_node.insert(entry.0, entry.1.clone());
+	}
+
+	root_node[name] = struct_node;
 
 	return Ok((root_node, iter));
 }
 
 fn parse_statement(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
-	let mut root_node = Node { class: "statement".to_owned(), name: String::new(), children: Vec::new(), properties: std::collections::HashMap::new() };
-
 	let mut iter = iterator;
+
+	let mut statement = json::JsonValue::new_array();
 
 	while let Some(v) = iter.next() {
 		if v == ";" {
 			break;
 		}
-
-		dbg!(&v);
-
-		root_node.children.push(Node { class: "expression".to_owned(), name: v.to_owned(), children: Vec::new(), properties: std::collections::HashMap::new() });
+		
+		statement.push(v.as_str());
 	}
 
-	return Ok((root_node, iter));
+	return Ok((statement, iter));
 }
 
 fn parse_function(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
-	let mut root_node = Node { class: "function".to_owned(), name: String::new(), children: Vec::new(), properties: std::collections::HashMap::new() };
-
 	let mut iter = iterator;
 
 	let name = iter.next().unwrap();
@@ -193,13 +191,9 @@ fn parse_function(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 		return Err(ParsingFailReasons::NotMine);
 	}
 
-	root_node.name = name.to_owned();
-
 	let colon = iter.next().unwrap();
 
-	if colon != ":" {
-		return Err(ParsingFailReasons::NotMine);
-	}
+	if colon != ":" { return Err(ParsingFailReasons::NotMine); }
 
 	let fn_token = iter.next().unwrap();
 
@@ -207,43 +201,38 @@ fn parse_function(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 
 	let open_brace = iter.next().unwrap();
 
-	if open_brace != "(" {
-		return Err(ParsingFailReasons::BadSyntax);
-	}
+	if open_brace != "(" { return Err(ParsingFailReasons::BadSyntax); }
 
 	let close_brace = iter.next().unwrap();
 
-	if close_brace != ")" {
-		return Err(ParsingFailReasons::BadSyntax);
-	}
+	if close_brace != ")" { return Err(ParsingFailReasons::BadSyntax); }
 
 	let arrow = iter.next().unwrap();
 
-	if arrow != "->" {
-		return Err(ParsingFailReasons::BadSyntax);
-	}
+	if arrow != "->" { return Err(ParsingFailReasons::BadSyntax); }
 
 	let return_type = iter.next().unwrap();
 
-	if !return_type.chars().next().unwrap().is_alphabetic() {
-		return Err(ParsingFailReasons::BadSyntax);
-	}
-
-	root_node.properties.insert("return_type".to_owned(), vec![Node { class: "type".to_owned(), name: return_type.to_owned(), children: Vec::new(), properties: std::collections::HashMap::new() }]);
+	if !return_type.chars().next().unwrap().is_alphabetic() { return Err(ParsingFailReasons::BadSyntax); }
 
 	let open_brace = iter.next().unwrap();
 
-	if open_brace != "{" {
-		return Err(ParsingFailReasons::BadSyntax);
-	}
+	if open_brace != "{" { return Err(ParsingFailReasons::BadSyntax); }
+
+	let mut root_node = json::JsonValue::new_object();
+
+	root_node[name] = json::object! {
+		type: "function",
+		data_type: return_type.as_str(),
+		statements: [],
+	};
 
 	loop  {
-		if let Ok(r) = parse_statement(iter.clone()) {
-			iter = r.1;
-			root_node.children.push(r.0);
-		} else {
-			return Err(ParsingFailReasons::BadSyntax);
-		}
+		let res = if let Ok(r) = parse_statement(iter.clone()) { r } else { return Err(ParsingFailReasons::BadSyntax); };
+
+		root_node[name]["statements"].push(res.0);
+
+		iter = res.1;
 
 		// check if iter is close brace
 		if iter.clone().peekable().peek().unwrap().as_str() == "}" {
@@ -255,8 +244,9 @@ fn parse_function(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 	return Ok((root_node, iter));
 }
 
-fn parse(tokens: Vec<String>) -> Result<Node, ()> {
-	let mut root_node = Node { class: "root".to_owned(), name: "root".to_owned(), children: Vec::new(), properties: std::collections::HashMap::new() };
+/// Parse consumes an stream of tokens and return a JSON describing the shader.
+pub fn parse(tokens: Vec<String>) -> Result<json::JsonValue, ()> {
+	let mut root_node = json::JsonValue::new_object();
 
 	let mut iter = tokens.iter();
 
@@ -275,7 +265,9 @@ fn parse(tokens: Vec<String>) -> Result<Node, ()> {
 			return Err(()); // No parser could handle the expression.
 		}
 
-		root_node.children.push(result.0);
+		for entry in result.0.entries() {
+			root_node.insert(entry.0, entry.1.clone());
+		}
 
 		iter = result.1;
 
@@ -307,17 +299,17 @@ mod tests {
 
 	#[test]
 	fn test_tokenization3() {
-		let source = "struct Light { position: vec3, color: vec3, data: Data<int>, array: [u8; 4] };";
+		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
 		let tokens = tokenize(source);
-		assert_eq!(tokens, vec!["struct", "Light", "{", "position", ":", "vec3", ",", "color", ":", "vec3", ",", "data", ":", "Data", "<", "int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"]);
+		assert_eq!(tokens, vec!["struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<", "int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"]);
 	}
 
 	#[test]
 	fn test_parse_struct() {
 		let source = "
 Light: struct {
-	position: vec3,
-	color: vec3
+	position: vec3f,
+	color: vec3f
 }";
 
 		let tokens = tokenize(source);
@@ -325,29 +317,21 @@ Light: struct {
 
 		assert_eq!(nodes.is_ok(), true);
 
-		let root_node = nodes.unwrap();
+		let root_node = &nodes.unwrap();
 
-		assert_eq!(&root_node.class, "root");
-		assert_eq!(&root_node.name, "root");
-		assert_eq!(root_node.children.len(), 1);
+		let struct_node = &root_node["Light"];
 
-		let struct_node = &root_node.children[0];
+		assert_eq!(struct_node["type"], "struct");
 
-		assert_eq!(&struct_node.class, "struct");
-		assert_eq!(&struct_node.name, "Light");
-		assert_eq!(struct_node.children.len(), 2);
+		let position_node = &struct_node["position"];
 
-		let position_node = &struct_node.children[0];
+		assert_eq!(position_node["type"], "member");
+		assert_eq!(position_node["data_type"], "vec3f");
 
-		assert_eq!(&position_node.class, "field");
-		assert_eq!(&position_node.name, "position");
-		assert_eq!(position_node.children.len(), 0);
+		let color_node = &struct_node["color"];
 
-		let color_node = &struct_node.children[1];
-
-		assert_eq!(&color_node.class, "field");
-		assert_eq!(&color_node.name, "color");
-		assert_eq!(color_node.children.len(), 0);
+		assert_eq!(color_node["type"], "member");
+		assert_eq!(color_node["data_type"], "vec3f");
 	}
 
 	#[test]
@@ -364,29 +348,23 @@ main: fn () -> void {
 
 		let root_node = nodes.unwrap();
 
-		assert_eq!(&root_node.class, "root");
-		assert_eq!(&root_node.name, "root");
-		assert_eq!(root_node.children.len(), 1);
+		let function_node = &root_node["main"];
 
-		let function_node = &root_node.children[0];
+		assert_eq!(function_node["type"], "function");
+		assert_eq!(function_node["data_type"], "void");
 
-		assert_eq!(&function_node.class, "function");
-		assert_eq!(&function_node.name, "main");
-		assert_eq!(function_node.children.len(), 1);
+		let statements_node = &function_node["statements"];
+		let statement_node = &statements_node[0];
 
-		let statement_node = &function_node.children[0];
-
-		assert_eq!(&statement_node.class, "statement");
-		assert_eq!(&statement_node.name, "");
-		assert_eq!(statement_node.children.len(), 12);
+		assert_eq!(statement_node.len(), 12);
 	}
 
 	#[test]
 	fn test_parse_struct_and_function() {
 		let source = "
 Light: struct {
-	position: vec3,
-	color: vec3
+	position: vec3f,
+	color: vec3f
 }
 
 #[vertex]
@@ -402,30 +380,23 @@ main: fn () -> void {
 
 		let root_node = nodes.unwrap();
 
-		assert_eq!(&root_node.class, "root");
-		assert_eq!(&root_node.name, "root");
-		assert_eq!(root_node.children.len(), 2);
+		let struct_node = &root_node["Light"];
 
-		let struct_node = &root_node.children[0];
+		assert_eq!(struct_node["type"], "struct");
 
-		assert_eq!(&struct_node.class, "struct");
-		assert_eq!(&struct_node.name, "Light");
-		assert_eq!(struct_node.children.len(), 2);
+		let position_node = &struct_node["position"];
 
-		let position_node = &struct_node.children[0];
+		assert_eq!(&position_node["type"], "member");
+		assert_eq!(&position_node["data_type"], "vec3f");
 
-		assert_eq!(&position_node.class, "field");
-		assert_eq!(&position_node.name, "position");
+		let color_node = &struct_node["color"];
 
-		let color_node = &struct_node.children[1];
+		assert_eq!(&color_node["type"], "member");
+		assert_eq!(&color_node["data_type"], "vec3f");
 
-		assert_eq!(&color_node.class, "field");
-		assert_eq!(&color_node.name, "color");
+		let function_node = &root_node["main"];
 
-		let function_node = &root_node.children[1];
-
-		assert_eq!(&function_node.class, "function");
-		assert_eq!(&function_node.name, "main");
-		assert_eq!(function_node.children.len(), 2);
+		assert_eq!(&function_node["type"], "function");
+		assert_eq!(function_node["data_type"], "void");
 	}
 }

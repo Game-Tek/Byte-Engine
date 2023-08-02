@@ -1,0 +1,5 @@
+{
+	"type": "raw",
+	"vertex": "shaders/vertex.besl",
+	"fragment": "shaders/fragment.besl"
+}

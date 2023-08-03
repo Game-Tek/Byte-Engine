@@ -43,8 +43,8 @@ impl VisibilityWorldRenderDomain {
 		let frames = (0..2).map(|_| render_system.create_frame()).collect::<Vec<_>>();
 
 		let vertex_layout = [
-			render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
-			render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
+			render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
 		];
 
 		let bindings = [
@@ -110,13 +110,13 @@ impl VisibilityWorldRenderDomain {
 				descriptor_set,
 				binding: 0,
 				array_element: 0,
-				descriptor: render_system::Descriptor::Buffer(camera_data_buffer_handle),
+				descriptor: render_system::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: 64 },
 			},
 			render_system::DescriptorWrite {
 				descriptor_set,
 				binding: 1,
 				array_element: 0,
-				descriptor: render_system::Descriptor::Buffer(meshes_data_buffer),
+				descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 64 },
 			},
 		]);
 

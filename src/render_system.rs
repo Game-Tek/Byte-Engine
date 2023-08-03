@@ -91,7 +91,7 @@ pub enum DataTypes {
 pub struct VertexElement {
 	pub name: String,
 	pub format: DataTypes,
-	pub shuffled: bool,
+	pub binding: u32,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -477,7 +477,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Ends recording on the command buffer.
-	pub fn end(&mut self) {
+	fn end(&mut self) {
 		if self.in_render_pass {
 			self.render_system.render_backend.end_render_pass(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer);
 		}
@@ -556,7 +556,10 @@ pub struct DescriptorSet {
 }
 
 pub enum Descriptor {
-	Buffer(BufferHandle),
+	Buffer{
+		handle: BufferHandle,
+		size: usize,
+	},
 	Texture(TextureHandle),
 }
 
@@ -709,7 +712,7 @@ impl RenderSystem {
 				pointer: std::ptr::null_mut(),
 			},
 			vertex_layout_hash,
-			index_count: indices.len() as u32 / 4,
+			index_count: indices.len() as u32 / 2,
 		});
 
 		mesh_handle
@@ -810,14 +813,14 @@ impl RenderSystem {
 			binding: descriptor_write.binding,
 			array_element: descriptor_write.array_element,
 			descriptor_type: match descriptor_write.descriptor {
-				Descriptor::Buffer(_) => render_backend::DescriptorType::UniformBuffer,
+				Descriptor::Buffer{ handle, size } => render_backend::DescriptorType::UniformBuffer,
 				Descriptor::Texture(_) => render_backend::DescriptorType::SampledImage,
 			},
 			descriptor_info: match descriptor_write.descriptor {
-				Descriptor::Buffer(buffer_handle) => {
+				Descriptor::Buffer{ handle: buffer_handle, size } => {
 					let buffer = &self.buffers[buffer_handle.0 as usize];
 					assert!(buffer.role == "GPU_READ");
-					render_backend::DescriptorInfo::Buffer{ buffer: buffer.buffer, offset: 0, range: 128 }
+					render_backend::DescriptorInfo::Buffer{ buffer: buffer.buffer, offset: 0, range: size }
 				}
 				Descriptor::Texture(texture_handle) => render_backend::DescriptorInfo::Texture{ texture: self.textures[texture_handle.0 as usize].texture_view.unwrap(), format: render_backend::TextureFormats::RGBAu8, layout: render_backend::Layouts::Texture, },
 			},
@@ -1464,13 +1467,13 @@ mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, binding: 0 },
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 				&vertex_layout
 			) };
 
@@ -1550,8 +1553,6 @@ mod tests {
 
 		command_buffer_recording.synchronize_texture(render_target);
 
-		command_buffer_recording.end();
-
 		renderer.execute(Some(frame_handle), command_buffer_recording, &[], &[], signal);
 
 		renderer.end_frame_capture();
@@ -1619,13 +1620,13 @@ mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, binding: 0 },
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 				&vertex_layout
 			) };
 
@@ -1657,8 +1658,8 @@ mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
+		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
@@ -1667,7 +1668,7 @@ mod tests {
 		let attachments = [
 			crate::render_system::AttachmentInfo {
 				texture: render_target,
-				format: crate::render_backend::TextureFormats::BGRAu8,
+				format: crate::render_backend::TextureFormats::RGBAu8,
 				clear: None,
 				load: false,
 				store: true,
@@ -1709,8 +1710,6 @@ mod tests {
 
 		command_buffer_recording.copy_textures(&[(render_target, swapchain_texture_handle,)]);
 
-		command_buffer_recording.end();
-
 		renderer.execute(Some(frame_handle), command_buffer_recording, &[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
 
 		renderer.present(Some(frame_handle), image_index, render_finished_synchronizer);
@@ -1745,13 +1744,13 @@ mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, binding: 0 },
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 				&vertex_layout
 			) };
 
@@ -1836,8 +1835,6 @@ mod tests {
 
 			command_buffer_recording.synchronize_texture(render_target);
 
-			command_buffer_recording.end();
-
 			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
@@ -1869,13 +1866,13 @@ mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, binding: 0 },
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 				&vertex_layout
 			) };
 
@@ -1984,8 +1981,6 @@ mod tests {
 
 			command_buffer_recording.synchronize_texture(render_target);
 
-			command_buffer_recording.end();
-
 			renderer.execute(Some(frames[i % FRAMES_IN_FLIGHT]), command_buffer_recording, &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
@@ -2009,13 +2004,13 @@ mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: true },
-			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, shuffled: true },
+			VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: crate::render_system::DataTypes::Float4, binding: 0 },
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0, 1, 2].as_ptr() as *const u8, 3 * 4),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 				&vertex_layout
 			) };
 
@@ -2099,7 +2094,7 @@ mod tests {
 		let descriptor_set = renderer.create_descriptor_set(&descriptor_set_layout_handle, &bindings);
 
 		renderer.write(&[
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer(buffer) },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: 64 } },
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Texture(sampled_texture) },
 		]);
 
@@ -2130,6 +2125,8 @@ mod tests {
 
 		command_buffer_recording.write_texture_data(sampled_texture, &pixels);
 
+		command_buffer_recording.transition_textures(&[(sampled_texture, true, render_backend::Layouts::Texture, render_backend::Stages::SHADER_READ, render_backend::AccessPolicies::READ)]);
+
 		let attachments = [
 			crate::render_system::AttachmentInfo {
 				texture: render_target,
@@ -2151,8 +2148,6 @@ mod tests {
 		command_buffer_recording.end_render_pass();
 
 		command_buffer_recording.synchronize_texture(render_target);
-
-		command_buffer_recording.end();
 
 		renderer.execute(Some(frame_handle), command_buffer_recording, &[], &[], signal);
 

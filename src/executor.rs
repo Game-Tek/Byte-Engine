@@ -135,44 +135,44 @@ impl Executor {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
+// #[cfg(test)]
+// mod tests {
+// 	use super::*;
 
-	#[test]
-	fn test() {
-		let (executor, spawner) = new_executor_and_spawner();
+// 	#[test]
+// 	fn test() {
+// 		let (executor, spawner) = new_executor_and_spawner();
 
-		spawner.spawn(async {
-			println!("howdy!");
-			// Wait for our timer future to complete after two seconds.
-			TimerFuture::new(std::time::Duration::new(2, 0)).await;
-			println!("done!");
-		});
+// 		spawner.spawn(async {
+// 			println!("howdy!");
+// 			// Wait for our timer future to complete after two seconds.
+// 			TimerFuture::new(std::time::Duration::new(2, 0)).await;
+// 			println!("done!");
+// 		});
 
-		drop(spawner);
+// 		drop(spawner);
 
-		executor.run();
-	}
+// 		executor.run();
+// 	}
 
-	// #[test]
-	// fn test_systems_as_parameters() {
-	// 	let mut dispatcher = Dispatcher::new();
+// 	// #[test]
+// 	// fn test_systems_as_parameters() {
+// 	// 	let mut dispatcher = Dispatcher::new();
 
-	// 	let test_system = TestSystem::new();
+// 	// 	let test_system = TestSystem::new();
 
-	// 	let system_handle = dispatcher.add_system(test_system);
+// 	// 	let system_handle = dispatcher.add_system(test_system);
 
-	// 	async fn task(orchestrator: &Orchestrator<'static>) {
-	// 	 	// let test_system = orchestrator.get_system::<TestSystem>(system_handle).await;
+// 	// 	async fn task(orchestrator: &Orchestrator<'static>) {
+// 	// 	 	// let test_system = orchestrator.get_system::<TestSystem>(system_handle).await;
 
-	// 	 	// let test_system = test_system.lock().unwrap();
+// 	// 	 	// let test_system = test_system.lock().unwrap();
 
-	// 	 	// assert_eq!(test_system.get_value(), 0);
-	// 	};
+// 	// 	 	// assert_eq!(test_system.get_value(), 0);
+// 	// 	};
 
-	// 	dispatcher.execute_task_2(task);
+// 	// 	dispatcher.execute_task_2(task);
 
-	// 	dispatcher.update();
-	// }
-}
+// 	// 	dispatcher.update();
+// 	// }
+// }

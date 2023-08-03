@@ -267,10 +267,10 @@ bitflags! {
 		const HOST = 0b01000000;
 		/// The all graphics stage.
 		const ALL_GRAPHICS = 0b10000000;
+		/// The shader read stage.
+		const SHADER_READ = 0b100000000;
 		/// The all stage.
 		const ALL = 0b11111111;
-		/// The shader read stage.
-		const SHADER_READ = 0b00000001;
 	}
 }
 
@@ -387,9 +387,9 @@ pub enum DescriptorInfo {
 		/// The buffer of the descriptor.
 		buffer: Buffer,
 		/// The offset to start reading from inside the buffer.
-		offset: u64,
+		offset: usize,
 		/// How much to read from the buffer after `offset`.
-		range: u64,
+		range: usize,
 	},
 	/// A texture descriptor.
 	Texture {

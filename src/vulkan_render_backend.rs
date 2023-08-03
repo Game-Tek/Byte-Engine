@@ -146,7 +146,7 @@ fn texture_format_and_resource_use_to_image_layout(_texture_format: render_backe
 			}
 		}
 		render_backend::Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
-		render_backend::Layouts::Texture => vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+		render_backend::Layouts::Texture => vk::ImageLayout::READ_ONLY_OPTIMAL,
 	}
 }
 
@@ -210,6 +210,10 @@ fn to_pipeline_stage_flags(stages: crate::render_backend::Stages) -> vk::Pipelin
 		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
 	}
 
+	if stages.contains(render_backend::Stages::SHADER_READ) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER; // TODO: not really?
+	}
+
 	pipeline_stage_flags
 }
 
@@ -222,6 +226,9 @@ fn to_access_flags(accesses: crate::render_backend::AccessPolicies, stages: crat
 		}
 		if stages.intersects(render_backend::Stages::PRESENTATION) {
 			access_flags |= vk::AccessFlags2::NONE
+		}
+		if stages.intersects(render_backend::Stages::SHADER_READ) {
+			access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ;
 		}
 	}
 
@@ -556,8 +563,8 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 				render_backend::DescriptorInfo::Buffer { buffer, offset, range } => {
 					let a = vk::DescriptorBufferInfo::default()
 						.buffer(unsafe { buffer.vulkan_buffer.buffer })
-						.offset(offset)
-						.range(range);
+						.offset(offset as u64)
+						.range(range as u64);
 					buffers.push(a);
 					write_info.buffer_info(&buffers)
 				},
@@ -641,30 +648,32 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 					render_backend::PipelineConfigurationBlocks::VertexInput { vertex_elements } => {
 						let mut vertex_input_attribute_descriptions = vec![];
 	
-						let mut offset = 0;
-	
+						let mut offset_per_binding = [0, 0, 0, 0, 0, 0, 0, 0]; // Assume 8 bindings max
+
 						for (i, vertex_element) in vertex_elements.iter().enumerate() {
 							let ve = vk::VertexInputAttributeDescription::default()
-								.binding(i as u32) // TODO: change
+								.binding(vertex_element.binding)
 								.location(i as u32)
 								.format(vertex_element.format.into())
-								.offset(0); // TODO: change
+								.offset(offset_per_binding[vertex_element.binding as usize]);
 	
 							vertex_input_attribute_descriptions.push(ve);
 	
-							offset += vertex_element.format.size() as u32;
+							offset_per_binding[vertex_element.binding as usize] += vertex_element.format.size() as u32;
 						}
-	
-						let vertex_binding_descriptions = [
-							vk::VertexInputBindingDescription::default()
-								.binding(0)
-								.stride(12)
-								.input_rate(vk::VertexInputRate::VERTEX),
-							vk::VertexInputBindingDescription::default()
-								.binding(1)
-								.stride(12)
-								.input_rate(vk::VertexInputRate::VERTEX),
-						];
+
+						let max_binding = vertex_elements.iter().map(|ve| ve.binding).max().unwrap() + 1;
+
+						let mut vertex_binding_descriptions = Vec::with_capacity(max_binding as usize);
+
+						for i in 0..max_binding {
+							vertex_binding_descriptions.push(
+								vk::VertexInputBindingDescription::default()
+								.binding(i)
+								.stride(offset_per_binding[i as usize])
+								.input_rate(vk::VertexInputRate::VERTEX)
+							)
+						}
 	
 						let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
 							.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
@@ -1264,7 +1273,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 		unsafe { self.device.cmd_bind_vertex_buffers(command_buffer.vulkan_command_buffer.command_buffer, 0, &buffers, &offsets); }
 	}
 
-	fn bind_index_buffer(&self, command_buffer: &crate::render_backend::CommandBuffer, buffer_descriptor: &crate::render_backend::BufferDescriptor) {
+	fn bind_index_buffer(&self, command_buffer: &render_backend::CommandBuffer, buffer_descriptor: &render_backend::BufferDescriptor) {
 		unsafe { self.device.cmd_bind_index_buffer(command_buffer.vulkan_command_buffer.command_buffer, buffer_descriptor.buffer.vulkan_buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); }
 	}
 

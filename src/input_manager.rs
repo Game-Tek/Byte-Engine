@@ -635,20 +635,37 @@ impl InputManager {
 	pub fn get_action_state(&self, input_event_handle: ActionHandle, device_handle: &DeviceHandle) -> InputEventState {
 		let action = &self.actions[input_event_handle.0 as usize];
 
-		// let input_sources_values = action.input_event_descriptions.iter().map(|input_event_description| {
-		// 	(self.get_input_source_record(device_handle, InputSourceAction::Handle(input_event_description.input_source_handle)), input_event_description.input_source_handle, input_event_description)
-		// }).collect::<Vec<_>>();
+		if let Some(record) = self.records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time) {
+			let value = self.resolve_action_value_from_record(action, record);
+	
+			InputEventState {
+				device_handle: device_handle.clone(),
+				input_event_handle,
+				value,
+			}
+		} else {
+			let value = match self.input_sources[action.input_event_descriptions[0].input_source_handle.0 as usize].type_ {
+				InputTypes::Bool(v) => {
+					match action.type_ {
+						Types::Bool => {
+							Value::Bool(false)
+						}
+						Types::Float => {
+							Value::Float(0.0f32)
+						}
+						_ => panic!()
+					}
+				}
+				InputTypes::Float(v) => Value::Float(v.default),
+				InputTypes::Vector2(v) => Value::Vector2(v.default),
+				_ => panic!()
+			};
 
-		// Assume linear event, boolean input sources, last event takes precedence
-
-		let record = self.records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time).unwrap();
-
-		let value = self.resolve_action_value_from_record(action, record);
-
-		InputEventState {
-			device_handle: device_handle.clone(),
-			input_event_handle,
-			value,
+			InputEventState {
+				device_handle: device_handle.clone(),
+				input_event_handle,
+				value,
+			}
 		}
 	}
 
@@ -658,7 +675,7 @@ impl InputManager {
 		match action.type_ {
 			Types::Float => {
 				let float = match record.value {
-					Value::Bool(value) => {
+					Value::Bool(record_value) => {
 						if let Some(last) = action.stack.last() {
 							if let Value::Bool(value) = last.value {
 								let event_description_for_input_source = action.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
@@ -680,7 +697,7 @@ impl InputManager {
 							match mapping.mapping {
 								Value::Bool(value) => if value { 1f32 } else { 0f32 },
 								Value::Unicode(_) => 0f32,
-								Value::Float(value) => value,
+								Value::Float(mapping_value) => mapping_value * record_value as u32 as f32,
 								Value::Int(value) => value as f32,
 								Value::Rgba(value) => value.r,
 								Value::Vector2(value) => value.x,

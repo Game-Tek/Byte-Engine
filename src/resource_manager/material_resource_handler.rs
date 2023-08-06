@@ -21,8 +21,7 @@ impl MaterialResourcerHandler {
 impl ResourceHandler for MaterialResourcerHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool {
 		match resource_type {
-			"image/png" => true,
-			".png" => true,
+			"json" => true,
 			_ => false
 		}
 	}
@@ -34,8 +33,11 @@ impl ResourceHandler for MaterialResourcerHandler {
 		let vertex  = material_json["vertex"].as_str().unwrap();
 		let fragment = material_json["fragment"].as_str().unwrap();
 
-		let vertex_shader_code = std::fs::read_to_string(vertex).unwrap();
-		let fragment_shader_code = std::fs::read_to_string(fragment).unwrap();
+		let vertex_path = "resources/".to_string() + vertex;
+		let fragment_path = "resources/".to_string() + fragment;
+
+		let vertex_shader_code = std::fs::read_to_string(vertex_path).unwrap();
+		let fragment_shader_code = std::fs::read_to_string(fragment_path).unwrap();
 
 		let vertex_shader = beshader_compiler::parse(beshader_compiler::tokenize(&vertex_shader_code));
 		let fragment_shader = beshader_compiler::parse(beshader_compiler::tokenize(&fragment_shader_code));
@@ -46,7 +48,6 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 		let c = common.process();
 
-		shader_spec["root"] = json::JsonValue::new_object();
 		shader_spec["root"][c.0] = c.1;
 
 		let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();

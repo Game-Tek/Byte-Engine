@@ -24,10 +24,10 @@ fn gallery_shooter() {
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
-	let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
-	let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
-	let duck_3: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
-	let duck_4: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
+	let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
+	let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
+	let duck_3: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
+	let duck_4: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
 
 	app.do_loop();
 
@@ -64,7 +64,7 @@ impl Component for Player {
 
 		Self {
 			camera: camera_handle,
-			mesh: orchestrator.spawn_component(MeshParameters{ resource_id: "Box.gltf", transform, }),
+			mesh: orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform, }),
 		}
 	}
 }

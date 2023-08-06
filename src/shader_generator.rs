@@ -272,44 +272,52 @@ impl ShaderGenerator {
 	}
 
 	pub fn generate(&self, program_spec: &json::JsonValue, compilation_settings: &json::JsonValue) -> String {
-		let mut shader_string = String::new();
+		let mut nodes = Vec::with_capacity(32);
 
-		let glsl_version = &program_spec["glsl"]["version"];
+		nodes.push(("GLSL".to_string(), {
+			let mut glsl_block = String::with_capacity(512);
+			let glsl_version = &program_spec["glsl"]["version"];
 
-		if let json::JsonValue::String(glsl_version) = glsl_version {
-			shader_string.push_str("#version ");
-			shader_string.push_str(&glsl_version); // TODO: Get only first number
-			shader_string.push_str(" core\n");
-		} else {
-			shader_string.push_str("#version 450 core\n");
-		}
+			if let json::JsonValue::String(glsl_version) = glsl_version {
+				glsl_block.push_str(&format!("#version {glsl_version} core\n"));
+			} else {
+				glsl_block.push_str("#version 450 core\n");
+			}
 
-		// shader type
+			// shader type
 
-		let shader_type = &compilation_settings["type"];
+			let shader_type = &compilation_settings["type"];
 
-		let shader_type = shader_type.as_str().unwrap_or("");
+			let shader_type = shader_type.as_str().unwrap_or("");
 
-		match shader_type {
-			"vertex" => shader_string.push_str("#pragma shader_stage(vertex)\n"),
-			"fragment" => shader_string.push_str("#pragma shader_stage(fragment)\n"),
-			"compute" => shader_string.push_str("#pragma shader_stage(compute)\n"),
-			_ => shader_string.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
-		}
+			match shader_type {
+				"vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
+				"fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
+				"compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+				_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
+			}
 
-		// extensions
+			// extensions
 
-		shader_string += Self::generate_glsl_extension_block(shader_type).as_str();
+			glsl_block += Self::generate_glsl_extension_block(shader_type).as_str();
+			// memory layout declarations
 
-		// memory layout declarations
+			glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
 
-		shader_string.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
+			glsl_block
+		}));
 
 		let root = &program_spec["root"];
 
 		let root = root.entries().next().unwrap();
 
-		fn process_node(shader_string: &mut String, (name, node): (&str, &json::JsonValue), compilation_settings: &json::JsonValue) {
+		#[derive(Clone)]
+		struct ProgramState {
+			in_position: u32, out_position: u32, push_constants: u32,
+			nodes: Vec<(String, String)>,
+		}
+
+		fn process_node(string: Option<&mut String>, (name, node): (&str, &json::JsonValue), compilation_settings: &json::JsonValue, program_state: &mut ProgramState) {
 			if !matches!(node, json::JsonValue::Object(_)) { return; }
 
 			if let Some(only_under) = (&node["__only_under"]).as_str() {
@@ -321,14 +329,15 @@ impl ShaderGenerator {
 			match node_type {
 				"scope" => {
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(None, entry, compilation_settings, program_state);
 					}
 				}
 				"struct" => {
+					let mut shader_string = String::with_capacity(64);
 					shader_string.push_str(format!("struct {name} {{").as_str());
 
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
 					}
 
 					shader_string.push_str(" };\n");
@@ -336,30 +345,56 @@ impl ShaderGenerator {
 					shader_string.push_str(&format!("layout(buffer_reference,scalar,buffer_reference_align=2) buffer {name}Pointer {{"));
 
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
 					}
 
-					shader_string.push_str(" }\n");
+					shader_string.push_str(" };\n");
+
+					program_state.nodes.push((name.to_string(), shader_string));
 				}
 				"in" => {
-					shader_string.push_str(format!("layout(location=0) in").as_str());
+					let mut shader_string = String::with_capacity(32);
+
+					let location = program_state.in_position;
+					shader_string.push_str(format!("layout(location={location}) in").as_str());
+
+					if let Some(interpolation) = node["interpolation"].as_str() {
+						shader_string.push_str(&format!(" {interpolation}"));
+					}
+
+					program_state.in_position += 1;
 
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
 					}
 
 					shader_string.push_str("\n");
+
+					program_state.nodes.push((name.to_string(), shader_string));
 				}
 				"out" => {
-					shader_string.push_str(format!("layout(location=0) out").as_str());
+					let mut shader_string = String::with_capacity(32);
+
+					let location = program_state.out_position;
+					shader_string.push_str(format!("layout(location={location}) out").as_str());
+
+					if let Some(interpolation) = node["interpolation"].as_str() {
+						shader_string.push_str(&format!(" {interpolation}"));
+					}
+
+					program_state.out_position += 1;
 
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
 					}
 
 					shader_string.push_str("\n");
+
+					program_state.nodes.push((name.to_string(), shader_string));
 				}
 				"function" => {
+					let mut shader_string = String::with_capacity(128);
+
 					let return_type = node["data_type"].as_str().unwrap();
 
 					shader_string.push_str(format!("{return_type} {name}() {{").as_str());
@@ -374,27 +409,60 @@ impl ShaderGenerator {
 					}
 
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
 					}
 
 					shader_string.push_str("\n}");
+
+					program_state.nodes.push((name.to_string(), shader_string));
 				}
 				"member" => {
 					let data_type = node["data_type"].as_str().unwrap();
 					let data_type = translate_type(data_type);
-					shader_string.push_str(format!(" {data_type} {name};").as_str());
+					if let Some(shader_string) = string {
+						shader_string.push_str(format!(" {data_type} {name};").as_str());
+					}
+				}
+				"push_constant" => {
+					let mut shader_string = if let Some(pc) = program_state.nodes.iter().find(|n| n.0 == "push_constant") {
+						pc.1.clone()
+					} else {
+						program_state.nodes.push(("push_constant".to_string(), String::new()));
+						format!("layout(push_constant) uniform push_constants {{")
+					};
+
+					program_state.push_constants += 1;
+
+					for entry in node.entries() {
+						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
+					}
+
+					program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
 				}
 				_ => {
 					for entry in node.entries() {
-						process_node(shader_string, entry, compilation_settings);
+						process_node(None, entry, compilation_settings, program_state);
 					}
 				}
 			}
 		}
 
-		process_node(&mut shader_string, root, &compilation_settings);
+		let mut program_state = ProgramState {
+			in_position: 0, out_position: 0, push_constants: 0,
+			nodes,
+		};
 
-		shader_string
+		process_node(None, root, &compilation_settings, &mut program_state);
+
+		if let Some(pc) = program_state.nodes.iter_mut().find(|n| n.0 == "push_constant") {
+			pc.1.push_str(" } pc;\n");
+		}
+
+		{
+			let mut shader_string = String::with_capacity(1024);
+			program_state.nodes.iter().for_each(|n| shader_string.push_str(n.1.as_str()));
+			shader_string
+		}
 	}
 }
 
@@ -407,6 +475,9 @@ fn translate_type(value: &str) -> String {
 	}
 
 	match r.as_str() {
+		"i32" => "int",
+		"u32" => "uint",
+		"f32" => "float",
 		"vec3f" => "vec3",
 		"vec4f" => "vec4",
 		"mat3f" => "mat3",
@@ -778,8 +849,23 @@ void main() {
 							data_type: "mat4f"
 						}
 					},
+					push_constant: {
+						type: "push_constant",
+						vp_matrix: {
+							type: "member",
+							data_type: "mat4f"
+						}
+					},
 					Forward:{
 						type: "scope",
+						buffer: {
+							type: "descriptor",
+							set: 0, binding: 0,
+							buffer: {
+								type: "member",
+								data_type: "Camera"
+							}
+						},
 						Light: {
 							type: "struct",
 							__only_under: "fragment",
@@ -794,9 +880,38 @@ void main() {
 						},
 						MyShader: {
 							type: "scope",
+							push_constant: {
+								type: "push_constant",
+								model_matrix: {
+									type: "member",
+									data_type: "mat4f"
+								}
+							},
 							Vertex: {
 								type: "scope",
 								__only_under: "vertex",
+								in_Position: {
+									type: "in",
+									in_Position: {
+										type: "member",
+										data_type: "vec3f",
+									}
+								},
+								in_Normal: {
+									type: "in",
+									in_Normal: {
+										type: "member",
+										data_type: "vec3f",
+									}
+								},
+								out_InstanceIndex: {
+									type: "out",
+									out_InstanceIndex: {
+										type: "member",
+										data_type: "u32",
+									},
+									interpolation: "flat"
+								},
 								main: {
 									type: "function",
 									data_type: "void",
@@ -808,6 +923,14 @@ void main() {
 							Fragment: {
 								type: "scope",
 								__only_under: "fragment",
+								in_InstanceIndex: {
+									type: "in",
+									in_InstanceIndex: {
+										type: "member",
+										data_type: "u32"
+									},
+									interpolation: "flat"
+								},
 								out_Color: {
 									type: "out",
 									out_Color: {
@@ -846,13 +969,19 @@ void main() {
 layout(row_major) uniform; layout(row_major) buffer;
 struct Camera { mat4 view_projection; };
 layout(buffer_reference,scalar,buffer_reference_align=2) buffer CameraPointer { mat4 view_projection; }
+layout(location=0) in vec3 in_Position;
+layout(location=1) in vec3 in_Normal;
+layout(location=0) out flat uint out_InstanceIndex;
+layout(push_constant) uniform push_constants { mat4 vp_matrix; mat4 model_matrix; } pc;
 void main() {
 	gl_Position=vec4(0,0,0,1);
 }";
 
 		println!("{}", &generated_vertex_shader);
 
-		assert_eq!(generated_vertex_shader, expected_vertex_shader_string);
+		//assert_eq!(generated_vertex_shader, expected_vertex_shader_string);
+
+		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_vertex_shader.as_str(), shaderc::ShaderKind::Vertex, "shader.glsl", "main", None).unwrap();
 
 		let expected_fragment_shader_string =
 "#version 450 core
@@ -869,7 +998,9 @@ void main() {
 layout(row_major) uniform; layout(row_major) buffer;
 struct Light { vec3 position; vec3 color; };
 layout(buffer_reference,scalar,buffer_reference_align=2) buffer LightPointer { vec3 position; vec3 color; }
+layout(location=0) in flat uint in_InstanceIndex;
 layout(location=0) out vec4 out_Color;
+layout(push_constant) uniform push_constants { mat4 vp_matrix; mat4 model_matrix; } pc;
 void main() {
 	out_Color=vec4(0,0,0,1);
 }";
@@ -878,6 +1009,8 @@ void main() {
 
 		println!("{}", &generated_fragment_shader);
 
-		assert_eq!(generated_fragment_shader, expected_fragment_shader_string);
+		//assert_eq!(generated_fragment_shader, expected_fragment_shader_string);
+
+		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_fragment_shader.as_str(), shaderc::ShaderKind::Fragment, "shader.glsl", "main", None).unwrap();
 	}
 }

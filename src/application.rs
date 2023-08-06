@@ -170,7 +170,7 @@ impl Application for GraphicsApplication {
 		let visibility_render_domain_handle = orchestrator.spawn_entity(render_domain::VisibilityWorldRenderDomain::new);
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new);
-		orchestrator.spawn_system(resource_manager::ResourceManager::new_as_system);
+		orchestrator.spawn_entity(resource_manager::ResourceManager::new_as_system);
 
 		GraphicsApplication { application, file_tracker_handle: file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
 	}

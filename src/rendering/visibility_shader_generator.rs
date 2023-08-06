@@ -10,73 +10,71 @@ impl VisibilityShaderGenerator {
 
 impl ShaderGenerator for VisibilityShaderGenerator {
 	fn process(&self) -> (&'static str, json::JsonValue) {
-		let mut value = json::JsonValue::new_object();
-
-		let mut vertex_input = json::object! {
+		let value = json::object! {
 			"in_position": {
 				type: "in",
-				location: 0,
-				type_name: "vec3f",
-				interpolation: "smooth"
+				in_position: {
+					type: "member",
+					data_type: "vec3f",
+				}
 			},
 			"in_normal": {
 				type: "in",
-				location: 1,
-				type_name: "vec3f",
-				interpolation: "smooth"
+				in_normal: {
+					type: "member",
+					data_type: "vec3f",
+				}
 			},
-		};
-
-		let push_constant = json::object! {
-			"camera": {
-				type_name: "Camera*"
+			"pc": {
+				type: "push_constant",
+				"camera": {
+					type: "member",
+					data_type: "Camera*"
+				},
+				"model": {
+					type: "member",
+					data_type: "Model*"
+				},
 			},
-			"model": {
-				type_name: "Model*"
-			}
-		};
-
-		let mut items = json::object! {
 			"Camera": {
 				type: "struct",
-				members: {
-					"view": {
-						type: "mat4f",
-					},
-					"projection": {
-						type: "mat4f",
-					},
-					"view_projection": {
-						type: "vec3f",
-					}
+				"view": {
+					type: "member",
+					data_type: "mat4f",
+				},
+				"projection": {
+					type: "member",
+					data_type: "mat4f",
+				},
+				"view_projection": {
+					type: "member",
+					data_type: "mat4f",
 				}
 			},
 			"Model": {
 				type: "struct",
-				members: {
-					"model": {
-						type: "mat4f",
-					},
-				}
+				"model": {
+					type: "member",
+					data_type: "mat4f",
+				},
 			},
-		};
-
-		let mut interface = json::object! {
 			"in_instance_index": {
 				type: "in",
-				location: 0,
-				type_name: "i32",
+				in_instance_index: {
+					type: "memeber",
+					data_type: "u32",
+				},
 				interpolation: "flat"
 			},
 			"out_color": {
-				type: "in",
-				location: 0,
-				type_name: "vec4",
-				way: "out",
-				interpolation: "smooth"
+				type: "out",
+				out_Color: {
+					type: "member",
+					data_type: "vec4f",
+				}
 			}
 		};
 
-		("visibility", value)
+		("Visibility", value)
 	}
 }

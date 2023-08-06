@@ -16,7 +16,7 @@ impl ResourceHandler for ImageResourceHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool {
 		match resource_type {
 			"image/png" => true,
-			".png" => true,
+			"png" => true,
 			_ => false
 		}
 	}

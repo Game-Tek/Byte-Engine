@@ -177,7 +177,7 @@ impl ResourceManager {
 			},
 			"local" => {
 				let files = if let Ok(r) = std::fs::read_dir("resources") { r } else { return None; };
-				let files = files.filter(|f| if let Ok(f) = f { f.path().to_str().unwrap().starts_with(path) } else { false });
+				let files = files.filter(|f| if let Ok(f) = f { f.path().to_str().unwrap().contains(path) } else { false });
 				let p = files.last().unwrap().unwrap().path();
 
 				let mut file = std::fs::File::open(&p).unwrap();
@@ -232,6 +232,8 @@ impl ResourceManager {
 		let mut file = if let Ok(file) = std::fs::File::create(asset_path) { file } else { return None; };
 
 		file.write_all(bytes.as_slice()).unwrap();
+
+		let document = self.db.collection::<Document>("resources").find_one(doc!{ "_id": resource_id }).unwrap().unwrap();
 
 		return Some(document);
 	}
@@ -305,7 +307,9 @@ impl ResourceManager {
 			}
 		};
 
-		let resource: T = T::deserialize(polodb_core::bson::Deserializer::new(document.clone().into())).unwrap();
+		dbg!(&document);
+
+		let resource: T = T::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
 
 		return Some(Request { document, resource, id: path.to_string() });
 	}

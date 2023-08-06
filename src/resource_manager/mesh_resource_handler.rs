@@ -1,4 +1,5 @@
 use polodb_core::bson::Document;
+use serde::Serialize;
 
 use super::ResourceHandler;
 
@@ -16,6 +17,7 @@ impl ResourceHandler for MeshResourceHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool {
 		match resource_type {
 			"mesh" => true,
+			"gltf" => true,
 			_ => false
 		}
 	}
@@ -89,15 +91,17 @@ impl ResourceHandler for MeshResourceHandler {
 			return Err("Mesh does not have indices".to_string());
 		}
 		
-		let resource = polodb_core::bson::doc!{
-			"bouding_box": [[]],
-			"vertex_components": [],
-			"index_type": "U16",
-			"vertex_count": 0,
-			"index_count": 0
+		let mesh = Mesh {
+			bounding_box,
+			vertex_components,
+			index_count,
+			vertex_count,
+			index_type
 		};
 
-		Ok((resource, buf))
+		let serialized_mesh = mesh.serialize(polodb_core::bson::Serializer::new()).unwrap();
+
+		Ok((serialized_mesh.as_document().unwrap().clone(), buf))
 	}
 }
 

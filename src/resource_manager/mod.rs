@@ -6,7 +6,7 @@ mod image_resource_handler;
 mod mesh_resource_handler;
 mod material_resource_handler;
 
-use std::{io::prelude::*, sync::Arc};
+use std::{io::prelude::*, str::FromStr, hash::{Hasher, Hash},};
 
 use polodb_core::bson::{Document, doc};
 
@@ -16,14 +16,35 @@ use crate::orchestrator::{System, self};
 
 trait ResourceHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool;
-	fn process(&self, bytes: Vec<u8>) -> Result<(Document, Vec<u8>), String>;
+
+	/// Returns a tuple containing the resource description and it's associated binary data.\
+	/// 
+	/// The returned document is like the following:
+	/// ```json
+	/// { "class": "X", "resource": { ... }, "hash": 0, "required_resources":[{ "path": "..." }] }
+	/// ```
+	/// Fields:
+	/// - **class**: The resource class. This is used to identify the resource type. Needs to be meaningful and will be a public constant.
+	/// - **resource**: The resource data. Can look like anything.
+	/// - **hash**(optional): The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
+	/// - **required_resources**(optional): A list of resources that this resource depends on. This is used to load resources that depend on other resources.
+	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String>;
 }
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
 /// It also handles caching of resources.
 /// 
+/// Resource can be sourced from the local filesystem or from the network.
 /// When in a debug build it will lazily load resources from source and cache them.
+/// When in a release build it will exclusively load resources from cache.
+/// 
+/// If accessing the filesystem paths will be relative to the assets directory, and assets should omit the extension.
+/// 
+/// The stored resource document is like the following:
+/// ```json
+/// { "_id":"OId" , "id": 01234, "path": "../..", "class": "X", "size": 0, "resource": { ... }, "hash": 0 }
+/// ```
 pub struct ResourceManager {
 	db: polodb_core::Database,
 	resource_handlers: Vec<Box<dyn ResourceHandler + Send>>,
@@ -104,16 +125,28 @@ pub struct Request<T> {
 impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new() -> Self {
-		std::fs::create_dir_all("assets").unwrap();
+		if let Err(error) = std::fs::create_dir_all("assets") {
+			match error.kind() {
+				std::io::ErrorKind::AlreadyExists => {},
+				_ => panic!("Could not create assets directory"),
+			}
+		}
+
+		if let Err(error) = std::fs::create_dir_all("resources") {
+			match error.kind() {
+				std::io::ErrorKind::AlreadyExists => {},
+				_ => panic!("Could not create assets directory"),
+			}
+		}
 
 		let mut args = std::env::args();
 
 		let memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
 		let db_res = if !memory_only {
-			polodb_core::Database::open_file("assets/resources.db")
+			polodb_core::Database::open_file("resources/resources.db")
 		} else {
-			println!("\x1B[WARNING]Using memory database instead of file database.");
+			println!("\x1B[INFO]Using memory database instead of file database.");
 			polodb_core::Database::open_memory()
 		};
 
@@ -152,57 +185,132 @@ impl ResourceManager {
 		Self::new()
 	}
 
-	fn resolve_resource_path(&self, path: &str) -> String { "resources/".to_string() + path	}
-	fn resolve_asset_path(&self, path: &str) -> String { "assets/".to_string() + path }
+	/// Tries to load a resource from cache or source.\
+	/// This is a more advanced version of get() as it allows to load resources that depend on other resources.\
+	/// 
+	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
+	/// If the resource is in cache but it's data cannot be parsed, it will return None.
+	/// Return is a tuple containing the resource description and it's associated binary data.\
+	/// ```json
+	/// { ..., "resources":[{ "id": 01234, "size": 0, "offset": 0, "class": "X" "resource": { ... }, "hash": 0 }] }
+	/// ```
+	/// Members:
+	/// - **id**: u64 - The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
+	/// - **size**: u64 - The resource size in bytes.
+	/// - **offset**: u64 - The resource offset in the resource bundle, relative to the start of the bundle.
+	/// - **class**: String - The resource class. This is used to identify the resource type. Needs to be meaningful and will be a public constant.
+	/// - **resource**: The resource data. Can look like anything.
+	/// - **hash**: u64 - The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical). 
+	/// 
+	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
+	pub fn get(&mut self, path: &str) -> Option<(Document, Vec<u8>)> {
+		let resource_description = if let Some(r) = self.get_document_from_cache(path) {
+			r
+		} else {
+			if let Some(r) = self.load_asset_from_source_and_cache_it(path) { r } else { return None; }
+		};
 
-	fn get_document_from_cache(&mut self, path: &str) -> Option<Document> {
-		self.db.collection::<Document>("resources").find_one(doc!{ "id": path }).unwrap()
-	}
+		let mut buffer = Vec::with_capacity(8192);
 
-	fn load_resource_into_cache(&mut self, path: &str) -> Option<Document> {
-		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };
+		let mut bundle_description = doc!{ "resources": [] };
 
-		let mut source_bytes;
-		let format;
+		if let Some(polodb_core::bson::Bson::Array(required_resources)) = resource_description.get("required_resources") {
+			let mut native_id_array = polodb_core::bson::Array::new();
+			let mut path_array = polodb_core::bson::Array::new();
 
-		match resource_origin {
-			"network" => {
-				let request = if let Ok(request) = ureq::get(path).call() { request } else { return None; };
-				let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return None; };
-				format = content_type;
+			for required_resource in required_resources {
+				let required_resource = if let polodb_core::bson::Bson::Document(required_resource) = required_resource { required_resource } else { break; };
 
-				source_bytes = Vec::new();
-
-				request.into_reader().read_to_end(&mut source_bytes);
-			},
-			"local" => {
-				let files = if let Ok(r) = std::fs::read_dir("resources") { r } else { return None; };
-				let files = files.filter(|f| if let Ok(f) = f { f.path().to_str().unwrap().contains(path) } else { false });
-				let p = files.last().unwrap().unwrap().path();
-
-				let mut file = std::fs::File::open(&p).unwrap();
-				let extension = p.extension().unwrap().to_str().unwrap();
-
-				format = extension.to_string();
-
-				source_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
-
-				if let Err(_) = file.read_to_end(&mut source_bytes) {
-					return None;
+				if let Some(polodb_core::bson::Bson::String(resource_path)) = required_resource.get("path") {
+					native_id_array.push(polodb_core::bson::oid::ObjectId::from_str(resource_path).unwrap().into());
+				} else if let Some(polodb_core::bson::Bson::String(required_resource_path)) = required_resource.get("path") {
+					path_array.push(required_resource_path.into());
+				} else {
+					panic!("Invalid required resource");	
 				}
-			},
-			_ => {
-				// Could not resolve how to get raw resource, return empty bytes
-				return None;
+			}
+
+			let search_doc = polodb_core::bson::doc! {
+				"$or": [
+					{ "_id": { "$in": native_id_array } },
+					{ "path": { "$in": path_array } }
+				]
+			};
+
+			// TODO: make recursive
+			let required_resources = self.db.collection::<Document>("resources").find(search_doc).unwrap().map(|e| e.unwrap()).collect::<Vec<_>>();
+
+			for required_resource in &required_resources {
+				let size = required_resource.get_i64("size").unwrap();
+				let offset = buffer.len() as i64;
+
+				bundle_description.get_array_mut("resources").unwrap().push(doc!{ "size": size, "offset": offset, "resource": required_resource.get("resource").unwrap() }.into());
+
+				self.load_data_from_cache(&required_resource, &mut buffer).unwrap();
 			}
 		}
 
-		let mut bytes = None;
+		let data = self.load_data_from_cache(&resource_description, &mut buffer);
+
+		if data.is_err() {
+			return None;
+		}
+
+		return Some((resource_description, buffer));
+	}
+
+	/// Tries to load the information/metadata for a resource (and it's dependecies).\
+	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
+	/// The result of this function can be later fed into `load_resource()` which will load the binary data.
+	pub fn request_resource(&mut self, path: &str) -> Option<Document> {
+		let resource_description = self.get_document_from_cache(path).or_else(|| self.load_asset_from_source_and_cache_it(path))?;
+		Some(resource_description)
+	}
+
+	/// Loads the resource binary data from cache.\
+	/// If a buffer range is provided it will load the data into the buffer.\
+	/// If no buffer range is provided it will return the data in a vector.
+	pub fn load_resource(&self, resource: &Document, options: Option<Document>, buffer: Option<&mut [u8]>) -> Result<Option<Vec<u8>>, LoadResults> {
+		if let Some(buffer) = buffer {
+			self.load_data_from_cache(resource, buffer);
+			Ok(None)
+		} else { 
+			let mut b = Vec::new();
+
+			self.load_data_from_cache(resource, &mut b);
+
+			Ok(Some(b))
+		}
+
+		//let resource: T = T::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
+	}
+
+	fn resolve_resource_path(&self, path: &str) -> String { "resources/".to_string() + path	}
+	fn resolve_asset_path(&self, path: &str) -> String { "assets/".to_string() + path }
+
+	/// Tries to load a resource from cache.\
+	/// The returned documents is like the following:
+	/// ```json
+	/// { "_id":"OId" , "id": 01234, "path":"../..", "size": 0, "class": "X", "resource": { ... }, "hash": 0 }
+	/// ```
+	fn get_document_from_cache(&mut self, path: &str) -> Option<Document> {
+		self.db.collection::<Document>("resources").find_one(doc!{ "path": path }).unwrap()
+	}
+
+	/// Tries to load a resource from source and cache it.\
+	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.
+	fn load_asset_from_source_and_cache_it(&mut self, path: &str) -> Option<Document> {
+		let (source_bytes, format) = match get_asset_from_source(path) {
+			Ok(value) => value,
+			Err(value) => return value,
+		};
+
+		let mut resource_packages = None;
 
 		for handler in &self.resource_handlers {
 			if handler.can_handle_type(&format) {
 				if let Ok(e) = handler.process(source_bytes) {
-					bytes = Some(e);
+					resource_packages = Some(e);
 					break;
 				} else {
 					return None;
@@ -210,124 +318,118 @@ impl ResourceManager {
 			}
 		};
 
-		let (resource_document, bytes) = if let Some(bytes) = bytes { bytes } else { return None; };
-
-		let id = path.to_string();
-
-		let document = doc! {
-			"id": id,
-			"resource": resource_document
-		};
-
-		let insert_result = if let Ok(insert_result) = self.db.collection::<Document>("resources").insert_one(&document) {
-			insert_result
-		} else {
-			return None;
-		};
-
-		let resource_id = insert_result.inserted_id.as_object_id().unwrap();
-
-		let asset_path = self.resolve_asset_path(resource_id.to_string().as_str());
-
-		let mut file = if let Ok(file) = std::fs::File::create(asset_path) { file } else { return None; };
-
-		file.write_all(bytes.as_slice()).unwrap();
-
-		let document = self.db.collection::<Document>("resources").find_one(doc!{ "_id": resource_id }).unwrap().unwrap();
-
-		return Some(document);
+		return self.cache_resources(resource_packages?, path);
 	}
 
-	fn load_data_from_cache(&mut self, path: &str) -> Result<Vec<u8>, LoadResults> {
-		let result = self.db.collection::<Document>("resources").find_one(doc!{ "id": path })?;
+	/// Stores the asset as a resource.
+	/// Returns the resource document.
+	fn cache_resources(&mut self, resource_packages: Vec<(Document, Vec<u8>)>, path: &str) -> Option<Document> {
+		let mut document = None;
 
-		if let Some(resource) = result {
-			let native_db_resource_id =	if let Some(polodb_core::bson::Bson::ObjectId(id)) = resource.get("_id") {
-				id
-			} else {
-				return Err(LoadResults::LoadFailed);
-			};
+		for resource_package in resource_packages {
+			let mut full_resource_document = resource_package.0;
 
-			let native_db_resource_id = native_db_resource_id.to_string();
+			let mut hasher = std::collections::hash_map::DefaultHasher::new();
+			path.hash(&mut hasher);
 
-			let mut file = match std::fs::File::open("assets/".to_string() + native_db_resource_id.as_str()) {
-				Ok(it) => it,
-				Err(reason) => {
-					match reason { // TODO: handle specific errors
-						_ => return Err(LoadResults::CacheFileNotFound { document: resource }),
-					}
+			full_resource_document.insert("id", hasher.finish() as i64);
+			full_resource_document.insert("path", path.to_string());
+			full_resource_document.insert("size", resource_package.1.len() as i64);
+
+			if let None = full_resource_document.get("hash") { // TODO: might be a good idea just to generate a random hash, since this method does not reflect changes to the document of the resource
+				let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+				std::hash::Hasher::write(&mut hasher, resource_package.1.as_slice());
+
+				full_resource_document.insert("hash", hasher.finish() as i64);
+			}
+
+			let insert_result = self.db.collection::<Document>("resources").insert_one(&full_resource_document).ok()?;
+
+			let resource_id = insert_result.inserted_id.as_object_id()?;
+
+			let resource_path = self.resolve_resource_path(resource_id.to_string().as_str());
+
+			let mut file = std::fs::File::create(resource_path).ok()?;
+
+			file.write_all(resource_package.1.as_slice()).unwrap();
+
+			document = Some(self.db.collection::<Document>("resources").find_one(doc!{ "_id": resource_id }).unwrap().unwrap());
+		}
+
+		return document;
+	}
+
+	/// Tries to load a resource from cache.\
+	/// If the resource cannot be found/loaded or if it's become stale it will return None.
+	fn load_data_from_cache(&mut self, resource_document: &polodb_core::bson::Document, buffer: &mut [u8]) -> Result<(), LoadResults> {
+		let native_db_resource_id =	if let Some(polodb_core::bson::Bson::ObjectId(oid)) = resource_document.get("_id") { oid } else { return Err(LoadResults::LoadFailed); };
+
+		let native_db_resource_id = native_db_resource_id.to_string();
+
+		let mut file = match std::fs::File::open(self.resolve_asset_path(&native_db_resource_id)) {
+			Ok(it) => it,
+			Err(reason) => {
+				match reason { // TODO: handle specific errors
+					_ => return Err(LoadResults::CacheFileNotFound { document: resource_document.clone() }),
 				}
-			};
-
-			let mut bytes = Vec::new();
-
-			let res = file.read_to_end(&mut bytes);
-
-			if res.is_err() { return Err(LoadResults::LoadFailed); }
-
-			return Ok(bytes);
-		}
-
-		return Err(LoadResults::ResourceNotFound);
-	}
-
-	/// Tries to load a resource from cache or source.\
-	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
-	/// If the resource is in cache but it's data cannot be parsed, it will return None.
-	pub fn get(&mut self, path: &str) -> Option<(Document, Vec<u8>)> {
-		let document = if let Some(r) = self.get_document_from_cache(path) {
-			r
-		} else {
-			if let Some(r) = self.load_resource_into_cache(path) {
-				r
-			} else {
-				return None;
 			}
 		};
 
-		let data = self.load_data_from_cache(path);
+		let res = file.read_exact(buffer);
 
-		if data.is_err() {
-			return None;
-		}
+		if res.is_err() { return Err(LoadResults::LoadFailed); }
 
-		let data = data.unwrap();
-
-		return Some((document, data));
+		return Ok(());
 	}
+}
 
-	pub fn get_resource_info<'a, T: serde::Deserialize<'a>>(&mut self, path: &str) -> Option<Request<T>> {
-		let document = if let Some(r) = self.get_document_from_cache(path) {
-			r
-		} else {
-			if let Some(r) = self.load_resource_into_cache(path) {
-				r
-			} else {
-				return None;
+/// Loads an asset from source.\
+/// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
+/// If the asset is not found it will return None.
+/// ```rust
+/// let (bytes, format) = resource_manager::get_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
+/// ```
+fn get_asset_from_source(path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
+	let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };
+	let mut source_bytes;
+	let format;
+	match resource_origin {
+		"network" => {
+			let request = if let Ok(request) = ureq::get(path).call() { request } else { return Err(None); };
+			let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return Err(None); };
+			format = content_type;
+
+			source_bytes = Vec::new();
+
+			request.into_reader().read_to_end(&mut source_bytes);
+		},
+		"local" => {
+			let files = if let Ok(r) = std::fs::read_dir("assets") { r } else { return Err(None); };
+			let files = files.filter(|f| if let Ok(f) = f { f.path().to_str().unwrap().contains(path) } else { false });
+			let p = files.last().unwrap().unwrap().path();
+
+			let (mut file, extension) = if let Ok(dir) = std::fs::read_dir("assets") {
+				let files = dir.filter(|f| if let Ok(f) = f { f.path().to_str().unwrap().contains(path) } else { false });
+				let file_path = files.last().unwrap().unwrap().path();
+				(std::fs::File::open(&p).unwrap(), p.extension().unwrap().to_str().unwrap().to_string())
+			} else { return Err(None); };
+
+			format = extension.to_string();
+
+			source_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
+
+			if let Err(_) = file.read_to_end(&mut source_bytes) {
+				return Err(None);
 			}
-		};
-
-		dbg!(&document);
-
-		let resource: T = T::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
-
-		return Some(Request { document, resource, id: path.to_string() });
+		},
+		_ => {
+			// Could not resolve how to get raw resource, return empty bytes
+			return Err(None);
+		}
 	}
 
-	pub fn load_resource_into_buffer<'a>(&mut self, request: &Request<mesh_resource_handler::Mesh>, vertex_buffer: &mut [u8], index_buffer: &mut [u8]) {
-		let _id = request.document.get("_id").unwrap().as_object_id().unwrap().to_string();
-		let mut file = std::fs::File::open("assets/".to_string() + _id.as_str()).unwrap();
-
-		let mesh_info =& request.resource;
-
-		use mesh_resource_handler::Size;
-
-		let vertex_size = mesh_info.vertex_components.size();
-
-		file.read(&mut vertex_buffer[..(vertex_size * mesh_info.vertex_count as usize)]).unwrap();
-		file.seek(std::io::SeekFrom::Start((vertex_size * mesh_info.vertex_count as usize).next_multiple_of(16) as u64)).unwrap();
-		file.read(&mut index_buffer[..(mesh_info.index_count as usize * mesh_info.index_type.size())]).unwrap();
-	}
+	Ok((source_bytes, format))
 }
 
 // TODO: test resource caching

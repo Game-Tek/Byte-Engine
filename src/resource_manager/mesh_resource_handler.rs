@@ -22,7 +22,7 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: Vec<u8>) -> Result<(Document, Vec<u8>), String> {
+	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let (gltf, buffers, _) = gltf::import_slice(bytes.as_slice()).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
@@ -101,7 +101,7 @@ impl ResourceHandler for MeshResourceHandler {
 
 		let serialized_mesh = mesh.serialize(polodb_core::bson::Serializer::new()).unwrap();
 
-		Ok((serialized_mesh.as_document().unwrap().clone(), buf))
+		Ok(vec![(serialized_mesh.as_document().unwrap().clone(), buf)])
 	}
 }
 

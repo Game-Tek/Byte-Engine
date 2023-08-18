@@ -35,7 +35,8 @@ pub struct VisibilityWorldRenderDomain {
 	mesh_resources: HashMap<&'static str, u32>,
 
 	/// Maps resource ids to shaders
-	shaders: std::collections::HashMap<u64, render_system::ShaderHandle>,
+	/// The hash and the shader handle are stored to determine if the shader has changed
+	shaders: std::collections::HashMap<u64, (u64, render_system::ShaderHandle)>,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -223,14 +224,14 @@ impl VisibilityWorldRenderDomain {
 			let mut resource_manager = resource_manager.get_mut();
 			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
-			let resource_request = resource_manager.get_resource_info(mesh.resource_id);
+			let resource_request = resource_manager.request_resource(mesh.resource_id);
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
 			let vertex_buffer = render_system.get_mut_buffer_slice(None, self.vertices_buffer);
 			let index_buffer = render_system.get_mut_buffer_slice(None, self.indices_buffer);
 
-			let resource = resource_manager.load_resource_into_buffer(&resource_request, vertex_buffer, index_buffer); // TODO: add offset
+			let resource = resource_manager.load_resource(&resource_request, None, None);
 
 			self.mesh_resources.insert(mesh.resource_id, self.index_count);
 
@@ -238,9 +239,37 @@ impl VisibilityWorldRenderDomain {
 
 			self.index_count += resource_info.index_count;
 
-			let material = resource_manager.get("cube.json");
+			let material = resource_manager.get("cube");
 
 			let material = if let Some(s) = material { s } else { return; };
+
+			for resource in material.0.get_array("resources").unwrap() {
+				let resource = resource.as_document().unwrap();
+				let class = resource.get_str("class").unwrap();
+
+				match class {
+					"Shader" => {
+						let shader_name = resource.get_str("name").unwrap();
+						let hash = resource.get_i64("hash").unwrap() as u64;
+						let resource_id = resource.get_i64("id").unwrap() as u64;
+
+						if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
+							if *old_hash == hash { continue; }
+						}
+
+						let offset = resource.get_i64("offset").unwrap() as usize;
+						let size = resource.get_i64("size").unwrap() as usize;
+
+						let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::SPIRV, &material.1[offset..(offset + size)]);
+
+						self.shaders.insert(resource_id, (hash, new_shader));
+					}
+					"Material" => {
+						// TODO: update pipeline
+					}
+					_ => {}
+				}
+			}
 
 			let result = resource_manager.get("cube");
 

@@ -1,4 +1,7 @@
 **/target
-**/assets
+**/resources
 *.db
 *.db.*
+.byte
+.byte-engine
+.byte-editor

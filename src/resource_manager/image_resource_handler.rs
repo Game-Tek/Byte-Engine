@@ -21,7 +21,7 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: Vec<u8>) -> Result<(Document, Vec<u8>), String> {
+	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let mut decoder = png::Decoder::new(bytes.as_slice());
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().unwrap();
@@ -59,7 +59,7 @@ impl ResourceHandler for ImageResourceHandler {
 			"compression": "BC7",
 		};
 
-		Ok((resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)))
+		Ok(vec![(resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface))])
 	}
 }
 

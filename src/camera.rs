@@ -1,4 +1,4 @@
-use crate::{Vec3f, orchestrator::{Property, EntityHandle, self, Component, Entity}};
+use crate::{Vec3f, orchestrator::{Property, self, Component, Entity}};
 
 #[derive(component_derive::Component)]
 /// Camera struct

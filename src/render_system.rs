@@ -26,6 +26,7 @@ pub fn select_by_score<T>(values: &[T], score: impl Fn(&T) -> i64) -> Option<&T>
 	best_value
 }
 
+/// Handle to a Pipeline Layout
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PipelineLayoutHandle(u32);
 
@@ -59,6 +60,7 @@ struct Texture {
 	role: String,
 }
 
+/// Handle to a Sampler
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerHandle(u32);
 
@@ -66,11 +68,15 @@ struct Sampler {
 	sampler: render_backend::Sampler,
 }
 
+/// Possible types of a shader source
 pub enum ShaderSourceType {
+	/// GLSL code string
 	GLSL,
+	/// SPIR-V binary
 	SPIRV,
 }
 
+/// Primitive GPU/shader data types.
 #[derive(Hash, Clone, Copy)]
 pub enum DataTypes {
 	Float,

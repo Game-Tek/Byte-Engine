@@ -1,4 +1,4 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, io::Read};
 
 use polodb_core::bson::Document;
 

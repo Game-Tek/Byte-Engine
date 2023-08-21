@@ -1,7 +1,9 @@
+use std::io::{Seek, Read};
+
 use polodb_core::bson::{Document, doc};
 use serde::{Serialize, Deserialize};
 
-use super::ResourceHandler;
+use super::{ResourceHandler, ResourceManager};
 
 pub struct MeshResourceHandler {
 
@@ -16,7 +18,7 @@ impl MeshResourceHandler {
 impl ResourceHandler for MeshResourceHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool {
 		match resource_type {
-			"mesh" => true,
+			"Mesh" | "mesh" => true,
 			"gltf" => true,
 			_ => false
 		}
@@ -112,6 +114,26 @@ impl ResourceHandler for MeshResourceHandler {
 			let mesh = Mesh::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(mesh)
 		})
+	}
+
+	fn read(&self, resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Buffer]) {
+		let mesh: &Mesh = resource.downcast_ref().unwrap();
+
+		for buffer in buffers {
+			match buffer.tag.as_str() {
+				"Vertex" => {
+					file.seek(std::io::SeekFrom::Start(0)).unwrap();
+					file.read(buffer.buffer).unwrap();
+				}
+				"Index" => {
+					let base_offset = mesh.vertex_count as u64 * mesh.vertex_components.size() as u64;
+					let rounded_offset = base_offset + (16 - base_offset % 16);
+					file.seek(std::io::SeekFrom::Start(rounded_offset));
+					file.read(buffer.buffer).unwrap();
+				}
+				_ => {}
+			}
+		}
 	}
 }
 

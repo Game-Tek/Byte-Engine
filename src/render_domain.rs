@@ -242,7 +242,7 @@ impl VisibilityWorldRenderDomain {
 
 						options.resources.push(resource_manager::OptionResource {
 							path: resource.path.clone(),
-							buffer: vertex_buffer,
+							buffers: vec![resource_manager::Buffer{ buffer: vertex_buffer, tag: "Vertex".to_string() }, resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }],
 						});
 					}
 					_ => {}
@@ -256,8 +256,6 @@ impl VisibilityWorldRenderDomain {
 			for resource in &response.resources {
 				match resource.class.as_str() {
 					"Shader" => {
-						let shader: &Shader = resource.resource.downcast_ref().unwrap();
-
 						let hash = resource.hash; let resource_id = resource.id;
 
 						if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {

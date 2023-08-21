@@ -16,6 +16,8 @@ pub struct FileTracker {
 
 impl FileTracker {
 	pub fn new(orchestrator: orchestrator::OrchestratorReference) -> FileTracker {
+		std::fs::create_dir_all(".byte-editor").unwrap();
+
 		let db = polodb_core::Database::open_file(".byte-editor/files.db").unwrap();
 
 		let (tx, rx) = std::sync::mpsc::channel();

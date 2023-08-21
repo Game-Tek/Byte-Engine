@@ -30,7 +30,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let material_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
 		let t = material_json["type"].as_str().unwrap();

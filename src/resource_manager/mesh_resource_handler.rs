@@ -1,4 +1,4 @@
-use polodb_core::bson::Document;
+use polodb_core::bson::{Document, doc};
 use serde::{Serialize, Deserialize};
 
 use super::ResourceHandler;
@@ -22,8 +22,8 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String> {
-		let (gltf, buffers, _) = gltf::import_slice(bytes.as_slice()).unwrap();
+	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
 
@@ -99,14 +99,17 @@ impl ResourceHandler for MeshResourceHandler {
 			index_type
 		};
 
-		let serialized_mesh = mesh.serialize(polodb_core::bson::Serializer::new()).unwrap();
+		let doc = doc!{
+			"class": "Mesh",
+			"resource": mesh.serialize(polodb_core::bson::Serializer::new()).unwrap()
+		};
 
-		Ok(vec![(serialized_mesh.as_document().unwrap().clone(), buf)])
+		Ok(vec![(doc, buf)])
 	}
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&Document) -> Box<dyn std::any::Any> + Send> {
 		Box::new(|document| {
-			let mesh = Mesh::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
+			let mesh = Mesh::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(mesh)
 		})
 	}

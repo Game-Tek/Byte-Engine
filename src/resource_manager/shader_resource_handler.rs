@@ -24,7 +24,7 @@ impl ResourceHandler for ShaderResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(polodb_core::bson::Document, Vec<u8>)>, String> {
+	fn process(&self, bytes: &[u8]) -> Result<Vec<(polodb_core::bson::Document, Vec<u8>)>, String> {
 		Err("Not implemented".to_string())
 	}
 

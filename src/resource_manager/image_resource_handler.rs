@@ -22,8 +22,8 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String> {
-		let mut decoder = png::Decoder::new(bytes.as_slice());
+	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+		let mut decoder = png::Decoder::new(bytes);
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().unwrap();
 		let mut buffer = vec![0; reader.output_buffer_size()];
@@ -47,7 +47,7 @@ impl ResourceHandler for ImageResourceHandler {
 		assert_eq!(extent.depth, 1); // TODO: support 3D textures
 
 		let rgba_surface = intel_tex_2::RgbaSurface {
-			data: bytes.as_slice(),
+			data: &buf,
 			width: extent.width,
 			height: extent.height,
 			stride: extent.width * 4,
@@ -56,8 +56,11 @@ impl ResourceHandler for ImageResourceHandler {
 		let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
 		let resource_document = polodb_core::bson::doc!{
-			"extent": [extent.width, extent.height, extent.depth],
-			"compression": "BC7",
+			"class": "Texture",
+			"resource": {
+				"extent": [extent.width, extent.height, extent.depth],
+				"compression": "BC7",
+			}
 		};
 
 		Ok(vec![(resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface))])
@@ -65,7 +68,7 @@ impl ResourceHandler for ImageResourceHandler {
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
 		Box::new(|document| {
-			let texture = Texture::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
+			let texture = Texture::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(texture)
 		})
 	}

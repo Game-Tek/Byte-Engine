@@ -29,7 +29,7 @@ trait ResourceHandler {
 	/// - **resource**: The resource data. Can look like anything.
 	/// - **hash**(optional): The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
 	/// - **required_resources**(optional): A list of resources that this resource depends on. This is used to load resources that depend on other resources.
-	fn process(&self, bytes: Vec<u8>) -> Result<Vec<(Document, Vec<u8>)>, String>;
+	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String>;
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
 		Box::new(|document| Box::new(document.get("resource").unwrap().clone()))
@@ -257,7 +257,13 @@ impl ResourceManager {
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
 	pub fn get(&mut self, path: &str) -> Option<(Response, Vec<u8>)> {
 		let request = self.load_from_cache_or_source(path)?;
-		let mut buffer = Vec::new();
+
+		let size = request.resources.iter().map(|r| r.size).sum::<u64>() as usize;
+
+		let mut buffer = Vec::with_capacity(size);
+
+		unsafe { buffer.set_len(size); }
+
 		let response = self.load_data_from_cache(request, None, &mut buffer).ok()?;
 		Some((response, buffer))
 	}
@@ -314,7 +320,23 @@ impl ResourceManager {
 			Some(documents)
 		}
 
-		let resource_descriptions = gather(&self.db, path)?;
+		let resource_descriptions = if let Some(a) = gather(&self.db, path) {
+			a
+		} else {
+			let r = Self::read_asset_from_source(path).unwrap();
+
+			let mut resource_packages = Vec::new();
+
+			for resource_handler in &self.resource_handlers {
+				if resource_handler.can_handle_type(r.1.as_str()) {
+					resource_packages.append(&mut resource_handler.process(&r.0).unwrap());
+				}
+			}
+
+			self.write_assets_to_cache(resource_packages, path)?;
+
+			gather(&self.db, path)?
+		};
 
 		let request = Request {
 			resources: resource_descriptions.iter().map(|r|
@@ -335,9 +357,7 @@ impl ResourceManager {
 
 	/// Stores the asset as a resource.
 	/// Returns the resource document.
-	fn cache_resources(&mut self, resource_packages: Vec<(Document, Vec<u8>)>, path: &str) -> Option<()> {
-		let mut document = None;
-
+	fn write_assets_to_cache(&mut self, resource_packages: Vec<(Document, Vec<u8>)>, path: &str) -> Option<()> {
 		for resource_package in resource_packages {
 			let mut full_resource_document = resource_package.0;
 
@@ -365,8 +385,6 @@ impl ResourceManager {
 			let mut file = std::fs::File::create(resource_path).ok()?;
 
 			file.write_all(resource_package.1.as_slice()).unwrap();
-
-			document = Some(self.db.collection::<Document>("resources").find_one(doc!{ "_id": resource_id }).unwrap().unwrap());
 		}
 
 		return Some(());
@@ -380,7 +398,7 @@ impl ResourceManager {
 		let resources = request.resources.into_iter().map(|resource_container| {
 			let native_db_resource_id = resource_container._id.to_string();
 	
-			let mut file = match std::fs::File::open(self.resolve_asset_path(&native_db_resource_id)) {
+			let mut file = match std::fs::File::open(self.resolve_resource_path(&native_db_resource_id)) {
 				Ok(it) => it,
 				Err(reason) => {
 					match reason { // TODO: handle specific errors
@@ -426,7 +444,7 @@ impl ResourceManager {
 	/// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 	/// If the asset is not found it will return None.
 	/// ```rust
-	/// let (bytes, format) = resource_manager::get_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
+	/// let (bytes, format) = resource_manager::read_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
 	/// ```
 	fn read_asset_from_source(path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
 		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };

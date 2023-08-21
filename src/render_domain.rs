@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{prelude::{MatProjection, MatRotate3D, MatTranslate}, Mat4f};
 
-use crate::{resource_manager, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference, OwnedComponent}, Vector3, camera::{self, Camera}, math};
+use crate::{resource_manager::{self, shader_resource_handler::{ShaderResourceHandler, Shader}, mesh_resource_handler}, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference, OwnedComponent}, Vector3, camera::{self, Camera}, math};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -228,52 +228,60 @@ impl VisibilityWorldRenderDomain {
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
-			let vertex_buffer = render_system.get_mut_buffer_slice(None, self.vertices_buffer);
-			let index_buffer = render_system.get_mut_buffer_slice(None, self.indices_buffer);
+			let mut options = resource_manager::Options { resources: Vec::new(), };
 
-			let resource = resource_manager.load_resource(&resource_request, None, None);
-
-			self.mesh_resources.insert(mesh.resource_id, self.index_count);
-
-			let resource_info = resource_request.resource;
-
-			self.index_count += resource_info.index_count;
-
-			let material = resource_manager.get("cube");
-
-			let material = if let Some(s) = material { s } else { return; };
-
-			for resource in material.0.get_array("resources").unwrap() {
-				let resource = resource.as_document().unwrap();
-				let class = resource.get_str("class").unwrap();
-
-				match class {
-					"Shader" => {
-						let shader_name = resource.get_str("name").unwrap();
-						let hash = resource.get_i64("hash").unwrap() as u64;
-						let resource_id = resource.get_i64("id").unwrap() as u64;
-
-						if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
-							if *old_hash == hash { continue; }
-						}
-
-						let offset = resource.get_i64("offset").unwrap() as usize;
-						let size = resource.get_i64("size").unwrap() as usize;
-
-						let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::SPIRV, &material.1[offset..(offset + size)]);
-
-						self.shaders.insert(resource_id, (hash, new_shader));
-					}
+			for resource in &resource_request.resources {
+				match resource.class.as_str() {
+					"Shader" => {}
 					"Material" => {
 						// TODO: update pipeline
+					}
+					"Mesh" => {
+						let vertex_buffer = render_system.get_mut_buffer_slice(None, self.vertices_buffer);
+						let index_buffer = render_system.get_mut_buffer_slice(None, self.indices_buffer);
+
+						options.resources.push(resource_manager::OptionResource {
+							path: resource.path.clone(),
+							buffer: vertex_buffer,
+						});
 					}
 					_ => {}
 				}
 			}
 
-			let result = resource_manager.get("cube");
+			let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
 
-			let result = if let Some(s) = result { s } else { return; };
+			let (response, buffer) = (resource.0, resource.1.unwrap());
+
+			for resource in &response.resources {
+				match resource.class.as_str() {
+					"Shader" => {
+						let shader: &Shader = resource.resource.downcast_ref().unwrap();
+
+						let hash = resource.hash; let resource_id = resource.id;
+
+						if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
+							if *old_hash == hash { continue; }
+						}
+
+						let offset = resource.offset as usize;
+						let size = resource.size as usize;
+
+						let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::SPIRV, &buffer[offset..(offset + size)]);
+
+						self.shaders.insert(resource_id, (hash, new_shader));
+					}
+					"Material" => {}
+					"Mesh" => {
+						self.mesh_resources.insert(mesh.resource_id, self.index_count);
+
+						let mesh: &mesh_resource_handler::Mesh = resource.resource.downcast_ref().unwrap();
+
+						self.index_count += mesh.index_count;
+					}
+					_ => {}
+				}
+			}
 		}
 
 		let closed_frame_index = self.current_frame % 2;

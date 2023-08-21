@@ -1,4 +1,5 @@
 use polodb_core::bson::Document;
+use serde::{Serialize, Deserialize};
 
 use super::ResourceHandler;
 
@@ -61,9 +62,16 @@ impl ResourceHandler for ImageResourceHandler {
 
 		Ok(vec![(resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface))])
 	}
+
+	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
+		Box::new(|document| {
+			let texture = Texture::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
+			Box::new(texture)
+		})
+	}
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Texture {
 	pub compression: String,
 	pub extent: crate::Extent,

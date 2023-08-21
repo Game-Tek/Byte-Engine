@@ -1,5 +1,5 @@
 use polodb_core::bson::Document;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 use super::ResourceHandler;
 
@@ -103,6 +103,13 @@ impl ResourceHandler for MeshResourceHandler {
 
 		Ok(vec![(serialized_mesh.as_document().unwrap().clone(), buf)])
 	}
+
+	fn get_deserializer(&self) -> Box<dyn Fn(&Document) -> Box<dyn std::any::Any> + Send> {
+		Box::new(|document| {
+			let mesh = Mesh::deserialize(polodb_core::bson::Deserializer::new(document.get("resource").unwrap().into())).unwrap();
+			Box::new(mesh)
+		})
+	}
 }
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -135,7 +142,7 @@ pub struct VertexComponent {
 	pub channel: u32,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Mesh {
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_components: Vec<VertexComponent>,

@@ -10,6 +10,10 @@ pub struct MaterialResourcerHandler {
 
 }
 
+pub struct Material {
+
+}
+
 impl MaterialResourcerHandler {
 	pub fn new() -> Self {
 		Self {
@@ -106,5 +110,11 @@ impl ResourceHandler for MaterialResourcerHandler {
 		};
 
 		Ok(vec![a, b])
+	}
+
+	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
+		Box::new(|document| {
+			Box::new(Material {})
+		})
 	}
 }

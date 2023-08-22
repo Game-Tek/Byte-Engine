@@ -356,11 +356,13 @@ impl ShaderGenerator {
 					let mut shader_string = String::with_capacity(32);
 
 					let location = program_state.in_position;
-					shader_string.push_str(format!("layout(location={location}) in").as_str());
+					shader_string.push_str(format!("layout(location={location})").as_str());
 
 					if let Some(interpolation) = node["interpolation"].as_str() {
 						shader_string.push_str(&format!(" {interpolation}"));
 					}
+
+					shader_string.push_str(" in");
 
 					program_state.in_position += 1;
 
@@ -395,30 +397,42 @@ impl ShaderGenerator {
 				"function" => {
 					let mut shader_string = String::with_capacity(128);
 
-					let return_type = node["data_type"].as_str().unwrap();
-
-					shader_string.push_str(format!("{return_type} {name}() {{").as_str());
-
-					let statements = &node["statements"];
-
-					for statement in statements.members() {
-						shader_string.push_str("\n\t");
-						for token in statement.members() {
-							shader_string.push_str(token.as_str().unwrap());
+					if node.has_key("code") {
+						let code = node["code"].as_str().unwrap();
+						shader_string.push_str(code);
+					} else {
+						let return_type = node["data_type"].as_str().unwrap();
+	
+						shader_string.push_str(format!("{return_type} {name}() {{").as_str());
+	
+						let statements = &node["statements"];
+	
+						for statement in statements.members() {
+							shader_string.push_str("\n\t");
+							for token in statement.members() {
+								shader_string.push_str(token.as_str().unwrap());
+							}
+							shader_string.push_str(";");
 						}
+
+						for entry in node.entries() {
+							process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
+						}
+	
+						shader_string.push_str("\n}");
 					}
 
-					for entry in node.entries() {
-						process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
-					}
-
-					shader_string.push_str("\n}");
 
 					program_state.nodes.push((name.to_string(), shader_string));
 				}
 				"member" => {
-					let data_type = node["data_type"].as_str().unwrap();
-					let data_type = translate_type(data_type);
+					let source_data_type = node["data_type"].as_str().unwrap();
+					let mut data_type = translate_type(source_data_type);
+
+					if source_data_type.ends_with('*') {
+						data_type.push_str("Pointer");
+					}
+
 					if let Some(shader_string) = string {
 						shader_string.push_str(format!(" {data_type} {name};").as_str());
 					}
@@ -440,6 +454,8 @@ impl ShaderGenerator {
 					program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
 				}
 				_ => {
+					println!("Unknown node type: {}", node_type);
+
 					for entry in node.entries() {
 						process_node(None, entry, compilation_settings, program_state);
 					}
@@ -457,6 +473,16 @@ impl ShaderGenerator {
 		if let Some(pc) = program_state.nodes.iter_mut().find(|n| n.0 == "push_constant") {
 			pc.1.push_str(" } pc;\n");
 		}
+
+		fn order(node: &(String, String)) -> u32 {
+			match node.0.as_str() {
+				"push_constant" => 1,
+				"main" => 2,
+				_ => 0,
+			}
+		}
+
+		program_state.nodes.sort_by(|a, b| order(a).cmp(&order(b)));
 
 		{
 			let mut shader_string = String::with_capacity(1024);
@@ -496,6 +522,9 @@ mod tests {
 
 	#[test]
 fn test_translate_type() {
+	assert_eq!(translate_type("i32"), "int");
+	assert_eq!(translate_type("u32"), "uint");
+	assert_eq!(translate_type("f32"), "float");
 	assert_eq!(translate_type("vec3f"), "vec3");
 	assert_eq!(translate_type("vec4f"), "vec4");
 	assert_eq!(translate_type("vec3"), "vec3");

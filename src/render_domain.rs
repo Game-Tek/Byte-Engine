@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use maths_rs::{prelude::{MatProjection, MatRotate3D, MatTranslate}, Mat4f};
+use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, shader_resource_handler::{ShaderResourceHandler, Shader}, mesh_resource_handler}, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference, OwnedComponent}, Vector3, camera::{self, Camera}, math};
+use crate::{resource_manager::{self, mesh_resource_handler}, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -40,7 +40,11 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(mut orchestrator: orchestrator::OrchestratorReference, render_system: &mut RenderSystem) -> Self {
+	pub fn new(mut orchestrator: orchestrator::OrchestratorReference,) -> orchestrator::EntityReturn<Self> {
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystem>();
+		let mut render_system = render_system.get_mut();
+		let render_system: &mut render_system::RenderSystem = render_system.downcast_mut().unwrap();
+
 		let frames = (0..2).map(|_| render_system.create_frame()).collect::<Vec<_>>();
 
 		let vertex_layout = [
@@ -123,9 +127,8 @@ impl VisibilityWorldRenderDomain {
 
 		orchestrator.subscribe_to_class(Self::listen_to_camera);
 		orchestrator.subscribe_to_class(Self::listen_to_mesh);
-		// orchestrator.subscribe(file_tracker::change, )
 
-		Self {
+		let render_domain = Self {
 			pipeline_layout_handle,
 			vertices_buffer: vertices_buffer_handle,
 			indices_buffer: indices_buffer_handle,
@@ -159,6 +162,41 @@ impl VisibilityWorldRenderDomain {
 			meshes: HashMap::new(),
 
 			mesh_resources: HashMap::new(),
+		};
+
+		Some((render_domain, vec![orchestrator::PPP::PostCreationFunction(Box::new(Self::load_needed_assets))]))
+	}
+
+	fn load_needed_assets(&mut self, orchestrator: OrchestratorReference) {
+		let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
+		let mut resource_manager = resource_manager.get_mut();
+		let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
+
+		let render_system = orchestrator.get_by_class::<RenderSystem>();
+		let mut render_system = render_system.get_mut();
+		let render_system: &mut render_system::RenderSystem = render_system.downcast_mut().unwrap();
+
+		let (response, buffer) = resource_manager.get("cube").unwrap();
+
+		for resource in &response.resources {
+			match resource.class.as_str() {
+				"Shader" => {
+					let hash = resource.hash; let resource_id = resource.id;
+
+					if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
+						if *old_hash == hash { continue; }
+					}
+
+					let offset = resource.offset as usize;
+					let size = resource.size as usize;
+
+					let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::SPIRV, &buffer[offset..(offset + size)]);
+
+					self.shaders.insert(resource_id, (hash, new_shader));
+				}
+				"Material" => {}
+				_ => {}
+			}
 		}
 	}
 
@@ -461,7 +499,7 @@ impl Mesh {
 }
 
 impl Component for Mesh {
-	type Parameters = MeshParameters;
+	type Parameters<'a> = MeshParameters;
 	fn new(orchestrator: OrchestratorReference, params: MeshParameters) -> Self {
 		Self {
 			resource_id: params.resource_id,

@@ -11,14 +11,14 @@ fn gallery_shooter() {
 
 	let orchestrator = app.get_mut_orchestrator();
 
-	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn_entity(input_manager::Action::<Vector3>::new("Lookaround", &[
+	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn_component(("Lookaround", [
 		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")).mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
 		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
-	]));
+	].as_slice()));
 
-	let trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn_entity(input_manager::Action::<bool>::new("Trigger", &[
-		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton"))
-	]));
+	let x = [input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton"))];
+
+	let trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn_component(("Trigger", x.as_slice()));
 
 	let player: EntityHandle<Player> = orchestrator.spawn_component((lookaround_action_handle));
 
@@ -42,8 +42,8 @@ struct Player {
 impl orchestrator::Entity for Player {}
 
 impl Component for Player {
-	type Parameters = EntityHandle<input_manager::Action<Vec3f>>;
-	fn new(orchestrator: orchestrator::OrchestratorReference, params: Self::Parameters) -> Self {
+	type Parameters<'a> = EntityHandle<input_manager::Action<Vec3f>>;
+	fn new(orchestrator: orchestrator::OrchestratorReference, params: Self::Parameters<'_>) -> Self {
 		let mut transform = maths_rs::Mat4f::identity();
 
 		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.4f32));

@@ -596,8 +596,8 @@ impl WindowSystem {
 		WindowSystem { windows: Vec::new() }
 	}
 
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> Self {
-		Self::new()
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<WindowSystem> {
+		Some((Self::new(), vec![]))
 	}
 
 	pub fn update(&mut self) -> bool {

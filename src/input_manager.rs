@@ -268,8 +268,8 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> Self {
-		Self::new()
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<InputManager> {
+		Some((Self::new(), vec![]))
 	}
 
 	/// Registers a device class/type.
@@ -1319,11 +1319,17 @@ impl GetType for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
+impl <T: Clone + Send + GetType> orchestrator::Component for Action<T> {
+	type Parameters<'a> = (&'a str, &'a [ActionBindingDescription]);
+
+	fn new(orchestrator: orchestrator::OrchestratorReference, (name, bindings): Self::Parameters<'_>) -> Self where Self: Sized {
+		Action { phantom: std::marker::PhantomData }
+	}
+}
+
 impl <T: Clone + Send + GetType> Action<T> {
-	pub fn new<'a>(name: &'a str, bindings: &'a [ActionBindingDescription]) -> (fn(orchestrator::OrchestratorReference, &mut InputManager, &'a str, &'a [ActionBindingDescription]) -> orchestrator::InternalId, &'a str, &'a [ActionBindingDescription]) {
-		(|_: orchestrator::OrchestratorReference, input_system: &mut InputManager, name: &'a str, bindings: &'a [ActionBindingDescription]| {
-			input_system.make_action::<T>(name, T::get_type(), bindings)
-		}, name, bindings)
+	pub fn new<'a>(name: &'a str, bindings: &'a [ActionBindingDescription]) -> orchestrator::EntityReturn<Action<T>> {
+		Some((Action { phantom: std::marker::PhantomData }, vec![]))
 	}
 
 	pub const fn value() -> Property<InputManager, Self, T> where T: GetType, Value: Extract<T> { Property::System { getter: InputManager::get_action_value, setter: InputManager::set_action_value } }

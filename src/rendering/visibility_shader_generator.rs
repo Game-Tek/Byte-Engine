@@ -11,6 +11,7 @@ impl VisibilityShaderGenerator {
 impl ShaderGenerator for VisibilityShaderGenerator {
 	fn process(&self) -> (&'static str, json::JsonValue) {
 		let value = json::object! {
+			"type": "scope",
 			"in_position": {
 				type: "in",
 				in_position: {
@@ -31,9 +32,9 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 					type: "member",
 					data_type: "Camera*"
 				},
-				"model": {
+				"meshes": {
 					type: "member",
-					data_type: "Model*"
+					data_type: "Mesh*"
 				},
 			},
 			"Camera": {
@@ -51,7 +52,7 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 					data_type: "mat4f",
 				}
 			},
-			"Model": {
+			"Mesh": {
 				type: "struct",
 				"model": {
 					type: "member",
@@ -61,7 +62,7 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 			"in_instance_index": {
 				type: "in",
 				in_instance_index: {
-					type: "memeber",
+					type: "member",
 					data_type: "u32",
 				},
 				interpolation: "flat"

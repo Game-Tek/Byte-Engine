@@ -640,8 +640,8 @@ impl RenderSystem {
 	}
 
 	/// Creates a new [`RenderSystem`].
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> RenderSystem {
-		Self::new()
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<RenderSystem> {
+		Some((Self::new(), vec![]))
 	}
 
 	pub fn has_errors(&self) -> bool {

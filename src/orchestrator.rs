@@ -49,8 +49,8 @@ impl <T> EntityHandle<T> {
 
 /// A component is a piece of data that is attached to an entity.
 pub trait Component : Entity {
-	type Parameters;
-	fn new(orchestrator: OrchestratorReference, params: Self::Parameters) -> Self where Self: Sized;
+	type Parameters<'a>;
+	fn new(orchestrator: OrchestratorReference, params: Self::Parameters<'_>) -> Self where Self: Sized;
 }
 
 pub trait OwnedComponent<T: Entity> : Entity {
@@ -94,6 +94,13 @@ struct Task {
 }
 
 type OrchestratorHandle = std::sync::Arc<Orchestrator>;
+
+pub enum PPP<T> {
+	PostCreationFunction(std::boxed::Box<dyn Fn(&mut T, OrchestratorReference,)>),
+}
+
+/// Entity creation functions must return this type.
+pub type EntityReturn<T> = Option<(T, Vec<PPP<T>>)>;
 
 pub enum Property<S, E, V> {
 	System {
@@ -148,12 +155,13 @@ impl Orchestrator {
 		EntityHandle::<C> { internal_id, external_id, phantom: std::marker::PhantomData }
 	}
 
-	pub fn spawn_entity<T, P, F>(&self, function: F) -> EntityHandle<T>
+	/// Spawn entity is a function that spawns an entity and returns a handle to it.
+	pub fn spawn_entity<T, P, F>(&self, function: F) -> Option<EntityHandle<T>>
 		where
 			T: Entity + Send + 'static,
 			F: IntoHandler<P, T> 
 	{
-		let handle = function.call(self);
+		let handle = function.call(self)?;
 
 		{
 			let systems_data = self.listeners_by_class.lock().unwrap();
@@ -164,7 +172,7 @@ impl Orchestrator {
 			}
 		}
 
-		handle
+		Some(handle)
 	}
 
 	pub fn spawn_system<T>(&self, function: fn(OrchestratorReference) -> T) -> EntityHandle<T> where T: System + Send + 'static {
@@ -183,7 +191,7 @@ impl Orchestrator {
 		}
 	}
 
-	pub fn spawn_component<C: Component + Send + 'static>(&self, parameters: C::Parameters) -> EntityHandle<C> {
+	pub fn spawn_component<C: Component + Send + 'static>(&self, parameters: C::Parameters<'_>) -> EntityHandle<C> {
 		let internal_id = {
 			let mut systems_data = self.systems_data.write().unwrap();
 			let internal_id = systems_data.counter;
@@ -683,7 +691,7 @@ pub struct OrchestratorReference<'a> {
 }
 
 impl <'a> OrchestratorReference<'a> {
-	pub fn spawn_component<C: Component + Send + 'static>(&self, parameters: C::Parameters) -> EntityHandle<C> {
+	pub fn spawn_component<C: Component + Send + 'static>(&self, parameters: C::Parameters<'_>) -> EntityHandle<C> {
 		self.orchestrator.spawn_component(parameters)
 	}
 
@@ -703,7 +711,7 @@ impl <'a> OrchestratorReference<'a> {
 		self.orchestrator.subscribe_to_class::<T, C, F>(self.internal_id, function);
 	}
 
-	pub fn spawn_entity<T, P, F>(&self, function: F) -> EntityHandle<T>
+	pub fn spawn_entity<T, P, F>(&self, function: F) -> Option<EntityHandle<T>>
 		where
 			T: Entity + Send + 'static,
 			F: IntoHandler<P, T> 
@@ -732,81 +740,13 @@ pub struct InternalId(pub u32);
 
 /// Handles extractor pattern for most functions passed to the orchestrator.
 pub trait IntoHandler<P, R> {
-	fn call(self, orchestrator: &Orchestrator,) -> EntityHandle<R>;
-}
-
-impl <F, P0, P1, P2, R: Send + 'static> IntoHandler<(P0, P1, P2), R> for F where
-	F: Fn(OrchestratorReference, &mut P0, &mut P1, &mut P2) -> InternalId + 'static,
-	P0: Entity + 'static,
-	P1: Entity + 'static,
-	P2: Entity + 'static,
-{
-	fn call(self, orchestrator: &Orchestrator,) -> EntityHandle<R> {
-		let systems_data = orchestrator.systems_data.read().unwrap();
-
-		let internal_id = systems_data.systems_by_name[P0::class()];
-
-		let mut system0_lock = systems_data.systems[&systems_data.systems_by_name[P0::class()]].write().unwrap();
-		let system0 = system0_lock.downcast_mut::<P0>().unwrap();
-
-		let mut system1_lock = systems_data.systems[&systems_data.systems_by_name[P1::class()]].write().unwrap();
-		let system1 = system1_lock.downcast_mut::<P1>().unwrap();
-
-		let mut system2_lock = systems_data.systems[&systems_data.systems_by_name[P2::class()]].write().unwrap();
-		let system2 = system2_lock.downcast_mut::<P2>().unwrap();
-
-		let obj = (self)(OrchestratorReference { orchestrator, internal_id }, system0, system1, system2);
-		
-		EntityHandle::<R> { internal_id, external_id: obj.0, phantom: std::marker::PhantomData }
-    }
-}
-
-impl <F, R> IntoHandler<(), R> for (R, F) where
-	R: Entity + Send + 'static,
-	F: Fn(OrchestratorReference, R) -> R
-{
-	fn call(self, orchestrator: &Orchestrator,) -> EntityHandle<R> {
-		let internal_id = {
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			let internal_id = systems_data.counter;
-			systems_data.counter += 1;
-			internal_id
-		};
-
-		let obj = (self.1)(OrchestratorReference { orchestrator, internal_id }, self.0);
-		let obj = std::sync::Arc::new(std::sync::RwLock::new(obj));
-		
-		{
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			systems_data.systems.insert(internal_id, obj);
-			systems_data.systems_by_name.insert(R::class(), internal_id);
-		}
-
-		EntityHandle::<R> { internal_id, external_id: 0, phantom: std::marker::PhantomData }
-    }
-}
-
-impl <F, P0, P1, P2, R: Send> IntoHandler<P0, R> for (F, P1, P2) where
-	F: Fn(OrchestratorReference, &mut P0, P1, P2) -> InternalId,
-	P0: Entity + 'static,
-{
-	fn call(self, orchestrator: &Orchestrator,) -> EntityHandle<R> {
-		let systems_data = orchestrator.systems_data.read().unwrap();
-		let internal_id = systems_data.systems_by_name[P0::class()];
-
-		let mut system0_lock = systems_data.systems[&systems_data.systems_by_name[P0::class()]].write().unwrap();
-		let system0 = system0_lock.downcast_mut::<P0>().unwrap();
-
-		let obj = (self.0)(OrchestratorReference { orchestrator, internal_id }, system0, self.1, self.2);
-		
-		EntityHandle::<R> { internal_id, external_id: obj.0, phantom: std::marker::PhantomData }
-    }
+	fn call(self, orchestrator: &Orchestrator,) -> Option<EntityHandle<R>>;
 }
 
 impl <F, R: Entity + Send + 'static> IntoHandler<(), R> for F where
-    F: Fn(OrchestratorReference) -> R,
+    F: Fn(OrchestratorReference) -> EntityReturn<R>,
 {
-    fn call(self, orchestrator: &Orchestrator,) -> EntityHandle<R> {
+    fn call(self, orchestrator: &Orchestrator,) -> Option<EntityHandle<R>> {
 		let internal_id = {
 			let mut systems_data = orchestrator.systems_data.write().unwrap();
 			let internal_id = systems_data.counter;
@@ -814,47 +754,25 @@ impl <F, R: Entity + Send + 'static> IntoHandler<(), R> for F where
 			internal_id
 		};
 
-		let obj = (self)(OrchestratorReference { orchestrator, internal_id });
+		let (obj, post) = (self)(OrchestratorReference { orchestrator, internal_id })?;
 		let obj = std::sync::Arc::new(std::sync::RwLock::new(obj));
 
 		{
 			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			systems_data.systems.insert(internal_id, obj);
+			systems_data.systems.insert(internal_id, obj.clone());
 			systems_data.systems_by_name.insert(R::class(), internal_id);
 		}
-
-		EntityHandle::<R> { internal_id, external_id: 0, phantom: std::marker::PhantomData }
-    }
-}
-
-impl <F, P0, R: Send + 'static> IntoHandler<P0, R> for F where
-	P0: Entity + 'static,
-	R: Entity + Send + 'static,
-	F: Fn(OrchestratorReference, &mut P0) -> R,
-{
-    fn call(self, orchestrator: &Orchestrator,) -> EntityHandle<R> {
-		let internal_id = {
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			let internal_id = systems_data.counter;
-			systems_data.counter += 1;
-			internal_id
-		};
-
-		let obj = {
-			let systems_data = orchestrator.systems_data.read().unwrap();
-			let mut system0_lock = systems_data.systems[&systems_data.systems_by_name[P0::class()]].write().unwrap();
-			let system0 = system0_lock.downcast_mut::<P0>().unwrap();
-
-			(self)(OrchestratorReference { orchestrator, internal_id }, system0)
-		};
 
 		{
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			let obj = std::sync::Arc::new(std::sync::RwLock::new(obj));
-			systems_data.systems.insert(internal_id, obj);
-			systems_data.systems_by_name.insert(R::class(), internal_id);
+			let mut obj = obj.write().unwrap();
+
+			for p in post {
+				match p {
+					PPP::PostCreationFunction(f) => f(&mut obj, OrchestratorReference { orchestrator, internal_id }),
+				}
+			}
 		}
 
-		EntityHandle::<R> { internal_id, external_id: 0, phantom: std::marker::PhantomData }
+		Some(EntityHandle::<R> { internal_id, external_id: 0, phantom: std::marker::PhantomData })
     }
 }

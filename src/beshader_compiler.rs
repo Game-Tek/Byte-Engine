@@ -246,7 +246,7 @@ fn parse_function(iterator: std::slice::Iter<'_, String>) -> ParsingResult {
 
 /// Parse consumes an stream of tokens and return a JSON describing the shader.
 pub fn parse(tokens: Vec<String>) -> Result<json::JsonValue, ()> {
-	let mut root_node = json::JsonValue::new_object();
+	let mut root_node = json::object!{ "type": "scope" };
 
 	let mut iter = tokens.iter();
 

@@ -13,10 +13,10 @@ pub struct RenderOrchestrator {
 }
 
 impl RenderOrchestrator {
-	pub fn new(orchestrator: orchestrator::OrchestratorReference) -> Self {
-		Self {
+	pub fn new(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<RenderOrchestrator> {
+		Some((Self {
 			render_passes: Vec::new(),
-		}
+		}, vec![]))
 	}
 
 	pub fn add_render_pass(&mut self, name: &str, depends_on: &[&str]) -> usize {

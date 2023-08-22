@@ -242,8 +242,8 @@ impl ResourceManager {
 		}
 	}
 
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> Self {
-		Self::new()
+	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<ResourceManager> {
+		Some((Self::new(), vec![]))
 	}
 
 	/// Tries to load a resource from cache or source.\
@@ -453,8 +453,8 @@ impl ResourceManager {
 	/// Loads an asset from source.\
 	/// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 	/// If the asset is not found it will return None.
-	/// ```rust
-	/// let (bytes, format) = resource_manager::read_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
+	/// ```ignore
+	/// let (bytes, format) = ResourceManager::read_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
 	/// ```
 	fn read_asset_from_source(path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
 		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };

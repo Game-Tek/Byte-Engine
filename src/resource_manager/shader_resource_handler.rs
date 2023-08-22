@@ -25,7 +25,7 @@ impl ResourceHandler for ShaderResourceHandler {
 	}
 
 	fn process(&self, bytes: &[u8]) -> Result<Vec<(polodb_core::bson::Document, Vec<u8>)>, String> {
-		Err("Not implemented".to_string())
+		Ok(vec![(polodb_core::bson::Document::new(), bytes.to_vec())])
 	}
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {

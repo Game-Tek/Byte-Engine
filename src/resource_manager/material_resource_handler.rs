@@ -37,10 +37,10 @@ impl ResourceHandler for MaterialResourcerHandler {
 		let vertex  = material_json["vertex"].as_str().unwrap();
 		let fragment = material_json["fragment"].as_str().unwrap();
 
-		fn treat_shader(path: &str, t: &str) -> (Document, Vec<u8>) {
-			let path = "resources/".to_string() + path;
+		fn treat_shader(path: &str, t: &str) -> Result<(Document, Vec<u8>), String> {
+			let path = "assets/".to_string() + path;
 			let shader_code = std::fs::read_to_string(path).unwrap();
-			let shader = beshader_compiler::parse(beshader_compiler::tokenize(&shader_code));
+			let shader = beshader_compiler::parse(beshader_compiler::tokenize(&shader_code)).unwrap();
 
 			let mut shader_spec = json::object! { glsl: { version: "450" } };
 
@@ -56,9 +56,15 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			shader_spec["root"][c.0][v.0] = v.1;
 
+			dbg!(&shader);
+
+			shader_spec["root"][c.0][v.0]["MyShader"] = shader;
+
+			println!("{}", shader_spec.dump());
+
 			let shader_generator = shader_generator::ShaderGenerator::new();
 
-			let glsl = shader_generator.generate(&shader_spec, &json::object!{ path: "Common.Visibility", type: t });
+			let glsl = shader_generator.generate(&shader_spec, &json::object!{ path: "Common.Visibility.MyShader", type: t });
 
 			let compiler = shaderc::Compiler::new().unwrap();
 			let mut options = shaderc::CompileOptions::new().unwrap();
@@ -71,7 +77,10 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			let binary = compiler.compile_into_spirv(&glsl, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
 
-			let compilation_artifact = match binary { Ok(binary) => { binary } Err(error) => { panic!(); } };
+			let compilation_artifact = match binary { Ok(binary) => { binary } Err(error) => {
+				println!("{}", &glsl);
+				return Err(error.to_string());
+			} };
 
 			if compilation_artifact.get_num_warnings() > 0 {
 				println!("Shader warnings: {}", compilation_artifact.get_warning_messages());
@@ -90,11 +99,11 @@ impl ResourceHandler for MaterialResourcerHandler {
 				"hash": hash
 			};
 
-			(resource, Vec::from(result_shader_bytes))
+			Ok((resource, Vec::from(result_shader_bytes)))
 		}
 
-		let a = treat_shader(vertex, "vertex");
-		let b = treat_shader(fragment, "fragment");
+		let a = treat_shader(vertex, "vertex")?;
+		let b = treat_shader(fragment, "fragment")?;
 
 		let material_resource_document = polodb_core::bson::doc!{
 			"class": "Material",
@@ -109,7 +118,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 			"resource": {}
 		};
 
-		Ok(vec![a, b])
+		Ok(vec![a, b, (material_resource_document, Vec::new())])
 	}
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {

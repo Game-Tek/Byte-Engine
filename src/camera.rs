@@ -45,7 +45,7 @@ impl Camera {
 impl Entity for Camera {}
 
 impl Component for Camera {
-	type Parameters = CameraParameters;
+	type Parameters<'a> = CameraParameters;
 
 	fn new(orchestrator: orchestrator::OrchestratorReference, params: CameraParameters) -> Self {
 		let camera  = Camera {

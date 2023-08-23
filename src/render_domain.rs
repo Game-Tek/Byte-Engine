@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler}, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math};
+use crate::{resource_manager::{self, mesh_resource_handler, shader_resource_handler::Shader}, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -181,6 +181,8 @@ impl VisibilityWorldRenderDomain {
 		for resource in &response.resources {
 			match resource.class.as_str() {
 				"Shader" => {
+					let shader: &Shader = resource.resource.downcast_ref().unwrap();
+
 					let hash = resource.hash; let resource_id = resource.id;
 
 					if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
@@ -190,7 +192,7 @@ impl VisibilityWorldRenderDomain {
 					let offset = resource.offset as usize;
 					let size = resource.size as usize;
 
-					let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::SPIRV, &buffer[offset..(offset + size)]);
+					let new_shader = render_system.add_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
 
 					self.shaders.insert(resource_id, (hash, new_shader));
 				}
@@ -294,6 +296,7 @@ impl VisibilityWorldRenderDomain {
 			for resource in &response.resources {
 				match resource.class.as_str() {
 					"Shader" => {
+						let shader: &Shader = resource.resource.downcast_ref().unwrap();
 						let hash = resource.hash; let resource_id = resource.id;
 
 						if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
@@ -303,7 +306,7 @@ impl VisibilityWorldRenderDomain {
 						let offset = resource.offset as usize;
 						let size = resource.size as usize;
 
-						let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::SPIRV, &buffer[offset..(offset + size)]);
+						let new_shader = render_system.add_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
 
 						self.shaders.insert(resource_id, (hash, new_shader));
 					}

@@ -30,6 +30,7 @@ pub enum BufferType {
 }
 
 /// Enumerates the types of shaders that can be created.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub enum ShaderTypes {
 	/// A vertex shader.
 	Vertex,
@@ -209,6 +210,7 @@ pub struct MemoryBackedResourceCreationResult<T> {
 }
 
 use bitflags::bitflags;
+use serde::{Serialize, Deserialize};
 
 bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq)]

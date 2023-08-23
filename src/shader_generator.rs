@@ -27,7 +27,7 @@ impl ShaderGenerator {
 		shader_string.push_str("#extension GL_EXT_shader_image_load_formatted : enable\n");
 
 		match shader_type {
-			"compute" => {
+			"Compute" => {
 				shader_string.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
 				shader_string.push_str("#extension GL_KHR_shader_subgroup_arithmetic  : enable\n");
 				shader_string.push_str("#extension GL_KHR_shader_subgroup_ballot : enable\n");
@@ -91,20 +91,20 @@ impl ShaderGenerator {
 
 		// shader type
 
-		let shader_type = &environment["shader"]["type"];
+		let shader_stage = &environment["shader"]["stage"];
 
-		let shader_type = shader_type.as_str().unwrap_or("");
+		let shader_stage = shader_stage.as_str().unwrap_or("");
 
-		match shader_type {
-			"vertex" => shader_string.push_str("#pragma shader_stage(vertex)\n"),
-			"fragment" => shader_string.push_str("#pragma shader_stage(fragment)\n"),
-			"compute" => shader_string.push_str("#pragma shader_stage(compute)\n"),
+		match shader_stage {
+			"Vertex" => shader_string.push_str("#pragma shader_stage(vertex)\n"),
+			"Fragment" => shader_string.push_str("#pragma shader_stage(fragment)\n"),
+			"Compute" => shader_string.push_str("#pragma shader_stage(compute)\n"),
 			_ => shader_string.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
 		}
 
 		// extensions
 
-		shader_string += Self::generate_glsl_extension_block(shader_type).as_str();
+		shader_string += Self::generate_glsl_extension_block(shader_stage).as_str();
 
 		// memory layout declarations
 
@@ -191,8 +191,8 @@ impl ShaderGenerator {
 
 		// in blocks
 
-		match shader_type {
-			"vertex" => {
+		match shader_stage {
+			"Vertex" => {
 				let vertex_layout = &environment["shader"]["vertex_layout"];
 
 				if let json::JsonValue::Array(vertex_layout) = vertex_layout {
@@ -211,7 +211,7 @@ impl ShaderGenerator {
 					}
 				}
 			}
-			"fragment" => {
+			"Fragment" => {
 				let input = &environment["shader"]["input"];
 
 				if let json::JsonValue::Array(input) = input {
@@ -248,7 +248,7 @@ impl ShaderGenerator {
 					}
 				}
 			}
-			"compute" => {
+			"Compute" => {
 				let local_size = &environment["shader"]["local_size"];
 
 				if let json::JsonValue::Array(local_size) = local_size {
@@ -271,6 +271,14 @@ impl ShaderGenerator {
 		shader_string
 	}
 
+	/// Generates a shader from a source string and an environment\
+	/// compilation_settings:
+	/// ```json
+	/// {
+	/// 	"path": "Common.Visibility.MyShader",
+	/// 	"stage": "Vertex" | "Fragment" | "Compute",
+	/// }
+	/// ```
 	pub fn generate(&self, program_spec: &json::JsonValue, compilation_settings: &json::JsonValue) -> String {
 		let mut nodes = Vec::with_capacity(32);
 
@@ -286,20 +294,20 @@ impl ShaderGenerator {
 
 			// shader type
 
-			let shader_type = &compilation_settings["type"];
+			let shader_stage = &compilation_settings["stage"];
 
-			let shader_type = shader_type.as_str().unwrap_or("");
+			let shader_stage = shader_stage.as_str().unwrap_or("");
 
-			match shader_type {
-				"vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
-				"fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
-				"compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+			match shader_stage {
+				"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
+				"Fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
+				"Compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
 				_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
 			}
 
 			// extensions
 
-			glsl_block += Self::generate_glsl_extension_block(shader_type).as_str();
+			glsl_block += Self::generate_glsl_extension_block(shader_stage).as_str();
 			// memory layout declarations
 
 			glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
@@ -321,7 +329,7 @@ impl ShaderGenerator {
 			if !matches!(node, json::JsonValue::Object(_)) { return; }
 
 			if let Some(only_under) = (&node["__only_under"]).as_str() {
-				if only_under != compilation_settings["type"].as_str().unwrap() { return; }
+				if only_under != compilation_settings["stage"].as_str().unwrap() { return; }
 			}
 
 			let node_type = if let Some(ty) = node["type"].as_str() { ty } else { return; };
@@ -553,7 +561,7 @@ fn test_generate_vertex_shader() {
 	gl_Position = vec4(in_position, 1.0);
 }";
 
-	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { type: "vertex", vertex_layout:[{ type: "vec3", name: "in_position" }] } });
+	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { stage: "Vertex", vertex_layout:[{ type: "vec3", name: "in_position" }] } });
 
 	let final_shader =
 "#version 450 core
@@ -586,7 +594,7 @@ fn test_generate_fragment_shader() {
 }
 ";
 
-	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { type: "fragment", input:[{ type:"vec4", name:"in_color" }], output:[{ type:"vec4", name:"out_color" }] } });
+	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { stage: "Fragment", input:[{ type:"vec4", name:"in_color" }], output:[{ type:"vec4", name:"out_color" }] } });
 
 	let final_shader =
 "#version 450 core
@@ -620,7 +628,7 @@ fn test_generate_compute_shader() {
 	return;
 }";
 
-	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { type: "compute", local_size: [1, 1, 1] } });
+	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { stage: "Compute", local_size: [1, 1, 1] } });
 
 	let final_shader =
 "#version 450 core
@@ -656,7 +664,7 @@ fn test_generate_shader_no_version() {
 	return;
 }";
 
-	let shader = shader_generator.generate_shader(base_shader, json::object! { shader: { type: "compute", local_size: [1, 1, 1] } });
+	let shader = shader_generator.generate_shader(base_shader, json::object! { shader: { stage: "Compute", local_size: [1, 1, 1] } });
 
 	let final_shader =
 "#version 450 core
@@ -723,7 +731,7 @@ fn test_push_constant() {
 	return;
 }";
 
-	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { type: "vertex", vertex_layout:[{ type: "vec3", name: "in_position" }], push_constants: [{ type: "mat4", name: "model_matrix" }] } });
+	let shader = shader_generator.generate_shader(base_shader, json::object! { glsl: { version: "450" }, shader: { stage: "Vertex", vertex_layout:[{ type: "vec3", name: "in_position" }], push_constants: [{ type: "mat4", name: "model_matrix" }] } });
 
 	let final_shader =
 "#version 450 core
@@ -897,7 +905,7 @@ void main() {
 						},
 						Light: {
 							type: "struct",
-							__only_under: "fragment",
+							__only_under: "Fragment",
 							position: {
 								type: "member",
 								data_type: "vec3f"
@@ -918,7 +926,7 @@ void main() {
 							},
 							Vertex: {
 								type: "scope",
-								__only_under: "vertex",
+								__only_under: "Vertex",
 								in_Position: {
 									type: "in",
 									in_Position: {
@@ -951,7 +959,7 @@ void main() {
 							},
 							Fragment: {
 								type: "scope",
-								__only_under: "fragment",
+								__only_under: "Fragment",
 								in_InstanceIndex: {
 									type: "in",
 									in_InstanceIndex: {
@@ -981,7 +989,7 @@ void main() {
 			}
 		};
 
-		let generated_vertex_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", type: "vertex" });
+		let generated_vertex_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Vertex" });
 
 		let expected_vertex_shader_string =
 "#version 450 core
@@ -1008,8 +1016,6 @@ void main() {
 
 		println!("{}", &generated_vertex_shader);
 
-		//assert_eq!(generated_vertex_shader, expected_vertex_shader_string);
-
 		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_vertex_shader.as_str(), shaderc::ShaderKind::Vertex, "shader.glsl", "main", None).unwrap();
 
 		let expected_fragment_shader_string =
@@ -1034,11 +1040,9 @@ void main() {
 	out_Color=vec4(0,0,0,1);
 }";
 
-		let generated_fragment_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", type: "fragment" });
+		let generated_fragment_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
 
 		println!("{}", &generated_fragment_shader);
-
-		//assert_eq!(generated_fragment_shader, expected_fragment_shader_string);
 
 		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_fragment_shader.as_str(), shaderc::ShaderKind::Fragment, "shader.glsl", "main", None).unwrap();
 	}

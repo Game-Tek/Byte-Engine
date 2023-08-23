@@ -725,46 +725,45 @@ impl RenderSystem {
 	}
 
 	/// Creates a shader.
-	pub fn add_shader(&mut self, _shader_source_type: ShaderSourceType, shader: &[u8]) -> ShaderHandle {
-		let compiler = shaderc::Compiler::new().unwrap();
-		let mut options = shaderc::CompileOptions::new().unwrap();
+	pub fn add_shader(&mut self, shader_source_type: ShaderSourceType, stage: render_backend::ShaderTypes, shader: &[u8]) -> ShaderHandle {
+		match shader_source_type {
+			ShaderSourceType::GLSL => {
+				let compiler = shaderc::Compiler::new().unwrap();
+				let mut options = shaderc::CompileOptions::new().unwrap();
+		
+				options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+				options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_2 as u32);
+				options.set_generate_debug_info();
+				options.set_target_spirv(shaderc::SpirvVersion::V1_5);
+				options.set_invert_y(true);
+		
+				let shader_text = std::str::from_utf8(shader).unwrap();
+		
+				let binary = compiler.compile_into_spirv(shader_text, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
+		
+				let shader_handle = ShaderHandle(self.shaders.len() as u32);
+		
+				match binary {
+					Ok(binary) => {
+						self.shaders.push(Shader {
+							shader: self.render_backend.create_shader(stage, binary.as_binary_u8())
+						});
+		
+						shader_handle
+					},
+					Err(error) => {
+						println!("Error compiling shader: {}", error);
+		
+						shader_handle
+					}
+				}
+			}
+			ShaderSourceType::SPIRV => {
+				let shader_handle = ShaderHandle(self.shaders.len() as u32);
 
-		options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-		options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_2 as u32);
-		options.set_generate_debug_info();
-		options.set_target_spirv(shaderc::SpirvVersion::V1_5);
-		options.set_invert_y(true);
-
-		let shader_text = std::str::from_utf8(shader).unwrap();
-
-		let binary = compiler.compile_into_spirv(shader_text, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
-
-		let shader_handle = ShaderHandle(self.shaders.len() as u32);
-
-		let shader_stage: String = shader_text.find("#pragma shader_stage(").map(|index| shader_text[index + 21..].split(')').next().unwrap().to_string()).unwrap_or(String::from(""));
-
-		let shader_stage = match shader_stage.as_str() {
-			"vertex" => {
-				crate::render_backend::ShaderTypes::Vertex
-			},
-			"fragment" => {
-				crate::render_backend::ShaderTypes::Fragment
-			},
-			_ => {
-				crate::render_backend::ShaderTypes::Vertex
-			},
-		};
-
-		match binary {
-			Ok(binary) => {
 				self.shaders.push(Shader {
-					shader: self.render_backend.create_shader(shader_stage, binary.as_binary_u8())
+					shader: self.render_backend.create_shader(stage, shader)
 				});
-
-				shader_handle
-			},
-			Err(error) => {
-				println!("Error compiling shader: {}", error);
 
 				shader_handle
 			}
@@ -1511,8 +1510,8 @@ mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
+		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, render_backend::ShaderTypes::Vertex, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, render_backend::ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
@@ -1664,8 +1663,8 @@ mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
+		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, render_backend::ShaderTypes::Vertex, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, render_backend::ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
@@ -1788,8 +1787,8 @@ mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
+		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, render_backend::ShaderTypes::Vertex, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, render_backend::ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
@@ -1916,8 +1915,8 @@ mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
+		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, render_backend::ShaderTypes::Vertex, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, render_backend::ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
@@ -2055,8 +2054,8 @@ mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, vertex_shader_code.as_bytes());
-		let fragment_shader = renderer.add_shader(crate::render_system::ShaderSourceType::GLSL, fragment_shader_code.as_bytes());
+		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, render_backend::ShaderTypes::Vertex, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, render_backend::ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
 		let buffer = renderer.create_buffer(64, render_backend::Uses::Uniform, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 

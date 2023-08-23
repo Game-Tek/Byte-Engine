@@ -37,7 +37,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		let vertex  = material_json["vertex"].as_str().unwrap();
 		let fragment = material_json["fragment"].as_str().unwrap();
 
-		fn treat_shader(path: &str, t: &str) -> Result<(Document, Vec<u8>), String> {
+		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
 			let path = "assets/".to_string() + path;
 			let shader_code = std::fs::read_to_string(path).unwrap();
 			let shader = beshader_compiler::parse(beshader_compiler::tokenize(&shader_code)).unwrap();
@@ -64,7 +64,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			let shader_generator = shader_generator::ShaderGenerator::new();
 
-			let glsl = shader_generator.generate(&shader_spec, &json::object!{ path: "Common.Visibility.MyShader", type: t });
+			let glsl = shader_generator.generate(&shader_spec, &json::object!{ path: "Common.Visibility.MyShader", stage: stage });
 
 			let compiler = shaderc::Compiler::new().unwrap();
 			let mut options = shaderc::CompileOptions::new().unwrap();
@@ -76,6 +76,8 @@ impl ResourceHandler for MaterialResourcerHandler {
 			options.set_invert_y(true);
 
 			let binary = compiler.compile_into_spirv(&glsl, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
+
+			// TODO: if shader fails to compile try to generate a failsafe shader
 
 			let compilation_artifact = match binary { Ok(binary) => { binary } Err(error) => {
 				println!("{}", &glsl);
@@ -96,14 +98,17 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			let resource = polodb_core::bson::doc!{
 				"class": "Shader",
-				"hash": hash
+				"hash": hash,
+				"resource": {
+					"stage": stage,
+				}
 			};
 
 			Ok((resource, Vec::from(result_shader_bytes)))
 		}
 
-		let a = treat_shader(vertex, "vertex")?;
-		let b = treat_shader(fragment, "fragment")?;
+		let a = treat_shader(vertex, "Vertex")?;
+		let b = treat_shader(fragment, "Fragment")?;
 
 		let material_resource_document = polodb_core::bson::doc!{
 			"class": "Material",

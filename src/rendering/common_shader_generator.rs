@@ -11,7 +11,7 @@ impl ShaderGenerator for CommonShaderGenerator {
 			"type": "scope",
 			"get_debug_color": {
 				"type": "function",
-				"code": "vec4 get_debug_color(int i) {
+				"code": "vec4 get_debug_color(uint i) {
 	vec4 colors[16] = vec4[16](
 		vec4(0.16863, 0.40392, 0.77647, 1),
 		vec4(0.32941, 0.76863, 0.21961, 1),

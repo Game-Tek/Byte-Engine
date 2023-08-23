@@ -12,66 +12,82 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 	fn process(&self) -> (&'static str, json::JsonValue) {
 		let value = json::object! {
 			"type": "scope",
-			"in_position": {
-				type: "in",
-				in_position: {
-					type: "member",
-					data_type: "vec3f",
-				}
-			},
-			"in_normal": {
-				type: "in",
-				in_normal: {
-					type: "member",
-					data_type: "vec3f",
-				}
-			},
 			"pc": {
-				type: "push_constant",
+				"type": "push_constant",
 				"camera": {
-					type: "member",
-					data_type: "Camera*"
+					"type": "member",
+					"data_type": "Camera*"
 				},
 				"meshes": {
-					type: "member",
-					data_type: "Mesh*"
+					"type": "member",
+					"data_type": "Mesh*"
 				},
 			},
 			"Camera": {
-				type: "struct",
+				"type": "struct",
 				"view": {
-					type: "member",
-					data_type: "mat4f",
+					"type": "member",
+					"data_type": "mat4f",
 				},
 				"projection": {
-					type: "member",
-					data_type: "mat4f",
+					"type": "member",
+					"data_type": "mat4f",
 				},
 				"view_projection": {
-					type: "member",
-					data_type: "mat4f",
+					"type": "member",
+					"data_type": "mat4f",
 				}
 			},
 			"Mesh": {
-				type: "struct",
+				"type": "struct",
 				"model": {
-					type: "member",
-					data_type: "mat4f",
+					"type": "member",
+					"data_type": "mat4f",
 				},
 			},
-			"in_instance_index": {
-				type: "in",
-				in_instance_index: {
-					type: "member",
-					data_type: "u32",
+			"Vertex": {
+				"type": "scope",
+				"__only_under": "Vertex",
+				"in_position": {
+					"type": "in",
+					"in_position": {
+						"type": "member",
+						"data_type": "vec3f",
+					}
 				},
-				interpolation: "flat"
+				"in_normal": {
+					"type": "in",
+					"in_normal": {
+						"type": "member",
+						"data_type": "vec3f",
+					}
+				},
+				"out_instance_index": {
+					"type": "out",
+					"out_instance_index": {
+						"type": "member",
+						"data_type": "u32",
+					},
+					"interpolation": "flat"
+				},
 			},
-			"out_color": {
-				type: "out",
-				out_Color: {
-					type: "member",
-					data_type: "vec4f",
+			"Fragment": {
+				"type": "scope",
+				"__only_under": "Fragment",
+				"in_instance_index": {
+					"type": "in",
+					"in_instance_index": {
+						"type": "member",
+						"data_type": "u32",
+					},
+					"interpolation": "flat"
+				},
+				"out_color": {
+					"type": "out",
+					"out_color": {
+						"type": "member",
+						"data_type": "vec4f",
+					}
 				}
 			}
 		};

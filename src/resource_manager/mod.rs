@@ -644,4 +644,9 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
 	}
+
+	#[test]
+	fn load_material() {
+		todo!("Implement")
+	}
 }

@@ -38,8 +38,8 @@ impl ResourceHandler for MaterialResourcerHandler {
 		let fragment = material_json["fragment"].as_str().unwrap();
 
 		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
-			let path = "assets/".to_string() + path;
-			let shader_code = std::fs::read_to_string(path).unwrap();
+			let arlp = "assets/".to_string() + path;
+			let shader_code = std::fs::read_to_string(&arlp).unwrap();
 			let shader = beshader_compiler::parse(beshader_compiler::tokenize(&shader_code)).unwrap();
 
 			let mut shader_spec = json::object! { glsl: { version: "450" } };
@@ -97,6 +97,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 			let hash = hasher.finish() as i64;
 
 			let resource = polodb_core::bson::doc!{
+				"path": path,
 				"class": "Shader",
 				"hash": hash,
 				"resource": {

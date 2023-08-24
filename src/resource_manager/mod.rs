@@ -315,8 +315,8 @@ impl ResourceManager {
 		fn gather(db: &polodb_core::Database, path: &str) -> Option<Vec<Document>> {
 			let doc = db.collection::<Document>("resources").find_one(doc!{ "path": path }).unwrap()?;
 
-			let mut documents = vec![doc.clone()];
-
+			let mut documents = vec![];
+			
 			if let Some(polodb_core::bson::Bson::Array(required_resources)) = doc.get("required_resources") {
 				for required_resource in required_resources {
 					if let polodb_core::bson::Bson::Document(required_resource) = required_resource {
@@ -326,6 +326,8 @@ impl ResourceManager {
 				}
 			}
 
+			documents.push(doc);
+
 			Some(documents)
 		}
 
@@ -334,15 +336,15 @@ impl ResourceManager {
 		} else {
 			let r = Self::read_asset_from_source(path).unwrap();
 
-			let mut resource_packages = Vec::new();
+			let mut generated_resources = Vec::new();
 
 			for resource_handler in &self.resource_handlers {
 				if resource_handler.can_handle_type(r.1.as_str()) {
-					resource_packages.append(&mut resource_handler.process(&r.0).unwrap());
+					generated_resources.append(&mut resource_handler.process(&r.0).unwrap());
 				}
 			}
 
-			self.write_assets_to_cache(resource_packages, path)?;
+			self.write_assets_to_cache(&generated_resources, path)?;
 
 			gather(&self.db, path)?
 		};
@@ -366,15 +368,23 @@ impl ResourceManager {
 
 	/// Stores the asset as a resource.
 	/// Returns the resource document.
-	fn write_assets_to_cache(&mut self, resource_packages: Vec<(Document, Vec<u8>)>, path: &str) -> Option<()> {
+	fn write_assets_to_cache(&mut self, resource_packages: &[(Document, Vec<u8>)], path: &str) -> Option<()> {
 		for resource_package in resource_packages {
-			let mut full_resource_document = resource_package.0;
+			dbg!(&resource_package.0);
+
+			let mut full_resource_document = resource_package.0.clone();
 
 			let mut hasher = std::collections::hash_map::DefaultHasher::new();
-			path.hash(&mut hasher);
+
+			if let Some(polodb_core::bson::Bson::String(p)) = full_resource_document.get("path") {
+				p.hash(&mut hasher);
+			} else {
+				full_resource_document.insert("path", path.to_string());
+				path.hash(&mut hasher);
+			}
 
 			full_resource_document.insert("id", hasher.finish() as i64);
-			full_resource_document.insert("path", path.to_string());
+
 			full_resource_document.insert("size", resource_package.1.len() as i64);
 
 			if let None = full_resource_document.get("hash") { // TODO: might be a good idea just to generate a random hash, since this method does not reflect changes to the document of the resource
@@ -647,6 +657,36 @@ mod tests {
 
 	#[test]
 	fn load_material() {
-		todo!("Implement")
+		std::env::set_var("--ResourceManager.memory_only", "true"); // Don't use file database
+
+		let mut resource_manager = ResourceManager::new();
+
+		// Test loading from source
+
+		let resource_result = resource_manager.get("cube");
+
+		assert!(resource_result.is_some());
+
+		let (request, buffer) = resource_result.unwrap();
+
+		assert_eq!(request.resources.len(), 3); // 1 material, 2 shaders
+
+		let resource_container = &request.resources[0];
+
+		assert_eq!(resource_container.class, "Shader");
+
+		let id = resource_container.id;
+
+		let resource_container = &request.resources[1];
+
+		assert_eq!(resource_container.class, "Shader");
+		assert_ne!(resource_container.id, id);
+
+		let id = resource_container.id;
+
+		let resource_container = &request.resources[2];
+
+		assert_eq!(resource_container.class, "Material");
+		assert_ne!(resource_container.id, id);
 	}
 }

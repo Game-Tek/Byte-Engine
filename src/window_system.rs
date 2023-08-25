@@ -2,6 +2,7 @@
 
 use std::ffi::c_void;
 
+use log::{trace, info};
 use xcb::{Xid, x};
 
 use crate::{Extent, orchestrator::{System, self}};
@@ -320,7 +321,6 @@ impl Iterator for WindowIterator<'_> {
 					let key: Result<Keys, _> = ev.detail().try_into();
 
 					if let Ok(key) = key {
-						println!("release {:?}", key);
 						Some(WindowEvents::Key { pressed: false, key })
 					} else {
 						None
@@ -349,7 +349,6 @@ impl Iterator for WindowIterator<'_> {
 					if let x::ClientMessageData::Data32([atom, ..]) = ev.data() {
 						if atom == self.wm_del_window.resource_id() {
 							let event = WindowEvents::Close;
-							println!("Window event: {:?}", event);
 							Some(event)
 						} else {
 							None
@@ -629,6 +628,8 @@ impl WindowSystem {
 		let window = Window::new_with_params(name, extent, id_name);
 
 		if let Some(window) = window {
+			trace!("Created window. Name: {}, Extent: {:?}", name, extent);
+
 			let window_handle = WindowHandle(self.windows.len() as u64);
 			self.windows.push(window);
 			window_handle

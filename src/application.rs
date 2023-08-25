@@ -39,16 +39,17 @@ impl Application for BaseApplication {
 	}
 
 	fn initialize(&mut self, arguments: std::env::Args) {
-		println!("\x1b[32m\x1b[1mByte-Engine\x1b[0m");
-		println!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", self.name, arguments.collect::<Vec<String>>().join(", "));
+		simple_logger::SimpleLogger::new().env().init().unwrap();
+		
+		info!("Byte-Engine");
+		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", self.name, arguments.collect::<Vec<String>>().join(", "));
 
-		println!("Initialized base Byte-Engine application!");
+		trace!("Initialized base Byte-Engine application!");
 	}
 
 	fn deinitialize(&mut self) {
-		println!("Deinitializing base Byte-Engine application...");
-
-		println!("Deinitialized base Byte-Engine application.");
+		trace!("Deinitializing base Byte-Engine application...");
+		info!("Deinitialized base Byte-Engine application.");
 	}
 
 	fn tick(&mut self) { return; }
@@ -56,6 +57,7 @@ impl Application for BaseApplication {
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
+use log::{info, trace};
 use maths_rs::prelude::Base;
 
 use crate::{orchestrator, window_system, render_system, input_manager, Vector2, rendering, render_domain, resource_manager, file_tracker};

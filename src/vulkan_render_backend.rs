@@ -1,6 +1,7 @@
 //! The Vulkan render backend.
 
 use ash::{vk::{self, ValidationFeatureEnableEXT}, Entry};
+use log::{warn, error};
 
 use crate::{render_backend::{self, TextureFormats}, render_system};
 
@@ -105,12 +106,13 @@ static mut counter: u32 = 0;
 
 unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::DebugUtilsMessageSeverityFlagsEXT, message_type: vk::DebugUtilsMessageTypeFlagsEXT, p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT, _p_user_data: *mut std::ffi::c_void,) -> vk::Bool32 {
     let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
-    let severity = format!("{:?}", message_severity).to_lowercase();
-    let ty = format!("{:?}", message_type).to_lowercase();
-    println!("[Debug][{}][{}] {:?}", severity, ty, message);
 
 	match message_severity {
+		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
+			warn!("{}", message.to_str().unwrap());
+		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+			error!("{}", message.to_str().unwrap());
 			counter += 1;
 		}
 		_ => {}

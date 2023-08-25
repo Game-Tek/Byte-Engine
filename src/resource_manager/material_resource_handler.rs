@@ -1,5 +1,6 @@
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, io::Read};
 
+use log::{warn, debug};
 use polodb_core::bson::Document;
 
 use crate::{rendering::shader_generator::ShaderGenerator, beshader_compiler, shader_generator};
@@ -56,11 +57,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			shader_spec["root"][c.0][v.0] = v.1;
 
-			dbg!(&shader);
-
 			shader_spec["root"][c.0][v.0]["MyShader"] = shader;
-
-			println!("{}", shader_spec.dump());
 
 			let shader_generator = shader_generator::ShaderGenerator::new();
 
@@ -80,12 +77,12 @@ impl ResourceHandler for MaterialResourcerHandler {
 			// TODO: if shader fails to compile try to generate a failsafe shader
 
 			let compilation_artifact = match binary { Ok(binary) => { binary } Err(error) => {
-				println!("{}", &glsl);
+				debug!("{}", &glsl);
 				return Err(error.to_string());
 			} };
 
 			if compilation_artifact.get_num_warnings() > 0 {
-				println!("Shader warnings: {}", compilation_artifact.get_warning_messages());
+				warn!("Shader warnings: {}", compilation_artifact.get_warning_messages());
 			}
 
 			let result_shader_bytes = compilation_artifact.as_binary_u8();

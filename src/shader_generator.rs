@@ -3,6 +3,7 @@
 use std::fmt::format;
 
 use json;
+use log::warn;
 
 pub struct ShaderGenerator {
 
@@ -462,7 +463,7 @@ impl ShaderGenerator {
 					program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
 				}
 				_ => {
-					println!("Unknown node type: {}", node_type);
+					warn!("Unknown node type: {}", node_type);
 
 					for entry in node.entries() {
 						process_node(None, entry, compilation_settings, program_state);

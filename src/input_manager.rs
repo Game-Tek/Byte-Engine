@@ -19,6 +19,8 @@
 
 use std::f32::consts::PI;
 
+use log::warn;
+
 use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{Orchestrator, EntityHandle, Property, System, self, Entity}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
@@ -490,7 +492,7 @@ impl InputManager {
 		let input_source = if let Some(input_source) = self.get_input_source_from_input_source_action(&input_source_action) {
 			input_source
 		} else {
-			println!("Tried to record an input source action that doesn't exist");
+			warn!("Tried to record an input source action that doesn't exist");
 			return;
 		};
 
@@ -506,14 +508,14 @@ impl InputManager {
 		};
 
 		if !matches {
-			println!("Tried to record an extraneous type into input source: {}", input_source.name);
+			warn!("Tried to record an extraneous type into input source: {}", input_source.name);
 			return;
 		} // Value type does not match input source declared type, so don't record.
 
 		let input_source_handle = if let Some(input_source_handle) = self.to_input_source_handle(&input_source_action) {
 			input_source_handle
 		} else {
-			println!("Tried to record an input source action that doesn't exist");
+			warn!("Tried to record an input source action that doesn't exist");
 			return;
 		};
 

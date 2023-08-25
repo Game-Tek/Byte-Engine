@@ -128,6 +128,7 @@ struct Allocation {
 }
 
 use bitflags::bitflags;
+use log::error;
 
 bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -751,8 +752,8 @@ impl RenderSystem {
 		
 						shader_handle
 					},
-					Err(error) => {
-						println!("Error compiling shader: {}", error);
+					Err(err) => {
+						error!("Error compiling shader: {}", err);
 		
 						shader_handle
 					}

@@ -9,6 +9,7 @@ mod material_resource_handler;
 
 use std::{io::prelude::*, str::FromStr, hash::{Hasher, Hash},};
 
+use log::{warn, info, error};
 use polodb_core::bson::{Document, doc};
 
 use crate::orchestrator::{System, self};
@@ -194,7 +195,7 @@ impl ResourceManager {
 		let db_res = if !memory_only {
 			polodb_core::Database::open_file("resources/resources.db")
 		} else {
-			println!("\x1B[INFO]Using memory database instead of file database.");
+			info!("Using memory database instead of file database.");
 			polodb_core::Database::open_memory()
 		};
 
@@ -204,7 +205,7 @@ impl ResourceManager {
 				// Delete file and try again
 				std::fs::remove_file("assets/resources.db").unwrap();
 
-				println!("\x1B[WARNING]Database file was corrupted, deleting and trying again.");
+				warn!("Database file was corrupted, deleting and trying again.");
 
 				let db_res = polodb_core::Database::open_file("assets/resources.db");
 
@@ -212,7 +213,7 @@ impl ResourceManager {
 					Ok(db) => db,
 					Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
 						Ok(db) => {
-							println!("\x1B[WARNING]Could not create database file, using memory database instead.");
+							error!("Could not create database file, using memory database instead.");
 							db
 						},
 						Err(_) => panic!("Could not create database"),

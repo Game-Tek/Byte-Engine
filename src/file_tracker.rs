@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use log::{error, warn, trace};
 use notify_debouncer_full::{notify::{*}, new_debouncer, DebounceEventResult, FileIdMap, DebouncedEvent};
 use polodb_core;
 
@@ -30,8 +31,8 @@ impl FileTracker {
 					}
 				}
 				Err(errors) => {
-					for error in errors {
-						println!("Error: {:?}", error);
+					for err in errors {
+						error!("{:?}", err);
 					}
 				}
 			}
@@ -60,7 +61,7 @@ impl FileTracker {
 			dbg!(_m as u64);
 
 			if d.get_i64("last_modified").unwrap() as u64 != _m as u64 {
-				println!("File changed: {:?}", path);
+				trace!("File changed: {:?}", path);
 
 				db.collection::<polodb_core::bson::Document>("files").update_one(polodb_core::bson::doc! {
 					"path": path.to_str().unwrap(),
@@ -87,7 +88,7 @@ impl FileTracker {
 		let result = self.debouncer.watcher().watch(path, RecursiveMode::Recursive);
 
 		if result.is_err() {
-			println!("Failed to watch path: {:?}", path);
+			warn!("Failed to watch path: {:?}", path);
 			return false;
 		}
 

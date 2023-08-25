@@ -2,29 +2,31 @@
 name = "byte_engine"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+rust-version = "1.73.0"
 
 [dependencies]
 component_derive = { path = "component_derive" }
 
-xcb = { version = "1.2.1", features=['xtest'] }
+xcb = { version = "1.2.2", features=['xtest'] }
 # ash = { version = "0.37.3", features=['linked'] }
 ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
 futures = "0.3.28"
 shaderc = "0.8.2"
-bitflags = "2.2.1"
+bitflags = "2.4.0"
 renderdoc = "0.11.0"
-png = "0.17.8"
+png = "0.17.10"
 json = "0.12.4"
 polodb_core = "4.4.0"
 intel_tex_2 = "0.2.2"
-gltf = "1.1.0"
-ureq = "2.6.2"
+gltf = "1.3.0"
+ureq = "2.7.1"
 libdeflater = "0.14.0"
-notify-debouncer-full = { version = "0.2.0", default-features = false }
-serde_json = "1.0.96"
+notify-debouncer-full = { version = "0.3.1", default-features = false }
+serde_json = "1.0.105"
 dual_quaternion = "0.2.0"
-maths-rs = "0.2.3"
-serde = "1.0.164"
+maths-rs = "0.2.4"
+serde = "1.0.187"
 
 [profile.dev]
 incremental = true

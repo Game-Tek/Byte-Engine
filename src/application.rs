@@ -39,7 +39,7 @@ impl Application for BaseApplication {
 	}
 
 	fn initialize(&mut self, arguments: std::env::Args) {
-		simple_logger::SimpleLogger::new().env().init().unwrap();
+		let _ = simple_logger::SimpleLogger::new().env().init();
 		
 		info!("Byte-Engine");
 		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", self.name, arguments.collect::<Vec<String>>().join(", "));

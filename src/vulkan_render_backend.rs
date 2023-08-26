@@ -407,22 +407,44 @@ impl VulkanRenderBackend {
 			.queue_priorities(&[1.0])
 			/* .build() */];
 
-		let mut buffer_device_address_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
-		let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
-		let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
-		let mut physical_device_8bit_storage_features = vk::PhysicalDevice8BitStorageFeatures::default().storage_buffer8_bit_access(true);
-		let mut physical_device_16bit_storage_features = vk::PhysicalDevice16BitStorageFeatures::default().storage_buffer16_bit_access(true);
-		let mut physical_device_scalar_block_layout_features = vk::PhysicalDeviceScalarBlockLayoutFeatures::default().scalar_block_layout(true);
+		let mut physical_device_vulkan_11_features = vk::PhysicalDeviceVulkan11Features::default()
+			.uniform_and_storage_buffer16_bit_access(true)
+		;
 
-		let enabled_physical_device_features = vk::PhysicalDeviceFeatures::default().shader_int64(true);
+		let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default().
+			descriptor_indexing(true).descriptor_binding_partially_bound(true)
+			.shader_sampled_image_array_non_uniform_indexing(true).shader_storage_image_array_non_uniform_indexing(true)
+			.scalar_block_layout(true)
+			.buffer_device_address(true)
+			.separate_depth_stencil_layouts(true)
+			.shader_buffer_int64_atomics(true).shader_float16(true).shader_int8(true)
+			.storage_buffer8_bit_access(true)
+			.uniform_and_storage_buffer8_bit_access(true)
+			.vulkan_memory_model(true)
+		;
+
+		let mut physical_device_vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
+			.pipeline_creation_cache_control(true)
+			.subgroup_size_control(true)
+			.compute_full_subgroups(true)
+			.synchronization2(true)
+			.dynamic_rendering(true)
+			.maintenance4(true)
+		;
+
+		let enabled_physical_device_features = vk::PhysicalDeviceFeatures::default()
+			.shader_int64(true)
+			.shader_uniform_buffer_array_dynamic_indexing(true)
+			.shader_storage_buffer_array_dynamic_indexing(true)
+			.shader_storage_image_array_dynamic_indexing(true)
+			.shader_storage_image_write_without_format(true)
+			.texture_compression_bc(true)
+		;			
 
   		let device_create_info = vk::DeviceCreateInfo::default()
-			.push_next(&mut buffer_device_address_features/* .build() */)
-			.push_next(&mut dynamic_rendering_features/* .build() */)
-			.push_next(&mut synchronization2_features/* .build() */)
-			.push_next(&mut physical_device_8bit_storage_features/* .build() */)
-			.push_next(&mut physical_device_16bit_storage_features/* .build() */)
-			.push_next(&mut physical_device_scalar_block_layout_features/* .build() */)
+			.push_next(&mut physical_device_vulkan_11_features/* .build() */)
+			.push_next(&mut physical_device_vulkan_12_features/* .build() */)
+			.push_next(&mut physical_device_vulkan_13_features/* .build() */)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features/* .build() */)

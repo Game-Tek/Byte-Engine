@@ -41,7 +41,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
 			let arlp = "assets/".to_string() + path;
 			let shader_code = std::fs::read_to_string(&arlp).unwrap();
-			let shader = beshader_compiler::parse(beshader_compiler::tokenize(&shader_code)).unwrap();
+			let shader = beshader_compiler::compile_to_jspd(&shader_code).unwrap();
 
 			let mut shader_spec = json::object! { glsl: { version: "450" } };
 

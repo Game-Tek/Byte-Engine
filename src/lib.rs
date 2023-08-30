@@ -10,6 +10,7 @@
 #![feature(downcast_unchecked)]
 #![feature(const_mut_refs)]
 #![feature(extract_if)]
+#![feature(try_trait_v2)]
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 

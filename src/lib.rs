@@ -25,7 +25,6 @@ pub mod resource_manager;
 pub mod shader_generator;
 pub mod input_manager;
 pub mod file_tracker;
-pub mod beshader_compiler;
 pub mod executor;
 pub mod camera;
 pub mod render_domain;
@@ -33,6 +32,7 @@ pub mod render_domain;
 pub mod math;
 pub mod rendering;
 pub mod gameplay;
+pub mod jspd;
 //pub mod gdeflate;
 
 pub use maths_rs::{Vec2f, Vec3f, Quatf, prelude::Base};

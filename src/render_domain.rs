@@ -37,6 +37,8 @@ pub struct VisibilityWorldRenderDomain {
 	/// Maps resource ids to shaders
 	/// The hash and the shader handle are stored to determine if the shader has changed
 	shaders: std::collections::HashMap<u64, (u64, render_system::ShaderHandle)>,
+
+	pipeline: Option<render_system::PipelineHandle>,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -162,6 +164,8 @@ impl VisibilityWorldRenderDomain {
 			meshes: HashMap::new(),
 
 			mesh_resources: HashMap::new(),
+
+			pipeline: None,
 		};
 
 		Some((render_domain, vec![orchestrator::PPP::PostCreationFunction(Box::new(Self::load_needed_assets))]))
@@ -196,34 +200,47 @@ impl VisibilityWorldRenderDomain {
 
 					self.shaders.insert(resource_id, (hash, new_shader));
 				}
-				"Material" => {}
+				"Material" => {
+					let shaders = resource.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
+
+					let shaders = shaders.iter().map(|shader| {
+						let (hash, shader) = self.shaders.get(shader).unwrap();
+
+						shader
+					}).collect::<Vec<_>>();
+
+					let vertex_layout = [
+						render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+						render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, binding: 1 },
+					];
+
+					let targets = [
+						render_system::AttachmentInfo {
+							texture: self.render_target,
+							format: render_backend::TextureFormats::RGBAu8,
+							clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+							load: false,
+							store: true,
+						},
+						render_system::AttachmentInfo {
+							texture: self.depth_target,
+							format: render_backend::TextureFormats::Depth32,
+							clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+							load: false,
+							store: true,
+						},
+					];
+
+					let pipeline_layout_handle = self.pipeline_layout_handle;
+
+					let pipeline = render_system.create_pipeline(pipeline_layout_handle, &shaders, &vertex_layout, &targets);
+
+					self.pipeline = Some(pipeline);
+				}
 				_ => {}
 			}
 		}
 	}
-
-	// pub fn update_shader(&mut self, render_system: &mut RenderSystem, shader_name: &str, shader_source: &str) {
-	// 	println!("Updating shader: {}", shader_name);
-
-	// 	let shader_source = shader_source.as_bytes();
-
-	// 	let new_shader = render_system.add_shader(crate::render_system::ShaderSourceType::GLSL, shader_source);
-
-	// 	let vertex_layout = [
-	// 		render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
-	// 		render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, shuffled: false },
-	// 	];
-
-	// 	let attachments = self.get_attachments();
-
-	// 	let vertex_shader_handle = self.shaders_by_name.get("vertex").unwrap().clone();
-
-	// 	let pipeline = render_system.create_pipeline(self.pipeline_layout_handle, &[vertex_shader_handle, &new_shader], &vertex_layout, &attachments);
-
-	// 	self.pipeline = pipeline;
-
-	// 	self.shaders_by_name.insert("fragment".to_string(), new_shader);
-	// }
 
 	fn listen_to_camera(&mut self, orchestrator: orchestrator::OrchestratorReference, camera_handle: EntityHandle<camera::Camera>, camera: &Camera) {
 		self.camera = Some(camera_handle);
@@ -272,10 +289,6 @@ impl VisibilityWorldRenderDomain {
 
 			for resource in &resource_request.resources {
 				match resource.class.as_str() {
-					"Shader" => {}
-					"Material" => {
-						// TODO: update pipeline
-					}
 					"Mesh" => {
 						let vertex_buffer = render_system.get_mut_buffer_slice(None, self.vertices_buffer);
 						let index_buffer = render_system.get_mut_buffer_slice(None, self.indices_buffer);
@@ -295,22 +308,6 @@ impl VisibilityWorldRenderDomain {
 
 			for resource in &response.resources {
 				match resource.class.as_str() {
-					"Shader" => {
-						let shader: &Shader = resource.resource.downcast_ref().unwrap();
-						let hash = resource.hash; let resource_id = resource.id;
-
-						if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
-							if *old_hash == hash { continue; }
-						}
-
-						let offset = resource.offset as usize;
-						let size = resource.size as usize;
-
-						let new_shader = render_system.add_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
-
-						self.shaders.insert(resource_id, (hash, new_shader));
-					}
-					"Material" => {}
 					"Mesh" => {
 						self.mesh_resources.insert(mesh.resource_id, self.index_count);
 
@@ -343,6 +340,8 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
+		if let None = self.pipeline { return; }
+
 		let render_system = orchestrator.get_by_class::<RenderSystem>();
 		let mut binding = render_system.get_mut();
   		let render_system: &mut render_system::RenderSystem = binding.downcast_mut().unwrap();
@@ -394,8 +393,7 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_render_pass(Extent::new(1920, 1080, 1), &attachments);
 
-		//command_buffer_recording.bind_pipeline(&self.pipeline);
-		// TODO: bind pipelines
+		command_buffer_recording.bind_pipeline(&self.pipeline.as_ref().unwrap());
 
 		let vertex_buffer_descriptors = [
 			render_system::BufferDescriptor {

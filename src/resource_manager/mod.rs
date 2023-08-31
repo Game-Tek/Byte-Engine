@@ -9,7 +9,7 @@ mod material_resource_handler;
 
 use std::{io::prelude::*, str::FromStr, hash::{Hasher, Hash},};
 
-use log::{warn, info, error};
+use log::{warn, info, error, trace};
 use polodb_core::bson::{Document, doc};
 
 use crate::orchestrator::{System, self};
@@ -88,6 +88,7 @@ pub struct ResourceRequest {
 	pub hash: u64,
 	pub class: String,
 	pub resource: Box<dyn std::any::Any>,
+	pub required_resources: Vec<String>,
 }
 
 pub struct ResourceResponse {
@@ -98,6 +99,7 @@ pub struct ResourceResponse {
 	pub hash: u64,
 	pub class: String,
 	pub resource: Box<dyn std::any::Any>,
+	pub required_resources: Vec<String>,
 }
 
 pub struct Request {
@@ -350,6 +352,10 @@ impl ResourceManager {
 			gather(&self.db, path)?
 		};
 
+		for r in &resource_descriptions {
+			trace!("Loaded resource: {:#?}", r);
+		}
+
 		let request = Request {
 			resources: resource_descriptions.iter().map(|r|
 				ResourceRequest { 
@@ -360,6 +366,7 @@ impl ResourceManager {
 					hash: r.get_i64("hash").unwrap() as u64,
 					class: r.get_str("class").unwrap().to_string(),
 					resource: self.deserializers[r.get_str("class").unwrap()](r.get_document("resource").unwrap()),
+					required_resources: if let Ok(rr) = r.get_array("required_resources") { rr.iter().map(|e| e.as_document().unwrap().get_str("path").unwrap().to_string()).collect() } else { vec![] },
 				}
 			).collect(),
 		};
@@ -435,6 +442,7 @@ impl ResourceManager {
 				hash: resource_container.hash,
 				class: resource_container.class.clone(),
 				resource: resource_container.resource,
+				required_resources: resource_container.required_resources,
 			};
 
 			let slice = if let Some(options) = &mut options {

@@ -3,7 +3,7 @@ use std::{collections::hash_map::DefaultHasher, hash::Hasher, io::Read};
 use log::{warn, debug};
 use polodb_core::bson::Document;
 
-use crate::{rendering::shader_generator::ShaderGenerator, beshader_compiler, shader_generator};
+use crate::{rendering::shader_generator::ShaderGenerator, shader_generator, jspd};
 
 use super::ResourceHandler;
 
@@ -41,7 +41,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
 			let arlp = "assets/".to_string() + path;
 			let shader_code = std::fs::read_to_string(&arlp).unwrap();
-			let shader = beshader_compiler::compile_to_jspd(&shader_code).unwrap();
+			let shader = jspd::compile_to_jspd(&shader_code).unwrap();
 
 			let mut shader_spec = json::object! { glsl: { version: "450" } };
 
@@ -57,7 +57,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			shader_spec["root"][c.0][v.0] = v.1;
 
-			shader_spec["root"][c.0][v.0]["MyShader"] = shader;
+			//shader_spec["root"][c.0][v.0]["MyShader"] = shader;
 
 			let shader_generator = shader_generator::ShaderGenerator::new();
 

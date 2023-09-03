@@ -537,7 +537,7 @@ mod tests {
 
 		assert!(resource_result.is_some());
 
-		let (request, buffer) = resource_result.unwrap();
+		let (request, _buffer) = resource_result.unwrap();
 
 		assert_eq!(request.resources.len(), 1);
 
@@ -556,7 +556,7 @@ mod tests {
 
 		assert!(resource_result.is_some());
 
-		let (request, buffer) = resource_result.unwrap();
+		let (request, _buffer) = resource_result.unwrap();
 
 		assert_eq!(request.resources.len(), 1);
 
@@ -581,7 +581,7 @@ mod tests {
 
 		assert!(resource_result.is_some());
 
-		let (request, buffer) = resource_result.unwrap();
+		let (request, _buffer) = resource_result.unwrap();
 
 		assert_eq!(request.resources.len(), 1);
 
@@ -638,7 +638,7 @@ mod tests {
 
 		assert!(resource_result.is_some());
 
-		let resource = resource_result.unwrap();
+		let _resource = resource_result.unwrap();
 
 		assert_eq!(request.resources.len(), 1);
 
@@ -676,7 +676,7 @@ mod tests {
 
 		assert!(resource_result.is_some());
 
-		let (request, buffer) = resource_result.unwrap();
+		let (request, _buffer) = resource_result.unwrap();
 
 		assert_eq!(request.resources.len(), 3); // 1 material, 2 shaders
 

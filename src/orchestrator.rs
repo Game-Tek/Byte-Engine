@@ -480,7 +480,7 @@ mod tests {
 			self.value += 1;
 		}
 
-		async fn task(&self, orchestrator: OrchestratorHandle) {
+		async fn task(&self, _orchestrator: OrchestratorHandle) {
 			println!("{}", self.value);
 		}
 
@@ -510,7 +510,7 @@ mod tests {
 
 		let test_system = TestSystem::new();
 
-		let system_handle = orchestrator.create_entity(test_system);
+		let _system_handle = orchestrator.create_entity(test_system);
 
 		//orchestrator.execute_task(TestSystem::task);
 
@@ -523,9 +523,9 @@ mod tests {
 
 		let test_system = TestSystem::new();
 
-		let system_handle = orchestrator.create_entity(test_system);
+		let _system_handle = orchestrator.create_entity(test_system);
 
-		fn task(o: &Orchestrator) {
+		fn task(_o: &Orchestrator) {
 			println!("howdy!");
 		}
 
@@ -552,7 +552,7 @@ mod tests {
 				self.value
 			}
 
-			fn set_value(&mut self, orchestrator: OrchestratorReference, value: u32) {
+			fn set_value(&mut self, _orchestrator: OrchestratorReference, value: u32) {
 				self.value = value;
 			}
 
@@ -575,7 +575,7 @@ mod tests {
 				self.value
 			}
 
-			fn set_value(&mut self, orchestrator: OrchestratorReference, value: u32) {
+			fn set_value(&mut self, _orchestrator: OrchestratorReference, value: u32) {
 				self.value = value;
 			}
 

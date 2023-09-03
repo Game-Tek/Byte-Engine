@@ -482,12 +482,12 @@ Light: struct {
 
 		let root_node = &node.node;
 
-		if let Nodes::Feature { name, feature } = root_node {
+		if let Nodes::Feature { name, feature: _ } = root_node {
 			assert_eq!(name, "root");
 
 			let light_node = &node["Light"].node;
 
-			if let (Nodes::Feature { name, feature }, light) = (light_node, light_node) {
+			if let (Nodes::Feature { name, feature }, _light) = (light_node, light_node) {
 				assert_eq!(name, "Light");
 
 				if let Features::Struct { fields } = feature {
@@ -538,11 +538,11 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).unwrap();
-		let (node, program) = parse(tokens).expect("Failed to parse");
+		let (node, _program) = parse(tokens).expect("Failed to parse");
 
 		let root_node = &node.node;
 
-		if let Nodes::Feature { name, feature } = &root_node {
+		if let Nodes::Feature { name, feature: _ } = &root_node {
 			assert_eq!(name, "root");
 
 			let main_node = &node["main"].node;
@@ -550,7 +550,7 @@ main: fn () -> void {
 			if let Nodes::Feature { name, feature } = &main_node {
 				assert_eq!(name, "main");
 
-				if let Features::Function { params, return_type, statements, raw } = feature {
+				if let Features::Function { params, return_type, statements, raw: _ } = feature {
 					assert_eq!(params.len(), 0);
 					assert_eq!(return_type, "void");
 					assert_eq!(statements.len(), 2);
@@ -561,7 +561,7 @@ main: fn () -> void {
 						if let Expressions::Assignment = expression {
 							let var_decl = &children[0];
 
-							if let Nodes::Expression { expression, children } = &var_decl.node {
+							if let Nodes::Expression { expression, children: _ } = &var_decl.node {
 								if let Expressions::VariableDeclaration = expression {
 								} else { panic!("Not a variable declaration"); }
 							} else { panic!("Not an expression"); }

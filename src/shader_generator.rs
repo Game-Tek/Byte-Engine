@@ -567,7 +567,7 @@ impl ShaderGenerator {
 					let mut s = String::new();
 
 					match feature {
-						lexer::Features::Function { params, return_type, statements, raw } => {
+						lexer::Features::Function { params: _, return_type, statements, raw: _ } => {
 							s.push_str(&format!("{return_type} {name}() {{", return_type = translate_type_str(return_type)));
 
 							for statement in statements {
@@ -710,7 +710,7 @@ fn test_translate_type() {
 
 #[test]
 fn test_generate_no_shader() {
-	let shader_generator = ShaderGenerator::new();
+	let _shader_generator = ShaderGenerator::new();
 }
 
 #[test]
@@ -1152,7 +1152,7 @@ void main() {
 
 		let generated_vertex_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Vertex" });
 
-		let expected_vertex_shader_string =
+		let _expected_vertex_shader_string =
 "#version 450 core
 #pragma shader_stage(vertex)
 #extension GL_EXT_shader_16bit_storage : enable
@@ -1179,7 +1179,7 @@ void main() {
 
 		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_vertex_shader.as_str(), shaderc::ShaderKind::Vertex, "shader.glsl", "main", None).unwrap();
 
-		let expected_fragment_shader_string =
+		let _expected_fragment_shader_string =
 "#version 450 core
 #pragma shader_stage(fragment)
 #extension GL_EXT_shader_16bit_storage : enable

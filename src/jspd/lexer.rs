@@ -258,12 +258,12 @@ main: fn () -> void {
 					Features::Scope => {
 						assert_eq!(name, "root");
 
-						let main = &node.children[0];
+						let _main = &node.children[0];
 
 						match &node.node {
 							Nodes::Feature { name, feature } => {
 								match feature {
-									Features::Function { params, return_type, statements, raw } => {
+									Features::Function { params: _, return_type: _, statements, raw: _ } => {
 										assert_eq!(name, "main");
 										// TODO: assert return type
 
@@ -278,7 +278,7 @@ main: fn () -> void {
 														let position = &children[0];
 
 														match &position.node {
-															Nodes::Expression { expression, children } => {
+															Nodes::Expression { expression, children: _ } => {
 																match expression {
 																	Expressions::VariableDeclaration => {
 																	}

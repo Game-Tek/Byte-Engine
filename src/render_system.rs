@@ -1739,7 +1739,7 @@ mod tests {
 		let mut renderer = RenderSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
-		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
+		let _extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let frames = (0..FRAMES_IN_FLIGHT).map(|_| renderer.create_frame()).collect::<Vec<_>>();
 
@@ -1861,7 +1861,7 @@ mod tests {
 		let mut renderer = RenderSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
-		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
+		let _extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let frames = (0..FRAMES_IN_FLIGHT).map(|_| renderer.create_frame()).collect::<Vec<_>>();
 
@@ -1938,7 +1938,7 @@ mod tests {
 
 		let pipeline = renderer.create_pipeline(pipeline_layout, &[&vertex_shader, &fragment_shader], &vertex_layout, &attachments);
 
-		let buffer = renderer.create_buffer(64, crate::render_backend::Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let _buffer = renderer.create_buffer(64, crate::render_backend::Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -2162,7 +2162,7 @@ mod tests {
 		renderer.wait(Some(frame_handle), signal); // Wait for the render to finish before accessing the texture data
 
 		// assert colored triangle was drawn to texture
-		let pixels = renderer.get_texture_data::<RGBAu8>(render_target);
+		let _pixels = renderer.get_texture_data::<RGBAu8>(render_target);
 
 		// TODO: assert rendering results
 

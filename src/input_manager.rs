@@ -793,14 +793,14 @@ mod tests {
 
 		let key_source_description = InputTypes::Bool(InputSourceDescription::new(false, false, false, true));
 
-		let up_input_source = input_manager.register_input_source(&device_class_handle, "Up", key_source_description);
-		let down_input_source = input_manager.register_input_source(&device_class_handle, "Down", key_source_description);
-		let left_input_source = input_manager.register_input_source(&device_class_handle, "Left", key_source_description);
-		let right_input_source = input_manager.register_input_source(&device_class_handle, "Right", key_source_description);
+		let _up_input_source = input_manager.register_input_source(&device_class_handle, "Up", key_source_description);
+		let _down_input_source = input_manager.register_input_source(&device_class_handle, "Down", key_source_description);
+		let _left_input_source = input_manager.register_input_source(&device_class_handle, "Left", key_source_description);
+		let _right_input_source = input_manager.register_input_source(&device_class_handle, "Right", key_source_description);
 
 		let key_source_description = InputTypes::Unicode(InputSourceDescription::new('\0', '\0', '\0', 'Z'));
 
-		let a_input_source = input_manager.register_input_source(&device_class_handle, "Character", key_source_description);
+		let _a_input_source = input_manager.register_input_source(&device_class_handle, "Character", key_source_description);
 
 		device_class_handle
 	}
@@ -810,17 +810,17 @@ mod tests {
 
 		let key_source_description = InputTypes::Float(InputSourceDescription::new(0.0f32, 0.0f32, 0.0f32, 1.0f32));
 
-		let up_input_source = input_manager.register_input_source(&device_class_handle, "LeftTrigger", key_source_description);
-		let down_input_source = input_manager.register_input_source(&device_class_handle, "RighTrigger", key_source_description);
+		let _up_input_source = input_manager.register_input_source(&device_class_handle, "LeftTrigger", key_source_description);
+		let _down_input_source = input_manager.register_input_source(&device_class_handle, "RighTrigger", key_source_description);
 
 		let key_source_description = InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
 
-		let a_input_source = input_manager.register_input_source(&device_class_handle, "LeftStick", key_source_description);
-		let b_input_source = input_manager.register_input_source(&device_class_handle, "RightStick", key_source_description);
+		let _a_input_source = input_manager.register_input_source(&device_class_handle, "LeftStick", key_source_description);
+		let _b_input_source = input_manager.register_input_source(&device_class_handle, "RightStick", key_source_description);
 
 		let light_source_description = InputTypes::Rgba(InputSourceDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 }));
 
-		let light_destination = input_manager.register_input_destination(&device_class_handle, "Light", light_source_description);
+		let _light_destination = input_manager.register_input_destination(&device_class_handle, "Light", light_source_description);
 
 		device_class_handle
 	}
@@ -830,11 +830,11 @@ mod tests {
 
 		let source_description = InputTypes::Vector3(InputSourceDescription::new(Vector3::new(0f32, 1.80f32, 0f32), Vector3::new(0f32, 0f32, 0f32), Vector3::min_value(), Vector3::max_value()));
 
-		let position_input_source = input_manager.register_input_source(&device_class_handle, "Position", source_description);
+		let _position_input_source = input_manager.register_input_source(&device_class_handle, "Position", source_description);
 
 		let source_description = InputTypes::Quaternion(InputSourceDescription::new(Quaternion::identity(), Quaternion::identity(), Quaternion::identity(), Quaternion::identity()));
 
-		let rotation_input_source = input_manager.register_input_source(&device_class_handle, "Orientation", source_description);
+		let _rotation_input_source = input_manager.register_input_source(&device_class_handle, "Orientation", source_description);
 
 		device_class_handle
 	}
@@ -844,7 +844,7 @@ mod tests {
 
 		let source_description = InputTypes::Int(InputSourceDescription::new(0, 0, 0, 3));
 
-		let funky_input_source = input_manager.register_input_source(&device_class_handle, "Int", source_description);
+		let _funky_input_source = input_manager.register_input_source(&device_class_handle, "Int", source_description);
 
 		let source_description = InputTypes::Rgba(InputSourceDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 }));
 
@@ -857,7 +857,7 @@ mod tests {
 	fn create_device_class() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = input_manager.register_device_class("Keyboard");
+		let _device_class_handle = input_manager.register_device_class("Keyboard");
 	}
 
 	#[test]
@@ -870,12 +870,12 @@ mod tests {
 
 		let stick_source_description = InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
 
-		let gamepad_left_stick_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftStick", stick_source_description);
-		let gamepad_right_stick_input_source = input_manager.register_input_source(&gamepad_class_handle, "RightStick", stick_source_description);
+		let _gamepad_left_stick_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftStick", stick_source_description);
+		let _gamepad_right_stick_input_source = input_manager.register_input_source(&gamepad_class_handle, "RightStick", stick_source_description);
 
 		let trigger_source_description = InputTypes::Float(InputSourceDescription { default: 0.0, rest: 0.0, min: 0.0, max: 1.0 });
 
-		let trigger_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftTrigger", trigger_source_description);
+		let _trigger_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftTrigger", trigger_source_description);
 	}
 
 	#[test]

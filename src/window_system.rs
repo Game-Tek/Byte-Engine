@@ -680,7 +680,7 @@ mod tests {
 	fn test_window_loop() {
 		let mut window_system = WindowSystem::new();
 
-		let window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
+		let _window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 
 		loop {
 			if window_system.update() == false {

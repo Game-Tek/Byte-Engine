@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self}, render_domain::{Mesh, MeshParameters}, Vector2, math};
+use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self}, render_domain::{Mesh, MeshParameters}, math};
 use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
@@ -18,11 +18,11 @@ fn gallery_shooter() {
 
 	let x = [input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton"))];
 
-	let trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn_component(("Trigger", x.as_slice()));
+	let _trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn_component(("Trigger", x.as_slice()));
 
-	let player: EntityHandle<Player> = orchestrator.spawn_component((lookaround_action_handle));
+	let _player: EntityHandle<Player> = orchestrator.spawn_component(lookaround_action_handle);
 
-	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
+	let _scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
 	// let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
 	// let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });

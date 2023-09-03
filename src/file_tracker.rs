@@ -16,7 +16,7 @@ pub struct FileTracker {
 }
 
 impl FileTracker {
-	pub fn new(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<FileTracker> {
+	pub fn new(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<FileTracker> {
 		std::fs::create_dir_all(".byte-editor").unwrap();
 
 		let db = polodb_core::Database::open_file(".byte-editor/files.db").unwrap();
@@ -38,7 +38,7 @@ impl FileTracker {
 			}
 		}).unwrap();
 
-		let mut watcher = debouncer.watcher();
+		let watcher = debouncer.watcher();
 
 		let col = db.collection::<polodb_core::bson::Document>("files");
 

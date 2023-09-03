@@ -181,7 +181,7 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 				}
 			}
 		}
-		parser::Nodes::Expression { expression, children } => {
+		parser::Nodes::Expression { expression, children: _ } => {
 			match expression {
 				parser::Expressions::Member => {
 					return Ok(Node {

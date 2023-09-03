@@ -34,11 +34,11 @@ impl Camera {
 	fn get_focus_distance(&self) -> f32 { self.focus_distance }
 
 	fn get_orientation(&self) -> Vec3f { self.direction }
-	fn set_orientation(&mut self, orchestrator: orchestrator::OrchestratorReference, orientation: Vec3f) { self.direction = orientation; }
+	fn set_orientation(&mut self, _orchestrator: orchestrator::OrchestratorReference, orientation: Vec3f) { self.direction = orientation; }
 	pub const fn orientation() -> Property<(), Camera, Vec3f> { Property::Component { getter: Self::get_orientation, setter: Self::set_orientation } }
 
 	fn get_position(&self) -> Vec3f { self.position }
-	fn set_position(&mut self, orchestrator: orchestrator::OrchestratorReference, position: Vec3f) { self.position = position; }
+	fn set_position(&mut self, _orchestrator: orchestrator::OrchestratorReference, position: Vec3f) { self.position = position; }
 	pub const fn position() -> Property<(), Camera, Vec3f> { Property::Component { getter: Self::get_position, setter: Self::set_position } }
 }
 
@@ -47,7 +47,7 @@ impl Entity for Camera {}
 impl Component for Camera {
 	type Parameters<'a> = CameraParameters;
 
-	fn new(orchestrator: orchestrator::OrchestratorReference, params: CameraParameters) -> Self {
+	fn new(_orchestrator: orchestrator::OrchestratorReference, params: CameraParameters) -> Self {
 		let camera  = Camera {
 			position: params.position,
 			direction: Vec3f::new(0.0, 0.0, 1.0),

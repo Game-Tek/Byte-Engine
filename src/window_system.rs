@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 
-use log::{trace, info};
+use log::{trace};
 use xcb::{Xid, x};
 
 use crate::{Extent, orchestrator::{System, self}};
@@ -370,7 +370,7 @@ impl Iterator for WindowIterator<'_> {
 }
 
 impl Window {
-	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Option<Window> {
+	pub fn new_with_params(name: &str, extent: Extent, _id_name: &str) -> Option<Window> {
 		let (connection, screen_index) = xcb::Connection::connect(None).unwrap();
 
 		let setup = connection.get_setup();
@@ -595,7 +595,7 @@ impl WindowSystem {
 		WindowSystem { windows: Vec::new() }
 	}
 
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<WindowSystem> {
+	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<WindowSystem> {
 		Some((Self::new(), vec![]))
 	}
 

@@ -3,7 +3,7 @@ use std::io::{Seek, Read};
 use polodb_core::bson::{Document, doc};
 use serde::{Serialize, Deserialize};
 
-use super::{ResourceHandler, ResourceManager};
+use super::{ResourceHandler};
 
 pub struct MeshResourceHandler {
 

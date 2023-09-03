@@ -1,4 +1,4 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, io::Read};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher};
 
 use log::{warn, debug};
 use polodb_core::bson::Document;
@@ -34,14 +34,14 @@ impl ResourceHandler for MaterialResourcerHandler {
 	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let material_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
-		let t = material_json["type"].as_str().unwrap();
+		let _t = material_json["type"].as_str().unwrap();
 		let vertex  = material_json["vertex"].as_str().unwrap();
 		let fragment = material_json["fragment"].as_str().unwrap();
 
 		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
 			let arlp = "assets/".to_string() + path;
 			let shader_code = std::fs::read_to_string(&arlp).unwrap();
-			let shader = jspd::compile_to_jspd(&shader_code).unwrap();
+			let _shader = jspd::compile_to_jspd(&shader_code).unwrap();
 
 			let mut shader_spec = json::object! { glsl: { version: "450" } };
 
@@ -125,7 +125,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 	}
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
-		Box::new(|document| {
+		Box::new(|_document| {
 			Box::new(Material {})
 		})
 	}

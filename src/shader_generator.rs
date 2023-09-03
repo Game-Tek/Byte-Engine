@@ -1,6 +1,6 @@
 //! The shader_generator module provides utilities to generate shaders.
 
-use std::fmt::format;
+
 
 use json;
 use log::warn;
@@ -544,7 +544,7 @@ impl ShaderGenerator {
 			nodes: Vec<(String, String)>,
 		}
 
-		fn process_node(string: Option<&mut String>, node: &Node, compilation_settings: &json::JsonValue, program_state: &mut ProgramState) {
+		fn process_node(_string: Option<&mut String>, _node: &Node, _compilation_settings: &json::JsonValue, _program_state: &mut ProgramState) {
 			// if let Some(only_under) = (&node["__only_under"]).as_str() {
 			// 	if only_under != compilation_settings["stage"].as_str().unwrap() { return; }
 			// }

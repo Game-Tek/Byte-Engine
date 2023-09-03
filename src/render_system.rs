@@ -641,7 +641,7 @@ impl RenderSystem {
 	}
 
 	/// Creates a new [`RenderSystem`].
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<RenderSystem> {
+	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<RenderSystem> {
 		Some((Self::new(), vec![]))
 	}
 
@@ -819,7 +819,7 @@ impl RenderSystem {
 			binding: descriptor_write.binding,
 			array_element: descriptor_write.array_element,
 			descriptor_type: match descriptor_write.descriptor {
-				Descriptor::Buffer{ handle, size } => render_backend::DescriptorType::UniformBuffer,
+				Descriptor::Buffer{ handle: _, size: _ } => render_backend::DescriptorType::UniformBuffer,
 				Descriptor::Texture(_) => render_backend::DescriptorType::SampledImage,
 			},
 			descriptor_info: match descriptor_write.descriptor {
@@ -1008,17 +1008,17 @@ impl RenderSystem {
 		buffer_handle
 	}
 
-	pub fn get_buffer_address(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
+	pub fn get_buffer_address(&self, _frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
 		let buffer = self.buffers.iter().find(|b| b.role == "GPU_READ" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		self.render_backend.get_buffer_address(&buffer.buffer)
 	}
 
-	pub fn cheat_get_buffer_address(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
+	pub fn cheat_get_buffer_address(&self, _frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> u64 {
 		let buffer = self.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		self.render_backend.get_buffer_address(&buffer.buffer)
 	}
 
-	pub fn get_buffer_slice(&mut self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &[u8] {
+	pub fn get_buffer_slice(&mut self, _frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &[u8] {
 		let buffer = self.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		unsafe {
 			std::slice::from_raw_parts(buffer.pointer, buffer.size as usize)
@@ -1026,7 +1026,7 @@ impl RenderSystem {
 	}
 
 	// Return a mutable slice to the buffer data.
-	pub fn get_mut_buffer_slice(&self, frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &mut [u8] {
+	pub fn get_mut_buffer_slice(&self, _frame_handle: Option<FrameHandle>, buffer_handle: BufferHandle) -> &mut [u8] {
 		let buffer = self.buffers.iter().find(|b| b.role == "CPU_WRITE" && b.common_handle == buffer_handle.0 as usize).unwrap();
 		unsafe {
 			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size as usize)
@@ -1385,9 +1385,9 @@ impl RenderSystem {
 		command_buffer_handle
 	}
 
-	fn get_buffer_handle(&self, frame_handle: Option<FrameHandle>, resource_handle: BufferHandle) -> BufferHandle {
-		let mut resource = &self.buffers[resource_handle.0 as usize];
-		let mut buffer_handle = resource_handle;
+	fn get_buffer_handle(&self, _frame_handle: Option<FrameHandle>, resource_handle: BufferHandle) -> BufferHandle {
+		let _resource = &self.buffers[resource_handle.0 as usize];
+		let buffer_handle = resource_handle;
 
 		buffer_handle
 	}

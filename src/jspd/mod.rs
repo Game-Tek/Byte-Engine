@@ -1,15 +1,15 @@
 //! This module contains all code related to the parsing of the BESL language and the generation of the JSPD.
 
-use std::rc::Rc;
+
 
 mod tokenizer;
 mod parser;
 pub mod lexer;
 
 pub(crate) fn compile_to_jspd(source: &str) -> Result<lexer::Node, CompilationError> {
-	let tokens = tokenizer::tokenize(source).map_err(|e| CompilationError::Undefined)?;
-	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|e| CompilationError::Undefined)?;
-	let jspd = lexer::lex(&parser_root_node, &parser_program).map_err(|e| CompilationError::Undefined)?;
+	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
+	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
+	let jspd = lexer::lex(&parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?;
 
 	return Ok(jspd);
 }

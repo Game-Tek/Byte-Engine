@@ -21,7 +21,7 @@ use std::f32::consts::PI;
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{Orchestrator, EntityHandle, Property, System, self, Entity}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property, System, self, Entity}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -270,7 +270,7 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<InputManager> {
+	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<InputManager> {
 		Some((Self::new(), vec![]))
 	}
 
@@ -346,7 +346,7 @@ impl InputManager {
 	/// # let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
 	/// input_manager.register_input_destination(&gamepad_device_class_handle, "Rumble", InputTypes::Float(InputSourceDescription::new(0f32, 0f32, 0f32, 1f32)));
 	/// ```
-	pub fn register_input_destination(&mut self, device_class_handle: &DeviceClassHandle, name: &str, value_type: InputTypes) -> InputSourceHandle {
+	pub fn register_input_destination(&mut self, _device_class_handle: &DeviceClassHandle, _name: &str, _value_type: InputTypes) -> InputSourceHandle {
 		InputSourceHandle(0)
 	}
 
@@ -366,7 +366,7 @@ impl InputManager {
 	/// let keyboard_device = input_manager.create_device(&keyboard_device_class_handle);
 	/// ```
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
-		let device_class = &self.device_classes[device_class_handle.0 as usize];
+		let _device_class = &self.device_classes[device_class_handle.0 as usize];
 
 		let other_device = self.devices.iter().filter(|d| d.device_class_handle.0 == device_class_handle.0).min_by_key(|d| d.index);
 
@@ -599,7 +599,7 @@ impl InputManager {
 
 	/// Gets the input source action from the input source action.
 	pub fn get_input_source_record(&self, device_handle: &DeviceHandle, input_source_action: InputSourceAction) -> Record {
-		let input_source = self.get_input_source_from_input_source_action(&input_source_action);
+		let _input_source = self.get_input_source_from_input_source_action(&input_source_action);
 
 		let device = self.get_device(device_handle);
 		let state = &device.input_source_states[&self.to_input_source_handle(&input_source_action).unwrap()];
@@ -612,7 +612,7 @@ impl InputManager {
 	}
 
 	pub fn get_input_source_value(&self, device_handle: &DeviceHandle, input_source_action: InputSourceAction) -> Value {
-		let input_source = self.get_input_source_from_input_source_action(&input_source_action);
+		let _input_source = self.get_input_source_from_input_source_action(&input_source_action);
 
 		let device = self.get_device(device_handle);
 		let state = &device.input_source_states[&self.to_input_source_handle(&input_source_action).unwrap()];
@@ -621,9 +621,9 @@ impl InputManager {
 	}
 
 	pub fn get_input_source_values(&self, input_source_action: InputSourceAction) -> Vec<InputSourceEventState> {
-		let input_source = self.get_input_source_from_input_source_action(&input_source_action);
+		let _input_source = self.get_input_source_from_input_source_action(&input_source_action);
 
-		self.devices.iter().enumerate().map(|(i, device)| {
+		self.devices.iter().enumerate().map(|(i, _device)| {
 			let device_handle = DeviceHandle(i as u32);
 
 			InputSourceEventState {
@@ -647,7 +647,7 @@ impl InputManager {
 			}
 		} else {
 			let value = match self.input_sources[action.input_event_descriptions[0].input_source_handle.0 as usize].type_ {
-				InputTypes::Bool(v) => {
+				InputTypes::Bool(_v) => {
 					match action.type_ {
 						Types::Bool => {
 							Value::Bool(false)
@@ -679,7 +679,7 @@ impl InputManager {
 				let float = match record.value {
 					Value::Bool(record_value) => {
 						if let Some(last) = action.stack.last() {
-							if let Value::Bool(value) = last.value {
+							if let Value::Bool(_value) = last.value {
 								let event_description_for_input_source = action.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
 		
 								match event_description_for_input_source.mapping {
@@ -1292,7 +1292,7 @@ impl InputManager {
 		state.value.extract()
 	}
 
-	pub fn set_action_value<T: Clone>(&mut self, action_handle: &EntityHandle<Action<T>>, value: T) {
+	pub fn set_action_value<T: Clone>(&mut self, _action_handle: &EntityHandle<Action<T>>, _value: T) {
 
 	}
 }
@@ -1324,13 +1324,13 @@ impl GetType for Vector3 {
 impl <T: Clone + Send + GetType> orchestrator::Component for Action<T> {
 	type Parameters<'a> = (&'a str, &'a [ActionBindingDescription]);
 
-	fn new(orchestrator: orchestrator::OrchestratorReference, (name, bindings): Self::Parameters<'_>) -> Self where Self: Sized {
+	fn new(_orchestrator: orchestrator::OrchestratorReference, (_name, _bindings): Self::Parameters<'_>) -> Self where Self: Sized {
 		Action { phantom: std::marker::PhantomData }
 	}
 }
 
 impl <T: Clone + Send + GetType> Action<T> {
-	pub fn new<'a>(name: &'a str, bindings: &'a [ActionBindingDescription]) -> orchestrator::EntityReturn<Action<T>> {
+	pub fn new<'a>(_name: &'a str, _bindings: &'a [ActionBindingDescription]) -> orchestrator::EntityReturn<Action<T>> {
 		Some((Action { phantom: std::marker::PhantomData }, vec![]))
 	}
 

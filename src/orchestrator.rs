@@ -1,9 +1,9 @@
 //! The orchestrator synchronizes and manages most of the application data.
 //! It contains systems and task to accomplish that feat.
 
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::HashMap};
 
-use crate::{Vector2, Vector3};
+
 
 /// System handle is a handle to a system in an [`Orchestrator`]
 pub struct SystemHandle(u32);
@@ -228,14 +228,14 @@ impl Orchestrator {
 	}
 
 	/// Ties a property of a component to a property of another component.
-	pub fn tie<T: 'static, U, V: 'static, S0: 'static, S1: 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> Property<S0, T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> Property<S1, U, V>) {
+	pub fn tie<T: 'static, U, V: 'static, S0: 'static, S1: 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> Property<S0, T, V>, _sender_component_handle: &EntityHandle<U>, j: fn() -> Property<S1, U, V>) {
 		let property_function_pointer = j as *const (); // Use the property function pointer as a key to the ties hashmap.
 
 		let property = i();
 
 		let update_function = match property {
-			Property::Component { getter, setter } => UpdateFunctionTypes::Component(std::boxed::Box::new(setter)),
-			Property::System { getter, setter } => UpdateFunctionTypes::System(std::boxed::Box::new(setter)),
+			Property::Component { getter: _, setter } => UpdateFunctionTypes::Component(std::boxed::Box::new(setter)),
+			Property::System { getter: _, setter } => UpdateFunctionTypes::System(std::boxed::Box::new(setter)),
 		};
 
 		let mut ties = self.ties.write().unwrap();
@@ -304,7 +304,7 @@ impl Orchestrator {
 		self.sep.lock().unwrap().1.spawn(task);
 	}
 
-	pub fn execute_task<S: System + Sync + Send, F: Sync + Send + 'static, R>(&self, task: F) where F: FnOnce(std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send + Sync + 'static>>, OrchestratorHandle) -> R, R: std::future::Future<Output = ()> + Send + 'static {
+	pub fn execute_task<S: System + Sync + Send, F: Sync + Send + 'static, R>(&self, _task: F) where F: FnOnce(std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send + Sync + 'static>>, OrchestratorHandle) -> R, R: std::future::Future<Output = ()> + Send + 'static {
 		self.sep.lock().unwrap().1.spawn(async move {
 		});
 	}
@@ -363,7 +363,7 @@ impl Orchestrator {
 	pub fn set_owned_property<C: Clone + 'static, V: Clone + Copy + 'static, S: 'static>(&self, internal_id: u32, component_handle: InternalId, function: fn() -> Property<S, C, V>, value: V) {
 		let systems_data = self.systems_data.read().unwrap();
 
-		let property = function();
+		let _property = function();
 
 		let ties = self.ties.read().unwrap();
 

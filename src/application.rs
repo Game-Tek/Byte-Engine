@@ -144,7 +144,7 @@ impl Application for GraphicsApplication {
 		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system).unwrap();
 		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system).unwrap();
 
-		let (mouse_device_class_handle, gamepad_device_class_handle, mouse_device_handle) = orchestrator.get_mut_and(&input_system_handle, |input_system: &mut input_manager::InputManager| {
+		let (_mouse_device_class_handle, _gamepad_device_class_handle, mouse_device_handle) = orchestrator.get_mut_and(&input_system_handle, |input_system: &mut input_manager::InputManager| {
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
 
 			input_system.register_input_source(&mouse_device_class_handle, "Position", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
@@ -177,7 +177,7 @@ impl Application for GraphicsApplication {
 		GraphicsApplication { application, file_tracker_handle: file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
 	}
 
-	fn initialize(&mut self, arguments: std::env::Args) {
+	fn initialize(&mut self, _arguments: std::env::Args) {
 	}
 
 	fn get_name(&self) -> String { self.application.get_name() }
@@ -194,10 +194,10 @@ impl Application for GraphicsApplication {
 			while let Some(event) = window_system.update_window(0) {
 				match event {
 					window_system::WindowEvents::Close => return false,
-					window_system::WindowEvents::Button { pressed, button } => {
+					window_system::WindowEvents::Button { pressed, button: _ } => {
 						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
 					},
-					window_system::WindowEvents::MouseMove { x, y, time } => {
+					window_system::WindowEvents::MouseMove { x, y, time: _ } => {
 						let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
 						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
 					},

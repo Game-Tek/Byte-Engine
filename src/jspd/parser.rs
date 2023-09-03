@@ -261,10 +261,10 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 fn make_expression_node(following_expression: Option<&Node>, new_expression: Expressions, new_node_children: Option<Vec<Rc<Node>>>) -> Node {
 	if let Some(following_expression) = following_expression {
-		if let Nodes::Expression { expression, children } = &following_expression.node {
+		if let Nodes::Expression { expression, children: _ } = &following_expression.node {
 			if expression.precedence() > new_expression.precedence() {
 				let mut cont = following_expression.clone();
-				if let Nodes::Expression { expression, children } = &mut cont.node {
+				if let Nodes::Expression { expression: _, children } = &mut cont.node {
 					children.insert(0, Rc::new(make_expression_node(None, new_expression, new_node_children.clone())));
 				}
 				cont
@@ -291,7 +291,7 @@ fn make_expression_node(following_expression: Option<&Node>, new_expression: Exp
 	}
 }
 
-fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
+fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().ok_or(ParsingFailReasons::BadSyntax)?;
@@ -307,7 +307,7 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &
 	return Ok(((Rc::new(expression), program.clone()), new_iterator));
 }
 
-fn parse_assignment<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
+fn parse_assignment<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	iterator.next().and_then(|v| if v == "=" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
 	let possible_following_expressions: Vec<Parser> = vec![
@@ -321,8 +321,8 @@ fn parse_assignment<'a>(mut iterator: std::slice::Iter<'a, String>, mut program:
 	return Ok(((Rc::new(expression), program.clone()), new_iterator));
 }
 
-fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
+	let _name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 
 	let lexers: Vec<Parser> = vec![
 		parse_assignment,
@@ -335,8 +335,8 @@ fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &
 	}
 }
 
-fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
+	let _name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 
 	let lexers: Vec<Parser> = vec![
 		parse_variable,
@@ -347,12 +347,12 @@ fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &
 	return Ok(((Rc::new(make_expression_node(Some(&expression), Expressions::Member, None)), program.clone()), new_iterator));
 }
 
-fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
-	let name = iterator.next().and_then(|v| if v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
+	let _name = iterator.next().and_then(|v| if v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	return Ok(((Rc::new(make_expression_node(None, Expressions::Literal, None)), program.clone()), iterator));
 }
 
-fn parse_rvalue<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
+fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	let parsers = vec![
 		parse_function_call,
 		parse_literal,
@@ -362,7 +362,7 @@ fn parse_rvalue<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &Pr
 	return execute_parsers(&parsers, iterator.clone(), program);
 }
 
-fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
+fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
@@ -390,7 +390,7 @@ fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, mut progr
 	return Ok(((Rc::new(make_expression_node(None, Expressions::FunctionCall, Some(children))), program.clone()), iterator));
 }
 
-fn parse_statement<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
+fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	let parsers = vec![
 		parse_var_decl,
 		parse_variable,
@@ -404,7 +404,7 @@ fn parse_statement<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: 
 	return Ok((lexeme, new_iterator));
 }
 
-fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, mut program: &ProgramState) -> ParserResult<'a> {
+fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "fn" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
@@ -443,7 +443,7 @@ impl Index<&str> for Node {
     fn index(&self, index: &str) -> &Self::Output {
 		for child in &self.children {
 			match &child.node {
-				Nodes::Feature { name, feature } => {
+				Nodes::Feature { name, feature: _ } => {
 					if name == index {
 						return child.as_ref();
 					}

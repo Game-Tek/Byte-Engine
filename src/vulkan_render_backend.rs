@@ -104,7 +104,7 @@ pub(crate) struct VulkanRenderBackend {
 
 static mut counter: u32 = 0;
 
-unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::DebugUtilsMessageSeverityFlagsEXT, message_type: vk::DebugUtilsMessageTypeFlagsEXT, p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT, _p_user_data: *mut std::ffi::c_void,) -> vk::Bool32 {
+unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::DebugUtilsMessageSeverityFlagsEXT, _message_type: vk::DebugUtilsMessageTypeFlagsEXT, p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT, _p_user_data: *mut std::ffi::c_void,) -> vk::Bool32 {
     let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
 
 	match message_severity {
@@ -666,7 +666,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 	fn create_pipeline(&self, blocks: &[render_backend::PipelineConfigurationBlocks]) -> render_backend::Pipeline {
 		/// This function calls itself recursively to build the pipeline the pipeline states.
 		/// This is done because this way we can "dynamically" allocate on the stack the needed structs because the recursive call keep them alive.
-		fn pipu(vulkan_render_backend: &VulkanRenderBackend, mut pipeline_create_info: vk::GraphicsPipelineCreateInfo<'_>, mut block_iterator: std::slice::Iter<'_, render_backend::PipelineConfigurationBlocks>) -> vk::Pipeline {
+		fn pipu(vulkan_render_backend: &VulkanRenderBackend, pipeline_create_info: vk::GraphicsPipelineCreateInfo<'_>, mut block_iterator: std::slice::Iter<'_, render_backend::PipelineConfigurationBlocks>) -> vk::Pipeline {
 			if let Some(block) = block_iterator.next() {
 				match block {
 					render_backend::PipelineConfigurationBlocks::VertexInput { vertex_elements } => {
@@ -1335,7 +1335,7 @@ impl render_backend::RenderBackend for VulkanRenderBackend {
 					buffer_memory_barriers.push(buffer_memory_barrier);
 				},
 				render_backend::Barrier::Memory() => {
-					let memory_barrier = if let Some(source) = barrier.source {
+					let memory_barrier = if let Some(_source) = barrier.source {
 						vk::MemoryBarrier2::default()
 							//.src_stage_mask(to_pipeline_stage_flags(source.stage))
 							//.src_access_mask(to_access_flags(source.access, source.stage))

@@ -7,7 +7,7 @@ pub mod mesh_resource_handler;
 pub mod shader_resource_handler;
 mod material_resource_handler;
 
-use std::{io::prelude::*, str::FromStr, hash::{Hasher, Hash},};
+use std::{io::prelude::*, hash::{Hasher, Hash},};
 
 use log::{warn, info, error, trace};
 use polodb_core::bson::{Document, doc};
@@ -36,7 +36,7 @@ trait ResourceHandler {
 		Box::new(|document| Box::new(document.get("resource").unwrap().clone()))
 	}
 
-	fn read(&self, resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [Buffer]) {
+	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [Buffer]) {
 		file.read_exact(buffers[0].buffer).unwrap();
 	}
 }
@@ -245,7 +245,7 @@ impl ResourceManager {
 		}
 	}
 
-	pub fn new_as_system(orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<ResourceManager> {
+	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<ResourceManager> {
 		Some((Self::new(), vec![]))
 	}
 
@@ -445,7 +445,7 @@ impl ResourceManager {
 				required_resources: resource_container.required_resources,
 			};
 
-			let slice = if let Some(options) = &mut options {
+			let _slice = if let Some(options) = &mut options {
 				if let Some(x) = options.resources.iter_mut().find(|e| e.path == resource_container.path) {
 					self.resource_handlers.iter().find(|h| h.can_handle_type(resource_container.class.as_str())).unwrap().
 					read(&response.resource, &mut file, x.buffers.as_mut_slice());

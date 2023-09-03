@@ -49,7 +49,7 @@ impl VisibilityWorldRenderDomain {
 
 		let frames = (0..2).map(|_| render_system.create_frame()).collect::<Vec<_>>();
 
-		let vertex_layout = [
+		let _vertex_layout = [
 			render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
 			render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
 		];
@@ -83,7 +83,7 @@ impl VisibilityWorldRenderDomain {
 		let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_backend::TextureFormats::RGBAu8, render_backend::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead);
 		let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_backend::TextureFormats::Depth32, render_backend::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead);
 
-		let attachments = [
+		let _attachments = [
 			render_system::AttachmentInfo {
 				texture: render_target,
 				format: render_backend::TextureFormats::RGBAu8,
@@ -189,7 +189,7 @@ impl VisibilityWorldRenderDomain {
 
 					let hash = resource.hash; let resource_id = resource.id;
 
-					if let Some((old_hash, old_shader)) = self.shaders.get(&resource_id) {
+					if let Some((old_hash, _old_shader)) = self.shaders.get(&resource_id) {
 						if *old_hash == hash { continue; }
 					}
 
@@ -204,7 +204,7 @@ impl VisibilityWorldRenderDomain {
 					let shaders = resource.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
 
 					let shaders = shaders.iter().map(|shader| {
-						let (hash, shader) = self.shaders.get(shader).unwrap();
+						let (_hash, shader) = self.shaders.get(shader).unwrap();
 
 						shader
 					}).collect::<Vec<_>>();
@@ -242,7 +242,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	fn listen_to_camera(&mut self, orchestrator: orchestrator::OrchestratorReference, camera_handle: EntityHandle<camera::Camera>, camera: &Camera) {
+	fn listen_to_camera(&mut self, _orchestrator: orchestrator::OrchestratorReference, camera_handle: EntityHandle<camera::Camera>, _camera: &Camera) {
 		self.camera = Some(camera_handle);
 	}
 
@@ -304,7 +304,7 @@ impl VisibilityWorldRenderDomain {
 
 			let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
 
-			let (response, buffer) = (resource.0, resource.1.unwrap());
+			let (response, _buffer) = (resource.0, resource.1.unwrap());
 
 			for resource in &response.resources {
 				match resource.class.as_str() {
@@ -351,7 +351,7 @@ impl VisibilityWorldRenderDomain {
 		let frame_handle_option = Some(self.frames[self.current_frame % 2]);
 
 		{
-			let mut command_buffer_recording = render_system.create_command_buffer_recording(frame_handle_option, self.transfer_command_buffer);
+			let command_buffer_recording = render_system.create_command_buffer_recording(frame_handle_option, self.transfer_command_buffer);
 
 			command_buffer_recording.synchronize_buffers();
 
@@ -476,7 +476,7 @@ impl VisibilityWorldRenderDomain {
 impl Entity for VisibilityWorldRenderDomain {}
 impl System for VisibilityWorldRenderDomain {}
 
-use crate::orchestrator::{Component, EntityHandle, Orchestrator};
+use crate::orchestrator::{Component, EntityHandle};
 
 #[derive(component_derive::Component)]
 pub struct Mesh{
@@ -492,7 +492,7 @@ pub struct MeshParameters {
 impl Entity for Mesh {}
 
 impl Mesh {
-	fn set_transform(&mut self, orchestrator: orchestrator::OrchestratorReference, value: maths_rs::Mat4f) { self.transform = value; }
+	fn set_transform(&mut self, _orchestrator: orchestrator::OrchestratorReference, value: maths_rs::Mat4f) { self.transform = value; }
 
 	fn get_transform(&self) -> maths_rs::Mat4f { self.transform }
 
@@ -501,7 +501,7 @@ impl Mesh {
 
 impl Component for Mesh {
 	type Parameters<'a> = MeshParameters;
-	fn new(orchestrator: OrchestratorReference, params: MeshParameters) -> Self {
+	fn new(_orchestrator: OrchestratorReference, params: MeshParameters) -> Self {
 		Self {
 			resource_id: params.resource_id,
 			transform: params.transform,

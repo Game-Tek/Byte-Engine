@@ -55,6 +55,7 @@ pub(crate) enum Expressions {
 	Assignment,
 }
 
+#[derive(Debug)]
 pub(crate) enum LexError {
 	Undefined,
 	NoSuchType,
@@ -229,6 +230,94 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 					});
 				}
 			}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::jspd::tokenizer;
+
+	use super::*;
+
+	#[test]
+	fn lex_function() {
+		let source = "
+main: fn () -> void {
+	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
+	gl_Position = position;
+}";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = &lex(&node, &program).expect("Failed to lex");
+
+		match &node.node {
+			Nodes::Feature { name, feature } => {
+				match feature {
+					Features::Scope => {
+						assert_eq!(name, "root");
+
+						let main = &node.children[0];
+
+						match &node.node {
+							Nodes::Feature { name, feature } => {
+								match feature {
+									Features::Function { params, return_type, statements, raw } => {
+										assert_eq!(name, "main");
+										// TODO: assert return type
+
+										let position = &statements[0];
+
+										match &position.node {
+											Nodes::Expression { expression, children } => {
+												match expression {
+													Expressions::Assignment => {
+														assert_eq!(children.len(), 2);
+
+														let position = &children[0];
+
+														match &position.node {
+															Nodes::Expression { expression, children } => {
+																match expression {
+																	Expressions::VariableDeclaration => {
+																	}
+																	_ => { panic!("Expected variable declaration"); }
+																}
+															}
+															_ => { panic!("Expected expression"); }
+														}
+
+														let constructor = &children[1];
+
+														match &constructor.node {
+															Nodes::Expression { expression, children } => {
+																match expression {
+																	Expressions::FunctionCall => {
+																		assert_eq!(children.len(), 4);
+																	}
+																	_ => { panic!("Expected function call"); }
+																}
+															}
+															_ => { panic!("Expected expression"); }
+														}
+													}
+													_ => { panic!("Expected variable declaration"); }
+												}
+											}
+											_ => { panic!("Expected expression"); }
+										}
+									}
+									_ => { panic!("Expected function"); }
+								}
+							}
+							_ => { panic!("Expected feature"); }
+						}
+					}
+					_ => { panic!("Expected scope"); }
+				}
+			}
+			_ => { panic!("Expected scope"); }
 		}
 	}
 }

@@ -5,7 +5,7 @@
 use json;
 use log::warn;
 
-use crate::jspd::lexer::Node;
+use crate::jspd::lexer::{Node, self};
 
 pub struct ShaderGenerator {
 
@@ -544,115 +544,90 @@ impl ShaderGenerator {
 			nodes: Vec<(String, String)>,
 		}
 
-		fn process_node(_string: Option<&mut String>, _node: &Node, _compilation_settings: &json::JsonValue, _program_state: &mut ProgramState) {
-			// if let Some(only_under) = (&node["__only_under"]).as_str() {
-			// 	if only_under != compilation_settings["stage"].as_str().unwrap() { return; }
+		fn process_node(string: Option<&mut String>, node: &Node, compilation_settings: &json::JsonValue, program_state: &mut ProgramState) {
+			// "push_constant" => {
+			// 	let mut shader_string = if let Some(pc) = program_state.nodes.iter().find(|n| n.0 == "push_constant") {
+			// 		pc.1.clone()
+			// 	} else {
+			// 		program_state.nodes.push(("push_constant".to_string(), String::new()));
+			// 		format!("layout(push_constant) uniform push_constants {{")
+			// 	};
+
+			// 	program_state.push_constants += 1;
+
+			// 	for entry in node.entries() {
+			// 		process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
+			// 	}
+
+			// 	program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
 			// }
 
-			// match node {
-			// 	Node::Scope{ children } => {
-			// 		for entry in children {
-			// 			process_node(None, entry, compilation_settings, program_state);
-			// 		}
-			// 	}
-			// 	Node::Struct { name, fields } => {
-			// 		let mut shader_string = String::with_capacity(64);
-			// 		shader_string.push_str(format!("struct {name} {{").as_str());
+			match &node.node {
+				lexer::Nodes::Feature { name, feature } =>{
+					let mut s = String::new();
 
-			// 		for entry in fields {
-			// 			process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
-			// 		}
+					match feature {
+						lexer::Features::Function { params, return_type, statements, raw } => {
+							s.push_str(&format!("{return_type} {name}() {{", return_type = translate_type_str(return_type)));
 
-			// 		shader_string.push_str(" };\n");
+							for statement in statements {
+								process_node(Some(&mut s), statement, compilation_settings, program_state);
+								s.push_str(";");
+							}
 
-			// 		shader_string.push_str(&format!("layout(buffer_reference,scalar,buffer_reference_align=2) buffer {name}Pointer {{"));
+							s.push_str("}");
+						}
+						lexer::Features::Scope => {
+							let is_some = match name.as_str() { "Vertex" | "Fragment" => true, _ => false };
+							if is_some {
+								if let Some(only_under) = compilation_settings["stage"].as_str() {
+									if only_under == name.as_str() { 
+										for node in &node.children {
+											process_node(None, node, compilation_settings, program_state);
+										}
+									}
+								}
+							} else {
+								for node in &node.children {
+									process_node(None, node, compilation_settings, program_state);
+								}
+							}
+						}
+						_ => todo!()
+					}
 
-			// 		for entry in fields {
-			// 			process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
-			// 		}
+					program_state.nodes.push((name.to_string(), s));
+				}
+				lexer::Nodes::Expression { expression, children } => {
+					let mut string = string.expect("Expression node calls should have an string provided to them");
+					match expression {
+						lexer::Expressions::FunctionCall => {
+							string.push_str(&format!("function_call"));
 
-			// 		shader_string.push_str(" };\n");
+							for child in children {
+								process_node(Some(&mut string), child, compilation_settings, program_state);
+							}
 
-			// 		program_state.nodes.push((name.to_string(), shader_string));
-			// 	}
-			// 	Node::Member { name, r#type } => {
-			// 		let source_data_type = r#type;
-					
-			// 		let t = if let Node::Struct { name, fields } = source_data_type.as_ref() {
-			// 			translate_type_str(name)
-			// 		} else { panic!("Member type is not a struct") };
+							string.push_str(&format!(")"));
+						}
+						lexer::Expressions::Assignment => {
+							string.push_str(&format!("="));
 
-			// 		if t.ends_with('*') {
-			// 			t.push_str("Pointer");
-			// 		}
+							for child in children {
+								process_node(Some(&mut string), child, compilation_settings, program_state);
+							}
+						}
+						lexer::Expressions::VariableDeclaration => {
+							string.push_str(&format!("TYPE name"));
 
-			// 		if let Some(shader_string) = string {
-			// 			shader_string.push_str(format!(" {t} {name};").as_str());
-			// 		}
-			// 	}
-			// 	Node::Function { name, params, return_type, statements, raw } => {
-			// 		let mut shader_string = String::with_capacity(128);
-
-			// 		if let Some(raw) = raw {
-			// 			shader_string = raw.clone();
-			// 			return;
-			// 		}
-
-			// 		fn l(lexeme: &Atom) -> String {
-			// 			let mut string = String::with_capacity(64);
-
-			// 			for token in &lexeme.children {
-			// 				string.push_str(&l(token));
-			// 			}
-
-			// 			match lexeme.atom {
-			// 				Atoms::Assignment => {
-			// 					string.push_str("=");
-			// 				}
-			// 				Atoms::FunctionCall => {
-			// 					string.push_str(&format!("{}(", "FUNCTION_NAME"));
-			// 				}
-			// 				Atoms::Literal => {
-			// 					string.push_str(&format!("{} ", "LITERAL"));
-			// 				}
-			// 				Atoms::Member => {
-			// 					string.push_str(&format!("{}.", "MEMBER"));
-			// 				}
-			// 				Atoms::VariableDeclaration => {
-			// 					let t = "TYPE";
-			// 					let n = "NAME";
-			// 					string.push_str(&format!("{t} {n}"));
-			// 				}
-			// 			};
-
-			// 			string
-			// 		}
-
-			// 		for statement in statements {
-			// 			shader_string.push_str(&l(statement));
-			// 			shader_string.push_str(";");
-			// 		}
-
-
-			// 		program_state.nodes.push((name.to_string(), shader_string));
-			// 	}
-			// 	// "push_constant" => {
-			// 	// 	let mut shader_string = if let Some(pc) = program_state.nodes.iter().find(|n| n.0 == "push_constant") {
-			// 	// 		pc.1.clone()
-			// 	// 	} else {
-			// 	// 		program_state.nodes.push(("push_constant".to_string(), String::new()));
-			// 	// 		format!("layout(push_constant) uniform push_constants {{")
-			// 	// 	};
-
-			// 	// 	program_state.push_constants += 1;
-
-			// 	// 	for entry in node.entries() {
-			// 	// 		process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
-			// 	// 	}
-
-			// 	// 	program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
-			// 	// }
-			// }
+							for child in children {
+								process_node(Some(&mut string), child, compilation_settings, program_state);
+							}
+						}
+						_ => todo!()
+					}
+				}
+			}
 		}
 
 		let mut program_state = ProgramState {
@@ -1233,10 +1208,11 @@ void main() {
 		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_fragment_shader.as_str(), shaderc::ShaderKind::Fragment, "shader.glsl", "main", None).unwrap();
 	}
 
+	#[test]
 	fn test_generate_from_jspd() {
 let source = "
 main: fn () -> void {
-	return;
+	position: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
 }
 ";
 		let jspd = compile_to_jspd(source).expect("failed to compile to jspd");

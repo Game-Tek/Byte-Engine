@@ -4,102 +4,37 @@ use std::rc::Rc;
 
 mod tokenizer;
 mod parser;
+pub mod lexer;
 
-pub(crate) fn compile_to_jspd(source: &str) -> Result<Node, ()> {
-	let tokens = tokenizer::tokenize(source)?;
-	let jspd = parser::parse(tokens)?;
+pub(crate) fn compile_to_jspd(source: &str) -> Result<lexer::Node, CompilationError> {
+	let tokens = tokenizer::tokenize(source).map_err(|e| CompilationError::Undefined)?;
+	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|e| CompilationError::Undefined)?;
+	let jspd = lexer::lex(&parser_root_node, &parser_program).map_err(|e| CompilationError::Undefined)?;
 
 	return Ok(jspd);
 }
 
-pub(crate) enum Node {
-	Root{
-		children: Vec<Rc<Node>>
-	},
-	Struct {
-		name: String,
-		fields: Vec<Rc<Node>>
-	},
-	Member {
-		name: String,
-		ty: Option<Rc<Node>>
-	},
-	Function {
-		name: String,
-		params: Vec<Rc<Node>>,
-		return_type: Rc<Node>,
-		statements: Vec<Rc<Lexeme>>
-	},
+#[derive(Debug)]
+pub(crate) enum CompilationError {
+	Undefined,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct Lexeme {
-	lexeme: Lexemes,
-	children: Vec<Rc<Lexeme>>
-}
+// pub(crate) fn json_to_jspd(source: &json::JsonValue) -> Result<Node, ()> {
+// 	fn process_node(node: &json::JsonValue) -> Result<Node, ()> {
+// 		match node {
+// 			json::JsonValue::Object(obj) => {
+// 				match obj["type"].as_str().unwrap() {
+// 					"struct" => {
+// 					}
+// 				}
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Lexemes {
-	Member,
-	Literal,
-	FunctionCall,
-	VariableDeclaration,
-	Assignment,
-}
+// 				for entry in obj {
+// 					process_node(entry);
+// 				}
+// 			}
+// 			_ => { Err(()) }
+// 		}
+// 	}
 
-trait Precedence {
-	fn precedence(&self) -> u8;
-}
-
-impl Precedence for Lexemes {
-	fn precedence(&self) -> u8 {
-		match self {
-			Lexemes::Member => 0,
-			Lexemes::Literal => 0,
-			Lexemes::FunctionCall => 0,
-			Lexemes::VariableDeclaration => 0,
-			Lexemes::Assignment => 255,
-		}
-	}
-}
-
-use std::ops::Index;
-
-impl Index<&str> for Node {
-    type Output = Node;
-
-    fn index(&self, index: &str) -> &Self::Output {
-        let children = match self {
-			Node::Root { children } => {
-				children
-			},
-			Node::Struct { name, fields } => {
-				fields
-			},
-			_ => panic!("Not implemented")
-		};
-
-		for child in children {
-			match child.as_ref() {
-				Node::Struct { name, fields: _ } => {
-					if name == index {
-						return child;
-					}
-				},
-				Node::Member { name, ty: _ } => {
-					if name == index {
-						return child;
-					}
-				},
-				Node::Function { name, params, return_type, statements } => {
-					if name == index {
-						return child;
-					}
-				},
-				_ => {}
-			}
-		}
-
-		panic!("Not found");
-    }
-}
+// 	return process_node(node);
+// }

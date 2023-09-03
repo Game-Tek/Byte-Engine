@@ -5,6 +5,8 @@ use std::fmt::format;
 use json;
 use log::warn;
 
+use crate::jspd::lexer::Node;
+
 pub struct ShaderGenerator {
 
 }
@@ -125,7 +127,7 @@ impl ShaderGenerator {
 
 				if let json::JsonValue::Array(members) = members {
 					for e in members {
-						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -144,7 +146,7 @@ impl ShaderGenerator {
 
 				if let json::JsonValue::Array(members) = members {
 					for e in members {
-						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -166,7 +168,7 @@ impl ShaderGenerator {
 				shader_string.push_str(", binding=");
 				shader_string.push_str(&e["binding"].to_string());
 				shader_string.push_str(") uniform ");
-				shader_string.push_str(&translate_type(&e["value"]["type"].as_str().unwrap()));
+				shader_string.push_str(&translate_type_str(&e["value"]["type"].as_str().unwrap()));
 				shader_string.push_str(" ");
 				shader_string.push_str(&e["value"]["name"].as_str().unwrap());
 				shader_string.push_str(";\n");
@@ -181,7 +183,7 @@ impl ShaderGenerator {
 			shader_string.push_str("layout(push_constant) uniform push_constants {\n");
 
 			for e in push_constants {
-				shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
+				shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
 				shader_string.push_str(" ");
 				shader_string.push_str(&e["name"].as_str().unwrap());
 				shader_string.push_str(";\n");
@@ -203,7 +205,7 @@ impl ShaderGenerator {
 						shader_string.push_str("layout(location=");
 						shader_string.push_str(&pos.to_string());
 						shader_string.push_str(") in ");
-						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -222,7 +224,7 @@ impl ShaderGenerator {
 						shader_string.push_str("layout(location=");
 						shader_string.push_str(&pos.to_string());
 						shader_string.push_str(") in ");
-						shader_string.push_str(&translate_type(&e["type"].as_str().unwrap()));
+						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
 						shader_string.push_str(" ");
 						shader_string.push_str(&e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
@@ -436,7 +438,7 @@ impl ShaderGenerator {
 				}
 				"member" => {
 					let source_data_type = node["data_type"].as_str().unwrap();
-					let mut data_type = translate_type(source_data_type);
+					let mut data_type = translate_type_str(source_data_type);
 
 					if source_data_type.ends_with('*') {
 						data_type.push_str("Pointer");
@@ -499,10 +501,191 @@ impl ShaderGenerator {
 			shader_string
 		}
 	}
+
+	pub(crate) fn generate_from_jspd(&self, root: &Node, compilation_settings: &json::JsonValue) -> String {
+		let mut nodes = Vec::with_capacity(32);
+
+		nodes.push(("GLSL".to_string(), {
+			let mut glsl_block = String::with_capacity(512);
+			let glsl_version = &compilation_settings["glsl"]["version"];
+
+			if let json::JsonValue::String(glsl_version) = glsl_version {
+				glsl_block.push_str(&format!("#version {glsl_version} core\n"));
+			} else {
+				glsl_block.push_str("#version 450 core\n");
+			}
+
+			// shader type
+
+			let shader_stage = &compilation_settings["stage"];
+
+			let shader_stage = shader_stage.as_str().unwrap_or("");
+
+			match shader_stage {
+				"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
+				"Fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
+				"Compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+				_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
+			}
+
+			// extensions
+
+			glsl_block += Self::generate_glsl_extension_block(shader_stage).as_str();
+			// memory layout declarations
+
+			glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
+
+			glsl_block
+		}));
+
+		#[derive(Clone)]
+		struct ProgramState {
+			in_position: u32, out_position: u32, push_constants: u32,
+			nodes: Vec<(String, String)>,
+		}
+
+		fn process_node(string: Option<&mut String>, node: &Node, compilation_settings: &json::JsonValue, program_state: &mut ProgramState) {
+			// if let Some(only_under) = (&node["__only_under"]).as_str() {
+			// 	if only_under != compilation_settings["stage"].as_str().unwrap() { return; }
+			// }
+
+			// match node {
+			// 	Node::Scope{ children } => {
+			// 		for entry in children {
+			// 			process_node(None, entry, compilation_settings, program_state);
+			// 		}
+			// 	}
+			// 	Node::Struct { name, fields } => {
+			// 		let mut shader_string = String::with_capacity(64);
+			// 		shader_string.push_str(format!("struct {name} {{").as_str());
+
+			// 		for entry in fields {
+			// 			process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
+			// 		}
+
+			// 		shader_string.push_str(" };\n");
+
+			// 		shader_string.push_str(&format!("layout(buffer_reference,scalar,buffer_reference_align=2) buffer {name}Pointer {{"));
+
+			// 		for entry in fields {
+			// 			process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
+			// 		}
+
+			// 		shader_string.push_str(" };\n");
+
+			// 		program_state.nodes.push((name.to_string(), shader_string));
+			// 	}
+			// 	Node::Member { name, r#type } => {
+			// 		let source_data_type = r#type;
+					
+			// 		let t = if let Node::Struct { name, fields } = source_data_type.as_ref() {
+			// 			translate_type_str(name)
+			// 		} else { panic!("Member type is not a struct") };
+
+			// 		if t.ends_with('*') {
+			// 			t.push_str("Pointer");
+			// 		}
+
+			// 		if let Some(shader_string) = string {
+			// 			shader_string.push_str(format!(" {t} {name};").as_str());
+			// 		}
+			// 	}
+			// 	Node::Function { name, params, return_type, statements, raw } => {
+			// 		let mut shader_string = String::with_capacity(128);
+
+			// 		if let Some(raw) = raw {
+			// 			shader_string = raw.clone();
+			// 			return;
+			// 		}
+
+			// 		fn l(lexeme: &Atom) -> String {
+			// 			let mut string = String::with_capacity(64);
+
+			// 			for token in &lexeme.children {
+			// 				string.push_str(&l(token));
+			// 			}
+
+			// 			match lexeme.atom {
+			// 				Atoms::Assignment => {
+			// 					string.push_str("=");
+			// 				}
+			// 				Atoms::FunctionCall => {
+			// 					string.push_str(&format!("{}(", "FUNCTION_NAME"));
+			// 				}
+			// 				Atoms::Literal => {
+			// 					string.push_str(&format!("{} ", "LITERAL"));
+			// 				}
+			// 				Atoms::Member => {
+			// 					string.push_str(&format!("{}.", "MEMBER"));
+			// 				}
+			// 				Atoms::VariableDeclaration => {
+			// 					let t = "TYPE";
+			// 					let n = "NAME";
+			// 					string.push_str(&format!("{t} {n}"));
+			// 				}
+			// 			};
+
+			// 			string
+			// 		}
+
+			// 		for statement in statements {
+			// 			shader_string.push_str(&l(statement));
+			// 			shader_string.push_str(";");
+			// 		}
+
+
+			// 		program_state.nodes.push((name.to_string(), shader_string));
+			// 	}
+			// 	// "push_constant" => {
+			// 	// 	let mut shader_string = if let Some(pc) = program_state.nodes.iter().find(|n| n.0 == "push_constant") {
+			// 	// 		pc.1.clone()
+			// 	// 	} else {
+			// 	// 		program_state.nodes.push(("push_constant".to_string(), String::new()));
+			// 	// 		format!("layout(push_constant) uniform push_constants {{")
+			// 	// 	};
+
+			// 	// 	program_state.push_constants += 1;
+
+			// 	// 	for entry in node.entries() {
+			// 	// 		process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
+			// 	// 	}
+
+			// 	// 	program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
+			// 	// }
+			// }
+		}
+
+		let mut program_state = ProgramState {
+			in_position: 0, out_position: 0, push_constants: 0,
+			nodes,
+		};
+
+		process_node(None, root, &compilation_settings, &mut program_state);
+
+		if let Some(pc) = program_state.nodes.iter_mut().find(|n| n.0 == "push_constant") {
+			pc.1.push_str(" } pc;\n");
+		}
+
+		fn order(node: &(String, String)) -> u32 {
+			match node.0.as_str() {
+				"push_constant" => 1,
+				"main" => 2,
+				_ => 0,
+			}
+		}
+
+		program_state.nodes.sort_by(|a, b| order(a).cmp(&order(b)));
+
+		{
+			let mut shader_string = String::with_capacity(1024);
+			program_state.nodes.iter().for_each(|n| shader_string.push_str(n.1.as_str()));
+			shader_string
+		}
+	}
 }
 
 /// Translates a type from the json format to the glsl format.
-fn translate_type(value: &str) -> String {
+fn translate_type_str(value: &str) -> String {
 	let mut r = String::from(value);
 
 	if r.ends_with('*') {
@@ -527,25 +710,27 @@ fn translate_type(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use crate::jspd::compile_to_jspd;
+
+use super::*;
 
 	#[test]
 fn test_translate_type() {
-	assert_eq!(translate_type("i32"), "int");
-	assert_eq!(translate_type("u32"), "uint");
-	assert_eq!(translate_type("f32"), "float");
-	assert_eq!(translate_type("vec3f"), "vec3");
-	assert_eq!(translate_type("vec4f"), "vec4");
-	assert_eq!(translate_type("vec3"), "vec3");
-	assert_eq!(translate_type("vec4"), "vec4");
-	assert_eq!(translate_type("mat3f"), "mat3");
-	assert_eq!(translate_type("mat4f"), "mat4");
-	assert_eq!(translate_type("mat3"), "mat3");
-	assert_eq!(translate_type("mat4"), "mat4");
-	assert_eq!(translate_type("mat3x4f"), "mat4x3");
-	assert_eq!(translate_type("mat4x3f"), "mat3x4");
-	assert_eq!(translate_type("mat3x4"), "mat4x3");
-	assert_eq!(translate_type("mat4x3"), "mat3x4");
+	assert_eq!(translate_type_str("i32"), "int");
+	assert_eq!(translate_type_str("u32"), "uint");
+	assert_eq!(translate_type_str("f32"), "float");
+	assert_eq!(translate_type_str("vec3f"), "vec3");
+	assert_eq!(translate_type_str("vec4f"), "vec4");
+	assert_eq!(translate_type_str("vec3"), "vec3");
+	assert_eq!(translate_type_str("vec4"), "vec4");
+	assert_eq!(translate_type_str("mat3f"), "mat3");
+	assert_eq!(translate_type_str("mat4f"), "mat4");
+	assert_eq!(translate_type_str("mat3"), "mat3");
+	assert_eq!(translate_type_str("mat4"), "mat4");
+	assert_eq!(translate_type_str("mat3x4f"), "mat4x3");
+	assert_eq!(translate_type_str("mat4x3f"), "mat3x4");
+	assert_eq!(translate_type_str("mat3x4"), "mat4x3");
+	assert_eq!(translate_type_str("mat4x3"), "mat3x4");
 }
 
 #[test]
@@ -1046,5 +1231,22 @@ void main() {
 		println!("{}", &generated_fragment_shader);
 
 		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_fragment_shader.as_str(), shaderc::ShaderKind::Fragment, "shader.glsl", "main", None).unwrap();
+	}
+
+	fn test_generate_from_jspd() {
+let source = "
+main: fn () -> void {
+	return;
+}
+";
+		let jspd = compile_to_jspd(source).expect("failed to compile to jspd");
+		
+		let shader_generator = ShaderGenerator::new();
+
+		let generated_shader = shader_generator.generate_from_jspd(&jspd, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
+
+		dbg!(&generated_shader);
+
+		shaderc::Compiler::new().unwrap().compile_into_spirv(generated_shader.as_str(), shaderc::ShaderKind::Fragment, "shader.glsl", "main", None).expect("failed to compile shader to GLSL");
 	}
 }

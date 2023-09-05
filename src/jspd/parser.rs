@@ -24,11 +24,13 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 		types: HashMap::new(),
 	};
 
+	let void = Rc::new(make_no_member_struct("void"));
 	let f32 = Rc::new(make_no_member_struct("f32"));
 	let vec2f = Rc::new(make_struct("vec2f", vec![Rc::new(make_member("x", "f32")), Rc::new(make_member("y", "f32"))]));
 	let vec3f = Rc::new(make_struct("vec3f", vec![Rc::new(make_member("x", "f32")), Rc::new(make_member("y", "f32")), Rc::new(make_member("z", "f32"))]));
 	let vec4f = Rc::new(make_struct("vec4f", vec![Rc::new(make_member("x", "f32")), Rc::new(make_member("y", "f32")), Rc::new(make_member("z", "f32")), Rc::new(make_member("w", "f32"))]));
 
+	program_state.types.insert("void".to_string(), void);
 	program_state.types.insert("f32".to_string(), f32);
 	program_state.types.insert("vec2f".to_string(), vec2f);
 	program_state.types.insert("vec3f".to_string(), vec3f);
@@ -102,9 +104,9 @@ pub(super) enum Features {
 #[derive(Clone)]
 pub(super) enum Expressions {
 	Member,
-	Literal,
-	FunctionCall,
-	VariableDeclaration,
+	Literal{ value: String, },
+	FunctionCall{ name: String, },
+	VariableDeclaration{ name: String, r#type: String, },
 	Assignment,
 }
 
@@ -177,9 +179,9 @@ impl Precedence for Expressions {
 	fn precedence(&self) -> u8 {
 		match self {
 			Expressions::Member => 0,
-			Expressions::Literal => 0,
-			Expressions::FunctionCall => 0,
-			Expressions::VariableDeclaration => 0,
+			Expressions::Literal{ value } => 0,
+			Expressions::FunctionCall{ name } => 0,
+			Expressions::VariableDeclaration{ name, r#type } => 0,
 			Expressions::Assignment => 255,
 		}
 	}
@@ -292,9 +294,9 @@ fn make_expression_node(following_expression: Option<&Node>, new_expression: Exp
 }
 
 fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
-	iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().ok_or(ParsingFailReasons::BadSyntax)?;
+	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax)?;
 
 	let possible_following_expressions: Vec<Parser> = vec![
 		parse_assignment,
@@ -302,7 +304,7 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 
 	let ((expression, _), new_iterator) = execute_parsers(&possible_following_expressions, iterator.clone(), program)?;
 
-	let expression = make_expression_node(Some(&expression), Expressions::VariableDeclaration, None);
+	let expression = make_expression_node(Some(&expression), Expressions::VariableDeclaration{ name: variable_name.clone(), r#type: variable_type.clone()  }, None);
 
 	return Ok(((Rc::new(expression), program.clone()), new_iterator));
 }
@@ -348,8 +350,8 @@ fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 }
 
 fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
-	let _name = iterator.next().and_then(|v| if v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	return Ok(((Rc::new(make_expression_node(None, Expressions::Literal, None)), program.clone()), iterator));
+	let value = iterator.next().and_then(|v| if v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	return Ok(((Rc::new(make_expression_node(None, Expressions::Literal{ value: value.clone() }, None)), program.clone()), iterator));
 }
 
 fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
@@ -363,7 +365,7 @@ fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramSta
 }
 
 fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
-	iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let function_name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
 	let mut children = vec![];
@@ -387,7 +389,7 @@ fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: 
 		}
 	}
 
-	return Ok(((Rc::new(make_expression_node(None, Expressions::FunctionCall, Some(children))), program.clone()), iterator));
+	return Ok(((Rc::new(make_expression_node(None, Expressions::FunctionCall{ name: function_name.clone() }, Some(children))), program.clone()), iterator));
 }
 
 fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
@@ -562,15 +564,20 @@ main: fn () -> void {
 							let var_decl = &children[0];
 
 							if let Nodes::Expression { expression, children: _ } = &var_decl.node {
-								if let Expressions::VariableDeclaration = expression {
+								if let Expressions::VariableDeclaration{ name, r#type } = expression {
+									assert_eq!(name, "position");
+									assert_eq!(r#type, "vec4f");
 								} else { panic!("Not a variable declaration"); }
 							} else { panic!("Not an expression"); }
 
 							let function_call = &children[1];
 
 							if let Nodes::Expression { expression, children } = &function_call.node {
-								if let Expressions::FunctionCall = expression {
+								if let Expressions::FunctionCall{ name } = expression {
+									assert_eq!(name, "vec4");
 									assert_eq!(children.len(), 4);
+
+									// TODO: assert values
 								} else { panic!("Not a function call"); }
 							} else { panic!("Not an expression"); }
 						} else { panic!("Not an assignment");}

@@ -568,7 +568,11 @@ impl ShaderGenerator {
 
 					match feature {
 						lexer::Features::Function { params: _, return_type, statements, raw: _ } => {
-							s.push_str(&format!("{return_type} {name}() {{", return_type = translate_type_str(return_type)));
+							let rt = if let lexer::Nodes::Feature { name, feature } = &return_type.node {
+								name
+							} else { panic!("Expected a feature node") };
+
+							s.push_str(&format!("{return_type} {name}() {{", return_type = translate_type_str(rt)));
 
 							for statement in statements {
 								process_node(Some(&mut s), statement, compilation_settings, program_state);
@@ -601,28 +605,42 @@ impl ShaderGenerator {
 				lexer::Nodes::Expression { expression, children } => {
 					let mut string = string.expect("Expression node calls should have an string provided to them");
 					match expression {
-						lexer::Expressions::FunctionCall => {
-							string.push_str(&format!("function_call"));
+						lexer::Expressions::FunctionCall{ name } => {
+							string.push_str(&format!("{name}(", name = translate_type_str(name)));
 
-							for child in children {
+							for (i, child) in children.iter().enumerate() {
 								process_node(Some(&mut string), child, compilation_settings, program_state);
+								if i != children.len() - 1 { string.push_str(","); }
 							}
 
 							string.push_str(&format!(")"));
 						}
 						lexer::Expressions::Assignment => {
+							assert!(children.len() == 2, "Assignment node should have 2 children");
+
+							let left = children.get(0).expect("Assignment node should have a left child");
+
+							process_node(Some(&mut string), left, compilation_settings, program_state);
+
 							string.push_str(&format!("="));
+
+							let right = children.get(1).expect("Assignment node should have a right child");
+
+							process_node(Some(&mut string), right, compilation_settings, program_state);
+						}
+						lexer::Expressions::VariableDeclaration{ name, r#type } => {
+							if let lexer::Nodes::Feature { name: type_name, feature } = &r#type.node {
+								if let lexer::Features::Struct { fields } = feature {
+									string.push_str(&format!("{type} {name}", type = translate_type_str(type_name), name = name));
+								} else { panic!("Expected a type feature") }
+							}
 
 							for child in children {
 								process_node(Some(&mut string), child, compilation_settings, program_state);
 							}
 						}
-						lexer::Expressions::VariableDeclaration => {
-							string.push_str(&format!("TYPE name"));
-
-							for child in children {
-								process_node(Some(&mut string), child, compilation_settings, program_state);
-							}
+						lexer::Expressions::Literal{ value } => {
+							string.push_str(&format!("{value}"));
 						}
 						_ => todo!()
 					}

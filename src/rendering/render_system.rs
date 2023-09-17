@@ -165,6 +165,7 @@ pub enum Descriptor {
 		size: usize,
 	},
 	Texture(TextureHandle),
+	Sampler(SamplerHandle),
 }
 
 pub enum UseCases {
@@ -414,7 +415,7 @@ pub(super) mod tests {
 		// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 	}
 
-	fn present(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn present(renderer: &mut dyn RenderSystem) {
 		let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -886,7 +887,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let buffer = renderer.create_buffer(64, Uses::Uniform, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let buffer = renderer.create_buffer(64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let sampled_texture = renderer.create_texture(crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
@@ -909,7 +910,7 @@ pub(super) mod tests {
 			},
 			DescriptorSetLayoutBinding {
 				descriptor_count: 1,
-				descriptor_type: DescriptorType::UniformBuffer,
+				descriptor_type: DescriptorType::StorageBuffer,
 				binding: 1,
 				stage_flags: Stages::VERTEX,
 				immutable_samplers: None,
@@ -928,9 +929,12 @@ pub(super) mod tests {
 		let descriptor_set = renderer.create_descriptor_set(&descriptor_set_layout_handle, &bindings);
 
 		renderer.write(&[
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: 64 } },
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Texture(sampled_texture) },
 		]);
+
+		assert!(!renderer.has_errors());
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle]);
 
@@ -996,7 +1000,7 @@ pub(super) mod tests {
 
 		// TODO: assert rendering results
 
-		assert!(!renderer.has_errors())
+		assert!(!renderer.has_errors());
 	}
 }
 

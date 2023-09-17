@@ -142,6 +142,8 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 				b.immutable_samplers(&x);
 
+				layout_bindings.push(b);
+
 				m(rs, &bindings[1..], layout_bindings)
 			} else {
 				let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
@@ -198,11 +200,14 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			let mut images: Vec<vk::DescriptorImageInfo> = Vec::new();
 
 			let descriptor_type = match descriptor_set_write.descriptor {
-				render_system::Descriptor::Buffer { handle, size } => {
+				render_system::Descriptor::Buffer { handle: _, size: _ } => {
 					vk::DescriptorType::STORAGE_BUFFER
 				},
-				render_system::Descriptor::Texture(handle) => {
+				render_system::Descriptor::Texture(_) => {
 					vk::DescriptorType::SAMPLED_IMAGE
+				},
+				render_system::Descriptor::Sampler(_) => {
+					vk::DescriptorType::SAMPLER
 				},
 				_ => panic!("Invalid descriptor info"),
 			};
@@ -226,8 +231,14 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				render_system::Descriptor::Texture(handle) => {
 					let texture = &self.textures[handle.0 as usize];
 					let a = vk::DescriptorImageInfo::default()
-						.image_layout(texture.layout)
+						.image_layout(vk::ImageLayout::READ_ONLY_OPTIMAL)
 						.image_view(texture.image_view);
+					images.push(a);
+					write_info.image_info(&images)
+				},
+				render_system::Descriptor::Sampler(handle) => {
+					let a = vk::DescriptorImageInfo::default()
+						.sampler(vk::Sampler::from_raw(handle.0));
 					images.push(a);
 					write_info.image_info(&images)
 				},
@@ -418,6 +429,12 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		let extent = vk::Extent3D::default().width(extent.width).height(extent.height).depth(extent.depth);
 
 		for _ in 0..(match use_case { render_system::UseCases::DYNAMIC => { self.frames } render_system::UseCases::STATIC => { 1 }}) {
+			let resource_uses = if resource_uses.contains(render_system::Uses::Texture) {
+				resource_uses | render_system::Uses::TransferDestination
+			} else {
+				resource_uses
+			};
+
 			let texture_creation_result = self.create_vulkan_texture(extent, format, resource_uses | render_system::Uses::TransferSource, device_accesses, render_system::AccessPolicies::WRITE, 1);
 
 			let (allocation_handle, pointer) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
@@ -432,6 +449,23 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				let staging_buffer_creation_result = self.create_vulkan_buffer(size, render_system::Uses::TransferDestination);
 
 				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuRead);
+
+				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
+
+				let staging_buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+
+				self.buffers.push(Buffer {
+					buffer: staging_buffer_creation_result.resource,
+					size: staging_buffer_creation_result.size,
+					device_address: address,
+					pointer,
+				});
+
+				Some(staging_buffer_handle)
+			} else if device_accesses.contains(render_system::DeviceAccesses::CpuWrite) {
+				let staging_buffer_creation_result = self.create_vulkan_buffer(size, render_system::Uses::TransferSource);
+
+				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead);
 
 				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
 
@@ -555,10 +589,10 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	///
 	/// Panics if .
 	fn acquire_swapchain_image(&self, swapchain_handle: render_system::SwapchainHandle, synchronizer_handle: render_system::SynchronizerHandle) -> u32 {
-		let synchronizer = self.synchronizers[synchronizer_handle.0 as usize];
-		let swapchain = vk::SwapchainKHR::from_raw(swapchain_handle.0);
+		let synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 
-		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain, u64::MAX, synchronizer.semaphore, vk::Fence::null()) };
+		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, u64::MAX, synchronizer.semaphore, vk::Fence::null()) };
 
 		let (index, swapchain_state) = if let Ok((index, state)) = acquisition_result {
 			if !state {
@@ -580,7 +614,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	fn present(&self, image_index: u32, swapchains: &[render_system::SwapchainHandle], synchronizer_handle: render_system::SynchronizerHandle) {
 		let synchronizer = self.synchronizers[synchronizer_handle.0 as usize];
 
-		let swapchains = swapchains.iter().map(|swapchain_handle| vk::SwapchainKHR::from_raw(swapchain_handle.0)).collect::<Vec<_>>();
+		let swapchains = swapchains.iter().map(|swapchain_handle| { let swapchain = &self.swapchains[swapchain_handle.0 as usize]; swapchain.swapchain }).collect::<Vec<_>>();
 		let wait_semaphores = [synchronizer.semaphore];
 
 		let image_indices = [image_index];
@@ -694,7 +728,6 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 	match message_severity {
 		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
 			warn!("{}", message.to_str().unwrap());
-			println!("{}", message.to_str().unwrap());
 		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
 			error!("{}", message.to_str().unwrap());
@@ -1924,19 +1957,18 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn write_texture_data(&mut self, texture_handle: render_system::TextureHandle, data: &[render_system::RGBAu8]) {
-		let source_texture = &self.render_system.textures[texture_handle.0 as usize];
-		let destination_texture = &self.render_system.textures[texture_handle.0 as usize];
+		let (texture_handle, texture) = self.get_texture(texture_handle);
 
-		let allocation_handle = source_texture.allocation_handle;
+		let staging_buffer_handle = texture.staging_buffer.expect("No staging buffer");
 
-		let allocation = &self.render_system.allocations[allocation_handle.0 as usize];
+		let buffer = &self.render_system.buffers[staging_buffer_handle.0 as usize];
 
-		let pointer = allocation.pointer;
+		let pointer = buffer.pointer;
 
 		let subresource_layout = self.render_system.get_image_subresource_layout(&texture_handle, 0);
 
 		if pointer.is_null() {
-			for i in data.len()..source_texture.extent.width as usize * source_texture.extent.height as usize * source_texture.extent.depth as usize {
+			for i in data.len()..texture.extent.width as usize * texture.extent.height as usize * texture.extent.depth as usize {
 				unsafe {
 					std::ptr::write(pointer.offset(i as isize), if i % 4 == 0 { 255 } else { 0 });
 				}
@@ -1944,11 +1976,11 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		} else {
 			let pointer = unsafe { pointer.offset(subresource_layout.offset as isize) };
 
-			for i in 0..source_texture.extent.height {
+			for i in 0..texture.extent.height {
 				let pointer = unsafe { pointer.offset(subresource_layout.row_pitch as isize * i as isize) };
 
 				unsafe {
-					std::ptr::copy_nonoverlapping((data.as_ptr().add(i as usize * source_texture.extent.width as usize)) as *mut u8, pointer, source_texture.extent.width as usize * 4);
+					std::ptr::copy_nonoverlapping((data.as_ptr().add(i as usize * texture.extent.width as usize)) as *mut u8, pointer, texture.extent.width as usize * 4);
 				}
 			}
 		}
@@ -1961,11 +1993,11 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				.src_stage_mask(vk::PipelineStageFlags2::empty())
 				.src_access_mask(vk::AccessFlags2KHR::empty())
 				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+				.new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
 				.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_READ)
+				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(source_texture.image)
+				.image(texture.image)
 				.subresource_range(vk::ImageSubresourceRange {
 					aspect_mask: vk::ImageAspectFlags::COLOR,
 					base_mip_level: 0,
@@ -1974,24 +2006,6 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 					layer_count: vk::REMAINING_ARRAY_LAYERS,
 				})
 				/* .build() */,
-			vk::ImageMemoryBarrier2KHR::default()
-				.old_layout(vk::ImageLayout::UNDEFINED)
-				.src_stage_mask(vk::PipelineStageFlags2::empty())
-				.src_access_mask(vk::AccessFlags2KHR::empty())
-				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
-				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(destination_texture.image)
-				.subresource_range(vk::ImageSubresourceRange {
-					aspect_mask: vk::ImageAspectFlags::COLOR,
-					base_mip_level: 0,
-					level_count: vk::REMAINING_MIP_LEVELS,
-					base_array_layer: 0,
-					layer_count: vk::REMAINING_ARRAY_LAYERS,
-				})
-				/* .build() */
 		];
 
 		let dependency_info = vk::DependencyInfo::default()
@@ -2003,36 +2017,30 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
 		}
 
-		// Copy images
-		let image_copies = [vk::ImageCopy2::default()
-			.src_subresource(vk::ImageSubresourceLayers::default()
+		let regions = [vk::BufferImageCopy2::default()
+			.buffer_offset(0)
+			.buffer_row_length(0)
+			.buffer_image_height(0)
+			.image_subresource(vk::ImageSubresourceLayers::default()
 				.aspect_mask(vk::ImageAspectFlags::COLOR)
 				.mip_level(0)
 				.base_array_layer(0)
 				.layer_count(1)
 				/* .build() */
 			)
-			.src_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-			.dst_subresource(vk::ImageSubresourceLayers::default()
-				.aspect_mask(vk::ImageAspectFlags::COLOR)
-				.mip_level(0)
-				.base_array_layer(0)
-				.layer_count(1)
-				/* .build() */
-			)
-			.dst_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-			.extent(source_texture.extent/* .build() */)
-		];
+			.image_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
+			.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth)/* .build() */)/* .build() */];
 
-		let copy_image_info = vk::CopyImageInfo2::default()
-			.src_image(source_texture.image)
-			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-			.dst_image(destination_texture.image)
+		// Copy to images from staging buffer
+		let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
+			.src_buffer(buffer.buffer)
+			.dst_image(texture.image)
 			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-			.regions(&image_copies);
-			/* .build() */
+			.regions(&regions);
 
-		unsafe { self.render_system.device.cmd_copy_image2(command_buffer.command_buffer, &copy_image_info); }
+		unsafe {
+			self.render_system.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
+		}		
 
 		let image_memory_barriers = [
 			vk::ImageMemoryBarrier2KHR::default()
@@ -2044,7 +2052,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				.dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
 				.dst_access_mask(vk::AccessFlags2KHR::SHADER_READ)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(destination_texture.image)
+				.image(texture.image)
 				.subresource_range(vk::ImageSubresourceRange {
 					aspect_mask: vk::ImageAspectFlags::COLOR,
 					base_mip_level: 0,
@@ -2195,7 +2203,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		let swapchain_image = swapchain_images[0];
 
-		let source_texture_state = self.get_texture_state(source_texture_handle).expect("No texture state found.");
+		let source_texture_state = self.get_texture_state(source_texture_handle).unwrap_or(vk::ImageLayout::UNDEFINED);
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 
@@ -2502,6 +2510,13 @@ mod tests {
 	fn render_triangle() {
 		let mut vulkan_render_system = VulkanRenderSystem::new();
 		render_system::tests::render_triangle(&mut vulkan_render_system);
+	}
+
+	#[ignore = "CI doesn't support presentation"]
+	#[test]
+	fn present() {
+		let mut vulkan_render_system = VulkanRenderSystem::new();
+		render_system::tests::present(&mut vulkan_render_system);
 	}
 
 	#[test]

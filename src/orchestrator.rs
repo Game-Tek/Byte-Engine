@@ -9,7 +9,7 @@ pub struct SystemHandle(u32);
 pub trait Entity: Send + 'static {}
 
 /// A system is a collection of components and logic to operate on them.
-pub trait System : Entity {}
+pub trait System : Entity + std::any::Any {}
 
 pub struct EntityHandle<T> where T: ?Sized {
 	internal_id: u32,
@@ -83,7 +83,7 @@ pub struct Orchestrator {
 
 unsafe impl Send for Orchestrator {}
 
-type EntityStorage = std::sync::Arc<std::sync::RwLock<dyn std::any::Any + Send + 'static>>;
+type EntityStorage = std::sync::Arc<std::sync::RwLock<dyn Entity>>;
 
 struct SystemsData {
 	counter: u32,
@@ -141,7 +141,7 @@ impl Orchestrator {
 		self.tasks.clear();
 	}
 
-	pub fn create_entity<C: Send + Sync + 'static>(&mut self, c: C) -> EntityHandle<C> {
+	pub fn create_entity<C: Entity>(&mut self, c: C) -> EntityHandle<C> {
 		let obj = std::sync::Arc::new(std::sync::RwLock::new(c));
 
 		let internal_id = {
@@ -268,7 +268,8 @@ impl Orchestrator {
 
 			listeners.push((internal_id, Box::new(move |orchestrator: &Orchestrator, entity_to_notify: u32, ha: (u32, u32)| {
 				let systems_data = orchestrator.systems_data.read().unwrap();
-				let mut system = systems_data.systems[&entity_to_notify].write().unwrap();
+				let mut lock_guard = systems_data.systems[&entity_to_notify].write().unwrap();
+				let system = lock_guard.as_ref();
 				let system = system.downcast_mut::<S>().unwrap();
 				let orchestrator_reference = OrchestratorReference { orchestrator, internal_id: entity_to_notify };
 
@@ -331,12 +332,12 @@ impl Orchestrator {
 		function(component.downcast_mut::<C>().unwrap())
 	}
 
-	pub fn get_2_mut_and<C0: 'static, C1: ?Sized + 'static, F, R>(&self, component_handle_0: &EntityHandle<C0>, component_handle_1: &EntityHandle<C1>, function: F) -> R where F: FnOnce(&mut C0, &mut C1) -> R {
+	pub fn get_2_mut_and<C0: 'static, C1: 'static, F, R>(&self, component_handle_0: &EntityHandle<C0>, component_handle_1: &EntityHandle<C1>, function: F) -> R where F: FnOnce(&mut C0, &mut C1) -> R {
 		let systems_data = self.systems_data.read().unwrap();
 		let mut component_0 = systems_data.systems[&component_handle_0.internal_id].write().unwrap();
 		let mut component_1 = systems_data.systems[&component_handle_1.internal_id].write().unwrap();
 
-		function(component_0.downcast_mut::<C0>().unwrap(), component_1.downcast_mut::<&mut C1>().unwrap())
+		function(component_0.downcast_mut::<C0>().unwrap(), component_1.downcast_mut::<C1>().unwrap())
 	}
 
 	// pub fn get_mut_by_class_and<C: System + 'static, F, R>(&self, function: F) -> R where F: FnOnce(&mut C) -> R {

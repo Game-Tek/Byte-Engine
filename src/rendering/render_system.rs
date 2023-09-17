@@ -535,6 +535,134 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
+	pub(crate) fn multiframe_present(renderer: &mut dyn RenderSystem) {
+		let mut window_system = window_system::WindowSystem::new();
+
+		// Use and odd width to make sure there is a middle/center pixel
+		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
+
+		let window_handle = window_system.create_window("Renderer Test", extent, "test");
+
+		let swapchain = renderer.bind_to_window(window_system.get_os_handles(&window_handle));
+
+		let floats: [f32;21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 
+			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		];
+
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+		];
+
+		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout
+			) };
+
+		let vertex_shader_code = "
+			#version 450
+			#pragma shader_stage(vertex)
+
+			layout(location = 0) in vec3 in_position;
+			layout(location = 1) in vec4 in_color;
+
+			layout(location = 0) out vec4 out_color;
+
+			void main() {
+				out_color = in_color;
+				gl_Position = vec4(in_position, 1.0);
+			}
+		";
+
+		let fragment_shader_code = "
+			#version 450
+			#pragma shader_stage(fragment)
+
+			layout(location = 0) in vec4 in_color;
+
+			layout(location = 0) out vec4 out_color;
+
+			void main() {
+				out_color = in_color;
+			}
+		";
+
+		let vertex_shader = renderer.add_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
+		let fragment_shader = renderer.add_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
+
+		let pipeline_layout = renderer.create_pipeline_layout(&[]);
+
+		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
+
+		let attachments = [
+			AttachmentInformation {
+				texture: render_target,
+				layout: Layouts::RenderTarget,
+				format: TextureFormats::RGBAu8,
+				clear: None,
+				load: false,
+				store: true,
+			}
+		];
+
+		let pipeline = renderer.create_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+
+		let command_buffer_handle = renderer.create_command_buffer();
+
+		let render_finished_synchronizer = renderer.create_synchronizer(true);
+		let image_ready = renderer.create_synchronizer(true);
+
+		for i in 0..2*64 {
+			renderer.wait(render_finished_synchronizer);
+
+			let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
+
+			renderer.start_frame_capture();
+
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
+
+			let attachments = [
+				AttachmentInformation {
+					texture: render_target,
+					layout: Layouts::RenderTarget,
+					format: TextureFormats::RGBAu8,
+					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+					load: false,
+					store: true,
+				}
+			];
+
+			command_buffer_recording.start_render_pass(extent, &attachments);
+
+			command_buffer_recording.bind_pipeline(&pipeline);
+
+			command_buffer_recording.draw_mesh(&mesh);
+
+			command_buffer_recording.end_render_pass();
+
+			command_buffer_recording.copy_to_swapchain(render_target, swapchain);
+
+			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
+
+			command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
+
+			renderer.present(image_index, &[swapchain], render_finished_synchronizer);
+
+			renderer.end_frame_capture();
+
+			assert!(!renderer.has_errors());
+
+			// Get texture data and cast u8 slice to rgbau8
+
+			// let pixels = unsafe { std::slice::from_raw_parts(renderer.get_texture_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
+
+			// check_triangle(pixels, extent);
+		}
+	}
+
 	pub(crate) fn multiframe_rendering(renderer: &mut dyn RenderSystem) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.

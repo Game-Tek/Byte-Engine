@@ -1736,25 +1736,59 @@ impl VulkanCommandBufferRecording<'_> {
 		}
 	}
 
-		/// Retrieves the current state of a texture.\
+	/// Retrieves the current state of a texture.\
 	/// If the texture has no known state, it will return a default state with undefined layout. This is useful for the first transition of a texture.\
 	/// If the texture has a known state, it will return the known state.
-	fn get_texture_state(&self, texture_handle: render_system::TextureHandle) -> Option<TextureState> {
-		if let Some(state) = self.texture_states.get(&texture_handle) {
-			Some(*state)
-		} else {
-			None
-		}
-	}
-
-		/// Inserts or updates state for a texture.\
+	/// Inserts or updates state for a texture.\
 	/// If the texture has no known state, it will insert the given state.\
 	/// If the texture has a known state, it will update it with the given state.
 	/// It will return the given state.
 	/// This is useful to perform a transition on a texture.
-	fn upsert_texture_state(&mut self, texture_handle: render_system::TextureHandle, texture_state: TextureState) -> TextureState {
-		self.texture_states.insert(texture_handle, texture_state);
-		texture_state
+	fn get_texture_state(&mut self, texture_handle: render_system::TextureHandle, new_texture_state: TextureState) -> (TextureState, TextureState) {
+		let (texture_handle, _) = self.get_texture(texture_handle);
+		if let Some(old_state) = self.texture_states.insert(texture_handle, new_texture_state) {
+			(old_state, new_texture_state)
+		} else {
+			(vk::ImageLayout::UNDEFINED, new_texture_state)
+		}
+	}
+
+	fn transition_textures(&mut self, texture_handles: &[(render_system::TextureHandle, ((vk::PipelineStageFlags2, vk::AccessFlags2), (vk::ImageLayout, vk::PipelineStageFlags2, vk::AccessFlags2)))]) {
+		let mut image_memory_barriers = Vec::new();
+
+		for texture_handle in texture_handles {
+			let (old_state, new_state) = self.get_texture_state(texture_handle.0, texture_handle.1.1.0);
+			 let (_, texture) = self.get_texture(texture_handle.0);
+			let image_memory_barrier = vk::ImageMemoryBarrier2KHR::default()
+				.old_layout(old_state)
+				.src_stage_mask(texture_handle.1.0.0)
+				.src_access_mask(texture_handle.1.0.1)
+				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+				.new_layout(new_state)
+				.dst_stage_mask(texture_handle.1.1.1)
+				.dst_access_mask(texture_handle.1.1.2)
+				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+				.image(texture.image)
+				.subresource_range(vk::ImageSubresourceRange {
+					aspect_mask: if texture.format_ != render_system::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
+					base_mip_level: 0,
+					level_count: vk::REMAINING_MIP_LEVELS,
+					base_array_layer: 0,
+					layer_count: vk::REMAINING_ARRAY_LAYERS,
+				})
+				/* .build() */;
+
+			image_memory_barriers.push(image_memory_barrier);
+		}
+
+		let dependency_info = vk::DependencyInfo::default()
+			.image_memory_barriers(&image_memory_barriers)
+			.dependency_flags(vk::DependencyFlags::BY_REGION)
+			/* .build() */;
+
+		let command_buffer = self.get_command_buffer();
+
+		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
 	}
 
 	fn get_texture(&self, mut texture_handle: render_system::TextureHandle) -> (render_system::TextureHandle, &Texture) {
@@ -1791,48 +1825,9 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
 	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[render_system::AttachmentInformation]) {
-		let mut image_memory_barriers = Vec::new();
-
-		for attachment in attachments {
-			let (texture_handle, texture) = self.get_texture(attachment.texture);
-			let state = self.get_texture_state(texture_handle);
-			let image_memory_barrier = if let Some(texture_source) = state {
-				vk::ImageMemoryBarrier2KHR::default()
-					.old_layout(texture_source)
-					.src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-					.src_access_mask(vk::AccessFlags2KHR::COLOR_ATTACHMENT_WRITE)
-			} else {
-				vk::ImageMemoryBarrier2KHR::default()
-					.old_layout(vk::ImageLayout::UNDEFINED)
-					.src_stage_mask(vk::PipelineStageFlags2::empty())
-					.src_access_mask(vk::AccessFlags2KHR::empty())
-			}
-				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
-				.dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-				.dst_access_mask(vk::AccessFlags2KHR::COLOR_ATTACHMENT_WRITE)
-				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(texture.image)
-				.subresource_range(vk::ImageSubresourceRange {
-					aspect_mask: if texture.format_ != render_system::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
-					base_mip_level: 0,
-					level_count: vk::REMAINING_MIP_LEVELS,
-					base_array_layer: 0,
-					layer_count: vk::REMAINING_ARRAY_LAYERS,
-				})
-				/* .build() */;
-
-			image_memory_barriers.push(image_memory_barrier);
-		}
-
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-			/* .build() */;
-
-		let command_buffer = self.get_command_buffer();
-
-		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
+		self.transition_textures(&attachments.iter().map(|attachment| {
+			(attachment.texture, ((vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2KHR::COLOR_ATTACHMENT_WRITE), (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2KHR::COLOR_ATTACHMENT_WRITE)))
+		}).collect::<Vec<_>>());
 
 		let render_area = vk::Rect2D::default()
 			.offset(vk::Offset2D::default().x(0).y(0)/* .build() */)
@@ -2192,6 +2187,8 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	// }
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::TextureHandle, swapchain_handle: render_system::SwapchainHandle) {
+		let (old_source_texture_state, new_source_texture_state) = self.get_texture_state(source_texture_handle, (vk::ImageLayout::TRANSFER_SRC_OPTIMAL));
+
 		let command_buffer = self.get_command_buffer();
 
 		let (_, source_texture) = self.get_texture(source_texture_handle);
@@ -2201,19 +2198,17 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			self.render_system.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
 		};
 
-		let swapchain_image = swapchain_images[0];
-
-		let source_texture_state = self.get_texture_state(source_texture_handle).unwrap_or(vk::ImageLayout::UNDEFINED);
+		let swapchain_image = swapchain_images[self.modulo_frame_index as usize];
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 
 		let image_memory_barriers = [
 			vk::ImageMemoryBarrier2KHR::default()
-				.old_layout(source_texture_state)
+				.old_layout(old_source_texture_state)
 				.src_stage_mask(vk::PipelineStageFlags2::empty())
 				.src_access_mask(vk::AccessFlags2KHR::empty())
 				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+				.new_layout(new_source_texture_state)
 				.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
 				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_READ)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -2348,46 +2343,9 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn sync_textures(&mut self, texture_handles: &[render_system::TextureHandle]) -> Vec<render_system::TextureCopyHandle> {
+		self.transition_textures(&texture_handles.iter().map(|texture_handle| (*texture_handle, ((vk::PipelineStageFlags2::empty(), vk::AccessFlags2KHR::empty()), (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2KHR::TRANSFER_READ)))).collect::<Vec<_>>());
+
 		let command_buffer = self.get_command_buffer();
-
-		let mut image_transitions = Vec::new();
-
-		// TODO: remove this and implement proper way to ask for textures copies
-		for texture_handle in texture_handles {
-			let (_, texture) = self.get_texture(*texture_handle);
-			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
-			if let Some(_) = texture.staging_buffer {
-				image_transitions.push({
-					vk::ImageMemoryBarrier2KHR::default()
-						.old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-						.src_stage_mask(vk::PipelineStageFlags2::empty())
-						.src_access_mask(vk::AccessFlags2KHR::empty())
-						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-						.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-						.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_READ)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.image(texture.image)
-						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: vk::ImageAspectFlags::COLOR,
-							base_mip_level: 0,
-							level_count: vk::REMAINING_MIP_LEVELS,
-							base_array_layer: 0,
-							layer_count: vk::REMAINING_ARRAY_LAYERS,
-						})
-						/* .build() */
-				})
-			}
-		}
-
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_transitions)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-			/* .build() */;
-
-		unsafe {
-			self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
-		}
 
 		for texture_handle in texture_handles {
 			let (_, texture) = self.get_texture(*texture_handle);
@@ -2517,6 +2475,14 @@ mod tests {
 	fn present() {
 		let mut vulkan_render_system = VulkanRenderSystem::new();
 		render_system::tests::present(&mut vulkan_render_system);
+	}
+
+
+	#[ignore = "CI doesn't support presentation"]
+	#[test]
+	fn multiframe_present() {
+		let mut vulkan_render_system = VulkanRenderSystem::new();
+		render_system::tests::multiframe_present(&mut vulkan_render_system);
 	}
 
 	#[test]

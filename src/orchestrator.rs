@@ -1,17 +1,25 @@
 //! The orchestrator synchronizes and manages most of the application data.
 //! It contains systems and task to accomplish that feat.
 
-use std::{collections::HashMap};
+use std::{collections::HashMap, ops::{DerefMut, Deref}, any::Any};
+
+use log::trace;
+
+use crate::rendering::render_system;
 
 /// System handle is a handle to a system in an [`Orchestrator`]
 pub struct SystemHandle(u32);
 
-pub trait Entity: Send + 'static {}
+pub trait Entity: Any + Send + 'static {
+	fn to_subclass(&self) -> &dyn Any where Self: Sized {
+		self
+	}
+}
 
 /// A system is a collection of components and logic to operate on them.
-pub trait System : Entity + std::any::Any {}
+pub trait System: Entity + Any {}
 
-pub struct EntityHandle<T> where T: ?Sized {
+pub struct EntityHandle<T> {
 	internal_id: u32,
 	external_id: u32,
 	phantom: std::marker::PhantomData<T>,
@@ -32,7 +40,7 @@ impl <T> PartialEq for EntityHandle<T> {
 
 impl <T> Eq for EntityHandle<T> {}
 
-impl <T: ?Sized> EntityHandle<T> {
+impl <T> EntityHandle<T> {
 	pub fn get_external_key(&self) -> u32 { self.external_id }
 	pub fn copy(&self) -> Self {
 		Self {
@@ -83,7 +91,8 @@ pub struct Orchestrator {
 
 unsafe impl Send for Orchestrator {}
 
-type EntityStorage = std::sync::Arc<std::sync::RwLock<dyn Entity>>;
+// type EntityStorage = std::sync::Arc<std::sync::RwLock<dyn Entity>>;
+type EntityStorage = std::sync::Arc<std::sync::RwLock<dyn Any + Send + 'static>>;
 
 struct SystemsData {
 	counter: u32,
@@ -168,6 +177,8 @@ impl Orchestrator {
 			F: IntoHandler<P, T> 
 	{
 		let handle = function.call(self)?;
+
+		trace!("{}", std::any::type_name::<T>());
 
 		{
 			let systems_data = self.listeners_by_class.lock().unwrap();
@@ -269,12 +280,11 @@ impl Orchestrator {
 			listeners.push((internal_id, Box::new(move |orchestrator: &Orchestrator, entity_to_notify: u32, ha: (u32, u32)| {
 				let systems_data = orchestrator.systems_data.read().unwrap();
 				let mut lock_guard = systems_data.systems[&entity_to_notify].write().unwrap();
-				let system = lock_guard.as_ref();
-				let system = system.downcast_mut::<S>().unwrap();
+				let system: &mut S = lock_guard.downcast_mut().unwrap();
 				let orchestrator_reference = OrchestratorReference { orchestrator, internal_id: entity_to_notify };
 
-				let component = systems_data.systems[&ha.0].read().unwrap();
-				let entity = component.downcast_ref::<T>().unwrap();
+				let lock_guard = systems_data.systems[&ha.0].read().unwrap();
+				let entity: &T = lock_guard.downcast_ref().unwrap();
 
 				function(system, orchestrator_reference, EntityHandle::<T> { internal_id: ha.0, external_id: ha.1, phantom: std::marker::PhantomData }, entity);
 			})));
@@ -410,6 +420,7 @@ impl Orchestrator {
 
 	pub fn get_by_class<S: System + ?Sized + 'static>(&self) -> EntityReference<S> {
 		let systems_data = self.systems_data.read().unwrap();
+		trace!("get_by_class: {}", std::any::type_name::<S>());
 		EntityReference { lock: systems_data.systems[&systems_data.systems_by_name[std::any::type_name::<S>()]].clone(), phantom: std::marker::PhantomData }
 	}
 }
@@ -550,6 +561,8 @@ mod tests {
 			value: u32,
 		}
 
+		impl Entity for Sender {}
+
 		impl Sender {
 			fn new(orchestrator: &mut Orchestrator) -> EntityHandle<Sender> {
 				orchestrator.create_entity(Sender { value: 0 })
@@ -572,6 +585,8 @@ mod tests {
 		struct Receiver {
 			value: u32,
 		}
+
+		impl Entity for Receiver {}
 
 		impl Receiver {
 			fn new(orchestrator: &mut Orchestrator) -> EntityHandle<Receiver> {
@@ -730,7 +745,7 @@ impl <'a> OrchestratorReference<'a> {
 		self.orchestrator.set_owned_property::<E, T, S>(self.internal_id, internal_id, property, value);
 	}
 
-	pub fn get_by_class<S: System + ?Sized + 'static>(&self) -> EntityReference<S> {
+	pub fn get_by_class<S: System + 'static>(&self) -> EntityReference<S> {
 		self.orchestrator.get_by_class::<S>()
 	}
 

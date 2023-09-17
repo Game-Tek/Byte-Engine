@@ -44,9 +44,9 @@ pub struct VisibilityWorldRenderDomain {
 
 impl VisibilityWorldRenderDomain {
 	pub fn new(mut orchestrator: orchestrator::OrchestratorReference,) -> orchestrator::EntityReturn<Self> {
-		let render_system = orchestrator.get_by_class::<dyn render_system::RenderSystem>();
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
+		let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
 
 		let _vertex_layout = [
 			render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
@@ -56,14 +56,14 @@ impl VisibilityWorldRenderDomain {
 		let bindings = [
 			render_system::DescriptorSetLayoutBinding {
 				binding: 0,
-				descriptor_type: render_system::DescriptorType::UniformBuffer,
+				descriptor_type: render_system::DescriptorType::StorageBuffer,
 				descriptor_count: 1,
 				stage_flags: render_system::Stages::VERTEX,
 				immutable_samplers: None,
 			},
 			render_system::DescriptorSetLayoutBinding {
 				binding: 1,
-				descriptor_type: render_system::DescriptorType::UniformBuffer,
+				descriptor_type: render_system::DescriptorType::StorageBuffer,
 				descriptor_count: 1,
 				stage_flags: render_system::Stages::VERTEX,
 				immutable_samplers: None,
@@ -109,9 +109,9 @@ impl VisibilityWorldRenderDomain {
 		let render_command_buffer = render_system.create_command_buffer();
 		let transfer_command_buffer = render_system.create_command_buffer();
 
-		let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_system::Uses::Uniform, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+		let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-		let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_system::Uses::Uniform, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+		let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 		render_system.write(&[
 			render_system::DescriptorWrite {
@@ -178,9 +178,9 @@ impl VisibilityWorldRenderDomain {
 		let mut resource_manager = resource_manager.get_mut();
 		let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
-		let render_system = orchestrator.get_by_class::<dyn RenderSystem>();
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
+		let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
 
 		let (response, buffer) = resource_manager.get("cube").unwrap();
 
@@ -252,9 +252,9 @@ impl VisibilityWorldRenderDomain {
 
 	fn get_transform(&self) -> Mat4f { return Mat4f::identity(); }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let render_system = orchestrator.get_by_class::<dyn RenderSystem>();
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
+		let render_system = render_system.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
 
 		let closed_frame_index = self.current_frame % 2;
 
@@ -274,9 +274,9 @@ impl VisibilityWorldRenderDomain {
 	pub const fn trasnform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
 	fn listen_to_mesh(&mut self, orchestrator: orchestrator::OrchestratorReference, mesh_handle: EntityHandle<Mesh>, mesh: &Mesh) {
-		let render_system = orchestrator.get_by_class::<dyn render_system::RenderSystem>();
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
+		let render_system = render_system.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
 
 		orchestrator.tie_self(Self::trasnform, &mesh_handle, Mesh::transform);
 
@@ -347,9 +347,9 @@ impl VisibilityWorldRenderDomain {
 		if let None = self.pipeline { return; }
 		if self.swapchain_handles.len() == 0 { return; }
 
-		let render_system = orchestrator.get_by_class::<dyn render_system::RenderSystem>();
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut binding = render_system.get_mut();
-  		let render_system = binding.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
+  		let render_system = binding.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
 
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 

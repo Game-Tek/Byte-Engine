@@ -1116,8 +1116,8 @@ impl VulkanRenderSystem {
 		}
 	}
 
-	pub fn new_as_system(_: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<VulkanRenderSystem> {
-		Some((VulkanRenderSystem::new(), vec![]))
+	pub fn new_as_system(_: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
+		Some((render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new())), vec![]))
 	}
 
 	fn get_log_count(&self) -> u32 { unsafe { COUNTER } }

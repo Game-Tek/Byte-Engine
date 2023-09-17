@@ -1492,3 +1492,120 @@ pub enum PipelineConfigurationBlocks<'a> {
 		layout: &'a PipelineLayoutHandle,
 	}
 }
+
+pub struct RenderSystemImplementation {
+	pointer: Box<dyn RenderSystem>,
+}
+
+impl RenderSystemImplementation {
+	pub fn new(pointer: Box<dyn RenderSystem>) -> Self {
+		Self {
+			pointer: pointer,
+		}
+	}
+}
+
+impl orchestrator::Entity for RenderSystemImplementation {}
+impl orchestrator::System for RenderSystemImplementation {}
+
+impl RenderSystem for RenderSystemImplementation {
+	fn has_errors(&self) -> bool {
+		self.pointer.has_errors()
+	}
+
+	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle {
+		self.pointer.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
+	}
+
+	fn add_shader(&mut self, shader_source_type: ShaderSourceType, stage: ShaderTypes, shader: &[u8]) -> ShaderHandle {
+		self.pointer.add_shader(shader_source_type, stage, shader)
+	}
+
+	fn get_buffer_address(&self, buffer_handle: BufferHandle) -> u64 {
+		self.pointer.get_buffer_address(buffer_handle)
+	}
+
+	fn write(&self, descriptor_set_writes: &[DescriptorWrite]) {
+		self.pointer.write(descriptor_set_writes)
+	}
+
+	fn get_buffer_slice(&mut self, buffer_handle: BufferHandle) -> &[u8] {
+		self.pointer.get_buffer_slice(buffer_handle)
+	}
+
+	fn get_mut_buffer_slice(&self, buffer_handle: BufferHandle) -> &mut [u8] {
+		self.pointer.get_mut_buffer_slice(buffer_handle)
+	}
+
+	fn get_texture_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
+		self.pointer.get_texture_data(texture_copy_handle)
+	}
+
+	fn bind_to_window(&mut self, window_os_handles: window_system::WindowOsHandles) -> SwapchainHandle {
+		self.pointer.bind_to_window(window_os_handles)
+	}
+
+	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle) {
+		self.pointer.present(image_index, swapchains, synchronizer_handle)
+	}
+
+	fn wait(&self, synchronizer_handle: SynchronizerHandle) {
+		self.pointer.wait(synchronizer_handle)
+	}
+
+	fn start_frame_capture(&self) {
+		self.pointer.start_frame_capture()
+	}
+
+	fn end_frame_capture(&self) {
+		self.pointer.end_frame_capture()
+	}
+
+	fn acquire_swapchain_image(&self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32 {
+		self.pointer.acquire_swapchain_image(swapchain_handle, synchronizer_handle)
+	}
+
+	fn create_buffer(&mut self, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle {
+		self.pointer.create_buffer(size, uses, accesses, use_case)
+	}
+
+	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {
+		self.pointer.create_allocation(size, _resource_uses, resource_device_accesses)
+	}
+
+	fn create_command_buffer(&mut self) -> CommandBufferHandle {
+		self.pointer.create_command_buffer()
+	}
+
+	fn create_command_buffer_recording<'a>(&'a self, command_buffer_handle: CommandBufferHandle, frame: Option<u32>) -> Box<dyn CommandBufferRecording + 'a> {
+		self.pointer.create_command_buffer_recording(command_buffer_handle, frame)
+	}
+
+	fn create_descriptor_set(&mut self, descriptor_set_layout: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle {
+		self.pointer.create_descriptor_set(descriptor_set_layout, bindings)
+	}
+
+	fn create_descriptor_set_layout(&mut self, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle {
+		self.pointer.create_descriptor_set_layout(bindings)
+	}
+
+	fn create_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handles: &[(&ShaderHandle, ShaderTypes)], vertex_layout: &[VertexElement], targets: &[AttachmentInformation]) -> PipelineHandle {
+		self.pointer.create_pipeline(pipeline_layout_handle, shader_handles, vertex_layout, targets)
+	}
+
+	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle]) -> PipelineLayoutHandle {
+		self.pointer.create_pipeline_layout(descriptor_set_layout_handles)
+	}
+
+	fn create_sampler(&mut self) -> SamplerHandle {
+		self.pointer.create_sampler()
+	}
+
+	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {
+		self.pointer.create_synchronizer(signaled)
+	}
+
+	fn create_texture(&mut self, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle {
+		self.pointer.create_texture(extent, format, resource_uses, device_accesses, use_case)
+	}
+}

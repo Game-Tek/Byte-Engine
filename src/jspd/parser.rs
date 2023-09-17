@@ -26,12 +26,14 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 
 	let void = Rc::new(make_no_member_struct("void"));
 	let f32 = Rc::new(make_no_member_struct("f32"));
+	let in_type = Rc::new(make_no_member_struct("In")); // Input type
 	let vec2f = Rc::new(make_struct("vec2f", vec![Rc::new(make_member("x", "f32")), Rc::new(make_member("y", "f32"))]));
 	let vec3f = Rc::new(make_struct("vec3f", vec![Rc::new(make_member("x", "f32")), Rc::new(make_member("y", "f32")), Rc::new(make_member("z", "f32"))]));
 	let vec4f = Rc::new(make_struct("vec4f", vec![Rc::new(make_member("x", "f32")), Rc::new(make_member("y", "f32")), Rc::new(make_member("z", "f32")), Rc::new(make_member("w", "f32"))]));
 
 	program_state.types.insert("void".to_string(), void);
 	program_state.types.insert("f32".to_string(), f32);
+	program_state.types.insert("In".to_string(), in_type);
 	program_state.types.insert("vec2f".to_string(), vec2f);
 	program_state.types.insert("vec3f".to_string(), vec3f);
 	program_state.types.insert("vec4f".to_string(), vec4f);
@@ -42,6 +44,7 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 		parse_struct,
 		parse_function,
 		parse_macro,
+		parse_member,
 	];
 
 	let mut children = vec![];
@@ -213,6 +216,29 @@ fn try_execute_parsers<'a>(parsers: &[Parser<'a>], iterator: std::slice::Iter<'a
 	}
 
 	return None;
+}
+
+fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
+	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	let mut r#type = iterator.next().ok_or(ParsingFailReasons::BadSyntax)?.clone();
+
+	if let Some(n) = iterator.clone().peekable().peek() {
+		if n.as_str() == "<"	{
+			iterator.next();
+			r#type.push_str("<");
+			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax)?;
+			r#type.push_str(next);
+			iterator.next();
+			r#type.push_str(">");
+		}
+	}
+
+	let node = Rc::new(make_member(name, &r#type));
+
+	iterator.next().ok_or(ParsingFailReasons::BadSyntax)?; // Skip semicolon
+
+	return Ok(((node, program.clone()), iterator));
 }
 
 fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
@@ -469,6 +495,36 @@ mod tests {
 
 	use crate::jspd::tokenizer::tokenize;
 
+	fn assert_struct(node: &Node) {
+		if let (Nodes::Feature { name, feature }, _light) = (&node.node, node) {
+			assert_eq!(name, "Light");
+
+			if let Features::Struct { fields } = feature {
+				assert_eq!(fields.len(), 2);
+
+				let position = &fields[0];
+
+				if let Nodes::Feature { name, feature } = &position.node {
+					assert_eq!(name, "position");
+
+					if let Features::Member { r#type } = feature {
+						assert_eq!(r#type, "vec3f");
+					} else { panic!("Not a member"); }
+				} else { panic!("Not a feature"); }
+
+				let color = &fields[1];
+
+				if let Nodes::Feature { name, feature } = &color.node {
+					assert_eq!(name, "color");
+
+					if let Features::Member { r#type } = feature {
+						assert_eq!(r#type, "vec3f");
+					} else { panic!("Not a member"); }
+				} else { panic!("Not a feature"); }
+			} else { panic!("Not a struct"); }
+		} else { panic!("Not a feature"); }
+	}
+
 	#[test]
 	fn test_parse_struct() {
 		let source = "
@@ -487,48 +543,48 @@ Light: struct {
 		if let Nodes::Feature { name, feature: _ } = root_node {
 			assert_eq!(name, "root");
 
-			let light_node = &node["Light"].node;
-
-			if let (Nodes::Feature { name, feature }, _light) = (light_node, light_node) {
-				assert_eq!(name, "Light");
-
-				if let Features::Struct { fields } = feature {
-					assert_eq!(fields.len(), 2);
-
-					let position = &fields[0];
-
-					if let Nodes::Feature { name, feature } = &position.node {
-						assert_eq!(name, "position");
-
-						if let Features::Member { r#type } = feature {
-							assert_eq!(r#type, "vec3f");
-						} else {
-							panic!("Not a member");
-						}
-					} else {
-						panic!("Not a feature");
-					}
-
-					let color = &fields[1];
-
-					if let Nodes::Feature { name, feature } = &color.node {
-						assert_eq!(name, "color");
-
-						if let Features::Member { r#type } = feature {
-							assert_eq!(r#type, "vec3f");
-						} else {
-							panic!("Not a member");
-						}
-					} else {
-						panic!("Not a feature");
-					}
-				} else {
-					panic!("Not a struct");
-				}
-			} else {
-				panic!("Not a feature");
-			}
+			assert_struct(&node["Light"]);
 		}
+	}
+
+	fn assert_function(node: &Node) {
+		let main_node = &node.node;
+
+		if let Nodes::Feature { name, feature } = &main_node {
+			assert_eq!(name, "main");
+
+			if let Features::Function { params, return_type, statements, raw: _ } = feature {
+				assert_eq!(params.len(), 0);
+				assert_eq!(return_type, "void");
+				assert_eq!(statements.len(), 2);
+
+				let statement = &statements[0];
+
+				if let Nodes::Expression { expression, children } = &statement.node {
+					if let Expressions::Assignment = expression {
+						let var_decl = &children[0];
+
+						if let Nodes::Expression { expression, children: _ } = &var_decl.node {
+							if let Expressions::VariableDeclaration{ name, r#type } = expression {
+								assert_eq!(name, "position");
+								assert_eq!(r#type, "vec4f");
+							} else { panic!("Not a variable declaration"); }
+						} else { panic!("Not an expression"); }
+
+						let function_call = &children[1];
+
+						if let Nodes::Expression { expression, children } = &function_call.node {
+							if let Expressions::FunctionCall{ name } = expression {
+								assert_eq!(name, "vec4");
+								assert_eq!(children.len(), 4);
+
+								// TODO: assert values
+							} else { panic!("Not a function call"); }
+						} else { panic!("Not an expression"); }
+					} else { panic!("Not an assignment");}
+				} else { panic!("Not an expression"); }
+			} else { panic!("Not a function"); }
+		} else { panic!("Not a feature"); }
 	}
 
 	#[test]
@@ -542,89 +598,76 @@ main: fn () -> void {
 		let tokens = tokenize(source).unwrap();
 		let (node, _program) = parse(tokens).expect("Failed to parse");
 
-		let root_node = &node.node;
-
-		if let Nodes::Feature { name, feature: _ } = &root_node {
+		if let Nodes::Feature { name, feature: _ } = &node.node {
 			assert_eq!(name, "root");
 
-			let main_node = &node["main"].node;
-
-			if let Nodes::Feature { name, feature } = &main_node {
-				assert_eq!(name, "main");
-
-				if let Features::Function { params, return_type, statements, raw: _ } = feature {
-					assert_eq!(params.len(), 0);
-					assert_eq!(return_type, "void");
-					assert_eq!(statements.len(), 2);
-
-					let statement = &statements[0];
-
-					if let Nodes::Expression { expression, children } = &statement.node {
-						if let Expressions::Assignment = expression {
-							let var_decl = &children[0];
-
-							if let Nodes::Expression { expression, children: _ } = &var_decl.node {
-								if let Expressions::VariableDeclaration{ name, r#type } = expression {
-									assert_eq!(name, "position");
-									assert_eq!(r#type, "vec4f");
-								} else { panic!("Not a variable declaration"); }
-							} else { panic!("Not an expression"); }
-
-							let function_call = &children[1];
-
-							if let Nodes::Expression { expression, children } = &function_call.node {
-								if let Expressions::FunctionCall{ name } = expression {
-									assert_eq!(name, "vec4");
-									assert_eq!(children.len(), 4);
-
-									// TODO: assert values
-								} else { panic!("Not a function call"); }
-							} else { panic!("Not an expression"); }
-						} else { panic!("Not an assignment");}
-					} else { panic!("Not an expression"); }
-				} else { panic!("Not a function"); }
-			} else { panic!("Not a feature"); }
+			assert_function(&node["main"]);
 		} else { panic!("Not root node") }
 	}
 
-// 	#[test]
-// 	fn test_parse_struct_and_function() {
-// 		let source = "
-// Light: struct {
-// 	position: vec3f,
-// 	color: vec3f
-// }
 
-// #[vertex]
-// main: fn () -> void {
-// 	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-// 	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-// }";
+	#[test]
+	fn parse_operators() {
+		let source = "
+main: fn () -> void {
+	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2;
+	gl_Position = position;
+}";
 
-// 		let tokens = tokenize(source).unwrap();
-// 		let nodes = parse(tokens);
+		let tokens = tokenize(source).unwrap();
+		let (node, _program) = parse(tokens).expect("Failed to parse");
 
-// 		assert_eq!(nodes.is_ok(), true);
+		if let Nodes::Feature { name, feature: _ } = &node.node {
+			assert_eq!(name, "root");
 
-// 		let root_node = nodes.unwrap();
+			assert_function(&node["main"]);
+		} else { panic!("Not root node") }
+	}
 
-// 		let struct_node = &root_node["Light"];
+	#[test]
+	fn test_parse_struct_and_function() {
+		let source = "
+Light: struct {
+	position: vec3f,
+	color: vec3f
+}
 
-// 		assert_eq!(struct_node["type"], "struct");
+#[vertex]
+main: fn () -> void {
+	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
+	gl_Position = position;
+}";
 
-// 		let position_node = &struct_node["position"];
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parse(tokens).expect("Failed to parse");
 
-// 		assert_eq!(&position_node["type"], "member");
-// 		assert_eq!(&position_node["data_type"], "vec3f");
+		if let Nodes::Feature { name, feature: _ } = &node.node {
+			assert_eq!(name, "root");
 
-// 		let color_node = &struct_node["color"];
+			assert_struct(&node["Light"]);
+			assert_function(&node["main"]);			
+		} else { panic!("Not root node") }
+	}
 
-// 		assert_eq!(&color_node["type"], "member");
-// 		assert_eq!(&color_node["data_type"], "vec3f");
+	#[test]
+	fn test_parse_member() {
+		let source = "color: In<vec4f>;";
 
-// 		let function_node = &root_node["main"];
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parse(tokens).expect("Failed to parse");
 
-// 		assert_eq!(&function_node["type"], "function");
-// 		assert_eq!(function_node["data_type"], "void");
-// 	}
+		if let Nodes::Feature { name, feature } = &node.node {
+			assert_eq!(name, "root");
+
+			let member_node = &node["color"];
+
+			if let Nodes::Feature { name, feature } = &member_node.node {
+				assert_eq!(name, "color");
+
+				if let Features::Member { r#type } = &feature {
+					assert_eq!(r#type, "In<vec4f>");
+				} else { panic!("Not a member"); }
+			} else { panic!("Not a feature"); }
+		}
+	}
 }

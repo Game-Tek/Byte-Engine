@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, shader_resource_handler::Shader}, render_system::{RenderSystem, self, FrameHandle}, render_backend, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math};
+use crate::{resource_manager::{self, mesh_resource_handler, shader_resource_handler::Shader}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -13,7 +13,6 @@ pub struct VisibilityWorldRenderDomain {
 	depth_target: render_system::TextureHandle,
 	index_count: u32,
 	instance_count: u32,
-	frames: Vec<render_system::FrameHandle>,
 	render_finished_synchronizer: render_system::SynchronizerHandle,
 	image_ready: render_system::SynchronizerHandle,
 	render_command_buffer: render_system::CommandBufferHandle,
@@ -36,37 +35,37 @@ pub struct VisibilityWorldRenderDomain {
 
 	/// Maps resource ids to shaders
 	/// The hash and the shader handle are stored to determine if the shader has changed
-	shaders: std::collections::HashMap<u64, (u64, render_system::ShaderHandle)>,
+	shaders: std::collections::HashMap<u64, (u64, render_system::ShaderHandle, render_system::ShaderTypes)>,
 
 	pipeline: Option<render_system::PipelineHandle>,
+
+	swapchain_handles: Vec<render_system::SwapchainHandle>,
 }
 
 impl VisibilityWorldRenderDomain {
 	pub fn new(mut orchestrator: orchestrator::OrchestratorReference,) -> orchestrator::EntityReturn<Self> {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystem>();
+		let render_system = orchestrator.get_by_class::<dyn render_system::RenderSystem>();
 		let mut render_system = render_system.get_mut();
-		let render_system: &mut render_system::RenderSystem = render_system.downcast_mut().unwrap();
-
-		let frames = (0..2).map(|_| render_system.create_frame()).collect::<Vec<_>>();
+		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
 
 		let _vertex_layout = [
-			render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
-			render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
+			render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
+			render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
 		];
 
 		let bindings = [
 			render_system::DescriptorSetLayoutBinding {
 				binding: 0,
-				descriptor_type: render_backend::DescriptorType::UniformBuffer,
+				descriptor_type: render_system::DescriptorType::UniformBuffer,
 				descriptor_count: 1,
-				stage_flags: render_backend::Stages::VERTEX,
+				stage_flags: render_system::Stages::VERTEX,
 				immutable_samplers: None,
 			},
 			render_system::DescriptorSetLayoutBinding {
 				binding: 1,
-				descriptor_type: render_backend::DescriptorType::UniformBuffer,
+				descriptor_type: render_system::DescriptorType::UniformBuffer,
 				descriptor_count: 1,
-				stage_flags: render_backend::Stages::VERTEX,
+				stage_flags: render_system::Stages::VERTEX,
 				immutable_samplers: None,
 			},
 		];
@@ -77,23 +76,25 @@ impl VisibilityWorldRenderDomain {
 
 		let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout]);
 		
-		let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_backend::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-		let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_backend::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+		let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+		let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-		let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_backend::TextureFormats::RGBAu8, render_backend::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead);
-		let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_backend::TextureFormats::Depth32, render_backend::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead);
+		let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+		let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 		let _attachments = [
-			render_system::AttachmentInfo {
+			render_system::AttachmentInformation {
 				texture: render_target,
-				format: render_backend::TextureFormats::RGBAu8,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::RGBAu8,
 				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			},
-			render_system::AttachmentInfo {
+			render_system::AttachmentInformation {
 				texture: depth_target,
-				format: render_backend::TextureFormats::Depth32,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::Depth32,
 				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
 				load: false,
 				store: true,
@@ -108,9 +109,9 @@ impl VisibilityWorldRenderDomain {
 		let render_command_buffer = render_system.create_command_buffer();
 		let transfer_command_buffer = render_system.create_command_buffer();
 
-		let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_backend::Uses::Uniform, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+		let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_system::Uses::Uniform, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-		let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_backend::Uses::Uniform, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+		let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_system::Uses::Uniform, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 		render_system.write(&[
 			render_system::DescriptorWrite {
@@ -144,7 +145,6 @@ impl VisibilityWorldRenderDomain {
 			index_count: 0,
 			instance_count: 0,
 			current_frame: 0,
-			frames,
 
 			render_finished_synchronizer,
 			image_ready,
@@ -166,6 +166,8 @@ impl VisibilityWorldRenderDomain {
 			mesh_resources: HashMap::new(),
 
 			pipeline: None,
+
+			swapchain_handles: Vec::new(),
 		};
 
 		Some((render_domain, vec![orchestrator::PPP::PostCreationFunction(Box::new(Self::load_needed_assets))]))
@@ -176,9 +178,9 @@ impl VisibilityWorldRenderDomain {
 		let mut resource_manager = resource_manager.get_mut();
 		let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
-		let render_system = orchestrator.get_by_class::<RenderSystem>();
+		let render_system = orchestrator.get_by_class::<dyn RenderSystem>();
 		let mut render_system = render_system.get_mut();
-		let render_system: &mut render_system::RenderSystem = render_system.downcast_mut().unwrap();
+		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
 
 		let (response, buffer) = resource_manager.get("cube").unwrap();
 
@@ -189,7 +191,7 @@ impl VisibilityWorldRenderDomain {
 
 					let hash = resource.hash; let resource_id = resource.id;
 
-					if let Some((old_hash, _old_shader)) = self.shaders.get(&resource_id) {
+					if let Some((old_hash, _old_shader, _)) = self.shaders.get(&resource_id) {
 						if *old_hash == hash { continue; }
 					}
 
@@ -198,33 +200,35 @@ impl VisibilityWorldRenderDomain {
 
 					let new_shader = render_system.add_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
 
-					self.shaders.insert(resource_id, (hash, new_shader));
+					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
 				"Material" => {
 					let shaders = resource.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
 
 					let shaders = shaders.iter().map(|shader| {
-						let (_hash, shader) = self.shaders.get(shader).unwrap();
+						let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
 
-						shader
+						(shader, *shader_type)
 					}).collect::<Vec<_>>();
 
 					let vertex_layout = [
-						render_system::VertexElement{ name: "POSITION".to_string(), format: crate::render_system::DataTypes::Float3, binding: 0 },
-						render_system::VertexElement{ name: "NORMAL".to_string(), format: crate::render_system::DataTypes::Float3, binding: 1 },
+						render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
+						render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 1 },
 					];
 
 					let targets = [
-						render_system::AttachmentInfo {
+						render_system::AttachmentInformation {
 							texture: self.render_target,
-							format: render_backend::TextureFormats::RGBAu8,
+							layout: render_system::Layouts::RenderTarget,
+							format: render_system::TextureFormats::RGBAu8,
 							clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 							load: false,
 							store: true,
 						},
-						render_system::AttachmentInfo {
+						render_system::AttachmentInformation {
 							texture: self.depth_target,
-							format: render_backend::TextureFormats::Depth32,
+							layout: render_system::Layouts::RenderTarget,
+							format: render_system::TextureFormats::Depth32,
 							clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
 							load: false,
 							store: true,
@@ -233,7 +237,7 @@ impl VisibilityWorldRenderDomain {
 
 					let pipeline_layout_handle = self.pipeline_layout_handle;
 
-					let pipeline = render_system.create_pipeline(pipeline_layout_handle, &shaders, &vertex_layout, &targets);
+					let pipeline = render_system.create_pipeline(&pipeline_layout_handle, &shaders, &vertex_layout, &targets);
 
 					self.pipeline = Some(pipeline);
 				}
@@ -248,13 +252,13 @@ impl VisibilityWorldRenderDomain {
 
 	fn get_transform(&self) -> Mat4f { return Mat4f::identity(); }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let render_system = orchestrator.get_by_class::<RenderSystem>();
+		let render_system = orchestrator.get_by_class::<dyn RenderSystem>();
 		let mut render_system = render_system.get_mut();
-		let render_system: &mut render_system::RenderSystem = render_system.downcast_mut().unwrap();
+		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
 
 		let closed_frame_index = self.current_frame % 2;
 
-		let meshes_data_slice = render_system.get_mut_buffer_slice(Some(FrameHandle(closed_frame_index as u32)), self.meshes_data_buffer);
+		let meshes_data_slice = render_system.get_mut_buffer_slice(self.meshes_data_buffer);
 
 		let meshes_data = [
 			value,
@@ -270,9 +274,9 @@ impl VisibilityWorldRenderDomain {
 	pub const fn trasnform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
 	fn listen_to_mesh(&mut self, orchestrator: orchestrator::OrchestratorReference, mesh_handle: EntityHandle<Mesh>, mesh: &Mesh) {
-		let render_system = orchestrator.get_by_class::<RenderSystem>();
+		let render_system = orchestrator.get_by_class::<dyn render_system::RenderSystem>();
 		let mut render_system = render_system.get_mut();
-		let render_system: &mut render_system::RenderSystem = render_system.downcast_mut().unwrap();
+		let render_system = render_system.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
 
 		orchestrator.tie_self(Self::trasnform, &mesh_handle, Mesh::transform);
 
@@ -290,8 +294,8 @@ impl VisibilityWorldRenderDomain {
 			for resource in &resource_request.resources {
 				match resource.class.as_str() {
 					"Mesh" => {
-						let vertex_buffer = render_system.get_mut_buffer_slice(None, self.vertices_buffer);
-						let index_buffer = render_system.get_mut_buffer_slice(None, self.indices_buffer);
+						let vertex_buffer = render_system.get_mut_buffer_slice(self.vertices_buffer);
+						let index_buffer = render_system.get_mut_buffer_slice(self.indices_buffer);
 
 						options.resources.push(resource_manager::OptionResource {
 							path: resource.path.clone(),
@@ -322,7 +326,7 @@ impl VisibilityWorldRenderDomain {
 
 		let closed_frame_index = self.current_frame % 2;
 
-		let meshes_data_slice = render_system.get_mut_buffer_slice(Some(FrameHandle(closed_frame_index as u32)), self.meshes_data_buffer);
+		let meshes_data_slice = render_system.get_mut_buffer_slice(self.meshes_data_buffer);
 
 		let meshes_data = [
 			mesh.transform,
@@ -341,28 +345,27 @@ impl VisibilityWorldRenderDomain {
 
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
 		if let None = self.pipeline { return; }
+		if self.swapchain_handles.len() == 0 { return; }
 
-		let render_system = orchestrator.get_by_class::<RenderSystem>();
+		let render_system = orchestrator.get_by_class::<dyn render_system::RenderSystem>();
 		let mut binding = render_system.get_mut();
-  		let render_system: &mut render_system::RenderSystem = binding.downcast_mut().unwrap();
+  		let render_system = binding.downcast_mut::<&mut dyn render_system::RenderSystem>().unwrap();
 
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 
-		let frame_handle_option = Some(self.frames[self.current_frame % 2]);
-
 		{
-			let command_buffer_recording = render_system.create_command_buffer_recording(frame_handle_option, self.transfer_command_buffer);
+			let command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
 
-			command_buffer_recording.synchronize_buffers();
+			todo!("Synchronize buffera");
 
-			render_system.execute(frame_handle_option, command_buffer_recording, &[], &[self.transfer_synchronizer], self.transfer_synchronizer);
+			command_buffer_recording.execute(&[], &[self.transfer_synchronizer], self.transfer_synchronizer);
 		}
 
-		render_system.wait(frame_handle_option, self.render_finished_synchronizer);
+		render_system.wait(self.render_finished_synchronizer);
 
 		//render_system.start_frame_capture();
 
-		let camera_data_buffer = render_system.get_mut_buffer_slice(frame_handle_option, self.camera_data_buffer_handle);
+		let camera_data_buffer = render_system.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
 		let camera_position = orchestrator.get_property(camera_handle, camera::Camera::position);
 		let camera_orientation = orchestrator.get_property(camera_handle, camera::Camera::orientation);
@@ -385,9 +388,11 @@ impl VisibilityWorldRenderDomain {
 			std::ptr::copy_nonoverlapping(camera_data_bytes.as_ptr(), camera_data_buffer.as_mut_ptr(), camera_data_bytes.len());
 		}
 
-		let image_index = render_system.acquire_swapchain_image(frame_handle_option, self.image_ready);
+		let swapchain_handle = self.swapchain_handles[0];
 
-		let mut command_buffer_recording = render_system.create_command_buffer_recording(frame_handle_option, self.render_command_buffer);
+		let image_index = render_system.acquire_swapchain_image(swapchain_handle, self.image_ready);
+
+		let mut command_buffer_recording = render_system.create_command_buffer_recording(self.render_command_buffer, Some(self.current_frame as u32));
 
 		let attachments = self.get_attachments();
 
@@ -421,15 +426,15 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_index_buffer(&index_buffer_index_descriptor);
 
-		let camera_data_buffer_address = render_system.get_buffer_address(frame_handle_option, self.camera_data_buffer_handle);
-		let meshes_data_buffer_address = render_system.get_buffer_address(frame_handle_option, self.meshes_data_buffer);
+		let camera_data_buffer_address = render_system.get_buffer_address(self.camera_data_buffer_handle);
+		let meshes_data_buffer_address = render_system.get_buffer_address(self.meshes_data_buffer);
 
 		let data = [
 			camera_data_buffer_address,
 			meshes_data_buffer_address,
 		];
 
-		command_buffer_recording.bind_descriptor_set(self.pipeline_layout_handle, 0, &self.descriptor_set);
+		command_buffer_recording.bind_descriptor_set(&self.pipeline_layout_handle, 0, &self.descriptor_set);
 
 		command_buffer_recording.write_to_push_constant(&self.pipeline_layout_handle, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) });
 
@@ -437,33 +442,33 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.end_render_pass();
 
-		let swapchain_texture_handle = render_system.get_swapchain_texture_handle(frame_handle_option);
+		command_buffer_recording.copy_to_swapchain(self.render_target, swapchain_handle);
 
-		command_buffer_recording.copy_textures(&[(self.render_target, swapchain_texture_handle,)]);
-
-		render_system.execute(frame_handle_option, command_buffer_recording, &[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
+		command_buffer_recording.execute(&[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 
 		//render_system.end_frame_capture();
 
-		render_system.present(frame_handle_option, image_index, self.render_finished_synchronizer);
+		render_system.present(image_index, &[swapchain_handle], self.render_finished_synchronizer);
 
-		render_system.wait(frame_handle_option, self.transfer_synchronizer); // Wait for buffers to be copied over to the GPU, or else we might overwrite them on the CPU before they are copied over
+		render_system.wait(self.transfer_synchronizer); // Wait for buffers to be copied over to the GPU, or else we might overwrite them on the CPU before they are copied over
 
 		self.current_frame += 1;
 	}
 
-	fn get_attachments(&mut self) -> [render_system::AttachmentInfo; 2] {
+	fn get_attachments(&mut self) -> [render_system::AttachmentInformation; 2] {
 		let attachments = [
-			render_system::AttachmentInfo {
+			render_system::AttachmentInformation {
 				texture: self.render_target,
-				format: crate::render_backend::TextureFormats::RGBAu8,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::RGBAu8,
 				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			},
-			render_system::AttachmentInfo {
+			render_system::AttachmentInformation {
 				texture: self.depth_target,
-				format: crate::render_backend::TextureFormats::Depth32,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::Depth32,
 				clear: Some(crate::RGBA { r: 1.0, g: 0.0, b: 0.0, a: 0.0 }),
 				load: false,
 				store: true,

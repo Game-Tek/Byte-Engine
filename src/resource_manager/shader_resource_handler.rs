@@ -1,12 +1,12 @@
 use serde::{Serialize, Deserialize};
 
-use crate::render_backend;
+use crate::rendering::render_system;
 
 use super::ResourceHandler;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Shader {
-	pub stage: render_backend::ShaderTypes,
+	pub stage: render_system::ShaderTypes,
 }
 
 pub struct ShaderResourceHandler {

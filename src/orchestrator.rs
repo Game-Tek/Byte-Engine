@@ -3,19 +3,15 @@
 
 use std::{collections::HashMap};
 
-
-
 /// System handle is a handle to a system in an [`Orchestrator`]
 pub struct SystemHandle(u32);
 
-pub trait Entity {
-	fn class() -> &'static str { std::any::type_name::<Self>() }
-}
+pub trait Entity: Send + 'static {}
 
 /// A system is a collection of components and logic to operate on them.
 pub trait System : Entity {}
 
-pub struct EntityHandle<T> {
+pub struct EntityHandle<T> where T: ?Sized {
 	internal_id: u32,
 	external_id: u32,
 	phantom: std::marker::PhantomData<T>,
@@ -36,12 +32,22 @@ impl <T> PartialEq for EntityHandle<T> {
 
 impl <T> Eq for EntityHandle<T> {}
 
-impl <T> EntityHandle<T> {
+impl <T: ?Sized> EntityHandle<T> {
 	pub fn get_external_key(&self) -> u32 { self.external_id }
 	pub fn copy(&self) -> Self {
 		Self {
 			internal_id: self.internal_id,
 			external_id: self.external_id,
+			phantom: std::marker::PhantomData,
+		}
+	}
+	pub fn get_contents(&self) -> (u32, u32) {
+		(self.internal_id, self.external_id)
+	}
+	pub fn from_contents(contents: (u32, u32)) -> Self {
+		Self {
+			internal_id: contents.0,
+			external_id: contents.1,
 			phantom: std::marker::PhantomData,
 		}
 	}
@@ -165,7 +171,7 @@ impl Orchestrator {
 
 		{
 			let systems_data = self.listeners_by_class.lock().unwrap();
-			if let Some(listeners) = systems_data.get(T::class()) {
+			if let Some(listeners) = systems_data.get(std::any::type_name::<T>()) {
 				for listener in listeners {
 					(listener.1)(self, listener.0, (handle.internal_id, handle.external_id));
 				}
@@ -204,7 +210,7 @@ impl Orchestrator {
 		{
 			let mut systems_data = self.systems_data.write().unwrap();
 			systems_data.systems.insert(internal_id, obj);
-			systems_data.systems_by_name.insert(C::class(), internal_id);
+			systems_data.systems_by_name.insert(std::any::type_name::<C>(), internal_id);
 		}
 
 		let external_id = 0;
@@ -213,7 +219,7 @@ impl Orchestrator {
 
 		{
 			let systems_data = self.listeners_by_class.lock().unwrap();
-			if let Some(listeners) = systems_data.get(C::class()) {
+			if let Some(listeners) = systems_data.get(std::any::type_name::<C>()) {
 				for listener in listeners {
 					(listener.1)(self, listener.0, (handle.internal_id, handle.external_id));
 				}
@@ -258,7 +264,7 @@ impl Orchestrator {
 		{
 			let mut listeners = self.listeners_by_class.lock().unwrap();
 			
-			let listeners = listeners.entry(T::class()).or_insert(Vec::new());
+			let listeners = listeners.entry(std::any::type_name::<T>()).or_insert(Vec::new());
 
 			listeners.push((internal_id, Box::new(move |orchestrator: &Orchestrator, entity_to_notify: u32, ha: (u32, u32)| {
 				let systems_data = orchestrator.systems_data.read().unwrap();
@@ -325,12 +331,12 @@ impl Orchestrator {
 		function(component.downcast_mut::<C>().unwrap())
 	}
 
-	pub fn get_2_mut_and<C0: 'static, C1: 'static, F, R>(&self, component_handle_0: &EntityHandle<C0>, component_handle_1: &EntityHandle<C1>, function: F) -> R where F: FnOnce(&mut C0, &mut C1) -> R {
+	pub fn get_2_mut_and<C0: 'static, C1: ?Sized + 'static, F, R>(&self, component_handle_0: &EntityHandle<C0>, component_handle_1: &EntityHandle<C1>, function: F) -> R where F: FnOnce(&mut C0, &mut C1) -> R {
 		let systems_data = self.systems_data.read().unwrap();
 		let mut component_0 = systems_data.systems[&component_handle_0.internal_id].write().unwrap();
 		let mut component_1 = systems_data.systems[&component_handle_1.internal_id].write().unwrap();
 
-		function(component_0.downcast_mut::<C0>().unwrap(), component_1.downcast_mut::<C1>().unwrap())
+		function(component_0.downcast_mut::<C0>().unwrap(), component_1.downcast_mut::<&mut C1>().unwrap())
 	}
 
 	// pub fn get_mut_by_class_and<C: System + 'static, F, R>(&self, function: F) -> R where F: FnOnce(&mut C) -> R {
@@ -401,18 +407,18 @@ impl Orchestrator {
 		function(component, OrchestratorReference { orchestrator: self, internal_id: handle.external_id });
 	}
 
-	pub fn get_by_class<S: System + 'static>(&self) -> EntityReference<S> {
+	pub fn get_by_class<S: System + ?Sized + 'static>(&self) -> EntityReference<S> {
 		let systems_data = self.systems_data.read().unwrap();
-		EntityReference { lock: systems_data.systems[&systems_data.systems_by_name[S::class()]].clone(), phantom: std::marker::PhantomData }
+		EntityReference { lock: systems_data.systems[&systems_data.systems_by_name[std::any::type_name::<S>()]].clone(), phantom: std::marker::PhantomData }
 	}
 }
 
-pub struct EntityReference<T> {
+pub struct EntityReference<T> where T: ?Sized {
 	lock: std::sync::Arc<std::sync::RwLock<dyn std::any::Any + Send + 'static>>,
 	phantom: std::marker::PhantomData<T>,
 }
 
-impl <T> EntityReference<T> {
+impl <T: ?Sized> EntityReference<T> {
 	pub fn get(&self) -> std::sync::RwLockReadGuard<dyn std::any::Any + Send + 'static> {
 		self.lock.read().unwrap()
 	}
@@ -711,11 +717,7 @@ impl <'a> OrchestratorReference<'a> {
 		self.orchestrator.subscribe_to_class::<T, C, F>(self.internal_id, function);
 	}
 
-	pub fn spawn_entity<T, P, F>(&self, function: F) -> Option<EntityHandle<T>>
-		where
-			T: Entity + Send + 'static,
-			F: IntoHandler<P, T> 
-	{
+	pub fn spawn_entity<T, P, F>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + Send + 'static, F: IntoHandler<P, T> {
 		self.orchestrator.spawn_entity::<T, P, F>(function)
 	}
 
@@ -727,7 +729,7 @@ impl <'a> OrchestratorReference<'a> {
 		self.orchestrator.set_owned_property::<E, T, S>(self.internal_id, internal_id, property, value);
 	}
 
-	pub fn get_by_class<S: System + 'static>(&self) -> EntityReference<S> {
+	pub fn get_by_class<S: System + ?Sized + 'static>(&self) -> EntityReference<S> {
 		self.orchestrator.get_by_class::<S>()
 	}
 
@@ -760,7 +762,7 @@ impl <F, R: Entity + Send + 'static> IntoHandler<(), R> for F where
 		{
 			let mut systems_data = orchestrator.systems_data.write().unwrap();
 			systems_data.systems.insert(internal_id, obj.clone());
-			systems_data.systems_by_name.insert(R::class(), internal_id);
+			systems_data.systems_by_name.insert(std::any::type_name::<R>(), internal_id);
 		}
 
 		{

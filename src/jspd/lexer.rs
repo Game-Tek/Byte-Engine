@@ -33,7 +33,9 @@ pub(crate) enum Features {
 	Root,
 	Scope,
 	Struct {
-		fields: Vec<Rc<Node>>
+		template: Option<Rc<Node>>,
+		fields: Vec<Rc<Node>>,
+		types: Vec<Rc<Node>>,
 	},
 	Member {
 		r#type: Rc<Node>,
@@ -131,6 +133,10 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 					}));
 				}
 				parser::Features::Struct { fields } => {
+					if let Some(n) = program.types.get(name) { // If the type already exists, return it.
+						return Ok(n.clone());
+					}
+
 					let mut children = Vec::new();
 
 					for field in fields {
@@ -141,7 +147,9 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 						node: Nodes::Feature {
 							name: name.clone(),
 							feature: Features::Struct {
+								template: None,
 								fields: children,
+								types: Vec::new(),
 							},
 						},
 						children: Vec::new(),
@@ -154,8 +162,48 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 					return Ok(node);
 				}
 				parser::Features::Member { r#type } => {
-					let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::NoSuchType{ type_name: r#type.clone() })?;
-					let t = lex_parsed_node(t, parser_program, program)?;
+					let t = if r#type.contains('<') {
+						let mut s = r#type.split(|c| c == '<' || c == '>');
+
+						let outer_type_name = s.next().ok_or(LexError::Undefined)?;
+
+						let outer_type = lex_parsed_node(parser_program.types.get(outer_type_name).ok_or(LexError::NoSuchType{ type_name: outer_type_name.to_string() })?, parser_program, program)?;
+
+						let inner_type_name = s.next().ok_or(LexError::Undefined)?;
+
+						let inner_type = lex_parsed_node(parser_program.types.get(inner_type_name).ok_or(LexError::NoSuchType{ type_name: inner_type_name.to_string() })?, parser_program, program)?;
+
+						if let Some(n) = program.types.get(r#type) { // If the type already exists, return it.
+							return Ok(n.clone());
+						}
+	
+						let mut children = Vec::new();
+	
+						// for field in fields {
+						// 	children.push(lex_parsed_node(&field, parser_program, program)?);
+						// }
+	
+						let struct_node = Node {
+							node: Nodes::Feature {
+								name: r#type.clone(),
+								feature: Features::Struct {
+									template: Some(outer_type.clone()),
+									fields: children,
+									types: vec![inner_type],
+								},
+							},
+							children: Vec::new(),
+						};
+	
+						let node = Rc::new(struct_node);
+	
+						program.types.insert(r#type.clone(), node.clone());
+
+						node
+					} else {
+						let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::NoSuchType{ type_name: r#type.clone() })?;
+						lex_parsed_node(t, parser_program, program)?
+					};
 
 					return Ok(Rc::new(Node {
 						node: Nodes::Feature {
@@ -244,6 +292,15 @@ mod tests {
 
 	use super::*;
 
+	fn assert_type(node: &Node, type_name: &str) {
+		match &node.node {
+			Nodes::Feature { name, feature } => {
+				assert_eq!(name, type_name);
+			}
+			_ => { panic!("Expected type"); }
+		}
+	}
+
 	#[test]
 	fn lex_function() {
 		let source = "
@@ -267,9 +324,10 @@ main: fn () -> void {
 						match &main.node {
 							Nodes::Feature { name, feature } => {
 								match feature {
-									Features::Function { params: _, return_type: _, statements, raw: _ } => {
+									Features::Function { params: _, return_type, statements, raw: _ } => {
 										assert_eq!(name, "main");
-										// TODO: assert return type
+										
+										assert_type(&return_type, "void");
 
 										let position = &statements[0];
 
@@ -286,7 +344,8 @@ main: fn () -> void {
 																match expression {
 																	Expressions::VariableDeclaration{ name, r#type } => {
 																		assert_eq!(name, "position");
-																		// TODO: assert type
+																		
+																		assert_type(&r#type, "vec4f");
 																	}
 																	_ => { panic!("Expected variable declaration"); }
 																}
@@ -316,6 +375,45 @@ main: fn () -> void {
 										}
 									}
 									_ => { panic!("Expected function got: {:#?}", feature); }
+								}
+							}
+							_ => { panic!("Expected feature"); }
+						}
+					}
+					_ => { panic!("Expected scope"); }
+				}
+			}
+			_ => { panic!("Expected scope"); }
+		}
+	}
+
+	#[test]
+	fn lex_member() {
+		let source = "
+color: In<vec4f>;
+";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = &lex(&node, &program).expect("Failed to lex");
+
+		match &node.node {
+			Nodes::Feature { name, feature } => {
+				match feature {
+					Features::Scope => {
+						assert_eq!(name, "root");
+
+						let color = &node.children[0];
+
+						match &color.node {
+							Nodes::Feature { name, feature } => {
+								match feature {
+									Features::Member { r#type } => {
+										assert_eq!(name, "color");
+										
+										assert_type(&r#type, "In<vec4f>");
+									}
+									_ => { panic!("Expected member"); }
 								}
 							}
 							_ => { panic!("Expected feature"); }

@@ -67,23 +67,23 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_tokenization() {
-		let source = "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }";
-		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens, vec!["void", "main", "(", ")", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", ";", "}"]);
-	}
-
-	#[test]
-	fn test_tokenization2() {
+	fn test_function() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }";
 		let tokens = tokenize(source).unwrap();
 		assert_eq!(tokens, vec!["fn", "main", "(", ")", "->", "void", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", ";", "}"]);
 	}
 
 	#[test]
-	fn test_tokenization3() {
+	fn test_struct() {
 		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
 		let tokens = tokenize(source).unwrap();
 		assert_eq!(tokens, vec!["struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<", "int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"]);
+	}
+
+	#[test]
+	fn test_member() {
+		let source = "color: In<vec4f>;";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(tokens, vec!["color", ":", "In", "<", "vec4f", ">", ";"]);
 	}
 }

@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator, window_system, render_system, input_manager, Vector2, rendering, render_domain, resource_manager, file_tracker};
+use crate::{orchestrator, rendering::{render_system}, window_system, input_manager, Vector2, rendering, render_domain, resource_manager, file_tracker};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -128,7 +128,7 @@ pub struct GraphicsApplication {
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
 	visibility_render_domain_handle: orchestrator::EntityHandle<render_domain::VisibilityWorldRenderDomain>,
-	render_system_handle: orchestrator::EntityHandle<render_system::RenderSystem>,
+	render_system_handle: orchestrator::EntityHandle<dyn render_system::RenderSystem>,
 }
 
 impl Application for GraphicsApplication {
@@ -163,9 +163,9 @@ impl Application for GraphicsApplication {
 
 		let file_tracker_handle = orchestrator.spawn_entity(file_tracker::FileTracker::new).unwrap();
 
-		let render_system_handle = orchestrator.spawn_entity(render_system::RenderSystem::new_as_system).unwrap();
+		let render_system_handle = rendering::create_render_system(&orchestrator);
 
-		orchestrator.get_2_mut_and(&window_system_handle, &render_system_handle, |window_system, render_system: &mut render_system::RenderSystem| {
+		orchestrator.get_2_mut_and(&window_system_handle, &render_system_handle, |window_system, render_system: &mut dyn render_system::RenderSystem| {
 			let window_handle = window_system.create_window("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 			render_system.bind_to_window(window_system.get_os_handles(&window_handle));
 		});

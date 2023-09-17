@@ -567,6 +567,23 @@ impl ShaderGenerator {
 					let mut s = String::new();
 
 					match feature {
+						lexer::Features::Member { r#type } => {
+							match &r#type.node {
+								lexer::Nodes::Feature { name, feature } => {
+									match feature {
+										lexer::Features::Struct { fields, types, template } => {
+											if let Some(t) = template {
+												s.push_str(&format!("layout(location={location}) {interpolation} {type} {name};", location = program_state.in_position, interpolation = "smooth", type = "vec4", name = name));
+											}
+										}
+										_ => todo!()
+									}
+								}
+								_ => todo!()
+							}
+
+							program_state.in_position += 1;
+						}
 						lexer::Features::Function { params: _, return_type, statements, raw: _ } => {
 							let rt = if let lexer::Nodes::Feature { name, feature } = &return_type.node {
 								name
@@ -630,7 +647,7 @@ impl ShaderGenerator {
 						}
 						lexer::Expressions::VariableDeclaration{ name, r#type } => {
 							if let lexer::Nodes::Feature { name: type_name, feature } = &r#type.node {
-								if let lexer::Features::Struct { fields } = feature {
+								if let lexer::Features::Struct { fields, types, template } = feature {
 									string.push_str(&format!("{type} {name}", type = translate_type_str(type_name), name = name));
 								} else { panic!("Expected a type feature") }
 							}

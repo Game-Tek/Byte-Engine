@@ -1303,7 +1303,7 @@ impl System for InputManager {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Action<T: Clone> { phantom: std::marker::PhantomData<T>, }
 
-impl <T: GetType + Clone> orchestrator::Entity for Action<T> {}
+impl <T: GetType + Clone + Send + 'static> orchestrator::Entity for Action<T> {}
 
 pub trait GetType {
 	fn get_type() -> Types;
@@ -1321,7 +1321,7 @@ impl GetType for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
-impl <T: Clone + Send + GetType> orchestrator::Component for Action<T> {
+impl <T: Clone + Send + GetType + 'static> orchestrator::Component for Action<T> {
 	type Parameters<'a> = (&'a str, &'a [ActionBindingDescription]);
 
 	fn new(_orchestrator: orchestrator::OrchestratorReference, (_name, _bindings): Self::Parameters<'_>) -> Self where Self: Sized {

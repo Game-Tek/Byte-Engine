@@ -263,19 +263,19 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 						children: Vec::new(),
 					}));
 				}
-				parser::Expressions::VariableDeclaration{ name, r#type } => {
+				parser::Expressions::Operator{ name } => {
 					return Ok(Rc::new(Node {
 						node: Nodes::Expression {
-							expression: Expressions::VariableDeclaration{ name: name.clone(), r#type: lex_parsed_node(parser_program.types.get(r#type).unwrap(), parser_program, program).unwrap() },
+							expression: Expressions::FunctionCall{ name: name.clone() },
 							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
 						},
 						children: Vec::new(),
 					}));
 				}
-				parser::Expressions::Assignment => {
+				parser::Expressions::VariableDeclaration{ name, r#type } => {
 					return Ok(Rc::new(Node {
 						node: Nodes::Expression {
-							expression: Expressions::Assignment,
+							expression: Expressions::VariableDeclaration{ name: name.clone(), r#type: lex_parsed_node(parser_program.types.get(r#type).unwrap(), parser_program, program).unwrap() },
 							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
 						},
 						children: Vec::new(),

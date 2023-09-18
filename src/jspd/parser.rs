@@ -109,8 +109,8 @@ pub(super) enum Expressions {
 	Member,
 	Literal{ value: String, },
 	FunctionCall{ name: String, },
+	Operator{ name: String, },
 	VariableDeclaration{ name: String, r#type: String, },
-	Assignment,
 }
 
 #[derive(Debug)]
@@ -182,10 +182,10 @@ impl Precedence for Expressions {
 	fn precedence(&self) -> u8 {
 		match self {
 			Expressions::Member => 0,
-			Expressions::Literal{ value } => 0,
-			Expressions::FunctionCall{ name } => 0,
+			Expressions::Literal{ value } => 253,
+			Expressions::FunctionCall{ name } => 253,
+			Expressions::Operator{ name } => 255,
 			Expressions::VariableDeclaration{ name, r#type } => 0,
-			Expressions::Assignment => 255,
 		}
 	}
 }
@@ -287,6 +287,13 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 	return Ok(((node, program.clone()), iterator));
 }
 
+/// Creates a new node from an expression and a following expression.
+/// If the expression has a higher precedence than the following expression, the following expression is inserted as a child of the new node.
+/// If the expression has a lower precedence than the following expression, the new node is inserted as a child of the following expression.
+///
+/// # Panics
+///
+/// Panics if .
 fn make_expression_node(following_expression: Option<&Node>, new_expression: Expressions, new_node_children: Option<Vec<Rc<Node>>>) -> Node {
 	if let Some(following_expression) = following_expression {
 		if let Nodes::Expression { expression, children: _ } = &following_expression.node {
@@ -325,7 +332,7 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax)?;
 
 	let possible_following_expressions: Vec<Parser> = vec![
-		parse_assignment,
+		parse_operator,
 	];
 
 	let ((expression, _), new_iterator) = execute_parsers(&possible_following_expressions, iterator.clone(), program)?;
@@ -335,25 +342,12 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 	return Ok(((Rc::new(expression), program.clone()), new_iterator));
 }
 
-fn parse_assignment<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
-	iterator.next().and_then(|v| if v == "=" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-
-	let possible_following_expressions: Vec<Parser> = vec![
-		parse_rvalue,
-	];
-
-	let ((expression, _), new_iterator) = execute_parsers(&possible_following_expressions, iterator.clone(), program)?;
-
-	let expression = make_expression_node(Some(&expression), Expressions::Assignment, Some(vec![expression.clone()]));
-
-	return Ok(((Rc::new(expression), program.clone()), new_iterator));
-}
-
 fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
 	let _name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
 
-	let lexers: Vec<Parser> = vec![
-		parse_assignment,
+	let lexers = vec![
+		parse_operator,
+		parse_accessor,
 	];
 
 	if let Some(Ok(((expression, _), new_iterator))) = try_execute_parsers(&lexers, iterator.clone(), program) {
@@ -376,7 +370,7 @@ fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 }
 
 fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
-	let value = iterator.next().and_then(|v| if v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	let value = iterator.next().and_then(|v| if v == "2.0" || v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	return Ok(((Rc::new(make_expression_node(None, Expressions::Literal{ value: value.clone() }, None)), program.clone()), iterator));
 }
 
@@ -388,6 +382,20 @@ fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramSta
 	];
 
 	return execute_parsers(&parsers, iterator.clone(), program);
+}
+
+fn parse_operator<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
+	let operator = iterator.next().and_then(|v| if v == "*" || v == "+" || v == "-" || v == "/" || v == "=" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+
+	let possible_following_expressions: Vec<Parser> = vec![
+		parse_rvalue,
+	];
+
+	let ((expression, _), new_iterator) = execute_parsers(&possible_following_expressions, iterator.clone(), program)?;
+
+	let expression = make_expression_node(Some(&expression), Expressions::Operator { name: operator.clone() }, Some(vec![expression.clone()]));
+
+	return Ok(((Rc::new(expression), program.clone()), new_iterator));
 }
 
 fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
@@ -415,7 +423,16 @@ fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: 
 		}
 	}
 
-	return Ok(((Rc::new(make_expression_node(None, Expressions::FunctionCall{ name: function_name.clone() }, Some(children))), program.clone()), iterator));
+	let valid_expressions = vec![
+		parse_operator,
+		parse_accessor,
+	];
+
+	let ((expression, _), new_iterator) = execute_parsers(&valid_expressions, iterator.clone(), program)?;
+
+	let expression = make_expression_node(Some(&expression), Expressions::FunctionCall{ name: function_name.clone() }, Some(children));
+
+	return Ok(((Rc::new(expression), program.clone()), new_iterator));
 }
 
 fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> ParserResult<'a> {
@@ -561,7 +578,9 @@ Light: struct {
 				let statement = &statements[0];
 
 				if let Nodes::Expression { expression, children } = &statement.node {
-					if let Expressions::Assignment = expression {
+					if let Expressions::Operator { name } = expression {
+						assert_eq!(name, "=");
+
 						let var_decl = &children[0];
 
 						if let Nodes::Expression { expression, children: _ } = &var_decl.node {
@@ -610,7 +629,7 @@ main: fn () -> void {
 	fn parse_operators() {
 		let source = "
 main: fn () -> void {
-	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2;
+	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
 	gl_Position = position;
 }";
 
@@ -620,7 +639,122 @@ main: fn () -> void {
 		if let Nodes::Feature { name, feature: _ } = &node.node {
 			assert_eq!(name, "root");
 
-			assert_function(&node["main"]);
+			let main_node = &node["main"];
+
+			if let Nodes::Feature { name, feature } = &main_node.node {
+				assert_eq!(name, "main");
+
+				if let Features::Function { params, return_type, statements, raw } = feature {
+					assert_eq!(statements.len(), 2);
+
+					let statement0 = &statements[0];
+
+					if let Nodes::Expression { expression, children } = &statement0.node {
+						if let Expressions::Operator { name } = expression {
+							assert_eq!(name, "=");
+
+							let var_decl = &children[0];
+
+							if let Nodes::Expression { expression, children } = &var_decl.node {
+								if let Expressions::VariableDeclaration { name, r#type } = expression {
+								} else { panic!("Not a variable declaration"); }
+							} else { panic!("Not an expression"); }
+
+							let multiply = &children[1];
+
+							if let Nodes::Expression { expression, children } = &multiply.node {
+								if let Expressions::Operator { name, } = expression {
+									assert_eq!(name, "*");
+								} else { panic!("Not a variable declaration"); }
+
+								let vec4 = &children[0];
+
+								if let Nodes::Expression { expression, children } = &vec4.node {
+									if let Expressions::FunctionCall { name, } = expression {
+										assert_eq!(name, "vec4");
+									} else { panic!("Not a variable declaration"); }
+								} else { panic!("Not an expression"); }
+
+								let literal = &children[1];
+
+								if let Nodes::Expression { expression, children } = &literal.node {
+									if let Expressions::Literal { value, } = expression {
+										assert_eq!(value, "2.0");
+									} else { panic!("Not a variable declaration"); }
+								} else { panic!("Not an expression"); }
+							} else { panic!("Not an expression"); }
+						} else { panic!("Not an assignment"); }
+					} else { panic!("Not an expression"); }
+				} else { panic!("Not a function"); }
+			} else { panic!("Not a feature"); }
+		} else { panic!("Not root node") }
+	}
+
+
+	#[test]
+	fn parse_accessor() {
+		let source = "
+main: fn () -> void {
+	poot: vec4 = vec4(0.0, 0.0, 0.0, 1.0);
+	position: vec4f = vec4(poot.x, 0.0, 0.0, 1.0) * 2.0;
+	position.y = 2.0;
+	gl_Position = position;
+}";
+
+		let tokens = tokenize(source).unwrap();
+		let (node, _program) = parse(tokens).expect("Failed to parse");
+
+		if let Nodes::Feature { name, feature: _ } = &node.node {
+			assert_eq!(name, "root");
+
+			let main_node = &node["main"];
+
+			if let Nodes::Feature { name, feature } = &main_node.node {
+				assert_eq!(name, "main");
+
+				if let Features::Function { params, return_type, statements, raw } = feature {
+					assert_eq!(statements.len(), 4);
+
+					let statement0 = &statements[0];
+
+					if let Nodes::Expression { expression, children } = &statement0.node {
+						if let Expressions::Operator { name } = expression {
+							assert_eq!(name, "=");
+
+							let var_decl = &children[0];
+
+							if let Nodes::Expression { expression, children } = &var_decl.node {
+								if let Expressions::VariableDeclaration { name, r#type } = expression {
+								} else { panic!("Not a variable declaration"); }
+							} else { panic!("Not an expression"); }
+
+							let multiply = &children[1];
+
+							if let Nodes::Expression { expression, children } = &multiply.node {
+								if let Expressions::Operator { name, } = expression {
+									assert_eq!(name, "*");
+								} else { panic!("Not a variable declaration"); }
+
+								let vec4 = &children[0];
+
+								if let Nodes::Expression { expression, children } = &vec4.node {
+									if let Expressions::FunctionCall { name, } = expression {
+										assert_eq!(name, "vec4");
+									} else { panic!("Not a variable declaration"); }
+								} else { panic!("Not an expression"); }
+
+								let literal = &children[1];
+
+								if let Nodes::Expression { expression, children } = &literal.node {
+									if let Expressions::Literal { value, } = expression {
+										assert_eq!(value, "2.0");
+									} else { panic!("Not a variable declaration"); }
+								} else { panic!("Not an expression"); }
+							} else { panic!("Not an expression"); }
+						} else { panic!("Not an assignment"); }
+					} else { panic!("Not an expression"); }
+				} else { panic!("Not a function"); }
+			} else { panic!("Not a feature"); }
 		} else { panic!("Not root node") }
 	}
 

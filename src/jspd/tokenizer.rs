@@ -74,6 +74,13 @@ mod tests {
 	}
 
 	#[test]
+	fn test_operators() {
+		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(tokens, vec!["fn", "main", "(", ")", "->", "void", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", "*", "2.0", ";", "}"]);
+	}
+
+	#[test]
 	fn test_struct() {
 		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
 		let tokens = tokenize(source).unwrap();

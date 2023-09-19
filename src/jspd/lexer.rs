@@ -58,6 +58,7 @@ pub(crate) enum Expressions {
 		r#type: Rc<Node>,
 	},
 	Assignment,
+Accessor,
 }
 
 #[derive(Debug)]
@@ -236,7 +237,16 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 		}
 		parser::Nodes::Expression { expression, children } => {
 			match expression {
-				parser::Expressions::Member => {
+				parser::Expressions::Accessor => {
+					return Ok(Rc::new(Node {
+						node: Nodes::Expression {
+							expression: Expressions::Accessor,
+							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
+						},
+						children: Vec::new(),
+					}));
+				}
+				parser::Expressions::Member{ name } => {
 					return Ok(Rc::new(Node {
 						node: Nodes::Expression {
 							expression: Expressions::Member,

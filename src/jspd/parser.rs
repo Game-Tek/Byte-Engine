@@ -746,27 +746,25 @@ main: fn () -> void {
 							let accessor = &children[0];
 
 							if let Nodes::Expression { expression, children } = &accessor.node {
-								if let Expressions::Member { name } = expression {
-									assert_eq!(name, "y");
-									assert_eq!(children.len(), 1); // accessor
+								if let Expressions::Accessor = expression {
+									assert_eq!(children.len(), 2); // position && y
 
-									let accessor = &children[0];
+									let position = &children[0];
 
-									if let Nodes::Expression { expression, children } = &accessor.node {
-										if let Expressions::Accessor = expression {
-											assert_eq!(children.len(), 1); // position member
-
-											let y = &children[0];
-
-											if let Nodes::Expression { expression, children } = &y.node {
-												if let Expressions::Member { name } = expression {
-													assert_eq!(name, "position");
-													assert_eq!(children.len(), 0);
-												} else { panic!("Not a member"); }
-											} else { panic!("Not an expression"); }
-										} else { panic!("Not an accessor"); }
+									if let Nodes::Expression { expression, children } = &position.node {
+										if let Expressions::Member { name } = expression {
+											assert_eq!(name, "position");
+										} else { panic!("Not a variable declaration"); }
 									} else { panic!("Not an expression"); }
-								} else { panic!("Not a member"); }
+
+									let y = &children[1];
+
+									if let Nodes::Expression { expression, children } = &y.node {
+										if let Expressions::Member { name } = expression {
+											assert_eq!(name, "y");
+										} else { panic!("Not a variable declaration"); }
+									} else { panic!("Not an expression"); }
+								} else { panic!("Not an accessor"); }
 							} else { panic!("Not an expression"); }
 
 							let literal = &children[1];

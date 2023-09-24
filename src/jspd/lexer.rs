@@ -11,54 +11,59 @@ pub(super) fn lex(node: &parser::Node, parser_program: &parser::ProgramState) ->
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Node {
+pub struct Node {
 	pub(crate) node: Nodes,
-	pub(crate) children: Vec<Rc<Node>>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum Nodes {
-	Feature {
-		name: String,
-		feature: Features,
-	},
-	Expression {
-		expression: Expressions,
-		children: Vec<Rc<Node>>,
-	},
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum Features {
-	Root,
-	Scope,
+	Scope{ name: String, children: Vec<Rc<Node>> },
 	Struct {
+		name: String,
 		template: Option<Rc<Node>>,
 		fields: Vec<Rc<Node>>,
 		types: Vec<Rc<Node>>,
 	},
 	Member {
+		name: String,
 		r#type: Rc<Node>,
 	},
 	Function {
+		name: String,
 		params: Vec<Rc<Node>>,
 		return_type: Rc<Node>,
 		statements: Vec<Rc<Node>>,
 		raw: Option<String>,
 	},
+	Expression(Expressions),
+	GLSL {
+		code: String,
+	}
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum Features {
+
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum Expressions {
-	Member,
-	Literal{ value: String },
-	FunctionCall{ name: String },
-	VariableDeclaration{
-		name: String,
-		r#type: Rc<Node>,
+	Member{ name: String },
+	Literal { value: String },
+	FunctionCall { name: String, parameters: Vec<Rc<Node>> },
+	Operator {
+		left: Rc<Node>,
+		right: Rc<Node>,
 	},
-	Assignment,
-Accessor,
+	VariableDeclaration {
+		name: String,
+		// r#type: Rc<Node>,
+		r#type: String,
+	},
+	Accessor {
+		left: Rc<Node>,
+		right: Rc<Node>,
+	}
 }
 
 #[derive(Debug)]
@@ -101,194 +106,171 @@ fn try_execute_lexers<'a>(lexers: &[Lexer<'a>], iterator: std::slice::Iter<'a, S
 
 fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramState, program: &mut ProgramState) -> Result<Rc<Node>, LexError> {
 	match &parser_node.node {
-		parser::Nodes::Feature { name, feature } => {
-			match feature {
-				parser::Features::Root => {
-					let mut children = Vec::new();
+		parser::Nodes::Scope{ name, children } => {
+			let mut ch = Vec::new();
 
-					for child in &parser_node.children {
-						children.push(lex_parsed_node(child, parser_program, program)?);
-					}
+			for child in children {
+				ch.push(lex_parsed_node(child, parser_program, program)?);
+			}
 
-					return Ok(Rc::new(Node {
-						node: Nodes::Feature {
-							name: name.clone(),
-							feature: Features::Root,
-						},
-						children,
-					}));
-				}
-				parser::Features::Scope => {
-					let mut children = Vec::new();
+			return Ok(Rc::new(Node {
+				node: Nodes::Scope{ name: name.clone(), children: ch, }
+			}));
+		}
+		parser::Nodes::Struct { name, fields } => {
+			if let Some(n) = program.types.get(name) { // If the type already exists, return it.
+				return Ok(n.clone());
+			}
 
-					for child in &parser_node.children {
-						children.push(lex_parsed_node(child, parser_program, program)?);
-					}
+			let mut children = Vec::new();
 
-					return Ok(Rc::new(Node {
-						node: Nodes::Feature {
-							name: name.clone(),
-							feature: Features::Scope,
-						},
-						children,
-					}));
-				}
-				parser::Features::Struct { fields } => {
-					if let Some(n) = program.types.get(name) { // If the type already exists, return it.
-						return Ok(n.clone());
-					}
+			for field in fields {
+				children.push(lex_parsed_node(&field, parser_program, program)?);
+			}
 
-					let mut children = Vec::new();
+			let struct_node = Node {
+				node: Nodes::Struct {
+					name: name.clone(),
+					template: None,
+					fields: children,
+					types: Vec::new(),
+				},
+			};
 
-					for field in fields {
-						children.push(lex_parsed_node(&field, parser_program, program)?);
-					}
+			let node = Rc::new(struct_node);
 
-					let struct_node = Node {
-						node: Nodes::Feature {
-							name: name.clone(),
-							feature: Features::Struct {
-								template: None,
-								fields: children,
+			program.types.insert(name.clone(), node.clone());
+			program.types.insert(format!("{}*", name.clone()), node.clone());
+
+			return Ok(node);
+		}
+		parser::Nodes::Member { name, r#type } => {
+			let t = if r#type.contains('<') {
+				let mut s = r#type.split(|c| c == '<' || c == '>');
+
+				let outer_type_name = s.next().ok_or(LexError::Undefined)?;
+
+				let outer_type = lex_parsed_node(parser_program.types.get(outer_type_name).ok_or(LexError::NoSuchType{ type_name: outer_type_name.to_string() })?, parser_program, program)?;
+
+				let inner_type_name = s.next().ok_or(LexError::Undefined)?;
+
+				let inner_type = if inner_type_name.ends_with('*') {
+					let x = Rc::new(
+						Node {
+							node: Nodes::Struct {
+								name: format!("{}*", &inner_type_name[..inner_type_name.len() - 1]),
+								template: Some(outer_type.clone()),
+								fields: Vec::new(),
 								types: Vec::new(),
 							},
-						},
-						children: Vec::new(),
-					};
-
-					let node = Rc::new(struct_node);
-
-					program.types.insert(name.clone(), node.clone());
-
-					return Ok(node);
-				}
-				parser::Features::Member { r#type } => {
-					let t = if r#type.contains('<') {
-						let mut s = r#type.split(|c| c == '<' || c == '>');
-
-						let outer_type_name = s.next().ok_or(LexError::Undefined)?;
-
-						let outer_type = lex_parsed_node(parser_program.types.get(outer_type_name).ok_or(LexError::NoSuchType{ type_name: outer_type_name.to_string() })?, parser_program, program)?;
-
-						let inner_type_name = s.next().ok_or(LexError::Undefined)?;
-
-						let inner_type = lex_parsed_node(parser_program.types.get(inner_type_name).ok_or(LexError::NoSuchType{ type_name: inner_type_name.to_string() })?, parser_program, program)?;
-
-						if let Some(n) = program.types.get(r#type) { // If the type already exists, return it.
-							return Ok(n.clone());
 						}
-	
-						let mut children = Vec::new();
-	
-						// for field in fields {
-						// 	children.push(lex_parsed_node(&field, parser_program, program)?);
-						// }
-	
-						let struct_node = Node {
-							node: Nodes::Feature {
-								name: r#type.clone(),
-								feature: Features::Struct {
-									template: Some(outer_type.clone()),
-									fields: children,
-									types: vec![inner_type],
-								},
-							},
-							children: Vec::new(),
-						};
-	
-						let node = Rc::new(struct_node);
-	
-						program.types.insert(r#type.clone(), node.clone());
+					);
 
-						node
-					} else {
-						let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::NoSuchType{ type_name: r#type.clone() })?;
-						lex_parsed_node(t, parser_program, program)?
-					};
+					program.types.insert(format!("{}*", &inner_type_name[..inner_type_name.len() - 1]), x.clone());
 
-					return Ok(Rc::new(Node {
-						node: Nodes::Feature {
-							name: name.clone(),
-							feature: Features::Member {
-								r#type: t,
-							},
-						},
-						children: Vec::new(),
-					}));
+					x
+				} else {					
+					lex_parsed_node(parser_program.types.get(inner_type_name).ok_or(LexError::NoSuchType{ type_name: inner_type_name.to_string() })?, parser_program, program)?
+				};
+
+				if let Some(n) = program.types.get(r#type) { // If the type already exists, return it.
+					return Ok(n.clone());
 				}
-				parser::Features::Function { params, return_type, statements, raw } => {
-					let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::NoSuchType{ type_name: return_type.clone() })?;
-					let t = lex_parsed_node(t, parser_program, program)?;
 
-					return Ok(Rc::new(Node {
-						node: Nodes::Feature {
-							name: name.clone(),
-							feature: Features::Function {
-								params: Vec::new(),
-								return_type: t,
-								statements: statements.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-								raw: raw.clone(),
-							},
-						},
-						children: Vec::new(),
-					}));
-				}
-			}
+				let mut children = Vec::new();
+
+				// for field in fields {
+				// 	children.push(lex_parsed_node(&field, parser_program, program)?);
+				// }
+
+				let struct_node = Node {
+					node: Nodes::Struct {
+						name: r#type.clone(),
+						template: Some(outer_type.clone()),
+						fields: children,
+						types: vec![inner_type],
+					},
+				};
+
+				let node = Rc::new(struct_node);
+
+				program.types.insert(r#type.clone(), node.clone());
+
+				node
+			} else {
+				let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::NoSuchType{ type_name: r#type.clone() })?;
+				lex_parsed_node(t, parser_program, program)?
+			};
+
+			return Ok(Rc::new(Node {
+				node: Nodes::Member {
+					name: name.clone(),
+					r#type: t,
+				},
+			}));
 		}
-		parser::Nodes::Expression { expression, children } => {
+		parser::Nodes::Function { name, params, return_type, statements, raw } => {
+			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::NoSuchType{ type_name: return_type.clone() })?;
+			let t = lex_parsed_node(t, parser_program, program)?;
+
+			return Ok(Rc::new(Node {
+				node: Nodes::Function {
+					name: name.clone(),
+					params: Vec::new(),
+					return_type: t,
+					statements: statements.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
+					raw: raw.clone(),
+				},
+			}));
+		}
+		parser::Nodes::Expression(expression) => {
 			match expression {
-				parser::Expressions::Accessor => {
+				parser::Expressions::Accessor{ left, right } => {
 					return Ok(Rc::new(Node {
-						node: Nodes::Expression {
-							expression: Expressions::Accessor,
-							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-						},
-						children: Vec::new(),
+						node: Nodes::Expression(Expressions::Accessor {
+							left: lex_parsed_node(&left, parser_program, program)?,
+							right: lex_parsed_node(&right, parser_program, program)?,
+						}),
 					}));
 				}
 				parser::Expressions::Member{ name } => {
 					return Ok(Rc::new(Node {
-						node: Nodes::Expression {
-							expression: Expressions::Member,
-							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-						},
-						children: Vec::new(),
+						node: Nodes::Expression(Expressions::Member {
+							name: name.clone(),
+
+						}),
 					}));
 				}
 				parser::Expressions::Literal{ value } => {
 					return Ok(Rc::new(Node {
-						node: Nodes::Expression {
-							expression: Expressions::Literal{ value: value.clone() },
-							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-						},
-						children: Vec::new(),
+						node: Nodes::Expression(Expressions::Literal {
+							value: value.clone(),
+						}),
 					}));
 				}
-				parser::Expressions::FunctionCall{ name } => {
+				parser::Expressions::FunctionCall{ name, parameters } => {
 					return Ok(Rc::new(Node {
-						node: Nodes::Expression {
-							expression: Expressions::FunctionCall{ name: name.clone() },
-							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-						},
-						children: Vec::new(),
+						node: Nodes::Expression(Expressions::FunctionCall {
+							name: name.clone(),
+							parameters: parameters.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
+						}),
 					}));
 				}
-				parser::Expressions::Operator{ name } => {
+				parser::Expressions::Operator{ name, left, right } => {
 					return Ok(Rc::new(Node {
-						node: Nodes::Expression {
-							expression: Expressions::FunctionCall{ name: name.clone() },
-							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-						},
-						children: Vec::new(),
+						node: Nodes::Expression(Expressions::Operator {
+							left: lex_parsed_node(&left, parser_program, program)?,
+							right: lex_parsed_node(&right, parser_program, program)?,
+						}),
 					}));
 				}
 				parser::Expressions::VariableDeclaration{ name, r#type } => {
 					return Ok(Rc::new(Node {
-						node: Nodes::Expression {
-							expression: Expressions::VariableDeclaration{ name: name.clone(), r#type: lex_parsed_node(parser_program.types.get(r#type).unwrap(), parser_program, program).unwrap() },
-							children: children.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
-						},
-						children: Vec::new(),
+						node: Nodes::Expression(Expressions::VariableDeclaration {
+							name: name.clone(),
+							// r#type: lex_parsed_node(&r#type, parser_program, program)?,
+							r#type: r#type.clone(),
+						}),
 					}));
 				}
 			}
@@ -304,7 +286,7 @@ mod tests {
 
 	fn assert_type(node: &Node, type_name: &str) {
 		match &node.node {
-			Nodes::Feature { name, feature } => {
+			Nodes::Struct { name, fields, template, types } => {
 				assert_eq!(name, type_name);
 			}
 			_ => { panic!("Expected type"); }
@@ -324,73 +306,44 @@ main: fn () -> void {
 		let node = &lex(&node, &program).expect("Failed to lex");
 
 		match &node.node {
-			Nodes::Feature { name, feature } => {
-				match feature {
-					Features::Scope => {
-						assert_eq!(name, "root");
+			Nodes::Scope{ name, children } => {
+				let main = &children[0];
 
-						let main = &node.children[0];
+				match &main.node {
+					Nodes::Function { name, params: _, return_type, statements, raw: _ } => {
+						assert_eq!(name, "main");
+						assert_type(&return_type, "void");
 
-						match &main.node {
-							Nodes::Feature { name, feature } => {
-								match feature {
-									Features::Function { params: _, return_type, statements, raw: _ } => {
-										assert_eq!(name, "main");
+						let position = &statements[0];
+
+						match &position.node {
+							Nodes::Expression(Expressions::Operator { left, right }) => {
+								let position = &left;
+
+								match &position.node {
+									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {
+										assert_eq!(name, "position");
 										
-										assert_type(&return_type, "void");
-
-										let position = &statements[0];
-
-										match &position.node {
-											Nodes::Expression { expression, children } => {
-												match expression {
-													Expressions::Assignment => {
-														assert_eq!(children.len(), 2);
-
-														let position = &children[0];
-
-														match &position.node {
-															Nodes::Expression { expression, children: _ } => {
-																match expression {
-																	Expressions::VariableDeclaration{ name, r#type } => {
-																		assert_eq!(name, "position");
-																		
-																		assert_type(&r#type, "vec4f");
-																	}
-																	_ => { panic!("Expected variable declaration"); }
-																}
-															}
-															_ => { panic!("Expected expression"); }
-														}
-
-														let constructor = &children[1];
-
-														match &constructor.node {
-															Nodes::Expression { expression, children } => {
-																match expression {
-																	Expressions::FunctionCall{ name } => {
-																		assert_eq!(name, "vec4");
-																		assert_eq!(children.len(), 4);
-																	}
-																	_ => { panic!("Expected function call"); }
-																}
-															}
-															_ => { panic!("Expected expression"); }
-														}
-													}
-													_ => { panic!("Expected variable declaration"); }
-												}
-											}
-											_ => { panic!("Expected expression"); }
-										}
+										// assert_type(&r#type, "vec4f");
+										assert_eq!(r#type, "vec4f");
 									}
-									_ => { panic!("Expected function got: {:#?}", feature); }
+									_ => { panic!("Expected expression"); }
+								}
+
+								let constructor = &right;
+
+								match &constructor.node {
+									Nodes::Expression(Expressions::FunctionCall{ name, parameters }) => {
+										assert_eq!(name, "vec4");
+										assert_eq!(parameters.len(), 4);
+									}
+									_ => { panic!("Expected expression"); }
 								}
 							}
-							_ => { panic!("Expected feature"); }
+							_ => { panic!("Expected variable declaration"); }
 						}
 					}
-					_ => { panic!("Expected scope"); }
+					_ => { panic!("Expected function."); }
 				}
 			}
 			_ => { panic!("Expected scope"); }
@@ -408,28 +361,17 @@ color: In<vec4f>;
 		let node = &lex(&node, &program).expect("Failed to lex");
 
 		match &node.node {
-			Nodes::Feature { name, feature } => {
-				match feature {
-					Features::Scope => {
-						assert_eq!(name, "root");
+			Nodes::Scope{ name, children } => {
+				assert_eq!(name, "root");
 
-						let color = &node.children[0];
+				let color = &children[0];
 
-						match &color.node {
-							Nodes::Feature { name, feature } => {
-								match feature {
-									Features::Member { r#type } => {
-										assert_eq!(name, "color");
-										
-										assert_type(&r#type, "In<vec4f>");
-									}
-									_ => { panic!("Expected member"); }
-								}
-							}
-							_ => { panic!("Expected feature"); }
-						}
+				match &color.node {
+					Nodes::Member { name, r#type } => {
+						assert_eq!(name, "color");						
+						assert_type(&r#type, "In<vec4f>");
 					}
-					_ => { panic!("Expected scope"); }
+					_ => { panic!("Expected feature"); }
 				}
 			}
 			_ => { panic!("Expected scope"); }

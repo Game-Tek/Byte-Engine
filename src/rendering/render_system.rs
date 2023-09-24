@@ -292,8 +292,6 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn render_triangle(renderer: &mut dyn RenderSystem) {
-		log::set_boxed_logger(Box::new(simple_logger::SimpleLogger::new())).unwrap();
-
 		let signal = renderer.create_synchronizer(false);
 
 		let floats: [f32;21] = [

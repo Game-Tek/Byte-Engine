@@ -1,17 +1,17 @@
 
 
+use std::rc::Rc;
+
+use crate::jspd::lexer;
+
 use super::shader_generator::ShaderGenerator;
 
 pub(crate) struct CommonShaderGenerator {
 }
 
 impl ShaderGenerator for CommonShaderGenerator {
-	fn process(&self) -> (&'static str, json::JsonValue) {
-		let items = json::object! {
-			"type": "scope",
-			"get_debug_color": {
-				"type": "function",
-				"code": "vec4 get_debug_color(uint i) {
+	fn process(&self, mut children: Vec<Rc<lexer::Node>>) -> (&'static str, lexer::Node) {
+		let code = "vec4 get_debug_color(uint i) {
 	vec4 colors[16] = vec4[16](
 		vec4(0.16863, 0.40392, 0.77647, 1),
 		vec4(0.32941, 0.76863, 0.21961, 1),
@@ -32,11 +32,15 @@ impl ShaderGenerator for CommonShaderGenerator {
 	);
 
 	return colors[i % 16];
-}"
-			}
+}";
+
+		children.insert(0, Rc::new(lexer::Node { node: lexer::Nodes::GLSL { code: code.to_string() } }));
+
+		let node = lexer::Node {
+			node: lexer::Nodes::Scope { name: "Common".to_string(), children }
 		};
 
-		(Self::SCOPE, items)
+		(Self::SCOPE, node)
 	}
 }
 

@@ -1,9 +1,9 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, rc::Rc};
 
-use log::{warn, debug};
+use log::{warn, debug, error};
 use polodb_core::bson::Document;
 
-use crate::{rendering::shader_generator::ShaderGenerator, shader_generator, jspd};
+use crate::{rendering::shader_generator::ShaderGenerator, shader_generator, jspd::{self, lexer}};
 
 use super::ResourceHandler;
 
@@ -40,28 +40,36 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
 			let arlp = "assets/".to_string() + path;
-			let shader_code = std::fs::read_to_string(&arlp).unwrap();
-			let _shader = jspd::compile_to_jspd(&shader_code).unwrap();
 
-			let mut shader_spec = json::object! { glsl: { version: "450" } };
+			let shader_node = if path.ends_with(".glsl") {
+				let shader_code = std::fs::read_to_string(&arlp).unwrap();
+				jspd::lexer::Node {
+					node: jspd::lexer::Nodes::GLSL { code: shader_code },
+				}
+			} else if path.ends_with(".besl") {
+				let shader_code = std::fs::read_to_string(&arlp).unwrap();
+				jspd::compile_to_jspd(&shader_code).unwrap()
+			} else {
+				panic!("Unknown shader type");
+			};
 
 			let common = crate::rendering::common_shader_generator::CommonShaderGenerator::new();
 
-			let c = common.process();
-
-			shader_spec["root"][c.0] = c.1;
-
 			let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
+			
+			let (_, visibility_node) = visibility.process(vec![Rc::new(shader_node)]);
+			let visibility_node = Rc::new(visibility_node);
 
-			let v = visibility.process();
+			let (_, common_node)  = common.process(vec![visibility_node]);
+			let common_node = Rc::new(common_node);
 
-			shader_spec["root"][c.0][v.0] = v.1;
-
-			//shader_spec["root"][c.0][v.0]["MyShader"] = shader;
+			let root_node = lexer::Node {
+				node: lexer::Nodes::Scope { name: "root".to_string(), children: vec![common_node.clone()] },
+			};
 
 			let shader_generator = shader_generator::ShaderGenerator::new();
 
-			let glsl = shader_generator.generate(&shader_spec, &json::object!{ path: "Common.Visibility.MyShader", stage: stage });
+			let glsl = shader_generator.generate(&root_node, &json::object!{ path: "Common.Visibility.MyShader", stage: stage, glsl: { version: "450" } });
 
 			let compiler = shaderc::Compiler::new().unwrap();
 			let mut options = shaderc::CompileOptions::new().unwrap();
@@ -76,9 +84,10 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			// TODO: if shader fails to compile try to generate a failsafe shader
 
-			let compilation_artifact = match binary { Ok(binary) => { binary } Err(error) => {
-				debug!("{}", &glsl);
-				return Err(error.to_string());
+			let compilation_artifact = match binary { Ok(binary) => { binary } Err(err) => {
+				error!("Failed to compile shader: {}", err);
+				error!("{}", &glsl);
+				return Err(err.to_string());
 			} };
 
 			if compilation_artifact.get_num_warnings() > 0 {

@@ -1,3 +1,7 @@
+use std::rc::Rc;
+
+use crate::jspd::{self, lexer};
+
 use super::shader_generator::ShaderGenerator;
 
 pub struct VisibilityShaderGenerator {}
@@ -9,19 +13,16 @@ impl VisibilityShaderGenerator {
 }
 
 impl ShaderGenerator for VisibilityShaderGenerator {
-	fn process(&self) -> (&'static str, json::JsonValue) {
+	fn process(&self, mut parent_children: Vec<Rc<lexer::Node>>) -> (&'static str, lexer::Node) {
 		let value = json::object! {
 			"type": "scope",
-			"pc": {
+			"camera": {
 				"type": "push_constant",
-				"camera": {
-					"type": "member",
-					"data_type": "Camera*"
-				},
-				"meshes": {
-					"type": "member",
-					"data_type": "Mesh*"
-				},
+				"data_type": "Camera*"
+			},
+			"meshes": {
+				"type": "push_constant",
+				"data_type": "Mesh*"
 			},
 			"Camera": {
 				"type": "struct",
@@ -50,24 +51,15 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 				"__only_under": "Vertex",
 				"in_position": {
 					"type": "in",
-					"in_position": {
-						"type": "member",
-						"data_type": "vec3f",
-					}
+					"data_type": "vec3f",
 				},
 				"in_normal": {
 					"type": "in",
-					"in_normal": {
-						"type": "member",
-						"data_type": "vec3f",
-					}
+					"data_type": "vec3f",
 				},
 				"out_instance_index": {
 					"type": "out",
-					"out_instance_index": {
-						"type": "member",
-						"data_type": "u32",
-					},
+					"data_type": "u32",
 					"interpolation": "flat"
 				},
 			},
@@ -76,22 +68,22 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 				"__only_under": "Fragment",
 				"in_instance_index": {
 					"type": "in",
-					"in_instance_index": {
-						"type": "member",
-						"data_type": "u32",
-					},
+					"data_type": "u32",
 					"interpolation": "flat"
 				},
 				"out_color": {
 					"type": "out",
-					"out_color": {
-						"type": "member",
-						"data_type": "vec4f",
-					}
+					"data_type": "vec4f",
 				}
 			}
 		};
 
-		("Visibility", value)
+		let mut node = jspd::json_to_jspd(&value).unwrap();
+
+		if let lexer::Nodes::Scope { name, children } = &mut node.node {
+			children.append(&mut parent_children);
+		};
+
+		("Visibility", node)
 	}
 }

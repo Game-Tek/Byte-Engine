@@ -282,7 +282,7 @@ impl ShaderGenerator {
 	/// 	"stage": "Vertex" | "Fragment" | "Compute",
 	/// }
 	/// ```
-	pub fn generate(&self, program_spec: &json::JsonValue, compilation_settings: &json::JsonValue) -> String {
+	pub fn from_json(&self, program_spec: &json::JsonValue, compilation_settings: &json::JsonValue) -> String {
 		let mut nodes = Vec::with_capacity(32);
 
 		nodes.push(("GLSL".to_string(), {
@@ -502,7 +502,7 @@ impl ShaderGenerator {
 		}
 	}
 
-	pub(crate) fn generate_from_jspd(&self, root: &Node, compilation_settings: &json::JsonValue) -> String {
+	pub(crate) fn generate(&self, root: &Node, compilation_settings: &json::JsonValue) -> String {
 		let mut nodes = Vec::with_capacity(32);
 
 		nodes.push(("GLSL".to_string(), {
@@ -545,72 +545,52 @@ impl ShaderGenerator {
 		}
 
 		fn process_node(string: Option<&mut String>, node: &Node, compilation_settings: &json::JsonValue, program_state: &mut ProgramState) {
-			// "push_constant" => {
-			// 	let mut shader_string = if let Some(pc) = program_state.nodes.iter().find(|n| n.0 == "push_constant") {
-			// 		pc.1.clone()
-			// 	} else {
-			// 		program_state.nodes.push(("push_constant".to_string(), String::new()));
-			// 		format!("layout(push_constant) uniform push_constants {{")
-			// 	};
-
-			// 	program_state.push_constants += 1;
-
-			// 	for entry in node.entries() {
-			// 		process_node(Some(&mut shader_string), entry, compilation_settings, program_state);
-			// 	}
-
-			// 	program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
-			// }
-
 			match &node.node {
-				lexer::Nodes::Feature { name, feature } =>{
+				lexer::Nodes::Member { name, r#type } => {
 					let mut s = String::new();
 
-					match feature {
-						lexer::Features::Member { r#type } => {
-							match &r#type.node {
-								lexer::Nodes::Feature { name, feature } => {
-									match feature {
-										lexer::Features::Struct { fields, types, template } => {
-											if let Some(t) = template {
-												s.push_str(&format!("layout(location={location}) {interpolation} {type} {name};", location = program_state.in_position, interpolation = "smooth", type = "vec4", name = name));
-											}
+					match &r#type.node {
+						lexer::Nodes::Struct { name: _, fields, types, template } => {
+							if let Some(t) = template {
+								if let lexer::Nodes::Struct { name: type_name, template, fields: _, types: _ } = &t.node {
+									if type_name == "In" {
+										if let lexer::Nodes::Struct { name: type_name, template, fields, types } = &types[0].node {
+											let interpolation = if type_name == "u32" {
+												"flat"
+											} else {
+												""
+											};
+
+											s.push_str(&format!("layout(location={location}) in {interpolation} {type} {name};\n", location = program_state.in_position, interpolation=interpolation, type = translate_type_str(&type_name), name = name));
 										}
-										_ => todo!()
+
+										program_state.in_position += 1;
 									}
-								}
-								_ => todo!()
-							}
 
-							program_state.in_position += 1;
-						}
-						lexer::Features::Function { params: _, return_type, statements, raw: _ } => {
-							let rt = if let lexer::Nodes::Feature { name, feature } = &return_type.node {
-								name
-							} else { panic!("Expected a feature node") };
-
-							s.push_str(&format!("{return_type} {name}() {{", return_type = translate_type_str(rt)));
-
-							for statement in statements {
-								process_node(Some(&mut s), statement, compilation_settings, program_state);
-								s.push_str(";");
-							}
-
-							s.push_str("}");
-						}
-						lexer::Features::Scope => {
-							let is_some = match name.as_str() { "Vertex" | "Fragment" => true, _ => false };
-							if is_some {
-								if let Some(only_under) = compilation_settings["stage"].as_str() {
-									if only_under == name.as_str() { 
-										for node in &node.children {
-											process_node(None, node, compilation_settings, program_state);
+									if type_name == "Out" {
+										if let lexer::Nodes::Struct { name: type_name, template, fields, types } = &types[0].node {
+											s.push_str(&format!("layout(location={location}) out {interpolation} {type} {name};\n", location = program_state.out_position, interpolation = "", type = translate_type_str(&type_name), name = name));
 										}
+
+										program_state.out_position += 1;
 									}
-								}
-							} else {
-								for node in &node.children {
-									process_node(None, node, compilation_settings, program_state);
+
+									if type_name == "PushConstant" {
+										let mut shader_string = if let Some(pc) = program_state.nodes.iter().find(|n| n.0 == "push_constant") {
+											pc.1.clone()
+										} else {
+											program_state.nodes.push(("push_constant".to_string(), String::new()));
+											format!("layout(push_constant) uniform push_constants {{")
+										};						
+										
+										if let lexer::Nodes::Struct { name: type_name, template, fields, types } = &types[0].node {
+											shader_string.push_str(&format!("{type} {name};", type = translate_type_str(&type_name), name = name));
+										}
+
+										program_state.push_constants += 1;
+
+										program_state.nodes.iter_mut().find(|n| n.0 == "push_constant").unwrap().1 = shader_string;
+									}
 								}
 							}
 						}
@@ -618,49 +598,115 @@ impl ShaderGenerator {
 					}
 
 					program_state.nodes.push((name.to_string(), s));
+
 				}
-				lexer::Nodes::Expression { expression, children } => {
+				lexer::Nodes::Struct { name, template, fields, types } => {
+					if let Some(t) = template {
+						if let lexer::Nodes::Struct { name, template, fields, types } = &t.node {
+							if name == "In" {
+								return;
+							}
+						}
+					}
+
+					let mut s = String::new();
+
+					s.push_str(&format!("struct {name} {{", name = name));
+
+					for field in fields {
+						if let lexer::Nodes::Member { name, r#type } = &field.node {
+							if let lexer::Nodes::Struct { name: type_name, template, fields, types } = &r#type.node {
+								s.push_str(&format!("{type} {name};", type = translate_type_str(&type_name), name = name));
+							}
+						}
+					}
+
+					s.push_str("};\n");
+
+					s.push_str(&format!("layout(buffer_reference, scalar, buffer_reference_align = 16) buffer {name}Pointer {{", name = name));
+
+					for field in fields {
+						if let lexer::Nodes::Member { name, r#type } = &field.node {
+							if let lexer::Nodes::Struct { name: type_name, template, fields, types } = &r#type.node {
+								s.push_str(&format!("{type} {name};", type = translate_type_str(&type_name), name = name));
+							}
+						}
+					}
+
+					s.push_str("};\n");
+
+					program_state.nodes.push((name.to_string(), s));
+				}
+				lexer::Nodes::Function { name, params: _, return_type, statements, raw: _ } => {
+					let mut s = String::new();
+
+					let rt = if let lexer::Nodes::Struct { name, fields, template, types } = &return_type.node {
+						name
+					} else { panic!("Expected a feature node") };
+
+					s.push_str(&format!("{return_type} {name}() {{", return_type = translate_type_str(rt)));
+
+					for statement in statements {
+						process_node(Some(&mut s), statement, compilation_settings, program_state);
+						s.push_str(";");
+					}
+
+					s.push_str("}\n");
+
+					program_state.nodes.push((name.to_string(), s));
+				}
+				lexer::Nodes::Scope{ name, children } => {
+					let mut s = String::new();
+
+					let is_some = match name.as_str() { "Vertex" | "Fragment" => true, _ => false };
+					if is_some {
+						if let Some(only_under) = compilation_settings["stage"].as_str() {
+							if only_under == name.as_str() { 
+								for node in children {
+									process_node(None, node, compilation_settings, program_state);
+								}
+							}
+						}
+					} else {
+						for node in children {
+							process_node(None, node, compilation_settings, program_state);
+						}
+					}
+					program_state.nodes.push((name.to_string(), s));
+				}
+				lexer::Nodes::Expression(expression) => {
 					let mut string = string.expect("Expression node calls should have an string provided to them");
 					match expression {
-						lexer::Expressions::FunctionCall{ name } => {
+						lexer::Expressions::FunctionCall{ name, parameters } => {
 							string.push_str(&format!("{name}(", name = translate_type_str(name)));
 
-							for (i, child) in children.iter().enumerate() {
+							for (i, child) in parameters.iter().enumerate() {
 								process_node(Some(&mut string), child, compilation_settings, program_state);
-								if i != children.len() - 1 { string.push_str(","); }
+								if i != parameters.len() - 1 { string.push_str(","); }
 							}
 
 							string.push_str(&format!(")"));
 						}
-						lexer::Expressions::Assignment => {
-							assert!(children.len() == 2, "Assignment node should have 2 children");
-
-							let left = children.get(0).expect("Assignment node should have a left child");
-
+						lexer::Expressions::Operator { left, right } => {
 							process_node(Some(&mut string), left, compilation_settings, program_state);
 
 							string.push_str(&format!("="));
 
-							let right = children.get(1).expect("Assignment node should have a right child");
-
 							process_node(Some(&mut string), right, compilation_settings, program_state);
 						}
 						lexer::Expressions::VariableDeclaration{ name, r#type } => {
-							if let lexer::Nodes::Feature { name: type_name, feature } = &r#type.node {
-								if let lexer::Features::Struct { fields, types, template } = feature {
-									string.push_str(&format!("{type} {name}", type = translate_type_str(type_name), name = name));
-								} else { panic!("Expected a type feature") }
-							}
-
-							for child in children {
-								process_node(Some(&mut string), child, compilation_settings, program_state);
-							}
+							string.push_str(&format!("{type} {name}", type = translate_type_str(r#type), name = name));
 						}
 						lexer::Expressions::Literal{ value } => {
 							string.push_str(&format!("{value}"));
 						}
 						_ => todo!()
 					}
+				}
+				lexer::Nodes::GLSL { code } => {
+					let mut code = code.clone();
+					code.push_str("\n");
+					program_state.nodes.push(("xxx".to_string(), code));
 				}
 			}
 		}
@@ -678,9 +724,11 @@ impl ShaderGenerator {
 
 		fn order(node: &(String, String)) -> u32 {
 			match node.0.as_str() {
-				"push_constant" => 1,
-				"main" => 2,
-				_ => 0,
+				"GLSL" => 0,
+				"push_constant" => 2,
+				"xxx" => 3,
+				"main" => 4,
+				_ => 1,
 			}
 		}
 
@@ -700,6 +748,7 @@ fn translate_type_str(value: &str) -> String {
 
 	if r.ends_with('*') {
 		r.pop();
+		r.push_str("Pointer");
 	}
 
 	match r.as_str() {
@@ -1185,7 +1234,7 @@ void main() {
 			}
 		};
 
-		let generated_vertex_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Vertex" });
+		let generated_vertex_shader = shader_generator.from_json(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Vertex" });
 
 		let _expected_vertex_shader_string =
 "#version 450 core
@@ -1236,7 +1285,7 @@ void main() {
 	out_Color=vec4(0,0,0,1);
 }";
 
-		let generated_fragment_shader = shader_generator.generate(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
+		let generated_fragment_shader = shader_generator.from_json(&program_spec, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
 
 		println!("{}", &generated_fragment_shader);
 
@@ -1254,7 +1303,7 @@ main: fn () -> void {
 		
 		let shader_generator = ShaderGenerator::new();
 
-		let generated_shader = shader_generator.generate_from_jspd(&jspd, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
+		let generated_shader = shader_generator.generate(&jspd, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
 
 		dbg!(&generated_shader);
 

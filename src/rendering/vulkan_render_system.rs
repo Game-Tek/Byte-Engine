@@ -510,7 +510,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::SamplerHandle(self.create_vulkan_sampler().as_raw())
 	}
 
-	fn bind_to_window(&mut self, window_os_handles: window_system::WindowOsHandles) -> render_system::SwapchainHandle {
+	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> render_system::SwapchainHandle {
 		let surface = self.create_vulkan_surface(window_os_handles); 
 
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, surface).expect("No surface capabilities") };
@@ -645,7 +645,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 use ash::{vk::{self, ValidationFeatureEnableEXT, Handle}, Entry};
 use log::{warn, error};
 
-use super::render_system::{self, CommandBufferRecording};
+use super::render_system::{self, CommandBufferRecording, TextureFormats};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -1116,8 +1116,8 @@ impl VulkanRenderSystem {
 		}
 	}
 
-	pub fn new_as_system(_: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
-		Some((render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new())), vec![]))
+	pub fn new_as_system() -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
+		orchestrator::EntityReturn::new(render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new())))
 	}
 
 	fn get_log_count(&self) -> u32 { unsafe { COUNTER } }
@@ -1529,7 +1529,7 @@ impl VulkanRenderSystem {
 		unsafe { self.device.create_image_view(&image_view_create_info, None).expect("No image view") }
 	}
 
-	fn create_vulkan_surface(&self, window_os_handles: crate::window_system::WindowOsHandles) -> vk::SurfaceKHR {
+	fn create_vulkan_surface(&self, window_os_handles: &window_system::WindowOsHandles) -> vk::SurfaceKHR {
 		let xcb_surface_create_info = vk::XcbSurfaceCreateInfoKHR::default()
 			.connection(window_os_handles.xcb_connection)
 			.window(window_os_handles.xcb_window);
@@ -1826,7 +1826,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
 	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[render_system::AttachmentInformation]) {
 		self.transition_textures(&attachments.iter().map(|attachment| {
-			(attachment.texture, ((vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2KHR::COLOR_ATTACHMENT_WRITE), (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2KHR::COLOR_ATTACHMENT_WRITE)))
+			(attachment.texture, ((vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE), (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
 		}).collect::<Vec<_>>());
 
 		let render_area = vk::Rect2D::default()

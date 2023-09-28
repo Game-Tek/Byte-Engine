@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self}, render_domain::{Mesh, MeshParameters}, math};
+use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self, System,}, render_domain::{Mesh, MeshParameters}, math};
 use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
@@ -11,23 +11,28 @@ fn gallery_shooter() {
 
 	let orchestrator = app.get_mut_orchestrator();
 
-	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn_component(("Lookaround", [
-		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")).mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
-		input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
-	].as_slice()));
+	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn(input_manager::Action{ name: "Lookaround", bindings: vec![
+			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")).mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
+			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
+		],
+		phantom: std::marker::PhantomData,
+	});
 
-	let x = [input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton"))];
+	let _trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn(input_manager::Action{ name: "Trigger", bindings: vec![
+			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton")),
+			// input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightTrigger")),
+		],
+		phantom: std::marker::PhantomData,
+	});
 
-	let _trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn_component(("Trigger", x.as_slice()));
+	let player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle)).expect("Failed to spawn player");
 
-	let _player: EntityHandle<Player> = orchestrator.spawn_component(lookaround_action_handle);
+	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
-	let _scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
-
-	// let duck_1: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
-	// let duck_2: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
-	// let duck_3: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
-	// let duck_4: EntityHandle<Mesh> = orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
+	let duck_1: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
+	let duck_2: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
+	let duck_3: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
+	let duck_4: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
 
 	app.do_loop();
 
@@ -42,30 +47,35 @@ struct Player {
 impl orchestrator::Entity for Player {}
 
 impl Component for Player {
-	type Parameters<'a> = EntityHandle<input_manager::Action<Vec3f>>;
-	fn new(orchestrator: orchestrator::OrchestratorReference, params: Self::Parameters<'_>) -> Self {
-		let mut transform = maths_rs::Mat4f::identity();
+	// type Parameters<'a> = EntityHandle<input_manager::Action<Vec3f>>;
+}
 
-		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.4f32));
-		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
+impl Player {
+	fn new(lookaround: EntityHandle<input_manager::Action<Vec3f>>) -> orchestrator::EntityReturn<Self> {
+		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
+			let mut transform = maths_rs::Mat4f::identity();
 
-		let camera_handle = orchestrator.spawn_component(byte_engine::camera::CameraParameters{
-			position: Vec3f::new(0.0, 0.0, 0.0),
-			direction: Vec3f::new(0.0, 0.0, 1.0),
-			fov: 90.0,
-			aspect_ratio: 1.0,
-			aperture: 0.0,
-			focus_distance: 0.0,
-		});
+			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.4f32));
+			transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
+	
+			let camera_handle = orchestrator.spawn(byte_engine::camera::Camera{
+				position: Vec3f::new(0.0, 0.0, 0.0),
+				direction: Vec3f::new(0.0, 0.0, 1.0),
+				fov: 90.0,
+				aspect_ratio: 1.0,
+				aperture: 0.0,
+				focus_distance: 0.0,
+			});
+	
+			orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
+	
+			// orchestrator.tie_self(Player::lookaround, &handle, input_manager::Action::value);
 
-		orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &params, input_manager::Action::value);
-
-		orchestrator.tie_self(Player::lookaround, &params, input_manager::Action::value);
-
-		Self {
-			camera: camera_handle,
-			mesh: orchestrator.spawn_component(MeshParameters{ resource_id: "Box", transform, }),
-		}
+			Self {
+				camera: camera_handle,
+				mesh: orchestrator.spawn(Mesh{ resource_id: "Box", transform, }),
+			}
+		})
 	}
 }
 

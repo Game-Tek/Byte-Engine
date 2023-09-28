@@ -10,9 +10,10 @@ icon: container
 We are going to create our weapon component.
 
 ```rust
-use byte_engine;
-struct Weapon {
-	mesh: ComponentHandle<Mesh>,
+#[derive(component_derive::Component)]
+pub struct Weapon {
+	pub resource_id: &'static str,
+	#[field] pub transform: maths_rs::Mat4f,
 }
 
 impl Weapon {

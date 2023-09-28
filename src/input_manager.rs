@@ -21,7 +21,7 @@ use std::f32::consts::PI;
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property, System, self, Entity}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property, System, self, Entity, EntitySubscriber}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -63,7 +63,7 @@ struct InputSource {
 	type_: InputTypes,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 /// An input source action is a way to reference an input source.
 /// It can be referenced by it's name or by it's handle.
 /// It's provided as a convenience to the developer.
@@ -108,7 +108,7 @@ pub enum Value {
 	Quaternion(Quaternion),
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 /// Enumerates the different functions that can be applied to an input event.
 pub enum Function {
 	Boolean,
@@ -119,6 +119,7 @@ pub enum Function {
 }
 
 /// An action binding description is a description of how an input source is mapped to a value for an action.
+#[derive(Copy, Clone, Debug)]
 pub struct ActionBindingDescription {
 	pub input_source: InputSourceAction,
 	pub mapping: Value,
@@ -237,7 +238,7 @@ pub struct InputEventState {
 /// Handle to an input device class.
 pub struct DeviceClassHandle(u32);
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 /// Handle to an input source.
 pub struct InputSourceHandle(u32);
 
@@ -270,8 +271,11 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<InputManager> {
-		Some((Self::new(), vec![]))
+	pub fn new_as_system() -> orchestrator::EntityReturn<InputManager> {
+		orchestrator::EntityReturn::new(Self::new())
+			.add_listener::<Action<bool>>()
+			.add_listener::<Action<Vector2>>()
+			.add_listener::<Action<Vector3>>()
 	}
 
 	/// Registers a device class/type.
@@ -779,6 +783,24 @@ impl InputManager {
 				}
 			}
 		}
+	}
+}
+
+impl EntitySubscriber<Action<bool>> for InputManager {
+	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
+		self.create_action(action.name, Types::Bool, &action.bindings);
+	}
+}
+
+impl EntitySubscriber<Action<Vector2>> for InputManager {
+	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
+		self.create_action(action.name, Types::Vector2, &action.bindings);
+	}
+}
+
+impl EntitySubscriber<Action<Vector3>> for InputManager {
+	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
+		self.create_action(action.name, Types::Vector3, &action.bindings);
 	}
 }
 
@@ -1300,8 +1322,12 @@ impl InputManager {
 impl Entity for InputManager {}
 impl System for InputManager {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Action<T: Clone> { phantom: std::marker::PhantomData<T>, }
+#[derive(Clone, Debug)]
+pub struct Action<T: Clone> {
+	pub name: &'static str,
+	pub bindings: Vec<ActionBindingDescription>,
+	pub phantom: std::marker::PhantomData<T>,
+}
 
 impl <T: GetType + Clone + Send + 'static> orchestrator::Entity for Action<T> {}
 
@@ -1322,17 +1348,9 @@ impl GetType for Vector3 {
 }
 
 impl <T: Clone + Send + GetType + 'static> orchestrator::Component for Action<T> {
-	type Parameters<'a> = (&'a str, &'a [ActionBindingDescription]);
-
-	fn new(_orchestrator: orchestrator::OrchestratorReference, (_name, _bindings): Self::Parameters<'_>) -> Self where Self: Sized {
-		Action { phantom: std::marker::PhantomData }
-	}
+	// type Parameters<'a> = ActionParameters<'a>;
 }
 
 impl <T: Clone + Send + GetType> Action<T> {
-	pub fn new<'a>(_name: &'a str, _bindings: &'a [ActionBindingDescription]) -> orchestrator::EntityReturn<Action<T>> {
-		Some((Action { phantom: std::marker::PhantomData }, vec![]))
-	}
-
 	pub const fn value() -> Property<InputManager, Self, T> where T: GetType, Value: Extract<T> { Property::System { getter: InputManager::get_action_value, setter: InputManager::set_action_value } }
 }

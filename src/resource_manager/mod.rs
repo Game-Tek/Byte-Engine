@@ -245,8 +245,8 @@ impl ResourceManager {
 		}
 	}
 
-	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<ResourceManager> {
-		Some((Self::new(), vec![]))
+	pub fn new_as_system() -> orchestrator::EntityReturn<ResourceManager> {
+		orchestrator::EntityReturn::new(Self::new())
 	}
 
 	/// Tries to load a resource from cache or source.\

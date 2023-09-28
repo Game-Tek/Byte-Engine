@@ -2,10 +2,11 @@
 
 use std::ffi::c_void;
 
+use component_derive::Component;
 use log::{trace};
 use xcb::{Xid, x};
 
-use crate::{Extent, orchestrator::{System, self}};
+use crate::{Extent, orchestrator::{System, self, EntitySubscriber}};
 
 #[derive(Debug, Clone, Copy)]
 /// The keys that can be pressed on a keyboard.
@@ -275,7 +276,25 @@ impl TryFrom<u8> for MouseKeys {
 	}
 }
 
-struct Window {
+#[derive(Component)]
+pub struct Window {
+	pub name: String,
+	pub extent: Extent,
+	pub id_name: String,
+}
+
+pub struct WindowParameters {
+	pub name: String,
+	pub extent: Extent,
+	pub id_name: String,
+}
+
+impl orchestrator::Entity for Window {}
+impl orchestrator::Component for Window {
+	// type Parameters<'a> = WindowParameters;
+}
+
+struct WindowInternal {
 	connection: xcb::Connection,
 	window: xcb::x::Window,
 	wm_del_window: xcb::x::Atom,
@@ -369,8 +388,8 @@ impl Iterator for WindowIterator<'_> {
 	}
 }
 
-impl Window {
-	pub fn new_with_params(name: &str, extent: Extent, _id_name: &str) -> Option<Window> {
+impl WindowInternal {
+	pub fn new_with_params(name: &str, extent: Extent, _id_name: &str) -> Option<WindowInternal> {
 		let (connection, screen_index) = xcb::Connection::connect(None).unwrap();
 
 		let setup = connection.get_setup();
@@ -476,7 +495,7 @@ impl Window {
 			return None;
 		}
 
-		Some(Window {
+		Some(WindowInternal {
 			connection,
 			window,
 			wm_del_window,
@@ -570,7 +589,7 @@ impl Window {
 
 /// The window system.
 pub struct WindowSystem {
-	windows: Vec<Window>,
+	windows: Vec<WindowInternal>,
 }
 
 impl orchestrator::Entity for WindowSystem {}
@@ -589,14 +608,19 @@ pub struct WindowOsHandles {
 	pub xcb_window: u32,
 }
 
+/// We are not using the handles to mutate data, so it is safe to send them between threads.
+/// The pointers are only mutable because the XCB library defines them as such.
+#[cfg(target_os = "linux")]
+unsafe impl Send for WindowOsHandles {}
+
 impl WindowSystem {
 	/// Creates a new window system.
 	pub fn new() -> WindowSystem {
 		WindowSystem { windows: Vec::new() }
 	}
 
-	pub fn new_as_system(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<WindowSystem> {
-		Some((Self::new(), vec![]))
+	pub fn new_as_system() -> orchestrator::EntityReturn<WindowSystem> {
+		orchestrator::EntityReturn::new(Self::new()).add_listener::<Window>()
 	}
 
 	pub fn update(&mut self) -> bool {
@@ -625,7 +649,7 @@ impl WindowSystem {
 	/// - `extent` - The size of the window.
 	/// - `id_name` - The name of the window for identification purposes.
 	pub fn create_window(&mut self, name: &str, extent: Extent, id_name: &str) -> WindowHandle {
-		let window = Window::new_with_params(name, extent, id_name);
+		let window = WindowInternal::new_with_params(name, extent, id_name);
 
 		if let Some(window) = window {
 			trace!("Created window. Name: {}, Extent: {:?}", name, extent);
@@ -645,8 +669,27 @@ impl WindowSystem {
 	/// 
 	/// # Returns
 	/// The operationg system handles for the window.
-	pub fn get_os_handles(&self, window_handle: &WindowHandle,) -> WindowOsHandles {
-		if window_handle.0 > self.windows.len() as u64 { return WindowOsHandles{ xcb_connection: std::ptr::null_mut(), xcb_window: 0 }; }
+	pub fn get_os_handles(&self, window_handle: &orchestrator::EntityHandle<Window>,) -> WindowOsHandles {
+		if window_handle.get_external_key() as usize > self.windows.len() { return WindowOsHandles{ xcb_connection: std::ptr::null_mut(), xcb_window: 0 }; }
+
+		let window = &self.windows[window_handle.get_external_key() as usize];
+
+		let connection = window.connection.get_raw_conn() as *mut std::ffi::c_void;
+
+		let window = window.window.to_owned().resource_id();
+
+		return WindowOsHandles{ xcb_connection: connection, xcb_window: window };
+	}
+
+	/// Gets the OS handles for a window.
+	/// 
+	/// # Arguments
+	/// - `window_handle` - The handle of the window to get the OS handles for.
+	/// 
+	/// # Returns
+	/// The operationg system handles for the window.
+	pub fn get_os_handles_2(&self, window_handle: &WindowHandle,) -> WindowOsHandles {
+		if window_handle.0 as usize > self.windows.len() { return WindowOsHandles{ xcb_connection: std::ptr::null_mut(), xcb_window: 0 }; }
 
 		let window = &self.windows[window_handle.0 as usize];
 
@@ -658,22 +701,28 @@ impl WindowSystem {
 	}
 }
 
+impl EntitySubscriber<Window> for WindowSystem {
+	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<Window>, window: &Window) {
+		self.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	#[ignore = "Ignore until we have a way to disable this test in CI where windows are not supported"]
-	#[test]
-	fn create_window() {
-		let mut window_system = WindowSystem::new();
+	// #[ignore = "Ignore until we have a way to disable this test in CI where windows are not supported"]
+	// #[test]
+	// fn create_window() {
+	// 	let mut window_system = WindowSystem::new();
 
-		let window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
+	// 	let window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 
-		let os_handles = window_system.get_os_handles(&window_handle);
+	// 	let os_handles = window_system.get_os_handles(&window_handle);
 
-		assert_ne!(os_handles.xcb_connection, std::ptr::null_mut());
-		assert_ne!(os_handles.xcb_window, 0);
-	}
+	// 	assert_ne!(os_handles.xcb_connection, std::ptr::null_mut());
+	// 	assert_ne!(os_handles.xcb_window, 0);
+	// }
 
 	#[ignore]
 	#[test]

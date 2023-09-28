@@ -139,10 +139,10 @@ impl Application for GraphicsApplication {
 
 		let orchestrator = application.get_mut_orchestrator();
 
-		orchestrator.spawn_entity(resource_manager::ResourceManager::new_as_system);
+		orchestrator.spawn_entity(resource_manager::ResourceManager::new_as_system());
 		
-		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system).unwrap();
-		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system).unwrap();
+		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system()).unwrap();
+		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();
 
 		let (_mouse_device_class_handle, _gamepad_device_class_handle, mouse_device_handle) = orchestrator.get_mut_and(&input_system_handle, |input_system: &mut input_manager::InputManager| {
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
@@ -161,18 +161,15 @@ impl Application for GraphicsApplication {
 			(mouse_device_class_handle, gamepad_device_class_handle, mouse_device_handle)
 		});
 
-		let file_tracker_handle = orchestrator.spawn_entity(file_tracker::FileTracker::new).unwrap();
+		let file_tracker_handle = orchestrator.spawn_entity(file_tracker::FileTracker::new()).unwrap();
 
 		let render_system_handle = rendering::create_render_system(&orchestrator);
 
-		orchestrator.get_2_mut_and(&window_system_handle, &render_system_handle, |window_system, render_system: &mut render_system::RenderSystemImplementation| {
-			let window_handle = window_system.create_window("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
-			render_system.bind_to_window(window_system.get_os_handles(&window_handle));
-		});
+		let visibility_render_domain_handle = orchestrator.spawn_entity(render_domain::VisibilityWorldRenderDomain::new()).unwrap();
 
-		let visibility_render_domain_handle = orchestrator.spawn_entity(render_domain::VisibilityWorldRenderDomain::new).unwrap();
+		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
-		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new);
+		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
 		GraphicsApplication { application, file_tracker_handle: file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
 	}

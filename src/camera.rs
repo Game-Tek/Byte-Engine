@@ -3,12 +3,12 @@ use crate::{Vec3f, orchestrator::{Property, self, Component, Entity}};
 #[derive(component_derive::Component)]
 /// Camera struct
 pub struct Camera {
-	position: Vec3f,
-	direction: Vec3f,
-	fov: f32,
-	aspect_ratio: f32,
-	aperture: f32,
-	focus_distance: f32,
+	pub position: Vec3f,
+	pub direction: Vec3f,
+	pub fov: f32,
+	pub aspect_ratio: f32,
+	pub aperture: f32,
+	pub focus_distance: f32,
 }
 
 pub struct CameraParameters {
@@ -45,18 +45,5 @@ impl Camera {
 impl Entity for Camera {}
 
 impl Component for Camera {
-	type Parameters<'a> = CameraParameters;
-
-	fn new(_orchestrator: orchestrator::OrchestratorReference, params: CameraParameters) -> Self {
-		let camera  = Camera {
-			position: params.position,
-			direction: Vec3f::new(0.0, 0.0, 1.0),
-			fov: params.fov,
-			aspect_ratio: 1.0,
-			aperture: 0.0,
-			focus_distance: 0.0,
-		};
-
-		camera
-	}
+	// type Parameters<'a> = CameraParameters;
 }

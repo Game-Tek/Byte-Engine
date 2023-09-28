@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, shader_resource_handler::Shader}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math};
+use crate::{resource_manager::{self, mesh_resource_handler, shader_resource_handler::Shader}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -43,134 +43,135 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(mut orchestrator: orchestrator::OrchestratorReference,) -> orchestrator::EntityReturn<Self> {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
-		let mut render_system = render_system.get_mut();
-		let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
+	pub fn new() -> orchestrator::EntityReturn<Self> {
+		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
+			let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+			let mut render_system = render_system.get_mut();
+			let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
 
-		let _vertex_layout = [
-			render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
-			render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
-		];
+			let _vertex_layout = [
+				render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
+				render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
+			];
 
-		let bindings = [
-			render_system::DescriptorSetLayoutBinding {
-				binding: 0,
-				descriptor_type: render_system::DescriptorType::StorageBuffer,
-				descriptor_count: 1,
-				stage_flags: render_system::Stages::VERTEX,
-				immutable_samplers: None,
-			},
-			render_system::DescriptorSetLayoutBinding {
-				binding: 1,
-				descriptor_type: render_system::DescriptorType::StorageBuffer,
-				descriptor_count: 1,
-				stage_flags: render_system::Stages::VERTEX,
-				immutable_samplers: None,
-			},
-		];
+			let bindings = [
+				render_system::DescriptorSetLayoutBinding {
+					binding: 0,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::VERTEX,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					binding: 1,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::VERTEX,
+					immutable_samplers: None,
+				},
+			];
 
-		let descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
+			let descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
 
-		let descriptor_set = render_system.create_descriptor_set(&descriptor_set_layout, &bindings);
+			let descriptor_set = render_system.create_descriptor_set(&descriptor_set_layout, &bindings);
 
-		let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout]);
-		
-		let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-		let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout]);
+			
+			let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-		let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-		let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-		let _attachments = [
-			render_system::AttachmentInformation {
-				texture: render_target,
-				layout: render_system::Layouts::RenderTarget,
-				format: render_system::TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			},
-			render_system::AttachmentInformation {
-				texture: depth_target,
-				layout: render_system::Layouts::RenderTarget,
-				format: render_system::TextureFormats::Depth32,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
-				load: false,
-				store: true,
-			},
-		];
+			let _attachments = [
+				render_system::AttachmentInformation {
+					texture: render_target,
+					layout: render_system::Layouts::RenderTarget,
+					format: render_system::TextureFormats::RGBAu8,
+					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+					load: false,
+					store: true,
+				},
+				render_system::AttachmentInformation {
+					texture: depth_target,
+					layout: render_system::Layouts::RenderTarget,
+					format: render_system::TextureFormats::Depth32,
+					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+					load: false,
+					store: true,
+				},
+			];
 
-		let render_finished_synchronizer = render_system.create_synchronizer(true);
-		let image_ready = render_system.create_synchronizer(false);
+			let render_finished_synchronizer = render_system.create_synchronizer(true);
+			let image_ready = render_system.create_synchronizer(false);
 
-		let transfer_synchronizer = render_system.create_synchronizer(false);
+			let transfer_synchronizer = render_system.create_synchronizer(false);
 
-		let render_command_buffer = render_system.create_command_buffer();
-		let transfer_command_buffer = render_system.create_command_buffer();
+			let render_command_buffer = render_system.create_command_buffer();
+			let transfer_command_buffer = render_system.create_command_buffer();
 
-		let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-		let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-		render_system.write(&[
-			render_system::DescriptorWrite {
+			render_system.write(&[
+				render_system::DescriptorWrite {
+					descriptor_set,
+					binding: 0,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: 64 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set,
+					binding: 1,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 64 },
+				},
+			]);
+
+			Self {
+				pipeline_layout_handle,
+				vertices_buffer: vertices_buffer_handle,
+				indices_buffer: indices_buffer_handle,
+
+				descriptor_set_layout,
 				descriptor_set,
-				binding: 0,
-				array_element: 0,
-				descriptor: render_system::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: 64 },
-			},
-			render_system::DescriptorWrite {
-				descriptor_set,
-				binding: 1,
-				array_element: 0,
-				descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 64 },
-			},
-		]);
 
-		orchestrator.subscribe_to_class(Self::listen_to_camera);
-		orchestrator.subscribe_to_class(Self::listen_to_mesh);
+				render_target,
+				depth_target,
 
-		let render_domain = Self {
-			pipeline_layout_handle,
-			vertices_buffer: vertices_buffer_handle,
-			indices_buffer: indices_buffer_handle,
+				index_count: 0,
+				instance_count: 0,
+				current_frame: 0,
 
-			descriptor_set_layout,
-			descriptor_set,
+				render_finished_synchronizer,
+				image_ready,
+				render_command_buffer,
 
-			render_target,
-			depth_target,
+				camera_data_buffer_handle,
 
-			index_count: 0,
-			instance_count: 0,
-			current_frame: 0,
+				transfer_synchronizer,
+				transfer_command_buffer,
 
-			render_finished_synchronizer,
-			image_ready,
-			render_command_buffer,
+				meshes_data_buffer,
 
-			camera_data_buffer_handle,
+				shaders: HashMap::new(),
 
-			transfer_synchronizer,
-			transfer_command_buffer,
+				camera: None,
 
-			meshes_data_buffer,
+				meshes: HashMap::new(),
 
-			shaders: HashMap::new(),
+				mesh_resources: HashMap::new(),
 
-			camera: None,
+				pipeline: None,
 
-			meshes: HashMap::new(),
-
-			mesh_resources: HashMap::new(),
-
-			pipeline: None,
-
-			swapchain_handles: Vec::new(),
-		};
-
-		Some((render_domain, vec![orchestrator::PPP::PostCreationFunction(Box::new(Self::load_needed_assets))]))
+				swapchain_handles: Vec::new(),
+			}
+		})
+			.add_post_creation_function(Box::new(Self::load_needed_assets))
+			.add_listener::<camera::Camera>()
+			.add_listener::<Mesh>()
+			.add_listener::<window_system::Window>()
 	}
 
 	fn load_needed_assets(&mut self, orchestrator: OrchestratorReference) {
@@ -246,17 +247,13 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	fn listen_to_camera(&mut self, _orchestrator: orchestrator::OrchestratorReference, camera_handle: EntityHandle<camera::Camera>, _camera: &Camera) {
-		self.camera = Some(camera_handle);
-	}
-
 	fn get_transform(&self) -> Mat4f { return Mat4f::identity(); }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut render_system = render_system.get_mut();
 		let render_system = render_system.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
 
-		let closed_frame_index = self.current_frame % 2;
+		// let closed_frame_index = self.current_frame % 2;
 
 		let meshes_data_slice = render_system.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -271,77 +268,8 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub const fn trasnform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
-
-	fn listen_to_mesh(&mut self, orchestrator: orchestrator::OrchestratorReference, mesh_handle: EntityHandle<Mesh>, mesh: &Mesh) {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
-		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
-
-		orchestrator.tie_self(Self::trasnform, &mesh_handle, Mesh::transform);
-
-		if !self.mesh_resources.contains_key(mesh.resource_id) { // Load only if not already loaded
-			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
-			let mut resource_manager = resource_manager.get_mut();
-			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
-
-			let resource_request = resource_manager.request_resource(mesh.resource_id);
-
-			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
-
-			let mut options = resource_manager::Options { resources: Vec::new(), };
-
-			for resource in &resource_request.resources {
-				match resource.class.as_str() {
-					"Mesh" => {
-						let vertex_buffer = render_system.get_mut_buffer_slice(self.vertices_buffer);
-						let index_buffer = render_system.get_mut_buffer_slice(self.indices_buffer);
-
-						options.resources.push(resource_manager::OptionResource {
-							path: resource.path.clone(),
-							buffers: vec![resource_manager::Buffer{ buffer: vertex_buffer, tag: "Vertex".to_string() }, resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }],
-						});
-					}
-					_ => {}
-				}
-			}
-
-			let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
-
-			let (response, _buffer) = (resource.0, resource.1.unwrap());
-
-			for resource in &response.resources {
-				match resource.class.as_str() {
-					"Mesh" => {
-						self.mesh_resources.insert(mesh.resource_id, self.index_count);
-
-						let mesh: &mesh_resource_handler::Mesh = resource.resource.downcast_ref().unwrap();
-
-						self.index_count += mesh.index_count;
-					}
-					_ => {}
-				}
-			}
-		}
-
-		let closed_frame_index = self.current_frame % 2;
-
-		let meshes_data_slice = render_system.get_mut_buffer_slice(self.meshes_data_buffer);
-
-		let meshes_data = [
-			mesh.transform,
-		];
-
-		let meshes_data_bytes = unsafe { std::slice::from_raw_parts(meshes_data.as_ptr() as *const u8, std::mem::size_of_val(&meshes_data)) };
-
-		unsafe {
-			std::ptr::copy_nonoverlapping(meshes_data_bytes.as_ptr(), meshes_data_slice.as_mut_ptr().add(self.instance_count as usize * std::mem::size_of::<maths_rs::Mat4f>()), meshes_data_bytes.len());
-		}
-
-		self.meshes.insert(mesh_handle, self.instance_count);
-
-		self.instance_count += 1;
-	}
+	/// Return the property for the transform of a mesh
+	pub const fn transform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
 		if let None = self.pipeline { return; }
@@ -349,14 +277,14 @@ impl VisibilityWorldRenderDomain {
 
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut binding = render_system.get_mut();
-  		let render_system = binding.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
+  		let render_system = binding.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 
 		{
-			let command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
+			let mut command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
 
-			todo!("Synchronize buffera");
+			// command_buffer_recording TODO: Copy the data from the CPU to the GPU
 
 			command_buffer_recording.execute(&[], &[self.transfer_synchronizer], self.transfer_synchronizer);
 		}
@@ -478,6 +406,98 @@ impl VisibilityWorldRenderDomain {
 	}
 }
 
+impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
+	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
+		self.camera = Some(handle);
+	}
+}
+
+impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
+	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Mesh>, mesh: &Mesh) {
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let mut render_system = render_system.get_mut();
+		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
+
+		orchestrator.tie_self(Self::transform, &handle, Mesh::transform);
+
+		if !self.mesh_resources.contains_key(mesh.resource_id) { // Load only if not already loaded
+			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
+			let mut resource_manager = resource_manager.get_mut();
+			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
+
+			let resource_request = resource_manager.request_resource(mesh.resource_id);
+
+			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
+
+			let mut options = resource_manager::Options { resources: Vec::new(), };
+
+			for resource in &resource_request.resources {
+				match resource.class.as_str() {
+					"Mesh" => {
+						let vertex_buffer = render_system.get_mut_buffer_slice(self.vertices_buffer);
+						let index_buffer = render_system.get_mut_buffer_slice(self.indices_buffer);
+
+						options.resources.push(resource_manager::OptionResource {
+							path: resource.path.clone(),
+							buffers: vec![resource_manager::Buffer{ buffer: vertex_buffer, tag: "Vertex".to_string() }, resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }],
+						});
+					}
+					_ => {}
+				}
+			}
+
+			let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
+
+			let (response, _buffer) = (resource.0, resource.1.unwrap());
+
+			for resource in &response.resources {
+				match resource.class.as_str() {
+					"Mesh" => {
+						self.mesh_resources.insert(mesh.resource_id, self.index_count);
+
+						let mesh: &mesh_resource_handler::Mesh = resource.resource.downcast_ref().unwrap();
+
+						self.index_count += mesh.index_count;
+					}
+					_ => {}
+				}
+			}
+		}
+
+		let meshes_data_slice = render_system.get_mut_buffer_slice(self.meshes_data_buffer);
+
+		let meshes_data = [
+			mesh.transform,
+		];
+
+		let meshes_data_bytes = unsafe { std::slice::from_raw_parts(meshes_data.as_ptr() as *const u8, std::mem::size_of_val(&meshes_data)) };
+
+		unsafe {
+			std::ptr::copy_nonoverlapping(meshes_data_bytes.as_ptr(), meshes_data_slice.as_mut_ptr().add(self.instance_count as usize * std::mem::size_of::<maths_rs::Mat4f>()), meshes_data_bytes.len());
+		}
+
+		self.meshes.insert(handle, self.instance_count);
+
+		self.instance_count += 1;
+	}
+}
+
+impl orchestrator::EntitySubscriber<window_system::Window> for VisibilityWorldRenderDomain {
+	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<window_system::Window>, window: &window_system::Window) {
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let mut render_system = render_system.get_mut();
+		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
+
+		let window_system = orchestrator.get_by_class::<window_system::WindowSystem>();
+		let mut window_system = window_system.get_mut();
+		let window_system = window_system.downcast_mut::<window_system::WindowSystem>().unwrap();
+
+		let swapchain_handle = render_system.bind_to_window(&window_system.get_os_handles(&handle));
+
+		self.swapchain_handles.push(swapchain_handle);
+	}
+}
+
 impl Entity for VisibilityWorldRenderDomain {}
 impl System for VisibilityWorldRenderDomain {}
 
@@ -505,11 +525,5 @@ impl Mesh {
 }
 
 impl Component for Mesh {
-	type Parameters<'a> = MeshParameters;
-	fn new(_orchestrator: OrchestratorReference, params: MeshParameters) -> Self {
-		Self {
-			resource_id: params.resource_id,
-			transform: params.transform,
-		}
-	}
+	// type Parameters<'a> = MeshParameters;
 }

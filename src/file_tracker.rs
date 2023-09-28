@@ -16,7 +16,7 @@ pub struct FileTracker {
 }
 
 impl FileTracker {
-	pub fn new(_orchestrator: orchestrator::OrchestratorReference) -> orchestrator::EntityReturn<FileTracker> {
+	pub fn new() -> orchestrator::EntityReturn<FileTracker> {
 		std::fs::create_dir_all(".byte-editor").unwrap();
 
 		let db = polodb_core::Database::open_file(".byte-editor/files.db").unwrap();
@@ -81,7 +81,7 @@ impl FileTracker {
 			rx,
 		};
 
-		Some((file_tracker, vec![]))
+		orchestrator::EntityReturn::new(file_tracker)
 	}
 
 	pub fn watch(&mut self, path: &Path) -> bool {

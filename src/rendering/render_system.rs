@@ -226,7 +226,7 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn create_sampler(&mut self) -> SamplerHandle;
 
-	fn bind_to_window(&mut self, window_os_handles: window_system::WindowOsHandles) -> SwapchainHandle;
+	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
 
 	fn get_texture_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 
@@ -421,7 +421,7 @@ pub(super) mod tests {
 
 		let window_handle = window_system.create_window("Renderer Test", extent, "test");
 
-		let swapchain = renderer.bind_to_window(window_system.get_os_handles(&window_handle));
+		let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -541,7 +541,7 @@ pub(super) mod tests {
 
 		let window_handle = window_system.create_window("Renderer Test", extent, "test");
 
-		let swapchain = renderer.bind_to_window(window_system.get_os_handles(&window_handle));
+		let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1539,7 +1539,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.get_texture_data(texture_copy_handle)
 	}
 
-	fn bind_to_window(&mut self, window_os_handles: window_system::WindowOsHandles) -> SwapchainHandle {
+	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle {
 		self.pointer.bind_to_window(window_os_handles)
 	}
 

@@ -71,6 +71,8 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			let glsl = shader_generator.generate(&root_node, &json::object!{ path: "Common.Visibility.MyShader", stage: stage, glsl: { version: "450" } });
 
+			debug!("Generated shader: {}", &glsl);
+
 			let compiler = shaderc::Compiler::new().unwrap();
 			let mut options = shaderc::CompileOptions::new().unwrap();
 

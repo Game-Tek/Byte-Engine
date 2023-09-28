@@ -518,7 +518,7 @@ impl ResourceManager {
 
 #[cfg(test)]
 mod tests {
-	use crate::resource_manager::{image_resource_handler::Texture, mesh_resource_handler::{Mesh, IntegralTypes, VertexSemantics}};
+	use crate::resource_manager::{image_resource_handler::Texture, mesh_resource_handler::{Mesh, IntegralTypes, VertexSemantics, Size}};
 
 	/// Tests for the resource manager.
 	/// It is important to test the load twice as the first time it will be loaded from source and the second time it will be loaded from cache.
@@ -638,7 +638,7 @@ mod tests {
 
 		assert!(resource_result.is_some());
 
-		let _resource = resource_result.unwrap();
+		let (_resource, mesh_buffer) = resource_result.unwrap();
 
 		assert_eq!(request.resources.len(), 1);
 
@@ -662,6 +662,44 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
+
+		let resource_request = resource_manager.request_resource("Box");
+
+		let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
+
+		let mut options = Options { resources: Vec::new(), };
+
+		let mut vertex_buffer = vec![0u8; 1024];
+		let mut index_buffer = vec![0u8; 1024];
+
+		let resource = &resource_request.resources[0];
+
+		match resource.class.as_str() {
+			"Mesh" => {
+				options.resources.push(OptionResource {
+					path: resource.path.clone(),
+					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }],
+				});
+			}
+			_ => {}
+		}
+
+		let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
+
+		let (response, _buffer) = (resource.0, resource.1.unwrap());
+
+		for resource in &response.resources {
+			match resource.class.as_str() {
+				"Mesh" => {
+					let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
+
+					assert_eq!(mesh_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize], vertex_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize]);
+
+					assert_eq!(mesh_buffer[576..(576 + mesh.index_count * 2) as usize], index_buffer[0..(mesh.index_count * 2) as usize]);
+				}
+				_ => {}
+			}
+		}
 	}
 
 	#[test]

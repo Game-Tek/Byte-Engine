@@ -127,7 +127,7 @@ impl ResourceHandler for MeshResourceHandler {
 				}
 				"Index" => {
 					let base_offset = mesh.vertex_count as u64 * mesh.vertex_components.size() as u64;
-					let rounded_offset = base_offset + (16 - base_offset % 16);
+					let rounded_offset = base_offset.next_multiple_of(16);
 					file.seek(std::io::SeekFrom::Start(rounded_offset));
 					file.read(buffer.buffer).unwrap();
 				}

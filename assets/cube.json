@@ -1,5 +1,6 @@
 {
-	"type": "raw",
-	"vertex": "shaders/vertex.glsl",
-	"fragment": "shaders/fragment.glsl"
+	"type": "Surface",
+	"shaders": {
+		"Fragment": "shaders/fragment.besl"
+	}
 }

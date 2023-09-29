@@ -21,6 +21,14 @@ impl MaterialResourcerHandler {
 
 		}
 	}
+
+	fn default_vertex_shader() -> &'static str {
+		"void main() { gl_Position = pc.camera.view_projection * pc.meshes[gl_InstanceIndex].model * vec4(in_position, 1.0); out_instance_index = gl_InstanceIndex; }"
+	}
+
+	fn default_fragment_shader() -> &'static str {
+		"void main() { out_color = get_debug_color(in_instance_index); }"
+	}
 }
 
 impl ResourceHandler for MaterialResourcerHandler {
@@ -32,27 +40,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 	}
 
 	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
-		let material_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
-
-		let _t = material_json["type"].as_str().unwrap();
-		let vertex  = material_json["vertex"].as_str().unwrap();
-		let fragment = material_json["fragment"].as_str().unwrap();
-
-		fn treat_shader(path: &str, stage: &str) -> Result<(Document, Vec<u8>), String> {
-			let arlp = "assets/".to_string() + path;
-
-			let shader_node = if path.ends_with(".glsl") {
-				let shader_code = std::fs::read_to_string(&arlp).unwrap();
-				jspd::lexer::Node {
-					node: jspd::lexer::Nodes::GLSL { code: shader_code },
-				}
-			} else if path.ends_with(".besl") {
-				let shader_code = std::fs::read_to_string(&arlp).unwrap();
-				jspd::compile_to_jspd(&shader_code).unwrap()
-			} else {
-				panic!("Unknown shader type");
-			};
-
+		fn treat_shader(shader_node: jspd::lexer::Node, path: &str, stage: &str,) -> Result<(Document, Vec<u8>), String> {
 			let common = crate::rendering::common_shader_generator::CommonShaderGenerator::new();
 
 			let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
@@ -116,23 +104,88 @@ impl ResourceHandler for MaterialResourcerHandler {
 			Ok((resource, Vec::from(result_shader_bytes)))
 		}
 
-		let a = treat_shader(vertex, "Vertex")?;
-		let b = treat_shader(fragment, "Fragment")?;
+		let material_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+
+		fn produce_shader(material_json: &json::JsonValue, stage: &str) -> ((Document, Vec<u8>), String) {
+			let shader_option = match &material_json["shaders"][stage] {
+				json::JsonValue::Null => { None }
+				json::JsonValue::Short(path) => {
+					let arlp = "assets/".to_string() + path.as_str();
+
+					if path.ends_with(".glsl") {
+						let shader_code = std::fs::read_to_string(&arlp).unwrap();
+						Some((jspd::lexer::Node {
+							node: jspd::lexer::Nodes::GLSL { code: shader_code },
+						}, path.to_string()))
+					} else if path.ends_with(".besl") {
+						let shader_code = std::fs::read_to_string(&arlp).unwrap();
+						Some((jspd::compile_to_jspd(&shader_code).unwrap(), path.to_string()))
+					} else {
+						None
+					}
+				}
+				json::JsonValue::String(path) => {
+					let arlp = "assets/".to_string() + path.as_str();
+
+					if path.ends_with(".glsl") {
+						let shader_code = std::fs::read_to_string(&arlp).unwrap();
+						Some((jspd::lexer::Node {
+							node: jspd::lexer::Nodes::GLSL { code: shader_code },
+						}, path.to_string()))
+					} else if path.ends_with(".besl") {
+						let shader_code = std::fs::read_to_string(&arlp).unwrap();
+						Some((jspd::compile_to_jspd(&shader_code).unwrap(), path.to_string()))
+					} else {
+						None
+					}
+				}
+				_ => {
+					error!("Invalid {stage} shader");
+					None
+				}
+			};
+
+			if let Some((shader, path)) = shader_option {
+				(treat_shader(shader, &path, stage).unwrap(), path)
+			} else {
+				let default_shader = match stage {
+					"Vertex" => MaterialResourcerHandler::default_vertex_shader(),
+					"Fragment" => MaterialResourcerHandler::default_fragment_shader(),
+					_ => { panic!("Invalid shader stage") }
+				};
+
+				let shader_node = jspd::lexer::Node {
+					node: jspd::lexer::Nodes::GLSL { code: default_shader.to_string() },
+				};
+
+				(treat_shader(shader_node, "", stage).unwrap(), "".to_string())
+			}
+		}
+		
+		let mut shaders = if let json::JsonValue::Short(s) = material_json["type"] {
+			if s.as_str() == "Raw" {
+				material_json["shaders"].entries().map(|(s_type, s)| {
+					let shader = produce_shader(&material_json, s_type);
+					shader
+				}).collect::<Vec<_>>()
+			} else {
+				vec![produce_shader(&material_json, "Vertex"), produce_shader(&material_json, "Fragment")]
+			}
+		} else {
+			vec![produce_shader(&material_json, "Vertex"), produce_shader(&material_json, "Fragment")]
+		};
+		
+		let required_resources = shaders.iter().map(|s| polodb_core::bson::doc! { "path": s.1.clone() }).collect::<Vec<_>>();
 
 		let material_resource_document = polodb_core::bson::doc!{
 			"class": "Material",
-			"required_resources": [
-				{
-					"path": vertex,
-				},
-				{
-					"path": fragment,
-				}
-			],
+			"required_resources": required_resources,
 			"resource": {}
 		};
 
-		Ok(vec![a, b, (material_resource_document, Vec::new())])
+		shaders.push(((material_resource_document.clone(), Vec::new()), "".to_string()));
+
+		Ok(shaders.iter().map(|s| s.0.clone()).collect::<Vec<_>>())
 	}
 
 	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {

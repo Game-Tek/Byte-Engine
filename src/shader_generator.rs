@@ -700,7 +700,16 @@ impl ShaderGenerator {
 						lexer::Expressions::Literal{ value } => {
 							string.push_str(&format!("{value}"));
 						}
-						_ => todo!()
+						lexer::Expressions::Member { name } => {
+							string.push_str(&format!("{name}", name = name));
+						}
+						lexer::Expressions::Accessor { left, right } => {
+							process_node(Some(&mut string), left, compilation_settings, program_state);
+
+							string.push_str(&format!(".",));
+
+							process_node(Some(&mut string), right, compilation_settings, program_state);
+						}
 					}
 				}
 				lexer::Nodes::GLSL { code } => {

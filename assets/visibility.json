@@ -55,9 +55,9 @@
 			"data_type": "u32",
 			"interpolation": "flat"
 		},
-		"out_color": {
+		"out_material_index": {
 			"type": "out",
-			"data_type": "vec4f"
+			"data_type": "u32"
 		}
 	}
 }

@@ -53,18 +53,18 @@ void main() {
 ```
 
 ### Material Sum Pass
+The material sum pass consists of a big prefix sum to determine how to organize material shader invocations later on.
 
-```glsl
-// Compute shader
-layout(location=0, binding=0) uint[] material_count;
-layout(location=0, binding=1) uint[] material_sum;
-layout(local_size_x=32) in;
-void main() {
-	uint sum = 0;
-	for (int i = 0; i < n_of_materials; ++i) {
-		material_sum[i] = sum;
-		sum += material_count[i];
-	}
+The prefix sum algorithm is simple, visit every number in a collection and accumulate their sums in a variable while writing the result of said variable to another array to store partial sums.
+```rust
+let pixels_per_material = [64587, 534, 897, 23456, 7492, 16792];
+
+let mut sum = 0f32;
+let mut prefix_sum_array = [0, 0, 0, 0, 0, 0];
+
+for (pixels, i) in pixels_per_material.iter().enumerate() {
+	prefix_sum_array[i] = sum;
+	sum += pixels;
 }
 ```
 

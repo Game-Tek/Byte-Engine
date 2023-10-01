@@ -37,9 +37,19 @@ pub struct VisibilityWorldRenderDomain {
 	/// The hash and the shader handle are stored to determine if the shader has changed
 	shaders: std::collections::HashMap<u64, (u64, render_system::ShaderHandle, render_system::ShaderTypes)>,
 
-	pipeline: Option<render_system::PipelineHandle>,
-
+	
 	swapchain_handles: Vec<render_system::SwapchainHandle>,
+	
+	visibility_pass_pipeline_layout: render_system::PipelineLayoutHandle,
+	visibility_passes_descriptor_set: render_system::DescriptorSetHandle,
+
+	visibility_pipeline: Option<render_system::PipelineHandle>,
+	material_count_pipeline: render_system::PipelineHandle,
+	material_offset_pipeline: render_system::PipelineHandle,
+	pixel_mapping_pipeline: render_system::PipelineHandle,
+
+	material_id: render_system::TextureHandle,
+	material_count: render_system::BufferHandle,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -83,25 +93,6 @@ impl VisibilityWorldRenderDomain {
 			let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-			let _attachments = [
-				render_system::AttachmentInformation {
-					texture: render_target,
-					layout: render_system::Layouts::RenderTarget,
-					format: render_system::TextureFormats::RGBAu8,
-					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-					load: false,
-					store: true,
-				},
-				render_system::AttachmentInformation {
-					texture: depth_target,
-					layout: render_system::Layouts::RenderTarget,
-					format: render_system::TextureFormats::Depth32,
-					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
-					load: false,
-					store: true,
-				},
-			];
-
 			let render_finished_synchronizer = render_system.create_synchronizer(true);
 			let image_ready = render_system.create_synchronizer(false);
 
@@ -128,6 +119,250 @@ impl VisibilityWorldRenderDomain {
 					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 64 },
 				},
 			]);
+
+			let visibility_pass_vertex_source = r#"
+				#version 450
+				#pragma shader_stage(vertex)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference2: enable
+
+				layout(location=0) in vec3 in_position;
+
+				layout(location=0) out uint out_instance_index;
+
+				layout(scalar, buffer_reference) buffer CameraData {
+					mat4 view_matrix;
+					mat4 projection_matrix;
+					mat4 view_projection;
+				};
+
+				layout(scalar, buffer_reference) buffer MeshData {
+					mat4 model;
+				};
+
+				layout(push_constant) uniform PushConstant {
+					CameraData camera;
+					MeshData meshes;
+				} pc;
+
+				void main() {
+					gl_Position = pc.camera.view_projection * pc.meshes[gl_InstanceIndex].model * vec4(in_position, 1.0);
+					out_instance_index = gl_InstanceIndex;
+				}
+			"#;
+
+			let visibility_pass_fragment_source = r#"
+				#version 450
+				#pragma shader_stage(fragment)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference2: enable
+
+				layout(location=0) flat in uint in_instance_index;
+
+				layout(location=0) out uint material_id;
+
+				void main() {
+					material_id = 0;
+				}
+			"#;
+
+			let visibility_pass_vertex_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Vertex, visibility_pass_vertex_source.as_bytes());
+			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Fragment, visibility_pass_fragment_source.as_bytes());
+
+			let visibility_pass_shaders = [
+				(&visibility_pass_vertex_shader, render_system::ShaderTypes::Vertex),
+				(&visibility_pass_fragment_shader, render_system::ShaderTypes::Fragment),
+			];
+
+			let material_id = render_system.create_texture(crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+
+			let attachments = [
+				render_system::AttachmentInformation {
+					texture: material_id,
+					layout: render_system::Layouts::RenderTarget,
+					format: render_system::TextureFormats::U32,
+					clear: Some(crate::RGBA { r: -f32::NAN, g: 0.0, b: 0.0, a: 1.0 }),
+					load: false,
+					store: true,
+				},
+				render_system::AttachmentInformation {
+					texture: depth_target,
+					layout: render_system::Layouts::RenderTarget,
+					format: render_system::TextureFormats::Depth32,
+					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+					load: false,
+					store: true,
+				},
+			];
+
+			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &_vertex_layout, &attachments);
+
+			let material_count = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+
+			let material_xy = render_system.create_buffer(1920 * 1080 * 2 * 2, render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+
+			let material_count_source = r#"
+				#version 450
+				#pragma shader_stage(compute)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference2: enable
+
+				layout(scalar, binding=0) buffer MaterialCount {
+					uint material_count[];
+				};
+
+				layout(set=0, binding=3, r8ui) uniform readonly uimage2D material_id;
+
+				layout(local_size_x=32, local_size_y=32) in;
+				void main() {
+					// If thread is out of bound respect to the material_id texture, return
+					if (gl_GlobalInvocationID.x >= imageSize(material_id).x || gl_GlobalInvocationID.y >= imageSize(material_id).y) { return; }
+
+					uint material_index = imageLoad(material_id, ivec2(gl_GlobalInvocationID.xy)).r;
+
+					if (material_index < 1024) {
+						atomicAdd(material_count[material_index], 1);
+					}
+				}
+			"#;
+
+			let material_offset_source = r#"
+				#version 450
+				#pragma shader_stage(compute)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference2: enable
+
+				layout(scalar, binding=0) buffer MaterialCount {
+					uint material_count[];
+				};
+
+				layout(scalar, binding=1) buffer MaterialOffset {
+					uint material_offset[];
+				};
+
+				layout(local_size_x=1) in;
+				void main() {
+					uint sum = 0;
+
+					for (uint i = 0; i < 1; i++) {
+						material_offset[i] = sum;
+						sum += material_count[i];
+					}
+
+				}
+			"#;
+
+			let pixel_mapping_source = r#"
+				#version 450
+				#pragma shader_stage(compute)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference2: enable
+				#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+
+				layout(scalar, binding=0) buffer MaterialOffset {
+					uint material_offset[];
+				};
+
+				layout(scalar, binding=2) buffer PixelMapping {
+					u16vec2 pixel_mapping[];
+				};
+
+				layout(set=0, binding=3, r8ui) uniform readonly uimage2D material_id;
+
+				layout(local_size_x=32, local_size_y=32) in;
+				void main() {
+					// If thread is out of bound respect to the material_id texture, return
+					if (gl_GlobalInvocationID.x >= imageSize(material_id).x || gl_GlobalInvocationID.y >= imageSize(material_id).y) { return; }
+
+					uint material_index = imageLoad(material_id, ivec2(gl_GlobalInvocationID.xy)).r;
+
+					uint offset = atomicAdd(material_offset[material_index], 1);
+
+					pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
+				}
+			"#;
+
+			let bindings = [
+				render_system::DescriptorSetLayoutBinding {
+					binding: 0,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					binding: 1,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					binding: 2,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					binding: 3,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+			];
+
+			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
+
+			let visibility_pass_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout]);
+
+			let visibility_passes_descriptor_set = render_system.create_descriptor_set(&visibility_descriptor_set_layout, &bindings);
+
+			render_system.write(&[
+				render_system::DescriptorWrite {
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 0,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: material_count, size: 1024 * 4 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 1,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: material_offset, size: 1024 * 4 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 2,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: material_xy, size: 1920 * 1080 * 2 * 2 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 3,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Texture(material_id),
+				},
+			]);
+
+			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_count_source.as_bytes());
+
+			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &material_count_shader);			
+
+			let material_offset_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_offset_source.as_bytes());
+
+			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &material_offset_shader);
+
+			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
+
+			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &pixel_mapping_shader);
 
 			Self {
 				pipeline_layout_handle,
@@ -163,12 +398,22 @@ impl VisibilityWorldRenderDomain {
 
 				mesh_resources: HashMap::new(),
 
-				pipeline: None,
+				visibility_pipeline: Some(visibility_pass_pipeline),
 
 				swapchain_handles: Vec::new(),
+
+				visibility_pass_pipeline_layout,
+				visibility_passes_descriptor_set,
+
+				material_count_pipeline,
+				material_offset_pipeline,
+				pixel_mapping_pipeline,
+
+				material_id,
+				material_count,
 			}
 		})
-			.add_post_creation_function(Box::new(Self::load_needed_assets))
+			// .add_post_creation_function(Box::new(Self::load_needed_assets))
 			.add_listener::<camera::Camera>()
 			.add_listener::<Mesh>()
 			.add_listener::<window_system::Window>()
@@ -199,7 +444,7 @@ impl VisibilityWorldRenderDomain {
 					let offset = resource.offset as usize;
 					let size = resource.size as usize;
 
-					let new_shader = render_system.add_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
+					let new_shader = render_system.create_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
 
 					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
@@ -238,9 +483,9 @@ impl VisibilityWorldRenderDomain {
 
 					let pipeline_layout_handle = self.pipeline_layout_handle;
 
-					let pipeline = render_system.create_pipeline(&pipeline_layout_handle, &shaders, &vertex_layout, &targets);
+					let pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &shaders, &vertex_layout, &targets);
 
-					self.pipeline = Some(pipeline);
+					self.visibility_pipeline = Some(pipeline);
 				}
 				_ => {}
 			}
@@ -272,7 +517,7 @@ impl VisibilityWorldRenderDomain {
 	pub const fn transform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
-		if let None = self.pipeline { return; }
+		if let None = self.visibility_pipeline { return; }
 		if self.swapchain_handles.len() == 0 { return; }
 
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
@@ -284,7 +529,7 @@ impl VisibilityWorldRenderDomain {
 		{
 			let mut command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
 
-			// command_buffer_recording TODO: Copy the data from the CPU to the GPU
+			// TODO: Copy the data from the CPU to the GPU
 
 			command_buffer_recording.execute(&[], &[self.transfer_synchronizer], self.transfer_synchronizer);
 		}
@@ -322,11 +567,30 @@ impl VisibilityWorldRenderDomain {
 
 		let mut command_buffer_recording = render_system.create_command_buffer_recording(self.render_command_buffer, Some(self.current_frame as u32));
 
-		let attachments = self.get_attachments();
+		let attachments = [
+			render_system::AttachmentInformation {
+				texture: self.material_id,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::U32,
+				clear: Some(crate::RGBA { r: -f32::NAN, g: 0.0, b: 0.0, a: 1.0 }),
+				load: false,
+				store: true,
+			},
+			render_system::AttachmentInformation {
+				texture: self.depth_target,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::Depth32,
+				clear: Some(crate::RGBA { r: 1.0, g: 0.0, b: 0.0, a: 0.0 }),
+				load: false,
+				store: true,
+			},
+		];
 
 		command_buffer_recording.start_render_pass(Extent::new(1920, 1080, 1), &attachments);
 
-		command_buffer_recording.bind_pipeline(&self.pipeline.as_ref().unwrap());
+		// Visibility pass
+
+		command_buffer_recording.bind_pipeline(&self.visibility_pipeline.as_ref().unwrap());
 
 		let vertex_buffer_descriptors = [
 			render_system::BufferDescriptor {
@@ -370,6 +634,103 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.end_render_pass();
 
+		// Material count pass
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState{ layout: render_system::Layouts::RenderTarget, format: render_system::TextureFormats::U32 }), destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::U32 }, texture: self.material_id },
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::FRAGMENT,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+				}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_count),
+				source: None,
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::TRANSFER,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			}
+		]);
+
+		command_buffer_recording.clear_buffer(self.material_count);
+
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Memory,
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::TRANSFER,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+				}
+			}
+		]);
+
+		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
+		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.dispatch((1920 / 32) + 1, (1080 / 32) + 1, 1);
+
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Memory,
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::COMPUTE,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+				}
+			}
+		]);
+
+		// Material offset pass
+
+		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
+		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
+		// command_buffer_recording.dispatch(1, 1, 1);
+
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Memory,
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::COMPUTE,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+				}
+			}
+		]);
+
+		// Pixel mapping pass
+
+		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
+		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
+		// command_buffer_recording.dispatch((1920 / 32) as u32, (1080 / 32) as u32, 1);
+
+		// Material evaluation pass
+
+		// todo!();
+
+		// Copy to swapchain
+
 		command_buffer_recording.copy_to_swapchain(self.render_target, swapchain_handle);
 
 		command_buffer_recording.execute(&[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
@@ -381,28 +742,6 @@ impl VisibilityWorldRenderDomain {
 		render_system.wait(self.transfer_synchronizer); // Wait for buffers to be copied over to the GPU, or else we might overwrite them on the CPU before they are copied over
 
 		self.current_frame += 1;
-	}
-
-	fn get_attachments(&mut self) -> [render_system::AttachmentInformation; 2] {
-		let attachments = [
-			render_system::AttachmentInformation {
-				texture: self.render_target,
-				layout: render_system::Layouts::RenderTarget,
-				format: render_system::TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			},
-			render_system::AttachmentInformation {
-				texture: self.depth_target,
-				layout: render_system::Layouts::RenderTarget,
-				format: render_system::TextureFormats::Depth32,
-				clear: Some(crate::RGBA { r: 1.0, g: 0.0, b: 0.0, a: 0.0 }),
-				load: false,
-				store: true,
-			},
-		];
-		attachments
 	}
 }
 

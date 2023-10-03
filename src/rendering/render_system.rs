@@ -148,6 +148,7 @@ pub trait CommandBufferRecording {
 	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
 
 	fn dispatch(&mut self, x: u32, y: u32, z: u32);
+	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
 
 	fn clear_buffer(&mut self, buffer_handle: BufferHandle);
 
@@ -232,7 +233,7 @@ pub trait RenderSystem: orchestrator::System {
 	fn get_mut_buffer_slice(&self, buffer_handle: BufferHandle) -> &mut [u8];
 
 	/// Creates a texture.
-	fn create_texture(&mut self, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle;
+	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle;
 
 	fn create_sampler(&mut self) -> SamplerHandle;
 
@@ -357,14 +358,14 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -383,7 +384,7 @@ pub(super) mod tests {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -483,14 +484,14 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
-		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: None,
+				clear: ClearValue::None,
 				load: false,
 				store: true,
 			}
@@ -514,7 +515,7 @@ pub(super) mod tests {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -603,14 +604,14 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[]);
 
-		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: None,
+				clear: ClearValue::None,
 				load: false,
 				store: true,
 			}
@@ -637,7 +638,7 @@ pub(super) mod tests {
 					texture: render_target,
 					layout: Layouts::RenderTarget,
 					format: TextureFormats::RGBAu8,
-					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
 				}
@@ -733,14 +734,14 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -764,7 +765,7 @@ pub(super) mod tests {
 					texture: render_target,
 					layout: Layouts::RenderTarget,
 					format: TextureFormats::RGBAu8,
-					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
 				}
@@ -866,14 +867,14 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -903,7 +904,7 @@ pub(super) mod tests {
 					texture: render_target,
 					layout: Layouts::RenderTarget,
 					format: TextureFormats::RGBAu8,
-					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
 				}
@@ -1025,7 +1026,7 @@ pub(super) mod tests {
 
 		let buffer = renderer.create_buffer(64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let sampled_texture = renderer.create_texture(crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let sampled_texture = renderer.create_texture(None, crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -1038,6 +1039,7 @@ pub(super) mod tests {
 
 		let bindings = [
 			DescriptorSetLayoutBinding {
+				name: "sampler",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::Sampler,
 				binding: 0,
@@ -1045,6 +1047,7 @@ pub(super) mod tests {
 				immutable_samplers: Some(vec![sampler]),
 			},
 			DescriptorSetLayoutBinding {
+				name: "ubo",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageBuffer,
 				binding: 1,
@@ -1052,6 +1055,7 @@ pub(super) mod tests {
 				immutable_samplers: None,
 			},
 			DescriptorSetLayoutBinding {
+				name: "tex",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::SampledImage,
 				binding: 2,
@@ -1077,14 +1081,14 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -1107,7 +1111,7 @@ pub(super) mod tests {
 				texture: render_target,
 				layout: Layouts::RenderTarget,
 				format: TextureFormats::RGBAu8,
-				clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
 			}
@@ -1209,6 +1213,14 @@ pub struct Memory<'a> {
 }
 
 #[derive(Clone, Copy)]
+pub enum ClearValue {
+	None,
+	Color(crate::RGBA),
+	Integer(u32, u32, u32, u32),
+	Depth(f32),
+}
+
+#[derive(Clone, Copy)]
 /// Stores the information of an attachment.
 pub struct AttachmentInformation {
 	/// The texture view of the attachment.
@@ -1218,7 +1230,7 @@ pub struct AttachmentInformation {
 	/// The layout of the attachment.
 	pub layout: Layouts,
 	/// The clear color of the attachment.
-	pub clear: Option<crate::RGBA>,
+	pub clear: ClearValue,
 	/// Whether to load the contents of the attchment when starting a render pass.
 	pub load: bool,
 	/// Whether to store the contents of the attachment when ending a render pass.
@@ -1310,6 +1322,9 @@ bitflags::bitflags! {
 		const ALL_GRAPHICS = 0b10000000;
 		/// The shader read stage.
 		const SHADER_READ = 0b100000000;
+		/// The shader write stage.
+		const SHADER_WRITE = 0b1000000000;
+		const INDIRECT = 0b10000000000;
 		/// The all stage.
 		const ALL = 0b11111111;
 	}
@@ -1396,6 +1411,7 @@ pub enum DescriptorType {
 
 /// Stores the information of a descriptor set layout binding.
 pub struct DescriptorSetLayoutBinding {
+	pub name: &'static str,
 	/// The binding of the descriptor set layout binding.
 	pub binding: u32,
 	/// The descriptor type of the descriptor set layout binding.
@@ -1619,7 +1635,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_synchronizer(signaled)
 	}
 
-	fn create_texture(&mut self, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle {
-		self.pointer.create_texture(extent, format, resource_uses, device_accesses, use_case)
+	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle {
+		self.pointer.create_texture(name, extent, format, resource_uses, device_accesses, use_case)
 	}
 }

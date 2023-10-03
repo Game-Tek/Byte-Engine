@@ -9,7 +9,7 @@ pub struct VisibilityWorldRenderDomain {
 	pipeline_layout_handle: render_system::PipelineLayoutHandle,
 	vertices_buffer: render_system::BufferHandle,
 	indices_buffer: render_system::BufferHandle,
-	render_target: render_system::TextureHandle,
+	albedo: render_system::TextureHandle,
 	depth_target: render_system::TextureHandle,
 	index_count: u32,
 	instance_count: u32,
@@ -50,6 +50,15 @@ pub struct VisibilityWorldRenderDomain {
 
 	material_id: render_system::TextureHandle,
 	material_count: render_system::BufferHandle,
+	material_offset: render_system::BufferHandle,
+	material_offset_scratch: render_system::BufferHandle,
+	material_evaluation_dispatches: render_system::BufferHandle,
+	material_xy: render_system::BufferHandle,
+
+	material_evaluation_descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
+	material_evaluation_descriptor_set: render_system::DescriptorSetHandle,
+	material_evaluation_pipeline_layout: render_system::PipelineLayoutHandle,
+	material_evaluation_pipeline: render_system::PipelineHandle,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -66,6 +75,7 @@ impl VisibilityWorldRenderDomain {
 
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
+					name: "CameraData",
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
@@ -73,6 +83,7 @@ impl VisibilityWorldRenderDomain {
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
+					name: "MeshData",
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
@@ -90,8 +101,8 @@ impl VisibilityWorldRenderDomain {
 			let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-			let render_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let depth_target = render_system.create_texture(Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let render_finished_synchronizer = render_system.create_synchronizer(true);
 			let image_ready = render_system.create_synchronizer(false);
@@ -176,14 +187,14 @@ impl VisibilityWorldRenderDomain {
 				(&visibility_pass_fragment_shader, render_system::ShaderTypes::Fragment),
 			];
 
-			let material_id = render_system.create_texture(crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let material_id = render_system.create_texture(Some("material_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let attachments = [
 				render_system::AttachmentInformation {
 					texture: material_id,
 					layout: render_system::Layouts::RenderTarget,
 					format: render_system::TextureFormats::U32,
-					clear: Some(crate::RGBA { r: -f32::NAN, g: 0.0, b: 0.0, a: 1.0 }),
+					clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
 					load: false,
 					store: true,
 				},
@@ -191,7 +202,7 @@ impl VisibilityWorldRenderDomain {
 					texture: depth_target,
 					layout: render_system::Layouts::RenderTarget,
 					format: render_system::TextureFormats::Depth32,
-					clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+					clear: render_system::ClearValue::Depth(0f32),
 					load: false,
 					store: true,
 				},
@@ -200,9 +211,11 @@ impl VisibilityWorldRenderDomain {
 			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &_vertex_layout, &attachments);
 
 			let material_count = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_offset = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset_scratch = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_evaluation_dispatches = render_system.create_buffer(1024 /* max materials */ * 12 /* uvec3 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination | render_system::Uses::Indirect, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-			let material_xy = render_system.create_buffer(1920 * 1080 * 2 * 2, render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_xy = render_system.create_buffer(1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let material_count_source = r#"
 				#version 450
@@ -215,7 +228,7 @@ impl VisibilityWorldRenderDomain {
 					uint material_count[];
 				};
 
-				layout(set=0, binding=3, r8ui) uniform readonly uimage2D material_id;
+				layout(set=0, binding=5, r8ui) uniform readonly uimage2D material_id;
 
 				layout(local_size_x=32, local_size_y=32) in;
 				void main() {
@@ -245,15 +258,24 @@ impl VisibilityWorldRenderDomain {
 					uint material_offset[];
 				};
 
+				layout(scalar, binding=2) buffer MaterialOffsetScratch {
+					uint material_offset_scratch[];
+				};
+
+				layout(scalar, binding=3) buffer MaterialEvaluationDispatches {
+					uvec3 material_evaluation_dispatches[];
+				};
+
 				layout(local_size_x=1) in;
 				void main() {
 					uint sum = 0;
 
 					for (uint i = 0; i < 1; i++) {
 						material_offset[i] = sum;
+						material_offset_scratch[i] = sum;
+						material_evaluation_dispatches[i] = uvec3((material_count[i] + 31) / 32, 1, 1);
 						sum += material_count[i];
 					}
-
 				}
 			"#;
 
@@ -265,15 +287,19 @@ impl VisibilityWorldRenderDomain {
 				#extension GL_EXT_buffer_reference2: enable
 				#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 
-				layout(scalar, binding=0) buffer MaterialOffset {
+				layout(scalar, binding=1) buffer MaterialOffset {
 					uint material_offset[];
 				};
 
-				layout(scalar, binding=2) buffer PixelMapping {
+				layout(scalar, binding=2) buffer MaterialOffsetScratch {
+					uint material_offset_scratch[];
+				};
+
+				layout(scalar, binding=4) buffer PixelMapping {
 					u16vec2 pixel_mapping[];
 				};
 
-				layout(set=0, binding=3, r8ui) uniform readonly uimage2D material_id;
+				layout(set=0, binding=5, r8ui) uniform readonly uimage2D material_id;
 
 				layout(local_size_x=32, local_size_y=32) in;
 				void main() {
@@ -282,7 +308,9 @@ impl VisibilityWorldRenderDomain {
 
 					uint material_index = imageLoad(material_id, ivec2(gl_GlobalInvocationID.xy)).r;
 
-					uint offset = atomicAdd(material_offset[material_index], 1);
+					if (material_index >= 1024) { return; }
+
+					uint offset = atomicAdd(material_offset_scratch[material_index], 1);
 
 					pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
 				}
@@ -290,6 +318,7 @@ impl VisibilityWorldRenderDomain {
 
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialCount",
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
@@ -297,6 +326,7 @@ impl VisibilityWorldRenderDomain {
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialOffset",
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
@@ -304,6 +334,7 @@ impl VisibilityWorldRenderDomain {
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialOffsetScratch",
 					binding: 2,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
@@ -311,7 +342,24 @@ impl VisibilityWorldRenderDomain {
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialEvaluationDispatches",
 					binding: 3,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialXY",
+					binding: 4,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialId",
+					binding: 5,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
 					stage_flags: render_system::Stages::COMPUTE,
@@ -320,49 +368,120 @@ impl VisibilityWorldRenderDomain {
 			];
 
 			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
-
 			let visibility_pass_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout]);
-
 			let visibility_passes_descriptor_set = render_system.create_descriptor_set(&visibility_descriptor_set_layout, &bindings);
 
 			render_system.write(&[
-				render_system::DescriptorWrite {
+				render_system::DescriptorWrite { // MaterialCount
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 0,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_count, size: 1024 * 4 },
 				},
-				render_system::DescriptorWrite {
+				render_system::DescriptorWrite { // MaterialOffset
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 1,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_offset, size: 1024 * 4 },
 				},
-				render_system::DescriptorWrite {
+				render_system::DescriptorWrite { // MaterialOffsetScratch
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 2,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Buffer{ handle: material_xy, size: 1920 * 1080 * 2 * 2 },
+					descriptor: render_system::Descriptor::Buffer{ handle: material_offset_scratch, size: 1024 * 4 },
 				},
-				render_system::DescriptorWrite {
+				render_system::DescriptorWrite { // MaterialEvaluationDispatches
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 3,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: material_evaluation_dispatches, size: 1024 * 12 },
+				},
+				render_system::DescriptorWrite { // MaterialXY
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 4,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: material_xy, size: 1920 * 1080 * 2 * 2 },
+				},
+				render_system::DescriptorWrite { // MaterialId
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 5,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Texture(material_id),
 				},
 			]);
 
 			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_count_source.as_bytes());
-
 			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &material_count_shader);			
 
 			let material_offset_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_offset_source.as_bytes());
-
 			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &material_offset_shader);
 
 			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
-
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &pixel_mapping_shader);
+
+			let material_evaluation_source = r#"
+				#version 450
+				#pragma shader_stage(compute)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference2: enable
+				#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+
+				layout(scalar, binding=0) buffer MaterialCount {
+					uint material_count[];
+				};
+
+				layout(scalar, binding=1) buffer MaterialOffset {
+					uint material_offset[];
+				};
+
+				layout(scalar, binding=4) buffer PixelMapping {
+					u16vec2 pixel_mapping[];
+				};
+
+				layout(set=1, binding=0, rgba8) uniform image2D albedo;
+
+				layout(push_constant, scalar) uniform PushConstant {
+					layout(offset=16) uint material_id;
+				} pc;
+
+				layout(local_size_x=32) in;
+				void main() {
+					uint offset = material_offset[pc.material_id];
+
+					u16vec2 pixel = pixel_mapping[offset + gl_GlobalInvocationID.x];
+
+					imageStore(albedo, ivec2(pixel.x, pixel.y), vec4(0.0, 0.0, 1.0, 1.0));
+				}
+			"#;
+
+			let material_evaluation_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_evaluation_source.as_bytes());
+
+			let bindings = [
+				render_system::DescriptorSetLayoutBinding {
+					name: "albedo",
+					binding: 0,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				}
+			];	
+
+			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
+			let material_evaluation_descriptor_set = render_system.create_descriptor_set(&material_evaluation_descriptor_set_layout, &bindings);
+
+			render_system.write(&[
+				render_system::DescriptorWrite { // albedo
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 0,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Texture(albedo),
+				},
+			]);
+
+			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout]);
+			let material_evaluation_pipeline = render_system.create_compute_pipeline(&material_evaluation_pipeline_layout, &material_evaluation_shader);
 
 			Self {
 				pipeline_layout_handle,
@@ -372,7 +491,7 @@ impl VisibilityWorldRenderDomain {
 				descriptor_set_layout,
 				descriptor_set,
 
-				render_target,
+				albedo,
 				depth_target,
 
 				index_count: 0,
@@ -409,8 +528,17 @@ impl VisibilityWorldRenderDomain {
 				material_offset_pipeline,
 				pixel_mapping_pipeline,
 
+				material_evaluation_descriptor_set_layout,
+				material_evaluation_descriptor_set,
+				material_evaluation_pipeline_layout,
+				material_evaluation_pipeline,
+
 				material_id,
 				material_count,
+				material_offset,
+				material_offset_scratch,
+				material_evaluation_dispatches,
+				material_xy,
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -464,10 +592,10 @@ impl VisibilityWorldRenderDomain {
 
 					let targets = [
 						render_system::AttachmentInformation {
-							texture: self.render_target,
+							texture: self.albedo,
 							layout: render_system::Layouts::RenderTarget,
 							format: render_system::TextureFormats::RGBAu8,
-							clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+							clear: render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 							load: false,
 							store: true,
 						},
@@ -475,7 +603,7 @@ impl VisibilityWorldRenderDomain {
 							texture: self.depth_target,
 							layout: render_system::Layouts::RenderTarget,
 							format: render_system::TextureFormats::Depth32,
-							clear: Some(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+							clear: render_system::ClearValue::Depth(0f32),
 							load: false,
 							store: true,
 						},
@@ -572,7 +700,7 @@ impl VisibilityWorldRenderDomain {
 				texture: self.material_id,
 				layout: render_system::Layouts::RenderTarget,
 				format: render_system::TextureFormats::U32,
-				clear: Some(crate::RGBA { r: -f32::NAN, g: 0.0, b: 0.0, a: 1.0 }),
+				clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
 				load: false,
 				store: true,
 			},
@@ -580,7 +708,7 @@ impl VisibilityWorldRenderDomain {
 				texture: self.depth_target,
 				layout: render_system::Layouts::RenderTarget,
 				format: render_system::TextureFormats::Depth32,
-				clear: Some(crate::RGBA { r: 1.0, g: 0.0, b: 0.0, a: 0.0 }),
+				clear: render_system::ClearValue::Depth(1f32),
 				load: false,
 				store: true,
 			},
@@ -656,10 +784,46 @@ impl VisibilityWorldRenderDomain {
 					stage: render_system::Stages::TRANSFER,
 					access: render_system::AccessPolicies::WRITE,
 				}
-			}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_offset),
+				source: None,
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::TRANSFER,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_offset_scratch),
+				source: None,
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::TRANSFER,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
+				source: None,
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::TRANSFER,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_xy),
+				source: None,
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::TRANSFER,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
 		]);
 
 		command_buffer_recording.clear_buffer(self.material_count);
+		command_buffer_recording.clear_buffer(self.material_offset);
+		command_buffer_recording.clear_buffer(self.material_offset_scratch);
+		command_buffer_recording.clear_buffer(self.material_evaluation_dispatches);
+		command_buffer_recording.clear_buffer(self.material_xy);
 
 		command_buffer_recording.barriers(&[
 			render_system::BarrierDescriptor {
@@ -679,7 +843,7 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
-		command_buffer_recording.dispatch((1920 / 32) + 1, (1080 / 32) + 1, 1);
+		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
 		command_buffer_recording.barriers(&[
 			render_system::BarrierDescriptor {
@@ -694,14 +858,22 @@ impl VisibilityWorldRenderDomain {
 					stage: render_system::Stages::COMPUTE,
 					access: render_system::AccessPolicies::READ,
 				}
-			}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
+				source: Some(render_system::TransitionState { stage: render_system::Stages::TRANSFER, access: render_system::AccessPolicies::WRITE, }),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
 		]);
 
 		// Material offset pass
 
 		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
-		// command_buffer_recording.dispatch(1, 1, 1);
+		command_buffer_recording.dispatch(1, 1, 1);
 
 		command_buffer_recording.barriers(&[
 			render_system::BarrierDescriptor {
@@ -723,15 +895,56 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
-		// command_buffer_recording.dispatch((1920 / 32) as u32, (1080 / 32) as u32, 1);
+		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
 		// Material evaluation pass
 
-		// todo!();
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Texture { source: None, destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
+				source: None,
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
+				source: Some(render_system::TransitionState { stage: render_system::Stages::COMPUTE, access: render_system::AccessPolicies::WRITE, }),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::INDIRECT,
+					access: render_system::AccessPolicies::READ,
+				}
+			},
+		]);
+
+		// TODO: for each user defined material in scene
+		command_buffer_recording.bind_compute_pipeline(&self.material_evaluation_pipeline);
+		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.material_evaluation_descriptor_set);
+		command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
+			std::slice::from_raw_parts(&0u32 as *const u32 as *const u8, std::mem::size_of::<u32>())
+		});
+		command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: 0, range: 12, slot: 0 });
 
 		// Copy to swapchain
 
-		command_buffer_recording.copy_to_swapchain(self.render_target, swapchain_handle);
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }), destination: render_system::TextureState{ layout: render_system::Layouts::Transfer, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::COMPUTE,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::TRANSFER,
+					access: render_system::AccessPolicies::READ,
+				}
+			},
+		]);
+
+		command_buffer_recording.copy_to_swapchain(self.albedo, swapchain_handle);
 
 		command_buffer_recording.execute(&[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 

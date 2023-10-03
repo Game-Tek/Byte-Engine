@@ -23,6 +23,7 @@ pub struct VulkanRenderSystem {
 	buffers: Vec<Buffer>,
 	textures: Vec<Texture>,
 	allocations: Vec<Allocation>,
+	descriptor_sets: Vec<DescriptorSet>,
 	meshes: Vec<Mesh>,
 	command_buffers: Vec<CommandBuffer>,
 	synchronizers: Vec<Synchronizer>,
@@ -180,7 +181,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let descriptor_pool = unsafe { self.device.create_descriptor_pool(&descriptor_pool_create_info, None).expect("No descriptor pool") };
 
-		let descriptor_set_layouts = [vk::DescriptorSetLayout::from_raw(descriptor_set_layout_handle.0)];
+		// Allocate 2 descriptor sets from our pool.
+		// TODO: Tie this count to the number of frames.
+		let descriptor_set_layouts = [vk::DescriptorSetLayout::from_raw(descriptor_set_layout_handle.0), vk::DescriptorSetLayout::from_raw(descriptor_set_layout_handle.0)];
 
 		let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
 			.descriptor_pool(descriptor_pool)
@@ -189,16 +192,31 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let descriptor_sets = unsafe { self.device.allocate_descriptor_sets(&descriptor_set_allocate_info).expect("No descriptor set") };
 
-		let descriptor_set = descriptor_sets[0];
+		let handle = render_system::DescriptorSetHandle(self.descriptor_sets.len() as u64);
+		let mut previous_handle: Option<render_system::DescriptorSetHandle> = None;
 
-		render_system::DescriptorSetHandle(descriptor_set.as_raw())
+		for descriptor_set in descriptor_sets {
+			let handle = render_system::DescriptorSetHandle(self.descriptor_sets.len() as u64);
+
+			self.descriptor_sets.push(
+				DescriptorSet {
+					next: None,
+					descriptor_set,
+				}
+			);
+
+			if let Some(previous_handle) = previous_handle {
+				self.descriptor_sets[previous_handle.0 as usize].next = Some(handle);
+			}
+
+			previous_handle = Some(handle);
+		}
+
+		handle
 	}
 
-	fn write(&self, descriptor_set_writes: &[render_system::DescriptorWrite]) {
+	fn write(&self, descriptor_set_writes: &[render_system::DescriptorWrite]) {		
 		for descriptor_set_write in descriptor_set_writes {
-			let mut buffers: Vec<vk::DescriptorBufferInfo> = Vec::new();
-			let mut images: Vec<vk::DescriptorImageInfo> = Vec::new();
-
 			let descriptor_type = match descriptor_set_write.descriptor {
 				render_system::Descriptor::Buffer { handle: _, size: _ } => {
 					vk::DescriptorType::STORAGE_BUFFER
@@ -215,46 +233,88 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				},
 			};
 
-			let write_info = vk::WriteDescriptorSet::default()
-				.dst_set(vk::DescriptorSet::from_raw(descriptor_set_write.descriptor_set.0))
-				.dst_binding(descriptor_set_write.binding)
-				.dst_array_element(descriptor_set_write.array_element)
-				.descriptor_type(descriptor_type)
-			;
-
-			let write_info = match descriptor_set_write.descriptor {
+			match descriptor_set_write.descriptor {
 				render_system::Descriptor::Buffer { handle, size } => {
-					let a = vk::DescriptorBufferInfo::default()
-						.buffer(self.buffers[handle.0 as usize].buffer)
-						.offset(0 as u64)
-						.range(size as u64);
-					buffers.push(a);
-					write_info.buffer_info(&buffers)
+					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
+					let mut buffer_handle_option = Some(handle);
+
+					while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let buffer = &self.buffers[handle.0 as usize];
+
+						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0 as u64).range(size as u64)];
+
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(descriptor_set_write.binding)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.buffer_info(&buffers);
+
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+
+						descriptor_set_handle_option = descriptor_set.next;
+
+						// if let Some(_) = buffer.next { // If buffer spans multiple frames, write each frame's buffer to each frame's descriptor set. Else write the same buffer to each frame's descriptor set.
+						// 	// buffer_handle_option = buffer.next;
+						// }
+					}
 				},
 				render_system::Descriptor::Texture(handle) => {
-					let texture = &self.textures[handle.0 as usize];
-					let a = vk::DescriptorImageInfo::default()
-						.image_layout(vk::ImageLayout::GENERAL)
-						.image_view(texture.image_view);
-					images.push(a);
-					write_info.image_info(&images)
+					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
+					let mut texture_handle_option = Some(handle);
+
+					while let (Some(descriptor_set_handle), Some(texture_handle)) = (descriptor_set_handle_option, texture_handle_option) {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let texture = &self.textures[texture_handle.0 as usize];
+
+						let images = [vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(texture.image_view)];
+
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(descriptor_set_write.binding)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.image_info(&images);
+
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+
+						descriptor_set_handle_option = descriptor_set.next;
+
+						if let Some(_) = texture.next { // If texture spans multiple frames, write each frame's texture to each frame's descriptor set. Else write the same texture to each frame's descriptor set.
+							texture_handle_option = texture.next;
+						}
+					}
 				},
 				render_system::Descriptor::Sampler(handle) => {
-					let a = vk::DescriptorImageInfo::default()
-						.sampler(vk::Sampler::from_raw(handle.0));
-					images.push(a);
-					write_info.image_info(&images)
-				},
-				_ => panic!("Invalid descriptor info"),
-			};
+					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
+					let mut sampler_handle_option = Some(handle);
 
-			unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+					while let (Some(descriptor_set_handle), Some(sampler_handle)) = (descriptor_set_handle_option, sampler_handle_option) {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+
+						let images = [vk::DescriptorImageInfo::default().sampler(vk::Sampler::from_raw(sampler_handle.0))];
+
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(descriptor_set_write.binding)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.image_info(&images);
+
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+
+						descriptor_set_handle_option = descriptor_set.next;
+						// sampler_handle_option = sampler.next;
+					}
+				},
+			}
 		}
 	}
 
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[render_system::DescriptorSetLayoutHandle]) -> render_system::PipelineLayoutHandle {
+	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[render_system::DescriptorSetLayoutHandle], push_constant_ranges: &[render_system::PushConstantRange]) -> render_system::PipelineLayoutHandle {
 		// self.create_vulkan_pipeline_layout(&descriptor_set_layout_handles.iter().map(|descriptor_set_layout_handle| vk::DescriptorSetLayout::from_raw(descriptor_set_layout_handle.0)).collect::<Vec<_>>())
-		let push_constant_ranges = [vk::PushConstantRange::default().size(64).offset(0).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE)];
+		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE)).collect::<Vec<_>>();
 		let set_layouts = descriptor_set_layout_handles.iter().map(|set_layout| vk::DescriptorSetLayout::from_raw(set_layout.0)).collect::<Vec<_>>();
 
   		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
@@ -678,6 +738,7 @@ pub(crate) struct Swapchain {
 
 #[derive(Clone, Copy)]
 pub(crate) struct DescriptorSet {
+	next: Option<render_system::DescriptorSetHandle>,
 	descriptor_set: vk::DescriptorSet,
 }
 
@@ -1165,6 +1226,7 @@ impl VulkanRenderSystem {
 			allocations: Vec::new(),
 			buffers: Vec::new(),
 			textures: Vec::new(),
+			descriptor_sets: Vec::new(),
 			meshes: Vec::new(),
 			command_buffers: Vec::new(),
 			synchronizers: Vec::new(),
@@ -1882,6 +1944,19 @@ impl VulkanCommandBufferRecording<'_> {
 	fn get_command_buffer(&self) -> &CommandBufferInternal {
 		&self.render_system.command_buffers[self.command_buffer.0 as usize].frames[self.modulo_frame_index as usize]
 	}
+
+	fn get_descriptor_set(&self, desciptor_set_handle: &render_system::DescriptorSetHandle) -> (render_system::DescriptorSetHandle, &DescriptorSet) {
+		let mut i = 0;
+		let mut handle = desciptor_set_handle.clone();
+		loop {
+			let descriptor_set = &self.render_system.descriptor_sets[handle.0 as usize];
+			if i == self.modulo_frame_index {
+				return (handle, descriptor_set);
+			}
+			handle = descriptor_set.next.unwrap();
+			i += 1;
+		}
+	}
 }
 
 impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> {
@@ -2460,7 +2535,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		// Copy texture to swapchain image
 
-		let image_copies = [vk::ImageCopy2::default()
+		let image_blits = [vk::ImageBlit2::default()
 			.src_subresource(vk::ImageSubresourceLayers::default()
 				.aspect_mask(vk::ImageAspectFlags::COLOR)
 				.mip_level(0)
@@ -2468,7 +2543,10 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				.layer_count(1)
 				/* .build() */
 			)
-			.src_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
+			.src_offsets([
+				vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
+				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1)/* .build() */,
+			])
 			.dst_subresource(vk::ImageSubresourceLayers::default()
 				.aspect_mask(vk::ImageAspectFlags::COLOR)
 				.mip_level(0)
@@ -2476,19 +2554,21 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				.layer_count(1)
 				/* .build() */
 			)
-			.dst_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-			.extent(source_texture.extent/* .build() */)
+			.dst_offsets([
+				vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
+				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1)/* .build() */,
+			])
 		];
 
-		let copy_image_info = vk::CopyImageInfo2::default()
+		let copy_image_info = vk::BlitImageInfo2::default()
 			.src_image(source_texture.image)
 			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
 			.dst_image(swapchain_image)
 			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-			.regions(&image_copies);
+			.regions(&image_blits);
 			/* .build() */
 
-		unsafe { self.render_system.device.cmd_copy_image2(command_buffer.command_buffer, &copy_image_info); }
+		unsafe { self.render_system.device.cmd_blit_image2(command_buffer.command_buffer, &copy_image_info); }
 
 		// Transition swapchain image to present layout
 
@@ -2543,7 +2623,10 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let command_buffer = self.get_command_buffer();
 
 		let pipeline_layout = vk::PipelineLayout::from_raw(pipeline_layout.0);
-		let descriptor_sets = [vk::DescriptorSet::from_raw(descriptor_set_handle.0)];
+
+		let (_, descriptor_set) = self.get_descriptor_set(descriptor_set_handle);
+
+		let descriptor_sets = [descriptor_set.descriptor_set];
 
 		unsafe {
 			self.render_system.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, pipeline_layout, first_set, &descriptor_sets, &[]);

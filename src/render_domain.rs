@@ -68,9 +68,9 @@ impl VisibilityWorldRenderDomain {
 			let mut render_system = render_system.get_mut();
 			let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
 
-			let _vertex_layout = [
+			let vertex_layout = [
 				render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
-				render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
+				render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 1 },
 			];
 
 			let bindings = [
@@ -96,7 +96,7 @@ impl VisibilityWorldRenderDomain {
 
 			let descriptor_set = render_system.create_descriptor_set(&descriptor_set_layout, &bindings);
 
-			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout]);
+			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }]);
 			
 			let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
@@ -138,7 +138,10 @@ impl VisibilityWorldRenderDomain {
 				#extension GL_EXT_scalar_block_layout: enable
 				#extension GL_EXT_buffer_reference2: enable
 
+				layout(row_major) uniform; layout(row_major) buffer;
+
 				layout(location=0) in vec3 in_position;
+				layout(location=1) in vec3 in_normal;
 
 				layout(location=0) out uint out_instance_index;
 
@@ -208,7 +211,7 @@ impl VisibilityWorldRenderDomain {
 				},
 			];
 
-			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &_vertex_layout, &attachments);
+			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &vertex_layout, &attachments);
 
 			let material_count = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let material_offset = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
@@ -368,7 +371,7 @@ impl VisibilityWorldRenderDomain {
 			];
 
 			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
-			let visibility_pass_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout]);
+			let visibility_pass_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }]);
 			let visibility_passes_descriptor_set = render_system.create_descriptor_set(&visibility_descriptor_set_layout, &bindings);
 
 			render_system.write(&[
@@ -451,7 +454,7 @@ impl VisibilityWorldRenderDomain {
 
 					u16vec2 pixel = pixel_mapping[offset + gl_GlobalInvocationID.x];
 
-					imageStore(albedo, ivec2(pixel.x, pixel.y), vec4(0.0, 0.0, 1.0, 1.0));
+					imageStore(albedo, ivec2(pixel.x, pixel.y), vec4(0.0, 1.0, 0.0, 1.0));
 				}
 			"#;
 
@@ -480,7 +483,7 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout]);
+			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }, render_system::PushConstantRange{ offset: 16, size: 4 }]);
 			let material_evaluation_pipeline = render_system.create_compute_pipeline(&material_evaluation_pipeline_layout, &material_evaluation_shader);
 
 			Self {
@@ -920,6 +923,7 @@ impl VisibilityWorldRenderDomain {
 
 		// TODO: for each user defined material in scene
 		command_buffer_recording.bind_compute_pipeline(&self.material_evaluation_pipeline);
+		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.material_evaluation_descriptor_set);
 		command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
 			std::slice::from_raw_parts(&0u32 as *const u32 as *const u8, std::mem::size_of::<u32>())

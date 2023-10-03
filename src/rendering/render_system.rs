@@ -200,7 +200,7 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn write(&self, descriptor_set_writes: &[DescriptorWrite]);
 
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle]) -> PipelineLayoutHandle;
+	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
 
 	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handles: &[(&ShaderHandle, ShaderTypes)], vertex_layout: &[VertexElement], targets: &[AttachmentInformation]) -> PipelineHandle;
 
@@ -353,7 +353,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -482,7 +482,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
 		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
@@ -602,7 +602,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
 		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
 
@@ -729,7 +729,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -862,7 +862,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1076,7 +1076,7 @@ pub(super) mod tests {
 
 		assert!(!renderer.has_errors());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1519,6 +1519,11 @@ pub enum PipelineConfigurationBlocks<'a> {
 	}
 }
 
+pub struct PushConstantRange {
+	pub offset: u32,
+	pub size: u32,
+}
+
 pub struct RenderSystemImplementation {
 	pointer: Box<dyn RenderSystem>,
 }
@@ -1623,8 +1628,8 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_handle)
 	}
 
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle]) -> PipelineLayoutHandle {
-		self.pointer.create_pipeline_layout(descriptor_set_layout_handles)
+	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {
+		self.pointer.create_pipeline_layout(descriptor_set_layout_handles, push_constant_ranges)
 	}
 
 	fn create_sampler(&mut self) -> SamplerHandle {

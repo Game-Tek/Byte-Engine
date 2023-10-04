@@ -49,6 +49,7 @@ pub struct VisibilityWorldRenderDomain {
 	pixel_mapping_pipeline: render_system::PipelineHandle,
 
 	material_id: render_system::TextureHandle,
+	vertex_id: render_system::TextureHandle,
 	material_count: render_system::BufferHandle,
 	material_offset: render_system::BufferHandle,
 	material_offset_scratch: render_system::BufferHandle,
@@ -144,6 +145,7 @@ impl VisibilityWorldRenderDomain {
 				layout(location=1) in vec3 in_normal;
 
 				layout(location=0) out uint out_instance_index;
+				layout(location=1) out uint out_vertex_id;
 
 				layout(scalar, buffer_reference) buffer CameraData {
 					mat4 view_matrix;
@@ -163,6 +165,7 @@ impl VisibilityWorldRenderDomain {
 				void main() {
 					gl_Position = pc.camera.view_projection * pc.meshes[gl_InstanceIndex].model * vec4(in_position, 1.0);
 					out_instance_index = gl_InstanceIndex;
+					out_vertex_id = gl_VertexIndex;
 				}
 			"#;
 
@@ -174,11 +177,14 @@ impl VisibilityWorldRenderDomain {
 				#extension GL_EXT_buffer_reference2: enable
 
 				layout(location=0) flat in uint in_instance_index;
+				layout(location=1) flat in uint in_vertex_id;
 
-				layout(location=0) out uint material_id;
+				layout(location=0) out uint out_material_id;
+				layout(location=1) out uint out_vertex_id;
 
 				void main() {
-					material_id = 0;
+					out_material_id = 0;
+					out_vertex_id = in_vertex_id;
 				}
 			"#;
 
@@ -191,10 +197,19 @@ impl VisibilityWorldRenderDomain {
 			];
 
 			let material_id = render_system.create_texture(Some("material_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let vertex_id = render_system.create_texture(Some("vertex_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let attachments = [
 				render_system::AttachmentInformation {
 					texture: material_id,
+					layout: render_system::Layouts::RenderTarget,
+					format: render_system::TextureFormats::U32,
+					clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
+					load: false,
+					store: true,
+				},
+				render_system::AttachmentInformation {
+					texture: vertex_id,
 					layout: render_system::Layouts::RenderTarget,
 					format: render_system::TextureFormats::U32,
 					clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
@@ -368,6 +383,14 @@ impl VisibilityWorldRenderDomain {
 					stage_flags: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "VertexId",
+					binding: 6,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
 			];
 
 			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
@@ -411,6 +434,12 @@ impl VisibilityWorldRenderDomain {
 					array_element: 0,
 					descriptor: render_system::Descriptor::Texture(material_id),
 				},
+				render_system::DescriptorWrite { // MaterialId
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 6,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Texture(vertex_id),
+				},
 			]);
 
 			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_count_source.as_bytes());
@@ -442,19 +471,47 @@ impl VisibilityWorldRenderDomain {
 					u16vec2 pixel_mapping[];
 				};
 
+				layout(set=0, binding=6, r8ui) uniform readonly uimage2D vertex_id;
+
 				layout(set=1, binding=0, rgba8) uniform image2D albedo;
 
 				layout(push_constant, scalar) uniform PushConstant {
 					layout(offset=16) uint material_id;
 				} pc;
 
+				vec4 get_debug_color(uint i) {
+					vec4 colors[16] = vec4[16](
+						vec4(0.16863, 0.40392, 0.77647, 1),
+						vec4(0.32941, 0.76863, 0.21961, 1),
+						vec4(0.81961, 0.16078, 0.67451, 1),
+						vec4(0.96863, 0.98824, 0.45490, 1),
+						vec4(0.75294, 0.09020, 0.75686, 1),
+						vec4(0.30588, 0.95686, 0.54510, 1),
+						vec4(0.66667, 0.06667, 0.75686, 1),
+						vec4(0.78824, 0.91765, 0.27451, 1),
+						vec4(0.40980, 0.12745, 0.48627, 1),
+						vec4(0.89804, 0.28235, 0.20784, 1),
+						vec4(0.93725, 0.67843, 0.33725, 1),
+						vec4(0.95294, 0.96863, 0.00392, 1),
+						vec4(1.00000, 0.27843, 0.67843, 1),
+						vec4(0.29020, 0.90980, 0.56863, 1),
+						vec4(0.30980, 0.70980, 0.27059, 1),
+						vec4(0.69804, 0.16078, 0.39216, 1)
+					);
+				
+					return colors[i % 16];
+				}
+
 				layout(local_size_x=32) in;
 				void main() {
 					uint offset = material_offset[pc.material_id];
 
 					u16vec2 pixel = pixel_mapping[offset + gl_GlobalInvocationID.x];
+					ivec2 coord = ivec2(pixel.x, pixel.y);
 
-					imageStore(albedo, ivec2(pixel.x, pixel.y), vec4(0.0, 1.0, 0.0, 1.0));
+					uint vertex_id = imageLoad(vertex_id, coord).r;
+
+					imageStore(albedo, coord, get_debug_color(vertex_id));
 				}
 			"#;
 
@@ -537,6 +594,8 @@ impl VisibilityWorldRenderDomain {
 				material_evaluation_pipeline,
 
 				material_id,
+				vertex_id,
+
 				material_count,
 				material_offset,
 				material_offset_scratch,
@@ -701,6 +760,14 @@ impl VisibilityWorldRenderDomain {
 		let attachments = [
 			render_system::AttachmentInformation {
 				texture: self.material_id,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::U32,
+				clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
+				load: false,
+				store: true,
+			},
+			render_system::AttachmentInformation {
+				texture: self.vertex_id,
 				layout: render_system::Layouts::RenderTarget,
 				format: render_system::TextureFormats::U32,
 				clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
@@ -912,6 +979,19 @@ impl VisibilityWorldRenderDomain {
 				}
 			},
 			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState { layout: render_system::Layouts::RenderTarget, format: render_system::TextureFormats::U32 }), destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::U32 }, texture: self.vertex_id },
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::FRAGMENT,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+				}
+			},
+			render_system::BarrierDescriptor {
 				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
 				source: Some(render_system::TransitionState { stage: render_system::Stages::COMPUTE, access: render_system::AccessPolicies::WRITE, }),
 				destination: render_system::TransitionState {
@@ -1062,6 +1142,7 @@ use crate::orchestrator::{Component, EntityHandle};
 #[derive(component_derive::Component)]
 pub struct Mesh{
 	pub resource_id: &'static str,
+	pub material_id: &'static str,
 	#[field] pub transform: maths_rs::Mat4f,
 }
 

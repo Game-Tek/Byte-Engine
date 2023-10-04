@@ -1,0 +1,9 @@
+{
+	"parent": "solid",
+	"variables": [
+		{
+			"name": "color",
+			"value": "Green"
+		}
+	]
+}

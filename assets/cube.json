@@ -1,6 +1,0 @@
-{
-	"type": "Surface",
-	"shaders": {
-		"Fragment": "shaders/fragment.besl"
-	}
-}

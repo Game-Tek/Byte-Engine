@@ -1,0 +1,15 @@
+{
+	"domain": "World",
+	"type": "Surface",
+	"shaders": {
+		"Fragment": "shaders/fragment.besl"
+	},
+	"variables": [
+		{
+			"name": "color",
+			"data_type": "vec4f",
+			"type": "Static",
+			"value": "Purple"
+		}
+	]
+}

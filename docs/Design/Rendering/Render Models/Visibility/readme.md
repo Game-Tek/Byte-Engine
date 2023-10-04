@@ -14,9 +14,11 @@ graph LR
 	Visibility -- writes to --- material_id[(material_id)]
 	material_id[(material_id)] -- feeds --- MaterialCount
 	MaterialCount -- writes to --- material_count[(material_count)]
+	MaterialCount -- writes to --- material_count_scratch[(material_count_scratch)]
 	material_count[(material_count)] -- feeds --- MaterialSum
 	MaterialSum -- writes to --- material_sum[(material_sum)]
 	material_id[(material_id)] -- feeds --- PixelMapping
+	material_count_scratch[(material_count_scratch)] -- feeds --- PixelMapping
 	material_sum[(material_sum)] -- feeds --- PixelMapping
 	PixelMapping -- writes to --- material_xy[(material_xy)]
 	material_xy[(material_xy)] -- feeds --- MaterialEvaluation
@@ -67,6 +69,8 @@ for (pixels, i) in pixels_per_material.iter().enumerate() {
 	sum += pixels;
 }
 ```
+
+This shader also writes to an extra target `material_offset_scratch`. This target contains the same value as `material_offset` but is then used by the **Pixel Mapping** pass to count how many pixel have been assigned to each material, while preserving `material_offset` as is because it is then needed by ????.
 
 ### Pixel Mapping Pass
 Here the `material_id` render target is visited once again, but this time accompanied by the `material_sum` buffer as to build another buffer containing the X and Y coordinates of every pixel of every material.

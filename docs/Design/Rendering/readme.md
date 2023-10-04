@@ -1,32 +1,12 @@
-# Render Design
+This section discusses some of the design decisions around rendering.
+This ecompasses everything from rendering code to rendering algorithms.
 
-Keep this in mind when reading this document:
-
-```mermaid
-graph LR
-	RenderMeshes --> RenderWorld
-	RenderParticles --> RenderWorld
-	RenderGI --> RenderWorld
-	RenderShadows --> RenderWorld
-	RenderSkinnedMeshes --> RenderWorld
-
-	ChromaticAberration --> PostProcessing
-	DepthOfField --> PostProcessing
-	SSAO --> PostProcessing
-	Bloom --> PostProcessing
-
-	RenderWorld --> PostProcessing
-
-	PostProcessing --> ColorMapping
-
-	RenderUI --> ColorMapping
-
-	ColorMapping --> Present
-```
+## Actors
 
 ### Render orchestrator
-The render orchestrator is coordinates the rendering of the different render domains.
+The render orchestrator coordinates the rendering of the different render domains.
 It manages the global render graph.
+It's strictly a piece of the runtime.
 
 ### Render system
 The render system provides easy to use abstractions over the render backend.
@@ -36,8 +16,12 @@ It abstracts details like staging buffers, memory allocation, etc. away from the
 Each render system is backed by a render backend. The render backend is responsible for creating the actual resources and executing the commands.
 This render backend can be chosen when creating the render system (e.g. Vulkan, OpenGL, DirectX, etc.)
 
+It also belong to the runtime.
+
 ### Render domain
 A render domain is collection of renderables that all live in the same space and we'd want to be managed by a common cohesive rendering technique.
+
+The render domain is an interface for defining a rendering environent and the guidelines for generating code for said environment.
 
 ### Render model
 A render model is an implementation of a render domain.

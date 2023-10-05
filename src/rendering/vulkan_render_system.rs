@@ -327,7 +327,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::PipelineLayoutHandle(pipeline_layout.as_raw())
 	}
 
-	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_handles: &[(&render_system::ShaderHandle, render_system::ShaderTypes)], vertex_layout: &[render_system::VertexElement], targets: &[render_system::AttachmentInformation]) -> render_system::PipelineHandle {
+	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_handles: &[(&render_system::ShaderHandle, render_system::ShaderTypes, Vec<Box<dyn render_system::SpecializationMapEntry>>)], vertex_layout: &[render_system::VertexElement], targets: &[render_system::AttachmentInformation]) -> render_system::PipelineHandle {
 		let pipeline_configuration_blocks = [
 			render_system::PipelineConfigurationBlocks::Shaders { shaders: shader_handles, },
 			render_system::PipelineConfigurationBlocks::Layout { layout: pipeline_layout_handle },
@@ -338,13 +338,45 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		self.create_vulkan_pipeline(&pipeline_configuration_blocks)
 	}
 
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_handle: &render_system::ShaderHandle) -> render_system::PipelineHandle {
+	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_parameter: render_system::ShaderParameter) -> render_system::PipelineHandle {
+		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
+
+		let mut spcialization_map_entries = Vec::with_capacity(48);
+		
+		for specialization_map_entry in shader_parameter.2 {
+			match specialization_map_entry.get_type().as_str() {
+				"vec4f" => {
+					for i in 0..4 {
+						spcialization_map_entries.push(vk::SpecializationMapEntry::default()
+						.constant_id(specialization_map_entry.get_constant_id() + i)
+						.offset(specialization_entries_buffer.len() as u32 + i as u32 * 4)
+						.size(specialization_map_entry.get_size() / 4));
+					}
+
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
+				}
+				_ => {
+					spcialization_map_entries.push(vk::SpecializationMapEntry::default()
+						.constant_id(specialization_map_entry.get_constant_id())
+						.offset(specialization_entries_buffer.len() as u32)
+						.size(specialization_map_entry.get_size()));
+		
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
+				}
+			}
+		}
+
+		let specialization_info = vk::SpecializationInfo::default()
+			.data(&specialization_entries_buffer)
+			.map_entries(&spcialization_map_entries);
+
 		let create_infos = [
 			vk::ComputePipelineCreateInfo::default()
 				.stage(vk::PipelineShaderStageCreateInfo::default()
 					.stage(vk::ShaderStageFlags::COMPUTE)
-					.module(vk::ShaderModule::from_raw(shader_handle.0))
+					.module(vk::ShaderModule::from_raw(shader_parameter.0.0))
 					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+					.specialization_info(&specialization_info)
 					/* .build() */
 				)
 				.layout(vk::PipelineLayout::from_raw(pipeline_layout_handle.0))
@@ -1354,13 +1386,37 @@ impl VulkanRenderSystem {
 						}
 					}
 					render_system::PipelineConfigurationBlocks::Shaders { shaders } => {
+						let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
+						let mut entries = [vk::SpecializationMapEntry::default(); 32];
+						let mut entry_count = 0;
+						let mut specilization_infos = [vk::SpecializationInfo::default(); 16];
+						let mut specilization_info_count = 0;
+
 						let stages = shaders
 							.iter()
-							.map(|shader| {
+							.map(move |shader| {
+								let entries_offset = entry_count;
+
+								for entry in &shader.2 {
+									specialization_entries_buffer.extend_from_slice(entry.get_data());
+
+									entries[entry_count] = vk::SpecializationMapEntry::default()
+										.constant_id(entry.get_constant_id())
+										.size(entry.get_size())
+										.offset(specialization_entries_buffer.len() as u32);
+
+									entry_count += 1;
+								}
+
+								// specilization_infos[{ let c = specilization_info_count; specilization_info_count += 1; c }] = vk::SpecializationInfo::default()
+								// 	.data(&specialization_entries_buffer)
+								// 	.map_entries(&entries[entries_offset..entry_count]);
+
 								vk::PipelineShaderStageCreateInfo::default()
 									.stage(to_shader_stage_flags(shader.1))
 									.module(vk::ShaderModule::from_raw(shader.0.0))
 									.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+									// .specialization_info(&specilization_infos[specilization_info_count - 1])
 									/* .build() */
 							})
 							.collect::<Vec<_>>();
@@ -1429,8 +1485,8 @@ impl VulkanRenderSystem {
 			/* .build() */;
 
 		let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
-				.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-				.primitive_restart_enable(false);
+			.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+			.primitive_restart_enable(false);
 
 		let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
 			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering

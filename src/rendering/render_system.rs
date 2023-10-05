@@ -202,9 +202,9 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
 
-	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handles: &[(&ShaderHandle, ShaderTypes)], vertex_layout: &[VertexElement], targets: &[AttachmentInformation]) -> PipelineHandle;
+	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handles: &[ShaderParameter], vertex_layout: &[VertexElement], targets: &[AttachmentInformation]) -> PipelineHandle;
 
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handle: &ShaderHandle) -> PipelineHandle;
+	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle;
 
 	fn create_command_buffer(&mut self) -> CommandBufferHandle;
 
@@ -371,7 +371,7 @@ pub(super) mod tests {
 			}
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -497,7 +497,7 @@ pub(super) mod tests {
 			}
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -617,7 +617,7 @@ pub(super) mod tests {
 			}
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -747,7 +747,7 @@ pub(super) mod tests {
 			}
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -880,7 +880,7 @@ pub(super) mod tests {
 			}
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
 		let _buffer = renderer.create_buffer(64, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
@@ -1094,7 +1094,7 @@ pub(super) mod tests {
 			}
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex), (&fragment_shader, ShaderTypes::Fragment)], &vertex_layout, &attachments);
+		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1501,6 +1501,39 @@ pub struct BufferDescriptor {
 	pub slot: u32,
 }
 
+pub trait SpecializationMapEntry {
+	fn get_constant_id(&self) -> u32;
+	fn get_size(&self) -> usize;
+	fn get_data(&self) -> &[u8];
+	fn get_type(&self) -> String;
+}
+
+pub struct GenericSpecializationMapEntry<T> {
+	pub r#type: String,
+	pub constant_id: u32,
+	pub value: T,
+}
+
+impl <T> SpecializationMapEntry for GenericSpecializationMapEntry<T> {
+	fn get_constant_id(&self) -> u32 {
+		self.constant_id
+	}
+
+	fn get_type(&self) -> String {
+		self.r#type.clone()
+	}
+
+	fn get_size(&self) -> usize {
+		std::mem::size_of::<T>()
+	}
+
+	fn get_data(&self) -> &[u8] {
+		unsafe { std::slice::from_raw_parts(&self.value as *const T as *const u8, std::mem::size_of::<T>()) }
+	}
+}
+
+pub type ShaderParameter<'a> = (&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>);
+
 pub enum PipelineConfigurationBlocks<'a> {
 	VertexInput {
 		vertex_elements: &'a [VertexElement]
@@ -1512,7 +1545,7 @@ pub enum PipelineConfigurationBlocks<'a> {
 		targets: &'a [AttachmentInformation],
 	},
 	Shaders {
-		shaders: &'a [(&'a ShaderHandle, ShaderTypes)],
+		shaders: &'a [(&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>)],
 	},
 	Layout {
 		layout: &'a PipelineLayoutHandle,
@@ -1620,12 +1653,12 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_descriptor_set_layout(bindings)
 	}
 
-	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handles: &[(&ShaderHandle, ShaderTypes)], vertex_layout: &[VertexElement], targets: &[AttachmentInformation]) -> PipelineHandle {
+	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handles: &[ShaderParameter], vertex_layout: &[VertexElement], targets: &[AttachmentInformation]) -> PipelineHandle {
 		self.pointer.create_raster_pipeline(pipeline_layout_handle, shader_handles, vertex_layout, targets)
 	}
 
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_handle: &ShaderHandle) -> PipelineHandle {
-		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_handle)
+	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle {
+		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
 	}
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {

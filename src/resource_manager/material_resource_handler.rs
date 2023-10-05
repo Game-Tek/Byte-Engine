@@ -73,7 +73,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		};
 		
 		let mut shaders = material_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-			Self::produce_shader(&material_domain, &shader_json, s_type)
+			Self::produce_shader(&material_domain, &material_json, &shader_json, s_type)
 		}).collect::<Vec<_>>();
 		
 		let required_resources = shaders.iter().map(|s| polodb_core::bson::doc! { "path": s.1.clone() }).collect::<Vec<_>>();
@@ -111,10 +111,10 @@ impl ResourceHandler for MaterialResourcerHandler {
 impl MaterialResourcerHandler {
 	const RENDER_MODEL: &str = "Visibility";
 
-	fn treat_shader(path: &str, domain: &str, stage: &str, shader_node: jspd::lexer::Node,) -> Option<Result<(Document, Vec<u8>), String>> {
+	fn treat_shader(path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<(Document, Vec<u8>), String>> {
 		let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
 
-		let glsl = visibility.transform(&shader_node, stage)?;
+		let glsl = visibility.transform(material, &shader_node, stage)?;
 
 		debug!("Generated shader: {}", &glsl);
 
@@ -165,7 +165,7 @@ impl MaterialResourcerHandler {
 		Some(Ok((resource, Vec::from(result_shader_bytes))))
 	}
 
-	fn produce_shader(domain: &str, shader_json: &json::JsonValue, stage: &str) -> Option<((Document, Vec<u8>), String)> {
+	fn produce_shader(domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<((Document, Vec<u8>), String)> {
 		let shader_option = match shader_json {
 			json::JsonValue::Null => { None }
 			json::JsonValue::Short(path) => {
@@ -205,7 +205,7 @@ impl MaterialResourcerHandler {
 		};
 
 		if let Some((shader, path)) = shader_option {
-			Some((Self::treat_shader(&path, domain, stage, shader,)?.unwrap(), path))
+			Some((Self::treat_shader(&path, domain, stage, material, shader,)?.unwrap(), path))
 		} else {
 			let default_shader = match stage {
 				"Vertex" => MaterialResourcerHandler::default_vertex_shader(),
@@ -217,7 +217,7 @@ impl MaterialResourcerHandler {
 				node: jspd::lexer::Nodes::GLSL { code: default_shader.to_string() },
 			};
 
-			Some((Self::treat_shader("", domain, stage, shader_node,)?.unwrap(), "".to_string()))
+			Some((Self::treat_shader("", domain, stage, material, shader_node,)?.unwrap(), "".to_string()))
 		}
 	}
 }

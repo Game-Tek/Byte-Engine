@@ -192,8 +192,8 @@ impl VisibilityWorldRenderDomain {
 			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Fragment, visibility_pass_fragment_source.as_bytes());
 
 			let visibility_pass_shaders = [
-				(&visibility_pass_vertex_shader, render_system::ShaderTypes::Vertex),
-				(&visibility_pass_fragment_shader, render_system::ShaderTypes::Fragment),
+				(&visibility_pass_vertex_shader, render_system::ShaderTypes::Vertex, vec![]),
+				(&visibility_pass_fragment_shader, render_system::ShaderTypes::Fragment, vec![]),
 			];
 
 			let material_id = render_system.create_texture(Some("material_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -448,13 +448,13 @@ impl VisibilityWorldRenderDomain {
 			]);
 
 			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_count_source.as_bytes());
-			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &material_count_shader);			
+			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_count_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let material_offset_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_offset_source.as_bytes());
-			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &material_offset_shader);
+			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_offset_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
-			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, &pixel_mapping_shader);
+			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let material_evaluation_source = r#"
 				#version 450
@@ -545,8 +545,8 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }, render_system::PushConstantRange{ offset: 16, size: 4 }]);
-			let material_evaluation_pipeline = render_system.create_compute_pipeline(&material_evaluation_pipeline_layout, &material_evaluation_shader);
+			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }, render_system::PushConstantRange{ offset: 16, size: 12 }]);
+			let material_evaluation_pipeline = render_system.create_compute_pipeline(&material_evaluation_pipeline_layout, (&material_evaluation_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			Self {
 				pipeline_layout_handle,
@@ -672,7 +672,7 @@ impl VisibilityWorldRenderDomain {
 						"Visibility" => {
 							match material.model.pass.as_str() {
 								"MaterialEvaluation" => {
-									let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, &shaders[0].0);
+									let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0, r#type: "vec4f".to_string(), value: [0f32, 1f32, 0f32, 1f32] })]));
 									
 									self.material_evaluation_materials.push(pipeline);
 								}
@@ -1012,11 +1012,14 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.material_evaluation_descriptor_set);
 
-		for pipeline in &self.material_evaluation_materials {
+		for (i, pipeline) in self.material_evaluation_materials.iter().enumerate() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			command_buffer_recording.bind_compute_pipeline(pipeline);
 			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
-				std::slice::from_raw_parts(&0u32 as *const u32 as *const u8, std::mem::size_of::<u32>())
+				std::slice::from_raw_parts(&(i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
+			});
+			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 20, unsafe {
+				std::slice::from_raw_parts(&(i as u64) as *const u64 as *const u8, std::mem::size_of::<u64>())
 			});
 			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: 0, range: 12, slot: 0 });
 		}

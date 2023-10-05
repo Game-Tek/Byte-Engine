@@ -91,15 +91,15 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 impl VisibilityShaderGenerator {
 	/// Produce a GLSL shader string from a BESL shader node.
 	/// This returns an option since for a given input stage the visibility shader generator may not produce any output.
-	pub fn transform(&self, shader_node: &lexer::Node, stage: &str) -> Option<String> {
+	pub fn transform(&self, material: &json::JsonValue, shader_node: &lexer::Node, stage: &str) -> Option<String> {
 		match stage {
 			"Vertex" => None,
-			"Fragment" => Some(self.fragment_transform(shader_node)),
+			"Fragment" => Some(self.fragment_transform(material, shader_node)),
 			_ => panic!("Invalid stage"),
 		}
 	}
 
-	fn fragment_transform(&self, shader_node: &lexer::Node) -> String {
+	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &lexer::Node) -> String {
 		let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
 
 		string.push_str("layout(set=0,binding=0,scalar) buffer MaterialCount {
@@ -134,10 +134,24 @@ vec4 get_debug_color(uint i) {
 	);
 
 	return colors[i % 16];
-}
-layout(push_constant, scalar) uniform PushConstant {
+}\n");
+
+		for variable in material["variables"].members() {
+			if variable["type"] == "Static" {
+				if variable["data_type"] == "vec4f" { // Since GLSL doesn't support vec4f constants, we have to split it into 4 floats.
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 0, "float", format!("be_variable_{}_r", variable["name"]), "1.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 1, "float", format!("be_variable_{}_g", variable["name"]), "0.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 2, "float", format!("be_variable_{}_b", variable["name"]), "0.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 3, "float", format!("be_variable_{}_a", variable["name"]), "1.0"));
+					string.push_str(&format!("const {} {} = {};\n", "vec4", format!("be_variable_{}", variable["name"]), format!("vec4({name}_r, {name}_g, {name}_b, {name}_a)", name=format!("be_variable_{}", variable["name"]))));
+				}
+			}
+		}
+
+		string.push_str("layout(push_constant, scalar) uniform PushConstant {
 	layout(offset=16) uint material_id;
-} pc;\n");
+} pc;");
+
 		string.push_str(&format!("layout(local_size_x=32) in;\n"));
 		string.push_str(&format!("void main() {{\n"));
 		string.push_str(&format!("uint offset = material_offset[pc.material_id];"));
@@ -171,7 +185,7 @@ layout(push_constant, scalar) uniform PushConstant {
 				lexer::Nodes::Expression(expression) => {
 					match expression {
 						lexer::Expressions::Operator { operator, left, right } => {
-							string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, get_debug_color(be_vertex_id));"));
+							string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, be_variable_color);"));
 							// format!("imageStore(out_albedo, ivec2(gl_FragCoord.xy), vec4(1.0, 0.0, 0.0, 1.0));")
 						}
 						_ => panic!("Invalid expression")

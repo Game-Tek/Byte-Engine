@@ -24,7 +24,7 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
@@ -109,11 +109,11 @@ impl ResourceHandler for MeshResourceHandler {
 		Ok(vec![(doc, buf)])
 	}
 
-	fn get_deserializer(&self) -> Box<dyn Fn(&Document) -> Box<dyn std::any::Any> + Send> {
-		Box::new(|document| {
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
+		vec![("Mesh", Box::new(|document| {
 			let mesh = Mesh::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(mesh)
-		})
+		}))]
 	}
 
 	fn read(&self, resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Buffer]) {

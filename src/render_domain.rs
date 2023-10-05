@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, shader_resource_handler::Shader}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
+use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material}}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -33,6 +34,8 @@ pub struct VisibilityWorldRenderDomain {
 
 	mesh_resources: HashMap<&'static str, u32>,
 
+	VERTEX_LAYOUT: [render_system::VertexElement; 2],
+
 	/// Maps resource ids to shaders
 	/// The hash and the shader handle are stored to determine if the shader has changed
 	shaders: std::collections::HashMap<u64, (u64, render_system::ShaderHandle, render_system::ShaderTypes)>,
@@ -42,8 +45,8 @@ pub struct VisibilityWorldRenderDomain {
 	
 	visibility_pass_pipeline_layout: render_system::PipelineLayoutHandle,
 	visibility_passes_descriptor_set: render_system::DescriptorSetHandle,
+	visibility_pass_pipeline: render_system::PipelineHandle,
 
-	visibility_pipeline: Option<render_system::PipelineHandle>,
 	material_count_pipeline: render_system::PipelineHandle,
 	material_offset_pipeline: render_system::PipelineHandle,
 	pixel_mapping_pipeline: render_system::PipelineHandle,
@@ -60,6 +63,8 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_descriptor_set: render_system::DescriptorSetHandle,
 	material_evaluation_pipeline_layout: render_system::PipelineLayoutHandle,
 	material_evaluation_pipeline: render_system::PipelineHandle,
+
+	material_evaluation_materials: Vec<render_system::PipelineHandle>,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -68,11 +73,6 @@ impl VisibilityWorldRenderDomain {
 			let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 			let mut render_system = render_system.get_mut();
 			let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
-
-			let vertex_layout = [
-				render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
-				render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 1 },
-			];
 
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
@@ -226,7 +226,12 @@ impl VisibilityWorldRenderDomain {
 				},
 			];
 
-			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &vertex_layout, &attachments);
+			let VERTEX_LAYOUT = [
+				render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
+				render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 1 },
+			];
+
+			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &VERTEX_LAYOUT, &attachments);
 
 			let material_count = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let material_offset = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
@@ -577,12 +582,13 @@ impl VisibilityWorldRenderDomain {
 
 				mesh_resources: HashMap::new(),
 
-				visibility_pipeline: Some(visibility_pass_pipeline),
+				VERTEX_LAYOUT,
 
 				swapchain_handles: Vec::new(),
 
 				visibility_pass_pipeline_layout,
 				visibility_passes_descriptor_set,
+				visibility_pass_pipeline,
 
 				material_count_pipeline,
 				material_offset_pipeline,
@@ -601,6 +607,8 @@ impl VisibilityWorldRenderDomain {
 				material_offset_scratch,
 				material_evaluation_dispatches,
 				material_xy,
+
+				material_evaluation_materials: Vec::new(),
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -609,16 +617,8 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<window_system::Window>()
 	}
 
-	fn load_needed_assets(&mut self, orchestrator: OrchestratorReference) {
-		let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
-		let mut resource_manager = resource_manager.get_mut();
-		let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
-
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
-		let mut render_system = render_system.get_mut();
-		let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
-
-		let (response, buffer) = resource_manager.get("cube").unwrap();
+	fn load_material(&mut self, resource_manager: &mut resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
+		let (response, buffer) = resource_manager.get(asset_url).unwrap();
 
 		for resource in &response.resources {
 			match resource.class.as_str() {
@@ -639,6 +639,8 @@ impl VisibilityWorldRenderDomain {
 					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
 				"Material" => {
+					let material: &Material = resource.resource.downcast_ref().unwrap();
+					
 					let shaders = resource.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
 
 					let shaders = shaders.iter().map(|shader| {
@@ -646,11 +648,6 @@ impl VisibilityWorldRenderDomain {
 
 						(shader, *shader_type)
 					}).collect::<Vec<_>>();
-
-					let vertex_layout = [
-						render_system::VertexElement{ name: "POSITION".to_string(), format: render_system::DataTypes::Float3, binding: 0 },
-						render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 1 },
-					];
 
 					let targets = [
 						render_system::AttachmentInformation {
@@ -670,12 +667,24 @@ impl VisibilityWorldRenderDomain {
 							store: true,
 						},
 					];
-
-					let pipeline_layout_handle = self.pipeline_layout_handle;
-
-					let pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &shaders, &vertex_layout, &targets);
-
-					self.visibility_pipeline = Some(pipeline);
+					
+					match material.model.name.as_str() {
+						"Visibility" => {
+							match material.model.pass.as_str() {
+								"MaterialEvaluation" => {
+									let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, &shaders[0].0);
+									
+									self.material_evaluation_materials.push(pipeline);
+								}
+								_ => {
+									error!("Unknown material pass: {}", material.model.pass)
+								}
+							}
+						}
+						_ => {
+							error!("Unknown material model: {}", material.model.name);
+						}
+					}
 				}
 				_ => {}
 			}
@@ -707,7 +716,6 @@ impl VisibilityWorldRenderDomain {
 	pub const fn transform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
-		if let None = self.visibility_pipeline { return; }
 		if self.swapchain_handles.len() == 0 { return; }
 
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
@@ -788,7 +796,7 @@ impl VisibilityWorldRenderDomain {
 
 		// Visibility pass
 
-		command_buffer_recording.bind_pipeline(&self.visibility_pipeline.as_ref().unwrap());
+		command_buffer_recording.bind_pipeline(&self.visibility_pass_pipeline);
 
 		let vertex_buffer_descriptors = [
 			render_system::BufferDescriptor {
@@ -1001,14 +1009,17 @@ impl VisibilityWorldRenderDomain {
 			},
 		]);
 
-		// TODO: for each user defined material in scene
-		command_buffer_recording.bind_compute_pipeline(&self.material_evaluation_pipeline);
-		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.material_evaluation_descriptor_set);
-		command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
-			std::slice::from_raw_parts(&0u32 as *const u32 as *const u8, std::mem::size_of::<u32>())
-		});
-		command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: 0, range: 12, slot: 0 });
+
+		for pipeline in &self.material_evaluation_materials {
+			// No need for sync here, as each thread across all invocations will write to a different pixel
+			command_buffer_recording.bind_compute_pipeline(pipeline);
+			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
+				std::slice::from_raw_parts(&0u32 as *const u32 as *const u8, std::mem::size_of::<u32>())
+			});
+			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: 0, range: 12, slot: 0 });
+		}
 
 		// Copy to swapchain
 
@@ -1060,6 +1071,8 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
 			let mut resource_manager = resource_manager.get_mut();
 			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
+
+			self.load_material(resource_manager, render_system, mesh.material_id);
 
 			let resource_request = resource_manager.request_resource(mesh.resource_id);
 

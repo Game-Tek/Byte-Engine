@@ -36,7 +36,7 @@ Materials can also reference other materials as their parent to inherit all thei
 }
 ```
 
-This concept is utilized by the engine to try and make optimization, since the shader is the same but only the values change this can be seen as the same pipeline but
+This concept is utilized by the engine to try and make optimizations, since the shader is the same but only the values change this can be seen as the same pipeline but
 different values fed by uniforms per instance. <br/>Note that this particular optimization should not relied upon since the engine may decide to increase shader/pipeline permutation if
 it sees these values can be replaced statically.
 

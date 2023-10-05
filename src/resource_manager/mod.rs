@@ -4,8 +4,7 @@
 
 mod image_resource_handler;
 pub mod mesh_resource_handler;
-pub mod shader_resource_handler;
-mod material_resource_handler;
+pub mod material_resource_handler;
 
 use std::{io::prelude::*, hash::{Hasher, Hash},};
 
@@ -30,11 +29,9 @@ trait ResourceHandler {
 	/// - **resource**: The resource data. Can look like anything.
 	/// - **hash**(optional): The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
 	/// - **required_resources**(optional): A list of resources that this resource depends on. This is used to load resources that depend on other resources.
-	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String>;
+	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String>;
 
-	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
-		Box::new(|document| Box::new(document.get("resource").unwrap().clone()))
-	}
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)>;
 
 	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [Buffer]) {
 		file.read_exact(buffers[0].buffer).unwrap();
@@ -72,14 +69,20 @@ impl From<polodb_core::Error> for LoadResults {
 	}
 }
 
+/// Enumaration for all the possible results of a resource load fails.
 #[derive(Debug)]
 pub enum LoadResults {
+	/// No resource could be resolved for the given path.
 	ResourceNotFound,
+	/// The resource could not be loaded.
 	LoadFailed,
+	/// The resource could not be found in cache.
 	CacheFileNotFound,
+	/// The resource type is not supported.
 	UnsuportedResourceType,
 }
 
+/// Struct that describes a resource request.
 pub struct ResourceRequest {
 	_id: polodb_core::bson::oid::ObjectId,
 	pub id: u64,
@@ -122,51 +125,6 @@ pub struct OptionResource<'a> {
 
 pub struct Options<'a> {
 	pub resources: Vec<OptionResource<'a>>,
-}
-
-fn extent_from_json(field: &polodb_core::bson::Bson) -> Option<crate::Extent> {
-	match field {
-		polodb_core::bson::Bson::Array(array) => {
-			let mut extent = crate::Extent {
-				width: 1,
-				height: 1,
-				depth: 1,
-			};
-
-			for (index, field) in array.iter().enumerate() {
-				match index {
-					0 => extent.width = field.as_i32().unwrap() as u32,
-					1 => extent.height = field.as_i32().unwrap() as u32,
-					2 => extent.depth = field.as_i32().unwrap() as u32,
-					_ => panic!("Invalid extent field"),
-				}
-			}
-
-			return Some(extent);
-		},
-		_ => return None,
-	}
-}
-
-fn vec3f_from_json(field: &polodb_core::bson::Bson) -> Option<[f32; 3]> {
-	match field {
-		polodb_core::bson::Bson::Array(array) => {
-			if let Some(polodb_core::bson::Bson::Double(x)) = array.get(0) {
-				if let Some(polodb_core::bson::Bson::Double(y)) = array.get(1) {
-					if let Some(polodb_core::bson::Bson::Double(z)) = array.get(2) {
-						return Some([*x as f32, *y as f32, *z as f32]);
-					} else {
-						return None;
-					}
-				} else {
-					return None;
-				}
-			} else {
-				return None;
-			}
-		},
-		_ => return None,
-	}
 }
 
 impl ResourceManager {
@@ -227,16 +185,16 @@ impl ResourceManager {
 		let resource_handlers: Vec<Box<dyn ResourceHandler + Send>> = vec![
 			Box::new(image_resource_handler::ImageResourceHandler::new()),
 			Box::new(mesh_resource_handler::MeshResourceHandler::new()),
-			Box::new(shader_resource_handler::ShaderResourceHandler::new()),
 			Box::new(material_resource_handler::MaterialResourcerHandler::new())
 		];
 
 		let mut deserializers = std::collections::HashMap::new();
 
-		deserializers.insert("Texture", resource_handlers[0].get_deserializer());
-		deserializers.insert("Mesh", resource_handlers[1].get_deserializer());
-		deserializers.insert("Shader", resource_handlers[2].get_deserializer());
-		deserializers.insert("Material", resource_handlers[3].get_deserializer());
+		for resource_handler in resource_handlers.as_slice() {
+			for deserializer in resource_handler.get_deserializers() {
+				deserializers.insert(deserializer.0, deserializer.1);
+			}
+		}
 
 		ResourceManager {
 			db,
@@ -343,7 +301,7 @@ impl ResourceManager {
 
 			for resource_handler in &self.resource_handlers {
 				if resource_handler.can_handle_type(r.1.as_str()) {
-					generated_resources.append(&mut resource_handler.process(&r.0).unwrap());
+					generated_resources.append(&mut resource_handler.process(path, &r.0).unwrap());
 				}
 			}
 

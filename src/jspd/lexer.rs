@@ -46,12 +46,24 @@ pub(crate) enum Features {
 
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Operators {
+	Plus,
+	Minus,
+	Multiply,
+	Divide,
+	Modulo,
+	Assignment,
+	Equality,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Expressions {
 	Member{ name: String },
 	Literal { value: String },
 	FunctionCall { name: String, parameters: Vec<Rc<Node>> },
 	Operator {
+		operator: Operators,
 		left: Rc<Node>,
 		right: Rc<Node>,
 	},
@@ -259,6 +271,16 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 				parser::Expressions::Operator{ name, left, right } => {
 					return Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::Operator {
+							operator: match name.as_str() {
+								"+" => Operators::Plus,
+								"-" => Operators::Minus,
+								"*" => Operators::Multiply,
+								"/" => Operators::Divide,
+								"%" => Operators::Modulo,
+								"=" => Operators::Assignment,
+								"==" => Operators::Equality,
+								_ => { panic!("Invalid operator") }
+							},
 							left: lex_parsed_node(&left, parser_program, program)?,
 							right: lex_parsed_node(&right, parser_program, program)?,
 						}),
@@ -317,8 +339,10 @@ main: fn () -> void {
 						let position = &statements[0];
 
 						match &position.node {
-							Nodes::Expression(Expressions::Operator { left, right }) => {
+							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 								let position = &left;
+
+								assert_eq!(operator, &Operators::Assignment);
 
 								match &position.node {
 									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {

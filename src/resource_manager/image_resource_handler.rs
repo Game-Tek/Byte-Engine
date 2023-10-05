@@ -22,7 +22,7 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let mut decoder = png::Decoder::new(bytes);
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().unwrap();
@@ -66,11 +66,11 @@ impl ResourceHandler for ImageResourceHandler {
 		Ok(vec![(resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface))])
 	}
 
-	fn get_deserializer(&self) -> Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send> {
-		Box::new(|document| {
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
+		vec![("Texture", Box::new(|document| {
 			let texture = Texture::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(texture)
-		})
+		}))]
 	}
 }
 

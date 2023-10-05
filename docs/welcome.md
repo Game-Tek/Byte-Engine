@@ -5,7 +5,7 @@
 ## What is Byte Engine?
 Byte is a game engine written in Rust. It's goal is to be a modern, composable, future-proof game engine.
 
-## Features :sparkles:
+## :sparkles: Features
 **Not all features are implemented yet.**
 - Vulkan rendering
 - Python scripting
@@ -25,8 +25,8 @@ As part of the goal of being a modern game engine, Byte has moderate requirement
 
 ---
 
-# What's next? :question:
+# What's next?
 This guide is designed to hand hold you through the process of creating a game with Byte.\
-It is to be read in order, as each chapter builds on the previous one.
+It is to be read in order, as each chapter builds on the previous one.\
 To get started just click on the __Next__ button below.\
 __**Good luck! :sunglasses:**__

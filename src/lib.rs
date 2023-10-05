@@ -11,6 +11,7 @@
 #![feature(const_mut_refs)]
 #![feature(extract_if)]
 #![feature(try_trait_v2)]
+#![feature(const_trait_impl)]
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 

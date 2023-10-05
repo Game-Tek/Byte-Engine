@@ -9,7 +9,7 @@ branding:
   colors:
     label:
       text: "#ffffff"
-      background: "#41d967"
+      background: "#DDDDDD"
 links:
 - text: Setup
   link: /setup/

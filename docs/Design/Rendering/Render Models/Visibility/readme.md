@@ -70,7 +70,7 @@ for (pixels, i) in pixels_per_material.iter().enumerate() {
 }
 ```
 
-This shader also writes to an extra target `material_offset_scratch`. This target contains the same value as `material_offset` but is then used by the **Pixel Mapping** pass to count how many pixel have been assigned to each material, while preserving `material_offset` as is because it is then needed by ????.
+This shader also writes to an extra target `material_offset_scratch`. This target contains the same value as `material_offset` but is then used by the **Pixel Mapping** pass to count how many pixel have been assigned to each material, while preserving `material_offset` as is because it is then needed by **Material Evaluation Pass**
 
 ### Pixel Mapping Pass
 Here the `material_id` render target is visited once again, but this time accompanied by the `material_sum` buffer as to build another buffer containing the X and Y coordinates of every pixel of every material.
@@ -91,3 +91,16 @@ void main() {
 	albedo[global_thread_id] = materials[material_id[global_thread_id]].albedo[calculate_uvs()];
 }
 ```
+
+---
+
+## Shader Generation
+This section explains what transformations are performed on user defined shader and materials to produce shaders that fit in the visibility render model.
+
+### Vertex Shaders
+If the material does not specify a vertex shader a default one is provided by the engine. This default shaders performs a trivial transformation (model translation and view projection transformation). <br/>This is the most _optimal_ shader since it signals to the engine that no "non-trivial" transformations need to take place and it can just render this model along with everything else in the scene.
+
+If the material **does** specify a vertex shader then this will be converted to a compute shader.
+
+### Fragment Shaders
+Since shading is deferred in the Visibility Buffer rendering model, all fragment shaders are turned into a compute shader for the material evaluation pass.

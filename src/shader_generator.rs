@@ -687,7 +687,7 @@ impl ShaderGenerator {
 
 							string.push_str(&format!(")"));
 						}
-						lexer::Expressions::Operator { left, right } => {
+						lexer::Expressions::Operator { operator, left, right } => {
 							process_node(Some(&mut string), left, compilation_settings, program_state);
 
 							string.push_str(&format!("="));
@@ -774,6 +774,57 @@ fn translate_type_str(value: &str) -> String {
 		"mat4x3" => "mat3x4",
 		_ => r.as_str()
 	}.to_string()
+}
+
+pub fn generate_glsl_header_block(compilation_settings: &json::JsonValue) -> String {
+	let mut glsl_block = String::with_capacity(512);
+	let glsl_version = &compilation_settings["glsl"]["version"];
+
+	if let json::JsonValue::String(glsl_version) = glsl_version {
+		glsl_block.push_str(&format!("#version {glsl_version} core\n"));
+	} else {
+		glsl_block.push_str("#version 450 core\n");
+	}
+
+	// shader type
+
+	let shader_stage = &compilation_settings["stage"];
+
+	let shader_stage = shader_stage.as_str().unwrap_or("");
+
+	match shader_stage {
+		"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
+		"Fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
+		"Compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+		_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
+	}
+
+	// extensions
+
+	glsl_block.push_str("#extension GL_EXT_shader_16bit_storage : enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n");
+	glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier : enable\n");
+	glsl_block.push_str("#extension GL_EXT_scalar_block_layout : enable\n");
+	glsl_block.push_str("#extension GL_EXT_buffer_reference : enable\n");
+	glsl_block.push_str("#extension GL_EXT_buffer_reference2 : enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted : enable\n");
+
+	match shader_stage {
+		"Compute" => {
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic  : enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot : enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle : enable\n");
+		}
+		_ => {}
+	}
+	// memory layout declarations
+
+	glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
+
+	glsl_block
 }
 
 #[cfg(test)]

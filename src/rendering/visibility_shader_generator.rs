@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::jspd::{self, lexer};
+use crate::{jspd::{self, lexer}, shader_generator};
 
 use super::shader_generator::ShaderGenerator;
 
@@ -85,5 +85,105 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 		};
 
 		("Visibility", node)
+	}
+}
+
+impl VisibilityShaderGenerator {
+	/// Produce a GLSL shader string from a BESL shader node.
+	/// This returns an option since for a given input stage the visibility shader generator may not produce any output.
+	pub fn transform(&self, shader_node: &lexer::Node, stage: &str) -> Option<String> {
+		match stage {
+			"Vertex" => None,
+			"Fragment" => Some(self.fragment_transform(shader_node)),
+			_ => panic!("Invalid stage"),
+		}
+	}
+
+	fn fragment_transform(&self, shader_node: &lexer::Node) -> String {
+		let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
+
+		string.push_str("layout(set=0,binding=0,scalar) buffer MaterialCount {
+	uint material_count[];
+};
+layout(set=0,binding=1,scalar) buffer MaterialOffset {
+	uint material_offset[];
+};
+layout(set=0,binding=4,scalar) buffer PixelMapping {
+	u16vec2 pixel_mapping[];
+};
+layout(set=0, binding=6, r8ui) uniform readonly uimage2D vertex_id;
+layout(set=1, binding=0, rgba8) uniform image2D out_albedo;
+vec4 get_debug_color(uint i) {
+	vec4 colors[16] = vec4[16](
+		vec4(0.16863, 0.40392, 0.77647, 1),
+		vec4(0.32941, 0.76863, 0.21961, 1),
+		vec4(0.81961, 0.16078, 0.67451, 1),
+		vec4(0.96863, 0.98824, 0.45490, 1),
+		vec4(0.75294, 0.09020, 0.75686, 1),
+		vec4(0.30588, 0.95686, 0.54510, 1),
+		vec4(0.66667, 0.06667, 0.75686, 1),
+		vec4(0.78824, 0.91765, 0.27451, 1),
+		vec4(0.40980, 0.12745, 0.48627, 1),
+		vec4(0.89804, 0.28235, 0.20784, 1),
+		vec4(0.93725, 0.67843, 0.33725, 1),
+		vec4(0.95294, 0.96863, 0.00392, 1),
+		vec4(1.00000, 0.27843, 0.67843, 1),
+		vec4(0.29020, 0.90980, 0.56863, 1),
+		vec4(0.30980, 0.70980, 0.27059, 1),
+		vec4(0.69804, 0.16078, 0.39216, 1)
+	);
+
+	return colors[i % 16];
+}
+layout(push_constant, scalar) uniform PushConstant {
+	layout(offset=16) uint material_id;
+} pc;\n");
+		string.push_str(&format!("layout(local_size_x=32) in;\n"));
+		string.push_str(&format!("void main() {{\n"));
+		string.push_str(&format!("uint offset = material_offset[pc.material_id];"));
+		string.push_str(&format!("u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];"));
+		string.push_str(&format!("ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);"));
+		string.push_str(&format!("uint be_vertex_id = imageLoad(vertex_id, be_pixel_coordinate).r;"));
+
+		fn visit_node(string: &mut String, shader_node: &lexer::Node) {
+			match &shader_node.node {
+				lexer::Nodes::Scope { name, children } => {
+					for child in children {
+						visit_node(string, child);
+					}
+				}
+				lexer::Nodes::Function { name, params, return_type, statements, raw } => {
+					for statement in statements {
+						visit_node(string, statement);
+					}
+				}
+				lexer::Nodes::Struct { name, template, fields, types } => {
+					for field in fields {
+						visit_node(string, field);
+					}
+				}
+				lexer::Nodes::Member { name, r#type } => {
+
+				}
+				lexer::Nodes::GLSL { code } => {
+					string.push_str(&code);
+				}
+				lexer::Nodes::Expression(expression) => {
+					match expression {
+						lexer::Expressions::Operator { operator, left, right } => {
+							string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, get_debug_color(be_vertex_id));"));
+							// format!("imageStore(out_albedo, ivec2(gl_FragCoord.xy), vec4(1.0, 0.0, 0.0, 1.0));")
+						}
+						_ => panic!("Invalid expression")
+					}
+				}
+			}
+		}
+
+		visit_node(&mut string, shader_node);
+
+		string.push_str(&format!("}}"));
+
+		string
 	}
 }

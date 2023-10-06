@@ -1,12 +1,12 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, rc::Rc};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher};
 
 use log::{warn, debug, error};
-use polodb_core::bson::{Document, Deserializer, Serializer};
+use polodb_core::bson::Document;
 use serde::{Serialize, Deserialize};
 
-use crate::{rendering::{shader_generator::ShaderGenerator, render_system}, shader_generator, jspd::{self, lexer}};
+use crate::{rendering::render_system, jspd::{self}};
 
-use super::{ResourceHandler, ResourceManager};
+use super::{ResourceHandler, ResourceManager, SerializedResourceDocument, GenericResourceSerialization, Resource};
 
 pub struct MaterialResourcerHandler {
 
@@ -26,6 +26,10 @@ pub struct Material {
 	pub model: Model,
 }
 
+impl Resource for Material {
+	fn get_class(&self) -> &'static str { "Material" }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VariantVariable {
 	pub name: String,
@@ -39,9 +43,17 @@ pub struct Variant {
 	pub variables: Vec<VariantVariable>,
 }
 
+impl Resource for Variant {
+	fn get_class(&self) -> &'static str { "Variant" }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Shader {
 	pub stage: render_system::ShaderTypes,
+}
+
+impl Resource for Shader {
+	fn get_class(&self) -> &'static str { "Shader" }
 }
 
 impl MaterialResourcerHandler {
@@ -68,7 +80,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(SerializedResourceDocument, Vec<u8>)>, String> {
 		let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
 		let is_material = asset_json["parent"].is_null();
@@ -92,17 +104,18 @@ impl ResourceHandler for MaterialResourcerHandler {
 				Self::produce_shader(&material_domain, &asset_json, &shader_json, s_type)
 			}).collect::<Vec<_>>();
 			
-			let required_resources = shaders.iter().map(|s| polodb_core::bson::doc! { "path": s.1.clone() }).collect::<Vec<_>>();
+			let required_resources = shaders.iter().map(|s| s.1.clone()).collect::<Vec<_>>();
 
-			let material_resource_document = polodb_core::bson::doc!{
-				"class": "Material",
-				"required_resources": required_resources,
-				"resource": {}
-			};
+			let material_resource_document = GenericResourceSerialization::new(Material {
+				model: Model {
+					name: Self::RENDER_MODEL.to_string(),
+					pass: "MaterialEvaluation".to_string(),
+				},
+			}).required_resources(required_resources);
 
-			shaders.push(((material_resource_document.clone(), Vec::new()), "".to_string()));
+			shaders.push(((material_resource_document.into(), Vec::new()), "".to_string()));
 
-			Ok(shaders.iter().map(|s| s.0.clone()).collect::<Vec<_>>())
+			Ok(shaders.into_iter().map(|s| s.0).collect::<Vec<_>>())
 		} else {
 			let variant_json = asset_json;
 
@@ -110,23 +123,23 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			let (buffer, _) = resource_manager.read_asset_from_source(parent_material_url).unwrap();
 
-			let parent_material_json = json::parse(std::str::from_utf8(&buffer).unwrap()).unwrap();
-
-			let material_resource_document = polodb_core::bson::doc!{
-				"class": "Variant",
-				"required_resources": [polodb_core::bson::doc! { "path": parent_material_url }],
-				"resource": {
-					"parent": parent_material_url,
-					"variables": variant_json["variables"].members().map(|v| {
-						polodb_core::bson::doc! {
-							"name": v["name"].as_str().unwrap(),
-							"value": v["value"].as_str().unwrap(),
+			let material_resource_document = GenericResourceSerialization {
+				url: None,
+				hash: None,
+				class: "Variant".to_string(),
+				required_resources: vec![parent_material_url.to_string()],
+				resource: Variant{
+					parent: parent_material_url.to_string(),
+					variables: variant_json["variables"].members().map(|v| {
+						VariantVariable {
+							name: v["name"].to_string(),
+							value: v["value"].to_string(),
 						}
 					}).collect::<Vec<_>>()
 				}
 			};
 
-			Ok(vec![(material_resource_document, Vec::new())])
+			Ok(vec![(material_resource_document.into(), Vec::new())])
 		}
 	}
 
@@ -157,7 +170,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 impl MaterialResourcerHandler {
 	const RENDER_MODEL: &str = "Visibility";
 
-	fn treat_shader(path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<(Document, Vec<u8>), String>> {
+	fn treat_shader(path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<(SerializedResourceDocument, Vec<u8>), String>> {
 		let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
 
 		let glsl = visibility.transform(material, &shader_node, stage)?;
@@ -197,21 +210,29 @@ impl MaterialResourcerHandler {
 
 		std::hash::Hash::hash(&result_shader_bytes, &mut hasher);
 
-		let hash = hasher.finish() as i64;
+		let hash = hasher.finish();
 
-		let resource = polodb_core::bson::doc!{
-			"path": path,
-			"class": "Shader",
-			"hash": hash,
-			"resource": {
-				"stage": stage,
+		let stage = match stage {
+			"Vertex" => render_system::ShaderTypes::Vertex,
+			"Fragment" => render_system::ShaderTypes::Fragment,
+			"Compute" => render_system::ShaderTypes::Compute,
+			_ => { panic!("Invalid shader stage") }
+		};
+
+		let resource = GenericResourceSerialization {
+			url: Some(path.to_string()),
+			class: "Shader".to_string(),
+			hash: Some(hash),
+			required_resources: Vec::new(),
+			resource: Shader {
+				stage: stage,
 			}
 		};
 
-		Some(Ok((resource, Vec::from(result_shader_bytes))))
+		Some(Ok((resource.into(), Vec::from(result_shader_bytes))))
 	}
 
-	fn produce_shader(domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<((Document, Vec<u8>), String)> {
+	fn produce_shader(domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<((SerializedResourceDocument, Vec<u8>), String)> {
 		let shader_option = match shader_json {
 			json::JsonValue::Null => { None }
 			json::JsonValue::Short(path) => {

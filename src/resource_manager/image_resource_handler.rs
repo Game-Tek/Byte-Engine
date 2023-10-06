@@ -1,7 +1,8 @@
-use polodb_core::bson::Document;
 use serde::{Serialize, Deserialize};
 
-use super::ResourceHandler;
+use crate::resource_manager::GenericResourceSerialization;
+
+use super::{ResourceHandler, SerializedResourceDocument, Resource};
 
 pub(crate) struct ImageResourceHandler {
 
@@ -22,7 +23,7 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(SerializedResourceDocument, Vec<u8>)>, String> {
 		let mut decoder = png::Decoder::new(bytes);
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().unwrap();
@@ -55,15 +56,18 @@ impl ResourceHandler for ImageResourceHandler {
 
 		let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
-		let resource_document = polodb_core::bson::doc!{
-			"class": "Texture",
-			"resource": {
-				"extent": [extent.width, extent.height, extent.depth],
-				"compression": "BC7",
+		let resource_document = GenericResourceSerialization {
+			url: Some(asset_url.to_string()),
+			hash: None,
+			required_resources: Vec::new(),
+			class: "Texture".to_string(),
+			resource: Texture{
+				extent: crate::Extent{ width: extent.width, height: extent.height, depth: extent.depth },
+				compression: Some(CompressionSchemes::BC7),
 			}
 		};
 
-		Ok(vec![(resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface))])
+		Ok(vec![(resource_document.into(), intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface))])
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
@@ -75,7 +79,16 @@ impl ResourceHandler for ImageResourceHandler {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub enum CompressionSchemes {
+	BC7,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Texture {
-	pub compression: String,
+	pub compression: Option<CompressionSchemes>,
 	pub extent: crate::Extent,
+}
+
+impl Resource for Texture {
+	fn get_class(&self) -> &'static str { "Texture"	}
 }

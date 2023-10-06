@@ -1232,7 +1232,7 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 						let index_buffer = render_system.get_mut_buffer_slice(self.indices_buffer);
 
 						options.resources.push(resource_manager::OptionResource {
-							path: resource.path.clone(),
+							url: resource.path.clone(),
 							buffers: vec![resource_manager::Buffer{ buffer: vertex_buffer, tag: "Vertex".to_string() }, resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }],
 						});
 					}

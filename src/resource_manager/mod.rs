@@ -29,7 +29,7 @@ trait ResourceHandler {
 	/// - **resource**: The resource data. Can look like anything.
 	/// - **hash**(optional): The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
 	/// - **required_resources**(optional): A list of resources that this resource depends on. This is used to load resources that depend on other resources.
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String>;
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(SerializedResourceDocument, Vec<u8>)>, String>;
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)>;
 
@@ -105,6 +105,54 @@ pub struct ResourceResponse {
 	pub required_resources: Vec<String>,
 }
 
+/// Trait that defines a resource.
+pub trait Resource {
+	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
+	/// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
+	/// Is needed by the deserialize function.
+	fn get_class(&self) -> &'static str;
+}
+
+/// This is the struct resource handlers should return when processing a resource.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GenericResourceSerialization<T: Resource> {
+	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
+	pub url: Option<String>,
+	/// The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
+	pub hash: Option<u64>,
+	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
+	pub class: String,
+	/// List of resources that this resource depends on.
+	pub required_resources: Vec<String>,
+	/// The resource data.
+	pub resource: T,
+}
+
+impl <T: Resource> GenericResourceSerialization<T> {
+	pub fn new(resource: T) -> Self {
+		GenericResourceSerialization {
+			url: None,
+			hash: None,
+			required_resources: Vec::new(),
+			class: resource.get_class().to_string(),
+			resource,
+		}
+	}
+
+	pub fn required_resources(mut self, required_resources: Vec<String>) -> Self {
+		self.required_resources = required_resources;
+		self
+	}
+}
+
+pub struct SerializedResourceDocument(polodb_core::bson::Document);
+
+impl <T: Resource + serde::Serialize> Into<SerializedResourceDocument> for GenericResourceSerialization<T> {
+	fn into(self) -> SerializedResourceDocument {
+		SerializedResourceDocument(polodb_core::bson::to_document(&self).unwrap())
+	}
+}
+
 pub struct Request {
 	pub resources: Vec<ResourceRequest>,
 }
@@ -114,15 +162,21 @@ pub struct Response {
 }
 
 pub struct Buffer<'a> {
+	/// The slice of the buffer to load the resource binary data into.
 	pub buffer: &'a mut [u8],
+	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
 	pub tag: String,
 }
 
+/// Options for loading a resource.
 pub struct OptionResource<'a> {
-	pub path: String,
+	/// The resource to apply this option to.
+	pub url: String,
+	/// The buffers to load the resource binary data into.
 	pub buffers: Vec<Buffer<'a>>,
 }
 
+/// Represents the options for performing a bundled/batch resource load.
 pub struct Options<'a> {
 	pub resources: Vec<OptionResource<'a>>,
 }
@@ -148,7 +202,7 @@ impl ResourceManager {
 
 		let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
-		if cfg!(test) {
+		if cfg!(test) { // If we are running tests we want to use memory database. This way we can run tests in parallel.
 			memory_only = true;
 		}
 
@@ -163,11 +217,11 @@ impl ResourceManager {
 			Ok(db) => db,
 			Err(_) => {
 				// Delete file and try again
-				std::fs::remove_file("assets/resources.db").unwrap();
+				std::fs::remove_file("resources/resources.db").unwrap();
 
 				warn!("Database file was corrupted, deleting and trying again.");
 
-				let db_res = polodb_core::Database::open_file("assets/resources.db");
+				let db_res = polodb_core::Database::open_file("resources/resources.db");
 
 				match db_res {
 					Ok(db) => db,
@@ -213,17 +267,6 @@ impl ResourceManager {
 	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
 	/// If the resource is in cache but it's data cannot be parsed, it will return None.
 	/// Return is a tuple containing the resource description and it's associated binary data.\
-	/// ```json
-	/// { ..., "resources":[{ "id": 01234, "size": 0, "offset": 0, "class": "X" "resource": { ... }, "hash": 0 }] }
-	/// ```
-	/// Members:
-	/// - **id**: u64 - The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-	/// - **size**: u64 - The resource size in bytes.
-	/// - **offset**: u64 - The resource offset in the resource bundle, relative to the start of the bundle.
-	/// - **class**: String - The resource class. This is used to identify the resource type. Needs to be meaningful and will be a public constant.
-	/// - **resource**: The resource data. Can look like anything.
-	/// - **hash**: u64 - The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical). 
-	/// 
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
 	pub fn get(&mut self, path: &str) -> Option<(Response, Vec<u8>)> {
 		let request = self.load_from_cache_or_source(path)?;
@@ -238,7 +281,7 @@ impl ResourceManager {
 		Some((response, buffer))
 	}
 
-	/// Tries to load the information/metadata for a resource (and it's dependecies).\
+	/// Tries to load the information/metadata for a resource (and it's dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load_resource()` which will load the binary data.
 	pub fn request_resource(&mut self, path: &str) -> Option<Request> {
@@ -334,11 +377,9 @@ impl ResourceManager {
 
 	/// Stores the asset as a resource.
 	/// Returns the resource document.
-	fn write_assets_to_cache(&mut self, resource_packages: &[(Document, Vec<u8>)], path: &str) -> Option<()> {
+	fn write_assets_to_cache(&mut self, resource_packages: &[(SerializedResourceDocument, Vec<u8>)], path: &str) -> Option<()> {
 		for resource_package in resource_packages {
-			dbg!(&resource_package.0);
-
-			let mut full_resource_document = resource_package.0.clone();
+			let mut full_resource_document = resource_package.0.0.clone();
 
 			let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -404,7 +445,7 @@ impl ResourceManager {
 			};
 
 			let _slice = if let Some(options) = &mut options {
-				if let Some(x) = options.resources.iter_mut().find(|e| e.path == resource_container.path) {
+				if let Some(x) = options.resources.iter_mut().find(|e| e.url == resource_container.path) {
 					self.resource_handlers.iter().find(|h| h.can_handle_type(resource_container.class.as_str())).unwrap().
 					read(&response.resource, &mut file, x.buffers.as_mut_slice());
 				} else {
@@ -635,7 +676,7 @@ mod tests {
 		match resource.class.as_str() {
 			"Mesh" => {
 				options.resources.push(OptionResource {
-					path: resource.path.clone(),
+					url: resource.path.clone(),
 					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }],
 				});
 			}

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material}}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
+use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -64,7 +64,7 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_pipeline_layout: render_system::PipelineLayoutHandle,
 	material_evaluation_pipeline: render_system::PipelineHandle,
 
-	material_evaluation_materials: Vec<render_system::PipelineHandle>,
+	material_evaluation_materials: HashMap<String, (u32, render_system::PipelineHandle)>,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -102,7 +102,7 @@ impl VisibilityWorldRenderDomain {
 			let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let render_finished_synchronizer = render_system.create_synchronizer(true);
@@ -137,6 +137,7 @@ impl VisibilityWorldRenderDomain {
 				#pragma shader_stage(vertex)
 
 				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference: enable
 				#extension GL_EXT_buffer_reference2: enable
 
 				layout(row_major) uniform; layout(row_major) buffer;
@@ -153,8 +154,9 @@ impl VisibilityWorldRenderDomain {
 					mat4 view_projection;
 				};
 
-				layout(scalar, buffer_reference) buffer MeshData {
+				layout(scalar, buffer_reference, buffer_reference_align=1) buffer MeshData {
 					mat4 model;
+					uint material_id;
 				};
 
 				layout(push_constant) uniform PushConstant {
@@ -174,16 +176,33 @@ impl VisibilityWorldRenderDomain {
 				#pragma shader_stage(fragment)
 
 				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference: enable
 				#extension GL_EXT_buffer_reference2: enable
 
 				layout(location=0) flat in uint in_instance_index;
 				layout(location=1) flat in uint in_vertex_id;
+				
+				layout(scalar, buffer_reference) buffer CameraData {
+					mat4 view_matrix;
+					mat4 projection_matrix;
+					mat4 view_projection;
+				};
+
+				layout(scalar, buffer_reference, buffer_reference_align=1) buffer MeshData {
+					mat4 model;
+					uint material_id;
+				};
+
+				layout(push_constant) uniform PushConstant {
+					CameraData camera;
+					MeshData meshes;
+				} pc;
 
 				layout(location=0) out uint out_material_id;
 				layout(location=1) out uint out_vertex_id;
 
 				void main() {
-					out_material_id = 0;
+					out_material_id = pc.meshes[in_instance_index].material_id;
 					out_vertex_id = in_vertex_id;
 				}
 			"#;
@@ -293,7 +312,7 @@ impl VisibilityWorldRenderDomain {
 				void main() {
 					uint sum = 0;
 
-					for (uint i = 0; i < 1; i++) {
+					for (uint i = 0; i < 4; i++) {
 						material_offset[i] = sum;
 						material_offset_scratch[i] = sum;
 						material_evaluation_dispatches[i] = uvec3((material_count[i] + 31) / 32, 1, 1);
@@ -545,7 +564,7 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }, render_system::PushConstantRange{ offset: 16, size: 12 }]);
+			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 28 }]);
 			let material_evaluation_pipeline = render_system.create_compute_pipeline(&material_evaluation_pipeline_layout, (&material_evaluation_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			Self {
@@ -608,7 +627,7 @@ impl VisibilityWorldRenderDomain {
 				material_evaluation_dispatches,
 				material_xy,
 
-				material_evaluation_materials: Vec::new(),
+				material_evaluation_materials: HashMap::new(),
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -620,71 +639,162 @@ impl VisibilityWorldRenderDomain {
 	fn load_material(&mut self, resource_manager: &mut resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
 		let (response, buffer) = resource_manager.get(asset_url).unwrap();
 
-		for resource in &response.resources {
-			match resource.class.as_str() {
+		for resource_document in &response.resources {
+			match resource_document.class.as_str() {
 				"Shader" => {
-					let shader: &Shader = resource.resource.downcast_ref().unwrap();
+					let shader: &Shader = resource_document.resource.downcast_ref().unwrap();
 
-					let hash = resource.hash; let resource_id = resource.id;
+					let hash = resource_document.hash; let resource_id = resource_document.id;
 
 					if let Some((old_hash, _old_shader, _)) = self.shaders.get(&resource_id) {
 						if *old_hash == hash { continue; }
 					}
 
-					let offset = resource.offset as usize;
-					let size = resource.size as usize;
+					let offset = resource_document.offset as usize;
+					let size = resource_document.size as usize;
 
 					let new_shader = render_system.create_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
 
 					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
-				"Material" => {
-					let material: &Material = resource.resource.downcast_ref().unwrap();
-					
-					let shaders = resource.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
+				"Variant" => {
+					if !self.material_evaluation_materials.contains_key(&resource_document.path) {
+						let variant: &Variant = resource_document.resource.downcast_ref().unwrap();
 
-					let shaders = shaders.iter().map(|shader| {
-						let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
+						let material_resource_document = response.resources.iter().find(|r| &r.path == &variant.parent).unwrap();
 
-						(shader, *shader_type)
-					}).collect::<Vec<_>>();
+						let shaders = material_resource_document.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
 
-					let targets = [
-						render_system::AttachmentInformation {
-							texture: self.albedo,
-							layout: render_system::Layouts::RenderTarget,
-							format: render_system::TextureFormats::RGBAu8,
-							clear: render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-							load: false,
-							store: true,
-						},
-						render_system::AttachmentInformation {
-							texture: self.depth_target,
-							layout: render_system::Layouts::RenderTarget,
-							format: render_system::TextureFormats::Depth32,
-							clear: render_system::ClearValue::Depth(0f32),
-							load: false,
-							store: true,
-						},
-					];
-					
-					match material.model.name.as_str() {
-						"Visibility" => {
-							match material.model.pass.as_str() {
-								"MaterialEvaluation" => {
-									let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0, r#type: "vec4f".to_string(), value: [0f32, 1f32, 0f32, 1f32] })]));
-									
-									self.material_evaluation_materials.push(pipeline);
+						let shaders = shaders.iter().map(|shader| {
+							let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
+
+							(shader, *shader_type)
+						}).collect::<Vec<_>>();
+
+						let targets = [
+							render_system::AttachmentInformation {
+								texture: self.albedo,
+								layout: render_system::Layouts::RenderTarget,
+								format: render_system::TextureFormats::RGBAu8,
+								clear: render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+								load: false,
+								store: true,
+							},
+							render_system::AttachmentInformation {
+								texture: self.depth_target,
+								layout: render_system::Layouts::RenderTarget,
+								format: render_system::TextureFormats::Depth32,
+								clear: render_system::ClearValue::Depth(0f32),
+								load: false,
+								store: true,
+							},
+						];
+
+						let mut specialization_constants: Vec<Box<dyn render_system::SpecializationMapEntry>> = vec![];
+
+						for (i, variable) in variant.variables.iter().enumerate() {
+							// TODO: use actual variable type
+
+							match variable.value.as_str() {
+								"White" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [1f32, 1f32, 1f32, 1f32] })
+									);
+								}
+								"Red" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [1f32, 0f32, 0f32, 1f32] })
+									);
+								}
+								"Green" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [0f32, 1f32, 0f32, 1f32] })
+									);
+								}
+								"Blue" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [0f32, 0f32, 1f32, 1f32] })
+									);
+								}
+								"Purple" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [1f32, 0f32, 1f32, 1f32] })
+									);
+								}
+								"Yellow" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [1f32, 1f32, 0f32, 1f32] })
+									);
+								}
+								"Black" => {
+									specialization_constants.push(
+										Box::new(render_system::GenericSpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value: [0f32, 0f32, 0f32, 1f32] })
+									);
 								}
 								_ => {
-									error!("Unknown material pass: {}", material.model.pass)
+									error!("Unknown variant value: {}", variable.value);
 								}
 							}
+
 						}
-						_ => {
-							error!("Unknown material model: {}", material.model.name);
+
+						let material = self.material_evaluation_materials.get(&variant.parent).unwrap();
+
+						let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, specialization_constants));
+						
+						self.material_evaluation_materials.insert(resource_document.path.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
+					}
+				}
+				"Material" => {
+					if !self.material_evaluation_materials.contains_key(&resource_document.path) {
+						let material: &Material = resource_document.resource.downcast_ref().unwrap();
+						
+						let shaders = resource_document.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
+	
+						let shaders = shaders.iter().map(|shader| {
+							let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
+	
+							(shader, *shader_type)
+						}).collect::<Vec<_>>();
+	
+						let targets = [
+							render_system::AttachmentInformation {
+								texture: self.albedo,
+								layout: render_system::Layouts::RenderTarget,
+								format: render_system::TextureFormats::RGBAu8,
+								clear: render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+								load: false,
+								store: true,
+							},
+							render_system::AttachmentInformation {
+								texture: self.depth_target,
+								layout: render_system::Layouts::RenderTarget,
+								format: render_system::TextureFormats::Depth32,
+								clear: render_system::ClearValue::Depth(0f32),
+								load: false,
+								store: true,
+							},
+						];
+						
+						match material.model.name.as_str() {
+							"Visibility" => {
+								match material.model.pass.as_str() {
+									"MaterialEvaluation" => {
+										let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0, r#type: "vec4f".to_string(), value: [0f32, 1f32, 0f32, 1f32] })]));
+										
+										self.material_evaluation_materials.insert(resource_document.path.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
+									}
+									_ => {
+										error!("Unknown material pass: {}", material.model.pass)
+									}
+								}
+							}
+							_ => {
+								error!("Unknown material model: {}", material.model.name);
+							}
 						}
 					}
+
 				}
 				_ => {}
 			}
@@ -982,7 +1092,7 @@ impl VisibilityWorldRenderDomain {
 				barrier: render_system::Barrier::Texture { source: None, destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
 				source: None,
 				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
+					stage: render_system::Stages::TRANSFER,
 					access: render_system::AccessPolicies::WRITE,
 				}
 			},
@@ -1009,19 +1119,37 @@ impl VisibilityWorldRenderDomain {
 			},
 		]);
 
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.clear_texture(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
+
+		command_buffer_recording.barriers(&[
+			render_system::BarrierDescriptor {
+				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState { layout: render_system::Layouts::Transfer, format: render_system::TextureFormats::RGBAu8 }), destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
+				source: Some(
+					render_system::TransitionState {
+						stage: render_system::Stages::TRANSFER,
+						access: render_system::AccessPolicies::WRITE,
+					}
+				),
+				destination: render_system::TransitionState {
+					stage: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+				}
+			},
+		]);
+
+		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.material_evaluation_descriptor_set);
 
-		for (i, pipeline) in self.material_evaluation_materials.iter().enumerate() {
+		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			command_buffer_recording.bind_compute_pipeline(pipeline);
 			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
-				std::slice::from_raw_parts(&(i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
+				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
 			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 20, unsafe {
-				std::slice::from_raw_parts(&(i as u64) as *const u64 as *const u8, std::mem::size_of::<u64>())
+				std::slice::from_raw_parts(&(*i as u64) as *const u64 as *const u8, std::mem::size_of::<u64>())
 			});
-			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: 0, range: 12, slot: 0 });
+			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
 		}
 
 		// Copy to swapchain
@@ -1062,6 +1190,12 @@ impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDom
 	}
 }
 
+#[repr(C)]
+struct ShaderMeshData {
+	model: Mat4f,
+	material_id: u32,
+}
+
 impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Mesh>, mesh: &Mesh) {
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
@@ -1069,6 +1203,14 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
 		orchestrator.tie_self(Self::transform, &handle, Mesh::transform);
+
+		{
+			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
+			let mut resource_manager = resource_manager.get_mut();
+			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
+
+			self.load_material(resource_manager, render_system, mesh.material_id);
+		}
 
 		if !self.mesh_resources.contains_key(mesh.resource_id) { // Load only if not already loaded
 			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
@@ -1118,14 +1260,15 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 
 		let meshes_data_slice = render_system.get_mut_buffer_slice(self.meshes_data_buffer);
 
-		let meshes_data = [
-			mesh.transform,
-		];
+		let mesh_data = ShaderMeshData {
+			model: mesh.transform,
+			material_id: self.material_evaluation_materials.get(mesh.material_id).unwrap().0,
+		};
 
-		let meshes_data_bytes = unsafe { std::slice::from_raw_parts(meshes_data.as_ptr() as *const u8, std::mem::size_of_val(&meshes_data)) };
+		let meshes_data_bytes = unsafe { std::slice::from_raw_parts(&mesh_data as *const ShaderMeshData as *const u8, std::mem::size_of_val(&mesh_data)) };
 
 		unsafe {
-			std::ptr::copy_nonoverlapping(meshes_data_bytes.as_ptr(), meshes_data_slice.as_mut_ptr().add(self.instance_count as usize * std::mem::size_of::<maths_rs::Mat4f>()), meshes_data_bytes.len());
+			std::ptr::copy_nonoverlapping(meshes_data_bytes.as_ptr(), meshes_data_slice.as_mut_ptr().add(self.instance_count as usize * std::mem::size_of::<ShaderMeshData>()), meshes_data_bytes.len());
 		}
 
 		self.meshes.insert(handle, self.instance_count);

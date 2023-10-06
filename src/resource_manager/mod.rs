@@ -29,7 +29,7 @@ trait ResourceHandler {
 	/// - **resource**: The resource data. Can look like anything.
 	/// - **hash**(optional): The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
 	/// - **required_resources**(optional): A list of resources that this resource depends on. This is used to load resources that depend on other resources.
-	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String>;
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String>;
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)>;
 
@@ -295,13 +295,13 @@ impl ResourceManager {
 		let resource_descriptions = if let Some(a) = gather(&self.db, path) {
 			a
 		} else {
-			let r = Self::read_asset_from_source(path).unwrap();
+			let r = self.read_asset_from_source(path).unwrap();
 
 			let mut generated_resources = Vec::new();
 
 			for resource_handler in &self.resource_handlers {
 				if resource_handler.can_handle_type(r.1.as_str()) {
-					generated_resources.append(&mut resource_handler.process(path, &r.0).unwrap());
+					generated_resources.append(&mut resource_handler.process(self, path, &r.0).unwrap());
 				}
 			}
 
@@ -433,7 +433,7 @@ impl ResourceManager {
 	/// ```ignore
 	/// let (bytes, format) = ResourceManager::read_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
 	/// ```
-	fn read_asset_from_source(path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
+	pub(super) fn read_asset_from_source(&self, path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
 		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };
 		let mut source_bytes;
 		let format;

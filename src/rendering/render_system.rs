@@ -150,6 +150,7 @@ pub trait CommandBufferRecording {
 	fn dispatch(&mut self, x: u32, y: u32, z: u32);
 	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
 
+	fn clear_texture(&mut self, texture_handle: TextureHandle, clear_value: ClearValue);
 	fn clear_buffer(&mut self, buffer_handle: BufferHandle);
 
 	/// Copies texture data from a CPU accessible buffer to a GPU accessible texture.

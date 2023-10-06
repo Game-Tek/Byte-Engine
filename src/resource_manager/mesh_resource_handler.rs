@@ -24,7 +24,7 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);

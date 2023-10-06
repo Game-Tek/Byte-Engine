@@ -1,12 +1,12 @@
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, rc::Rc};
 
 use log::{warn, debug, error};
-use polodb_core::bson::Document;
+use polodb_core::bson::{Document, Deserializer, Serializer};
 use serde::{Serialize, Deserialize};
 
 use crate::{rendering::{shader_generator::ShaderGenerator, render_system}, shader_generator, jspd::{self, lexer}};
 
-use super::ResourceHandler;
+use super::{ResourceHandler, ResourceManager};
 
 pub struct MaterialResourcerHandler {
 
@@ -24,6 +24,19 @@ pub struct Model {
 pub struct Material {
 	/// The render model this material is for.
 	pub model: Model,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VariantVariable {
+	pub name: String,
+	pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Variant {
+	/// Parent material asset url.
+	pub parent: String,
+	pub variables: Vec<VariantVariable>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,56 +68,89 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
-		let material_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+		let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
-		let material_domain = match &material_json["domain"] {
-			json::JsonValue::Null => { "Common".to_string() }
-			json::JsonValue::Short(s) => { s.to_string() }
-			json::JsonValue::String(s) => { s.to_string() }
-			_ => { panic!("Invalid domain") }
-		};
+		let is_material = asset_json["parent"].is_null();
 
-		let material_type = match &material_json["type"] {
-			json::JsonValue::Null => { "Raw".to_string() }
-			json::JsonValue::Short(s) => { s.to_string() }
-			json::JsonValue::String(s) => { s.to_string() }
-			_ => { panic!("Invalid type") }
-		};
-		
-		let mut shaders = material_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-			Self::produce_shader(&material_domain, &material_json, &shader_json, s_type)
-		}).collect::<Vec<_>>();
-		
-		let required_resources = shaders.iter().map(|s| polodb_core::bson::doc! { "path": s.1.clone() }).collect::<Vec<_>>();
+		if is_material {
+			let material_domain = match &asset_json["domain"] {
+				json::JsonValue::Null => { "Common".to_string() }
+				json::JsonValue::Short(s) => { s.to_string() }
+				json::JsonValue::String(s) => { s.to_string() }
+				_ => { panic!("Invalid domain") }
+			};
 
-		let material_resource_document = polodb_core::bson::doc!{
-			"class": "Material",
-			"required_resources": required_resources,
-			"resource": {}
-		};
+			let material_type = match &asset_json["type"] {
+				json::JsonValue::Null => { "Raw".to_string() }
+				json::JsonValue::Short(s) => { s.to_string() }
+				json::JsonValue::String(s) => { s.to_string() }
+				_ => { panic!("Invalid type") }
+			};
+			
+			let mut shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
+				Self::produce_shader(&material_domain, &asset_json, &shader_json, s_type)
+			}).collect::<Vec<_>>();
+			
+			let required_resources = shaders.iter().map(|s| polodb_core::bson::doc! { "path": s.1.clone() }).collect::<Vec<_>>();
 
-		shaders.push(((material_resource_document.clone(), Vec::new()), "".to_string()));
+			let material_resource_document = polodb_core::bson::doc!{
+				"class": "Material",
+				"required_resources": required_resources,
+				"resource": {}
+			};
 
-		Ok(shaders.iter().map(|s| s.0.clone()).collect::<Vec<_>>())
+			shaders.push(((material_resource_document.clone(), Vec::new()), "".to_string()));
+
+			Ok(shaders.iter().map(|s| s.0.clone()).collect::<Vec<_>>())
+		} else {
+			let variant_json = asset_json;
+
+			let parent_material_url = variant_json["parent"].as_str().unwrap();
+
+			let (buffer, _) = resource_manager.read_asset_from_source(parent_material_url).unwrap();
+
+			let parent_material_json = json::parse(std::str::from_utf8(&buffer).unwrap()).unwrap();
+
+			let material_resource_document = polodb_core::bson::doc!{
+				"class": "Variant",
+				"required_resources": [polodb_core::bson::doc! { "path": parent_material_url }],
+				"resource": {
+					"parent": parent_material_url,
+					"variables": variant_json["variables"].members().map(|v| {
+						polodb_core::bson::doc! {
+							"name": v["name"].as_str().unwrap(),
+							"value": v["value"].as_str().unwrap(),
+						}
+					}).collect::<Vec<_>>()
+				}
+			};
+
+			Ok(vec![(material_resource_document, Vec::new())])
+		}
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
 		vec![("Material",
-		Box::new(|_document| {
-			Box::new(Material {
-				model: Model {
-					name: Self::RENDER_MODEL.to_string(),
-					pass: "MaterialEvaluation".to_string(),
-				},
-			})
-		})),
-		("Shader",
-		Box::new(|_document| {
-			Box::new(Shader {
-				stage: render_system::ShaderTypes::Compute,
-			})
-		}))]
+			Box::new(|_document| {
+				Box::new(Material {
+					model: Model {
+						name: Self::RENDER_MODEL.to_string(),
+						pass: "MaterialEvaluation".to_string(),
+					},
+				})
+			})),
+			("Shader",
+			Box::new(|_document| {
+				Box::new(Shader {
+					stage: render_system::ShaderTypes::Compute,
+				})
+			})),
+			("Variant",
+			Box::new(|document| {
+				Box::new(Variant::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap())
+			})),
+		]
 	}
 }
 

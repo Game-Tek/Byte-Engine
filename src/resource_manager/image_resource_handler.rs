@@ -22,7 +22,7 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
+	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(Document, Vec<u8>)>, String> {
 		let mut decoder = png::Decoder::new(bytes);
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().unwrap();

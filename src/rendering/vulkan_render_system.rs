@@ -314,7 +314,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[render_system::DescriptorSetLayoutHandle], push_constant_ranges: &[render_system::PushConstantRange]) -> render_system::PipelineLayoutHandle {
 		// self.create_vulkan_pipeline_layout(&descriptor_set_layout_handles.iter().map(|descriptor_set_layout_handle| vk::DescriptorSetLayout::from_raw(descriptor_set_layout_handle.0)).collect::<Vec<_>>())
-		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE)).collect::<Vec<_>>();
+		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE)).collect::<Vec<_>>();
 		let set_layouts = descriptor_set_layout_handles.iter().map(|set_layout| vk::DescriptorSetLayout::from_raw(set_layout.0)).collect::<Vec<_>>();
 
   		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
@@ -2224,7 +2224,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, offset: u32, data: &[u8]) {
 		let command_buffer = self.get_command_buffer();
 		let pipeline_layout = vk::PipelineLayout::from_raw(pipeline_layout_handle.0);
-		unsafe { self.render_system.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE, offset, data); }
+		unsafe { self.render_system.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
 	}
 
 	/// Draws a render system mesh.
@@ -2266,6 +2266,27 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let command_buffer = self.get_command_buffer();
 		unsafe {
 			self.render_system.device.cmd_draw_indexed(command_buffer.command_buffer, index_count, instance_count, first_index, vertex_offset, first_instance);
+		}
+	}
+
+	fn clear_texture(&mut self, texture_handle: render_system::TextureHandle, clear_value: render_system::ClearValue) {
+		let (texture_handle, texture) = self.get_texture(texture_handle);
+
+		let clear_value = match clear_value {
+			render_system::ClearValue::None => vk::ClearColorValue{ float32: [0.0, 0.0, 0.0, 0.0] },
+			render_system::ClearValue::Color(color) => vk::ClearColorValue{ float32: [color.r, color.g, color.b, color.a] },
+			render_system::ClearValue::Depth(depth) => vk::ClearColorValue{ float32: [depth, 0.0, 0.0, 0.0] },
+			render_system::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue{ uint32: [r, g, b, a] },
+		};
+
+		unsafe {
+			self.render_system.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::GENERAL, &clear_value, &[vk::ImageSubresourceRange {
+				aspect_mask: vk::ImageAspectFlags::COLOR,
+				base_mip_level: 0,
+				level_count: vk::REMAINING_MIP_LEVELS,
+				base_array_layer: 0,
+				layer_count: vk::REMAINING_ARRAY_LAYERS,
+			}]);
 		}
 	}
 

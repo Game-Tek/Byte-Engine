@@ -1,19 +1,10 @@
 //! # Byte-Engine
 //! Byte-Engine is a Rust powered game engine. It is designed to be efficient, fast and easy to use; with simple, composable patterns
 
-#![feature(int_roundings)]
-#![feature(ptr_sub_ptr)]
-#![feature(iter_advance_by)]
-#![feature(inherent_associated_types)]
-#![feature(arbitrary_self_types)]
-#![feature(non_lifetime_binders)]
 #![feature(downcast_unchecked)]
 #![feature(const_mut_refs)]
-#![feature(extract_if)]
-#![feature(try_trait_v2)]
-#![feature(const_trait_impl)]
-#![warn(missing_docs)]
-#![warn(missing_doc_code_examples)]
+// #![warn(missing_docs)] # Disable now because we are writing a lot of code
+// #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
 
 pub mod application;
 pub mod orchestrator;

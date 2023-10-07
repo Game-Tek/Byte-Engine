@@ -106,7 +106,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 			
 			let required_resources = shaders.iter().map(|s| s.1.clone()).collect::<Vec<_>>();
 
-			let material_resource_document = GenericResourceSerialization::new(Material {
+			let material_resource_document = GenericResourceSerialization::new(asset_url.to_string(), Material {
 				model: Model {
 					name: Self::RENDER_MODEL.to_string(),
 					pass: "MaterialEvaluation".to_string(),
@@ -121,11 +121,10 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 			let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-			let (buffer, _) = resource_manager.read_asset_from_source(parent_material_url).unwrap();
+			let _ = resource_manager.load_from_cache_or_source(parent_material_url).unwrap();
 
 			let material_resource_document = GenericResourceSerialization {
-				url: None,
-				hash: None,
+				url: asset_url.to_string(),
 				class: "Variant".to_string(),
 				required_resources: vec![parent_material_url.to_string()],
 				resource: Variant{
@@ -146,12 +145,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
 		vec![("Material",
 			Box::new(|_document| {
-				Box::new(Material {
-					model: Model {
-						name: Self::RENDER_MODEL.to_string(),
-						pass: "MaterialEvaluation".to_string(),
-					},
-				})
+				Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())
 			})),
 			("Shader",
 			Box::new(|_document| {
@@ -168,7 +162,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 }
 
 impl MaterialResourcerHandler {
-	const RENDER_MODEL: &str = "Visibility";
+	const RENDER_MODEL: &'static str = "Visibility";
 
 	fn treat_shader(path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<(SerializedResourceDocument, Vec<u8>), String>> {
 		let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
@@ -206,12 +200,6 @@ impl MaterialResourcerHandler {
 
 		let result_shader_bytes = compilation_artifact.as_binary_u8();
 
-		let mut hasher = DefaultHasher::new();
-
-		std::hash::Hash::hash(&result_shader_bytes, &mut hasher);
-
-		let hash = hasher.finish();
-
 		let stage = match stage {
 			"Vertex" => render_system::ShaderTypes::Vertex,
 			"Fragment" => render_system::ShaderTypes::Fragment,
@@ -220,9 +208,8 @@ impl MaterialResourcerHandler {
 		};
 
 		let resource = GenericResourceSerialization {
-			url: Some(path.to_string()),
+			url: path.to_string(),
 			class: "Shader".to_string(),
-			hash: Some(hash),
 			required_resources: Vec::new(),
 			resource: Shader {
 				stage: stage,

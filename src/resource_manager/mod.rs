@@ -8,8 +8,8 @@ pub mod material_resource_handler;
 
 use std::{io::prelude::*, hash::{Hasher, Hash},};
 
-use log::{warn, info, error, trace};
-use polodb_core::bson::{Document, doc};
+use log::{warn, info, error, trace, debug};
+use polodb_core::bson::{Document, doc, to_vec};
 
 use crate::orchestrator::{System, self};
 
@@ -86,7 +86,7 @@ pub enum LoadResults {
 pub struct ResourceRequest {
 	_id: polodb_core::bson::oid::ObjectId,
 	pub id: u64,
-	pub	path: String,
+	pub	url: String,
 	pub size: u64,
 	pub hash: u64,
 	pub class: String,
@@ -96,7 +96,7 @@ pub struct ResourceRequest {
 
 pub struct ResourceResponse {
 	pub id: u64,
-	pub	path: String,
+	pub	url: String,
 	pub size: u64,
 	pub offset: u64,
 	pub hash: u64,
@@ -117,22 +117,19 @@ pub trait Resource {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct GenericResourceSerialization<T: Resource> {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-	pub url: Option<String>,
-	/// The resource hash. This is used to identify the resource data. If the resource handler wants to generate a hash for the resource it can do so else the resource manager will generate a hash for it. This is because some resources can generate hashes inteligently (EJ: code generators can output same hash for different looking code if the code is semantically identical).
-	pub hash: Option<u64>,
+	url: String,
 	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
-	pub class: String,
+	class: String,
 	/// List of resources that this resource depends on.
-	pub required_resources: Vec<String>,
+	required_resources: Vec<String>,
 	/// The resource data.
-	pub resource: T,
+	resource: T,
 }
 
 impl <T: Resource> GenericResourceSerialization<T> {
-	pub fn new(resource: T) -> Self {
+	pub fn new(url: String, resource: T) -> Self {
 		GenericResourceSerialization {
-			url: None,
-			hash: None,
+			url,
 			required_resources: Vec::new(),
 			class: resource.get_class().to_string(),
 			resource,
@@ -311,22 +308,23 @@ impl ResourceManager {
 	}
 
 	/// Tries to load a resource from cache.\
-	/// The returned documents is like the following:
-	/// ```json
-	/// { "_id":"OId" , "id": 01234, "path":"../..", "size": 0, "class": "X", "resource": { ... }, "hash": 0 }
-	/// ```
-	fn load_from_cache_or_source(&mut self, path: &str) -> Option<Request> {
-		fn gather(db: &polodb_core::Database, path: &str) -> Option<Vec<Document>> {
-			let doc = db.collection::<Document>("resources").find_one(doc!{ "path": path }).unwrap()?;
+	fn load_from_cache_or_source(&self, url: &str) -> Option<Request> {
+		fn gather(db: &polodb_core::Database, url: &str) -> Option<Vec<Document>> {
+			let doc = db.collection::<Document>("resources").find_one(doc!{ "url": url }).unwrap()?;
 
 			let mut documents = vec![];
 			
 			if let Some(polodb_core::bson::Bson::Array(required_resources)) = doc.get("required_resources") {
 				for required_resource in required_resources {
 					if let polodb_core::bson::Bson::Document(required_resource) = required_resource {
-						let resource_path = required_resource.get("path").unwrap().as_str().unwrap();
+						let resource_path = required_resource.get("url").unwrap().as_str().unwrap();
 						documents.append(&mut gather(db, resource_path)?);
-					};
+					}
+
+					if let polodb_core::bson::Bson::String(required_resource) = required_resource {
+						let resource_path = required_resource.as_str();
+						documents.append(&mut gather(db, resource_path)?);
+					}
 				}
 			}
 
@@ -335,22 +333,22 @@ impl ResourceManager {
 			Some(documents)
 		}
 
-		let resource_descriptions = if let Some(a) = gather(&self.db, path) {
+		let resource_descriptions = if let Some(a) = gather(&self.db, url) {
 			a
 		} else {
-			let r = self.read_asset_from_source(path).unwrap();
+			let r = self.read_asset_from_source(url).unwrap();
 
 			let mut generated_resources = Vec::new();
 
 			for resource_handler in &self.resource_handlers {
 				if resource_handler.can_handle_type(r.1.as_str()) {
-					generated_resources.append(&mut resource_handler.process(self, path, &r.0).unwrap());
+					generated_resources.append(&mut resource_handler.process(self, url, &r.0).unwrap());
 				}
 			}
 
-			self.write_assets_to_cache(&generated_resources, path)?;
+			self.write_resource_to_cache(&generated_resources,)?;
 
-			gather(&self.db, path)?
+			gather(&self.db, url)?
 		};
 
 		for r in &resource_descriptions {
@@ -362,12 +360,12 @@ impl ResourceManager {
 				ResourceRequest { 
 					_id: r.get_object_id("_id").unwrap().clone(),
 					id: r.get_i64("id").unwrap() as u64,
-					path: r.get_str("path").unwrap().to_string(),
+					url: r.get_str("url").unwrap().to_string(),
 					size: r.get_i64("size").unwrap() as u64,
 					hash: r.get_i64("hash").unwrap() as u64,
 					class: r.get_str("class").unwrap().to_string(),
 					resource: self.deserializers[r.get_str("class").unwrap()](r.get_document("resource").unwrap()),
-					required_resources: if let Ok(rr) = r.get_array("required_resources") { rr.iter().map(|e| e.as_document().unwrap().get_str("path").unwrap().to_string()).collect() } else { vec![] },
+					required_resources: if let Ok(rr) = r.get_array("required_resources") { rr.iter().map(|e| e.as_str().unwrap().to_string()).collect() } else { vec![] },
 				}
 			).collect(),
 		};
@@ -377,30 +375,32 @@ impl ResourceManager {
 
 	/// Stores the asset as a resource.
 	/// Returns the resource document.
-	fn write_assets_to_cache(&mut self, resource_packages: &[(SerializedResourceDocument, Vec<u8>)], path: &str) -> Option<()> {
+	fn write_resource_to_cache(&self, resource_packages: &[(SerializedResourceDocument, Vec<u8>)],) -> Option<()> {
 		for resource_package in resource_packages {
 			let mut full_resource_document = resource_package.0.0.clone();
 
 			let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
-			if let Some(polodb_core::bson::Bson::String(p)) = full_resource_document.get("path") {
+			if let Some(polodb_core::bson::Bson::String(p)) = full_resource_document.get("url") {
 				p.hash(&mut hasher);
 			} else {
-				full_resource_document.insert("path", path.to_string());
-				path.hash(&mut hasher);
+				error!("Resource document does not have a path field.");
 			}
 
 			full_resource_document.insert("id", hasher.finish() as i64);
-
 			full_resource_document.insert("size", resource_package.1.len() as i64);
 
-			if let None = full_resource_document.get("hash") { // TODO: might be a good idea just to generate a random hash, since this method does not reflect changes to the document of the resource
+			if let None = full_resource_document.get("hash") {
 				let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
-				std::hash::Hasher::write(&mut hasher, resource_package.1.as_slice());
+				std::hash::Hasher::write(&mut hasher, resource_package.1.as_slice()); // Hash binary data
+
+				std::hash::Hasher::write(&mut hasher, &to_vec(full_resource_document.get("resource").unwrap()).unwrap()); // Hash resource metadata, since changing the resources description must also change the hash. (For caching purposes)
 
 				full_resource_document.insert("hash", hasher.finish() as i64);
 			}
+
+			debug!("Generated resource: {:#?}", &full_resource_document);
 
 			let insert_result = self.db.collection::<Document>("resources").insert_one(&full_resource_document).ok()?;
 
@@ -435,7 +435,7 @@ impl ResourceManager {
 
 			let response = ResourceResponse {
 				id: resource_container.id,
-				path: resource_container.path.clone(),
+				url: resource_container.url.clone(),
 				size: resource_container.size,
 				offset: offset as u64,
 				hash: resource_container.hash,
@@ -445,7 +445,7 @@ impl ResourceManager {
 			};
 
 			let _slice = if let Some(options) = &mut options {
-				if let Some(x) = options.resources.iter_mut().find(|e| e.url == resource_container.path) {
+				if let Some(x) = options.resources.iter_mut().find(|e| e.url == resource_container.url) {
 					self.resource_handlers.iter().find(|h| h.can_handle_type(resource_container.class.as_str())).unwrap().
 					read(&response.resource, &mut file, x.buffers.as_mut_slice());
 				} else {
@@ -474,7 +474,7 @@ impl ResourceManager {
 	/// ```ignore
 	/// let (bytes, format) = ResourceManager::read_asset_from_source("textures/concrete").unwrap(); // Path relative to .../assets
 	/// ```
-	pub(super) fn read_asset_from_source(&self, path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
+	fn read_asset_from_source(&self, path: &str) -> Result<(Vec<u8>, String), Option<Document>> {
 		let resource_origin = if path.starts_with("http://") || path.starts_with("https://") { "network" } else { "local" };
 		let mut source_bytes;
 		let format;
@@ -676,7 +676,7 @@ mod tests {
 		match resource.class.as_str() {
 			"Mesh" => {
 				options.resources.push(OptionResource {
-					url: resource.path.clone(),
+					url: resource.url.clone(),
 					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }],
 				});
 			}

@@ -57,8 +57,7 @@ impl ResourceHandler for ImageResourceHandler {
 		let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
 		let resource_document = GenericResourceSerialization {
-			url: Some(asset_url.to_string()),
-			hash: None,
+			url: asset_url.to_string(),
 			required_resources: Vec::new(),
 			class: "Texture".to_string(),
 			resource: Texture{

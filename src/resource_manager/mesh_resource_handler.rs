@@ -102,8 +102,7 @@ impl ResourceHandler for MeshResourceHandler {
 		};
 
 		let resource_document = GenericResourceSerialization {
-			url: None,
-			hash: None,
+			url: asset_url.to_string(),
 			required_resources: Vec::new(),
 			class: "Mesh".to_string(),
 			resource: mesh,

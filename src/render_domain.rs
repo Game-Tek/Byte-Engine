@@ -658,12 +658,12 @@ impl VisibilityWorldRenderDomain {
 					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
 				"Variant" => {
-					if !self.material_evaluation_materials.contains_key(&resource_document.path) {
+					if !self.material_evaluation_materials.contains_key(&resource_document.url) {
 						let variant: &Variant = resource_document.resource.downcast_ref().unwrap();
 
-						let material_resource_document = response.resources.iter().find(|r| &r.path == &variant.parent).unwrap();
+						let material_resource_document = response.resources.iter().find(|r| &r.url == &variant.parent).unwrap();
 
-						let shaders = material_resource_document.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
+						let shaders = material_resource_document.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.url == f).unwrap().id).collect::<Vec<_>>();
 
 						let shaders = shaders.iter().map(|shader| {
 							let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
@@ -742,14 +742,14 @@ impl VisibilityWorldRenderDomain {
 
 						let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, specialization_constants));
 						
-						self.material_evaluation_materials.insert(resource_document.path.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
+						self.material_evaluation_materials.insert(resource_document.url.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
 					}
 				}
 				"Material" => {
-					if !self.material_evaluation_materials.contains_key(&resource_document.path) {
+					if !self.material_evaluation_materials.contains_key(&resource_document.url) {
 						let material: &Material = resource_document.resource.downcast_ref().unwrap();
 						
-						let shaders = resource_document.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.path == f).unwrap().id).collect::<Vec<_>>();
+						let shaders = resource_document.required_resources.iter().map(|f| response.resources.iter().find(|r| &r.url == f).unwrap().id).collect::<Vec<_>>();
 	
 						let shaders = shaders.iter().map(|shader| {
 							let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
@@ -782,7 +782,7 @@ impl VisibilityWorldRenderDomain {
 									"MaterialEvaluation" => {
 										let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0, r#type: "vec4f".to_string(), value: [0f32, 1f32, 0f32, 1f32] })]));
 										
-										self.material_evaluation_materials.insert(resource_document.path.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
+										self.material_evaluation_materials.insert(resource_document.url.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
 									}
 									_ => {
 										error!("Unknown material pass: {}", material.model.pass)
@@ -1232,7 +1232,7 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 						let index_buffer = render_system.get_mut_buffer_slice(self.indices_buffer);
 
 						options.resources.push(resource_manager::OptionResource {
-							url: resource.path.clone(),
+							url: resource.url.clone(),
 							buffers: vec![resource_manager::Buffer{ buffer: vertex_buffer, tag: "Vertex".to_string() }, resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }],
 						});
 					}

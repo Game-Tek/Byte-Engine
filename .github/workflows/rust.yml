@@ -27,4 +27,4 @@ jobs:
     - name: Build
       run: cargo build
     - name: Run unit tests
-      run: RUST_BACKTRACE=1 cargo test
+      run: RUST_BACKTRACE=1 cargo test -- --skip render

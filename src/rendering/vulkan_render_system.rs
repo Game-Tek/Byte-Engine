@@ -5,8 +5,12 @@ use crate::{orchestrator, window_system, render_debugger::RenderDebugger};
 pub struct VulkanRenderSystem {
 	entry: ash::Entry,
 	instance: ash::Instance,
-	debug_utils: ash::extensions::ext::DebugUtils,
-	debug_utils_messenger: vk::DebugUtilsMessengerEXT,
+
+	#[cfg(debug_assertions)]
+	debug_utils: Option<ash::extensions::ext::DebugUtils>,
+	#[cfg(debug_assertions)]
+	debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
+
 	physical_device: vk::PhysicalDevice,
 	device: ash::Device,
 	queue_family_index: u32,
@@ -16,6 +20,7 @@ pub struct VulkanRenderSystem {
 	acceleration_structure: ash::extensions::khr::AccelerationStructure,
 	ray_tracing_pipeline: ash::extensions::khr::RayTracingPipeline,
 
+	#[cfg(debug_assertions)]
 	debugger: RenderDebugger,
 
 	frames: u8,
@@ -1154,52 +1159,73 @@ impl Size for &[render_system::VertexElement] {
 	}
 }
 
+pub struct Settings {
+	validation: bool,
+	ray_tracing: bool,
+}
+
 impl VulkanRenderSystem {
-	pub fn new() -> VulkanRenderSystem {
+	pub fn new(settings: &Settings) -> VulkanRenderSystem {
 		let entry: ash::Entry = Entry::linked();
 
 		let application_info = vk::ApplicationInfo::default()
 			.api_version(vk::make_api_version(0, 1, 3, 0));
 
-		let layer_names = [
-			#[cfg(debug_assertions)]
-			std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr(),
-			/*std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr(),*/
-		];
+		let mut layer_names = Vec::new();
+		
+		if settings.validation {
+			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
+		}
 
-		let extension_names = [
-			#[cfg(debug_assertions)]
-			ash::extensions::ext::DebugUtils::NAME.as_ptr(),
-			ash::extensions::khr::Surface::NAME.as_ptr(),
-			ash::extensions::khr::XcbSurface::NAME.as_ptr(),
-		];
+		let mut extension_names = Vec::new();
+		
+		extension_names.push(ash::extensions::khr::Surface::NAME.as_ptr());
 
-		let enabled_validation_features = [ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION, ValidationFeatureEnableEXT::BEST_PRACTICES, ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT];
+		#[cfg(target_os = "linux")]
+		extension_names.push(ash::extensions::khr::XcbSurface::NAME.as_ptr());
+
+		if settings.validation {
+			extension_names.push(ash::extensions::ext::DebugUtils::NAME.as_ptr());
+		}
+
+		let enabled_validation_features = [
+			ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
+			ValidationFeatureEnableEXT::BEST_PRACTICES,
+			ValidationFeatureEnableEXT::GPU_ASSISTED,
+			ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT,
+		];
 
 		let mut validation_features = vk::ValidationFeaturesEXT::default()
 			.enabled_validation_features(&enabled_validation_features);
 
 		let instance_create_info = vk::InstanceCreateInfo::default()
-			.push_next(&mut validation_features/* .build() */)
 			.application_info(&application_info)
 			.enabled_layer_names(&layer_names)
 			.enabled_extension_names(&extension_names)
 			/* .build() */;
 
+		let instance_create_info = if settings.validation {
+			instance_create_info.push_next(&mut validation_features)
+		} else {
+			instance_create_info
+		};
+
 		let instance = unsafe { entry.create_instance(&instance_create_info, None).expect("No instance") };
 
-		let debug_utils = ash::extensions::ext::DebugUtils::new(&entry, &instance);
+		let (debug_utils, debug_utils_messenger) = if settings.validation {
+			let debug_utils = ash::extensions::ext::DebugUtils::new(&entry, &instance);
 
-		let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-			.message_severity(
-				vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-			)
-			.message_type(
-				vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
-			)
-			.pfn_user_callback(Some(vulkan_debug_utils_callback));
+			let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+				.message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,)
+				.message_type(vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,)
+				.pfn_user_callback(Some(vulkan_debug_utils_callback));
+	
+			let debug_utils_messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None).expect("Debug Utils Callback") };
 
-		let debug_utils_messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None).expect("Debug Utils Callback") };
+			(Some(debug_utils), Some(debug_utils_messenger))
+		} else {
+			(None, None)
+		};
 
 		let physical_devices = unsafe { instance.enumerate_physical_devices().expect("No physical devices.") };
 
@@ -1244,9 +1270,15 @@ impl VulkanRenderSystem {
 			})
 			.expect("No queue family index found.");
 
-		let device_extension_names = [
-			ash::extensions::khr::Swapchain::NAME.as_ptr(),
-		];
+		let mut device_extension_names = Vec::new();
+		
+		device_extension_names.push(ash::extensions::khr::Swapchain::NAME.as_ptr());
+
+		if settings.ray_tracing {
+			device_extension_names.push(ash::extensions::khr::AccelerationStructure::NAME.as_ptr());
+			device_extension_names.push(ash::extensions::khr::RayTracingPipeline::NAME.as_ptr());
+			device_extension_names.push(ash::extensions::khr::RayTracingMaintenance1::NAME.as_ptr());
+		}		
 
 		let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
 			.queue_family_index(queue_family_index)
@@ -1288,7 +1320,20 @@ impl VulkanRenderSystem {
 			.shader_storage_image_array_dynamic_indexing(true)
 			.shader_storage_image_write_without_format(true)
 			.texture_compression_bc(true)
-		;			
+		;
+
+		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) = if settings.ray_tracing {
+			let physical_device_acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+				.acceleration_structure(true);
+
+			let physical_device_ray_tracing_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
+				.ray_tracing_pipeline(true)
+				.ray_traversal_primitive_culling(true);
+
+			(physical_device_acceleration_structure_features, physical_device_ray_tracing_pipeline_features)
+		} else {
+			(vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(), vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default())
+		};
 
   		let device_create_info = vk::DeviceCreateInfo::default()
 			.push_next(&mut physical_device_vulkan_11_features/* .build() */)
@@ -1298,6 +1343,14 @@ impl VulkanRenderSystem {
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features/* .build() */)
 			/* .build() */;
+
+		let device_create_info = if settings.ray_tracing {
+			device_create_info
+				.push_next(&mut physical_device_acceleration_structure_features)
+				.push_next(&mut physical_device_ray_tracing_pipeline_features)
+		} else {
+			device_create_info
+		};
 
 		let device: ash::Device = unsafe { instance.create_device(physical_device, &device_create_info, None).expect("No device") };
 
@@ -1339,7 +1392,11 @@ impl VulkanRenderSystem {
 	}
 
 	pub fn new_as_system() -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
-		orchestrator::EntityReturn::new(render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new())))
+		let settings = Settings {
+			validation: true,
+			ray_tracing: true,
+		};
+		orchestrator::EntityReturn::new(render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new(&settings))))
 	}
 
 	fn get_log_count(&self) -> u32 { unsafe { COUNTER } }
@@ -1614,13 +1671,15 @@ impl VulkanRenderSystem {
 
 		if let Some(name) = name {
 			unsafe {
-				self.debug_utils.set_debug_utils_object_name(
-					self.device.handle(),
-					&vk::DebugUtilsObjectNameInfoEXT::default()
-						.object_handle(buffer)
-						.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-						/* .build() */
-				).expect("No debug utils object name");
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils.set_debug_utils_object_name(
+						self.device.handle(),
+						&vk::DebugUtilsObjectNameInfoEXT::default()
+							.object_handle(buffer)
+							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+							/* .build() */
+					).expect("No debug utils object name");
+				}
 			}
 		}
 
@@ -1691,13 +1750,15 @@ impl VulkanRenderSystem {
 
 		unsafe{
 			if let Some(name) = name {
-				self.debug_utils.set_debug_utils_object_name(
-					self.device.handle(),
-					&vk::DebugUtilsObjectNameInfoEXT::default()
-						.object_handle(image)
-						.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-						/* .build() */
-				).expect("No debug utils object name");
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils.set_debug_utils_object_name(
+						self.device.handle(),
+						&vk::DebugUtilsObjectNameInfoEXT::default()
+							.object_handle(image)
+							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+							/* .build() */
+					).expect("No debug utils object name");
+				}
 			}
 		}
 
@@ -1806,13 +1867,15 @@ impl VulkanRenderSystem {
 
 		unsafe{
 			if let Some(name) = name {
-				self.debug_utils.set_debug_utils_object_name(
-					self.device.handle(),
-					&vk::DebugUtilsObjectNameInfoEXT::default()
-						.object_handle(vk_image_view)
-						.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-						/* .build() */
-				).expect("No debug utils object name");
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils.set_debug_utils_object_name(
+						self.device.handle(),
+						&vk::DebugUtilsObjectNameInfoEXT::default()
+							.object_handle(vk_image_view)
+							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+							/* .build() */
+					).expect("No debug utils object name");
+				}
 			}
 		}
 
@@ -3055,14 +3118,14 @@ mod tests {
 
 	#[test]
 	fn render_triangle() {
-		let mut vulkan_render_system = VulkanRenderSystem::new();
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::render_triangle(&mut vulkan_render_system);
 	}
 
 	#[ignore = "CI doesn't support presentation"]
 	#[test]
 	fn present() {
-		let mut vulkan_render_system = VulkanRenderSystem::new();
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::present(&mut vulkan_render_system);
 	}
 
@@ -3070,25 +3133,25 @@ mod tests {
 	#[ignore = "CI doesn't support presentation"]
 	#[test]
 	fn multiframe_present() {
-		let mut vulkan_render_system = VulkanRenderSystem::new();
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::multiframe_present(&mut vulkan_render_system);
 	}
 
 	#[test]
 	fn multiframe_rendering() {
-		let mut vulkan_render_system = VulkanRenderSystem::new();
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::multiframe_rendering(&mut vulkan_render_system);
 	}
 
 	#[test]
 	fn dynamic_data() {
-		let mut vulkan_render_system = VulkanRenderSystem::new();
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::dynamic_data(&mut vulkan_render_system);
 	}
 
 	#[test]
 	fn descriptor_sets() {
-		let mut vulkan_render_system = VulkanRenderSystem::new();
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::descriptor_sets(&mut vulkan_render_system);
 	}
 }

@@ -161,6 +161,9 @@ impl <T: 'static> EntityReturn<T> {
 	}
 
 	pub fn add_listener<C: Component>(mut self,) -> Self where T: EntitySubscriber<C> {
+		// TODO: Notify listener of the entities that existed before they started to listen.
+		// Maybe add a parameter to choose whether to listen retroactively or not. With a default value of true.
+
 		let b = Box::new(move |orchestrator: &Orchestrator, entity_to_notify: u32, ha: (u32, u32)| {
 			let systems_data = orchestrator.systems_data.read().unwrap();
 

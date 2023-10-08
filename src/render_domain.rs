@@ -1,9 +1,9 @@
 use std::{collections::HashMap, hash::Hash};
 
-use log::error;
+use log::{error, trace};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::render_system::{RenderSystem, self}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
+use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -565,6 +565,7 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<camera::Camera>()
 			.add_listener::<Mesh>()
 			.add_listener::<window_system::Window>()
+			.add_listener::<DirectionalLight>()
 	}
 
 	fn load_material(&mut self, resource_manager: &mut resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
@@ -1170,6 +1171,12 @@ impl orchestrator::EntitySubscriber<window_system::Window> for VisibilityWorldRe
 		let swapchain_handle = render_system.bind_to_window(&window_system.get_os_handles(&handle));
 
 		self.swapchain_handles.push(swapchain_handle);
+	}
+}
+
+impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderDomain {
+	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<DirectionalLight>, light: &DirectionalLight) {
+		trace!("Directional light created with direction: {:#?} and color: {:#?}", light.direction, light.color);
 	}
 }
 

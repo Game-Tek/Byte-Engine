@@ -68,51 +68,77 @@ bitflags::bitflags! {
 
 // HANDLES
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct BufferHandle(pub(super) u64);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct CommandBufferHandle(pub(super) u64);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ShaderHandle(pub(super) u64);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PipelineHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureHandle(pub(super) u64);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MeshHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SynchronizerHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetLayoutHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetHandle(pub(super) u64);
 
 /// Handle to a Pipeline Layout
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PipelineLayoutHandle(pub(super) u64);
 
 /// Handle to a Sampler
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SamplerHandle(pub(super) u64);
 
 /// Handle to a Sampler
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SwapchainHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AllocationHandle(pub(crate) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Handle {
+	Buffer(BufferHandle),
+	CommandBuffer(CommandBufferHandle),
+	Shader(ShaderHandle),
+	Pipeline(PipelineHandle),
+	Texture(TextureHandle),
+	Mesh(MeshHandle),
+	Synchronizer(SynchronizerHandle),
+	DescriptorSetLayout(DescriptorSetLayoutHandle),
+	DescriptorSet(DescriptorSetHandle),
+	PipelineLayout(PipelineLayoutHandle),
+	Sampler(SamplerHandle),
+	Swapchain(SwapchainHandle),
+	Allocation(AllocationHandle),
+	TextureCopy(TextureCopyHandle),
+}
+
 // HANDLES
+
+pub struct Consumption {
+	pub handle: Handle,
+	pub stages: Stages,
+	pub access: AccessPolicies,
+	pub layout: Layouts,
+}
 
 pub trait CommandBufferRecording {
 	/// Enables recording on the command buffer.
@@ -146,6 +172,8 @@ pub trait CommandBufferRecording {
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
 
 	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
+
+	fn consume_resources(&mut self, handles: &[Consumption]);
 
 	fn dispatch(&mut self, x: u32, y: u32, z: u32);
 	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
@@ -224,7 +252,7 @@ pub trait RenderSystem: orchestrator::System {
 	/// # Returns
 	/// 
 	/// The handle of the buffer.
-	fn create_buffer(&mut self, size: usize, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle;
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle;
 
 	fn get_buffer_address(&self, buffer_handle: BufferHandle) -> u64;
 
@@ -883,7 +911,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&pipeline_layout, &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], &vertex_layout, &attachments);
 
-		let _buffer = renderer.create_buffer(64, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let _buffer = renderer.create_buffer(None, 64, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let command_buffer_handle = renderer.create_command_buffer();
 
@@ -1025,7 +1053,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let buffer = renderer.create_buffer(64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let sampled_texture = renderer.create_texture(None, crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
@@ -1279,20 +1307,13 @@ bitflags::bitflags! {
 pub struct TextureState {
 	/// The layout of the resource.
 	pub layout: Layouts,
-	/// The format of the resource.
-	pub format: TextureFormats,
 }
 
 #[derive(Clone, Copy)]
 /// Stores the information of a barrier.
 pub enum Barrier {
 	/// A texture barrier.
-	Texture {
-		source: Option<TextureState>,
-		destination: TextureState,
-		/// The texture of the barrier.
-		texture: TextureHandle,
-	},
+	Texture(TextureHandle),
 	/// A buffer barrier.
 	Buffer(BufferHandle),
 	/// A memory barrier.
@@ -1338,9 +1359,11 @@ pub struct TransitionState {
 	pub stage: Stages,
 	/// The type of access that will be done on the resource by the process the operation that requires this transition.
 	pub access: AccessPolicies,
+	pub layout: Layouts,
 }
 
 /// Stores the information of a barrier descriptor.
+#[derive(Clone, Copy)]
 pub struct BarrierDescriptor {
 	/// The barrier.
 	pub barrier: Barrier,
@@ -1392,7 +1415,7 @@ pub enum Layouts {
 	Present,
 	/// The texture will be used as a read only sample source.
 	Texture,
-General,
+	General,
 }
 
 #[derive(Clone, Copy)]
@@ -1630,8 +1653,8 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.acquire_swapchain_image(swapchain_handle, synchronizer_handle)
 	}
 
-	fn create_buffer(&mut self, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle {
-		self.pointer.create_buffer(size, uses, accesses, use_case)
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle {
+		self.pointer.create_buffer(name, size, uses, accesses, use_case)
 	}
 
 	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {

@@ -62,7 +62,6 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
 	material_evaluation_descriptor_set: render_system::DescriptorSetHandle,
 	material_evaluation_pipeline_layout: render_system::PipelineLayoutHandle,
-	material_evaluation_pipeline: render_system::PipelineHandle,
 
 	material_evaluation_materials: HashMap<String, (u32, render_system::PipelineHandle)>,
 }
@@ -99,8 +98,8 @@ impl VisibilityWorldRenderDomain {
 
 			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }]);
 			
-			let vertices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let indices_buffer_handle = render_system.create_buffer(1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let vertices_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Buffers"), 1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -113,9 +112,9 @@ impl VisibilityWorldRenderDomain {
 			let render_command_buffer = render_system.create_command_buffer();
 			let transfer_command_buffer = render_system.create_command_buffer();
 
-			let camera_data_buffer_handle = render_system.create_buffer(16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let camera_data_buffer_handle = render_system.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-			let meshes_data_buffer = render_system.create_buffer(16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let meshes_data_buffer = render_system.create_buffer(Some("Visibility Meshes Data"), 16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			render_system.write(&[
 				render_system::DescriptorWrite {
@@ -252,12 +251,12 @@ impl VisibilityWorldRenderDomain {
 
 			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &VERTEX_LAYOUT, &attachments);
 
-			let material_count = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_offset = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_offset_scratch = render_system.create_buffer(1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_evaluation_dispatches = render_system.create_buffer(1024 /* max materials */ * 12 /* uvec3 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination | render_system::Uses::Indirect, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_count = render_system.create_buffer(Some("Material Count"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset = render_system.create_buffer(Some("Material Offset"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset_scratch = render_system.create_buffer(Some("Material Offset Scratch"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_evaluation_dispatches = render_system.create_buffer(Some("Material Evaluation Dipatches"), 1024 /* max materials */ * 12 /* uvec3 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination | render_system::Uses::Indirect, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-			let material_xy = render_system.create_buffer(1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_xy = render_system.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let material_count_source = r#"
 				#version 450
@@ -266,7 +265,7 @@ impl VisibilityWorldRenderDomain {
 				#extension GL_EXT_scalar_block_layout: enable
 				#extension GL_EXT_buffer_reference2: enable
 
-				layout(scalar, binding=0) buffer MaterialCount {
+				layout(scalar, set=0, binding=0) buffer MaterialCount {
 					uint material_count[];
 				};
 
@@ -279,7 +278,7 @@ impl VisibilityWorldRenderDomain {
 
 					uint material_index = imageLoad(material_id, ivec2(gl_GlobalInvocationID.xy)).r;
 
-					if (material_index < 1024) {
+					if (material_index != 0xFFFFFFFF) {
 						atomicAdd(material_count[material_index], 1);
 					}
 				}
@@ -350,7 +349,7 @@ impl VisibilityWorldRenderDomain {
 
 					uint material_index = imageLoad(material_id, ivec2(gl_GlobalInvocationID.xy)).r;
 
-					if (material_index >= 1024) { return; }
+					if (material_index == 0xFFFFFFFF) { return; }
 
 					uint offset = atomicAdd(material_offset_scratch[material_index], 1);
 
@@ -475,72 +474,6 @@ impl VisibilityWorldRenderDomain {
 			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let material_evaluation_source = r#"
-				#version 450
-				#pragma shader_stage(compute)
-
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_buffer_reference2: enable
-				#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
-
-				layout(scalar, binding=0) buffer MaterialCount {
-					uint material_count[];
-				};
-
-				layout(scalar, binding=1) buffer MaterialOffset {
-					uint material_offset[];
-				};
-
-				layout(scalar, binding=4) buffer PixelMapping {
-					u16vec2 pixel_mapping[];
-				};
-
-				layout(set=0, binding=6, r8ui) uniform readonly uimage2D vertex_id;
-
-				layout(set=1, binding=0, rgba8) uniform image2D albedo;
-
-				layout(push_constant, scalar) uniform PushConstant {
-					layout(offset=16) uint material_id;
-				} pc;
-
-				vec4 get_debug_color(uint i) {
-					vec4 colors[16] = vec4[16](
-						vec4(0.16863, 0.40392, 0.77647, 1),
-						vec4(0.32941, 0.76863, 0.21961, 1),
-						vec4(0.81961, 0.16078, 0.67451, 1),
-						vec4(0.96863, 0.98824, 0.45490, 1),
-						vec4(0.75294, 0.09020, 0.75686, 1),
-						vec4(0.30588, 0.95686, 0.54510, 1),
-						vec4(0.66667, 0.06667, 0.75686, 1),
-						vec4(0.78824, 0.91765, 0.27451, 1),
-						vec4(0.40980, 0.12745, 0.48627, 1),
-						vec4(0.89804, 0.28235, 0.20784, 1),
-						vec4(0.93725, 0.67843, 0.33725, 1),
-						vec4(0.95294, 0.96863, 0.00392, 1),
-						vec4(1.00000, 0.27843, 0.67843, 1),
-						vec4(0.29020, 0.90980, 0.56863, 1),
-						vec4(0.30980, 0.70980, 0.27059, 1),
-						vec4(0.69804, 0.16078, 0.39216, 1)
-					);
-				
-					return colors[i % 16];
-				}
-
-				layout(local_size_x=32) in;
-				void main() {
-					uint offset = material_offset[pc.material_id];
-
-					u16vec2 pixel = pixel_mapping[offset + gl_GlobalInvocationID.x];
-					ivec2 coord = ivec2(pixel.x, pixel.y);
-
-					uint vertex_id = imageLoad(vertex_id, coord).r;
-
-					imageStore(albedo, coord, get_debug_color(vertex_id));
-				}
-			"#;
-
-			let material_evaluation_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_evaluation_source.as_bytes());
-
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
 					name: "albedo",
@@ -565,7 +498,6 @@ impl VisibilityWorldRenderDomain {
 			]);
 
 			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 28 }]);
-			let material_evaluation_pipeline = render_system.create_compute_pipeline(&material_evaluation_pipeline_layout, (&material_evaluation_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			Self {
 				pipeline_layout_handle,
@@ -616,7 +548,6 @@ impl VisibilityWorldRenderDomain {
 				material_evaluation_descriptor_set_layout,
 				material_evaluation_descriptor_set,
 				material_evaluation_pipeline_layout,
-				material_evaluation_pipeline,
 
 				material_id,
 				vertex_id,
@@ -950,60 +881,36 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.end_render_pass();
 
-		// Material count pass
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState{ layout: render_system::Layouts::RenderTarget, format: render_system::TextureFormats::U32 }), destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::U32 }, texture: self.material_id },
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::FRAGMENT,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-				}
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_count),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
 			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_count),
-				source: None,
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::WRITE,
-				}
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_offset),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
 			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_offset),
-				source: None,
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::WRITE,
-				}
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_offset_scratch),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
 			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_offset_scratch),
-				source: None,
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::WRITE,
-				}
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_evaluation_dispatches),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
 			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
-				source: None,
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::WRITE,
-				}
-			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_xy),
-				source: None,
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::WRITE,
-				}
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_xy),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
 			},
 		]);
 
@@ -1013,127 +920,116 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.clear_buffer(self.material_evaluation_dispatches);
 		command_buffer_recording.clear_buffer(self.material_xy);
 
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Memory,
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::TRANSFER,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-				}
-			}
+		// Material count pass
+
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.material_id),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_count),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
+				layout: render_system::Layouts::General,
+			},
 		]);
 
 		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Memory,
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::COMPUTE,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-				}
-			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
-				source: Some(render_system::TransitionState { stage: render_system::Stages::TRANSFER, access: render_system::AccessPolicies::WRITE, }),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::WRITE,
-				}
-			},
-		]);
-
 		// Material offset pass
 
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_count),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_offset),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_offset_scratch),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
+		]);
 		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.dispatch(1, 1, 1);
 
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Memory,
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::COMPUTE,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-				}
-			}
-		]);
-
 		// Pixel mapping pass
 
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_offset),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_offset_scratch),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_xy),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
+		]);
 		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
 		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
 		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
 		// Material evaluation pass
-
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Texture { source: None, destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
-				source: None,
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::WRITE,
-				}
-			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState { layout: render_system::Layouts::RenderTarget, format: render_system::TextureFormats::U32 }), destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::U32 }, texture: self.vertex_id },
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::FRAGMENT,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-				}
-			},
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Buffer(self.material_evaluation_dispatches),
-				source: Some(render_system::TransitionState { stage: render_system::Stages::COMPUTE, access: render_system::AccessPolicies::WRITE, }),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::INDIRECT,
-					access: render_system::AccessPolicies::READ,
-				}
+		
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.albedo),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
 			},
 		]);
 
 		command_buffer_recording.clear_texture(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
 
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState { layout: render_system::Layouts::Transfer, format: render_system::TextureFormats::RGBAu8 }), destination: render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::TRANSFER,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::WRITE,
-				}
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption {
+				handle: render_system::Handle::Texture(self.albedo),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Texture(self.vertex_id),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_evaluation_dispatches),
+				stages: render_system::Stages::INDIRECT,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.material_xy),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
 			},
 		]);
 
@@ -1153,22 +1049,6 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		// Copy to swapchain
-
-		command_buffer_recording.barriers(&[
-			render_system::BarrierDescriptor {
-				barrier: render_system::Barrier::Texture { source: Some(render_system::TextureState{ layout: render_system::Layouts::General, format: render_system::TextureFormats::RGBAu8 }), destination: render_system::TextureState{ layout: render_system::Layouts::Transfer, format: render_system::TextureFormats::RGBAu8 }, texture: self.albedo },
-				source: Some(
-					render_system::TransitionState {
-						stage: render_system::Stages::COMPUTE,
-						access: render_system::AccessPolicies::WRITE,
-					}
-				),
-				destination: render_system::TransitionState {
-					stage: render_system::Stages::TRANSFER,
-					access: render_system::AccessPolicies::READ,
-				}
-			},
-		]);
 
 		command_buffer_recording.copy_to_swapchain(self.albedo, swapchain_handle);
 

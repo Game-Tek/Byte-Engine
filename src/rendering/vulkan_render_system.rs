@@ -50,18 +50,12 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 
 	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[render_system::VertexElement]) -> render_system::MeshHandle {
-		let mut hasher = std::collections::hash_map::DefaultHasher::new();
-
-		std::hash::Hash::hash_slice(&vertex_layout, &mut hasher);
-
-		let vertex_layout_hash = hasher.finish();
-
 		let vertex_buffer_size = vertices.len();
 		let index_buffer_size = indices.len();
 
 		let buffer_size = vertex_buffer_size.next_multiple_of(16) + index_buffer_size;
 
-		let buffer_creation_result = self.create_vulkan_buffer(buffer_size, render_system::Uses::Vertex | render_system::Uses::Index);
+		let buffer_creation_result = self.create_vulkan_buffer(None, buffer_size, render_system::Uses::Vertex | render_system::Uses::Index);
 
 		let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead);
 
@@ -438,11 +432,11 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	/// # Returns
 	/// 
 	/// The handle of the buffer.
-	fn create_buffer(&mut self, size: usize, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::BufferHandle {
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::BufferHandle {
 		if device_accesses.contains(render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead) {
 			match use_case {
 				render_system::UseCases::STATIC => {
-					let buffer_creation_result = self.create_vulkan_buffer(size, resource_uses);
+					let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses);
 
 					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
@@ -460,7 +454,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					buffer_handle
 				}
 				render_system::UseCases::DYNAMIC => {	
-					let buffer_creation_result = self.create_vulkan_buffer(size, resource_uses | render_system::Uses::TransferDestination);
+					let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses | render_system::Uses::TransferDestination);
 	
 					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 	
@@ -475,7 +469,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						pointer,
 					});
 
-					let buffer_creation_result = self.create_vulkan_buffer(size, resource_uses | render_system::Uses::TransferSource);
+					let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses | render_system::Uses::TransferSource);
 
 					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
@@ -492,7 +486,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				}
 			}
 		} else if device_accesses.contains(render_system::DeviceAccesses::GpuWrite) {
-			let buffer_creation_result = self.create_vulkan_buffer(size, resource_uses);
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses);
 
 			let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
@@ -557,10 +551,10 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			let texture_handle = render_system::TextureHandle(self.textures.len() as u64);
 
-			let image_view = self.create_vulkan_texture_view(&texture_creation_result.resource, format, 0);
+			let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, 0);
 
 			let staging_buffer = if device_accesses.contains(render_system::DeviceAccesses::CpuRead) {
-				let staging_buffer_creation_result = self.create_vulkan_buffer(size, render_system::Uses::TransferDestination);
+				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, render_system::Uses::TransferDestination);
 
 				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuRead);
 
@@ -577,7 +571,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 				Some(staging_buffer_handle)
 			} else if device_accesses.contains(render_system::DeviceAccesses::CpuWrite) {
-				let staging_buffer_creation_result = self.create_vulkan_buffer(size, render_system::Uses::TransferSource);
+				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, render_system::Uses::TransferSource);
 
 				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead);
 
@@ -757,7 +751,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 }
 
 use ash::{vk::{self, ValidationFeatureEnableEXT, Handle}, Entry};
-use log::{warn, error};
+use log::{warn, error, debug};
 
 use super::render_system::{self, CommandBufferRecording, TextureFormats};
 
@@ -972,7 +966,45 @@ fn to_pipeline_stage_flags(stages: render_system::Stages) -> vk::PipelineStageFl
 	pipeline_stage_flags
 }
 
-fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_system::Stages) -> vk::AccessFlags2 {
+fn to_pipeline_stage_flags_with_format(stages: render_system::Stages, format: render_system::TextureFormats) -> vk::PipelineStageFlags2 {
+	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
+
+	if stages.contains(render_system::Stages::VERTEX) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER
+	}
+
+	if stages.contains(render_system::Stages::FRAGMENT) {
+		if format != render_system::TextureFormats::Depth32 {
+			pipeline_stage_flags |= vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+		} else {
+			pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+		}
+	}
+
+	if stages.contains(render_system::Stages::COMPUTE) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
+	}
+
+	if stages.contains(render_system::Stages::TRANSFER) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
+	}
+
+	if stages.contains(render_system::Stages::PRESENTATION) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
+	}
+
+	if stages.contains(render_system::Stages::SHADER_READ) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER; // TODO: not really?
+	}
+
+	if stages.contains(render_system::Stages::INDIRECT) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT;
+	}
+
+	pipeline_stage_flags
+}
+
+fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_system::Stages,) -> vk::AccessFlags2 {
 	let mut access_flags = vk::AccessFlags2::empty();
 
 	if accesses.contains(render_system::AccessPolicies::READ) {
@@ -1002,6 +1034,46 @@ fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_syste
 		}
 		if stages.intersects(render_system::Stages::FRAGMENT) {
 			access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+		}
+	}
+
+	access_flags
+}
+
+fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: render_system::Stages, format: render_system::TextureFormats) -> vk::AccessFlags2 {
+	let mut access_flags = vk::AccessFlags2::empty();
+
+	if accesses.contains(render_system::AccessPolicies::READ) {
+		if stages.intersects(render_system::Stages::TRANSFER) {
+			access_flags |= vk::AccessFlags2::TRANSFER_READ
+		}
+		if stages.intersects(render_system::Stages::PRESENTATION) {
+			access_flags |= vk::AccessFlags2::NONE
+		}
+		if stages.intersects(render_system::Stages::SHADER_READ) {
+			access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ;
+		}
+		if stages.intersects(render_system::Stages::COMPUTE) {
+			access_flags |= vk::AccessFlags2::SHADER_READ
+		}
+		if stages.intersects(render_system::Stages::INDIRECT) {
+			access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
+		}
+	}
+
+	if accesses.contains(render_system::AccessPolicies::WRITE) {
+		if stages.intersects(render_system::Stages::TRANSFER) {
+			access_flags |= vk::AccessFlags2::TRANSFER_WRITE
+		}
+		if stages.intersects(render_system::Stages::COMPUTE) {
+			access_flags |= vk::AccessFlags2::SHADER_WRITE
+		}
+		if stages.intersects(render_system::Stages::FRAGMENT) {
+			if format != render_system::TextureFormats::Depth32 {
+				access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+			} else {
+				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+			}
 		}
 	}
 
@@ -1102,7 +1174,7 @@ impl VulkanRenderSystem {
 			ash::extensions::khr::XcbSurface::NAME.as_ptr(),
 		];
 
-		let enabled_validation_features = [ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION, ValidationFeatureEnableEXT::BEST_PRACTICES];
+		let enabled_validation_features = [ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION, ValidationFeatureEnableEXT::BEST_PRACTICES, ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT];
 
 		let mut validation_features = vk::ValidationFeaturesEXT::default()
 			.enabled_validation_features(&enabled_validation_features);
@@ -1135,8 +1207,8 @@ impl VulkanRenderSystem {
 
 		{
 			let best_physical_device = physical_devices.iter().max_by_key(|physical_device| {
-				let properties = unsafe { instance.get_physical_device_properties(*physical_device.clone()) };
-				let features = unsafe { instance.get_physical_device_features(*physical_device.clone()) };
+				let properties = unsafe { instance.get_physical_device_properties((*physical_device).clone()) };
+				let features = unsafe { instance.get_physical_device_features((*physical_device).clone()) };
 
 				// If the device doesn't support sample rate shading, don't even consider it.
 				if features.sample_rate_shading == vk::FALSE { return 0; }
@@ -1513,7 +1585,7 @@ impl VulkanRenderSystem {
 		texture_handle
 	}
 
-	fn create_vulkan_buffer(&self, size: usize, resource_uses: render_system::Uses) -> MemoryBackedResourceCreationResult<vk::Buffer> {
+	fn create_vulkan_buffer(&self, name: Option<&str>, size: usize, resource_uses: render_system::Uses) -> MemoryBackedResourceCreationResult<vk::Buffer> {
 		let buffer_create_info = vk::BufferCreateInfo::default()
 			.size(size as u64)
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -1539,6 +1611,18 @@ impl VulkanRenderSystem {
 			/* .build() */;
 
 		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
+
+		if let Some(name) = name {
+			unsafe {
+				self.debug_utils.set_debug_utils_object_name(
+					self.device.handle(),
+					&vk::DebugUtilsObjectNameInfoEXT::default()
+						.object_handle(buffer)
+						.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+						/* .build() */
+				).expect("No debug utils object name");
+			}
+		}
 
 		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
 
@@ -1696,7 +1780,7 @@ impl VulkanRenderSystem {
 		unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") }
 	}
 
-	fn create_vulkan_texture_view(&self, texture: &vk::Image, format: render_system::TextureFormats, _mip_levels: u32) -> vk::ImageView {
+	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: render_system::TextureFormats, _mip_levels: u32) -> vk::ImageView {
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
 			.view_type(
@@ -1718,7 +1802,21 @@ impl VulkanRenderSystem {
 			})
 			/* .build() */;
 
-		unsafe { self.device.create_image_view(&image_view_create_info, None).expect("No image view") }
+		let vk_image_view = unsafe { self.device.create_image_view(&image_view_create_info, None).expect("No image view") };
+
+		unsafe{
+			if let Some(name) = name {
+				self.debug_utils.set_debug_utils_object_name(
+					self.device.handle(),
+					&vk::DebugUtilsObjectNameInfoEXT::default()
+						.object_handle(vk_image_view)
+						.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+						/* .build() */
+				).expect("No debug utils object name");
+			}
+		}
+
+		vk_image_view
 	}
 
 	fn create_vulkan_surface(&self, window_os_handles: &window_system::WindowOsHandles) -> vk::SurfaceKHR {
@@ -1906,15 +2004,18 @@ impl VulkanRenderSystem {
 	}
 }
 
-type TextureState = (vk::ImageLayout, vk::PipelineStageFlags2, vk::AccessFlags2);
+struct TransitionState {
+	stage: vk::PipelineStageFlags2,
+	access: vk::AccessFlags2,
+	layout: vk::ImageLayout,
+}
 
 pub struct VulkanCommandBufferRecording<'a> {
 	render_system: &'a VulkanRenderSystem,
 	command_buffer: render_system::CommandBufferHandle,
 	in_render_pass: bool,
 	modulo_frame_index: u32,
-	/// `texture_states` is used to perform resource tracking on textures.\ It is mainly useful for barriers and transitions and copies.
-	texture_states: HashMap<render_system::TextureHandle, TextureState>,
+	states: HashMap<render_system::Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 }
 
@@ -1926,64 +2027,26 @@ impl VulkanCommandBufferRecording<'_> {
 			command_buffer,
 			modulo_frame_index: frame_index.map(|frame_index| frame_index % render_system.frames as u32).unwrap_or(0),
 			in_render_pass: false,
-			texture_states: HashMap::new(),
+			states: HashMap::new(),
 		}
 	}
 
-	/// Retrieves the current state of a texture.\
-	/// If the texture has no known state, it will return a default state with undefined layout. This is useful for the first transition of a texture.\
-	/// If the texture has a known state, it will return the known state.
-	/// Inserts or updates state for a texture.\
-	/// If the texture has no known state, it will insert the given state.\
-	/// If the texture has a known state, it will update it with the given state.
-	/// It will return the given state.
-	/// This is useful to perform a transition on a texture.
-	fn get_texture_state(&mut self, texture_handle: render_system::TextureHandle, new_texture_state: TextureState) -> (TextureState, TextureState) {
-		let (texture_handle, _) = self.get_texture(texture_handle);
-		if let Some(old_state) = self.texture_states.insert(texture_handle, new_texture_state) {
-			(old_state, new_texture_state)
-		} else {
-			((vk::ImageLayout::UNDEFINED, vk::PipelineStageFlags2::NONE, vk::AccessFlags2::NONE), new_texture_state)
-		}
-	}
-
-	fn transition_textures(&mut self, texture_handles: &[(render_system::TextureHandle, (bool, (vk::ImageLayout, vk::PipelineStageFlags2, vk::AccessFlags2)))]) {
-		let mut image_memory_barriers = Vec::new();
-
-		for texture_handle in texture_handles {
-			let (old_state, new_state) = self.get_texture_state(texture_handle.0, texture_handle.1.1);
-			 let (_, texture) = self.get_texture(texture_handle.0);
-			let image_memory_barrier = vk::ImageMemoryBarrier2KHR::default()
-				.old_layout(old_state.0)
-				.src_stage_mask(old_state.1)
-				.src_access_mask(old_state.2)
-				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(new_state.0)
-				.dst_stage_mask(new_state.1)
-				.dst_access_mask(new_state.2)
-				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(texture.image)
-				.subresource_range(vk::ImageSubresourceRange {
-					aspect_mask: if texture.format_ != render_system::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
-					base_mip_level: 0,
-					level_count: vk::REMAINING_MIP_LEVELS,
-					base_array_layer: 0,
-					layer_count: vk::REMAINING_ARRAY_LAYERS,
-				})
-				/* .build() */;
-
-			image_memory_barriers.push(image_memory_barrier);
-		}
-
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-			/* .build() */;
-
-		let command_buffer = self.get_command_buffer();
-
-		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
-	}
+	// /// Retrieves the current state of a texture.\
+	// /// If the texture has no known state, it will return a default state with undefined layout. This is useful for the first transition of a texture.\
+	// /// If the texture has a known state, it will return the known state.
+	// /// Inserts or updates state for a texture.\
+	// /// If the texture has no known state, it will insert the given state.\
+	// /// If the texture has a known state, it will update it with the given state.
+	// /// It will return the given state.
+	// /// This is useful to perform a transition on a texture.
+	// fn get_texture_state(&mut self, texture_handle: render_system::TextureHandle, new_texture_state: TextureState) -> (TextureState, TextureState) {
+	// 	let (texture_handle, _) = self.get_texture(texture_handle);
+	// 	if let Some(old_state) = self.states.insert(render_system::Handle::TextureCopy(texture_handle), new_texture_state) {
+	// 		(old_state, new_texture_state)
+	// 	} else {
+	// 		((vk::ImageLayout::UNDEFINED, vk::PipelineStageFlags2::NONE, vk::AccessFlags2::NONE), new_texture_state)
+	// 	}
+	// }
 
 	fn get_texture(&self, mut texture_handle: render_system::TextureHandle) -> (render_system::TextureHandle, &Texture) {
 		let mut i = 0;
@@ -2032,9 +2095,15 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
 	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[render_system::AttachmentInformation]) {
-		self.transition_textures(&attachments.iter().map(|attachment| {
-			(attachment.texture, (false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
-		}).collect::<Vec<_>>());
+		self.consume_resources(&attachments.iter().map(|attachment|
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(attachment.texture),
+				stages: render_system::Stages::FRAGMENT,
+				access: render_system::AccessPolicies::WRITE,
+				layout: attachment.layout,
+			}
+			// r(false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
+		).collect::<Vec<_>>());
 
 		let render_area = vk::Rect2D::default()
 			.offset(vk::Offset2D::default().x(0).y(0)/* .build() */)
@@ -2143,41 +2212,36 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 					memory_barriers.push(memory_barrier);
 				}
-				render_system::Barrier::Texture{ source, destination, texture } => {
-					let new_layout = texture_format_and_resource_use_to_image_layout(destination.format, destination.layout, Some(barrier.destination.access));
+				render_system::Barrier::Texture(texture_handle) => {
+					let (texture_handle, texture) = self.get_texture(texture_handle);
+
+					let new_layout = texture_format_and_resource_use_to_image_layout(texture.format_, barrier.destination.layout, Some(barrier.destination.access));
 					let new_stage_mask = to_pipeline_stage_flags(barrier.destination.stage);
 					let new_access_mask = to_access_flags(barrier.destination.access, barrier.destination.stage);
 
-					let (old_state, new_state) = self.get_texture_state(texture, (new_layout, new_stage_mask, new_access_mask));
-
-					let texture = self.get_texture(texture);
-
 					let image_memory_barrier = if let Some(barrier_source) = barrier.source {
-						if let Some(texture_source) = source {
+							let old_layout = texture_format_and_resource_use_to_image_layout(texture.format_, barrier_source.layout, Some(barrier_source.access));
+							let old_stage_mask = to_pipeline_stage_flags(barrier_source.stage);
+							let old_access_mask = to_access_flags(barrier_source.access, barrier_source.stage);
+
 							vk::ImageMemoryBarrier2KHR::default()
-							.old_layout(old_state.0)
-							.src_stage_mask(old_state.1)
-							.src_access_mask(old_state.2)
+							.old_layout(old_layout)
+							.src_stage_mask(old_stage_mask)
+							.src_access_mask(old_access_mask)
 						} else {
 							vk::ImageMemoryBarrier2KHR::default()
 							.old_layout(vk::ImageLayout::UNDEFINED)
 							.src_stage_mask(vk::PipelineStageFlags2::empty())
 							.src_access_mask(vk::AccessFlags2KHR::empty())
 						}
-					} else {
-						vk::ImageMemoryBarrier2KHR::default()
-						.old_layout(vk::ImageLayout::UNDEFINED)
-						.src_stage_mask(vk::PipelineStageFlags2::empty())
-						.src_access_mask(vk::AccessFlags2KHR::empty())
-					}
 						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(new_state.0)
-						.dst_stage_mask(new_state.1)
-						.dst_access_mask(new_state.2)
+						.new_layout(new_layout)
+						.dst_stage_mask(new_stage_mask)
+						.dst_access_mask(new_access_mask)
 						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.image(texture.1.image)
+						.image(texture.image)
 						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: if destination.format != render_system::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
+							aspect_mask: if texture.format != vk::Format::D32_SFLOAT { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
 							base_mip_level: 0,
 							level_count: vk::REMAINING_MIP_LEVELS,
 							base_array_layer: 0,
@@ -2280,7 +2344,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		};
 
 		unsafe {
-			self.render_system.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::GENERAL, &clear_value, &[vk::ImageSubresourceRange {
+			self.render_system.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &clear_value, &[vk::ImageSubresourceRange {
 				aspect_mask: vk::ImageAspectFlags::COLOR,
 				base_mip_level: 0,
 				level_count: vk::REMAINING_MIP_LEVELS,
@@ -2288,12 +2352,157 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				layer_count: vk::REMAINING_ARRAY_LAYERS,
 			}]);
 		}
+
+		let handle = render_system::Handle::Texture(texture_handle);
+
+		if let Some(state) = self.states.get_mut(&handle) {
+			*state = TransitionState { stage: vk::PipelineStageFlags2::TRANSFER, access: vk::AccessFlags2::TRANSFER_WRITE, layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL };
+		} else {
+			self.states.insert(handle, TransitionState {
+				stage: vk::PipelineStageFlags2::TRANSFER,
+				access: vk::AccessFlags2::TRANSFER_WRITE,
+				layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+			});
+		}
+	}
+
+	fn consume_resources(&mut self, consumptions: &[render_system::Consumption]) {
+		let mut image_memory_barriers = Vec::new();
+		let mut buffer_memory_barriers = Vec::new();
+		let mut memory_barriers = Vec::new();
+
+		for consumption in consumptions {
+			let new_stage_mask = to_pipeline_stage_flags(consumption.stages);
+			let new_access_mask = to_access_flags(consumption.access, consumption.stages);
+
+			match consumption.handle {
+				render_system::Handle::Texture(texture_handle) => {
+					let (_, texture) = self.get_texture(texture_handle);
+
+					let new_layout = texture_format_and_resource_use_to_image_layout(texture.format_, consumption.layout, Some(consumption.access));
+
+					let new_stage_mask = to_pipeline_stage_flags_with_format(consumption.stages, texture.format_);
+					let new_access_mask = to_access_flags_with_format(consumption.access, consumption.stages, texture.format_);
+
+					let image_memory_barrier = if let Some(barrier_source) = self.states.get(&consumption.handle) {
+							vk::ImageMemoryBarrier2KHR::default()
+							.old_layout(barrier_source.layout)
+							.src_stage_mask(barrier_source.stage)
+							.src_access_mask(barrier_source.access)
+						} else {
+							vk::ImageMemoryBarrier2KHR::default()
+							.old_layout(vk::ImageLayout::UNDEFINED)
+							.src_stage_mask(vk::PipelineStageFlags2::empty())
+							.src_access_mask(vk::AccessFlags2KHR::empty())
+						}
+						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.new_layout(new_layout)
+						.dst_stage_mask(new_stage_mask)
+						.dst_access_mask(new_access_mask)
+						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.image(texture.image)
+						.subresource_range(vk::ImageSubresourceRange {
+							aspect_mask: if texture.format != vk::Format::D32_SFLOAT { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
+							base_mip_level: 0,
+							level_count: vk::REMAINING_MIP_LEVELS,
+							base_array_layer: 0,
+							layer_count: vk::REMAINING_ARRAY_LAYERS,
+						})
+						/* .build() */;
+					image_memory_barriers.push(image_memory_barrier);
+				}
+				render_system::Handle::Buffer(buffer_handle) => {
+					let buffer_memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+						vk::BufferMemoryBarrier2KHR::default()
+						.src_stage_mask(source.stage)
+						.src_access_mask(source.access)
+						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					} else {
+						vk::BufferMemoryBarrier2KHR::default()
+						.src_stage_mask(vk::PipelineStageFlags2::empty())
+						.src_access_mask(vk::AccessFlags2KHR::empty())
+						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					}
+					.dst_stage_mask(new_stage_mask)
+					.dst_access_mask(new_access_mask)
+					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.buffer(self.render_system.buffers[buffer_handle.0 as usize].buffer)
+					.offset(0)
+					.size(vk::WHOLE_SIZE);
+
+					buffer_memory_barriers.push(buffer_memory_barrier);
+
+					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+						vk::MemoryBarrier2::default()
+						.src_stage_mask(source.stage)
+						.src_access_mask(source.access)
+					} else {
+						vk::MemoryBarrier2::default()
+						.src_stage_mask(vk::PipelineStageFlags2::empty())
+						.src_access_mask(vk::AccessFlags2KHR::empty())
+					}
+					.dst_stage_mask(new_stage_mask)
+					.dst_access_mask(new_access_mask);
+
+					memory_barriers.push(memory_barrier);
+				},
+				_ => unimplemented!(),
+			};
+
+			// Update current resource state, AFTER generating the barrier.
+			self.states.insert(consumption.handle,
+				TransitionState {
+					stage: new_stage_mask,
+					access: new_access_mask,
+					layout: match consumption.handle {
+						render_system::Handle::Texture(texture_handle) => {
+							let (_, texture) = self.get_texture(texture_handle);
+							texture_format_and_resource_use_to_image_layout(texture.format_, consumption.layout, Some(consumption.access))
+						}
+						_ => vk::ImageLayout::UNDEFINED
+					}
+				}
+			);
+		}
+
+		// let memory_barrier = if let Some(source) = barrier.source {
+		// 	vk::MemoryBarrier2::default()
+		// 		.src_stage_mask(to_pipeline_stage_flags(source.stage))
+		// 		.src_access_mask(to_access_flags(source.access, source.stage))
+
+		// } else {
+		// 	vk::MemoryBarrier2::default()
+		// 		.src_stage_mask(vk::PipelineStageFlags2::empty())
+		// 		.src_access_mask(vk::AccessFlags2KHR::empty())
+		// }
+		// .dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
+		// .dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
+		// /* .build() */;
+
+		// memory_barriers.push(memory_barrier);
+
+		let dependency_info = vk::DependencyInfo::default()
+			.image_memory_barriers(&image_memory_barriers)
+			.buffer_memory_barriers(&buffer_memory_barriers)
+			.memory_barriers(&memory_barriers)
+			.dependency_flags(vk::DependencyFlags::BY_REGION)
+			/* .build() */;
+
+		let command_buffer = self.get_command_buffer();
+
+		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
 	}
 
 	fn clear_buffer(&mut self, buffer_handle: render_system::BufferHandle) {
 		unsafe {
 			self.render_system.device.cmd_fill_buffer(self.get_command_buffer().command_buffer, self.render_system.buffers[buffer_handle.0 as usize].buffer, 0, vk::WHOLE_SIZE, 0);
 		}
+
+		self.states.insert(render_system::Handle::Buffer(buffer_handle), TransitionState {
+			stage: vk::PipelineStageFlags2::TRANSFER,
+			access: vk::AccessFlags2::TRANSFER_WRITE,
+			layout: vk::ImageLayout::UNDEFINED,
+		});
 	}
 
 	fn dispatch(&mut self, x: u32, y: u32, z: u32) {
@@ -2547,7 +2756,14 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	// }
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::TextureHandle, swapchain_handle: render_system::SwapchainHandle) {
-		// let (old_source_texture_state, new_source_texture_state) = self.get_texture_state(source_texture_handle, (vk::ImageLayout::TRANSFER_SRC_OPTIMAL));
+		self.consume_resources(&[
+			render_system::Consumption {
+				handle: render_system::Handle::Texture(source_texture_handle),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::Transfer,
+			},
+		]);
 
 		let (_, source_texture) = self.get_texture(source_texture_handle);
 		let swapchain = &self.render_system.swapchains[swapchain_handle.0 as usize];
@@ -2711,7 +2927,12 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn sync_textures(&mut self, texture_handles: &[render_system::TextureHandle]) -> Vec<render_system::TextureCopyHandle> {
-		self.transition_textures(&texture_handles.iter().map(|texture_handle| (*texture_handle, (false, (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2KHR::TRANSFER_READ)))).collect::<Vec<_>>());
+		self.consume_resources(&texture_handles.iter().map(|texture_handle| render_system::Consumption {
+			handle: render_system::Handle::Texture(*texture_handle),
+			stages: render_system::Stages::TRANSFER,
+			access: render_system::AccessPolicies::READ,
+			layout: render_system::Layouts::Transfer,
+		}).collect::<Vec<_>>());
 
 		let command_buffer = self.get_command_buffer();
 

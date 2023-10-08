@@ -154,6 +154,7 @@ vec4 get_debug_color(uint i) {
 
 		string.push_str(&format!("layout(local_size_x=32) in;\n"));
 		string.push_str(&format!("void main() {{\n"));
+		string.push_str(&format!("if (gl_GlobalInvocationID.x >= material_count[pc.material_id]) {{ return; }}")); // This bounds check is necessary since we're using a local_size_x of 32.
 		string.push_str(&format!("uint offset = material_offset[pc.material_id];"));
 		string.push_str(&format!("u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];"));
 		string.push_str(&format!("ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);"));

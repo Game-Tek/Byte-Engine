@@ -230,6 +230,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				render_system::Descriptor::Sampler(_) => {
 					vk::DescriptorType::SAMPLER
 				},
+				render_system::Descriptor::Swapchain(_) => {
+					unimplemented!()
+				}
 			};
 
 			match descriptor_set_write.descriptor {
@@ -307,6 +310,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						// sampler_handle_option = sampler.next;
 					}
 				},
+				render_system::Descriptor::Swapchain(handle) => {
+					unimplemented!()
+				}
 			}
 		}
 	}

@@ -5,13 +5,23 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 
 use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
+struct ToneMapPass {
+	pipeline_layout: render_system::PipelineLayoutHandle,
+	pipeline: render_system::PipelineHandle,
+	descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
+	descriptor_set: render_system::DescriptorSetHandle,
+}
+
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	pipeline_layout_handle: render_system::PipelineLayoutHandle,
 	vertices_buffer: render_system::BufferHandle,
 	indices_buffer: render_system::BufferHandle,
+
 	albedo: render_system::TextureHandle,
 	depth_target: render_system::TextureHandle,
+	result: render_system::TextureHandle,
+
 	index_count: u32,
 	instance_count: u32,
 	render_finished_synchronizer: render_system::SynchronizerHandle,
@@ -64,6 +74,8 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_pipeline_layout: render_system::PipelineLayoutHandle,
 
 	material_evaluation_materials: HashMap<String, (u32, render_system::PipelineHandle)>,
+
+	tone_map_pass: ToneMapPass,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -101,7 +113,7 @@ impl VisibilityWorldRenderDomain {
 			let vertices_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Buffers"), 1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let render_finished_synchronizer = render_system.create_synchronizer(true);
@@ -499,6 +511,131 @@ impl VisibilityWorldRenderDomain {
 
 			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 28 }]);
 
+			let tone_mapping_shader = r#"
+			#version 450
+			#pragma shader_stage(compute)
+
+			#extension GL_EXT_scalar_block_layout: enable
+			#extension GL_EXT_buffer_reference2: enable
+			#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+
+			layout(set=0, binding=0, rgba16) uniform readonly image2D source;
+			layout(set=0, binding=1, rgba8) uniform image2D result;
+
+			vec3 ACESNarkowicz(vec3 x) {
+				const float a = 2.51;
+				const float b = 0.03;
+				const float c = 2.43;
+				const float d = 0.59;
+				const float e = 0.14;
+				return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+			}
+
+			const mat3 ACES_INPUT_MAT = mat3(
+				vec3( 0.59719,  0.35458,  0.04823),
+				vec3( 0.07600,  0.90834,  0.01566),
+				vec3( 0.02840,  0.13383,  0.83777)
+			);
+
+			const mat3 ACES_OUTPUT_MAT = mat3(
+				vec3( 1.60475, -0.53108, -0.07367),
+				vec3(-0.10208,  1.10813, -0.00605),
+				vec3(-0.00327, -0.07276,  1.07602)
+			);
+
+			vec3 RRTAndODTFit(vec3 v) {
+				vec3 a = v * (v + 0.0245786) - 0.000090537;
+				vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+				return a / b;
+			}
+
+			vec3 ACESFitted(vec3 x) {
+				return clamp(ACES_OUTPUT_MAT * RRTAndODTFit(ACES_INPUT_MAT * x), 0.0, 1.0);
+			}
+
+			layout(local_size_x=32, local_size_y=32) in;
+			void main() {
+				if (gl_GlobalInvocationID.x >= imageSize(source).x || gl_GlobalInvocationID.y >= imageSize(source).y) { return; }
+
+				vec4 source_color = imageLoad(source, ivec2(gl_GlobalInvocationID.xy));
+
+				vec3 result_color = ACESNarkowicz(source_color.rgb);
+
+				result_color = pow(result_color, vec3(1.0 / 2.2));
+
+				imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(result_color, 1.0));
+			}
+			"#;
+
+			let result = render_system.create_texture(Some("result"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+
+			let tone_map_pass = {
+				let descriptor_set_layout = render_system.create_descriptor_set_layout(&[
+					render_system::DescriptorSetLayoutBinding {
+						name: "source",
+						binding: 0,
+						descriptor_type: render_system::DescriptorType::StorageImage,
+						descriptor_count: 1,
+						stage_flags: render_system::Stages::COMPUTE,
+						immutable_samplers: None,
+					},
+					render_system::DescriptorSetLayoutBinding {
+						name: "result",
+						binding: 1,
+						descriptor_type: render_system::DescriptorType::StorageImage,
+						descriptor_count: 1,
+						stage_flags: render_system::Stages::COMPUTE,
+						immutable_samplers: None,
+					},
+				]);
+
+				let pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout], &[]);
+
+				let descriptor_set = render_system.create_descriptor_set(&descriptor_set_layout, &[
+					render_system::DescriptorSetLayoutBinding {
+						name: "source",
+						binding: 0,
+						descriptor_type: render_system::DescriptorType::StorageImage,
+						descriptor_count: 1,
+						stage_flags: render_system::Stages::COMPUTE,
+						immutable_samplers: None,
+					},
+					render_system::DescriptorSetLayoutBinding {
+						name: "result",
+						binding: 1,
+						descriptor_type: render_system::DescriptorType::StorageImage,
+						descriptor_count: 1,
+						stage_flags: render_system::Stages::COMPUTE,
+						immutable_samplers: None,
+					},
+				]);
+
+				render_system.write(&[
+					render_system::DescriptorWrite {
+						descriptor_set,
+						binding: 0,
+						array_element: 0,
+						descriptor: render_system::Descriptor::Texture(albedo),
+					},
+					render_system::DescriptorWrite {
+						descriptor_set,
+						binding: 1,
+						array_element: 0,
+						descriptor: render_system::Descriptor::Texture(result),
+					},
+				]);
+
+				let tone_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, tone_mapping_shader.as_bytes());
+				let tone_mapping_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
+
+				ToneMapPass {
+					descriptor_set_layout,
+					pipeline_layout,
+					descriptor_set,
+					pipeline: tone_mapping_pipeline,
+				}
+			};
+
 			Self {
 				pipeline_layout_handle,
 				vertices_buffer: vertices_buffer_handle,
@@ -509,6 +646,7 @@ impl VisibilityWorldRenderDomain {
 
 				albedo,
 				depth_target,
+				result,
 
 				index_count: 0,
 				instance_count: 0,
@@ -559,6 +697,8 @@ impl VisibilityWorldRenderDomain {
 				material_xy,
 
 				material_evaluation_materials: HashMap::new(),
+
+				tone_map_pass,
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -1003,9 +1143,16 @@ impl VisibilityWorldRenderDomain {
 				access: render_system::AccessPolicies::WRITE,
 				layout: render_system::Layouts::Transfer,
 			},
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.result),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
+			},
 		]);
 
 		command_buffer_recording.clear_texture(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
+		command_buffer_recording.clear_texture(self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption {
@@ -1049,9 +1196,30 @@ impl VisibilityWorldRenderDomain {
 			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
 		}
 
+		// Tone mapping pass
+
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.albedo),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.result),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
+		]);
+
+		command_buffer_recording.bind_compute_pipeline(&self.tone_map_pass.pipeline);
+		command_buffer_recording.bind_descriptor_set(&self.tone_map_pass.pipeline_layout, 0, &self.tone_map_pass.descriptor_set);
+		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
+
 		// Copy to swapchain
 
-		command_buffer_recording.copy_to_swapchain(self.albedo, image_index, swapchain_handle);
+		command_buffer_recording.copy_to_swapchain(self.result, image_index, swapchain_handle);
 
 		command_buffer_recording.execute(&[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 

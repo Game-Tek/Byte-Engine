@@ -203,6 +203,7 @@ pub enum Descriptor {
 		size: usize,
 	},
 	Texture(TextureHandle),
+	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
 }
 

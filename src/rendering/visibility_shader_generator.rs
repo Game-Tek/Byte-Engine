@@ -112,7 +112,7 @@ layout(set=0,binding=4,scalar) buffer PixelMapping {
 	u16vec2 pixel_mapping[];
 };
 layout(set=0, binding=6, r8ui) uniform readonly uimage2D vertex_id;
-layout(set=1, binding=0, rgba8) uniform image2D out_albedo;
+layout(set=1, binding=0, rgba16) uniform image2D out_albedo;
 vec4 get_debug_color(uint i) {
 	vec4 colors[16] = vec4[16](
 		vec4(0.16863, 0.40392, 0.77647, 1),

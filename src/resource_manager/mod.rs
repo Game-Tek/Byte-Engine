@@ -6,7 +6,7 @@ mod image_resource_handler;
 pub mod mesh_resource_handler;
 pub mod material_resource_handler;
 
-use std::{io::prelude::*, hash::{Hasher, Hash},};
+use std::{io::prelude::*, hash::{Hasher, Hash}, ffi::OsString,};
 
 use log::{warn, info, error, trace, debug};
 use polodb_core::bson::{Document, doc, to_vec};
@@ -490,7 +490,7 @@ impl ResourceManager {
 			},
 			"local" => {
 				let (mut file, extension) = if let Ok(dir) = std::fs::read_dir("assets") {
-					let files = dir.filter(|f| if let Ok(f) = f { f.path().to_str().unwrap().contains(path) } else { false });
+					let files = dir.filter(|f| if let Ok(f) = f { f.path().file_stem().unwrap().eq(&OsString::from(path)) } else { false });
 					let file_path = files.last().unwrap().unwrap().path();
 					(std::fs::File::open(&file_path).unwrap(), file_path.extension().unwrap().to_str().unwrap().to_string())
 				} else { return Err(None); };

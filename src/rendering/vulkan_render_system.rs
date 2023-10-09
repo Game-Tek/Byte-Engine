@@ -169,13 +169,13 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					render_system::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
 					render_system::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 				})
-				.descriptor_count(binding.descriptor_count)
+				.descriptor_count(binding.descriptor_count * self.frames as u32)
 				/* .build() */
 		})
 		.collect::<Vec<_>>();
 
 		let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-			.max_sets(3)
+			.max_sets(3/* LEAVE AS 3 AS THAT IS THE MAX AMOUNT OF BUFFERED FRAMES */)
 			.pool_sizes(&pool_sizes);
 
 		let descriptor_pool = unsafe { self.device.create_descriptor_pool(&descriptor_pool_create_info, None).expect("No descriptor pool") };
@@ -1191,8 +1191,6 @@ impl VulkanRenderSystem {
 		let enabled_validation_features = [
 			ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
 			ValidationFeatureEnableEXT::BEST_PRACTICES,
-			ValidationFeatureEnableEXT::GPU_ASSISTED,
-			ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT,
 		];
 
 		let mut validation_features = vk::ValidationFeaturesEXT::default()
@@ -1240,6 +1238,13 @@ impl VulkanRenderSystem {
 				if features.sample_rate_shading == vk::FALSE { return 0; }
 
 				let mut device_score = 0 as u64;
+
+				device_score += if features.shader_storage_image_array_dynamic_indexing == vk::TRUE { 1 } else { 0 };
+				device_score += if features.shader_sampled_image_array_dynamic_indexing == vk::TRUE { 1 } else { 0 };
+				device_score += if features.shader_storage_buffer_array_dynamic_indexing == vk::TRUE { 1 } else { 0 };
+				device_score += if features.shader_uniform_buffer_array_dynamic_indexing == vk::TRUE { 1 } else { 0 };
+
+				device_score += if features.shader_storage_image_write_without_format == vk::TRUE { 1 } else { 0 };
 
 				device_score += match properties.device_type {
 					vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
@@ -1394,7 +1399,7 @@ impl VulkanRenderSystem {
 	pub fn new_as_system() -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
 		let settings = Settings {
 			validation: true,
-			ray_tracing: true,
+			ray_tracing: false,
 		};
 		orchestrator::EntityReturn::new(render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new(&settings))))
 	}

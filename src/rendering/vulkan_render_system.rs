@@ -2823,7 +2823,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	// 	self.render_system.render_backend.copy_textures(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &texture_copies);
 	// }
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::TextureHandle, swapchain_handle: render_system::SwapchainHandle) {
+	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::TextureHandle, present_image_index: u32, swapchain_handle: render_system::SwapchainHandle) {
 		self.consume_resources(&[
 			render_system::Consumption {
 				handle: render_system::Handle::Texture(source_texture_handle),
@@ -2840,7 +2840,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			self.render_system.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
 		};
 
-		let swapchain_image = swapchain_images[self.modulo_frame_index as usize];
+		let swapchain_image = swapchain_images[present_image_index as usize];
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 

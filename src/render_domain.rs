@@ -1050,7 +1050,7 @@ impl VisibilityWorldRenderDomain {
 
 		// Copy to swapchain
 
-		command_buffer_recording.copy_to_swapchain(self.albedo, swapchain_handle);
+		command_buffer_recording.copy_to_swapchain(self.albedo, image_index, swapchain_handle);
 
 		command_buffer_recording.execute(&[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 

@@ -190,7 +190,7 @@ pub trait CommandBufferRecording {
 	/// Binds a decriptor set on the GPU.
 	fn bind_descriptor_set(&self, pipeline_layout: &PipelineLayoutHandle, arg: u32, descriptor_set_handle: &DescriptorSetHandle);
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: TextureHandle, swapchain_handle: SwapchainHandle);
+	fn copy_to_swapchain(&mut self, source_texture_handle: TextureHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
 
 	fn sync_textures(&mut self, texture_handles: &[TextureHandle]) -> Vec<TextureCopyHandle>;
 
@@ -558,7 +558,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.end_render_pass();
 
-		command_buffer_recording.copy_to_swapchain(render_target, swapchain);
+		command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
 
 		command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
 
@@ -681,7 +681,7 @@ pub(super) mod tests {
 
 			command_buffer_recording.end_render_pass();
 
-			command_buffer_recording.copy_to_swapchain(render_target, swapchain);
+			command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
 
 			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 

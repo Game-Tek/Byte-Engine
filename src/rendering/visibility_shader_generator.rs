@@ -324,12 +324,14 @@ void main() {{
 	vec4 b = camera.view_projection * mesh.model * vertex_positions[1];
 	vec4 c = camera.view_projection * mesh.model * vertex_positions[2];
 
-	vec3 barycenter = CalculateBarycenter(vec3[3](a.xyz, b.xyz, c.xyz), uv);
+	BarycentricDeriv barycentric_deriv = CalcFullBary(a, b, c, uv, vec2(1920.0, 1080.0));
+	vec3 barycenter = barycentric_deriv.lambda;
 
-	// vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
-	vec3 BE_VERTEX_POSITION = vec3(mesh.model * vertex_positions[0]);
-	// vec3 BE_VERTEX_NORMAL = vec3((mesh.model * vertex_normals[0]).xyz * barycenter.x + (mesh.model * vertex_normals[1]).xyz * barycenter.y + (mesh.model * vertex_normals[2]).xyz * barycenter.z);
-	vec3 BE_VERTEX_NORMAL = vec3(mesh.model * vertex_normals[0]);
+	vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
+	// vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * 0.333 + (mesh.model * vertex_positions[1]).xyz * 0.333 + (mesh.model * vertex_positions[2]).xyz * 0.333);
+	// vec3 BE_VERTEX_POSITION = vec3(mesh.model * vertex_positions[0]);
+	vec3 BE_VERTEX_NORMAL = vec3((mesh.model * vertex_normals[0]).xyz * barycenter.x + (mesh.model * vertex_normals[1]).xyz * barycenter.y + (mesh.model * vertex_normals[2]).xyz * barycenter.z);
+	// vec3 BE_VERTEX_NORMAL = vec3(mesh.model * vertex_normals[0]);
 
 	vec3 N = normalize(BE_VERTEX_NORMAL);
 	vec3 V = normalize(camera.view[3].xyz - BE_VERTEX_POSITION);
@@ -337,7 +339,7 @@ void main() {{
 	vec3 Lo = vec3(0.00001);
 
 	for (uint i = 0; i < 1; ++i) {{
-		vec3 light_pos = vec3(-1.5, 1, -0.5);
+		vec3 light_pos = vec3(0, 2, -1.5);
 		vec3 L = normalize(light_pos - BE_VERTEX_POSITION);
 		vec3 H = normalize(V + L);
 

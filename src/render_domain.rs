@@ -248,8 +248,8 @@ impl VisibilityWorldRenderDomain {
 
 				layout(row_major) uniform; layout(row_major) buffer;
 
-				layout(location=0) out uint out_instance_index[8];
-				layout(location=1) out uint out_primitive_index[8];
+				layout(location=0) perprimitiveEXT out uint out_instance_index[12];
+				layout(location=1) perprimitiveEXT out uint out_primitive_index[12];
 
 				layout(scalar, buffer_reference) buffer CameraData {
 					mat4 view_matrix;
@@ -275,24 +275,22 @@ impl VisibilityWorldRenderDomain {
 					MeshData meshes;
 				} pc;
 
-				layout(triangles, max_vertices=8, max_primitives=12) out;
+				layout(triangles, max_vertices=24, max_primitives=12) out;
 				
-				layout(local_size_x=12) in;
+				layout(local_size_x=32) in;
 				void main() {
-					SetMeshOutputsEXT(8, 12);
+					SetMeshOutputsEXT(24, 12);
 
-					uint triangle_indices[3] = uint[](uint(indices[gl_LocalInvocationID.x * 3 + 0]), uint(indices[gl_LocalInvocationID.x * 3 + 1]), uint(indices[gl_LocalInvocationID.x * 3 + 2]));
-
-					if (gl_LocalInvocationID.x < 8) {
-						vec3 triangle_vertex_positions[3] = vec3[](vertex_positions[triangle_indices[0]], vertex_positions[triangle_indices[1]], vertex_positions[triangle_indices[2]]);
-
-						gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = pc.camera.view_projection * pc.meshes[0].model * vec4(triangle_vertex_positions[0], 1.0);
-
-						out_instance_index[gl_LocalInvocationID.x] = 0;
-						out_primitive_index[gl_LocalInvocationID.x] = triangle_indices[0];
+					if (gl_LocalInvocationID.x < 24) {
+						gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = pc.camera.view_projection * pc.meshes[0].model * vec4(vertex_positions[gl_LocalInvocationID.x], 1.0);
 					}
 					
-					gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);					
+					if (gl_LocalInvocationID.x < 12) {
+						uint triangle_indices[3] = uint[](uint(indices[gl_LocalInvocationID.x * 3 + 0]), uint(indices[gl_LocalInvocationID.x * 3 + 1]), uint(indices[gl_LocalInvocationID.x * 3 + 2]));
+						gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+						out_instance_index[gl_LocalInvocationID.x] = 0;
+						out_primitive_index[gl_LocalInvocationID.x] = gl_LocalInvocationID.x * 3;
+					}
 				}
 			"#;
 
@@ -303,9 +301,10 @@ impl VisibilityWorldRenderDomain {
 				#extension GL_EXT_scalar_block_layout: enable
 				#extension GL_EXT_buffer_reference: enable
 				#extension GL_EXT_buffer_reference2: enable
+				#extension GL_EXT_mesh_shader: require
 
-				layout(location=0) flat in uint in_instance_index;
-				layout(location=1) flat in uint in_primitive_index;
+				layout(location=0) perprimitiveEXT flat in uint in_instance_index;
+				layout(location=1) perprimitiveEXT flat in uint in_primitive_index;
 				
 				layout(scalar, buffer_reference) buffer CameraData {
 					mat4 view_matrix;

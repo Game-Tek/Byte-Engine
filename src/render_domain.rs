@@ -15,7 +15,10 @@ struct ToneMapPass {
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	pipeline_layout_handle: render_system::PipelineLayoutHandle,
-	vertices_buffer: render_system::BufferHandle,
+
+	vertex_positions_buffer: render_system::BufferHandle,
+	vertex_normals_buffer: render_system::BufferHandle,
+
 	indices_buffer: render_system::BufferHandle,
 
 	albedo: render_system::TextureHandle,
@@ -62,7 +65,9 @@ pub struct VisibilityWorldRenderDomain {
 	pixel_mapping_pipeline: render_system::PipelineHandle,
 
 	material_id: render_system::TextureHandle,
-	vertex_id: render_system::TextureHandle,
+	instance_id: render_system::TextureHandle,
+	primitive_index: render_system::TextureHandle,
+
 	material_count: render_system::BufferHandle,
 	material_offset: render_system::BufferHandle,
 	material_offset_scratch: render_system::BufferHandle,
@@ -76,6 +81,8 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_materials: HashMap<String, (u32, render_system::PipelineHandle)>,
 
 	tone_map_pass: ToneMapPass,
+debug_position: render_system::TextureHandle,
+debug_normal: render_system::TextureHandle,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -102,6 +109,30 @@ impl VisibilityWorldRenderDomain {
 					stage_flags: render_system::Stages::VERTEX,
 					immutable_samplers: None,
 				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "vertex positions",
+					binding: 2,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::MESH,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "vertex normals",
+					binding: 3,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::MESH,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "indices",
+					binding: 4,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::MESH,
+					immutable_samplers: None,
+				},
 			];
 
 			let descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
@@ -110,8 +141,13 @@ impl VisibilityWorldRenderDomain {
 
 			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }]);
 			
-			let vertices_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Buffers"), 1024 * 1024 * 16, render_system::Uses::Vertex, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let vertex_positions_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Positions Buffer"), 1024 * 1024 * 16, render_system::Uses::Vertex | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let vertex_normals_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Normals Buffer"), 1024 * 1024 * 16, render_system::Uses::Vertex | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+
+			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+
+			let debug_position = render_system.create_texture(Some("debug position"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let debug_normal = render_system.create_texture(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -140,6 +176,24 @@ impl VisibilityWorldRenderDomain {
 					binding: 1,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 64 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set,
+					binding: 2,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: vertex_positions_buffer_handle, size: 512 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set,
+					binding: 3,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: vertex_normals_buffer_handle, size: 512 },
+				},
+				render_system::DescriptorWrite {
+					descriptor_set,
+					binding: 4,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: indices_buffer_handle, size: 512 },
 				},
 			]);
 
@@ -182,6 +236,66 @@ impl VisibilityWorldRenderDomain {
 				}
 			"#;
 
+			let visibility_pass_mesh_source = r#"
+				#version 450
+				#pragma shader_stage(mesh)
+
+				#extension GL_EXT_scalar_block_layout: enable
+				#extension GL_EXT_buffer_reference: enable
+				#extension GL_EXT_buffer_reference2: enable
+				#extension GL_EXT_shader_16bit_storage: require
+				#extension GL_EXT_mesh_shader: require
+
+				layout(row_major) uniform; layout(row_major) buffer;
+
+				layout(location=0) out uint out_instance_index[8];
+				layout(location=1) out uint out_primitive_index[8];
+
+				layout(scalar, buffer_reference) buffer CameraData {
+					mat4 view_matrix;
+					mat4 projection_matrix;
+					mat4 view_projection;
+				};
+
+				layout(scalar, buffer_reference, buffer_reference_align=1) buffer MeshData {
+					mat4 model;
+					uint material_id;
+				};
+
+				layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
+					vec3 vertex_positions[];
+				};
+
+				layout(set=0,binding=4,scalar) buffer readonly MeshIndices {
+					uint16_t indices[];
+				};
+
+				layout(push_constant) uniform PushConstant {
+					CameraData camera;
+					MeshData meshes;
+				} pc;
+
+				layout(triangles, max_vertices=8, max_primitives=12) out;
+				
+				layout(local_size_x=12) in;
+				void main() {
+					SetMeshOutputsEXT(8, 12);
+
+					uint triangle_indices[3] = uint[](uint(indices[gl_LocalInvocationID.x * 3 + 0]), uint(indices[gl_LocalInvocationID.x * 3 + 1]), uint(indices[gl_LocalInvocationID.x * 3 + 2]));
+
+					if (gl_LocalInvocationID.x < 8) {
+						vec3 triangle_vertex_positions[3] = vec3[](vertex_positions[triangle_indices[0]], vertex_positions[triangle_indices[1]], vertex_positions[triangle_indices[2]]);
+
+						gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = pc.camera.view_projection * pc.meshes[0].model * vec4(triangle_vertex_positions[0], 1.0);
+
+						out_instance_index[gl_LocalInvocationID.x] = 0;
+						out_primitive_index[gl_LocalInvocationID.x] = triangle_indices[0];
+					}
+					
+					gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);					
+				}
+			"#;
+
 			let visibility_pass_fragment_source = r#"
 				#version 450
 				#pragma shader_stage(fragment)
@@ -191,7 +305,7 @@ impl VisibilityWorldRenderDomain {
 				#extension GL_EXT_buffer_reference2: enable
 
 				layout(location=0) flat in uint in_instance_index;
-				layout(location=1) flat in uint in_vertex_id;
+				layout(location=1) flat in uint in_primitive_index;
 				
 				layout(scalar, buffer_reference) buffer CameraData {
 					mat4 view_matrix;
@@ -210,24 +324,28 @@ impl VisibilityWorldRenderDomain {
 				} pc;
 
 				layout(location=0) out uint out_material_id;
-				layout(location=1) out uint out_vertex_id;
+				layout(location=1) out uint out_primitive_index;
+				layout(location=2) out uint out_instance_id;
 
 				void main() {
 					out_material_id = pc.meshes[in_instance_index].material_id;
-					out_vertex_id = in_vertex_id;
+					out_primitive_index = in_primitive_index;
+					out_instance_id = in_instance_index;
 				}
 			"#;
 
-			let visibility_pass_vertex_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Vertex, visibility_pass_vertex_source.as_bytes());
+			// let visibility_pass_vertex_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Vertex, visibility_pass_vertex_source.as_bytes());
+			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Mesh, visibility_pass_mesh_source.as_bytes());
 			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Fragment, visibility_pass_fragment_source.as_bytes());
 
 			let visibility_pass_shaders = [
-				(&visibility_pass_vertex_shader, render_system::ShaderTypes::Vertex, vec![]),
+				(&visibility_pass_mesh_shader, render_system::ShaderTypes::Mesh, vec![]),
 				(&visibility_pass_fragment_shader, render_system::ShaderTypes::Fragment, vec![]),
 			];
 
 			let material_id = render_system.create_texture(Some("material_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let vertex_id = render_system.create_texture(Some("vertex_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let primitive_index = render_system.create_texture(Some("primitive index"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let instance_id = render_system.create_texture(Some("instance_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let attachments = [
 				render_system::AttachmentInformation {
@@ -239,7 +357,15 @@ impl VisibilityWorldRenderDomain {
 					store: true,
 				},
 				render_system::AttachmentInformation {
-					texture: vertex_id,
+					texture: primitive_index,
+					layout: render_system::Layouts::RenderTarget,
+					format: render_system::TextureFormats::U32,
+					clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
+					load: false,
+					store: true,
+				},
+				render_system::AttachmentInformation {
+					texture: instance_id,
 					layout: render_system::Layouts::RenderTarget,
 					format: render_system::TextureFormats::U32,
 					clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
@@ -261,7 +387,12 @@ impl VisibilityWorldRenderDomain {
 				render_system::VertexElement{ name: "NORMAL".to_string(), format: render_system::DataTypes::Float3, binding: 1 },
 			];
 
-			let visibility_pass_pipeline = render_system.create_raster_pipeline(&pipeline_layout_handle, &visibility_pass_shaders, &VERTEX_LAYOUT, &attachments);
+			let visibility_pass_pipeline = render_system.create_raster_pipeline(&[
+				render_system::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout_handle },
+				render_system::PipelineConfigurationBlocks::Shaders { shaders: &visibility_pass_shaders },
+				// render_system::PipelineConfigurationBlocks::VertexInput { vertex_elements: &VERTEX_LAYOUT },
+				render_system::PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
+			]);
 
 			let material_count = render_system.create_buffer(Some("Material Count"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 			let material_offset = render_system.create_buffer(Some("Material Offset"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
@@ -426,6 +557,14 @@ impl VisibilityWorldRenderDomain {
 					stage_flags: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "InstanceId",
+					binding: 7,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
 			];
 
 			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
@@ -473,7 +612,13 @@ impl VisibilityWorldRenderDomain {
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 6,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(vertex_id),
+					descriptor: render_system::Descriptor::Texture(primitive_index),
+				},
+				render_system::DescriptorWrite { // InstanceId
+					descriptor_set: visibility_passes_descriptor_set,
+					binding: 7,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Texture(instance_id),
 				},
 			]);
 
@@ -494,7 +639,71 @@ impl VisibilityWorldRenderDomain {
 					descriptor_count: 1,
 					stage_flags: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
-				}
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "MeshBuffer",
+					binding: 1,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "Positions",
+					binding: 2,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "Normals",
+					binding: 3,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "Indeces",
+					binding: 4,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "CameraData",
+					binding: 5,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "MeshData",
+					binding: 6,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "debug_position",
+					binding: 7,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "debug_normals",
+					binding: 8,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
 			];	
 
 			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
@@ -506,6 +715,54 @@ impl VisibilityWorldRenderDomain {
 					binding: 0,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Texture(albedo),
+				},
+				render_system::DescriptorWrite { // MeshBuffer
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 1,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 1024 * 4 },
+				},
+				render_system::DescriptorWrite { // Positions
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 2,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: vertex_positions_buffer_handle, size: 1024 * 4 },
+				},
+				render_system::DescriptorWrite { // Normals
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 3,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: vertex_normals_buffer_handle, size: 1024 * 4 },
+				},
+				render_system::DescriptorWrite { // Indeces
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 4,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: indices_buffer_handle, size: 1024 * 4 },
+				},
+				render_system::DescriptorWrite { // CameraData
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 5,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: 256 },
+				},
+				render_system::DescriptorWrite { // MeshData
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 6,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: 256 },
+				},
+				render_system::DescriptorWrite { // debug_position
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 7,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Texture(debug_position),
+				},
+				render_system::DescriptorWrite { // debug_normals
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 8,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Texture(debug_normal),
 				},
 			]);
 
@@ -638,7 +895,9 @@ impl VisibilityWorldRenderDomain {
 
 			Self {
 				pipeline_layout_handle,
-				vertices_buffer: vertices_buffer_handle,
+
+				vertex_positions_buffer: vertex_positions_buffer_handle,
+				vertex_normals_buffer: vertex_normals_buffer_handle,
 				indices_buffer: indices_buffer_handle,
 
 				descriptor_set_layout,
@@ -688,7 +947,11 @@ impl VisibilityWorldRenderDomain {
 				material_evaluation_pipeline_layout,
 
 				material_id,
-				vertex_id,
+				primitive_index,
+				instance_id,
+
+				debug_position,
+				debug_normal,
 
 				material_count,
 				material_offset,
@@ -925,7 +1188,7 @@ impl VisibilityWorldRenderDomain {
 
 		let view_matrix = maths_rs::Mat4f::from_translation(-camera_position) * math::look_at(camera_orientation);
 
-		let projection_matrix = math::projection_matrix(35f32, 16f32 / 9f32, 0.1f32, 100f32);
+		let projection_matrix = math::projection_matrix(45f32, 16f32 / 9f32, 0.1f32, 100f32);
 
 		let view_projection_matrix = projection_matrix * view_matrix;
 
@@ -947,6 +1210,26 @@ impl VisibilityWorldRenderDomain {
 
 		let mut command_buffer_recording = render_system.create_command_buffer_recording(self.render_command_buffer, Some(self.current_frame as u32));
 
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.vertex_positions_buffer),
+				stages: render_system::Stages::MESH,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.vertex_normals_buffer),
+				stages: render_system::Stages::MESH,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},render_system::Consumption{
+				handle: render_system::Handle::Buffer(self.indices_buffer),
+				stages: render_system::Stages::MESH,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+		]);
+
 		let attachments = [
 			render_system::AttachmentInformation {
 				texture: self.material_id,
@@ -957,7 +1240,15 @@ impl VisibilityWorldRenderDomain {
 				store: true,
 			},
 			render_system::AttachmentInformation {
-				texture: self.vertex_id,
+				texture: self.primitive_index,
+				layout: render_system::Layouts::RenderTarget,
+				format: render_system::TextureFormats::U32,
+				clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
+				load: false,
+				store: true,
+			},
+			render_system::AttachmentInformation {
+				texture: self.instance_id,
 				layout: render_system::Layouts::RenderTarget,
 				format: render_system::TextureFormats::U32,
 				clear: render_system::ClearValue::Integer(!0u32, 0, 0, 0),
@@ -980,31 +1271,31 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_pipeline(&self.visibility_pass_pipeline);
 
-		let vertex_buffer_descriptors = [
-			render_system::BufferDescriptor {
-				buffer: self.vertices_buffer,
-				offset: 0,
-				range: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
-				slot: 0,
-			},
-			render_system::BufferDescriptor {
-				buffer: self.vertices_buffer,
-				offset: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
-				range: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
-				slot: 1,
-			},
-		];
+		// let vertex_buffer_descriptors = [
+		// 	render_system::BufferDescriptor {
+		// 		buffer: self.vertex_positions_buffer,
+		// 		offset: 0,
+		// 		range: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
+		// 		slot: 0,
+		// 	},
+		// 	render_system::BufferDescriptor {
+		// 		buffer: self.vertex_normals_buffer,
+		// 		offset: 0,
+		// 		range: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
+		// 		slot: 1,
+		// 	},
+		// ];
 
-		command_buffer_recording.bind_vertex_buffers(&vertex_buffer_descriptors);
+		// command_buffer_recording.bind_vertex_buffers(&vertex_buffer_descriptors);
 
-		let index_buffer_index_descriptor = render_system::BufferDescriptor {
-			buffer: self.indices_buffer,
-			offset: 0,
-			range: (self.index_count * std::mem::size_of::<u16>() as u32) as u64,
-			slot: 0,
-		};
+		// let index_buffer_index_descriptor = render_system::BufferDescriptor {
+		// 	buffer: self.indices_buffer,
+		// 	offset: 0,
+		// 	range: (self.index_count * std::mem::size_of::<u16>() as u32) as u64,
+		// 	slot: 0,
+		// };
 
-		command_buffer_recording.bind_index_buffer(&index_buffer_index_descriptor);
+		// command_buffer_recording.bind_index_buffer(&index_buffer_index_descriptor);
 
 		let camera_data_buffer_address = render_system.get_buffer_address(self.camera_data_buffer_handle);
 		let meshes_data_buffer_address = render_system.get_buffer_address(self.meshes_data_buffer);
@@ -1018,7 +1309,9 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.write_to_push_constant(&self.pipeline_layout_handle, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) });
 
-		command_buffer_recording.draw_indexed(self.index_count, self.instance_count, 0, 0, 0);
+		// command_buffer_recording.draw_indexed(self.index_count, self.instance_count, 0, 0, 0);
+		// command_buffer_recording.dispatch_meshes(self.index_count / 3, 1, 1);
+		command_buffer_recording.dispatch_meshes(1, 1, 1);
 
 		command_buffer_recording.end_render_pass();
 
@@ -1162,7 +1455,13 @@ impl VisibilityWorldRenderDomain {
 				layout: render_system::Layouts::General,
 			},
 			render_system::Consumption {
-				handle: render_system::Handle::Texture(self.vertex_id),
+				handle: render_system::Handle::Texture(self.primitive_index),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Texture(self.instance_id),
 				stages: render_system::Stages::COMPUTE,
 				access: render_system::AccessPolicies::READ,
 				layout: render_system::Layouts::General,
@@ -1179,6 +1478,18 @@ impl VisibilityWorldRenderDomain {
 				access: render_system::AccessPolicies::READ,
 				layout: render_system::Layouts::General,
 			},
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.debug_position),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(self.debug_normal),
+				stages: render_system::Stages::COMPUTE,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::General,
+			},
 		]);
 
 		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
@@ -1187,6 +1498,7 @@ impl VisibilityWorldRenderDomain {
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			command_buffer_recording.bind_compute_pipeline(pipeline);
+			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) });
 			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 16, unsafe {
 				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
@@ -1277,12 +1589,17 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 			for resource in &resource_request.resources {
 				match resource.class.as_str() {
 					"Mesh" => {
-						let vertex_buffer = render_system.get_mut_buffer_slice(self.vertices_buffer);
+						let vertex_positions_buffer = render_system.get_mut_buffer_slice(self.vertex_positions_buffer);
+						let vertex_normals_buffer = render_system.get_mut_buffer_slice(self.vertex_normals_buffer);
 						let index_buffer = render_system.get_mut_buffer_slice(self.indices_buffer);
 
 						options.resources.push(resource_manager::OptionResource {
 							url: resource.url.clone(),
-							buffers: vec![resource_manager::Buffer{ buffer: vertex_buffer, tag: "Vertex".to_string() }, resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }],
+							buffers: vec![
+								resource_manager::Buffer{ buffer: vertex_positions_buffer, tag: "Vertex.Position".to_string() },
+								resource_manager::Buffer{ buffer: vertex_normals_buffer, tag: "Vertex.Normal".to_string() },
+								resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }
+							],
 						});
 					}
 					_ => {}
@@ -1314,11 +1631,9 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 			material_id: self.material_evaluation_materials.get(mesh.material_id).unwrap().0,
 		};
 
-		let meshes_data_bytes = unsafe { std::slice::from_raw_parts(&mesh_data as *const ShaderMeshData as *const u8, std::mem::size_of_val(&mesh_data)) };
+		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMeshData, 16) };
 
-		unsafe {
-			std::ptr::copy_nonoverlapping(meshes_data_bytes.as_ptr(), meshes_data_slice.as_mut_ptr().add(self.instance_count as usize * std::mem::size_of::<ShaderMeshData>()), meshes_data_bytes.len());
-		}
+		meshes_data_slice[self.instance_count as usize] = mesh_data;
 
 		self.meshes.insert(handle, self.instance_count);
 

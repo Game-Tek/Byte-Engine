@@ -19,6 +19,7 @@ pub struct VulkanRenderSystem {
 	surface: ash::extensions::khr::Surface,
 	acceleration_structure: ash::extensions::khr::AccelerationStructure,
 	ray_tracing_pipeline: ash::extensions::khr::RayTracingPipeline,
+	mesh_shading: ash::extensions::ext::MeshShader,
 
 	#[cfg(debug_assertions)]
 	debugger: RenderDebugger,
@@ -319,7 +320,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[render_system::DescriptorSetLayoutHandle], push_constant_ranges: &[render_system::PushConstantRange]) -> render_system::PipelineLayoutHandle {
 		// self.create_vulkan_pipeline_layout(&descriptor_set_layout_handles.iter().map(|descriptor_set_layout_handle| vk::DescriptorSetLayout::from_raw(descriptor_set_layout_handle.0)).collect::<Vec<_>>())
-		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE)).collect::<Vec<_>>();
+		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE)).collect::<Vec<_>>();
 		let set_layouts = descriptor_set_layout_handles.iter().map(|set_layout| vk::DescriptorSetLayout::from_raw(set_layout.0)).collect::<Vec<_>>();
 
   		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
@@ -332,15 +333,8 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::PipelineLayoutHandle(pipeline_layout.as_raw())
 	}
 
-	fn create_raster_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_handles: &[(&render_system::ShaderHandle, render_system::ShaderTypes, Vec<Box<dyn render_system::SpecializationMapEntry>>)], vertex_layout: &[render_system::VertexElement], targets: &[render_system::AttachmentInformation]) -> render_system::PipelineHandle {
-		let pipeline_configuration_blocks = [
-			render_system::PipelineConfigurationBlocks::Shaders { shaders: shader_handles, },
-			render_system::PipelineConfigurationBlocks::Layout { layout: pipeline_layout_handle },
-			render_system::PipelineConfigurationBlocks::VertexInput { vertex_elements: vertex_layout },
-			render_system::PipelineConfigurationBlocks::RenderTargets { targets: &targets },
-		];
-
-		self.create_vulkan_pipeline(&pipeline_configuration_blocks)
+	fn create_raster_pipeline(&mut self, pipeline_blocks: &[render_system::PipelineConfigurationBlocks]) -> render_system::PipelineHandle {
+		self.create_vulkan_pipeline(&pipeline_blocks)
 	}
 
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_parameter: render_system::ShaderParameter) -> render_system::PipelineHandle {
@@ -931,7 +925,7 @@ fn to_format(format: render_system::TextureFormats) -> vk::Format {
 		render_system::TextureFormats::RGBu10u10u11 => vk::Format::R16G16_S10_5_NV,
 		render_system::TextureFormats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
 		render_system::TextureFormats::Depth32 => vk::Format::D32_SFLOAT,
-		TextureFormats::U32 => vk::Format::R32_UINT,
+		render_system::TextureFormats::U32 => vk::Format::R32_UINT,
 	}
 }
 
@@ -939,7 +933,15 @@ fn to_shader_stage_flags(shader_type: render_system::ShaderTypes) -> vk::ShaderS
 	match shader_type {
 		render_system::ShaderTypes::Vertex => vk::ShaderStageFlags::VERTEX,
 		render_system::ShaderTypes::Fragment => vk::ShaderStageFlags::FRAGMENT,
-		render_system::ShaderTypes::Compute => vk::ShaderStageFlags::COMPUTE,		
+		render_system::ShaderTypes::Compute => vk::ShaderStageFlags::COMPUTE,
+		render_system::ShaderTypes::Task => vk::ShaderStageFlags::TASK_EXT,
+		render_system::ShaderTypes::Mesh => vk::ShaderStageFlags::MESH_EXT,
+		render_system::ShaderTypes::Raygen => vk::ShaderStageFlags::RAYGEN_KHR,
+		render_system::ShaderTypes::ClosestHit => vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+		render_system::ShaderTypes::AnyHit => vk::ShaderStageFlags::ANY_HIT_KHR,
+		render_system::ShaderTypes::Intersection => vk::ShaderStageFlags::INTERSECTION_KHR,
+		render_system::ShaderTypes::Miss => vk::ShaderStageFlags::MISS_KHR,
+		render_system::ShaderTypes::Callable => vk::ShaderStageFlags::CALLABLE_KHR,
 	}
 }
 
@@ -948,6 +950,10 @@ fn to_pipeline_stage_flags(stages: render_system::Stages) -> vk::PipelineStageFl
 
 	if stages.contains(render_system::Stages::VERTEX) {
 		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER
+	}
+
+	if stages.contains(render_system::Stages::MESH) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::MESH_SHADER_EXT;
 	}
 
 	if stages.contains(render_system::Stages::FRAGMENT) {
@@ -1095,17 +1101,10 @@ impl Into<vk::ShaderStageFlags> for render_system::Stages {
 	fn into(self) -> vk::ShaderStageFlags {
 		let mut shader_stage_flags = vk::ShaderStageFlags::default();
 
-		if self.intersects(render_system::Stages::VERTEX) {
-			shader_stage_flags |= vk::ShaderStageFlags::VERTEX
-		}
-
-		if self.intersects(render_system::Stages::FRAGMENT) {
-			shader_stage_flags |= vk::ShaderStageFlags::FRAGMENT
-		}
-
-		if self.intersects(render_system::Stages::COMPUTE) {
-			shader_stage_flags |= vk::ShaderStageFlags::COMPUTE
-		}
+		shader_stage_flags |= if self.intersects(render_system::Stages::VERTEX) { vk::ShaderStageFlags::VERTEX } else { vk::ShaderStageFlags::default() };
+		shader_stage_flags |= if self.intersects(render_system::Stages::FRAGMENT) { vk::ShaderStageFlags::FRAGMENT } else { vk::ShaderStageFlags::default() };
+		shader_stage_flags |= if self.intersects(render_system::Stages::COMPUTE) { vk::ShaderStageFlags::COMPUTE } else { vk::ShaderStageFlags::default() };
+		shader_stage_flags |= if self.intersects(render_system::Stages::MESH) { vk::ShaderStageFlags::MESH_EXT } else { vk::ShaderStageFlags::default() };
 
 		shader_stage_flags
 	}
@@ -1289,7 +1288,9 @@ impl VulkanRenderSystem {
 			device_extension_names.push(ash::extensions::khr::AccelerationStructure::NAME.as_ptr());
 			device_extension_names.push(ash::extensions::khr::RayTracingPipeline::NAME.as_ptr());
 			device_extension_names.push(ash::extensions::khr::RayTracingMaintenance1::NAME.as_ptr());
-		}		
+		}
+
+		device_extension_names.push(ash::extensions::ext::MeshShader::NAME.as_ptr());
 
 		let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
 			.queue_family_index(queue_family_index)
@@ -1333,6 +1334,10 @@ impl VulkanRenderSystem {
 			.texture_compression_bc(true)
 		;
 
+		let mut physical_device_mesh_shading_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
+			.task_shader(true)
+			.mesh_shader(true);
+
 		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) = if settings.ray_tracing {
 			let physical_device_acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
 				.acceleration_structure(true);
@@ -1350,6 +1355,7 @@ impl VulkanRenderSystem {
 			.push_next(&mut physical_device_vulkan_11_features/* .build() */)
 			.push_next(&mut physical_device_vulkan_12_features/* .build() */)
 			.push_next(&mut physical_device_vulkan_13_features/* .build() */)
+			.push_next(&mut physical_device_mesh_shading_features/* .build() */)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features/* .build() */)
@@ -1373,6 +1379,8 @@ impl VulkanRenderSystem {
 		let swapchain = ash::extensions::khr::Swapchain::new(&instance, &device);
 		let surface = ash::extensions::khr::Surface::new(&entry, &instance);
 
+		let mesh_shading = ash::extensions::ext::MeshShader::new(&instance, &device);
+
 		VulkanRenderSystem { 
 			entry,
 			instance,
@@ -1386,6 +1394,7 @@ impl VulkanRenderSystem {
 			surface,
 			acceleration_structure,
 			ray_tracing_pipeline,
+			mesh_shading,
 
 			debugger: RenderDebugger::new(),
 
@@ -1608,7 +1617,7 @@ impl VulkanRenderSystem {
 			.depth_clamp_enable(false)
 			.rasterizer_discard_enable(false)
 			.polygon_mode(vk::PolygonMode::FILL)
-			.cull_mode(vk::CullModeFlags::BACK)
+			.cull_mode(vk::CullModeFlags::NONE)
 			.front_face(vk::FrontFace::CLOCKWISE)
 			.depth_bias_enable(false)
 			.depth_bias_constant_factor(0.0)
@@ -2362,7 +2371,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, offset: u32, data: &[u8]) {
 		let command_buffer = self.get_command_buffer();
 		let pipeline_layout = vk::PipelineLayout::from_raw(pipeline_layout_handle.0);
-		unsafe { self.render_system.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
+		unsafe { self.render_system.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
 	}
 
 	/// Draws a render system mesh.
@@ -2577,6 +2586,14 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::UNDEFINED,
 		});
+	}
+
+	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		let command_buffer = self.get_command_buffer();
+
+		unsafe {
+			self.render_system.mesh_shading.cmd_draw_mesh_tasks(command_buffer.command_buffer, x, y, z);
+		}
 	}
 
 	fn dispatch(&mut self, x: u32, y: u32, z: u32) {

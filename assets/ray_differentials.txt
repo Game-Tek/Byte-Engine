@@ -1,0 +1,35 @@
+vec2 pixel_footprint = vec2(1.0 / 1920.0, 1.0 / 1080.0);
+
+vec3 view_eye = vec3(pc.view[3].xyz);
+vec3 view_dir = vec3(pc.view[2].xyz);
+
+vec3 curFNorm = normalize(cross(vertex_positions[1].xyz - vertex_positions[0].xyz, vertex_positions[2].xyz - vertex_positions[0].xyz));
+
+float topIsectTime = dot(curFNorm, vertex_positions[0].xyz) - dot(view_eye, curFNorm);
+
+vec2 uv = (be_pixel_xy + vec2(0.5)) / vec2(1920.0, 1080.0); // Could be wrong, remove 0.5 if so.
+
+vec2 curRayUV = uv * 2.0 - 1.0;
+
+vec2 rayDiff1UV = (uv + vec2(pixel_footprint.x, 0)) * 2.0 - vec2(1.0);
+vec2 rayDiff2UV = (uv + vec2(0, pixel_footprint.y)) * 2.0 - vec2(1.0);
+
+mat4 frameMVP = pc.view_projection * mesh.model;
+
+vec3 curRay = frameMVP[0].xyz - curRayUV.y * frameMVP[1].xyz * whrTanHalfFovYReserved.y - curRayUV.x * frameMVP[2].xyz * whrTanHalfFovYReserved.y * whrTanHalfFovYReserved.x;
+vec3 rayDiff1 = frameMVP[0].xyz - rayDiff1UV.y * frameMVP[1].xyz * whrTanHalfFovYReserved.y - rayDiff1UV.x * frameMVP[2].xyz * whrTanHalfFovYReserved.y * frameMVP.whrTanHalfFovYReserved.x;
+vec3 rayDiff2 = frameMVP[0].xyz - rayDiff2UV.y * frameMVP[1].xyz * whrTanHalfFovYReserved.y - rayDiff2UV.x * frameMVP[2].xyz * whrTanHalfFovYReserved.y * frameMVP.whrTanHalfFovYReserved.x;
+
+vec3 curPos = viewEye + (topIsectTime / dot(curRay, curFNorm)) * curRay;
+vec3 isect1 = viewEye + (topIsectTime / dot(rayDiff1, curFNorm)) * rayDiff1;
+vec3 isect2 = viewEye + (topIsectTime / dot(rayDiff2, curFNorm)) * rayDiff2;
+
+vec3 curIsectBary = barycentricCoords(curPos, vertex_positions[0].xyz, vertex_positions[1].xyz, vertex_positions[2].xyz);
+vec3 isect1Bary = barycentricCoords(isect1, vertex_positions[0].xyz, vertex_positions[1].xyz, vertex_positions[2].xyz);
+vec3 isect2Bary = barycentricCoords(isect2, vertex_positions[0].xyz, vertex_positions[1].xyz, vertex_positions[2].xyz);
+
+vec2 curUV = curTri.uv1Norm1.xy * curIsectBary.x + curTri.uv2Norm2.xy * curIsectBary.y + curTri.uv3Norm3.xy * curIsectBary.z;
+vec2 rightUV  = curTri.uv1Norm1.xy * isect1Bary.x + curTri.uv2Norm2.xy * isect1Bary.y + curTri.uv3Norm3.xy * isect1Bary.z;
+vec2 bottomUV = curTri.uv1Norm1.xy * isect2Bary.x + curTri.uv2Norm2.xy * isect2Bary.y + curTri.uv3Norm3.xy * isect2Bary.z;
+
+vec4 dUVdxdy = vec4 (rightUV - curUV, bottomUV - curUV);

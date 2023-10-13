@@ -112,7 +112,124 @@ layout(set=0,binding=4,scalar) buffer PixelMapping {
 	u16vec2 pixel_mapping[];
 };
 layout(set=0, binding=6, r8ui) uniform readonly uimage2D vertex_id;
+layout(set=0, binding=7, r8ui) uniform readonly uimage2D instance_id;
 layout(set=1, binding=0, rgba16) uniform image2D out_albedo;
+layout(set=1, binding=7, rgba16) uniform image2D out_position;
+layout(set=1, binding=8, rgba16) uniform image2D out_normals;
+
+struct BarycentricDeriv {
+	vec3 lambda;
+	vec3 ddx;
+	vec3 ddy;
+};
+
+BarycentricDeriv CalcFullBary(vec4 pt0, vec4 pt1, vec4 pt2, vec2 pixelNdc, vec2 winSize) {
+	BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0));
+
+	vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w);
+
+	vec2 ndc0 = pt0.xy * invW.x;
+	vec2 ndc1 = pt1.xy * invW.y;
+	vec2 ndc2 = pt2.xy * invW.z;
+
+	float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1));
+	ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW;
+	ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW;
+	float ddxSum = dot(ret.ddx, vec3(1));
+	float ddySum = dot(ret.ddy, vec3(1));
+
+	vec2 deltaVec = pixelNdc - ndc0;
+	float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum;
+	float interpW = 1.0 / interpInvW;
+
+	ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x);
+	ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y);
+	ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z);
+
+	ret.ddx *= (2.0 / winSize.x);
+	ret.ddy *= (2.0 / winSize.y);
+	ddxSum  *= (2.0 / winSize.x);
+	ddySum  *= (2.0 / winSize.y);
+
+	ret.ddy *= -1.0;
+	ddySum  *= -1.0;
+
+	float interpW_ddx = 1.0 / (interpInvW + ddxSum);
+	float interpW_ddy = 1.0 / (interpInvW + ddySum);
+
+	ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda;
+	ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda;  
+
+	return ret;
+}
+
+struct Mesh {
+	mat4 model;
+	uint material_id;
+};
+
+layout(set=1, binding=1, scalar) buffer readonly MeshBuffer {
+	Mesh meshes[];
+};
+
+layout(set=1, binding=2, scalar) buffer readonly Positions {
+	vec3 positions[];
+};
+
+layout(set=1, binding=3, scalar) buffer readonly Normals {
+	vec3 normals[];
+};
+
+layout(set=1, binding=4, scalar) buffer readonly Indeces {
+	uint16_t indeces[];
+};
+
+const float PI = 3.14159265359;
+
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a      = roughness*roughness;
+    float a2     = a*a;
+    float NdotH  = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+	
+    float num   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+	
+    return num / denom;
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+
+    float num   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+	
+    return num / denom;
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
+	
+    return ggx1 * ggx2;
+}
+
+vec3 CalculateBarycenter(vec3 vertices[3], vec2 p) {
+	float D = vertices[0].x * (vertices[1].y - vertices[2].x) + vertices[0].y * (vertices[1].x - vertices[2].y) + vertices[1].x * vertices[2].y - vertices[1].y * vertices[2].x;
+
+	D = D == 0.0 ? 0.00001 : D;
+
+	float lambda1 = ((vertices[1].y - vertices[2].y) * p.x + (vertices[2].x - vertices[1].x) * p.y + (vertices[1].x * vertices[2].y - vertices[1].y * vertices[2].x)) / D;
+	float lambda2 = ((vertices[2].y - vertices[0].y) * p.x + (vertices[0].x - vertices[2].x) * p.y + (vertices[2].x * vertices[0].y - vertices[2].y * vertices[0].x)) / D;
+	float lambda3 = ((vertices[0].y - vertices[1].y) * p.x + (vertices[1].x - vertices[0].x) * p.y + (vertices[0].x * vertices[1].y - vertices[0].y * vertices[1].x)) / D;
+
+	return vec3(lambda1, lambda2, lambda3);
+}
+
 vec4 get_debug_color(uint i) {
 	vec4 colors[16] = vec4[16](
 		vec4(0.16863, 0.40392, 0.77647, 1),
@@ -148,17 +265,110 @@ vec4 get_debug_color(uint i) {
 			}
 		}
 
-		string.push_str("layout(push_constant, scalar) uniform PushConstant {
+		string.push_str("
+struct Camera {
+	mat4 view;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+
+layout(set=1,binding=5,scalar) buffer CameraBuffer {
+	Camera camera;
+};
+		
+layout(push_constant, scalar) uniform PushConstant {
 	layout(offset=16) uint material_id;
 } pc;");
 
+		string.push_str("\nvec3 fresnelSchlick(float cosTheta, vec3 F0) {
+			return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+		}");
+
 		string.push_str(&format!("layout(local_size_x=32) in;\n"));
-		string.push_str(&format!("void main() {{\n"));
-		string.push_str(&format!("if (gl_GlobalInvocationID.x >= material_count[pc.material_id]) {{ return; }}")); // This bounds check is necessary since we're using a local_size_x of 32.
-		string.push_str(&format!("uint offset = material_offset[pc.material_id];"));
-		string.push_str(&format!("u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];"));
-		string.push_str(&format!("ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);"));
-		string.push_str(&format!("uint be_vertex_id = imageLoad(vertex_id, be_pixel_coordinate).r;"));
+
+string.push_str(&format!("
+void main() {{
+	if (gl_GlobalInvocationID.x >= material_count[pc.material_id]) {{ return; }}
+
+	uint offset = material_offset[pc.material_id];
+	u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];
+	ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);
+	uint be_vertex_id = imageLoad(vertex_id, be_pixel_coordinate).r;
+	uint be_instance_id = imageLoad(instance_id, be_pixel_coordinate).r;
+
+	Mesh mesh = meshes[be_instance_id];
+
+	uint vertex_indeces[3] = uint[3](
+		uint(indeces[be_vertex_id + 0]),
+		uint(indeces[be_vertex_id + 1]),
+		uint(indeces[be_vertex_id + 2])
+	);
+
+	vec4 vertex_positions[3] = vec4[3](
+		vec4(positions[vertex_indeces[0]], 1.0),
+		vec4(positions[vertex_indeces[1]], 1.0),
+		vec4(positions[vertex_indeces[2]], 1.0)
+	);
+
+	vec4 vertex_normals[3] = vec4[3](
+		vec4(normals[vertex_indeces[0]], 0.0),
+		vec4(normals[vertex_indeces[1]], 0.0),
+		vec4(normals[vertex_indeces[2]], 0.0)
+	);
+
+	vec2 uv = ((be_pixel_xy) / vec2(1920.0, 1080.0)) * 2 - 1;
+
+	uv.y = -uv.y;
+
+	vec4 a = camera.view_projection * mesh.model * vertex_positions[0];
+	vec4 b = camera.view_projection * mesh.model * vertex_positions[1];
+	vec4 c = camera.view_projection * mesh.model * vertex_positions[2];
+
+	vec3 barycenter = CalculateBarycenter(vec3[3](a.xyz, b.xyz, c.xyz), uv);
+
+	// vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
+	vec3 BE_VERTEX_POSITION = vec3(mesh.model * vertex_positions[0]);
+	// vec3 BE_VERTEX_NORMAL = vec3((mesh.model * vertex_normals[0]).xyz * barycenter.x + (mesh.model * vertex_normals[1]).xyz * barycenter.y + (mesh.model * vertex_normals[2]).xyz * barycenter.z);
+	vec3 BE_VERTEX_NORMAL = vec3(mesh.model * vertex_normals[0]);
+
+	vec3 N = normalize(BE_VERTEX_NORMAL);
+	vec3 V = normalize(camera.view[3].xyz - BE_VERTEX_POSITION);
+
+	vec3 Lo = vec3(0.00001);
+
+	for (uint i = 0; i < 1; ++i) {{
+		vec3 light_pos = vec3(-1.5, 1, -0.5);
+		vec3 L = normalize(light_pos - BE_VERTEX_POSITION);
+		vec3 H = normalize(V + L);
+
+		float distance = length(light_pos - BE_VERTEX_POSITION);
+		float attenuation = 1.0 / (distance * distance);
+		vec3 light_color = vec3(1.0);
+		vec3 radiance = light_color * attenuation;
+
+		vec3 BE_ALBEDO = vec3({albedo});
+		vec3 BE_METALLIC = vec3({metallic});
+		float BE_ROUGHNESS = float({roughness});
+
+		vec3 F0 = vec3(0.04);
+		F0 = mix(F0, BE_ALBEDO, BE_METALLIC);
+		vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+		float NDF = DistributionGGX(N, H, BE_ROUGHNESS);
+		float G = GeometrySmith(N, V, L, BE_ROUGHNESS);
+		vec3 numerator = NDF * G * F;
+		float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.000001;
+		vec3 specular = numerator / denominator;
+
+		vec3 kS = F;
+		vec3 kD = vec3(1.0) - kS;
+
+		kD *= 1.0 - BE_METALLIC;
+
+		float NdotL = max(dot(N, L), 0.0);
+		Lo += (kD * BE_ALBEDO / PI + specular) * radiance * NdotL;
+	}}
+", roughness="0.5", albedo="be_variable_color", metallic="vec3(0.0)"));
 
 		fn visit_node(string: &mut String, shader_node: &lexer::Node) {
 			match &shader_node.node {
@@ -186,7 +396,7 @@ vec4 get_debug_color(uint i) {
 				lexer::Nodes::Expression(expression) => {
 					match expression {
 						lexer::Expressions::Operator { operator, left, right } => {
-							string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, be_variable_color);"));
+							string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, vec4(Lo, 1.0));"));
 							// format!("imageStore(out_albedo, ivec2(gl_FragCoord.xy), vec4(1.0, 0.0, 0.0, 1.0));")
 						}
 						_ => panic!("Invalid expression")
@@ -197,7 +407,10 @@ vec4 get_debug_color(uint i) {
 
 		visit_node(&mut string, shader_node);
 
-		string.push_str(&format!("}}"));
+		string.push_str(&format!("imageStore(out_position, be_pixel_coordinate, vec4(BE_VERTEX_POSITION, 1.0));"));
+		string.push_str(&format!("imageStore(out_normals, be_pixel_coordinate, vec4(BE_VERTEX_NORMAL, 1.0));"));
+
+		string.push_str(&format!("\n}}")); // Close main()
 
 		string
 	}

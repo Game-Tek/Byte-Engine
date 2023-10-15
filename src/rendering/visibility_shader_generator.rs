@@ -275,7 +275,21 @@ struct Camera {
 layout(set=1,binding=5,scalar) buffer CameraBuffer {
 	Camera camera;
 };
-		
+
+struct Light {
+	vec3 position;
+	vec3 color;
+};
+
+struct LightingData {
+	uint light_count;
+	Light lights[16];
+};
+
+layout(set=1,binding=9,scalar) buffer readonly LightingBuffer {
+	LightingData lighting_data;
+};
+
 layout(push_constant, scalar) uniform PushConstant {
 	layout(offset=16) uint material_id;
 } pc;");
@@ -336,16 +350,17 @@ void main() {{
 	vec3 N = normalize(BE_VERTEX_NORMAL);
 	vec3 V = normalize(camera.view[3].xyz - BE_VERTEX_POSITION);
 
-	vec3 Lo = vec3(0.00001);
+	vec3 Lo = vec3(0.0);
 
-	for (uint i = 0; i < 1; ++i) {{
-		vec3 light_pos = vec3(0, 2, -1.5);
+	for (uint i = 0; i < lighting_data.light_count; ++i) {{
+		vec3 light_pos = lighting_data.lights[i].position;
+		vec3 light_color = lighting_data.lights[i].color;
+
 		vec3 L = normalize(light_pos - BE_VERTEX_POSITION);
 		vec3 H = normalize(V + L);
 
 		float distance = length(light_pos - BE_VERTEX_POSITION);
 		float attenuation = 1.0 / (distance * distance);
-		vec3 light_color = vec3(1.0);
 		vec3 radiance = light_color * attenuation;
 
 		vec3 BE_ALBEDO = vec3({albedo});

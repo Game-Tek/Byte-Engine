@@ -3,7 +3,7 @@ use std::{collections::HashMap, hash::Hash};
 use log::{error, trace};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
+use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight, point_light::PointLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
 struct ToneMapPass {
 	pipeline_layout: render_system::PipelineLayoutHandle,
@@ -83,6 +83,7 @@ pub struct VisibilityWorldRenderDomain {
 	tone_map_pass: ToneMapPass,
 debug_position: render_system::TextureHandle,
 debug_normal: render_system::TextureHandle,
+light_data_buffer: render_system::BufferHandle,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -630,6 +631,12 @@ impl VisibilityWorldRenderDomain {
 			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
+			let light_data_buffer = render_system.create_buffer(Some("Light Data"), 1024 * 4, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+
+			let lighting_data = unsafe { (render_system.get_mut_buffer_slice(light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
+
+			lighting_data.count = 0; // Initially, no lights
+
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
 					name: "albedo",
@@ -703,6 +710,14 @@ impl VisibilityWorldRenderDomain {
 					stage_flags: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "LightData",
+					binding: 9,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stage_flags: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
 			];	
 
 			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
@@ -762,6 +777,12 @@ impl VisibilityWorldRenderDomain {
 					binding: 8,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Texture(debug_normal),
+				},
+				render_system::DescriptorWrite { // LightData
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 9,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: light_data_buffer, size: 1024 * 4 },
 				},
 			]);
 
@@ -926,6 +947,7 @@ impl VisibilityWorldRenderDomain {
 				camera: None,
 
 				meshes: HashMap::new(),
+				light_data_buffer,
 
 				mesh_resources: HashMap::new(),
 
@@ -968,6 +990,7 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<Mesh>()
 			.add_listener::<window_system::Window>()
 			.add_listener::<DirectionalLight>()
+			.add_listener::<PointLight>()
 	}
 
 	fn load_material(&mut self, resource_manager: &mut resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
@@ -1555,6 +1578,17 @@ struct ShaderMeshData {
 	model: Mat4f,
 	material_id: u32,
 }
+#[repr(C)]
+struct LightingData {
+	count: u32,
+	lights: [LightData; 16],
+}
+
+#[repr(C)]
+struct LightData {
+	position: Vector3,
+	color: Vector3,
+}
 
 impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Mesh>, mesh: &Mesh) {
@@ -1658,7 +1692,35 @@ impl orchestrator::EntitySubscriber<window_system::Window> for VisibilityWorldRe
 
 impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<DirectionalLight>, light: &DirectionalLight) {
-		trace!("Directional light created with direction: {:#?} and color: {:#?}", light.direction, light.color);
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let mut render_system = render_system.get_mut();
+		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
+
+		let lighting_data = unsafe { (render_system.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
+
+		let light_index = lighting_data.count as usize;
+
+		lighting_data.lights[light_index].position = crate::Vec3f::new(0.0, 2.0, -1.5);
+		lighting_data.lights[light_index].color = light.color;
+		
+		lighting_data.count += 1;
+	}
+}
+
+impl orchestrator::EntitySubscriber<PointLight> for VisibilityWorldRenderDomain {
+	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<PointLight>, light: &PointLight) {
+		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let mut render_system = render_system.get_mut();
+		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
+
+		let lighting_data = unsafe { (render_system.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
+
+		let light_index = lighting_data.count as usize;
+
+		lighting_data.lights[light_index].position = light.position;
+		lighting_data.lights[light_index].color = light.color;
+		
+		lighting_data.count += 1;
 	}
 }
 

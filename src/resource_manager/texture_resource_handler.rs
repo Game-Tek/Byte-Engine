@@ -25,18 +25,21 @@ impl ResourceHandler for ImageResourceHandler {
 
 	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
 		let mut decoder = png::Decoder::new(bytes);
-		decoder.set_transformations(png::Transformations::EXPAND);
+		decoder.set_transformations(png::Transformations::normalize_to_color8());
 		let mut reader = decoder.read_info().unwrap();
 		let mut buffer = vec![0; reader.output_buffer_size()];
 		let info = reader.next_frame(&mut buffer).unwrap();
 
 		let extent = crate::Extent { width: info.width, height: info.height, depth: 1, };
 
+		assert_eq!(info.color_type, png::ColorType::Rgb);
+		assert_eq!(info.bit_depth, png::BitDepth::Eight);
+
 		let mut buf: Vec<u8> = Vec::with_capacity(extent.width as usize * extent.height as usize * 4);
 
 		// convert rgb to rgba
-		for x in 0..extent.width {
-			for y in 0..extent.height {
+		for y in 0..extent.height {
+			for x in 0..extent.width {
 				let index = ((x + y * extent.width) * 3) as usize;
 				buf.push(buffer[index]);
 				buf.push(buffer[index + 1]);

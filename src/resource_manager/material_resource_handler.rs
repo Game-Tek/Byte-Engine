@@ -6,7 +6,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::{rendering::render_system, jspd::{self}};
 
-use super::{ResourceHandler, ResourceManager, SerializedResourceDocument, GenericResourceSerialization, Resource};
+use super::{ResourceHandler, ResourceManager, SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources};
 
 pub struct MaterialResourcerHandler {
 
@@ -80,7 +80,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(SerializedResourceDocument, Vec<u8>)>, String> {
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
 		let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
 		let is_material = asset_json["parent"].is_null();
@@ -100,45 +100,40 @@ impl ResourceHandler for MaterialResourcerHandler {
 				_ => { panic!("Invalid type") }
 			};
 			
-			let mut shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-				Self::produce_shader(&material_domain, &asset_json, &shader_json, s_type)
+			let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
+				Self::produce_shader(resource_manager, &material_domain, &asset_json, &shader_json, s_type)
 			}).collect::<Vec<_>>();
-			
-			let required_resources = shaders.iter().map(|s| s.1.clone()).collect::<Vec<_>>();
 
-			let material_resource_document = GenericResourceSerialization::new(asset_url.to_string(), Material {
+			for variable in asset_json["variables"].members() {
+				if variable["data_type"].as_str().unwrap() == "Texture2D" {
+					let texture_url = variable["value"].as_str().unwrap();
+
+					required_resources.push(ProcessedResources::Ref(texture_url.to_string()));
+				}
+			}
+
+			Ok(vec![ProcessedResources::Generated((GenericResourceSerialization::new(asset_url.to_string(), Material {
 				model: Model {
 					name: Self::RENDER_MODEL.to_string(),
 					pass: "MaterialEvaluation".to_string(),
 				},
-			}).required_resources(required_resources);
-
-			shaders.push(((material_resource_document.into(), Vec::new()), "".to_string()));
-
-			Ok(shaders.into_iter().map(|s| s.0).collect::<Vec<_>>())
+			}).required_resources(&required_resources), Vec::new()))])
 		} else {
 			let variant_json = asset_json;
 
 			let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-			let _ = resource_manager.load_from_cache_or_source(parent_material_url).unwrap();
+			let material_resource_document = GenericResourceSerialization::new(asset_url.to_string(), Variant{
+				parent: parent_material_url.to_string(),
+				variables: variant_json["variables"].members().map(|v| {
+					VariantVariable {
+						name: v["name"].to_string(),
+						value: v["value"].to_string(),
+					}
+				}).collect::<Vec<_>>()
+			}).required_resources(&[ProcessedResources::Ref(parent_material_url.to_string())]);
 
-			let material_resource_document = GenericResourceSerialization {
-				url: asset_url.to_string(),
-				class: "Variant".to_string(),
-				required_resources: vec![parent_material_url.to_string()],
-				resource: Variant{
-					parent: parent_material_url.to_string(),
-					variables: variant_json["variables"].members().map(|v| {
-						VariantVariable {
-							name: v["name"].to_string(),
-							value: v["value"].to_string(),
-						}
-					}).collect::<Vec<_>>()
-				}
-			};
-
-			Ok(vec![(material_resource_document.into(), Vec::new())])
+			Ok(vec![ProcessedResources::Generated((material_resource_document.into(), Vec::new()))])
 		}
 	}
 
@@ -164,7 +159,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 impl MaterialResourcerHandler {
 	const RENDER_MODEL: &'static str = "Visibility";
 
-	fn treat_shader(path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<(SerializedResourceDocument, Vec<u8>), String>> {
+	fn treat_shader(path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<ProcessedResources, String>> {
 		let visibility = crate::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
 
 		let glsl = visibility.transform(material, &shader_node, stage)?;
@@ -207,31 +202,26 @@ impl MaterialResourcerHandler {
 			_ => { panic!("Invalid shader stage") }
 		};
 
-		let resource = GenericResourceSerialization {
-			url: path.to_string(),
-			class: "Shader".to_string(),
-			required_resources: Vec::new(),
-			resource: Shader {
-				stage: stage,
-			}
-		};
+		let resource = GenericResourceSerialization::new(path.to_string(), Shader {
+			stage: stage,
+		});
 
-		Some(Ok((resource.into(), Vec::from(result_shader_bytes))))
+		Some(Ok(ProcessedResources::Generated((resource, Vec::from(result_shader_bytes)))))
 	}
 
-	fn produce_shader(domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<((SerializedResourceDocument, Vec<u8>), String)> {
+	fn produce_shader(resource_manager: &ResourceManager, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
 		let shader_option = match shader_json {
 			json::JsonValue::Null => { None }
 			json::JsonValue::Short(path) => {
-				let arlp = "assets/".to_string() + path.as_str();
+				let (arlp, format) = resource_manager.read_asset_from_source(&path).ok()?;
 
-				if path.ends_with(".glsl") {
-					let shader_code = std::fs::read_to_string(&arlp).unwrap();
+				let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
+
+				if format == "glsl" {
 					Some((jspd::lexer::Node {
 						node: jspd::lexer::Nodes::GLSL { code: shader_code },
 					}, path.to_string()))
-				} else if path.ends_with(".besl") {
-					let shader_code = std::fs::read_to_string(&arlp).unwrap();
+				} else if format == "besl" {
 					Some((jspd::compile_to_jspd(&shader_code).unwrap(), path.to_string()))
 				} else {
 					None
@@ -259,7 +249,7 @@ impl MaterialResourcerHandler {
 		};
 
 		if let Some((shader, path)) = shader_option {
-			Some((Self::treat_shader(&path, domain, stage, material, shader,)?.unwrap(), path))
+			Some(Self::treat_shader(&path, domain, stage, material, shader,)?.unwrap())
 		} else {
 			let default_shader = match stage {
 				"Vertex" => MaterialResourcerHandler::default_vertex_shader(),
@@ -271,7 +261,7 @@ impl MaterialResourcerHandler {
 				node: jspd::lexer::Nodes::GLSL { code: default_shader.to_string() },
 			};
 
-			Some((Self::treat_shader("", domain, stage, material, shader_node,)?.unwrap(), "".to_string()))
+			Some(Self::treat_shader("", domain, stage, material, shader_node,)?.unwrap())
 		}
 	}
 }

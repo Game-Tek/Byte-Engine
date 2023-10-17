@@ -2,7 +2,7 @@
 	"domain": "World",
 	"type": "Surface",
 	"shaders": {
-		"Fragment": "shaders/fragment.besl"
+		"Fragment": "shaders/fragment"
 	},
 	"variables": [
 		{
@@ -10,6 +10,12 @@
 			"data_type": "vec4f",
 			"type": "Static",
 			"value": "Purple"
+		},
+		{
+			"name": "texture",
+			"data_type": "Texture2D",
+			"type": "Static",
+			"value": "patterned_brick_floor_02_diff_2k"
 		}
 	]
 }

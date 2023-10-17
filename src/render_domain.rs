@@ -3,7 +3,7 @@ use std::{collections::HashMap, hash::Hash};
 use log::{error, trace};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight, point_light::PointLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
+use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight, point_light::PointLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self, Camera}, math, window_system};
 
 struct ToneMapPass {
 	pipeline_layout: render_system::PipelineLayoutHandle,
@@ -81,9 +81,11 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_materials: HashMap<String, (u32, render_system::PipelineHandle)>,
 
 	tone_map_pass: ToneMapPass,
-debug_position: render_system::TextureHandle,
-debug_normal: render_system::TextureHandle,
-light_data_buffer: render_system::BufferHandle,
+	debug_position: render_system::TextureHandle,
+	debug_normal: render_system::TextureHandle,
+	light_data_buffer: render_system::BufferHandle,
+
+	pending_texture_loads: Vec<render_system::TextureHandle>,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -147,11 +149,11 @@ impl VisibilityWorldRenderDomain {
 
 			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
-			let debug_position = render_system.create_texture(Some("debug position"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let debug_normal = render_system.create_texture(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let debug_position = render_system.create_texture(Some("debug position"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let debug_normal = render_system.create_texture(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, None, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let render_finished_synchronizer = render_system.create_synchronizer(true);
 			let image_ready = render_system.create_synchronizer(false);
@@ -343,9 +345,9 @@ impl VisibilityWorldRenderDomain {
 				(&visibility_pass_fragment_shader, render_system::ShaderTypes::Fragment, vec![]),
 			];
 
-			let material_id = render_system.create_texture(Some("material_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let primitive_index = render_system.create_texture(Some("primitive index"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let instance_id = render_system.create_texture(Some("instance_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let material_id = render_system.create_texture(Some("material_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, None, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let primitive_index = render_system.create_texture(Some("primitive index"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, None, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let instance_id = render_system.create_texture(Some("instance_id"), crate::Extent::new(1920, 1080, 1), render_system::TextureFormats::U32, None, render_system::Uses::RenderTarget | render_system::Uses::Storage, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let attachments = [
 				render_system::AttachmentInformation {
@@ -844,7 +846,7 @@ impl VisibilityWorldRenderDomain {
 			}
 			"#;
 
-			let result = render_system.create_texture(Some("result"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let result = render_system.create_texture(Some("result"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, None, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let tone_map_pass = {
 				let descriptor_set_layout = render_system.create_descriptor_set_layout(&[
@@ -983,6 +985,8 @@ impl VisibilityWorldRenderDomain {
 				material_evaluation_materials: HashMap::new(),
 
 				tone_map_pass,
+
+				pending_texture_loads: Vec::new(),
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -998,6 +1002,23 @@ impl VisibilityWorldRenderDomain {
 
 		for resource_document in &response.resources {
 			match resource_document.class.as_str() {
+				"Texture" => {
+					let texture: &texture_resource_handler::Texture = resource_document.resource.downcast_ref().unwrap();
+
+					let compression = if let Some(compression) = &texture.compression {
+						match compression {
+							texture_resource_handler::CompressionSchemes::BC7 => Some(render_system::CompressionSchemes::BC7)
+						}
+					} else {
+						None
+					};
+
+					let new_texture = render_system.create_texture(Some(&resource_document.url), texture.extent, render_system::TextureFormats::RGBAu8, compression, render_system::Uses::Texture | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+
+					render_system.get_texture_slice_mut(new_texture).copy_from_slice(&buffer[resource_document.offset as usize..(resource_document.offset + resource_document.size) as usize]);
+
+					self.pending_texture_loads.push(new_texture);
+				}
 				"Shader" => {
 					let shader: &Shader = resource_document.resource.downcast_ref().unwrap();
 
@@ -1194,7 +1215,9 @@ impl VisibilityWorldRenderDomain {
 		{
 			let mut command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
 
-			// TODO: Copy the data from the CPU to the GPU
+			command_buffer_recording.transfer_textures(&self.pending_texture_loads);
+
+			self.pending_texture_loads.clear();
 
 			command_buffer_recording.execute(&[], &[self.transfer_synchronizer], self.transfer_synchronizer);
 		}

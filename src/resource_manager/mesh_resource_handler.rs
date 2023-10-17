@@ -4,7 +4,7 @@ use log::error;
 use polodb_core::bson::{Document, doc};
 use serde::{Serialize, Deserialize};
 
-use super::{ResourceHandler, SerializedResourceDocument, GenericResourceSerialization, Resource};
+use super::{ResourceHandler, SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources};
 
 pub struct MeshResourceHandler {
 
@@ -25,7 +25,7 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<(SerializedResourceDocument, Vec<u8>)>, String> {
+	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
 		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
@@ -102,14 +102,9 @@ impl ResourceHandler for MeshResourceHandler {
 			index_type
 		};
 
-		let resource_document = GenericResourceSerialization {
-			url: asset_url.to_string(),
-			required_resources: Vec::new(),
-			class: "Mesh".to_string(),
-			resource: mesh,
-		};
+		let resource_document = GenericResourceSerialization::new(asset_url.to_string(), mesh);
 
-		Ok(vec![(resource_document.into(), buf)])
+		Ok(vec![ProcessedResources::Generated((resource_document, buf))])
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {

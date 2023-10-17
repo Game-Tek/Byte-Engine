@@ -183,6 +183,8 @@ pub trait CommandBufferRecording {
 	fn clear_texture(&mut self, texture_handle: TextureHandle, clear_value: ClearValue);
 	fn clear_buffer(&mut self, buffer_handle: BufferHandle);
 
+	fn transfer_textures(&mut self, texture_handles: &[TextureHandle]);
+
 	/// Copies texture data from a CPU accessible buffer to a GPU accessible texture.
 	fn write_texture_data(&mut self, texture_handle: TextureHandle, data: &[RGBAu8]);
 
@@ -264,8 +266,10 @@ pub trait RenderSystem: orchestrator::System {
 	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice(&self, buffer_handle: BufferHandle) -> &mut [u8];
 
+	fn get_texture_slice_mut(&self, texture_handle: TextureHandle) -> &mut [u8];
+
 	/// Creates a texture.
-	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle;
+	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle;
 
 	fn create_sampler(&mut self) -> SamplerHandle;
 
@@ -390,7 +394,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -521,7 +525,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -646,7 +650,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -781,7 +785,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -919,7 +923,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1083,7 +1087,7 @@ pub(super) mod tests {
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let sampled_texture = renderer.create_texture(None, crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let sampled_texture = renderer.create_texture(None, crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, None, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -1138,7 +1142,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1269,6 +1273,11 @@ pub enum TextureFormats {
 	/// 32 bit float depth.
 	Depth32,
 U32,
+}
+
+#[derive(Clone, Copy)]
+pub enum CompressionSchemes {
+	BC7,
 }
 
 #[derive(Clone, Copy)]
@@ -1665,6 +1674,10 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.get_mut_buffer_slice(buffer_handle)
 	}
 
+	fn get_texture_slice_mut(&self, texture_handle: TextureHandle) -> &mut [u8] {
+		self.pointer.get_texture_slice_mut(texture_handle)
+	}
+
 	fn get_texture_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
 		self.pointer.get_texture_data(texture_copy_handle)
 	}
@@ -1737,7 +1750,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_synchronizer(signaled)
 	}
 
-	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle {
-		self.pointer.create_texture(name, extent, format, resource_uses, device_accesses, use_case)
+	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle {
+		self.pointer.create_texture(name, extent, format, compression, resource_uses, device_accesses, use_case)
 	}
 }

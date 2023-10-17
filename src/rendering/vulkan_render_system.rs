@@ -527,12 +527,19 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	fn get_mut_buffer_slice(&self, buffer_handle: render_system::BufferHandle) -> &mut [u8] {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		unsafe {
-			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size as usize)
+			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size)
+		}
+	}
+
+	fn get_texture_slice_mut(&self, texture_handle: render_system::TextureHandle) -> &mut [u8] {
+		let texture = &self.textures[texture_handle.0 as usize];
+		unsafe {
+			std::slice::from_raw_parts_mut(texture.pointer as *mut u8, texture.size)
 		}
 	}
 
 	/// Creates a texture.
-	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: render_system::TextureFormats, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::TextureHandle {
+	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::TextureHandle {
 		let size = (extent.width * extent.height * extent.depth * 4) as usize;
 
 		let texture_handle = render_system::TextureHandle(self.textures.len() as u64);
@@ -548,7 +555,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				resource_uses
 			};
 
-			let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | render_system::Uses::TransferSource, device_accesses, render_system::AccessPolicies::WRITE, 1);
+			let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | render_system::Uses::TransferSource, device_accesses, render_system::AccessPolicies::WRITE, 1);
 
 			let (allocation_handle, pointer) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
 
@@ -556,9 +563,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			let texture_handle = render_system::TextureHandle(self.textures.len() as u64);
 
-			let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, 0);
+			let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, compression, 0);
 
-			let staging_buffer = if device_accesses.contains(render_system::DeviceAccesses::CpuRead) {
+			let (staging_buffer, pointer) = if device_accesses.contains(render_system::DeviceAccesses::CpuRead) {
 				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, render_system::Uses::TransferDestination);
 
 				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuRead);
@@ -574,7 +581,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					pointer,
 				});
 
-				Some(staging_buffer_handle)
+				(Some(staging_buffer_handle), pointer)
 			} else if device_accesses.contains(render_system::DeviceAccesses::CpuWrite) {
 				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, render_system::Uses::TransferSource);
 
@@ -591,20 +598,21 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					pointer,
 				});
 
-				Some(staging_buffer_handle)
+				(Some(staging_buffer_handle), pointer)
 			} else {
-				None
+				(None, std::ptr::null_mut())
 			};
 
 			self.textures.push(Texture {
 				next: None,
+				size: texture_creation_result.size,
 				staging_buffer,
 				allocation_handle,
 				image: texture_creation_result.resource,
 				image_view,
 				pointer,
 				extent,
-				format: to_format(format),
+				format: to_format(format, compression),
 				format_: format,
 				layout: vk::ImageLayout::UNDEFINED,
 			});
@@ -825,6 +833,7 @@ pub(crate) struct Texture {
 	format: vk::Format,
 	format_: render_system::TextureFormats,
 	layout: vk::ImageLayout,
+	size: usize,
 }
 
 unsafe impl Send for Texture {}
@@ -915,9 +924,17 @@ fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
 	}
 }
 
-fn to_format(format: render_system::TextureFormats) -> vk::Format {
+fn to_format(format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>) -> vk::Format {
 	match format {
-		render_system::TextureFormats::RGBAu8 => vk::Format::R8G8B8A8_UNORM,
+		render_system::TextureFormats::RGBAu8 => {
+			if let Some(compression) = compression {
+				match compression {
+					render_system::CompressionSchemes::BC7 => vk::Format::BC7_SRGB_BLOCK,
+				}
+			} else {
+				vk::Format::R8G8B8A8_UNORM
+			}
+		}
 		render_system::TextureFormats::RGBAu16 => vk::Format::R16G16B16A16_SFLOAT,
 		render_system::TextureFormats::RGBAu32 => vk::Format::R32G32B32A32_SFLOAT,
 		render_system::TextureFormats::RGBAf16 => vk::Format::R16G16B16A16_SFLOAT,
@@ -1497,7 +1514,7 @@ impl VulkanRenderSystem {
 								.alpha_blend_op(vk::BlendOp::ADD)
 						}).collect::<Vec<_>>();
 	
-						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != render_system::TextureFormats::Depth32).map(|a| to_format(a.format)).collect::<Vec<_>>();
+						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != render_system::TextureFormats::Depth32).map(|a| to_format(a.format, None)).collect::<Vec<_>>();
 
 						let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
 							.logic_op_enable(false)
@@ -1728,7 +1745,7 @@ impl VulkanRenderSystem {
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
 
-	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: render_system::TextureFormats, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, _access_policies: render_system::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
+	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, _access_policies: render_system::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_type_from_extent = |extent: vk::Extent3D| {
 			if extent.depth > 1 {
 				vk::ImageType::TYPE_3D
@@ -1741,7 +1758,7 @@ impl VulkanRenderSystem {
 
 		let image_create_info = vk::ImageCreateInfo::default()
 			.image_type(image_type_from_extent(extent))
-			.format(to_format(format))
+			.format(to_format(format, compression))
 			.extent(extent)
 			.mip_levels(mip_levels)
 			.array_layers(1)
@@ -1861,13 +1878,13 @@ impl VulkanRenderSystem {
 		unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") }
 	}
 
-	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: render_system::TextureFormats, _mip_levels: u32) -> vk::ImageView {
+	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>, _mip_levels: u32) -> vk::ImageView {
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
 			.view_type(
 				vk::ImageViewType::TYPE_2D
 			)
-			.format(to_format(format))
+			.format(to_format(format, compression))
 			.components(vk::ComponentMapping {
 				r: vk::ComponentSwizzle::IDENTITY,
 				g: vk::ComponentSwizzle::IDENTITY,
@@ -2130,6 +2147,10 @@ impl VulkanCommandBufferRecording<'_> {
 	// 		((vk::ImageLayout::UNDEFINED, vk::PipelineStageFlags2::NONE, vk::AccessFlags2::NONE), new_texture_state)
 	// 	}
 	// }
+
+	fn get_buffer(&self, buffer_handle: render_system::BufferHandle) -> (render_system::BufferHandle, &Buffer) {
+		(buffer_handle, &self.render_system.buffers[buffer_handle.0 as usize])
+	}
 
 	fn get_texture(&self, mut texture_handle: render_system::TextureHandle) -> (render_system::TextureHandle, &Texture) {
 		let mut i = 0;
@@ -2611,6 +2632,51 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
+	fn transfer_textures(&mut self, texture_handles: &[render_system::TextureHandle]) {
+		self.consume_resources(&texture_handles.iter().map(|texture_handle|
+			render_system::Consumption{
+				handle: render_system::Handle::Texture(*texture_handle),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
+			}
+			// r(false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
+		).collect::<Vec<_>>());
+
+		let command_buffer = self.get_command_buffer();
+
+		for texture_handle in texture_handles {
+			let (_, texture) = self.get_texture(*texture_handle);
+
+			let regions = [vk::BufferImageCopy2::default()
+				.buffer_offset(0)
+				.buffer_row_length(0)
+				.buffer_image_height(0)
+				.image_subresource(vk::ImageSubresourceLayers::default()
+					.aspect_mask(vk::ImageAspectFlags::COLOR)
+					.mip_level(0)
+					.base_array_layer(0)
+					.layer_count(1)
+					/* .build() */
+				)
+				.image_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
+				.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth)/* .build() */)/* .build() */];
+
+			let (_, buffer) = self.get_buffer(texture.staging_buffer.expect("No staging buffer"));
+
+			// Copy to images from staging buffer
+			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
+				.src_buffer(buffer.buffer)
+				.dst_image(texture.image)
+				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+				.regions(&regions);
+
+			unsafe {
+				self.render_system.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
+			}
+		}
+	}
+
 	fn write_texture_data(&mut self, texture_handle: render_system::TextureHandle, data: &[render_system::RGBAu8]) {
 		let (texture_handle, texture) = self.get_texture(texture_handle);
 
@@ -2695,7 +2761,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		unsafe {
 			self.render_system.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
-		}		
+		}
 
 		let image_memory_barriers = [
 			vk::ImageMemoryBarrier2KHR::default()

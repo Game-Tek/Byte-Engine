@@ -4,7 +4,7 @@ use log::error;
 use polodb_core::bson::{Document, doc};
 use serde::{Serialize, Deserialize};
 
-use super::{ResourceHandler, SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources};
+use super::{SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
 
 pub struct MeshResourceHandler {
 
@@ -25,7 +25,7 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
+	fn process(&self, _: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
 		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
@@ -271,7 +271,7 @@ impl Size for IntegralTypes {
 
 #[cfg(test)]
 mod tests {
-	use crate::{resource_manager::{ResourceManager, Options, OptionResource, Buffer}, Vector3};
+	use crate::{resource_manager::{resource_manager::ResourceManager, Options, OptionResource, Buffer}, Vector3};
 
 	use super::*;
 
@@ -291,20 +291,82 @@ mod tests {
 	}
 
 	#[test]
+	fn load_local_mesh() {
+		let mut resource_manager = ResourceManager::new();
+
+		let (response, buffer) = resource_manager.get("Box").expect("Failed to get resource");
+
+		assert_eq!(response.resources.len(), 1);
+
+		let resource_container = &response.resources[0];
+		let resource = &resource_container.resource;
+
+		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
+
+		assert_eq!(buffer.len(), (24 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
+
+		let mesh = resource.downcast_ref::<Mesh>().unwrap();
+
+		assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
+		assert_eq!(mesh.vertex_count, 24);
+		assert_eq!(mesh.index_count, 36);
+		assert_eq!(mesh.index_type, IntegralTypes::U16);
+		assert_eq!(mesh.vertex_components.len(), 2);
+		assert_eq!(mesh.vertex_components[0].semantic, VertexSemantics::Position);
+		assert_eq!(mesh.vertex_components[0].format, "vec3f");
+		assert_eq!(mesh.vertex_components[0].channel, 0);
+		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
+		assert_eq!(mesh.vertex_components[1].format, "vec3f");
+		assert_eq!(mesh.vertex_components[1].channel, 1);
+
+		let resource_request = resource_manager.request_resource("Box");
+
+		let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
+
+		let mut options = Options { resources: Vec::new(), };
+
+		let mut vertex_buffer = vec![0u8; 1024];
+		let mut index_buffer = vec![0u8; 1024];
+
+		let resource = &resource_request.resources[0];
+
+		match resource.class.as_str() {
+			"Mesh" => {
+				options.resources.push(OptionResource {
+					url: resource.url.clone(),
+					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }],
+				});
+			}
+			_ => {}
+		}
+
+		let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
+
+		let (response, _buffer) = (resource.0, resource.1.unwrap());
+
+		for resource in &response.resources {
+			match resource.class.as_str() {
+				"Mesh" => {
+					let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
+
+					assert_eq!(buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize], vertex_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize]);
+
+					assert_eq!(buffer[576..(576 + mesh.index_count * 2) as usize], index_buffer[0..(mesh.index_count * 2) as usize]);
+				}
+				_ => {}
+			}
+		}
+	}
+
+	#[test]
 	fn load_with_manager_buffer() {
 		let mut resource_manager = ResourceManager::new();
 
-		// Test loading from source
+		let (response, buffer) = resource_manager.get("Box").expect("Failed to get resource");
 
-		let resource_result = resource_manager.get("Box");
+		assert_eq!(response.resources.len(), 1);
 
-		assert!(resource_result.is_some());
-
-		let (request, buffer) = resource_result.unwrap();
-
-		assert_eq!(request.resources.len(), 1);
-
-		let resource_container = &request.resources[0];
+		let resource_container = &response.resources[0];
 		let resource = &resource_container.resource;
 
 		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
@@ -406,10 +468,6 @@ mod tests {
 					assert_eq!(index_buffer[0], 0);
 					assert_eq!(index_buffer[1], 1);
 					assert_eq!(index_buffer[2], 2);
-
-					// assert_eq!(mesh_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize], vertex_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize]);
-
-					// assert_eq!(mesh_buffer[576..(576 + mesh.index_count * 2) as usize], index_buffer[0..(mesh.index_count * 2) as usize]);
 				}
 				_ => {}
 			}
@@ -477,10 +535,6 @@ mod tests {
 					assert_eq!(index_buffer[0], 0);
 					assert_eq!(index_buffer[1], 1);
 					assert_eq!(index_buffer[2], 2);
-
-					// assert_eq!(mesh_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize], vertex_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize]);
-
-					// assert_eq!(mesh_buffer[576..(576 + mesh.index_count * 2) as usize], index_buffer[0..(mesh.index_count * 2) as usize]);
 				}
 				_ => {}
 			}

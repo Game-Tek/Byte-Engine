@@ -585,6 +585,12 @@ impl WindowInternal {
 			}
 		}
 	}
+
+	pub fn close(&self) {
+		let connection = &self.connection;
+
+		connection.send_request(&xcb::x::DestroyWindow { window: self.window });
+	}
 }
 
 /// The window system.
@@ -662,6 +668,10 @@ impl WindowSystem {
 		}
 	}
 
+	pub fn close_window(&mut self, window_handle: &WindowHandle) {
+		self.windows[window_handle.0 as usize].close();
+	}
+
 	/// Gets the OS handles for a window.
 	/// 
 	/// # Arguments
@@ -724,19 +734,14 @@ mod tests {
 	// 	assert_ne!(os_handles.xcb_window, 0);
 	// }
 
-	#[ignore]
 	#[test]
 	fn test_window_loop() {
 		let mut window_system = WindowSystem::new();
 
-		let _window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
+		let window_handle = window_system.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 
-		loop {
-			if window_system.update() == false {
-				break;
-			}
+		std::thread::sleep(std::time::Duration::from_millis(500));
 
-			std::thread::sleep(std::time::Duration::from_millis(16));
-		}
+		window_system.close_window(&window_handle);
 	}
 }

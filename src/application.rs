@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator, rendering::{render_system}, window_system, input_manager, Vector2, rendering::{self, render_system::RenderSystem}, render_domain, resource_manager, file_tracker};
+use crate::{orchestrator, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, render_domain, resource_manager, file_tracker};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -139,7 +139,7 @@ impl Application for GraphicsApplication {
 
 		let orchestrator = application.get_mut_orchestrator();
 
-		orchestrator.spawn_entity(resource_manager::ResourceManager::new_as_system());
+		orchestrator.spawn_entity(resource_manager::resource_manager::ResourceManager::new_as_system());
 		
 		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system()).unwrap();
 		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();
@@ -279,7 +279,6 @@ mod tests {
 		app.deinitialize();
 	}
 
-	#[ignore = "Ignore until we have a way to disable this test in CI where windows are not supported"]
 	#[test]
 	fn create_graphics_application() {
 		let mut app = GraphicsApplication::new("Test");
@@ -291,8 +290,6 @@ mod tests {
 
 		while !app.application.close {
 			app.tick();
-
-			println!("Tick!");
 
 			if start_time.elapsed().as_secs() > 1 {
 				app.close();

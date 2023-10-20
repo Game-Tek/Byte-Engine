@@ -150,7 +150,7 @@ impl VisibilityWorldRenderDomain {
 			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let debug_position = render_system.create_texture(Some("debug position"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let debug_normal = render_system.create_texture(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let debug_normals = render_system.create_texture(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let albedo = render_system.create_texture(Some("albedo"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let depth_target = render_system.create_texture(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::TextureFormats::Depth32, None, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -608,19 +608,19 @@ impl VisibilityWorldRenderDomain {
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 5,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(material_id),
+					descriptor: render_system::Descriptor::Texture{ handle: material_id, layout: render_system::Layouts::General },
 				},
 				render_system::DescriptorWrite { // MaterialId
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 6,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(primitive_index),
+					descriptor: render_system::Descriptor::Texture{ handle: primitive_index, layout: render_system::Layouts::General },
 				},
 				render_system::DescriptorWrite { // InstanceId
 					descriptor_set: visibility_passes_descriptor_set,
 					binding: 7,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(instance_id),
+					descriptor: render_system::Descriptor::Texture{ handle: instance_id, layout: render_system::Layouts::General },
 				},
 			]);
 
@@ -730,7 +730,7 @@ impl VisibilityWorldRenderDomain {
 					descriptor_set: material_evaluation_descriptor_set,
 					binding: 0,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(albedo),
+					descriptor: render_system::Descriptor::Texture{ handle: albedo, layout: render_system::Layouts::General },
 				},
 				render_system::DescriptorWrite { // MeshBuffer
 					descriptor_set: material_evaluation_descriptor_set,
@@ -772,13 +772,13 @@ impl VisibilityWorldRenderDomain {
 					descriptor_set: material_evaluation_descriptor_set,
 					binding: 7,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(debug_position),
+					descriptor: render_system::Descriptor::Texture{ handle: debug_position, layout: render_system::Layouts::General }
 				},
 				render_system::DescriptorWrite { // debug_normals
 					descriptor_set: material_evaluation_descriptor_set,
 					binding: 8,
 					array_element: 0,
-					descriptor: render_system::Descriptor::Texture(debug_normal),
+					descriptor: render_system::Descriptor::Texture{ handle: debug_normals, layout: render_system::Layouts::General }
 				},
 				render_system::DescriptorWrite { // LightData
 					descriptor_set: material_evaluation_descriptor_set,
@@ -894,13 +894,13 @@ impl VisibilityWorldRenderDomain {
 						descriptor_set,
 						binding: 0,
 						array_element: 0,
-						descriptor: render_system::Descriptor::Texture(albedo),
+						descriptor: render_system::Descriptor::Texture{ handle: albedo, layout: render_system::Layouts::General },
 					},
 					render_system::DescriptorWrite {
 						descriptor_set,
 						binding: 1,
 						array_element: 0,
-						descriptor: render_system::Descriptor::Texture(result),
+						descriptor: render_system::Descriptor::Texture{ handle: result, layout: render_system::Layouts::General },
 					},
 				]);
 
@@ -974,7 +974,7 @@ impl VisibilityWorldRenderDomain {
 				instance_id,
 
 				debug_position,
-				debug_normal,
+				debug_normal: debug_normals,
 
 				material_count,
 				material_offset,
@@ -997,7 +997,7 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<PointLight>()
 	}
 
-	fn load_material(&mut self, resource_manager: &mut resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
+	fn load_material(&mut self, resource_manager: &mut resource_manager::resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
 		let (response, buffer) = resource_manager.get(asset_url).unwrap();
 
 		for resource_document in &response.resources {
@@ -1622,17 +1622,17 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 		orchestrator.tie_self(Self::transform, &handle, Mesh::transform);
 
 		{
-			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
+			let resource_manager = orchestrator.get_by_class::<resource_manager::resource_manager::ResourceManager>();
 			let mut resource_manager = resource_manager.get_mut();
-			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
+			let resource_manager: &mut resource_manager::resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
 			self.load_material(resource_manager, render_system, mesh.material_id);
 		}
 
 		if !self.mesh_resources.contains_key(mesh.resource_id) { // Load only if not already loaded
-			let resource_manager = orchestrator.get_by_class::<resource_manager::ResourceManager>();
+			let resource_manager = orchestrator.get_by_class::<resource_manager::resource_manager::ResourceManager>();
 			let mut resource_manager = resource_manager.get_mut();
-			let resource_manager: &mut resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
+			let resource_manager: &mut resource_manager::resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
 			self.load_material(resource_manager, render_system, mesh.material_id);
 

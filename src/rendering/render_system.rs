@@ -202,11 +202,14 @@ pub trait CommandBufferRecording {
 }
 
 pub enum Descriptor {
-	Buffer{
+	Buffer {
 		handle: BufferHandle,
 		size: usize,
 	},
-	Texture(TextureHandle),
+	Texture {
+		handle: TextureHandle,
+		layout: Layouts,
+	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
 }
@@ -918,7 +921,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Vertex, vertex_shader_code.as_bytes());
 		let fragment_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Fragment, fragment_shader_code.as_bytes());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
+		let pipeline_layout = renderer.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1087,7 +1090,7 @@ pub(super) mod tests {
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let sampled_texture = renderer.create_texture(None, crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, None, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let sampled_texture = renderer.create_texture(Some("sampled texture"), crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, None, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -1096,7 +1099,7 @@ pub(super) mod tests {
 			RGBAu8 { r: 255, g: 255, b: 0, a: 255 },
 		];
 
-		let sampler = renderer.create_sampler();
+		let sampler =  renderer.create_sampler();
 
 		let bindings = [
 			DescriptorSetLayoutBinding {
@@ -1132,7 +1135,7 @@ pub(super) mod tests {
 		renderer.write(&[
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: 64 } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Texture(sampled_texture) },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Texture{ handle: sampled_texture, layout: Layouts::Texture } },
 		]);
 
 		assert!(!renderer.has_errors());
@@ -1170,7 +1173,14 @@ pub(super) mod tests {
 
 		command_buffer_recording.write_texture_data(sampled_texture, &pixels);
 
-		// command_buffer_recording.transition_textures(&[(sampled_texture, true, Layouts::Texture, Stages::SHADER_READ, AccessPolicies::READ)]);
+		command_buffer_recording.consume_resources(&[
+			Consumption{
+				handle: Handle::Texture(sampled_texture),
+				stages: Stages::FRAGMENT,
+				access: AccessPolicies::READ,
+				layout: Layouts::Texture,
+			}
+		]);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1392,8 +1402,6 @@ bitflags::bitflags! {
 		const PRESENTATION = 0b1000000;
 		/// The host stage.
 		const HOST = 0b10000000;
-		/// The shader read stage.
-		const SHADER_READ = 0b100000000;
 		/// The shader write stage.
 		const SHADER_WRITE = 0b1000000000;
 		/// The indirect commands evaluation stage.
@@ -1529,7 +1537,7 @@ pub struct DescriptorWrite {
 	/// The descriptor set to write to.
 	pub descriptor_set: DescriptorSetHandle,
 	/// The binding to write to.
-	pub 	binding: u32,
+	pub binding: u32,
 	/// The index of the array element to write to in the binding(if the binding is an array).
 	pub array_element: u32,
 	/// Information describing the descriptor.

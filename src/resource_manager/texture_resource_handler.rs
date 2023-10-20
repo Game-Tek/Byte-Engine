@@ -1,8 +1,10 @@
+use std::io::Read;
+
 use serde::{Serialize, Deserialize};
 
 use crate::resource_manager::GenericResourceSerialization;
 
-use super::{ResourceHandler, SerializedResourceDocument, Resource, ProcessedResources};
+use super::{SerializedResourceDocument, Resource, ProcessedResources, resource_manager::ResourceManager, resource_handler::ResourceHandler};
 
 pub(crate) struct ImageResourceHandler {
 
@@ -23,7 +25,7 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, _: &super::ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
+	fn process(&self, _: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
 		let mut decoder = png::Decoder::new(bytes);
 		decoder.set_transformations(png::Transformations::normalize_to_color8());
 		let mut reader = decoder.read_info().unwrap();
@@ -67,6 +69,10 @@ impl ResourceHandler for ImageResourceHandler {
 		Ok(vec![ProcessedResources::Generated((resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)))])
 	}
 
+	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Buffer]) {
+		file.read_exact(buffers[0].buffer).unwrap();
+	}
+
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
 		vec![("Texture", Box::new(|document| {
 			let texture = Texture::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
@@ -88,4 +94,47 @@ pub struct Texture {
 
 impl Resource for Texture {
 	fn get_class(&self) -> &'static str { "Texture"	}
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::resource_manager::resource_manager::ResourceManager;
+
+	use super::*;
+
+	#[test]
+	fn load_net_image() {
+		let mut resource_manager = ResourceManager::new();
+
+		let (response, _) = resource_manager.get("https://camo.githubusercontent.com/dca6cdb597abc9c7ff4a0e066e6c35eb70b187683fbff2208d0440b4ef6c5a30/68747470733a2f2f692e696d6775722e636f6d2f56525261434f702e706e67").expect("Failed to load image");
+
+		assert_eq!(response.resources.len(), 1);
+
+		let resource_container = &response.resources[0];
+		let resource = &resource_container.resource;
+
+		assert_eq!(resource.type_id(), std::any::TypeId::of::<Texture>());
+
+		let texture_info = resource.downcast_ref::<Texture>().unwrap();
+
+		assert_eq!(texture_info.extent, crate::Extent{ width: 4096, height: 1024, depth: 1 });
+	}
+
+	#[test]
+	fn load_local_image() {
+		let mut resource_manager = ResourceManager::new();
+
+		let (response, _) = resource_manager.get("patterned_brick_floor_02_diff_2k").expect("Failed to load image");
+
+		assert_eq!(response.resources.len(), 1);
+
+		let resource_container = &response.resources[0];
+		let resource = &resource_container.resource;
+
+		assert_eq!(resource.type_id(), std::any::TypeId::of::<Texture>());
+
+		let texture_info = resource.downcast_ref::<Texture>().unwrap();
+
+		assert!(texture_info.extent.width == 2048 && texture_info.extent.height == 2048 && texture_info.extent.depth == 1);
+	}
 }

@@ -1,12 +1,11 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher};
+use std::io::Read;
 
 use log::{warn, debug, error};
-use polodb_core::bson::Document;
 use serde::{Serialize, Deserialize};
 
 use crate::{rendering::render_system, jspd::{self}};
 
-use super::{ResourceHandler, ResourceManager, SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources};
+use super::{SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
 
 pub struct MaterialResourcerHandler {
 
@@ -78,6 +77,10 @@ impl ResourceHandler for MaterialResourcerHandler {
 			"json" => true,
 			_ => false
 		}
+	}
+
+	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Buffer]) {
+		file.read_exact(buffers[0].buffer).unwrap();
 	}
 
 	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
@@ -263,5 +266,31 @@ impl MaterialResourcerHandler {
 
 			Some(Self::treat_shader("", domain, stage, material, shader_node,)?.unwrap())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::resource_manager::resource_manager::ResourceManager;
+
+	#[test]
+	fn load_material() {
+		let mut resource_manager = ResourceManager::new();
+
+		let (response, _) = resource_manager.get("solid").expect("Failed to load material");
+
+		assert_eq!(response.resources.len(), 3); // 1 material, 1 shader, 1 texture
+
+		let resource_container = &response.resources[0];
+
+		assert_eq!(resource_container.class, "Shader");
+
+		let resource_container = &response.resources[1];
+
+		assert_eq!(resource_container.class, "Texture");
+
+		let resource_container = &response.resources[2];
+
+		assert_eq!(resource_container.class, "Material");
 	}
 }

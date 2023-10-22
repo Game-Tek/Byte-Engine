@@ -1,6 +1,8 @@
 use std::{collections::HashMap,};
 
-use crate::{orchestrator, window_system, render_debugger::RenderDebugger};
+use ash::vk;
+
+use crate::{orchestrator, window_system, render_debugger::RenderDebugger, rendering::render_system};
 
 #[cfg(test)]
 use std::{println as error, println as warn};
@@ -110,7 +112,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						self.create_vulkan_shader(stage, binary.as_binary_u8())
 					},
 					Err(err) => {
-						error!("Error compiling shader: {}", err);
+						error!("Error compiling shader: {}\n{}", err, shader_text);
 						panic!("Error compiling shader: {}", err);
 					}
 				}
@@ -279,7 +281,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 						let buffer = &self.buffers[handle.0 as usize];
 
-						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0 as u64).range(size as u64)];
+						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0 as u64).range(match size { render_system::Ranges::Size(size) => { size as u64 } render_system::Ranges::Whole => { vk::WHOLE_SIZE } })];
 
 						let write_info = vk::WriteDescriptorSet::default()
 							.dst_set(descriptor_set.descriptor_set)
@@ -831,12 +833,12 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 }
 
-use ash::{vk::{self, ValidationFeatureEnableEXT, Handle}, Entry};
+use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
 
 #[cfg(not(test))]
 use log::{warn, error, debug};
 
-use super::render_system::{self, CommandBufferRecording, Formats};
+use super::render_system::{CommandBufferRecording, Formats};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {

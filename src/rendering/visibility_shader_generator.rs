@@ -301,7 +301,7 @@ layout(set=2,binding=10,scalar) buffer readonly MaterialsBuffer {
 };
 
 layout(push_constant, scalar) uniform PushConstant {
-	layout(offset=16) uint material_id;
+	uint material_id;
 } pc;");
 
 		string.push_str("\nvec3 fresnelSchlick(float cosTheta, vec3 F0) {

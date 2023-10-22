@@ -184,10 +184,16 @@ pub trait CommandBufferRecording {
 	fn execute(&mut self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Ranges {
+	Size(usize),
+	Whole,
+}
+
 pub enum Descriptor {
 	Buffer {
 		handle: BufferHandle,
-		size: usize,
+		size: Ranges,
 	},
 	Image {
 		handle: ImageHandle,
@@ -1112,7 +1118,7 @@ pub(super) mod tests {
 
 		renderer.write(&[
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: 64 } },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: Ranges::Size(64) } },
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Image{ handle: sampled_texture, layout: Layouts::Read } },
 		]);
 

@@ -7,23 +7,6 @@ use std::hash::Hasher;
 
 use crate::{window_system, orchestrator::{self}, Extent};
 
-/// Returns the best value from a slice of values based on a score function.
-fn select_by_score<T>(values: &[T], score: impl Fn(&T) -> u64) -> Option<&T> {
-	let mut best_score = 0 as u64;
-	let mut best_value: Option<&T> = None;
-
-	for value in values {
-		let score = score(value);
-
-		if score > best_score {
-			best_score = score;
-			best_value = Some(value);
-		}
-	}
-
-	best_value
-}
-
 /// Possible types of a shader source
 pub enum ShaderSourceType {
 	/// GLSL code string
@@ -81,7 +64,7 @@ pub struct ShaderHandle(pub(super) u64);
 pub struct PipelineHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TextureHandle(pub(super) u64);
+pub struct ImageHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MeshHandle(pub(super) u64);
@@ -119,7 +102,7 @@ pub enum Handle {
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
 	Pipeline(PipelineHandle),
-	Texture(TextureHandle),
+	Image(ImageHandle),
 	Mesh(MeshHandle),
 	Synchronizer(SynchronizerHandle),
 	DescriptorSetLayout(DescriptorSetLayoutHandle),
@@ -180,13 +163,13 @@ pub trait CommandBufferRecording {
 	fn dispatch(&mut self, x: u32, y: u32, z: u32);
 	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
 
-	fn clear_texture(&mut self, texture_handle: TextureHandle, clear_value: ClearValue);
+	fn clear_texture(&mut self, texture_handle: ImageHandle, clear_value: ClearValue);
 	fn clear_buffer(&mut self, buffer_handle: BufferHandle);
 
-	fn transfer_textures(&mut self, texture_handles: &[TextureHandle]);
+	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]);
 
-	/// Copies texture data from a CPU accessible buffer to a GPU accessible texture.
-	fn write_texture_data(&mut self, texture_handle: TextureHandle, data: &[RGBAu8]);
+	/// Copies imaeg data from a CPU accessible buffer to a GPU accessible image.
+	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
 
 	/// Ends recording on the command buffer.
 	fn end(&mut self);
@@ -194,9 +177,9 @@ pub trait CommandBufferRecording {
 	/// Binds a decriptor set on the GPU.
 	fn bind_descriptor_set(&self, pipeline_layout: &PipelineLayoutHandle, arg: u32, descriptor_set_handle: &DescriptorSetHandle);
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: TextureHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
+	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
 
-	fn sync_textures(&mut self, texture_handles: &[TextureHandle]) -> Vec<TextureCopyHandle>;
+	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
 	fn execute(&mut self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
 }
@@ -206,12 +189,12 @@ pub enum Descriptor {
 		handle: BufferHandle,
 		size: usize,
 	},
-	Texture {
-		handle: TextureHandle,
+	Image {
+		handle: ImageHandle,
 		layout: Layouts,
 	},
-	CombinedTextureSampler {
-		image_handle: TextureHandle,
+	CombinedImageSampler {
+		image_handle: ImageHandle,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	},
@@ -274,16 +257,16 @@ pub trait RenderSystem: orchestrator::System {
 	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice(&self, buffer_handle: BufferHandle) -> &mut [u8];
 
-	fn get_texture_slice_mut(&self, texture_handle: TextureHandle) -> &mut [u8];
+	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8];
 
-	/// Creates a texture.
-	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle;
+	/// Creates an image.
+	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
 
 	fn create_sampler(&mut self) -> SamplerHandle;
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
 
-	fn get_texture_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
+	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
 	/// Multiple underlying synchronization primitives are created, one for each frame
@@ -402,13 +385,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -430,9 +413,9 @@ pub(super) mod tests {
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -453,12 +436,12 @@ pub(super) mod tests {
 
 		renderer.end_frame_capture();
 
-		renderer.wait(signal); // Wait for the render to finish before accessing the texture data
+		renderer.wait(signal); // Wait for the render to finish before accessing the image data
 
 		assert!(!renderer.has_errors());
 
-		// Get texture data and cast u8 slice to rgbau8
-		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_texture_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
+		// Get image data and cast u8 slice to rgbau8
+		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
 
 		check_triangle(pixels, extent);
 
@@ -533,13 +516,13 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::None,
 				load: false,
 				store: true,
@@ -566,9 +549,9 @@ pub(super) mod tests {
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -658,13 +641,13 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::None,
 				load: false,
 				store: true,
@@ -694,9 +677,9 @@ pub(super) mod tests {
 
 			let attachments = [
 				AttachmentInformation {
-					texture: render_target,
+					image: render_target,
 					layout: Layouts::RenderTarget,
-					format: TextureFormats::RGBAu8,
+					format: Formats::RGBAu8,
 					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
@@ -722,12 +705,6 @@ pub(super) mod tests {
 			renderer.end_frame_capture();
 
 			assert!(!renderer.has_errors());
-
-			// Get texture data and cast u8 slice to rgbau8
-
-			// let pixels = unsafe { std::slice::from_raw_parts(renderer.get_texture_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
-
-			// check_triangle(pixels, extent);
 		}
 	}
 
@@ -793,13 +770,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -826,9 +803,9 @@ pub(super) mod tests {
 
 			let attachments = [
 				AttachmentInformation {
-					texture: render_target,
+					image: render_target,
 					layout: Layouts::RenderTarget,
-					format: TextureFormats::RGBAu8,
+					format: Formats::RGBAu8,
 					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
@@ -853,9 +830,7 @@ pub(super) mod tests {
 
 			assert!(!renderer.has_errors());
 
-			// Get texture data and cast u8 slice to rgbau8
-
-			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_texture_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
+			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
 
 			check_triangle(pixels, extent);
 		}
@@ -931,13 +906,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -970,9 +945,9 @@ pub(super) mod tests {
 
 			let attachments = [
 				AttachmentInformation {
-					texture: render_target,
+					image: render_target,
 					layout: Layouts::RenderTarget,
-					format: TextureFormats::RGBAu8,
+					format: Formats::RGBAu8,
 					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
@@ -1009,9 +984,7 @@ pub(super) mod tests {
 
 			assert!(!renderer.has_errors());
 
-			// Get texture data and cast u8 slice to rgbau8
-
-			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_texture_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
+			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
 
 			assert_eq!(pixels.len(), (extent.width * extent.height) as usize);
 			
@@ -1095,7 +1068,7 @@ pub(super) mod tests {
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let sampled_texture = renderer.create_texture(Some("sampled texture"), crate::Extent { width: 2, height: 2, depth: 1 }, TextureFormats::RGBAu8, None, Uses::Texture, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let sampled_texture = renderer.create_image(Some("sampled texture"), crate::Extent { width: 2, height: 2, depth: 1 }, Formats::RGBAu8, None, Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -1140,7 +1113,7 @@ pub(super) mod tests {
 		renderer.write(&[
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: 64 } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Texture{ handle: sampled_texture, layout: Layouts::Texture } },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Image{ handle: sampled_texture, layout: Layouts::Read } },
 		]);
 
 		assert!(!renderer.has_errors());
@@ -1150,13 +1123,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_texture(None, extent, TextureFormats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1176,22 +1149,22 @@ pub(super) mod tests {
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
 
-		command_buffer_recording.write_texture_data(sampled_texture, &pixels);
+		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
 		command_buffer_recording.consume_resources(&[
 			Consumption{
-				handle: Handle::Texture(sampled_texture),
+				handle: Handle::Image(sampled_texture),
 				stages: Stages::FRAGMENT,
 				access: AccessPolicies::READ,
-				layout: Layouts::Texture,
+				layout: Layouts::Read,
 			}
 		]);
 
 		let attachments = [
 			AttachmentInformation {
-				texture: render_target,
+				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: TextureFormats::RGBAu8,
+				format: Formats::RGBAu8,
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1217,7 +1190,7 @@ pub(super) mod tests {
 		renderer.wait(signal); // Wait for the render to finish before accessing the texture data
 
 		// assert colored triangle was drawn to texture
-		let _pixels = renderer.get_texture_data(texure_copy_handles[0]);
+		let _pixels = renderer.get_image_data(texure_copy_handles[0]);
 
 		// TODO: assert rendering results
 
@@ -1270,7 +1243,7 @@ pub enum ShaderTypes {
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 /// Enumerates the formats that textures can have.
-pub enum TextureFormats {
+pub enum Formats {
 	/// 8 bit unsigned per component normalized RGBA.
 	RGBAu8,
 	/// 16 bit unsigned per component normalized RGBA.
@@ -1317,10 +1290,10 @@ pub enum ClearValue {
 #[derive(Clone, Copy)]
 /// Stores the information of an attachment.
 pub struct AttachmentInformation {
-	/// The texture view of the attachment.
-	pub texture: TextureHandle,
+	/// The image view of the attachment.
+	pub image: ImageHandle,
 	/// The format of the attachment.
-	pub format: TextureFormats,
+	pub format: Formats,
 	/// The layout of the attachment.
 	pub layout: Layouts,
 	/// The clear color of the attachment.
@@ -1332,14 +1305,14 @@ pub struct AttachmentInformation {
 }
 
 #[derive(Clone, Copy)]
-/// Stores the information of a texture copy.
-pub struct TextureCopy {
-	/// The source texture.
-	pub(super) source: TextureHandle,
-	pub(super) source_format: TextureFormats,
-	/// The destination texture.
-	pub(super) destination: TextureHandle,
-	pub(super) destination_format: TextureFormats,
+/// Stores the information of a image copy.
+pub struct ImageCopy {
+	/// The source image.
+	pub(super) source: ImageHandle,
+	pub(super) source_format: Formats,
+	/// The destination image.
+	pub(super) destination: ImageHandle,
+	pub(super) destination_format: Formats,
 	/// The images extent.
 	pub(super) extent: crate::Extent,
 }
@@ -1377,8 +1350,8 @@ pub struct TextureState {
 #[derive(Clone, Copy)]
 /// Stores the information of a barrier.
 pub enum Barrier {
-	/// A texture barrier.
-	Texture(TextureHandle),
+	/// An image barrier.
+	Image(ImageHandle),
 	/// A buffer barrier.
 	Buffer(BufferHandle),
 	/// A memory barrier.
@@ -1449,8 +1422,8 @@ bitflags::bitflags! {
 		const Storage = 1 << 3;
 		/// Resource will be used as an indirect buffer.
 		const Indirect = 1 << 4;
-		/// Resource will be used as a texture.
-		const Texture = 1 << 5;
+		/// Resource will be used as an image.
+		const Image = 1 << 5;
 		/// Resource will be used as a render target.
 		const RenderTarget = 1 << 6;
 		/// Resource will be used as a depth stencil.
@@ -1469,14 +1442,15 @@ bitflags::bitflags! {
 pub enum Layouts {
 	/// The layout is undefined. We don't mind what the layout is.
 	Undefined,
-	/// The texture will be used as render target.
+	/// The image will be used as render target.
 	RenderTarget,
-	/// The texture will be used in a transfer operation.
+	/// The resource will be used in a transfer operation.
 	Transfer,
-	/// The texture will be used as a presentation source.
+	/// The resource will be used as a presentation source.
 	Present,
-	/// The texture will be used as a read only sample source.
-	Texture,
+	/// The resource will be used as a read only sample source.
+	Read,
+	/// The resource will be used as a read/write storage.
 	General,
 }
 
@@ -1523,12 +1497,12 @@ pub enum DescriptorInfo {
 		/// How much to read from the buffer after `offset`.
 		range: usize,
 	},
-	/// A texture descriptor.
-	Texture {
-		/// The texture of the descriptor.
-		texture: TextureHandle,
+	/// An image descriptor.
+	Image {
+		/// The image of the descriptor.
+		image: ImageHandle,
 		/// The format of the texture.
-		format: TextureFormats,
+		format: Formats,
 		/// The layout of the texture.
 		layout: Layouts,
 	},
@@ -1551,7 +1525,7 @@ pub struct DescriptorWrite {
 	pub descriptor: Descriptor,
 }
 
-/// Describes the details of the memory layout of a particular texture.
+/// Describes the details of the memory layout of a particular image.
 pub struct ImageSubresourceLayout {
 	/// The offset inside a memory region where the texture will read it's first texel from.
 	pub(super) offset: u64,
@@ -1689,12 +1663,12 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.get_mut_buffer_slice(buffer_handle)
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: TextureHandle) -> &mut [u8] {
+	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8] {
 		self.pointer.get_texture_slice_mut(texture_handle)
 	}
 
-	fn get_texture_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
-		self.pointer.get_texture_data(texture_copy_handle)
+	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
+		self.pointer.get_image_data(texture_copy_handle)
 	}
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle {
@@ -1765,7 +1739,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_synchronizer(signaled)
 	}
 
-	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: TextureFormats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> TextureHandle {
-		self.pointer.create_texture(name, extent, format, compression, resource_uses, device_accesses, use_case)
+	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle {
+		self.pointer.create_image(name, extent, format, compression, resource_uses, device_accesses, use_case)
 	}
 }

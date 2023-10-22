@@ -297,7 +297,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						// }
 					}
 				},
-				render_system::Descriptor::Texture{ handle, layout } => {
+				render_system::Descriptor::Image{ handle, layout } => {
 					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
 					let mut texture_handle_option = Some(handle);
 
@@ -327,7 +327,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						}
 					}
 				},
-				render_system::Descriptor::CombinedTextureSampler{ image_handle, sampler_handle, layout } => {
+				render_system::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout } => {
 					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
 					let mut texture_handle_option = Some(image_handle);
 
@@ -599,7 +599,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		}
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: render_system::TextureHandle) -> &mut [u8] {
+	fn get_texture_slice_mut(&self, texture_handle: render_system::ImageHandle) -> &mut [u8] {
 		let texture = &self.textures[texture_handle.0 as usize];
 		unsafe {
 			std::slice::from_raw_parts_mut(texture.pointer as *mut u8, texture.size)
@@ -607,17 +607,17 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 
 	/// Creates a texture.
-	fn create_texture(&mut self, name: Option<&str>, extent: crate::Extent, format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::TextureHandle {
+	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: render_system::Formats, compression: Option<render_system::CompressionSchemes>, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::ImageHandle {
 		let size = (extent.width * extent.height * extent.depth * 4) as usize;
 
-		let texture_handle = render_system::TextureHandle(self.textures.len() as u64);
+		let texture_handle = render_system::ImageHandle(self.textures.len() as u64);
 
-		let mut previous_texture_handle: Option<render_system::TextureHandle> = None;
+		let mut previous_texture_handle: Option<render_system::ImageHandle> = None;
 
 		let extent = vk::Extent3D::default().width(extent.width).height(extent.height).depth(extent.depth);
 
 		for _ in 0..(match use_case { render_system::UseCases::DYNAMIC => { self.frames } render_system::UseCases::STATIC => { 1 }}) {
-			let resource_uses = if resource_uses.contains(render_system::Uses::Texture) {
+			let resource_uses = if resource_uses.contains(render_system::Uses::Image) {
 				resource_uses | render_system::Uses::TransferDestination
 			} else {
 				resource_uses
@@ -629,7 +629,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			let (address, pointer) = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
-			let texture_handle = render_system::TextureHandle(self.textures.len() as u64);
+			let texture_handle = render_system::ImageHandle(self.textures.len() as u64);
 
 			let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, compression, 0);
 
@@ -738,7 +738,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		swapchain_handle
 	}
 
-	fn get_texture_data(&self, texture_copy_handle: render_system::TextureCopyHandle) -> &[u8] {
+	fn get_image_data(&self, texture_copy_handle: render_system::TextureCopyHandle) -> &[u8] {
 		// let texture = self.textures.iter().find(|texture| texture.parent.map_or(false, |x| texture_handle == x)).unwrap(); // Get the proxy texture
 		let texture = &self.textures[texture_copy_handle.0 as usize];
 		let buffer_handle = texture.staging_buffer.expect("No staging buffer");
@@ -836,7 +836,7 @@ use ash::{vk::{self, ValidationFeatureEnableEXT, Handle}, Entry};
 #[cfg(not(test))]
 use log::{warn, error, debug};
 
-use super::render_system::{self, CommandBufferRecording, TextureFormats};
+use super::render_system::{self, CommandBufferRecording, Formats};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -906,7 +906,7 @@ pub(crate) struct Synchronizer {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Texture {
-	next: Option<render_system::TextureHandle>,
+	next: Option<render_system::ImageHandle>,
 	staging_buffer: Option<render_system::BufferHandle>,
 	allocation_handle: render_system::AllocationHandle,
 	image: vk::Image,
@@ -914,7 +914,7 @@ pub(crate) struct Texture {
 	pointer: *const u8,
 	extent: vk::Extent3D,
 	format: vk::Format,
-	format_: render_system::TextureFormats,
+	format_: render_system::Formats,
 	layout: vk::ImageLayout,
 	size: usize,
 }
@@ -965,10 +965,10 @@ fn to_clear_value(clear: render_system::ClearValue) -> vk::ClearValue {
 	}
 }
 
-fn texture_format_and_resource_use_to_image_layout(_texture_format: render_system::TextureFormats, layout: render_system::Layouts, access: Option<render_system::AccessPolicies>) -> vk::ImageLayout {
+fn texture_format_and_resource_use_to_image_layout(_texture_format: render_system::Formats, layout: render_system::Layouts, access: Option<render_system::AccessPolicies>) -> vk::ImageLayout {
 	match layout {
 		render_system::Layouts::Undefined => vk::ImageLayout::UNDEFINED,
-		render_system::Layouts::RenderTarget => if _texture_format != render_system::TextureFormats::Depth32 { vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL } else { vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
+		render_system::Layouts::RenderTarget => if _texture_format != render_system::Formats::Depth32 { vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL } else { vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
 		render_system::Layouts::Transfer => {
 			match access {
 				Some(a) => {
@@ -984,7 +984,7 @@ fn texture_format_and_resource_use_to_image_layout(_texture_format: render_syste
 			}
 		}
 		render_system::Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
-		render_system::Layouts::Texture => vk::ImageLayout::READ_ONLY_OPTIMAL,
+		render_system::Layouts::Read => vk::ImageLayout::READ_ONLY_OPTIMAL,
 		render_system::Layouts::General => vk::ImageLayout::GENERAL,
 	}
 }
@@ -1005,9 +1005,9 @@ fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
 	}
 }
 
-fn to_format(format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>) -> vk::Format {
+fn to_format(format: render_system::Formats, compression: Option<render_system::CompressionSchemes>) -> vk::Format {
 	match format {
-		render_system::TextureFormats::RGBAu8 => {
+		render_system::Formats::RGBAu8 => {
 			if let Some(compression) = compression {
 				match compression {
 					render_system::CompressionSchemes::BC7 => vk::Format::BC7_SRGB_BLOCK,
@@ -1016,14 +1016,14 @@ fn to_format(format: render_system::TextureFormats, compression: Option<render_s
 				vk::Format::R8G8B8A8_UNORM
 			}
 		}
-		render_system::TextureFormats::RGBAu16 => vk::Format::R16G16B16A16_SFLOAT,
-		render_system::TextureFormats::RGBAu32 => vk::Format::R32G32B32A32_SFLOAT,
-		render_system::TextureFormats::RGBAf16 => vk::Format::R16G16B16A16_SFLOAT,
-		render_system::TextureFormats::RGBAf32 => vk::Format::R32G32B32A32_SFLOAT,
-		render_system::TextureFormats::RGBu10u10u11 => vk::Format::R16G16_S10_5_NV,
-		render_system::TextureFormats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
-		render_system::TextureFormats::Depth32 => vk::Format::D32_SFLOAT,
-		render_system::TextureFormats::U32 => vk::Format::R32_UINT,
+		render_system::Formats::RGBAu16 => vk::Format::R16G16B16A16_SFLOAT,
+		render_system::Formats::RGBAu32 => vk::Format::R32G32B32A32_SFLOAT,
+		render_system::Formats::RGBAf16 => vk::Format::R16G16B16A16_SFLOAT,
+		render_system::Formats::RGBAf32 => vk::Format::R32G32B32A32_SFLOAT,
+		render_system::Formats::RGBu10u10u11 => vk::Format::R16G16_S10_5_NV,
+		render_system::Formats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
+		render_system::Formats::Depth32 => vk::Format::D32_SFLOAT,
+		render_system::Formats::U32 => vk::Format::R32_UINT,
 	}
 }
 
@@ -1077,7 +1077,7 @@ fn to_pipeline_stage_flags(stages: render_system::Stages) -> vk::PipelineStageFl
 	pipeline_stage_flags
 }
 
-fn to_pipeline_stage_flags_with_format(stages: render_system::Stages, format: render_system::TextureFormats, access: render_system::AccessPolicies) -> vk::PipelineStageFlags2 {
+fn to_pipeline_stage_flags_with_format(stages: render_system::Stages, format: render_system::Formats, access: render_system::AccessPolicies) -> vk::PipelineStageFlags2 {
 	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
 
 	if stages.contains(render_system::Stages::VERTEX) {
@@ -1085,7 +1085,7 @@ fn to_pipeline_stage_flags_with_format(stages: render_system::Stages, format: re
 	}
 
 	if stages.contains(render_system::Stages::FRAGMENT) {
-		if format != render_system::TextureFormats::Depth32 {
+		if format != render_system::Formats::Depth32 {
 			if access.contains(render_system::AccessPolicies::READ) {
 				pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
 			}
@@ -1153,7 +1153,7 @@ fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_syste
 	access_flags
 }
 
-fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: render_system::Stages, format: render_system::TextureFormats) -> vk::AccessFlags2 {
+fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: render_system::Stages, format: render_system::Formats) -> vk::AccessFlags2 {
 	let mut access_flags = vk::AccessFlags2::empty();
 
 	if accesses.contains(render_system::AccessPolicies::READ) {
@@ -1167,7 +1167,7 @@ fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: 
 			access_flags |= vk::AccessFlags2::SHADER_READ
 		}
 		if stages.intersects(render_system::Stages::FRAGMENT) {
-			if format != render_system::TextureFormats::Depth32 {
+			if format != render_system::Formats::Depth32 {
 				access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
 			} else {
 				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
@@ -1186,7 +1186,7 @@ fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: 
 			access_flags |= vk::AccessFlags2::SHADER_WRITE
 		}
 		if stages.intersects(render_system::Stages::FRAGMENT) {
-			if format != render_system::TextureFormats::Depth32 {
+			if format != render_system::Formats::Depth32 {
 				access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
 			} else {
 				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
@@ -1598,7 +1598,7 @@ impl VulkanRenderSystem {
 						return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
 					}
 					render_system::PipelineConfigurationBlocks::RenderTargets { targets } => {
-						let pipeline_color_blend_attachments = targets.iter().filter(|a| a.format != render_system::TextureFormats::Depth32).map(|_| {
+						let pipeline_color_blend_attachments = targets.iter().filter(|a| a.format != render_system::Formats::Depth32).map(|_| {
 							vk::PipelineColorBlendAttachmentState::default()
 								.color_write_mask(vk::ColorComponentFlags::RGBA)
 								.blend_enable(false)
@@ -1610,7 +1610,7 @@ impl VulkanRenderSystem {
 								.alpha_blend_op(vk::BlendOp::ADD)
 						}).collect::<Vec<_>>();
 	
-						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != render_system::TextureFormats::Depth32).map(|a| to_format(a.format, None)).collect::<Vec<_>>();
+						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != render_system::Formats::Depth32).map(|a| to_format(a.format, None)).collect::<Vec<_>>();
 
 						let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
 							.logic_op_enable(false)
@@ -1624,7 +1624,7 @@ impl VulkanRenderSystem {
 
 						let pipeline_create_info = pipeline_create_info.color_blend_state(&color_blend_state);
 
-						if let Some(_) = targets.iter().find(|a| a.format == render_system::TextureFormats::Depth32) {
+						if let Some(_) = targets.iter().find(|a| a.format == render_system::Formats::Depth32) {
 							let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
 								.depth_test_enable(true)
 								.depth_write_enable(true)
@@ -1763,8 +1763,8 @@ impl VulkanRenderSystem {
 		render_system::PipelineHandle(pipeline.as_raw())
 	}
 
-	fn create_texture_internal(&mut self, texture: Texture, previous: Option<render_system::TextureHandle>) -> render_system::TextureHandle {
-		let texture_handle = render_system::TextureHandle(self.textures.len() as u64);
+	fn create_texture_internal(&mut self, texture: Texture, previous: Option<render_system::ImageHandle>) -> render_system::ImageHandle {
+		let texture_handle = render_system::ImageHandle(self.textures.len() as u64);
 
 		self.textures.push(texture);
 
@@ -1841,7 +1841,7 @@ impl VulkanRenderSystem {
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
 
-	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, _access_policies: render_system::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
+	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: render_system::Formats, compression: Option<render_system::CompressionSchemes>, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, _access_policies: render_system::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_type_from_extent = |extent: vk::Extent3D| {
 			if extent.depth > 1 {
 				vk::ImageType::TYPE_3D
@@ -1861,13 +1861,13 @@ impl VulkanRenderSystem {
 			.samples(vk::SampleCountFlags::TYPE_1)
 			.tiling(if !device_accesses.intersects(render_system::DeviceAccesses::CpuRead | render_system::DeviceAccesses::CpuWrite) { vk::ImageTiling::OPTIMAL } else { vk::ImageTiling::LINEAR })
 			.usage(
-				if resource_uses.intersects(render_system::Uses::Texture) { vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::empty() }
+				if resource_uses.intersects(render_system::Uses::Image) { vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::empty() }
 				|
 				if resource_uses.intersects(render_system::Uses::Storage) { vk::ImageUsageFlags::STORAGE } else { vk::ImageUsageFlags::empty() }
 				|
-				if resource_uses.intersects(render_system::Uses::RenderTarget) && format != render_system::TextureFormats::Depth32 { vk::ImageUsageFlags::COLOR_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
+				if resource_uses.intersects(render_system::Uses::RenderTarget) && format != render_system::Formats::Depth32 { vk::ImageUsageFlags::COLOR_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
 				|
-				if resource_uses.intersects(render_system::Uses::DepthStencil) || format == render_system::TextureFormats::Depth32 { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
+				if resource_uses.intersects(render_system::Uses::DepthStencil) || format == render_system::Formats::Depth32 { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
 				|
 				if resource_uses.intersects(render_system::Uses::TransferSource) { vk::ImageUsageFlags::TRANSFER_SRC } else { vk::ImageUsageFlags::empty() }
 				|
@@ -1925,7 +1925,7 @@ impl VulkanRenderSystem {
 		sampler
 	}
 
-	fn get_image_subresource_layout(&self, texture: &render_system::TextureHandle, mip_level: u32) -> render_system::ImageSubresourceLayout {
+	fn get_image_subresource_layout(&self, texture: &render_system::ImageHandle, mip_level: u32) -> render_system::ImageSubresourceLayout {
 		let image_subresource = vk::ImageSubresource {
 			aspect_mask: vk::ImageAspectFlags::COLOR,
 			mip_level,
@@ -1974,7 +1974,7 @@ impl VulkanRenderSystem {
 		unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") }
 	}
 
-	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: render_system::TextureFormats, compression: Option<render_system::CompressionSchemes>, _mip_levels: u32) -> vk::ImageView {
+	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: render_system::Formats, compression: Option<render_system::CompressionSchemes>, _mip_levels: u32) -> vk::ImageView {
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
 			.view_type(
@@ -1988,7 +1988,7 @@ impl VulkanRenderSystem {
 				a: vk::ComponentSwizzle::IDENTITY,
 			})
 			.subresource_range(vk::ImageSubresourceRange {
-				aspect_mask: if format != render_system::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
+				aspect_mask: if format != render_system::Formats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
 				base_mip_level: 0,
 				level_count: 1,
 				base_array_layer: 0,
@@ -2248,7 +2248,7 @@ impl VulkanCommandBufferRecording<'_> {
 		(buffer_handle, &self.render_system.buffers[buffer_handle.0 as usize])
 	}
 
-	fn get_texture(&self, mut texture_handle: render_system::TextureHandle) -> (render_system::TextureHandle, &Texture) {
+	fn get_texture(&self, mut texture_handle: render_system::ImageHandle) -> (render_system::ImageHandle, &Texture) {
 		let mut i = 0;
 		loop {
 			let texture = &self.render_system.textures[texture_handle.0 as usize];
@@ -2297,7 +2297,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[render_system::AttachmentInformation]) {
 		self.consume_resources(&attachments.iter().map(|attachment|
 			render_system::Consumption{
-				handle: render_system::Handle::Texture(attachment.texture),
+				handle: render_system::Handle::Image(attachment.image),
 				stages: render_system::Stages::FRAGMENT,
 				access: render_system::AccessPolicies::WRITE,
 				layout: attachment.layout,
@@ -2310,8 +2310,8 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			.extent(vk::Extent2D::default().width(extent.width).height(extent.height)/* .build() */)
 			/* .build() */;
 
-		let color_attchments = attachments.iter().filter(|a| a.format != render_system::TextureFormats::Depth32).map(|attachment| {
-			let (_, texture) = self.get_texture(attachment.texture);
+		let color_attchments = attachments.iter().filter(|a| a.format != render_system::Formats::Depth32).map(|attachment| {
+			let (_, texture) = self.get_texture(attachment.image);
 			vk::RenderingAttachmentInfo::default()
 				.image_view(texture.image_view)
 				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
@@ -2321,8 +2321,8 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				/* .build() */
 		}).collect::<Vec<_>>();
 
-		let depth_attachment = attachments.iter().find(|attachment| attachment.format == render_system::TextureFormats::Depth32).map(|attachment| {
-			let (_, texture) = self.get_texture(attachment.texture);
+		let depth_attachment = attachments.iter().find(|attachment| attachment.format == render_system::Formats::Depth32).map(|attachment| {
+			let (_, texture) = self.get_texture(attachment.image);
 			vk::RenderingAttachmentInfo::default()
 				.image_view(texture.image_view)
 				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
@@ -2412,7 +2412,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 					memory_barriers.push(memory_barrier);
 				}
-				render_system::Barrier::Texture(texture_handle) => {
+				render_system::Barrier::Image(texture_handle) => {
 					let (texture_handle, texture) = self.get_texture(texture_handle);
 
 					let new_layout = texture_format_and_resource_use_to_image_layout(texture.format_, barrier.destination.layout, Some(barrier.destination.access));
@@ -2533,7 +2533,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn clear_texture(&mut self, texture_handle: render_system::TextureHandle, clear_value: render_system::ClearValue) {
+	fn clear_texture(&mut self, texture_handle: render_system::ImageHandle, clear_value: render_system::ClearValue) {
 		let (texture_handle, texture) = self.get_texture(texture_handle);
 
 		let clear_value = match clear_value {
@@ -2553,7 +2553,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			}]);
 		}
 
-		let handle = render_system::Handle::Texture(texture_handle);
+		let handle = render_system::Handle::Image(texture_handle);
 
 		if let Some(state) = self.states.get_mut(&handle) {
 			*state = TransitionState { stage: vk::PipelineStageFlags2::TRANSFER, access: vk::AccessFlags2::TRANSFER_WRITE, layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL };
@@ -2576,7 +2576,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			let mut new_access_mask = to_access_flags(consumption.access, consumption.stages);
 
 			match consumption.handle {
-				render_system::Handle::Texture(texture_handle) => {
+				render_system::Handle::Image(texture_handle) => {
 					let (_, texture) = self.get_texture(texture_handle);
 
 					let new_layout = texture_format_and_resource_use_to_image_layout(texture.format_, consumption.layout, Some(consumption.access));
@@ -2655,7 +2655,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 					stage: new_stage_mask,
 					access: new_access_mask,
 					layout: match consumption.handle {
-						render_system::Handle::Texture(texture_handle) => {
+						render_system::Handle::Image(texture_handle) => {
 							let (_, texture) = self.get_texture(texture_handle);
 							texture_format_and_resource_use_to_image_layout(texture.format_, consumption.layout, Some(consumption.access))
 						}
@@ -2728,10 +2728,10 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn transfer_textures(&mut self, texture_handles: &[render_system::TextureHandle]) {
+	fn transfer_textures(&mut self, texture_handles: &[render_system::ImageHandle]) {
 		self.consume_resources(&texture_handles.iter().map(|texture_handle|
 			render_system::Consumption{
-				handle: render_system::Handle::Texture(*texture_handle),
+				handle: render_system::Handle::Image(*texture_handle),
 				stages: render_system::Stages::TRANSFER,
 				access: render_system::AccessPolicies::WRITE,
 				layout: render_system::Layouts::Transfer,
@@ -2773,10 +2773,10 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn write_texture_data(&mut self, texture_handle: render_system::TextureHandle, data: &[render_system::RGBAu8]) {
+	fn write_image_data(&mut self, texture_handle: render_system::ImageHandle, data: &[render_system::RGBAu8]) {
 		self.consume_resources(
 			&[render_system::Consumption{
-				handle: render_system::Handle::Texture(texture_handle),
+				handle: render_system::Handle::Image(texture_handle),
 				stages: render_system::Stages::TRANSFER,
 				access: render_system::AccessPolicies::WRITE,
 				layout: render_system::Layouts::Transfer,
@@ -2956,10 +2956,10 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	// 	self.render_system.render_backend.copy_textures(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &texture_copies);
 	// }
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::TextureHandle, present_image_index: u32, swapchain_handle: render_system::SwapchainHandle) {
+	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::ImageHandle, present_image_index: u32, swapchain_handle: render_system::SwapchainHandle) {
 		self.consume_resources(&[
 			render_system::Consumption {
-				handle: render_system::Handle::Texture(source_texture_handle),
+				handle: render_system::Handle::Image(source_texture_handle),
 				stages: render_system::Stages::TRANSFER,
 				access: render_system::AccessPolicies::READ,
 				layout: render_system::Layouts::Transfer,
@@ -3127,9 +3127,9 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn sync_textures(&mut self, texture_handles: &[render_system::TextureHandle]) -> Vec<render_system::TextureCopyHandle> {
+	fn sync_textures(&mut self, texture_handles: &[render_system::ImageHandle]) -> Vec<render_system::TextureCopyHandle> {
 		self.consume_resources(&texture_handles.iter().map(|texture_handle| render_system::Consumption {
-			handle: render_system::Handle::Texture(*texture_handle),
+			handle: render_system::Handle::Image(*texture_handle),
 			stages: render_system::Stages::TRANSFER,
 			access: render_system::AccessPolicies::READ,
 			layout: render_system::Layouts::Transfer,

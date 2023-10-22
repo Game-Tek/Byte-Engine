@@ -210,45 +210,6 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let visibility_pass_vertex_source = r#"
-				#version 450
-				#pragma shader_stage(vertex)
-
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_buffer_reference: enable
-				#extension GL_EXT_buffer_reference2: enable
-
-				layout(row_major) uniform; layout(row_major) buffer;
-
-				layout(location=0) in vec3 in_position;
-				layout(location=1) in vec3 in_normal;
-
-				layout(location=0) out uint out_instance_index;
-				layout(location=1) out uint out_vertex_id;
-
-				layout(scalar, buffer_reference) buffer CameraData {
-					mat4 view_matrix;
-					mat4 projection_matrix;
-					mat4 view_projection;
-				};
-
-				layout(scalar, buffer_reference, buffer_reference_align=1) buffer MeshData {
-					mat4 model;
-					uint material_id;
-				};
-
-				layout(push_constant) uniform PushConstant {
-					CameraData camera;
-					MeshData meshes;
-				} pc;
-
-				void main() {
-					gl_Position = pc.camera.view_projection * pc.meshes[gl_InstanceIndex].model * vec4(in_position, 1.0);
-					out_instance_index = gl_InstanceIndex;
-					out_vertex_id = gl_VertexIndex;
-				}
-			"#;
-
 			let visibility_pass_mesh_source = r#"
 				#version 450
 				#pragma shader_stage(mesh)
@@ -294,14 +255,16 @@ impl VisibilityWorldRenderDomain {
 				void main() {
 					SetMeshOutputsEXT(24, 12);
 
+					uint instance_index = gl_GlobalInvocationID.x / 32;
+
 					if (gl_LocalInvocationID.x < 24) {
-						gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = pc.camera.view_projection * pc.meshes[0].model * vec4(vertex_positions[gl_LocalInvocationID.x], 1.0);
+						gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = pc.camera.view_projection * pc.meshes[instance_index].model * vec4(vertex_positions[gl_LocalInvocationID.x], 1.0);
 					}
 					
 					if (gl_LocalInvocationID.x < 12) {
 						uint triangle_indices[3] = uint[](uint(indices[gl_LocalInvocationID.x * 3 + 0]), uint(indices[gl_LocalInvocationID.x * 3 + 1]), uint(indices[gl_LocalInvocationID.x * 3 + 2]));
 						gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-						out_instance_index[gl_LocalInvocationID.x] = 0;
+						out_instance_index[gl_LocalInvocationID.x] = instance_index;
 						out_primitive_index[gl_LocalInvocationID.x] = gl_LocalInvocationID.x * 3;
 					}
 				}
@@ -1355,32 +1318,6 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_pipeline(&self.visibility_pass_pipeline);
 
-		// let vertex_buffer_descriptors = [
-		// 	render_system::BufferDescriptor {
-		// 		buffer: self.vertex_positions_buffer,
-		// 		offset: 0,
-		// 		range: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
-		// 		slot: 0,
-		// 	},
-		// 	render_system::BufferDescriptor {
-		// 		buffer: self.vertex_normals_buffer,
-		// 		offset: 0,
-		// 		range: (24 * std::mem::size_of::<Vector3>() as u32) as u64,
-		// 		slot: 1,
-		// 	},
-		// ];
-
-		// command_buffer_recording.bind_vertex_buffers(&vertex_buffer_descriptors);
-
-		// let index_buffer_index_descriptor = render_system::BufferDescriptor {
-		// 	buffer: self.indices_buffer,
-		// 	offset: 0,
-		// 	range: (self.index_count * std::mem::size_of::<u16>() as u32) as u64,
-		// 	slot: 0,
-		// };
-
-		// command_buffer_recording.bind_index_buffer(&index_buffer_index_descriptor);
-
 		let camera_data_buffer_address = render_system.get_buffer_address(self.camera_data_buffer_handle);
 		let meshes_data_buffer_address = render_system.get_buffer_address(self.meshes_data_buffer);
 
@@ -1394,8 +1331,7 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.write_to_push_constant(&self.pipeline_layout_handle, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) });
 
 		// command_buffer_recording.draw_indexed(self.index_count, self.instance_count, 0, 0, 0);
-		// command_buffer_recording.dispatch_meshes(self.index_count / 3, 1, 1);
-		command_buffer_recording.dispatch_meshes(1, 1, 1);
+		command_buffer_recording.dispatch_meshes((self.index_count * self.instance_count) / 32, 1, 1);
 
 		command_buffer_recording.end_render_pass();
 
@@ -1768,7 +1704,7 @@ impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderD
 
 		let light_index = lighting_data.count as usize;
 
-		lighting_data.lights[light_index].position = crate::Vec3f::new(0.0, 2.0, -1.5);
+		lighting_data.lights[light_index].position = crate::Vec3f::new(0.0, 2.0, 0.0);
 		lighting_data.lights[light_index].color = light.color;
 		
 		lighting_data.count += 1;

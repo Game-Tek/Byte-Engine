@@ -30,8 +30,10 @@ pub struct VisibilityWorldRenderDomain {
 	render_finished_synchronizer: render_system::SynchronizerHandle,
 	image_ready: render_system::SynchronizerHandle,
 	render_command_buffer: render_system::CommandBufferHandle,
-	camera_data_buffer_handle: render_system::BufferHandle,
 	current_frame: usize,
+
+	camera_data_buffer_handle: render_system::BufferHandle,
+	materials_data_buffer_handle: render_system::BufferHandle,
 
 	descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
 	descriptor_set: render_system::DescriptorSetHandle,
@@ -101,7 +103,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::VERTEX,
+					stages: render_system::Stages::VERTEX,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -109,7 +111,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::VERTEX,
+					stages: render_system::Stages::VERTEX,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -117,7 +119,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 2,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::MESH,
+					stages: render_system::Stages::MESH,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -125,7 +127,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 3,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::MESH,
+					stages: render_system::Stages::MESH,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -133,14 +135,22 @@ impl VisibilityWorldRenderDomain {
 					binding: 4,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::MESH,
+					stages: render_system::Stages::MESH,
 					immutable_samplers: None,
 				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "textures",
+					binding: 5,
+					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
+					descriptor_count: 1,
+					stages: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				}
 			];
 
-			let descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
+			let descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Base Set Layout"), &bindings);
 
-			let descriptor_set = render_system.create_descriptor_set(&descriptor_set_layout, &bindings);
+			let descriptor_set = render_system.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout, &bindings);
 
 			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }]);
 			
@@ -508,7 +518,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -516,7 +526,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -524,7 +534,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 2,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -532,7 +542,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 3,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -540,7 +550,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 4,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -548,7 +558,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 5,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -556,7 +566,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 6,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -564,14 +574,14 @@ impl VisibilityWorldRenderDomain {
 					binding: 7,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 			];
 
-			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
+			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Visibility Set Layout"), &bindings);
 			let visibility_pass_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 16 }]);
-			let visibility_passes_descriptor_set = render_system.create_descriptor_set(&visibility_descriptor_set_layout, &bindings);
+			let visibility_passes_descriptor_set = render_system.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout, &bindings);
 
 			render_system.write(&[
 				render_system::DescriptorWrite { // MaterialCount
@@ -634,10 +644,12 @@ impl VisibilityWorldRenderDomain {
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let light_data_buffer = render_system.create_buffer(Some("Light Data"), 1024 * 4, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-
+			
 			let lighting_data = unsafe { (render_system.get_mut_buffer_slice(light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
-
+			
 			lighting_data.count = 0; // Initially, no lights
+			
+			let materials_data_buffer_handle = render_system.create_buffer(Some("Materials Data"), 1024 * 4 * 4, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
@@ -645,7 +657,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -653,7 +665,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -661,7 +673,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 2,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -669,7 +681,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 3,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -677,7 +689,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 4,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -685,7 +697,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 5,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -693,7 +705,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 6,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -701,7 +713,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 7,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -709,7 +721,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 8,
 					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 				render_system::DescriptorSetLayoutBinding {
@@ -717,13 +729,21 @@ impl VisibilityWorldRenderDomain {
 					binding: 9,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stage_flags: render_system::Stages::COMPUTE,
+					stages: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "MaterialsData",
+					binding: 10,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 			];	
 
-			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_layout(&bindings);
-			let material_evaluation_descriptor_set = render_system.create_descriptor_set(&material_evaluation_descriptor_set_layout, &bindings);
+			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Material Evaluation Set Layout"), &bindings);
+			let material_evaluation_descriptor_set = render_system.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout, &bindings);
 
 			render_system.write(&[
 				render_system::DescriptorWrite { // albedo
@@ -786,9 +806,15 @@ impl VisibilityWorldRenderDomain {
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: light_data_buffer, size: 1024 * 4 },
 				},
+				render_system::DescriptorWrite { // MaterialsData
+					descriptor_set: material_evaluation_descriptor_set,
+					binding: 10,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer{ handle: materials_data_buffer_handle, size: 1024 * 4 * 4 },
+				},
 			]);
 
-			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 28 }]);
+			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 28 }]);
 
 			let tone_mapping_shader = r#"
 			#version 450
@@ -849,13 +875,13 @@ impl VisibilityWorldRenderDomain {
 			let result = render_system.create_texture(Some("result"), Extent::new(1920, 1080, 1), render_system::TextureFormats::RGBAu8, None, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let tone_map_pass = {
-				let descriptor_set_layout = render_system.create_descriptor_set_layout(&[
+				let descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Tonemap Pass Set Layout"), &[
 					render_system::DescriptorSetLayoutBinding {
 						name: "source",
 						binding: 0,
 						descriptor_type: render_system::DescriptorType::StorageImage,
 						descriptor_count: 1,
-						stage_flags: render_system::Stages::COMPUTE,
+						stages: render_system::Stages::COMPUTE,
 						immutable_samplers: None,
 					},
 					render_system::DescriptorSetLayoutBinding {
@@ -863,20 +889,20 @@ impl VisibilityWorldRenderDomain {
 						binding: 1,
 						descriptor_type: render_system::DescriptorType::StorageImage,
 						descriptor_count: 1,
-						stage_flags: render_system::Stages::COMPUTE,
+						stages: render_system::Stages::COMPUTE,
 						immutable_samplers: None,
 					},
 				]);
 
 				let pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
-				let descriptor_set = render_system.create_descriptor_set(&descriptor_set_layout, &[
+				let descriptor_set = render_system.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout, &[
 					render_system::DescriptorSetLayoutBinding {
 						name: "source",
 						binding: 0,
 						descriptor_type: render_system::DescriptorType::StorageImage,
 						descriptor_count: 1,
-						stage_flags: render_system::Stages::COMPUTE,
+						stages: render_system::Stages::COMPUTE,
 						immutable_samplers: None,
 					},
 					render_system::DescriptorSetLayoutBinding {
@@ -884,7 +910,7 @@ impl VisibilityWorldRenderDomain {
 						binding: 1,
 						descriptor_type: render_system::DescriptorType::StorageImage,
 						descriptor_count: 1,
-						stage_flags: render_system::Stages::COMPUTE,
+						stages: render_system::Stages::COMPUTE,
 						immutable_samplers: None,
 					},
 				]);
@@ -949,7 +975,9 @@ impl VisibilityWorldRenderDomain {
 				camera: None,
 
 				meshes: HashMap::new(),
+
 				light_data_buffer,
+				materials_data_buffer_handle,
 
 				mesh_resources: HashMap::new(),
 
@@ -1016,6 +1044,17 @@ impl VisibilityWorldRenderDomain {
 					let new_texture = render_system.create_texture(Some(&resource_document.url), texture.extent, render_system::TextureFormats::RGBAu8, compression, render_system::Uses::Texture | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 					render_system.get_texture_slice_mut(new_texture).copy_from_slice(&buffer[resource_document.offset as usize..(resource_document.offset + resource_document.size) as usize]);
+					
+					let sampler = render_system.create_sampler(); // TODO: use actual sampler
+
+					render_system.write(&[
+						render_system::DescriptorWrite {
+							descriptor_set: self.descriptor_set,
+							binding: 5,
+							array_element: 0,
+							descriptor: render_system::Descriptor::CombinedTextureSampler { image_handle: new_texture, sampler_handle: sampler, layout: render_system::Layouts::Texture },
+						},
+					]);
 
 					self.pending_texture_loads.push(new_texture);
 				}
@@ -1134,26 +1173,15 @@ impl VisibilityWorldRenderDomain {
 	
 							(shader, *shader_type)
 						}).collect::<Vec<_>>();
-	
-						let targets = [
-							render_system::AttachmentInformation {
-								texture: self.albedo,
-								layout: render_system::Layouts::RenderTarget,
-								format: render_system::TextureFormats::RGBAu8,
-								clear: render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-								load: false,
-								store: true,
-							},
-							render_system::AttachmentInformation {
-								texture: self.depth_target,
-								layout: render_system::Layouts::RenderTarget,
-								format: render_system::TextureFormats::Depth32,
-								clear: render_system::ClearValue::Depth(0f32),
-								load: false,
-								store: true,
-							},
-						];
 						
+						let materials_buffer_slice = render_system.get_mut_buffer_slice(self.materials_data_buffer_handle);
+
+						let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+
+						let material_data = unsafe { material_data.as_mut().unwrap() };
+
+						material_data.textures[0] = 0; // TODO: make dynamic based on supplied textures
+
 						match material.model.name.as_str() {
 							"Visibility" => {
 								match material.model.pass.as_str() {
@@ -1216,6 +1244,17 @@ impl VisibilityWorldRenderDomain {
 			let mut command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
 
 			command_buffer_recording.transfer_textures(&self.pending_texture_loads);
+
+			let consumption = self.pending_texture_loads.iter().map(|handle|{
+				render_system::Consumption{
+					handle: render_system::Handle::Texture(*handle),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Texture,
+				}
+			}).collect::<Vec<_>>();
+
+			command_buffer_recording.consume_resources(&consumption);
 
 			self.pending_texture_loads.clear();
 
@@ -1537,8 +1576,9 @@ impl VisibilityWorldRenderDomain {
 			},
 		]);
 
-		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.visibility_passes_descriptor_set);
-		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.material_evaluation_descriptor_set);
+		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.descriptor_set);
+		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 2, &self.material_evaluation_descriptor_set);
 
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
@@ -1611,6 +1651,11 @@ struct LightingData {
 struct LightData {
 	position: Vector3,
 	color: Vector3,
+}
+
+#[repr(C)]
+struct MaterialData {
+	textures: [u32; 16],
 }
 
 impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {

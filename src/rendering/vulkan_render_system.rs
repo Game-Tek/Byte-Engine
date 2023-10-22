@@ -121,7 +121,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		}
 	}
 
-	fn create_descriptor_set_layout(&mut self, bindings: &[render_system::DescriptorSetLayoutBinding]) -> render_system::DescriptorSetLayoutHandle {
+	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[render_system::DescriptorSetLayoutBinding]) -> render_system::DescriptorSetLayoutHandle {
 		let mut map: HashMap<DSLB, vk::DescriptorType> = HashMap::new();
 
 		fn m(rs: &mut VulkanRenderSystem, bindings: &[render_system::DescriptorSetLayoutBinding], layout_bindings: &mut Vec<vk::DescriptorSetLayoutBinding>, map: &mut HashMap<DSLB, vk::DescriptorType>) -> vk::DescriptorSetLayout {
@@ -132,11 +132,12 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					render_system::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
 					render_system::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
 					render_system::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
+					render_system::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
 					render_system::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
 					render_system::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 				})
 				.descriptor_count(binding.descriptor_count)
-				.stage_flags(binding.stage_flags.into());
+				.stage_flags(binding.stages.into());
 
 				let x = if let Some(inmutable_samplers) = &binding.immutable_samplers {
 					inmutable_samplers.iter().map(|sampler| vk::Sampler::from_raw(sampler.0)).collect::<Vec<_>>()
@@ -162,6 +163,20 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let descriptor_set_layout = m(self, bindings, &mut Vec::new(), &mut map);
 
+		unsafe{
+			if let Some(name) = name {
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils.set_debug_utils_object_name(
+						self.device.handle(),
+						&vk::DebugUtilsObjectNameInfoEXT::default()
+							.object_handle(descriptor_set_layout)
+							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+							/* .build() */
+					).expect("No debug utils object name");
+				}
+			}
+		}
+
 		let handle = render_system::DescriptorSetLayoutHandle(self.descriptor_sets_layouts.len() as u64);
 
 		self.descriptor_sets_layouts.push(DescriptorSetLayout {
@@ -172,13 +187,14 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		handle
 	}
 
-	fn create_descriptor_set(&mut self, descriptor_set_layout_handle: &render_system::DescriptorSetLayoutHandle, bindings: &[render_system::DescriptorSetLayoutBinding]) -> render_system::DescriptorSetHandle {
+	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &render_system::DescriptorSetLayoutHandle, bindings: &[render_system::DescriptorSetLayoutBinding]) -> render_system::DescriptorSetHandle {
 		let pool_sizes = bindings.iter().map(|binding| {
 			vk::DescriptorPoolSize::default()
 				.ty(match binding.descriptor_type {
 					render_system::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
 					render_system::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
 					render_system::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
+					render_system::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
 					render_system::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
 					render_system::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 				})
@@ -222,6 +238,20 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			if let Some(previous_handle) = previous_handle {
 				self.descriptor_sets[previous_handle.0 as usize].next = Some(handle);
+			}
+
+			if let Some(name) = name {
+				if let Some(debug_utils) = &self.debug_utils {
+					unsafe {
+						debug_utils.set_debug_utils_object_name(
+							self.device.handle(),
+							&vk::DebugUtilsObjectNameInfoEXT::default()
+								.object_handle(descriptor_set)
+								.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+								/* .build() */
+						).expect("No debug utils object name");
+					}
+				}
 			}
 
 			previous_handle = Some(handle);
@@ -275,7 +305,42 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 						let texture = &self.textures[texture_handle.0 as usize];
 
-						let images = [vk::DescriptorImageInfo::default().image_layout(texture_format_and_resource_use_to_image_layout(texture.format_, layout, None)).image_view(texture.image_view)];
+						let images = [
+							vk::DescriptorImageInfo::default()
+							.image_layout(texture_format_and_resource_use_to_image_layout(texture.format_, layout, None))
+							.image_view(texture.image_view)
+						];
+
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(descriptor_set_write.binding)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.image_info(&images);
+
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+
+						descriptor_set_handle_option = descriptor_set.next;
+
+						if let Some(_) = texture.next { // If texture spans multiple frames, write each frame's texture to each frame's descriptor set. Else write the same texture to each frame's descriptor set.
+							texture_handle_option = texture.next;
+						}
+					}
+				},
+				render_system::Descriptor::CombinedTextureSampler{ image_handle, sampler_handle, layout } => {
+					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
+					let mut texture_handle_option = Some(image_handle);
+
+					while let (Some(descriptor_set_handle), Some(texture_handle)) = (descriptor_set_handle_option, texture_handle_option) {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let texture = &self.textures[texture_handle.0 as usize];
+
+						let images = [
+							vk::DescriptorImageInfo::default()
+							.image_layout(texture_format_and_resource_use_to_image_layout(texture.format_, layout, None))
+							.image_view(texture.image_view)
+							.sampler(vk::Sampler::from_raw(sampler_handle.0))
+						];
 
 						let write_info = vk::WriteDescriptorSet::default()
 							.dst_set(descriptor_set.descriptor_set)
@@ -1347,7 +1412,7 @@ impl VulkanRenderSystem {
 		;
 
 		let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
-			.descriptor_indexing(true).descriptor_binding_partially_bound(true)
+			.descriptor_indexing(true).descriptor_binding_partially_bound(true).runtime_descriptor_array(true)
 			.shader_sampled_image_array_non_uniform_indexing(true).shader_storage_image_array_non_uniform_indexing(true)
 			.scalar_block_layout(true)
 			.buffer_device_address(true)

@@ -46,7 +46,7 @@ pub(crate) enum Features {
 
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Operators {
 	Plus,
 	Minus,

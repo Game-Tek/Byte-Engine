@@ -102,20 +102,22 @@ impl VisibilityShaderGenerator {
 	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &lexer::Node) -> String {
 		let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
 
-		string.push_str("layout(set=0,binding=0,scalar) buffer MaterialCount {
+		string.push_str("layout(set=0,binding=5) uniform sampler2D textures[1];
+
+layout(set=1,binding=0,scalar) buffer MaterialCount {
 	uint material_count[];
 };
-layout(set=0,binding=1,scalar) buffer MaterialOffset {
+layout(set=1,binding=1,scalar) buffer MaterialOffset {
 	uint material_offset[];
 };
-layout(set=0,binding=4,scalar) buffer PixelMapping {
+layout(set=1,binding=4,scalar) buffer PixelMapping {
 	u16vec2 pixel_mapping[];
 };
-layout(set=0, binding=6, r8ui) uniform readonly uimage2D vertex_id;
-layout(set=0, binding=7, r8ui) uniform readonly uimage2D instance_id;
-layout(set=1, binding=0, rgba16) uniform image2D out_albedo;
-layout(set=1, binding=7, rgba16) uniform image2D out_position;
-layout(set=1, binding=8, rgba16) uniform image2D out_normals;
+layout(set=1, binding=6, r8ui) uniform readonly uimage2D vertex_id;
+layout(set=1, binding=7, r8ui) uniform readonly uimage2D instance_id;
+layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
+layout(set=2, binding=7, rgba16) uniform image2D out_position;
+layout(set=2, binding=8, rgba16) uniform image2D out_normals;
 
 struct BarycentricDeriv {
 	vec3 lambda;
@@ -168,19 +170,19 @@ struct Mesh {
 	uint material_id;
 };
 
-layout(set=1, binding=1, scalar) buffer readonly MeshBuffer {
+layout(set=2, binding=1, scalar) buffer readonly MeshBuffer {
 	Mesh meshes[];
 };
 
-layout(set=1, binding=2, scalar) buffer readonly Positions {
+layout(set=2, binding=2, scalar) buffer readonly Positions {
 	vec3 positions[];
 };
 
-layout(set=1, binding=3, scalar) buffer readonly Normals {
+layout(set=2, binding=3, scalar) buffer readonly Normals {
 	vec3 normals[];
 };
 
-layout(set=1, binding=4, scalar) buffer readonly Indeces {
+layout(set=2, binding=4, scalar) buffer readonly Indeces {
 	uint16_t indeces[];
 };
 
@@ -272,7 +274,7 @@ struct Camera {
 	mat4 view_projection;
 };
 
-layout(set=1,binding=5,scalar) buffer CameraBuffer {
+layout(set=2,binding=5,scalar) buffer CameraBuffer {
 	Camera camera;
 };
 
@@ -286,8 +288,16 @@ struct LightingData {
 	Light lights[16];
 };
 
-layout(set=1,binding=9,scalar) buffer readonly LightingBuffer {
+struct Material {
+	uint textures[16];
+};
+
+layout(set=2,binding=9,scalar) buffer readonly LightingBuffer {
 	LightingData lighting_data;
+};
+
+layout(set=2,binding=10,scalar) buffer readonly MaterialsBuffer {
+	Material materials[];
 };
 
 layout(push_constant, scalar) uniform PushConstant {
@@ -311,6 +321,7 @@ void main() {{
 	uint be_instance_id = imageLoad(instance_id, be_pixel_coordinate).r;
 
 	Mesh mesh = meshes[be_instance_id];
+	Material material = materials[pc.material_id];
 
 	uint vertex_indeces[3] = uint[3](
 		uint(indeces[be_vertex_id + 0]),
@@ -350,6 +361,85 @@ void main() {{
 	vec3 N = normalize(BE_VERTEX_NORMAL);
 	vec3 V = normalize(camera.view[3].xyz - BE_VERTEX_POSITION);
 
+	vec3 BE_ALBEDO = vec3(1, 0, 0);
+	vec3 BE_METALLIC = vec3(0);
+	float BE_ROUGHNESS = float(0.5);
+"));
+
+		fn visit_node(string: &mut String, shader_node: &lexer::Node) {
+			match &shader_node.node {
+				lexer::Nodes::Scope { name: _, children } => {
+					for child in children {
+						visit_node(string, child);
+					}
+				}
+				lexer::Nodes::Function { name, params: _, return_type: _, statements, raw: _ } => {
+					match name.as_str() {
+						_ => {
+							for statement in statements {
+								visit_node(string, statement);
+								string.push_str(";\n");
+							}
+						}
+					}
+				}
+				lexer::Nodes::Struct { name, template, fields, types } => {
+					for field in fields {
+						visit_node(string, field);
+					}
+				}
+				lexer::Nodes::Member { name, r#type } => {
+
+				}
+				lexer::Nodes::GLSL { code } => {
+					string.push_str(&code);
+				}
+				lexer::Nodes::Expression(expression) => {
+					match expression {
+						lexer::Expressions::Operator { operator, left: _, right } => {
+							if operator == &lexer::Operators::Assignment {
+								string.push_str(&format!("BE_ALBEDO = vec3("));
+								visit_node(string, right);
+								string.push_str(")");
+							}
+						}
+						lexer::Expressions::FunctionCall { name, parameters } => {
+							match name.as_str() {
+								"sample" => {
+									string.push_str(&format!("textureGrad("));
+									for parameter in parameters {
+										visit_node(string, parameter);
+									}
+									string.push_str(&format!(", uv, vec2(0.5), vec2(0.5f))"));
+								}
+								_ => {
+									string.push_str(&format!("{}(", name));
+									for parameter in parameters {
+										visit_node(string, parameter);
+									}
+									string.push_str(&format!(")"));
+								}
+							}
+						}
+						lexer::Expressions::Member { name } => {
+							match name.as_str() {
+								"texture" => { // TODO: replace for checking against user defined parameters
+									string.push_str(&format!("textures[nonuniformEXT(0)]"));
+								}
+								_ => {
+									string.push_str(name);
+								}
+							}
+						}
+						_ => panic!("Invalid expression")
+					}
+				}
+			}
+		}
+
+		visit_node(&mut string, shader_node);
+
+string.push_str(&format!("
 	vec3 Lo = vec3(0.0);
 
 	for (uint i = 0; i < lighting_data.light_count; ++i) {{
@@ -362,10 +452,6 @@ void main() {{
 		float distance = length(light_pos - BE_VERTEX_POSITION);
 		float attenuation = 1.0 / (distance * distance);
 		vec3 radiance = light_color * attenuation;
-
-		vec3 BE_ALBEDO = vec3({albedo});
-		vec3 BE_METALLIC = vec3({metallic});
-		float BE_ROUGHNESS = float({roughness});
 
 		vec3 F0 = vec3(0.04);
 		F0 = mix(F0, BE_ALBEDO, BE_METALLIC);
@@ -385,45 +471,9 @@ void main() {{
 		float NdotL = max(dot(N, L), 0.0);
 		Lo += (kD * BE_ALBEDO / PI + specular) * radiance * NdotL;
 	}}
-", roughness="0.5", albedo="be_variable_color", metallic="vec3(0.0)"));
+"));
 
-		fn visit_node(string: &mut String, shader_node: &lexer::Node) {
-			match &shader_node.node {
-				lexer::Nodes::Scope { name, children } => {
-					for child in children {
-						visit_node(string, child);
-					}
-				}
-				lexer::Nodes::Function { name, params, return_type, statements, raw } => {
-					for statement in statements {
-						visit_node(string, statement);
-					}
-				}
-				lexer::Nodes::Struct { name, template, fields, types } => {
-					for field in fields {
-						visit_node(string, field);
-					}
-				}
-				lexer::Nodes::Member { name, r#type } => {
-
-				}
-				lexer::Nodes::GLSL { code } => {
-					string.push_str(&code);
-				}
-				lexer::Nodes::Expression(expression) => {
-					match expression {
-						lexer::Expressions::Operator { operator, left, right } => {
-							string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, vec4(Lo, 1.0));"));
-							// format!("imageStore(out_albedo, ivec2(gl_FragCoord.xy), vec4(1.0, 0.0, 0.0, 1.0));")
-						}
-						_ => panic!("Invalid expression")
-					}
-				}
-			}
-		}
-
-		visit_node(&mut string, shader_node);
-
+		string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, vec4(Lo, 1.0));"));
 		string.push_str(&format!("imageStore(out_position, be_pixel_coordinate, vec4(BE_VERTEX_POSITION, 1.0));"));
 		string.push_str(&format!("imageStore(out_normals, be_pixel_coordinate, vec4(BE_VERTEX_NORMAL, 1.0));"));
 

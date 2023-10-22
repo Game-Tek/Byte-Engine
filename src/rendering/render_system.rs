@@ -210,6 +210,11 @@ pub enum Descriptor {
 		handle: TextureHandle,
 		layout: Layouts,
 	},
+	CombinedTextureSampler {
+		image_handle: TextureHandle,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
 }
@@ -231,9 +236,9 @@ pub trait RenderSystem: orchestrator::System {
 	/// Creates a shader.
 	fn create_shader(&mut self, shader_source_type: ShaderSourceType, stage: ShaderTypes, shader: &[u8]) -> ShaderHandle;
 
-	fn create_descriptor_set_layout(&mut self, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle;
+	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle;
 
-	fn create_descriptor_set(&mut self, descriptor_set_layout_handle: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle;
+	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle;
 
 	fn write(&self, descriptor_set_writes: &[DescriptorWrite]);
 
@@ -1107,7 +1112,7 @@ pub(super) mod tests {
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::Sampler,
 				binding: 0,
-				stage_flags: Stages::FRAGMENT,
+				stages: Stages::FRAGMENT,
 				immutable_samplers: Some(vec![sampler]),
 			},
 			DescriptorSetLayoutBinding {
@@ -1115,7 +1120,7 @@ pub(super) mod tests {
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageBuffer,
 				binding: 1,
-				stage_flags: Stages::VERTEX,
+				stages: Stages::VERTEX,
 				immutable_samplers: None,
 			},
 			DescriptorSetLayoutBinding {
@@ -1123,14 +1128,14 @@ pub(super) mod tests {
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::SampledImage,
 				binding: 2,
-				stage_flags: Stages::FRAGMENT,
+				stages: Stages::FRAGMENT,
 				immutable_samplers: None,
 			},
 		];
 
-		let descriptor_set_layout_handle = renderer.create_descriptor_set_layout(&bindings);
+		let descriptor_set_layout_handle = renderer.create_descriptor_set_layout(None, &bindings);
 
-		let descriptor_set = renderer.create_descriptor_set(&descriptor_set_layout_handle, &bindings);
+		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle, &bindings);
 
 		renderer.write(&[
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
@@ -1482,8 +1487,10 @@ pub enum DescriptorType {
 	UniformBuffer,
 	/// A storage buffer.
 	StorageBuffer,
-	/// A combined image sampler.
+	/// An image.
 	SampledImage,
+	/// A combined image sampler.
+	CombinedImageSampler,
 	/// A storage image.
 	StorageImage,
 	/// A sampler.
@@ -1500,7 +1507,7 @@ pub struct DescriptorSetLayoutBinding {
 	/// The number of descriptors in the descriptor set layout binding.
 	pub descriptor_count: u32,
 	/// The stages the descriptor set layout binding will be used in.
-	pub stage_flags: Stages,
+	pub stages: Stages,
 	/// The immutable samplers of the descriptor set layout binding.
 	pub immutable_samplers: Option<Vec<SamplerHandle>>,
 }
@@ -1730,12 +1737,12 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_command_buffer_recording(command_buffer_handle, frame)
 	}
 
-	fn create_descriptor_set(&mut self, descriptor_set_layout: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle {
-		self.pointer.create_descriptor_set(descriptor_set_layout, bindings)
+	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle {
+		self.pointer.create_descriptor_set(name, descriptor_set_layout, bindings)
 	}
 
-	fn create_descriptor_set_layout(&mut self, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle {
-		self.pointer.create_descriptor_set_layout(bindings)
+	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle {
+		self.pointer.create_descriptor_set_layout(name, bindings)
 	}
 
 	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle {

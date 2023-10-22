@@ -26,7 +26,7 @@ fn gi() {
 	// let _c: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", material_id: "green_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.7, 0.13, 1.8)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.26, 0.26, 0.26)), });
 
 	// let _sun: EntityHandle<DirectionalLight> = orchestrator.spawn(DirectionalLight::new(Vec3f::new(-0.3, 0.7, -0.3), 4000.0));
-	let _sun: EntityHandle<PointLight> = orchestrator.spawn(PointLight::new(Vec3f::new(-0.7, -0.7, -1.0), 2500.0));
+	let _sun: EntityHandle<PointLight> = orchestrator.spawn(PointLight::new(Vec3f::new(-0.7, -0.7, -1.0), 4500.0));
 
 	app.do_loop();
 

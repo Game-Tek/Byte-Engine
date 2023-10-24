@@ -22,6 +22,9 @@ pub enum DataTypes {
 	Float2,
 	Float3,
 	Float4,
+	U8,
+	U16,
+	U32,
 	Int,
 	Int2,
 	Int3,
@@ -53,6 +56,9 @@ bitflags::bitflags! {
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct BufferHandle(pub(super) u64);
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+pub struct AccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct CommandBufferHandle(pub(super) u64);
@@ -99,6 +105,7 @@ pub struct TextureCopyHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handle {
 	Buffer(BufferHandle),
+	AccelerationStructure(AccelerationStructureHandle),
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
 	Pipeline(PipelineHandle),
@@ -123,9 +130,41 @@ pub struct Consumption {
 	pub layout: Layouts,
 }
 
+pub enum AccelerationStructureBuildAA {
+	Mesh {
+		vertex_buffer: BufferHandle,
+		index_buffer: BufferHandle,
+		transform_buffer: BufferHandle,
+		vertex_format: Formats,
+		vertex_stride: u32,
+		index_format: DataTypes,
+		index_count: u32,
+		transform_count: u32,
+		vertex_count: u32,
+	},
+	AABB {
+		aabb_buffer: BufferHandle,
+		transform_buffer: BufferHandle,
+		transform_count: u32,
+	},
+	Instance {
+		acceleration_structure: AccelerationStructureHandle,
+		transform_buffer: BufferHandle,
+		transform_count: u32,
+	},
+}
+
+pub struct AccelerationStructureBuild {
+	pub acceleration_structure: AccelerationStructureHandle,
+	pub scratch_buffer: BufferHandle,
+	pub acceleration_structure_build_type: AccelerationStructureBuildAA,
+}
+
 pub trait CommandBufferRecording {
 	/// Enables recording on the command buffer.
 	fn begin(&self);
+
+	fn build_acceleration_structures(&mut self, acceleration_structure_builds: &[AccelerationStructureBuild]);
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
@@ -141,8 +180,6 @@ pub trait CommandBufferRecording {
 	fn bind_pipeline(&mut self, pipeline_handle: &PipelineHandle);
 
 	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle);
-
-	fn barriers(&mut self, barriers: &[BarrierDescriptor]);
 
 	/// Writes to the push constant register.
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: &[u8]);
@@ -163,8 +200,8 @@ pub trait CommandBufferRecording {
 	fn dispatch(&mut self, x: u32, y: u32, z: u32);
 	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
 
-	fn clear_texture(&mut self, texture_handle: ImageHandle, clear_value: ClearValue);
-	fn clear_buffer(&mut self, buffer_handle: BufferHandle);
+	fn clear_textures(&mut self, textures: &[(ImageHandle, ClearValue)]);
+	fn clear_buffers(&mut self, buffer_handles: &[BufferHandle]);
 
 	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]);
 
@@ -175,7 +212,7 @@ pub trait CommandBufferRecording {
 	fn end(&mut self);
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_set(&self, pipeline_layout: &PipelineLayoutHandle, arg: u32, descriptor_set_handle: &DescriptorSetHandle);
+	fn bind_descriptor_sets(&self, pipeline_layout: &PipelineLayoutHandle, sets: &[(DescriptorSetHandle, u32)]);
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
 
@@ -269,6 +306,8 @@ pub trait RenderSystem: orchestrator::System {
 	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
 
 	fn create_sampler(&mut self) -> SamplerHandle;
+
+	fn create_acceleration_structure(&mut self, name: Option<&str>) -> AccelerationStructureHandle;
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
 
@@ -1181,7 +1220,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.bind_pipeline(&pipeline);
 
-		command_buffer_recording.bind_descriptor_set(&pipeline_layout, 0, &descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[(descriptor_set, 0)]);
 
 		command_buffer_recording.draw_mesh(&mesh);
 
@@ -1739,6 +1778,10 @@ impl RenderSystem for RenderSystemImplementation {
 
 	fn create_sampler(&mut self) -> SamplerHandle {
 		self.pointer.create_sampler()
+	}
+
+	fn create_acceleration_structure(&mut self, name: Option<&str>) -> AccelerationStructureHandle {
+		self.pointer.create_acceleration_structure(name)
 	}
 
 	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {

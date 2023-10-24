@@ -40,6 +40,7 @@ pub struct VulkanRenderSystem {
 	descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	descriptor_sets: Vec<DescriptorSet>,
 	meshes: Vec<Mesh>,
+	acceleration_structures: Vec<AccelerationStructure>,
 	command_buffers: Vec<CommandBuffer>,
 	synchronizers: Vec<Synchronizer>,
 	swapchains: Vec<Swapchain>,
@@ -701,6 +702,41 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::SamplerHandle(self.create_vulkan_sampler().as_raw())
 	}
 
+	fn create_acceleration_structure(&mut self, name: Option<&str>) -> render_system::AccelerationStructureHandle {
+		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
+			.buffer(vk::Buffer::null())
+			.size(0)
+			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+
+		let handle = render_system::AccelerationStructureHandle(self.acceleration_structures.len() as u64);
+
+		{
+			let handle = unsafe {
+				self.acceleration_structure.create_acceleration_structure(&create_info, None).expect("No acceleration structure")
+			};
+
+			self.acceleration_structures.push(AccelerationStructure {
+				acceleration_structure: handle,
+			});
+
+			if let Some(name) = name {
+				if let Some(debug_utils) = &self.debug_utils {
+					unsafe {
+						debug_utils.set_debug_utils_object_name(
+							self.device.handle(),
+							&vk::DebugUtilsObjectNameInfoEXT::default()
+								.object_handle(handle)
+								.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+								/* .build() */
+						).expect("No debug utils object name");
+					}
+				}
+			}
+		}
+
+		handle
+	}
+
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> render_system::SwapchainHandle {
 		let surface = self.create_vulkan_surface(window_os_handles); 
 
@@ -1219,7 +1255,10 @@ impl Into<vk::Format> for render_system::DataTypes {
 			render_system::DataTypes::Float2 => vk::Format::R32G32_SFLOAT,
 			render_system::DataTypes::Float3 => vk::Format::R32G32B32_SFLOAT,
 			render_system::DataTypes::Float4 => vk::Format::R32G32B32A32_SFLOAT,
+			render_system::DataTypes::U8 => vk::Format::R8_UINT,
+			render_system::DataTypes::U16 => vk::Format::R16_UINT,
 			render_system::DataTypes::Int => vk::Format::R32_SINT,
+			render_system::DataTypes::U32 => vk::Format::R32_UINT,
 			render_system::DataTypes::Int2 => vk::Format::R32G32_SINT,
 			render_system::DataTypes::Int3 => vk::Format::R32G32B32_SINT,
 			render_system::DataTypes::Int4 => vk::Format::R32G32B32A32_SINT,
@@ -1242,6 +1281,9 @@ impl Size for render_system::DataTypes {
 			render_system::DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
 			render_system::DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
 			render_system::DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
+			render_system::DataTypes::U8 => std::mem::size_of::<u8>(),
+			render_system::DataTypes::U16 => std::mem::size_of::<u16>(),
+			render_system::DataTypes::U32 => std::mem::size_of::<u32>(),
 			render_system::DataTypes::Int => std::mem::size_of::<i32>(),
 			render_system::DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
 			render_system::DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
@@ -1519,6 +1561,7 @@ impl VulkanRenderSystem {
 			textures: Vec::new(),
 			descriptor_sets_layouts: Vec::new(),
 			descriptor_sets: Vec::new(),
+			acceleration_structures: Vec::new(),
 			meshes: Vec::new(),
 			command_buffers: Vec::new(),
 			synchronizers: Vec::new(),
@@ -2262,6 +2305,10 @@ impl VulkanCommandBufferRecording<'_> {
 		}
 	}
 
+	fn get_acceleration_structure(&self, acceleration_structure_handle: render_system::AccelerationStructureHandle) -> (render_system::AccelerationStructureHandle, &AccelerationStructure) {
+		(acceleration_structure_handle, &self.render_system.acceleration_structures[acceleration_structure_handle.0 as usize])
+	}
+
 	fn get_command_buffer(&self) -> &CommandBufferInternal {
 		&self.render_system.command_buffers[self.command_buffer.0 as usize].frames[self.modulo_frame_index as usize]
 	}
@@ -2368,103 +2415,120 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		self.in_render_pass = false;
 	}
 
-	fn barriers(&mut self, barriers: &[render_system::BarrierDescriptor]) {
-		let mut image_memory_barriers = Vec::new();
-		let mut buffer_memory_barriers = Vec::new();
-		let mut memory_barriers = Vec::new();
+	fn build_acceleration_structures(&mut self, acceleration_structure_builds: &[render_system::AccelerationStructureBuild]) {
+		fn visit(this: &mut VulkanCommandBufferRecording, acceleration_structure_builds: &[render_system::AccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>) {
+			if let Some(build) = acceleration_structure_builds.first() {
+				let (acceleration_structure_handle, acceleration_structure) = this.get_acceleration_structure(build.acceleration_structure);
 
-		for barrier in barriers {
-			match barrier.barrier {
-				render_system::Barrier::Buffer(buffer_barrier) => {
-					let buffer_memory_barrier = if let Some(source) = barrier.source {
-							vk::BufferMemoryBarrier2KHR::default()
-							.src_stage_mask(to_pipeline_stage_flags(source.stage))
-							.src_access_mask(to_access_flags(source.access, source.stage))
-							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						} else {
-							vk::BufferMemoryBarrier2KHR::default()
-							.src_stage_mask(vk::PipelineStageFlags2::empty())
-							.src_access_mask(vk::AccessFlags2KHR::empty())
-							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						}
-						.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
-						.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.buffer(self.render_system.buffers[buffer_barrier.0 as usize].buffer)
-						.offset(0)
-						.size(vk::WHOLE_SIZE)
-						/* .build() */;
-
-					buffer_memory_barriers.push(buffer_memory_barrier);
-				},
-				render_system::Barrier::Memory => {
-					let memory_barrier = if let Some(source) = barrier.source {
-						vk::MemoryBarrier2::default()
-							.src_stage_mask(to_pipeline_stage_flags(source.stage))
-							.src_access_mask(to_access_flags(source.access, source.stage))
-
-					} else {
-						vk::MemoryBarrier2::default()
-							.src_stage_mask(vk::PipelineStageFlags2::empty())
-							.src_access_mask(vk::AccessFlags2KHR::empty())
+				let (as_geometries, offsets) = match build.acceleration_structure_build_type {
+					render_system::AccelerationStructureBuildAA::AABB { aabb_buffer, transform_buffer, transform_count } => {
+						(vec![], vec![])
 					}
-					.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
-					.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
+					render_system::AccelerationStructureBuildAA::Instance { acceleration_structure, transform_buffer, transform_count } => {
+						(vec![], vec![])
+					}
+					render_system::AccelerationStructureBuildAA::Mesh { vertex_buffer, index_buffer, transform_buffer, vertex_format, vertex_stride, index_format, index_count, transform_count, vertex_count } => {
+						let vertex_data_address = unsafe {
+							let (_, buffer) = this.get_buffer(vertex_buffer);
+							this.render_system.device.get_buffer_device_address(
+								&vk::BufferDeviceAddressInfo::default()
+									.buffer(buffer.buffer)
+									/* .build() */
+							)
+						};
+
+						let index_data_address = unsafe {
+							let (_, buffer) = this.get_buffer(index_buffer);
+							this.render_system.device.get_buffer_device_address(
+								&vk::BufferDeviceAddressInfo::default()
+									.buffer(buffer.buffer)
+									/* .build() */
+							)
+						};
+
+						let transform_data_address = unsafe {
+							let (_, buffer) = this.get_buffer(transform_buffer);
+							this.render_system.device.get_buffer_device_address(
+								&vk::BufferDeviceAddressInfo::default()
+									.buffer(buffer.buffer)
+									/* .build() */
+							)
+						};
+
+						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+							.vertex_data(vk::DeviceOrHostAddressConstKHR {
+								device_address: vertex_data_address,
+							})
+							.index_data(vk::DeviceOrHostAddressConstKHR {
+								device_address: index_data_address,
+							})
+							.max_vertex(vertex_count - 1)
+							.transform_data(vk::DeviceOrHostAddressConstKHR {
+								device_address: transform_data_address,
+							})
+							.vertex_format(to_format(vertex_format, None))
+							.index_type(match index_format {
+								render_system::DataTypes::U8 => vk::IndexType::UINT16,
+								render_system::DataTypes::U16 => vk::IndexType::UINT16,
+								render_system::DataTypes::U32 => vk::IndexType::UINT32,
+								_ => panic!("Invalid index format"),
+							})
+							.vertex_stride(vertex_stride as u64);
+
+						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
+							.primitive_count(index_count / 3)
+							.primitive_offset(0)
+							.first_vertex(0)
+							.transform_offset(0)
+							/* .build() */];
+
+						(vec![vk::AccelerationStructureGeometryKHR::default()
+							.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+							.geometry(vk::AccelerationStructureGeometryDataKHR{ triangles })],
+						build_range_info)
+					}
+				};
+
+				let scratch_buffer_address = unsafe {
+					let (_, buffer) = this.get_buffer(build.scratch_buffer);
+					this.render_system.device.get_buffer_device_address(
+						&vk::BufferDeviceAddressInfo::default()
+							.buffer(buffer.buffer)
+							/* .build() */
+					)
+				};
+
+				let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+					.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+					.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+					.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+					.dst_acceleration_structure(acceleration_structure.acceleration_structure)
+					.scratch_data(vk::DeviceOrHostAddressKHR {
+						device_address: scratch_buffer_address,
+					})
 					/* .build() */;
 
-					memory_barriers.push(memory_barrier);
+				infos.push(build_geometry_info);
+				build_range_infos.push(offsets);
+				geometries.push(as_geometries);
+
+				visit(this, &acceleration_structure_builds[1..], infos, geometries, build_range_infos);
+			} else {
+				let command_buffer = this.get_command_buffer();
+
+				for (info, geos) in infos.iter().zip(geometries) {
+					info.geometries(&geos);
 				}
-				render_system::Barrier::Image(texture_handle) => {
-					let (texture_handle, texture) = self.get_texture(texture_handle);
 
-					let new_layout = texture_format_and_resource_use_to_image_layout(texture.format_, barrier.destination.layout, Some(barrier.destination.access));
-					let new_stage_mask = to_pipeline_stage_flags(barrier.destination.stage);
-					let new_access_mask = to_access_flags(barrier.destination.access, barrier.destination.stage);
+				let build_range_infos = build_range_infos.iter().map(|build_range_info| build_range_info.as_slice()).collect::<Vec<_>>();
 
-					let image_memory_barrier = if let Some(barrier_source) = barrier.source {
-							let old_layout = texture_format_and_resource_use_to_image_layout(texture.format_, barrier_source.layout, Some(barrier_source.access));
-							let old_stage_mask = to_pipeline_stage_flags(barrier_source.stage);
-							let old_access_mask = to_access_flags(barrier_source.access, barrier_source.stage);
-
-							vk::ImageMemoryBarrier2KHR::default()
-							.old_layout(old_layout)
-							.src_stage_mask(old_stage_mask)
-							.src_access_mask(old_access_mask)
-						} else {
-							vk::ImageMemoryBarrier2KHR::default()
-							.old_layout(vk::ImageLayout::UNDEFINED)
-							.src_stage_mask(vk::PipelineStageFlags2::empty())
-							.src_access_mask(vk::AccessFlags2KHR::empty())
-						}
-						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(new_layout)
-						.dst_stage_mask(new_stage_mask)
-						.dst_access_mask(new_access_mask)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.image(texture.image)
-						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: if texture.format != vk::Format::D32_SFLOAT { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
-							base_mip_level: 0,
-							level_count: vk::REMAINING_MIP_LEVELS,
-							base_array_layer: 0,
-							layer_count: vk::REMAINING_ARRAY_LAYERS,
-						})
-						/* .build() */;
-					image_memory_barriers.push(image_memory_barrier);
-				},
+				unsafe {
+					this.render_system.acceleration_structure.cmd_build_acceleration_structures(command_buffer.command_buffer, &infos, &build_range_infos)
+				}
 			}
 		}
 
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_memory_barriers)
-			.buffer_memory_barriers(&buffer_memory_barriers)
-			.memory_barriers(&memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-			/* .build() */;
-
-		let command_buffer = self.get_command_buffer();
-
-		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
+		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new());
 	}
 
 	/// Binds a shader to the GPU.
@@ -2535,36 +2599,33 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn clear_texture(&mut self, texture_handle: render_system::ImageHandle, clear_value: render_system::ClearValue) {
-		let (texture_handle, texture) = self.get_texture(texture_handle);
+	fn clear_textures(&mut self, textures: &[(render_system::ImageHandle, render_system::ClearValue)]) {
+		self.consume_resources(textures.iter().map(|(texture_handle, _)| render_system::Consumption {
+			handle: render_system::Handle::Image(*texture_handle),
+			stages: render_system::Stages::TRANSFER,
+			access: render_system::AccessPolicies::WRITE,
+			layout: render_system::Layouts::Transfer,
+		}).collect::<Vec<_>>().as_slice());
 
-		let clear_value = match clear_value {
-			render_system::ClearValue::None => vk::ClearColorValue{ float32: [0.0, 0.0, 0.0, 0.0] },
-			render_system::ClearValue::Color(color) => vk::ClearColorValue{ float32: [color.r, color.g, color.b, color.a] },
-			render_system::ClearValue::Depth(depth) => vk::ClearColorValue{ float32: [depth, 0.0, 0.0, 0.0] },
-			render_system::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue{ uint32: [r, g, b, a] },
-		};
-
-		unsafe {
-			self.render_system.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &clear_value, &[vk::ImageSubresourceRange {
-				aspect_mask: vk::ImageAspectFlags::COLOR,
-				base_mip_level: 0,
-				level_count: vk::REMAINING_MIP_LEVELS,
-				base_array_layer: 0,
-				layer_count: vk::REMAINING_ARRAY_LAYERS,
-			}]);
-		}
-
-		let handle = render_system::Handle::Image(texture_handle);
-
-		if let Some(state) = self.states.get_mut(&handle) {
-			*state = TransitionState { stage: vk::PipelineStageFlags2::TRANSFER, access: vk::AccessFlags2::TRANSFER_WRITE, layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL };
-		} else {
-			self.states.insert(handle, TransitionState {
-				stage: vk::PipelineStageFlags2::TRANSFER,
-				access: vk::AccessFlags2::TRANSFER_WRITE,
-				layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-			});
+		for (texture_handle, clear_value) in textures {
+			let (_, texture) = self.get_texture(*texture_handle);
+	
+			let clear_value = match clear_value {
+				render_system::ClearValue::None => vk::ClearColorValue{ float32: [0.0, 0.0, 0.0, 0.0] },
+				render_system::ClearValue::Color(color) => vk::ClearColorValue{ float32: [color.r, color.g, color.b, color.a] },
+				render_system::ClearValue::Depth(depth) => vk::ClearColorValue{ float32: [*depth, 0.0, 0.0, 0.0] },
+				render_system::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue{ uint32: [*r, *g, *b, *a] },
+			};
+	
+			unsafe {
+				self.render_system.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &clear_value, &[vk::ImageSubresourceRange {
+					aspect_mask: vk::ImageAspectFlags::COLOR,
+					base_mip_level: 0,
+					level_count: vk::REMAINING_MIP_LEVELS,
+					base_array_layer: 0,
+					layer_count: vk::REMAINING_ARRAY_LAYERS,
+				}]);
+			}
 		}
 	}
 
@@ -2695,16 +2756,27 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
 	}
 
-	fn clear_buffer(&mut self, buffer_handle: render_system::BufferHandle) {
-		unsafe {
-			self.render_system.device.cmd_fill_buffer(self.get_command_buffer().command_buffer, self.render_system.buffers[buffer_handle.0 as usize].buffer, 0, vk::WHOLE_SIZE, 0);
-		}
+	fn clear_buffers(&mut self, buffer_handles: &[render_system::BufferHandle]) {
+		self.consume_resources(&buffer_handles.iter().map(|buffer_handle|
+			render_system::Consumption{
+				handle: render_system::Handle::Buffer(*buffer_handle),
+				stages: render_system::Stages::TRANSFER,
+				access: render_system::AccessPolicies::WRITE,
+				layout: render_system::Layouts::Transfer,
+			}
+		).collect::<Vec<_>>());
 
-		self.states.insert(render_system::Handle::Buffer(buffer_handle), TransitionState {
-			stage: vk::PipelineStageFlags2::TRANSFER,
-			access: vk::AccessFlags2::TRANSFER_WRITE,
-			layout: vk::ImageLayout::UNDEFINED,
-		});
+		for buffer_handle in buffer_handles {
+			unsafe {
+				self.render_system.device.cmd_fill_buffer(self.get_command_buffer().command_buffer, self.render_system.buffers[buffer_handle.0 as usize].buffer, 0, vk::WHOLE_SIZE, 0);
+			}
+
+			self.states.insert(render_system::Handle::Buffer(*buffer_handle), TransitionState {
+				stage: vk::PipelineStageFlags2::TRANSFER,
+				access: vk::AccessFlags2::TRANSFER_WRITE,
+				layout: vk::ImageLayout::UNDEFINED,
+			});
+		}
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
@@ -3115,17 +3187,20 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_set(&self, pipeline_layout: &render_system::PipelineLayoutHandle, first_set: u32, descriptor_set_handle: &render_system::DescriptorSetHandle) {
+	fn bind_descriptor_sets(&self, pipeline_layout: &render_system::PipelineLayoutHandle, sets: &[(render_system::DescriptorSetHandle, u32)]) {
 		let command_buffer = self.get_command_buffer();
 
 		let pipeline_layout = vk::PipelineLayout::from_raw(pipeline_layout.0);
 
-		let (_, descriptor_set) = self.get_descriptor_set(descriptor_set_handle);
+		assert!(sets.is_sorted_by(|a, b| Some(a.1.cmp(&b.1))));
 
-		let descriptor_sets = [descriptor_set.descriptor_set];
-
-		unsafe {
-			self.render_system.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, pipeline_layout, first_set, &descriptor_sets, &[]);
+		for (descriptor_set_handle, set_index) in sets {
+			let (_, descriptor_set) = self.get_descriptor_set(descriptor_set_handle);
+			let descriptor_sets = [descriptor_set.descriptor_set];
+	
+			unsafe {
+				self.render_system.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, pipeline_layout, *set_index, &descriptor_sets, &[]);
+			}
 		}
 	}
 
@@ -3235,6 +3310,10 @@ struct Mesh {
 	vertex_count: u32,
 	index_count: u32,
 	vertex_size: usize,
+}
+
+struct AccelerationStructure {
+	acceleration_structure: vk::AccelerationStructureKHR,
 }
 
 struct Frame {

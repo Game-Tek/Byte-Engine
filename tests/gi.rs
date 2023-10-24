@@ -1,7 +1,7 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self, System,}, render_domain::{Mesh, MeshParameters}, math, rendering::{directional_light::DirectionalLight, point_light::PointLight}};
-use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
+use byte_engine::{application::Application, Vec3f, orchestrator::EntityHandle, render_domain::Mesh, rendering::point_light::PointLight};
+use maths_rs::prelude::{MatTranslate, MatScale,};
 
 #[ignore]
 #[test]
@@ -30,15 +30,4 @@ fn gi() {
 	app.do_loop();
 
 	app.deinitialize();
-}
-
-struct Player {
-	mesh: EntityHandle<Mesh>,
-	camera: EntityHandle<byte_engine::camera::Camera>,
-}
-
-impl orchestrator::Entity for Player {}
-
-impl Component for Player {
-	// type Parameters<'a> = EntityHandle<input_manager::Action<Vec3f>>;
 }

@@ -1227,17 +1227,17 @@ impl VisibilityWorldRenderDomain {
 
 		let view_projection_matrix = projection_matrix * view_matrix;
 
-		let camera_data = [
-			view_matrix,
-			projection_matrix,
-			view_projection_matrix,
-		];
-
-		let camera_data_bytes = unsafe { std::slice::from_raw_parts(camera_data.as_ptr() as *const u8, std::mem::size_of_val(&camera_data)) };
-
-		unsafe {
-			std::ptr::copy_nonoverlapping(camera_data_bytes.as_ptr(), camera_data_buffer.as_mut_ptr(), camera_data_bytes.len());
+		struct ShaderCameraData {
+			view_matrix: maths_rs::Mat4f,
+			projection_matrix: maths_rs::Mat4f,
+			view_projection_matrix: maths_rs::Mat4f,
 		}
+
+		let camera_data_reference = unsafe { (camera_data_buffer.as_mut_ptr() as *mut ShaderCameraData).as_mut().unwrap() };
+
+		camera_data_reference.view_matrix = view_matrix;
+		camera_data_reference.projection_matrix = projection_matrix;
+		camera_data_reference.view_projection_matrix = view_projection_matrix;
 
 		let swapchain_handle = self.swapchain_handles[0];
 
@@ -1298,50 +1298,13 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_pipeline(&self.visibility_pass_pipeline);
 
-		command_buffer_recording.bind_descriptor_set(&self.pipeline_layout_handle, 0, &self.descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[(self.descriptor_set, 0)]);
 
 		command_buffer_recording.dispatch_meshes((self.index_count * self.instance_count) / 32, 1, 1);
 
 		command_buffer_recording.end_render_pass();
 
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_count),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset_scratch),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_evaluation_dispatches),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_xy),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-		]);
-
-		command_buffer_recording.clear_buffer(self.material_count);
-		command_buffer_recording.clear_buffer(self.material_offset);
-		command_buffer_recording.clear_buffer(self.material_offset_scratch);
-		command_buffer_recording.clear_buffer(self.material_evaluation_dispatches);
-		command_buffer_recording.clear_buffer(self.material_xy);
+		command_buffer_recording.clear_buffers(&[self.material_count, self.material_offset, self.material_offset_scratch, self.material_evaluation_dispatches, self.material_xy]);
 
 		// Material count pass
 
@@ -1361,8 +1324,7 @@ impl VisibilityWorldRenderDomain {
 		]);
 
 		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.descriptor_set);
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 1, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
 		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
 		// Material offset pass
@@ -1388,8 +1350,7 @@ impl VisibilityWorldRenderDomain {
 			},
 		]);
 		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.descriptor_set);
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 1, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
 		command_buffer_recording.dispatch(1, 1, 1);
 
 		// Pixel mapping pass
@@ -1414,30 +1375,14 @@ impl VisibilityWorldRenderDomain {
 				layout: render_system::Layouts::General,
 			},
 		]);
+
 		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 0, &self.descriptor_set);
-		command_buffer_recording.bind_descriptor_set(&self.visibility_pass_pipeline_layout, 1, &self.visibility_passes_descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
 		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
 		// Material evaluation pass
-		
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.albedo),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.result),
-				stages: render_system::Stages::TRANSFER,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::Transfer,
-			},
-		]);
 
-		command_buffer_recording.clear_texture(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
-		command_buffer_recording.clear_texture(self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
+		command_buffer_recording.clear_textures(&[(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })), (self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }))]);
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption {
@@ -1484,9 +1429,7 @@ impl VisibilityWorldRenderDomain {
 			},
 		]);
 
-		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 0, &self.descriptor_set);
-		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 1, &self.visibility_passes_descriptor_set);
-		command_buffer_recording.bind_descriptor_set(&self.material_evaluation_pipeline_layout, 2, &self.material_evaluation_descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1), (self.material_evaluation_descriptor_set, 2)]);
 
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
@@ -1515,7 +1458,7 @@ impl VisibilityWorldRenderDomain {
 		]);
 
 		command_buffer_recording.bind_compute_pipeline(&self.tone_map_pass.pipeline);
-		command_buffer_recording.bind_descriptor_set(&self.tone_map_pass.pipeline_layout, 0, &self.tone_map_pass.descriptor_set);
+		command_buffer_recording.bind_descriptor_sets(&self.tone_map_pass.pipeline_layout, &[(self.tone_map_pass.descriptor_set, 0)]);
 		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
 
 		// Copy to swapchain

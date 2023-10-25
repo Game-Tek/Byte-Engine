@@ -459,6 +459,57 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::PipelineHandle(pipeline_handle.as_raw())
 	}
 
+	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shaders: &[render_system::ShaderParameter]) -> render_system::PipelineHandle {
+		let mut groups = Vec::with_capacity(1024);
+		
+		let stages = shaders.iter().map(|shader| {
+			vk::PipelineShaderStageCreateInfo::default()
+				.stage(to_shader_stage_flags(shader.1))
+				.module(vk::ShaderModule::from_raw(shader.0.0))
+				.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+				// .specialization_info(&specilization_infos[specilization_info_count - 1])
+				/* .build() */
+		}).collect::<Vec<_>>();
+
+		for (i, shader) in shaders.iter().enumerate() {
+			match shader.1 {
+				render_system::ShaderTypes::Raygen | render_system::ShaderTypes::Miss | render_system::ShaderTypes::Callable => {
+					groups.push(vk::RayTracingShaderGroupCreateInfoKHR::default()
+						.general_shader(i as u32));
+				}
+				render_system::ShaderTypes::ClosestHit => {
+					groups.push(vk::RayTracingShaderGroupCreateInfoKHR::default()
+						.closest_hit_shader(i as u32));
+				}
+				render_system::ShaderTypes::AnyHit => {
+					groups.push(vk::RayTracingShaderGroupCreateInfoKHR::default()
+						.any_hit_shader(i as u32));
+				}
+				render_system::ShaderTypes::Intersection => {
+					groups.push(vk::RayTracingShaderGroupCreateInfoKHR::default()
+						.intersection_shader(i as u32));
+				}
+				_ => {
+					warn!("Fed shader of type '{:?}' to ray tracing pipeline", shader.1)
+				}
+			}
+		}
+
+		let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
+			.layout(vk::PipelineLayout::from_raw(pipeline_layout_handle.0))
+			.stages(&stages)
+			.groups(&groups)
+			.max_pipeline_ray_recursion_depth(1);
+
+		let pipeline_handle = unsafe {
+			let pipeline = self.ray_tracing_pipeline.create_ray_tracing_pipelines(vk::DeferredOperationKHR::null(), vk::PipelineCache::null(), &[create_info], None).expect("No ray tracing pipeline")[0];
+			let handle_buffer = self.ray_tracing_pipeline.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, 32 * groups.len()).expect("Could not get ray tracing shader group handles");
+			pipeline
+		};
+
+		render_system::PipelineHandle(pipeline_handle.as_raw())
+	}
+
 	fn create_command_buffer(&mut self) -> render_system::CommandBufferHandle {
 		let command_buffer_handle = render_system::CommandBufferHandle(self.command_buffers.len() as u64);
 
@@ -874,7 +925,7 @@ use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
 #[cfg(not(test))]
 use log::{warn, error, debug};
 
-use super::render_system::{CommandBufferRecording, Formats};
+use super::render_system::{CommandBufferRecording, Formats, DispatchExtent};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -2537,7 +2588,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	/// Binds a pipeline to the GPU.
-	fn bind_pipeline(&mut self, pipeline_handle: &render_system::PipelineHandle) {
+	fn bind_raster_pipeline(&mut self, pipeline_handle: &render_system::PipelineHandle) {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = vk::Pipeline::from_raw(pipeline_handle.0);
 		unsafe { self.render_system.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline); }
@@ -2548,6 +2599,13 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let pipeline = vk::Pipeline::from_raw(pipeline_handle.0);
 		unsafe { self.render_system.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline); }
 		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
+	}
+
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &render_system::PipelineHandle) {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = vk::Pipeline::from_raw(pipeline_handle.0);
+		unsafe { self.render_system.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline); }
+		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
 	}
 
 	/// Writes to the push constant register.
@@ -2787,8 +2845,13 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn dispatch(&mut self, x: u32, y: u32, z: u32) {
+	fn dispatch(&mut self, dispatch: render_system::DispatchExtent) {
 		let command_buffer = self.get_command_buffer();
+
+		let x = dispatch.dispatch_extent.width.div_ceil(dispatch.workgroup_extent.width);
+		let y = dispatch.dispatch_extent.height.div_ceil(dispatch.workgroup_extent.height);
+		let z = dispatch.dispatch_extent.depth.div_ceil(dispatch.workgroup_extent.depth);
+
 		unsafe {
 			self.render_system.device.cmd_dispatch(command_buffer.command_buffer, x, y, z);
 		}
@@ -2799,6 +2862,26 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let buffer = self.render_system.buffers[buffer_descriptor.buffer.0 as usize];
 		unsafe {
 			self.render_system.device.cmd_dispatch_indirect(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset);
+		}
+	}
+
+	fn trace_rays(&mut self, binding_tables: render_system::BindingTables, x: u32, y: u32, z: u32) {
+		let command_buffer = self.get_command_buffer();
+
+		fn make_strided_range(range: render_system::BufferStridedRange) -> vk::StridedDeviceAddressRegionKHR {
+			vk::StridedDeviceAddressRegionKHR::default()
+				.device_address(0)
+				.stride(range.stride)
+				.size(range.size)
+		}
+
+		let raygen_shader_binding_tables = make_strided_range(binding_tables.raygen);
+		let miss_shader_binding_tables = make_strided_range(binding_tables.miss);
+		let hit_shader_binding_tables = make_strided_range(binding_tables.hit);
+		let callable_shader_binding_tables = make_strided_range(binding_tables.callable);
+
+		unsafe {
+			self.render_system.ray_tracing_pipeline.cmd_trace_rays(command_buffer.command_buffer, &raygen_shader_binding_tables, &miss_shader_binding_tables, &hit_shader_binding_tables, &callable_shader_binding_tables, x, y, z)
 		}
 	}
 
@@ -2913,123 +2996,6 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	/// Performs a series of texture copies.
-	// fn copy_textures(&mut self, copies: &[((render_system::TextureHandle, bool, render_system::Layouts, render_system::Stages, render_system::AccessPolicies), (render_system::TextureHandle, bool, render_system::Layouts, render_system::Stages, render_system::AccessPolicies))]) {
-	// 	let mut transitions = Vec::new();
-
-	// 	for (f, t) in copies {
-	// 		transitions.push((*f, true, render_system::Layouts::Transfer, render_system::Stages::TRANSFER, render_system::AccessPolicies::READ));
-	// 		transitions.push((*t, false, render_system::Layouts::Transfer, render_system::Stages::TRANSFER, render_system::AccessPolicies::WRITE));
-	// 	}
-
-	// 	self.transition_textures(&transitions);
-
-	// 	let command_buffer = &self.render_system.command_buffers[self.command_buffer.0 as usize];
-
-	// 	for (source, destination) in copies {
-	// 		let source_texture = &self.render_system.textures[source.0.0 as usize];
-	// 		let destination_texture = &self.render_system.textures[destination.0.0 as usize];
-	// 		let (source_layout) = self.get_texture_state(source.0).expect("xx");
-	// 		let (destination_layout) = self.get_texture_state(destination.0).expect("xx");
-
-	// 		if source_texture.format == destination_texture.format {
-	// 			let image_copies = [vk::ImageCopy2::default()
-	// 				.src_subresource(vk::ImageSubresourceLayers::default()
-	// 					.aspect_mask(vk::ImageAspectFlags::COLOR)
-	// 					.mip_level(0)
-	// 					.base_array_layer(0)
-	// 					.layer_count(1)
-	// 					/* .build() */
-	// 				)
-	// 				.src_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-	// 				.dst_subresource(vk::ImageSubresourceLayers::default()
-	// 					.aspect_mask(vk::ImageAspectFlags::COLOR)
-	// 					.mip_level(0)
-	// 					.base_array_layer(0)
-	// 					.layer_count(1)
-	// 					/* .build() */
-	// 				)
-	// 				.dst_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-	// 				.extent(source_texture.extent/* .build() */)
-	// 			];
-
-	// 			let copy_image_info = vk::CopyImageInfo2::default()
-	// 				.src_image(source_texture.image)
-	// 				.src_image_layout(source.2)
-	// 				.dst_image(destination_texture.image)
-	// 				.dst_image_layout(destination.2)
-	// 				.regions(&image_copies);
-	// 				/* .build() */
-
-	// 			unsafe { self.render_system.device.cmd_copy_image2(command_buffer.command_buffer, &copy_image_info); }
-	// 		} else {
-	// 			let regions = [
-	// 				vk::ImageBlit2::default()
-	// 				.src_offsets([
-	// 					vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
-	// 					vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1)/* .build() */,
-	// 				])
-	// 				.src_subresource(vk::ImageSubresourceLayers::default()
-	// 					.aspect_mask(vk::ImageAspectFlags::COLOR)
-	// 					.mip_level(0)
-	// 					.base_array_layer(0)
-	// 					.layer_count(1)
-	// 					/* .build() */
-	// 				)
-	// 				.dst_offsets([
-	// 					vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
-	// 					vk::Offset3D::default().x(destination_texture.extent.width as i32).y(destination_texture.extent.height as i32).z(1)/* .build() */,
-	// 				])
-	// 				.dst_subresource(vk::ImageSubresourceLayers::default()
-	// 					.aspect_mask(vk::ImageAspectFlags::COLOR)
-	// 					.mip_level(0)
-	// 					.base_array_layer(0)
-	// 					.layer_count(1)
-	// 					/* .build() */
-	// 				)
-	// 			];
-
-	// 			let blit_image_info = vk::BlitImageInfo2::default()
-	// 				.src_image(source_texture.image)
-	// 				.src_image_layout(texture_format_and_resource_use_to_image_layout(source_texture.format, source.2, Some(source.4)))
-	// 				.dst_image(destination_texture.image)
-	// 				.dst_image_layout(texture_format_and_resource_use_to_image_layout(destination_texture.format, destination.2, Some(destination.4)))
-	// 				.regions(&regions);
-	// 				/* .build() */
-	// 			unsafe { self.render_system.device.cmd_blit_image2(command_buffer.command_buffer, &blit_image_info); }
-	// 		}
-	// 	}
-	// }
-
-	/// Copies GPU accessible texture data to a CPU accessible buffer.
-	// fn synchronize_texture(&mut self, texture_handle: render_system::TextureHandle) {
-	// 	let mut texture_copies = Vec::new();
-
-	// 	let texture = self.render_system.get_texture(self.frame_handle, texture_handle);
-
-	// 	let copy_dst_texture = self.render_system.textures.iter().enumerate().find(|(_, texture)| texture.parent == Some(texture_handle) && texture.role == "CPU_READ").expect("No CPU_READ texture found. Texture must be created with the CPU read access flag.");
-		
-	// 	let source_texture_handle = texture_handle;
-	// 	let destination_texture_handle = TextureHandle(copy_dst_texture.0 as u32);
-		
-	// 	let transitions = [
-	// 		(source_texture_handle, true, Layouts::Transfer, Stages::TRANSFER, AccessPolicies::READ),
-	// 		(destination_texture_handle, false, Layouts::Transfer, Stages::TRANSFER, AccessPolicies::WRITE)
-	// 	];
-
-	// 	self.transition_textures(&transitions);
-
-	// 	texture_copies.push(TextureCopy {
-	// 		source: texture.texture,
-	// 		source_format: texture.format,
-	// 		destination: copy_dst_texture.1.texture,
-	// 		destination_format: copy_dst_texture.1.format,
-	// 		extent: texture.extent,
-	// 	});
-
-	// 	self.render_system.render_backend.copy_textures(&self.render_system.command_buffers[self.command_buffer.0 as usize].command_buffer, &texture_copies);
-	// }
-
 	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::ImageHandle, present_image_index: u32, swapchain_handle: render_system::SwapchainHandle) {
 		self.consume_resources(&[
 			render_system::Consumption {
@@ -3054,24 +3020,6 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let command_buffer = self.get_command_buffer();
 
 		let image_memory_barriers = [
-			// vk::ImageMemoryBarrier2KHR::default()
-			// 	.old_layout(old_source_texture_state)
-			// 	.src_stage_mask(vk::PipelineStageFlags2::empty())
-			// 	.src_access_mask(vk::AccessFlags2KHR::empty())
-			// 	.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-			// 	.new_layout(new_source_texture_state)
-			// 	.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-			// 	.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_READ)
-			// 	.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-			// 	.image(source_texture.image)
-			// 	.subresource_range(vk::ImageSubresourceRange {
-			// 		aspect_mask: vk::ImageAspectFlags::COLOR,
-			// 		base_mip_level: 0,
-			// 		level_count: vk::REMAINING_MIP_LEVELS,
-			// 		base_array_layer: 0,
-			// 		layer_count: vk::REMAINING_ARRAY_LAYERS,
-			// 	})
-			// 	/* .build() */,
 			vk::ImageMemoryBarrier2KHR::default()
 				.old_layout(vk::ImageLayout::UNDEFINED)
 				.src_stage_mask(vk::PipelineStageFlags2::empty())
@@ -3301,6 +3249,32 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let execution_completion_synchronizer = &self.render_system.synchronizers[execution_synchronizer_handle.0 as usize];
 
 		unsafe { self.render_system.device.queue_submit2(self.render_system.queue, &[submit_info], execution_completion_synchronizer.fence); }
+	}
+
+	fn start_region(&self, name: &str) {
+		let command_buffer = self.get_command_buffer();
+
+		let name = std::ffi::CString::new(name).unwrap();
+
+		let marker_info = vk::DebugUtilsLabelEXT::default()
+			.label_name(&name.as_c_str());
+
+		unsafe {
+			if let Some(debug_utils) = &self.render_system.debug_utils {
+				debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
+			}
+		}
+	}
+
+	fn end_region(&self) {
+		let command_buffer = self.get_command_buffer();
+
+		unsafe {
+			if let Some(debug_utils) = &self.render_system.debug_utils {
+				debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
+			}
+		}
+	
 	}
 }
 

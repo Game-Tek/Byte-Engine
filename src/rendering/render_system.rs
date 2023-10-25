@@ -160,6 +160,25 @@ pub struct AccelerationStructureBuild {
 	pub acceleration_structure_build_type: AccelerationStructureBuildAA,
 }
 
+pub struct BufferStridedRange {
+	pub buffer: BufferHandle,
+	pub offset: u64,
+	pub stride: u64,
+	pub size: u64,
+}
+
+pub struct BindingTables {
+	pub raygen: BufferStridedRange,
+	pub hit: BufferStridedRange,
+	pub miss: BufferStridedRange,
+	pub callable: BufferStridedRange,
+}
+
+pub struct DispatchExtent {
+	pub workgroup_extent: Extent,
+	pub dispatch_extent: Extent,
+}
+
 pub trait CommandBufferRecording {
 	/// Enables recording on the command buffer.
 	fn begin(&self);
@@ -177,9 +196,9 @@ pub trait CommandBufferRecording {
 	fn bind_shader(&self, shader_handle: ShaderHandle);
 
 	/// Binds a pipeline to the GPU.
-	fn bind_pipeline(&mut self, pipeline_handle: &PipelineHandle);
-
+	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle);
 	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle);
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle);
 
 	/// Writes to the push constant register.
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: &[u8]);
@@ -197,8 +216,10 @@ pub trait CommandBufferRecording {
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 
-	fn dispatch(&mut self, x: u32, y: u32, z: u32);
+	fn dispatch(&mut self, dispatch: DispatchExtent);
 	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
+
+	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 
 	fn clear_textures(&mut self, textures: &[(ImageHandle, ClearValue)]);
 	fn clear_buffers(&mut self, buffer_handles: &[BufferHandle]);
@@ -219,6 +240,10 @@ pub trait CommandBufferRecording {
 	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
 	fn execute(&mut self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
+
+	fn start_region(&self, name: &str);
+	
+	fn end_region(&self);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -273,6 +298,8 @@ pub trait RenderSystem: orchestrator::System {
 	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle;
 
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle;
+
+	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle;
 
 	fn create_command_buffer(&mut self) -> CommandBufferHandle;
 
@@ -469,7 +496,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.start_render_pass(extent, &attachments);
 
-		command_buffer_recording.bind_pipeline(&pipeline);
+		command_buffer_recording.bind_raster_pipeline(&pipeline);
 
 		command_buffer_recording.draw_mesh(&mesh);
 
@@ -605,7 +632,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.start_render_pass(extent, &attachments);
 
-		command_buffer_recording.bind_pipeline(&pipeline);
+		command_buffer_recording.bind_raster_pipeline(&pipeline);
 
 		command_buffer_recording.draw_mesh(&mesh);
 
@@ -733,7 +760,7 @@ pub(super) mod tests {
 
 			command_buffer_recording.start_render_pass(extent, &attachments);
 
-			command_buffer_recording.bind_pipeline(&pipeline);
+			command_buffer_recording.bind_raster_pipeline(&pipeline);
 
 			command_buffer_recording.draw_mesh(&mesh);
 
@@ -859,7 +886,7 @@ pub(super) mod tests {
 
 			command_buffer_recording.start_render_pass(extent, &attachments);
 
-			command_buffer_recording.bind_pipeline(&pipeline);
+			command_buffer_recording.bind_raster_pipeline(&pipeline);
 
 			command_buffer_recording.draw_mesh(&mesh);
 
@@ -1001,7 +1028,7 @@ pub(super) mod tests {
 
 			command_buffer_recording.start_render_pass(extent, &attachments);
 
-			command_buffer_recording.bind_pipeline(&pipeline);
+			command_buffer_recording.bind_raster_pipeline(&pipeline);
 			
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
@@ -1218,7 +1245,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.start_render_pass(extent, &attachments);
 
-		command_buffer_recording.bind_pipeline(&pipeline);
+		command_buffer_recording.bind_raster_pipeline(&pipeline);
 
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[(descriptor_set, 0)]);
 
@@ -1770,6 +1797,10 @@ impl RenderSystem for RenderSystemImplementation {
 
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle {
 		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
+	}
+
+	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle {
+		self.pointer.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
 	}
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {

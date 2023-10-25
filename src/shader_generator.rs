@@ -30,6 +30,9 @@ impl ShaderGenerator {
 		shader_string.push_str("#extension GL_EXT_shader_image_load_formatted : enable\n");
 
 		match shader_type {
+			"RayGen" | "ClosestHit" | "Intersection" | "AnyHit" | "Miss" | "Callable" => {
+				shader_string.push_str("#extension GL_EXT_ray_tracing: require\n");
+			}
 			"Compute" => {
 				shader_string.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
 				shader_string.push_str("#extension GL_KHR_shader_subgroup_arithmetic  : enable\n");

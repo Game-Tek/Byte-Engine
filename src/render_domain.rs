@@ -1292,11 +1292,13 @@ impl VisibilityWorldRenderDomain {
 			},
 		];
 
+		command_buffer_recording.start_region("Visibility Pass");
+
 		command_buffer_recording.start_render_pass(Extent::new(1920, 1080, 1), &attachments);
 
 		// Visibility pass
 
-		command_buffer_recording.bind_pipeline(&self.visibility_pass_pipeline);
+		command_buffer_recording.bind_raster_pipeline(&self.visibility_pass_pipeline);
 
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[(self.descriptor_set, 0)]);
 
@@ -1304,9 +1306,13 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.end_render_pass();
 
+		command_buffer_recording.end_region();
+
 		command_buffer_recording.clear_buffers(&[self.material_count, self.material_offset, self.material_offset_scratch, self.material_evaluation_dispatches, self.material_xy]);
 
 		// Material count pass
+
+		command_buffer_recording.start_region("Material Count Pass");
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption{
@@ -1325,9 +1331,13 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
-		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
+		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+
+		command_buffer_recording.end_region();
 
 		// Material offset pass
+
+		command_buffer_recording.start_region("Material Offset Pass");
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption{
@@ -1351,9 +1361,13 @@ impl VisibilityWorldRenderDomain {
 		]);
 		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
-		command_buffer_recording.dispatch(1, 1, 1);
+		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 1, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1, height: 1, depth: 1 } });
+
+		command_buffer_recording.end_region();
 
 		// Pixel mapping pass
+
+		command_buffer_recording.start_region("Pixel Mapping Pass");
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption{
@@ -1378,11 +1392,15 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
-		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
+		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+
+		command_buffer_recording.end_region();
 
 		// Material evaluation pass
 
 		command_buffer_recording.clear_textures(&[(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })), (self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }))]);
+
+		command_buffer_recording.start_region("Material Evaluation Pass");
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption {
@@ -1440,7 +1458,11 @@ impl VisibilityWorldRenderDomain {
 			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
 		}
 
+		command_buffer_recording.end_region();
+
 		// Tone mapping pass
+
+		command_buffer_recording.start_region("Tone Mapping Pass");
 
 		command_buffer_recording.consume_resources(&[
 			render_system::Consumption{
@@ -1459,7 +1481,9 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_compute_pipeline(&self.tone_map_pass.pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.tone_map_pass.pipeline_layout, &[(self.tone_map_pass.descriptor_set, 0)]);
-		command_buffer_recording.dispatch(1920u32.div_ceil(32), 1080u32.div_ceil(32), 1);
+		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+
+		command_buffer_recording.end_region();
 
 		// Copy to swapchain
 

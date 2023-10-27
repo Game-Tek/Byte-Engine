@@ -805,9 +805,7 @@ pub fn generate_glsl_header_block(compilation_settings: &json::JsonValue) -> Str
 	// extensions
 
 	glsl_block.push_str("#extension GL_EXT_shader_16bit_storage : enable\n");
-	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable\n");
-	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable\n");
-	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types: enable\n");
 	glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier : enable\n");
 	glsl_block.push_str("#extension GL_EXT_scalar_block_layout : enable\n");
 	glsl_block.push_str("#extension GL_EXT_buffer_reference : enable\n");

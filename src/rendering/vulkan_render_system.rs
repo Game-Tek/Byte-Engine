@@ -49,6 +49,19 @@ pub struct VulkanRenderSystem {
 impl orchestrator::Entity for VulkanRenderSystem {}
 impl orchestrator::System for VulkanRenderSystem {}
 
+fn uses_to_vk_usage_flags(usage: render_system::Uses) -> vk::BufferUsageFlags {
+	let mut flags = vk::BufferUsageFlags::empty();
+	flags |= if usage.contains(render_system::Uses::Vertex) { vk::BufferUsageFlags::VERTEX_BUFFER } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::Index) { vk::BufferUsageFlags::INDEX_BUFFER } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::Uniform) { vk::BufferUsageFlags::UNIFORM_BUFFER } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::Storage) { vk::BufferUsageFlags::STORAGE_BUFFER } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::TransferSource) { vk::BufferUsageFlags::TRANSFER_SRC } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::TransferDestination) { vk::BufferUsageFlags::TRANSFER_DST } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::AccelerationStructure) { vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::Indirect) { vk::BufferUsageFlags::INDIRECT_BUFFER } else { vk::BufferUsageFlags::empty() };
+	flags
+}
+
 impl render_system::RenderSystem for VulkanRenderSystem {
 	fn has_errors(&self) -> bool {
 		self.get_log_count() > 0
@@ -65,7 +78,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let buffer_size = vertex_buffer_size.next_multiple_of(16) + index_buffer_size;
 
-		let buffer_creation_result = self.create_vulkan_buffer(None, buffer_size, render_system::Uses::Vertex | render_system::Uses::Index);
+		let buffer_creation_result = self.create_vulkan_buffer(None, buffer_size, vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 		let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead);
 
@@ -113,7 +126,15 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						self.create_vulkan_shader(stage, binary.as_binary_u8())
 					},
 					Err(err) => {
-						error!("Error compiling shader: {}\n{}", err, shader_text);
+						let error_string = err.to_string();
+						let errors = error_string.lines().filter(|error| error.starts_with("shader_name:")).map(|error| (error.split(':').nth(1).unwrap(), error.split(':').nth(4).unwrap())).map(|(error_line_number_string, error)| (error_line_number_string.trim().parse::<usize>().unwrap(), error.trim())).collect::<Vec<_>>();
+						let mut error_string = String::new();
+
+						for (error_line_index, error) in errors {
+							error_string.push_str(&format!("{}	Error: {}\n", shader_text.lines().nth(error_line_index).unwrap(), error));
+						}
+
+						error!("Error compiling shader:\n{}", error_string);
 						panic!("Error compiling shader: {}", err);
 					}
 				}
@@ -138,6 +159,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					render_system::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
 					render_system::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
 					render_system::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
+					render_system::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
 				})
 				.descriptor_count(binding.descriptor_count)
 				.stage_flags(binding.stages.into());
@@ -200,6 +222,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					render_system::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
 					render_system::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
 					render_system::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
+					render_system::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
 				})
 				.descriptor_count(binding.descriptor_count * self.frames as u32)
 				/* .build() */
@@ -386,6 +409,35 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				render_system::Descriptor::Swapchain(handle) => {
 					unimplemented!()
 				}
+				render_system::Descriptor::AccelerationStructure { handle } => {
+					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
+					let mut acceleration_structure_handle_option = Some(handle);
+
+					while let (Some(descriptor_set_handle), Some(acceleration_structure_handle)) = (descriptor_set_handle_option, acceleration_structure_handle_option) {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let acceleration_structure = &self.acceleration_structures[acceleration_structure_handle.0 as usize];
+
+						let acceleration_structures = [acceleration_structure.acceleration_structure];
+
+						let mut acc_str_descriptor_info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+							.acceleration_structures(&acceleration_structures);
+
+						let write_info = vk::WriteDescriptorSet::default()
+							.push_next(&mut acc_str_descriptor_info)
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(descriptor_set_write.binding)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type);
+
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+
+						descriptor_set_handle_option = descriptor_set.next;
+
+						// if let Some(_) = acceleration_structure.next { // If acceleration structure spans multiple frames, write each frame's acceleration structure to each frame's descriptor set. Else write the same acceleration structure to each frame's descriptor set.
+						// 	acceleration_structure_handle_option = acceleration_structure.next;
+						// }
+					}
+				}
 			}
 		}
 	}
@@ -563,7 +615,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		if device_accesses.contains(render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead) {
 			match use_case {
 				render_system::UseCases::STATIC => {
-					let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses);
+					let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
@@ -581,7 +633,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					buffer_handle
 				}
 				render_system::UseCases::DYNAMIC => {	
-					let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses | render_system::Uses::TransferDestination);
+					let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 	
 					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 	
@@ -596,7 +648,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						pointer,
 					});
 
-					let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses | render_system::Uses::TransferSource);
+					let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
@@ -613,7 +665,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				}
 			}
 		} else if device_accesses.contains(render_system::DeviceAccesses::GpuWrite) {
-			let buffer_creation_result = self.create_vulkan_buffer(name, size, resource_uses);
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 			let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
@@ -688,7 +740,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, compression, 0);
 
 			let (staging_buffer, pointer) = if device_accesses.contains(render_system::DeviceAccesses::CpuRead) {
-				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, render_system::Uses::TransferDestination);
+				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuRead);
 
@@ -705,7 +757,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 				(Some(staging_buffer_handle), pointer)
 			} else if device_accesses.contains(render_system::DeviceAccesses::CpuWrite) {
-				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, render_system::Uses::TransferSource);
+				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead);
 
@@ -753,11 +805,85 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::SamplerHandle(self.create_vulkan_sampler().as_raw())
 	}
 
-	fn create_acceleration_structure(&mut self, name: Option<&str>) -> render_system::AccelerationStructureHandle {
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> render_system::BufferHandle {
+		let size = max_instance_count as usize * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>();
+
+		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+
+		let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead);
+
+		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+		let buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+
+		self.buffers.push(Buffer {
+			buffer: buffer_creation_result.resource,
+			size: buffer_creation_result.size,
+			device_address: address,
+			pointer,
+		});
+
+		buffer_handle
+	}
+
+	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: render_system::AccelerationStructureTypes, buffer_descriptor: render_system::BufferDescriptor,) -> render_system::AccelerationStructureHandle {
+		let (acceleration_structure_type, geometry, instances) = match r#type {
+			render_system::AccelerationStructureTypes::TopLevel { instance_count } => {
+				(
+					vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+					vk::AccelerationStructureGeometryKHR::default()
+					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+					.geometry(vk::AccelerationStructureGeometryDataKHR {
+						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+					}),
+					instance_count
+				)
+			}
+			render_system::AccelerationStructureTypes::BottomLevel { vertex_position_format, triangle_count, vertex_count, index_format } => {
+				(
+					vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+					vk::AccelerationStructureGeometryKHR::default()
+					.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+					.geometry(vk::AccelerationStructureGeometryDataKHR {
+						triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+							.vertex_format(match vertex_position_format {
+								render_system::DataTypes::Float3 => vk::Format::R32G32B32_SFLOAT,
+								_ => panic!("Invalid vertex position format"),
+							})
+							.vertex_stride(vertex_position_format.size() as u64)
+							.max_vertex(vertex_count)
+							.index_type(match index_format {
+								render_system::DataTypes::U8 => vk::IndexType::UINT16,
+								render_system::DataTypes::U16 => vk::IndexType::UINT16,
+								render_system::DataTypes::U32 => vk::IndexType::UINT32,
+								_ => panic!("Invalid index format"),
+							})
+					}),
+					0,
+				)
+			}
+		};
+
+		let geometries = [geometry];
+
+		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+			.ty(acceleration_structure_type)
+			.geometries(&geometries);
+
+		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+
+		unsafe {
+			self.acceleration_structure.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[instances], &mut size_info);
+		}
+
+		let acceleration_structure_size = size_info.acceleration_structure_size;
+		let scratch_size = size_info.build_scratch_size;
+
 		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
-			.buffer(vk::Buffer::null())
-			.size(0)
-			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+			.buffer(self.buffers[buffer_descriptor.buffer.0 as usize].buffer)
+			.size(acceleration_structure_size)
+			.offset(buffer_descriptor.offset)
+			.ty(acceleration_structure_type);
 
 		let handle = render_system::AccelerationStructureHandle(self.acceleration_structures.len() as u64);
 
@@ -1490,6 +1616,7 @@ impl VulkanRenderSystem {
 
 		if settings.ray_tracing {
 			device_extension_names.push(ash::extensions::khr::AccelerationStructure::NAME.as_ptr());
+			device_extension_names.push(ash::extensions::khr::DeferredHostOperations::NAME.as_ptr());
 			device_extension_names.push(ash::extensions::khr::RayTracingPipeline::NAME.as_ptr());
 			device_extension_names.push(ash::extensions::khr::RayTracingMaintenance1::NAME.as_ptr());
 		}
@@ -1623,7 +1750,7 @@ impl VulkanRenderSystem {
 	pub fn new_as_system() -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
 		let settings = Settings {
 			validation: true,
-			ray_tracing: false,
+			ray_tracing: true,
 		};
 		orchestrator::EntityReturn::new(render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new(&settings))))
 	}
@@ -1871,30 +1998,11 @@ impl VulkanRenderSystem {
 		texture_handle
 	}
 
-	fn create_vulkan_buffer(&self, name: Option<&str>, size: usize, resource_uses: render_system::Uses) -> MemoryBackedResourceCreationResult<vk::Buffer> {
+	fn create_vulkan_buffer(&self, name: Option<&str>, size: usize, usage: vk::BufferUsageFlags) -> MemoryBackedResourceCreationResult<vk::Buffer> {
 		let buffer_create_info = vk::BufferCreateInfo::default()
 			.size(size as u64)
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.usage(
-				if resource_uses.contains(render_system::Uses::Vertex) { vk::BufferUsageFlags::VERTEX_BUFFER } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::Index) { vk::BufferUsageFlags::INDEX_BUFFER } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::Uniform) { vk::BufferUsageFlags::UNIFORM_BUFFER } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::Storage) { vk::BufferUsageFlags::STORAGE_BUFFER } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::TransferSource) { vk::BufferUsageFlags::TRANSFER_SRC } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::TransferDestination) { vk::BufferUsageFlags::TRANSFER_DST } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::AccelerationStructure) { vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR } else { vk::BufferUsageFlags::empty() }
-				|
-				if resource_uses.contains(render_system::Uses::Indirect) { vk::BufferUsageFlags::INDIRECT_BUFFER } else { vk::BufferUsageFlags::empty() }
-				|
-				vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS /*We allways use this feature so include constantly*/
-			)
-			/* .build() */;
+			.usage(usage);
 
 		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
 

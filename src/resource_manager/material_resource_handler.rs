@@ -279,17 +279,13 @@ mod tests {
 
 		let (response, _) = resource_manager.get("solid").expect("Failed to load material");
 
-		assert_eq!(response.resources.len(), 3); // 1 material, 1 shader, 1 texture
+		assert_eq!(response.resources.len(), 2); // 1 material, 1 shader
 
 		let resource_container = &response.resources[0];
 
 		assert_eq!(resource_container.class, "Shader");
 
 		let resource_container = &response.resources[1];
-
-		assert_eq!(resource_container.class, "Texture");
-
-		let resource_container = &response.resources[2];
 
 		assert_eq!(resource_container.class, "Material");
 	}

@@ -5,11 +5,24 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 
 use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight, point_light::PointLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self}, math, window_system};
 
+struct VisibilityInfo {
+	instance_count: u32,
+	triangle_count: u32,
+	meshlet_count: u32,
+	vertex_count: u32,
+}
+
 struct ToneMapPass {
 	pipeline_layout: render_system::PipelineLayoutHandle,
 	pipeline: render_system::PipelineHandle,
 	descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
 	descriptor_set: render_system::DescriptorSetHandle,
+}
+
+struct MeshData {
+	meshlets: Vec<ShaderMeshletData>,
+	vertex_count: u32,
+	triangle_count: u32,
 }
 
 /// This the visibility buffer implementation of the world render domain.
@@ -25,8 +38,8 @@ pub struct VisibilityWorldRenderDomain {
 	depth_target: render_system::ImageHandle,
 	result: render_system::ImageHandle,
 
-	index_count: u32,
-	instance_count: u32,
+	visiblity_info: VisibilityInfo,
+
 	render_finished_synchronizer: render_system::SynchronizerHandle,
 	image_ready: render_system::SynchronizerHandle,
 	render_command_buffer: render_system::CommandBufferHandle,
@@ -42,10 +55,11 @@ pub struct VisibilityWorldRenderDomain {
 	transfer_command_buffer: render_system::CommandBufferHandle,
 
 	meshes_data_buffer: render_system::BufferHandle,
+	meshlets_data_buffer: render_system::BufferHandle,
 
 	camera: Option<EntityHandle<crate::camera::Camera>>,
 
-	meshes: HashMap<EntityHandle<Mesh>, u32>,
+	meshes: HashMap<String, MeshData>,
 
 	mesh_resources: HashMap<&'static str, u32>,
 
@@ -86,7 +100,12 @@ pub struct VisibilityWorldRenderDomain {
 	light_data_buffer: render_system::BufferHandle,
 
 	pending_texture_loads: Vec<render_system::ImageHandle>,
+
+	top_level_acceleration_structure: render_system::AccelerationStructureHandle,
 }
+
+const VERTEX_COUNT: u32 = 64;
+const TRIANGLE_COUNT: u32 = 126;
 
 impl VisibilityWorldRenderDomain {
 	pub fn new() -> orchestrator::EntityReturn<Self> {
@@ -143,7 +162,15 @@ impl VisibilityWorldRenderDomain {
 					descriptor_count: 1,
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
-				}
+				},
+				render_system::DescriptorSetLayoutBinding {
+					name: "meshlet data",
+					binding: 6,
+					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_count: 1,
+					stages: render_system::Stages::MESH,
+					immutable_samplers: None,
+				},
 			];
 
 			let descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Base Set Layout"), &bindings);
@@ -174,6 +201,7 @@ impl VisibilityWorldRenderDomain {
 			let camera_data_buffer_handle = render_system.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let meshes_data_buffer = render_system.create_buffer(Some("Visibility Meshes Data"), 16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let meshlets_data_buffer = render_system.create_buffer(Some("Visibility Meshlets Data"), 16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			render_system.write(&[
 				render_system::DescriptorWrite {
@@ -206,70 +234,93 @@ impl VisibilityWorldRenderDomain {
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: indices_buffer_handle, size: render_system::Ranges::Whole },
 				},
+				render_system::DescriptorWrite {
+					descriptor_set,
+					binding: 6,
+					array_element: 0,
+					descriptor: render_system::Descriptor::Buffer { handle: meshlets_data_buffer, size: render_system::Ranges::Whole },
+				},
 			]);
 
-			let visibility_pass_mesh_source = r#"
-				#version 450
-				#pragma shader_stage(mesh)
+			let visibility_pass_mesh_source = format!("
+#version 450
+#pragma shader_stage(mesh)
 
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_buffer_reference: enable
-				#extension GL_EXT_buffer_reference2: enable
-				#extension GL_EXT_shader_16bit_storage: require
-				#extension GL_EXT_mesh_shader: require
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_shader_explicit_arithmetic_types: enable
+#extension GL_EXT_mesh_shader: require
 
-				layout(row_major) uniform; layout(row_major) buffer;
+layout(row_major) uniform; layout(row_major) buffer;
 
-				layout(location=0) perprimitiveEXT out uint out_instance_index[12];
-				layout(location=1) perprimitiveEXT out uint out_primitive_index[12];
+layout(location=0) perprimitiveEXT out uint out_instance_index[{TRIANGLE_COUNT}];
+layout(location=1) perprimitiveEXT out uint out_primitive_index[{TRIANGLE_COUNT}];
 
-				struct Camera {
-					mat4 view_matrix;
-					mat4 projection_matrix;
-					mat4 view_projection;
-				};
+struct Camera {{
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+}};
 
-				struct Mesh {
-					mat4 model;
-					uint material_id;
-				};
+struct Mesh {{
+	mat4 model;
+	uint material_id;
+}};
 
-				layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
-					Camera camera;
-				};
+struct Meshlet {{
+	uint32_t instance_index;
+	uint16_t vertex_offset;
+	uint16_t triangle_offset;
+	uint8_t vertex_count;
+	uint8_t triangle_count;
+}};
 
-				layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {
-					Mesh meshes[];
-				};
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {{
+	Camera camera;
+}};
 
-				layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
-					vec3 vertex_positions[];
-				};
+layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {{
+	Mesh meshes[];
+}};
 
-				layout(set=0,binding=4,scalar) buffer readonly MeshIndices {
-					uint16_t indices[];
-				};
+layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {{
+	vec3 vertex_positions[];
+}};
 
-				layout(triangles, max_vertices=24, max_primitives=12) out;
-				
-				layout(local_size_x=32) in;
-				void main() {
-					SetMeshOutputsEXT(24, 12);
+layout(set=0,binding=4,scalar) buffer readonly MeshIndices {{
+	uint16_t indices[];
+}};
 
-					uint instance_index = gl_GlobalInvocationID.x / 32;
+layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {{
+	Meshlet meshlets[];
+}};
 
-					if (gl_LocalInvocationID.x < 24) {
-						gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[gl_LocalInvocationID.x], 1.0);
-					}
-					
-					if (gl_LocalInvocationID.x < 12) {
-						uint triangle_indices[3] = uint[](uint(indices[gl_LocalInvocationID.x * 3 + 0]), uint(indices[gl_LocalInvocationID.x * 3 + 1]), uint(indices[gl_LocalInvocationID.x * 3 + 2]));
-						gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-						out_instance_index[gl_LocalInvocationID.x] = instance_index;
-						out_primitive_index[gl_LocalInvocationID.x] = gl_LocalInvocationID.x * 3;
-					}
-				}
-			"#;
+layout(triangles, max_vertices={VERTEX_COUNT}, max_primitives={TRIANGLE_COUNT}) out;
+layout(local_size_x=128) in;
+void main() {{
+	uint meshlet_index = gl_WorkGroupID.x;
+
+	Meshlet meshlet = meshlets[meshlet_index];
+
+	uint instance_index = meshlet.instance_index;
+
+	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+	
+	if (gl_LocalInvocationID.x < meshlet.vertex_count) {{
+		uint vertex_index = meshlet.vertex_offset + gl_LocalInvocationID.x;
+		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
+	}}
+	
+	if (gl_LocalInvocationID.x < meshlet.triangle_count) {{
+		uint triangle_index = meshlet.triangle_offset + gl_LocalInvocationID.x;
+		uint triangle_indices[3] = uint[](indices[triangle_index * 3 + 0], indices[triangle_index * 3 + 1], indices[triangle_index * 3 + 2]);
+		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+		out_instance_index[gl_LocalInvocationID.x] = instance_index;
+		out_primitive_index[gl_LocalInvocationID.x] = triangle_index;
+	}}
+}}", TRIANGLE_COUNT=TRIANGLE_COUNT, VERTEX_COUNT=VERTEX_COUNT);
 
 			let visibility_pass_fragment_source = r#"
 				#version 450
@@ -893,6 +944,62 @@ impl VisibilityWorldRenderDomain {
 				}
 			};
 
+			let _instance_buffer = render_system.create_acceleration_structure_instance_buffer(Some("Scene Instance Buffer"), 16);
+			
+			let buffer = render_system.create_buffer(None, 65565, render_system::Uses::AccelerationStructure, render_system::DeviceAccesses::GpuWrite, render_system::UseCases::STATIC);
+			let top_level_acceleration_structure = render_system.create_acceleration_structure(Some("Top Level Acceleration Structure"), render_system::AccelerationStructureTypes::TopLevel{ instance_count: 16 }, render_system::BufferDescriptor { buffer: buffer, offset: 0, range: 4096, slot: 0 });
+
+			let rt_pass_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("RT Pass Set Layout"), &[
+				render_system::DescriptorSetLayoutBinding {
+					name: "top level acc str",
+					binding: 0,
+					descriptor_type: render_system::DescriptorType::AccelerationStructure,
+					descriptor_count: 1,
+					stages: render_system::Stages::ACCELERATION_STRUCTURE,
+					immutable_samplers: None,
+				},
+			]);
+
+			let _rt_pass_pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout, rt_pass_descriptor_set_layout], &[]);
+
+			let rt_pass_descriptor_set = render_system.create_descriptor_set(Some("RT Pass Descriptor Set"), &rt_pass_descriptor_set_layout, &[
+				render_system::DescriptorSetLayoutBinding {
+					name: "top level acc str",
+					binding: 0,
+					descriptor_type: render_system::DescriptorType::AccelerationStructure,
+					descriptor_count: 1,
+					stages: render_system::Stages::ACCELERATION_STRUCTURE,
+					immutable_samplers: None,
+				},
+			]);
+
+			render_system.write(&[
+				render_system::DescriptorWrite {
+					descriptor_set: rt_pass_descriptor_set,
+					binding: 0,
+					array_element: 0,
+					descriptor: render_system::Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure },
+				},
+			]);
+
+			const _SHADOW_RAY_GEN_SHADER: &'static str = "
+#version 450
+#pragma shader_stage(ray_gen)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_ray_tracing: require
+
+layout(row_major) uniform; layout(row_major) buffer;			
+
+void main() {
+	const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+	const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
+	vec2 d = inUV * 2.0 - 1.0;
+}";
+
 			Self {
 				pipeline_layout_handle,
 
@@ -907,8 +1014,8 @@ impl VisibilityWorldRenderDomain {
 				depth_target,
 				result,
 
-				index_count: 0,
-				instance_count: 0,
+				visiblity_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, },
+
 				current_frame: 0,
 
 				render_finished_synchronizer,
@@ -921,6 +1028,7 @@ impl VisibilityWorldRenderDomain {
 				transfer_command_buffer,
 
 				meshes_data_buffer,
+				meshlets_data_buffer,
 
 				shaders: HashMap::new(),
 
@@ -966,6 +1074,8 @@ impl VisibilityWorldRenderDomain {
 				tone_map_pass,
 
 				pending_texture_loads: Vec::new(),
+
+				top_level_acceleration_structure,
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -1302,7 +1412,7 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[(self.descriptor_set, 0)]);
 
-		command_buffer_recording.dispatch_meshes((self.index_count * self.instance_count) / 32, 1, 1);
+		command_buffer_recording.dispatch_meshes(self.visiblity_info.meshlet_count, 1, 1);
 
 		command_buffer_recording.end_render_pass();
 
@@ -1508,6 +1618,16 @@ impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDom
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
+struct ShaderMeshletData {
+	instance_index: u32,
+	vertex_offset: u16,
+	primitive_offset: u16,
+	vertex_count: u8,
+	triangle_count: u8,
+}
+
+#[repr(C)]
 struct ShaderInstanceData {
 	model: Mat4f,
 	material_id: u32,
@@ -1550,8 +1670,6 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 			let mut resource_manager = resource_manager.get_mut();
 			let resource_manager: &mut resource_manager::resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
-			self.load_material(resource_manager, render_system, mesh.material_id);
-
 			let resource_request = resource_manager.request_resource(mesh.resource_id);
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
@@ -1585,11 +1703,41 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 			for resource in &response.resources {
 				match resource.class.as_str() {
 					"Mesh" => {
-						self.mesh_resources.insert(mesh.resource_id, self.index_count);
+						self.mesh_resources.insert(mesh.resource_id, self.visiblity_info.triangle_count);
 
 						let mesh: &mesh_resource_handler::Mesh = resource.resource.downcast_ref().unwrap();
 
-						self.index_count += mesh.index_count;
+						{
+							let vertex_offset = self.visiblity_info.vertex_count;
+							let triangle_offset = self.visiblity_info.triangle_count / 3;
+
+							let meshlet_count = (mesh.index_count / 3).div_ceil(TRIANGLE_COUNT);
+
+							let mut mesh_vertex_count = 0;
+							let mut mesh_triangle_count = 0;
+
+							let mut meshlets = Vec::with_capacity(meshlet_count as usize);
+
+							for _ in 0..meshlet_count {
+								let meshlet_vertex_count = (mesh.vertex_count - mesh_vertex_count).min(TRIANGLE_COUNT) as u8;
+								let meshlet_triangle_count = (mesh.index_count / 3 - mesh_triangle_count).min(TRIANGLE_COUNT) as u8;
+
+								let meshlet_data = ShaderMeshletData {
+									instance_index: self.visiblity_info.instance_count,
+									vertex_offset: vertex_offset as u16 + mesh_vertex_count as u16,
+									primitive_offset:triangle_offset as u16 + mesh_triangle_count as u16,
+									vertex_count: meshlet_vertex_count,
+									triangle_count: meshlet_triangle_count,
+								};
+								
+								meshlets.push(meshlet_data);
+
+								mesh_vertex_count += meshlet_vertex_count as u32;
+								mesh_triangle_count += meshlet_triangle_count as u32;
+							}
+
+							self.meshes.insert(resource.url.clone(), MeshData{ meshlets, vertex_count: mesh_vertex_count, triangle_count: mesh_triangle_count, });
+						}
 					}
 					_ => {}
 				}
@@ -1605,11 +1753,23 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 
 		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderInstanceData, 16) };
 
-		meshes_data_slice[self.instance_count as usize] = mesh_data;
+		meshes_data_slice[self.visiblity_info.instance_count as usize] = mesh_data;
 
-		self.meshes.insert(handle, self.instance_count);
+		let meshlets_data_slice = render_system.get_mut_buffer_slice(self.meshlets_data_buffer);
 
-		self.instance_count += 1;
+		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, 128) };
+
+		let mesh = self.meshes.get(mesh.resource_id).expect("Mesh not loaded");
+
+		for (i, meshlet) in mesh.meshlets.iter().enumerate() {
+			let meshlet = ShaderMeshletData { instance_index: self.visiblity_info.instance_count, ..(*meshlet) };
+			meshlets_data_slice[self.visiblity_info.meshlet_count as usize + i] = meshlet;
+		}
+
+		self.visiblity_info.meshlet_count += mesh.meshlets.len() as u32;
+		self.visiblity_info.vertex_count += mesh.vertex_count;
+		self.visiblity_info.triangle_count += mesh.triangle_count;
+		self.visiblity_info.instance_count += 1;
 	}
 }
 

@@ -113,7 +113,7 @@ layout(set=1,binding=1,scalar) buffer MaterialOffset {
 layout(set=1,binding=4,scalar) buffer PixelMapping {
 	u16vec2 pixel_mapping[];
 };
-layout(set=1, binding=6, r8ui) uniform readonly uimage2D vertex_id;
+layout(set=1, binding=6, r8ui) uniform readonly uimage2D triangle_index;
 layout(set=1, binding=7, r8ui) uniform readonly uimage2D instance_id;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
 layout(set=2, binding=7, rgba16) uniform image2D out_position;
@@ -258,11 +258,11 @@ vec4 get_debug_color(uint i) {
 		for variable in material["variables"].members() {
 			if variable["type"] == "Static" {
 				if variable["data_type"] == "vec4f" { // Since GLSL doesn't support vec4f constants, we have to split it into 4 floats.
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 0, "float", format!("be_variable_{}_r", variable["name"]), "1.0"));
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 1, "float", format!("be_variable_{}_g", variable["name"]), "0.0"));
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 2, "float", format!("be_variable_{}_b", variable["name"]), "0.0"));
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 3, "float", format!("be_variable_{}_a", variable["name"]), "1.0"));
-					string.push_str(&format!("const {} {} = {};\n", "vec4", format!("be_variable_{}", variable["name"]), format!("vec4({name}_r, {name}_g, {name}_b, {name}_a)", name=format!("be_variable_{}", variable["name"]))));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 0, "float", format!("{}_r", variable["name"]), "1.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 1, "float", format!("{}_g", variable["name"]), "0.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 2, "float", format!("{}_b", variable["name"]), "0.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 3, "float", format!("{}_a", variable["name"]), "1.0"));
+					string.push_str(&format!("const {} {} = {};\n", "vec4", variable["name"], format!("vec4({name}_r, {name}_g, {name}_b, {name}_a)", name=variable["name"])));
 				}
 			}
 		}
@@ -317,16 +317,16 @@ void main() {{
 	uint offset = material_offset[pc.material_id];
 	u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];
 	ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);
-	uint be_vertex_id = imageLoad(vertex_id, be_pixel_coordinate).r;
+	uint BE_TRIANGLE_INDEX = imageLoad(triangle_index, be_pixel_coordinate).r;
 	uint be_instance_id = imageLoad(instance_id, be_pixel_coordinate).r;
 
 	Mesh mesh = meshes[be_instance_id];
 	Material material = materials[pc.material_id];
 
 	uint vertex_indeces[3] = uint[3](
-		uint(indeces[be_vertex_id + 0]),
-		uint(indeces[be_vertex_id + 1]),
-		uint(indeces[be_vertex_id + 2])
+		uint(indeces[BE_TRIANGLE_INDEX * 3 + 0]),
+		uint(indeces[BE_TRIANGLE_INDEX * 3 + 1]),
+		uint(indeces[BE_TRIANGLE_INDEX * 3 + 2])
 	);
 
 	vec4 vertex_positions[3] = vec4[3](
@@ -353,7 +353,7 @@ void main() {{
 	vec3 barycenter = barycentric_deriv.lambda;
 
 	vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
-	vec3 BE_VERTEX_NORMAL = vec3((mesh.model * vertex_normals[0]).xyz * barycenter.x + (mesh.model * vertex_normals[1]).xyz * barycenter.y + (mesh.model * vertex_normals[2]).xyz * barycenter.z);
+	vec3 BE_VERTEX_NORMAL = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
 
 	vec3 N = normalize(BE_VERTEX_NORMAL);
 	vec3 V = normalize(camera.view[3].xyz - BE_VERTEX_POSITION);
@@ -420,9 +420,6 @@ void main() {{
 						}
 						lexer::Expressions::Member { name } => {
 							match name.as_str() {
-								"texture" => { // TODO: replace for checking against user defined parameters
-									string.push_str(&format!("textures[nonuniformEXT(0)]"));
-								}
 								_ => {
 									string.push_str(name);
 								}

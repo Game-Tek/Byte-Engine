@@ -266,6 +266,9 @@ pub enum Descriptor {
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	},
+	AccelerationStructure {
+		handle: AccelerationStructureHandle,
+	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
 }
@@ -334,7 +337,8 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn create_sampler(&mut self) -> SamplerHandle;
 
-	fn create_acceleration_structure(&mut self, name: Option<&str>) -> AccelerationStructureHandle;
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BufferHandle;
+	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: AccelerationStructureTypes, buffer_descriptor: BufferDescriptor,) -> AccelerationStructureHandle;
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
 
@@ -1540,7 +1544,8 @@ pub enum DescriptorType {
 	/// A storage image.
 	StorageImage,
 	/// A sampler.
-	Sampler
+	Sampler,
+AccelerationStructure,
 }
 
 /// Stores the information of a descriptor set layout binding.
@@ -1691,6 +1696,18 @@ pub struct PushConstantRange {
 	pub size: u32,
 }
 
+pub enum AccelerationStructureTypes {
+	TopLevel {
+		instance_count: u32,
+	},
+	BottomLevel {
+		vertex_count: u32,
+		triangle_count: u32,
+		vertex_position_format: DataTypes,
+		index_format: DataTypes,
+	},
+}
+
 pub struct RenderSystemImplementation {
 	pointer: Box<dyn RenderSystem>,
 }
@@ -1811,8 +1828,12 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_sampler()
 	}
 
-	fn create_acceleration_structure(&mut self, name: Option<&str>) -> AccelerationStructureHandle {
-		self.pointer.create_acceleration_structure(name)
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BufferHandle {
+		self.pointer.create_acceleration_structure_instance_buffer(name, max_instance_count)
+	}
+
+	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: AccelerationStructureTypes, buffer_descriptor: BufferDescriptor,) -> AccelerationStructureHandle {
+		self.pointer.create_acceleration_structure(name,r#type,buffer_descriptor)
 	}
 
 	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {

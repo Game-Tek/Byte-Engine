@@ -75,6 +75,8 @@ impl ResourceHandler for MaterialResourcerHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool {
 		match resource_type {
 			"json" => true,
+			"glsl" => true,
+			"besl" => true,
 			_ => false
 		}
 	}
@@ -83,7 +85,9 @@ impl ResourceHandler for MaterialResourcerHandler {
 		file.read_exact(buffers[0].buffer).unwrap();
 	}
 
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str,) -> Result<Vec<ProcessedResources>, String> {
+		let (bytes, _) = resource_manager.read_asset_from_source(asset_url).unwrap();
+
 		let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
 		let is_material = asset_json["parent"].is_null();

@@ -25,8 +25,9 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, _: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
-		let mut decoder = png::Decoder::new(bytes);
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str,) -> Result<Vec<ProcessedResources>, String> {
+		let (bytes, _) = resource_manager.read_asset_from_source(asset_url).unwrap();
+		let mut decoder = png::Decoder::new(bytes.as_slice());
 		decoder.set_transformations(png::Transformations::normalize_to_color8());
 		let mut reader = decoder.read_info().unwrap();
 		let mut buffer = vec![0; reader.output_buffer_size()];

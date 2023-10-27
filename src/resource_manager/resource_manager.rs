@@ -190,14 +190,16 @@ impl ResourceManager {
 
 			documents
 		} else {
-			let r = self.read_asset_from_source(url).unwrap();
+			// let r = self.read_asset_from_source(url).unwrap();
 
 			let mut loaded_resource_documents = Vec::new();
 
-			let resource_handlers = self.resource_handlers.iter().filter(|h| h.can_handle_type(r.1.as_str()));
+			let asset_type = self.get_url_type(url);
+
+			let resource_handlers = self.resource_handlers.iter().filter(|h| h.can_handle_type(&asset_type));
 
 			for resource_handler in resource_handlers {
-				let gg = resource_handler.process(self, url, &r.0).unwrap();
+				let gg = resource_handler.process(self, url,).unwrap();
 
 				for g in gg {
 					match g {
@@ -394,23 +396,11 @@ impl ResourceManager {
 				request.into_reader().read_to_end(&mut source_bytes);
 			},
 			"local" => {
-				let path = std::path::Path::new("assets/");
+				let path = self.realize_asset_path(url).unwrap();
 
-				let url_as_path = std::path::Path::new(url);
+				let mut file = std::fs::File::open(&path).unwrap();
 
-				let url_as_path_parent = url_as_path.parent().ok_or(None)?;
-
-				let path = path.join(url_as_path_parent);
-
-				let (mut file, extension) = if let Ok(dir) = std::fs::read_dir(path) {
-					let files = dir.filter(|f| if let Ok(f) = f { f.path().file_stem().unwrap().eq(url_as_path.file_name().unwrap()) } else { false });
-
-					let file_path = files.last().ok_or(None)?.or(Err(None))?.path();
-
-					(std::fs::File::open(&file_path).unwrap(), file_path.extension().unwrap().to_str().unwrap().to_string())
-				} else { return Err(None); };
-
-				format = extension.to_string();
+				format = path.extension().unwrap().to_str().unwrap().to_string();
 
 				source_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
 
@@ -425,6 +415,63 @@ impl ResourceManager {
 		}
 
 		Ok((source_bytes, format))
+	}
+
+	pub fn realize_asset_path(&self, url:&str) -> Option<std::path::PathBuf> {
+		let path = std::path::Path::new("assets/");
+
+		let url_as_path = std::path::Path::new(url);
+
+		let url_as_path_parent = url_as_path.parent().or(None)?;
+
+		let path = path.join(url_as_path_parent);
+
+		let path = if let Ok(dir) = std::fs::read_dir(path) {
+			let files = dir.filter(|f|
+				if let Ok(f) = f {
+					let path = if f.path().is_file() { f.path() } else { return false; };
+					// Do this to only try loading files that have supported extensions
+					// Take this case
+					// Suzanne.gltf	Suzanne.bin
+					// We want to load Suzanne.gltf and not Suzanne.bin
+					let extension = path.extension().unwrap().to_str().unwrap();
+					self.resource_handlers.iter().any(|rm| rm.can_handle_type(extension)) && f.path().file_stem().unwrap().eq(url_as_path.file_name().unwrap())
+				} else {
+					false
+				}
+			);
+
+			let file_path = files.last()?.unwrap().path();
+
+			file_path
+		} else { return None; };
+
+		Some(path)
+	}
+
+	fn get_url_type(&self, url:&str) -> String {
+		let origin = if url.starts_with("http://") || url.starts_with("https://") {
+			"network".to_string()
+		} else {
+			"local".to_string()
+		};
+	
+		match origin.as_str() {
+			"network" => {
+				let request = if let Ok(request) = ureq::get(url).call() { request } else { return "unknown".to_string(); };
+				let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return "unknown".to_string(); };
+				content_type
+			},
+			"local" => {
+				let path = self.realize_asset_path(url).unwrap();
+
+				path.extension().unwrap().to_str().unwrap().to_string()
+			},
+			_ => {
+				// Could not resolve how to get raw resource, return empty bytes
+				return "unknown".to_string();
+			}
+		}
 	}
 }
 

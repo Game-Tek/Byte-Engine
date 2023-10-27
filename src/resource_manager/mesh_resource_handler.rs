@@ -25,8 +25,8 @@ impl ResourceHandler for MeshResourceHandler {
 		}
 	}
 
-	fn process(&self, _: &ResourceManager, asset_url: &str, bytes: &[u8]) -> Result<Vec<ProcessedResources>, String> {
-		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str) -> Result<Vec<ProcessedResources>, String> {
+		let (gltf, buffers, _) = gltf::import(resource_manager.realize_asset_path(asset_url).unwrap()).unwrap();
 
 		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
 
@@ -356,6 +356,36 @@ mod tests {
 				_ => {}
 			}
 		}
+	}
+
+	#[test]
+	fn load_local_gltf_mesh_with_external_binaries() {
+		let mut resource_manager = ResourceManager::new();
+
+		let (response, _) = resource_manager.get("Suzanne").expect("Failed to get resource");
+
+		assert_eq!(response.resources.len(), 1);
+
+		let resource_container = &response.resources[0];
+		let resource = &resource_container.resource;
+
+		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
+
+		// assert_eq!(buffer.len(), (11808 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
+
+		let mesh = resource.downcast_ref::<Mesh>().unwrap();
+
+		// assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
+		assert_eq!(mesh.vertex_count, 11808);
+		assert_eq!(mesh.index_count, 3936 * 3);
+		assert_eq!(mesh.index_type, IntegralTypes::U16);
+		assert_eq!(mesh.vertex_components.len(), 4);
+		assert_eq!(mesh.vertex_components[0].semantic, VertexSemantics::Position);
+		assert_eq!(mesh.vertex_components[0].format, "vec3f");
+		assert_eq!(mesh.vertex_components[0].channel, 0);
+		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
+		assert_eq!(mesh.vertex_components[1].format, "vec3f");
+		assert_eq!(mesh.vertex_components[1].channel, 1);
 	}
 
 	#[test]

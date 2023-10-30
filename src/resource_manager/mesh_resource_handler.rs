@@ -14,6 +14,15 @@ impl MeshResourceHandler {
 	pub fn new() -> Self {
 		Self {}
 	}
+
+	fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
+		let bounds = mesh.bounding_box();
+
+		[
+			[bounds.min[0], bounds.min[1], bounds.min[2],],
+			[bounds.max[0], bounds.max[1], bounds.max[2],],
+		]
+	}
 }
 
 impl ResourceHandler for MeshResourceHandler {
@@ -28,83 +37,103 @@ impl ResourceHandler for MeshResourceHandler {
 	fn process(&self, resource_manager: &ResourceManager, asset_url: &str) -> Result<Vec<ProcessedResources>, String> {
 		let (gltf, buffers, _) = gltf::import(resource_manager.realize_asset_path(asset_url).unwrap()).unwrap();
 
-		let mut buf: Vec<u8> = Vec::with_capacity(4096 * 1024 * 3);
+		const MESHLETIZE: bool = true;
 
-		// 'mesh_loop: for mesh in gltf.meshes() {					
-		// 	for primitive in mesh.primitives() {
-		
-		let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
+		let mut resources = Vec::with_capacity(2);
 
-		let mut vertex_components = Vec::new();
-		let index_type;
-		let bounding_box: [[f32; 3]; 2];
-		let vertex_count = primitive.attributes().next().unwrap().1.count() as u32;
-		let index_count = primitive.indices().unwrap().count() as u32;
+		for mesh in gltf.meshes() {
+			for primitive in mesh.primitives() {
+				let mut vertex_components = Vec::new();
 
-		let bounds = primitive.bounding_box();
+				let bounding_box = Self::make_bounding_box(&primitive);
 
-		bounding_box = [
-			[bounds.min[0], bounds.min[1], bounds.min[2],],
-			[bounds.max[0], bounds.max[1], bounds.max[2],],
-		];
+				let mut buffer = Vec::with_capacity(4096 * 1024 * 3);
 
-		let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+				let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-		if let Some(positions) = reader.read_positions() {
-			positions.for_each(|position| position.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buf.push(*byte))));
-			vertex_components.push(VertexComponent { semantic: VertexSemantics::Position, format: "vec3f".to_string(), channel: 0 });
-		} else {
-			return Err("Mesh does not have positions".to_string());
-		}
+				let vertex_count = if let Some(positions) = reader.read_positions() {
+					let vertex_count = positions.clone().count();
+					positions.for_each(|position| position.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
+					vertex_components.push(VertexComponent { semantic: VertexSemantics::Position, format: "vec3f".to_string(), channel: 0 });
+					vertex_count
+				} else {
+					return Err("Mesh does not have positions".to_string());
+				};
 
-		if let Some(normals) = reader.read_normals() {
-			normals.for_each(|normal| normal.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buf.push(*byte))));
-			vertex_components.push(VertexComponent { semantic: VertexSemantics::Normal, format: "vec3f".to_string(), channel: 1 });
-		}
+				let indices = reader.read_indices().expect("Cannot create mesh which does not have indices").into_u32().collect::<Vec<u32>>();
 
-		if let Some(tangents) = reader.read_tangents() {
-			tangents.for_each(|tangent| tangent.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buf.push(*byte))));
-			vertex_components.push(VertexComponent { semantic: VertexSemantics::Tangent, format: "vec3f".to_string(), channel: 2 });
-		}
+				let optimized_indices = meshopt::optimize::optimize_vertex_cache(&indices, vertex_count);				
+	
+				if let Some(normals) = reader.read_normals() {
+					normals.for_each(|normal| normal.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
+					vertex_components.push(VertexComponent { semantic: VertexSemantics::Normal, format: "vec3f".to_string(), channel: 1 });
+				}
+	
+				if let Some(tangents) = reader.read_tangents() {
+					tangents.for_each(|tangent| tangent.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
+					vertex_components.push(VertexComponent { semantic: VertexSemantics::Tangent, format: "vec3f".to_string(), channel: 2 });
+				}
+	
+				if let Some(uv) = reader.read_tex_coords(0) {
+					uv.into_f32().for_each(|uv| uv.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
+					vertex_components.push(VertexComponent { semantic: VertexSemantics::Uv, format: "vec3f".to_string(), channel: 3 });
+				}
+	
+				// align buffer to 16 bytes for indices
+				while buffer.len() % 16 != 0 { buffer.push(0); }
 
-		if let Some(uv) = reader.read_tex_coords(0) {
-			uv.into_f32().for_each(|uv| uv.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buf.push(*byte))));
-			vertex_components.push(VertexComponent { semantic: VertexSemantics::Uv, format: "vec3f".to_string(), channel: 3 });
-		}
+				let mut index_streams = Vec::with_capacity(2);
 
-		// align buffer to 16 bytes for indices
-		while buf.len() % 16 != 0 { buf.push(0); }
+				let offset = buffer.len();
 
-		if let Some(indices) = reader.read_indices() {
-			match indices {
-				gltf::mesh::util::ReadIndices::U8(indices) => {
-					indices.for_each(|index| index.to_le_bytes().iter().for_each(|byte| buf.push(*byte)));
-					index_type = IntegralTypes::U8;
-				},
-				gltf::mesh::util::ReadIndices::U16(indices) => {
-					indices.for_each(|index| index.to_le_bytes().iter().for_each(|byte| buf.push(*byte)));
-					index_type = IntegralTypes::U16;
-				},
-				gltf::mesh::util::ReadIndices::U32(indices) => {
-					indices.for_each(|index| index.to_le_bytes().iter().for_each(|byte| buf.push(*byte)));
-					index_type = IntegralTypes::U32;
-				},
+				{
+					let index_type = IntegralTypes::U16;
+
+					match index_type {
+						IntegralTypes::U16 => {
+							optimized_indices.iter().map(|i| *i as u16).for_each(|index| index.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)));
+							index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Raw, offset, count: optimized_indices.len() as u32 });
+						}
+						_ => panic!("Unsupported index type")
+					}
+				}
+
+				let offset = buffer.len();
+
+				if MESHLETIZE {
+					let meshlets = meshopt::clusterize::build_meshlets(&optimized_indices, vertex_count, 64, 126);
+
+					let mut index_count: usize = 0;
+
+					for meshlet in meshlets {
+						index_count += meshlet.triangle_count as usize * 3;
+						for i in 0..meshlet.triangle_count as usize {
+							for x in meshlet.indices[i] {
+								(x as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
+							}
+						}
+					}
+
+					assert_eq!(index_count, optimized_indices.len());
+
+					index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Meshlets, offset, count: optimized_indices.len() as u32 });
+				}
+
+				let mesh = Mesh {
+					compression: CompressionSchemes::None,
+					bounding_box,
+					vertex_components,
+					vertex_count: vertex_count as u32,
+					index_streams,
+				};
+	
+				let resource_document = GenericResourceSerialization::new(asset_url.to_string(), mesh);
+
+				resources.push(ProcessedResources::Generated((resource_document, buffer)));
 			}
-		} else {
-			return Err("Mesh does not have indices".to_string());
 		}
-		
-		let mesh = Mesh {
-			bounding_box,
-			vertex_components,
-			index_count,
-			vertex_count,
-			index_type
-		};
 
-		let resource_document = GenericResourceSerialization::new(asset_url.to_string(), mesh);
-
-		Ok(vec![ProcessedResources::Generated((resource_document, buf))])
+		Ok(resources)
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
@@ -128,14 +157,29 @@ impl ResourceHandler for MeshResourceHandler {
 					file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).unwrap();
 				}
 				"Vertex.Normal" => {
+					#[cfg(debug_assertions)]
+					if !mesh.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Normal) { error!("Requested Vertex.Normal stream but mesh does not have normals."); continue; }
+
 					file.seek(std::io::SeekFrom::Start(mesh.vertex_count as u64 * 12)).unwrap(); // 12 bytes per vertex
 					file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).unwrap();
 				}
-				"Index" => {
-					let base_offset = mesh.vertex_count as u64 * mesh.vertex_components.size() as u64;
-					let rounded_offset = base_offset.next_multiple_of(16);
-					file.seek(std::io::SeekFrom::Start(rounded_offset)).expect("Failed to seek to index buffer");
-					file.read(&mut buffer.buffer[0..(mesh.index_count as usize * mesh.index_type.size())]).unwrap();
+				"Indices" => {
+					#[cfg(debug_assertions)]
+					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Raw) { error!("Requested Index stream but mesh does not have RAW indices."); continue; }
+
+					let raw_index_stram = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Raw).unwrap();
+
+					file.seek(std::io::SeekFrom::Start(raw_index_stram.offset as u64)).expect("Failed to seek to index buffer");
+					file.read(&mut buffer.buffer[0..(raw_index_stram.count as usize * raw_index_stram.data_type.size())]).unwrap();
+				}
+				"MeshletIndices" => {
+					#[cfg(debug_assertions)]
+					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Meshlets) { error!("Requested MeshletIndices stream but mesh does not have meshlet indices indices."); continue; }
+
+					let meshlet_indices_streams = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
+
+					file.seek(std::io::SeekFrom::Start(meshlet_indices_streams.offset as u64)).expect("Failed to seek to index buffer");
+					file.read(&mut buffer.buffer[0..(meshlet_indices_streams.count as usize * meshlet_indices_streams.data_type.size())]).unwrap();
 				}
 				_ => {
 					error!("Unknown buffer tag: {}", buffer.tag);
@@ -176,12 +220,34 @@ pub struct VertexComponent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub enum CompressionSchemes {
+	None,
+	Quantization,
+	Octahedral,
+	OctahedralQuantization,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub enum IndexStreamTypes {
+	Raw,
+	Meshlets,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IndexStream {
+	pub stream_type: IndexStreamTypes,
+	pub offset: usize,
+	pub count: u32,
+	pub data_type: IntegralTypes,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Mesh {
+	pub compression: CompressionSchemes,
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_components: Vec<VertexComponent>,
-	pub index_type: IntegralTypes,
 	pub vertex_count: u32,
-	pub index_count: u32,
+	pub index_streams: Vec<IndexStream>,
 }
 
 impl Resource for Mesh {
@@ -197,7 +263,7 @@ impl Size for VertexSemantics {
 		match self {
 			VertexSemantics::Position => 3 * 4,
 			VertexSemantics::Normal => 3 * 4,
-			VertexSemantics::Tangent => 3 * 4,
+			VertexSemantics::Tangent => 4 * 4,
 			VertexSemantics::BiTangent => 3 * 4,
 			VertexSemantics::Uv => 2 * 4,
 			VertexSemantics::Color => 4 * 4,
@@ -303,14 +369,12 @@ mod tests {
 
 		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
 
-		assert_eq!(buffer.len(), (24 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
-
 		let mesh = resource.downcast_ref::<Mesh>().unwrap();
+
+		let _offset = 0usize;
 
 		assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
 		assert_eq!(mesh.vertex_count, 24);
-		assert_eq!(mesh.index_count, 36);
-		assert_eq!(mesh.index_type, IntegralTypes::U16);
 		assert_eq!(mesh.vertex_components.len(), 2);
 		assert_eq!(mesh.vertex_components[0].semantic, VertexSemantics::Position);
 		assert_eq!(mesh.vertex_components[0].format, "vec3f");
@@ -318,6 +382,22 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
+
+		assert_eq!(mesh.index_streams.len(), 2);
+
+		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+
+		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
+		assert_eq!(mesh.index_streams[0].offset, offset);
+		assert_eq!(mesh.index_streams[0].count, 36);
+		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
+
+		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+
+		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
+		assert_eq!(mesh.index_streams[1].offset, offset);
+		assert_eq!(mesh.index_streams[1].count, 36);
+		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U16);
 
 		let resource_request = resource_manager.request_resource("Box");
 
@@ -334,7 +414,7 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }],
+					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Indices".to_string() }],
 				});
 			}
 			_ => {}
@@ -351,7 +431,7 @@ mod tests {
 
 					assert_eq!(buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize], vertex_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize]);
 
-					assert_eq!(buffer[576..(576 + mesh.index_count * 2) as usize], index_buffer[0..(mesh.index_count * 2) as usize]);
+					assert_eq!(buffer[576..(576 + mesh.index_streams[0].count * 2) as usize], index_buffer[0..(mesh.index_streams[0].count * 2) as usize]);
 				}
 				_ => {}
 			}
@@ -362,7 +442,7 @@ mod tests {
 	fn load_local_gltf_mesh_with_external_binaries() {
 		let mut resource_manager = ResourceManager::new();
 
-		let (response, _) = resource_manager.get("Suzanne").expect("Failed to get resource");
+		let (response, buffer) = resource_manager.get("Suzanne").expect("Failed to get resource");
 
 		assert_eq!(response.resources.len(), 1);
 
@@ -371,14 +451,12 @@ mod tests {
 
 		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
 
-		// assert_eq!(buffer.len(), (11808 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
-
 		let mesh = resource.downcast_ref::<Mesh>().unwrap();
 
-		// assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
+		let _offset = 0usize;
+
+		// assert_eq!(mesh.bounding_box, [[-2.674f32, -1.925f32, -1.626f32], [2.674f32, 1.925f32, 1.626f32]]);
 		assert_eq!(mesh.vertex_count, 11808);
-		assert_eq!(mesh.index_count, 3936 * 3);
-		assert_eq!(mesh.index_type, IntegralTypes::U16);
 		assert_eq!(mesh.vertex_components.len(), 4);
 		assert_eq!(mesh.vertex_components[0].semantic, VertexSemantics::Position);
 		assert_eq!(mesh.vertex_components[0].format, "vec3f");
@@ -386,6 +464,38 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
+
+		assert_eq!(mesh.index_streams.len(), 2);
+
+		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+
+		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
+		assert_eq!(mesh.index_streams[0].offset, offset);
+		assert_eq!(mesh.index_streams[0].count, 3936 * 3);
+		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
+
+		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+
+		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
+		assert_eq!(mesh.index_streams[1].offset, offset);
+		assert_eq!(mesh.index_streams[1].count, 3936 * 3);
+		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U16);
+
+		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
+
+		assert_eq!(vertex_positions.len(), 11808);
+
+		assert_eq!(vertex_positions[0], Vector3::new(0.492188f32, 0.185547f32, 0.720703f32));
+		assert_eq!(vertex_positions[1], Vector3::new(0.472656f32, 0.243042f32, 0.751221f32));
+		assert_eq!(vertex_positions[2], Vector3::new(0.463867f32, 0.198242f32, 0.753418f32));
+
+		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const Vector3).add(11808), mesh.vertex_count as usize) };
+
+		assert_eq!(vertex_normals.len(), 11808);
+
+		assert_eq!(vertex_normals[0], Vector3::new(0.703351f32, -0.228379f32, 0.673156f32));
+		assert_eq!(vertex_normals[1], Vector3::new(0.818977f32, -0.001884f32, 0.573824f32));
+		assert_eq!(vertex_normals[2], Vector3::new(0.776439f32, -0.262265f32, 0.573027f32));
 	}
 
 	#[test]
@@ -401,21 +511,35 @@ mod tests {
 
 		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
 
-		assert_eq!(buffer.len(), (24 /* vertices */ * (3 /* components per position */ * 4 /* float size */ + 3/*normals */ * 4) as usize).next_multiple_of(16) + 6/* cube faces */ * 2 /* triangles per face */ * 3 /* indices per triangle */ * 2 /* bytes per index */);
-
 		let mesh = resource.downcast_ref::<Mesh>().unwrap();
 		
+		let offset = 0usize;
+
 		assert_eq!(mesh.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
 		assert_eq!(mesh.vertex_count, 24);
-		assert_eq!(mesh.index_count, 36);
-		assert_eq!(mesh.index_type, IntegralTypes::U16);
 		assert_eq!(mesh.vertex_components.len(), 2);
+		assert_eq!(offset, 0);
 		assert_eq!(mesh.vertex_components[0].semantic, VertexSemantics::Position);
 		assert_eq!(mesh.vertex_components[0].format, "vec3f");
 		assert_eq!(mesh.vertex_components[0].channel, 0);
 		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
+		assert_eq!(mesh.index_streams.len(), 2);
+
+		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+
+		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
+		assert_eq!(mesh.index_streams[0].offset, offset);
+		assert_eq!(mesh.index_streams[0].count, 36);
+		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
+
+		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+
+		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
+		assert_eq!(mesh.index_streams[1].offset, offset);
+		assert_eq!(mesh.index_streams[1].count, 36);
+		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U16);
 
 		// Cast buffer to Vector3<f32>
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
@@ -426,7 +550,7 @@ mod tests {
 		assert_eq!(vertex_positions[2], Vector3::new(-0.5f32, 0.5f32, 0.5f32));
 
 		// Cast buffer + 12 * 24 to Vector3<f32>
-		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const Vector3).add(24) as *const Vector3, mesh.vertex_count as usize) };
+		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const Vector3).add(24), mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_normals.len(), 24);
 		assert_eq!(vertex_normals[0], Vector3::new(0f32, 0f32, 1f32));
@@ -434,7 +558,7 @@ mod tests {
 		assert_eq!(vertex_normals[2], Vector3::new(0f32, 0f32, 1f32));
 
 		// Cast buffer + 12 * 24 + 12 * 24 to u16
-		let indeces = unsafe { std::slice::from_raw_parts((buffer.as_ptr().add(12 * 24 + 12 * 24)) as *const u16, mesh.index_count as usize) };
+		let indeces = unsafe { std::slice::from_raw_parts((buffer.as_ptr().add(12 * 24 + 12 * 24)) as *const u16, mesh.index_streams[0].count as usize) };
 
 		assert_eq!(indeces.len(), 36);
 		assert_eq!(indeces[0], 0);
@@ -459,7 +583,7 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }],
+					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Indices".to_string() }],
 				});
 			}
 			_ => {}
@@ -492,7 +616,7 @@ mod tests {
 
 
 					// Cast index_buffer to u16
-					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_count as usize) };
+					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_streams[0].count as usize) };
 
 					assert_eq!(index_buffer.len(), 36);
 					assert_eq!(index_buffer[0], 0);
@@ -525,7 +649,7 @@ mod tests {
 					buffers: vec![
 						Buffer{ buffer: vertex_positions_buffer.as_mut_slice(), tag: "Vertex.Position".to_string() },
 						Buffer{ buffer: vertex_normals_buffer.as_mut_slice(), tag: "Vertex.Normal".to_string() },
-						Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Index".to_string() }
+						Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Indices".to_string() }
 					],
 				});
 			}
@@ -559,7 +683,7 @@ mod tests {
 
 					// Cast index_buffer to u16
 
-					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_count as usize) };
+					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_streams[0].count as usize) };
 
 					assert_eq!(index_buffer.len(), 36);
 					assert_eq!(index_buffer[0], 0);

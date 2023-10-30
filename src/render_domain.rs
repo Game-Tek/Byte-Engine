@@ -29,10 +29,10 @@ struct MeshData {
 pub struct VisibilityWorldRenderDomain {
 	pipeline_layout_handle: render_system::PipelineLayoutHandle,
 
-	vertex_positions_buffer: render_system::BufferHandle,
-	vertex_normals_buffer: render_system::BufferHandle,
+	vertex_positions_buffer: render_system::BaseBufferHandle,
+	vertex_normals_buffer: render_system::BaseBufferHandle,
 
-	indices_buffer: render_system::BufferHandle,
+	indices_buffer: render_system::BaseBufferHandle,
 
 	albedo: render_system::ImageHandle,
 	depth_target: render_system::ImageHandle,
@@ -45,8 +45,8 @@ pub struct VisibilityWorldRenderDomain {
 	render_command_buffer: render_system::CommandBufferHandle,
 	current_frame: usize,
 
-	camera_data_buffer_handle: render_system::BufferHandle,
-	materials_data_buffer_handle: render_system::BufferHandle,
+	camera_data_buffer_handle: render_system::BaseBufferHandle,
+	materials_data_buffer_handle: render_system::BaseBufferHandle,
 
 	descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
 	descriptor_set: render_system::DescriptorSetHandle,
@@ -54,8 +54,8 @@ pub struct VisibilityWorldRenderDomain {
 	transfer_synchronizer: render_system::SynchronizerHandle,
 	transfer_command_buffer: render_system::CommandBufferHandle,
 
-	meshes_data_buffer: render_system::BufferHandle,
-	meshlets_data_buffer: render_system::BufferHandle,
+	meshes_data_buffer: render_system::BaseBufferHandle,
+	meshlets_data_buffer: render_system::BaseBufferHandle,
 
 	camera: Option<EntityHandle<crate::camera::Camera>>,
 
@@ -82,11 +82,11 @@ pub struct VisibilityWorldRenderDomain {
 	instance_id: render_system::ImageHandle,
 	primitive_index: render_system::ImageHandle,
 
-	material_count: render_system::BufferHandle,
-	material_offset: render_system::BufferHandle,
-	material_offset_scratch: render_system::BufferHandle,
-	material_evaluation_dispatches: render_system::BufferHandle,
-	material_xy: render_system::BufferHandle,
+	material_count: render_system::BaseBufferHandle,
+	material_offset: render_system::BaseBufferHandle,
+	material_offset_scratch: render_system::BaseBufferHandle,
+	material_evaluation_dispatches: render_system::BaseBufferHandle,
+	material_xy: render_system::BaseBufferHandle,
 
 	material_evaluation_descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
 	material_evaluation_descriptor_set: render_system::DescriptorSetHandle,
@@ -97,7 +97,7 @@ pub struct VisibilityWorldRenderDomain {
 	tone_map_pass: ToneMapPass,
 	debug_position: render_system::ImageHandle,
 	debug_normal: render_system::ImageHandle,
-	light_data_buffer: render_system::BufferHandle,
+	light_data_buffer: render_system::BaseBufferHandle,
 
 	pending_texture_loads: Vec<render_system::ImageHandle>,
 
@@ -200,8 +200,8 @@ impl VisibilityWorldRenderDomain {
 
 			let camera_data_buffer_handle = render_system.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-			let meshes_data_buffer = render_system.create_buffer(Some("Visibility Meshes Data"), 16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let meshlets_data_buffer = render_system.create_buffer(Some("Visibility Meshlets Data"), 16 * 4 * 4 * 16, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let meshes_data_buffer = render_system.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<ShaderInstanceData>() * 1024, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let meshlets_data_buffer = render_system.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<ShaderMeshletData>() * 1024, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			render_system.write(&[
 				render_system::DescriptorWrite {
@@ -252,6 +252,7 @@ impl VisibilityWorldRenderDomain {
 #extension GL_EXT_shader_16bit_storage: require
 #extension GL_EXT_shader_explicit_arithmetic_types: enable
 #extension GL_EXT_mesh_shader: require
+#extension GL_EXT_debug_printf : enable
 
 layout(row_major) uniform; layout(row_major) buffer;
 
@@ -275,6 +276,7 @@ struct Meshlet {{
 	uint16_t triangle_offset;
 	uint8_t vertex_count;
 	uint8_t triangle_count;
+	uint8_t padding[6];
 }};
 
 layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {{
@@ -307,14 +309,15 @@ void main() {{
 	uint instance_index = meshlet.instance_index;
 
 	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
-	
-	if (gl_LocalInvocationID.x < meshlet.vertex_count) {{
-		uint vertex_index = meshlet.vertex_offset + gl_LocalInvocationID.x;
+
+	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count) && gl_LocalInvocationID.x < {VERTEX_COUNT}) {{
+		uint vertex_index = uint(meshlet.vertex_offset) + gl_LocalInvocationID.x;
 		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
+		// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions[vertex_index], 1.0);
 	}}
 	
-	if (gl_LocalInvocationID.x < meshlet.triangle_count) {{
-		uint triangle_index = meshlet.triangle_offset + gl_LocalInvocationID.x;
+	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count) && gl_LocalInvocationID.x < {TRIANGLE_COUNT}) {{
+		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
 		uint triangle_indices[3] = uint[](indices[triangle_index * 3 + 0], indices[triangle_index * 3 + 1], indices[triangle_index * 3 + 2]);
 		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
 		out_instance_index[gl_LocalInvocationID.x] = instance_index;
@@ -1324,7 +1327,7 @@ void main() {
 
 		render_system.wait(self.render_finished_synchronizer);
 
-		//render_system.start_frame_capture();
+		render_system.start_frame_capture();
 
 		let camera_data_buffer = render_system.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
@@ -1403,6 +1406,45 @@ void main() {
 		];
 
 		command_buffer_recording.start_region("Visibility Pass");
+
+		command_buffer_recording.consume_resources(&[
+			render_system::Consumption {
+				handle: render_system::Handle::Buffer(self.camera_data_buffer_handle),
+				stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Buffer(self.vertex_positions_buffer),
+				stages: render_system::Stages::MESH,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Buffer(self.vertex_normals_buffer),
+				stages: render_system::Stages::MESH,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Buffer(self.indices_buffer),
+				stages: render_system::Stages::MESH,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Buffer(self.meshes_data_buffer),
+				stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+			render_system::Consumption {
+				handle: render_system::Handle::Buffer(self.meshlets_data_buffer),
+				stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT,
+				access: render_system::AccessPolicies::READ,
+				layout: render_system::Layouts::General,
+			},
+		]);
 
 		command_buffer_recording.start_render_pass(Extent::new(1920, 1080, 1), &attachments);
 
@@ -1601,7 +1643,7 @@ void main() {
 
 		command_buffer_recording.execute(&[self.transfer_synchronizer, self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 
-		//render_system.end_frame_capture();
+		render_system.end_frame_capture();
 
 		render_system.present(image_index, &[swapchain_handle], self.render_finished_synchronizer);
 
@@ -1617,14 +1659,15 @@ impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDom
 	}
 }
 
-#[repr(C)]
 #[derive(Copy, Clone)]
+#[repr(C)]
 struct ShaderMeshletData {
 	instance_index: u32,
 	vertex_offset: u16,
-	primitive_offset: u16,
+	triangle_offset: u16,
 	vertex_count: u8,
 	triangle_count: u8,
+	pad: [u8; 6],
 }
 
 #[repr(C)]
@@ -1686,9 +1729,9 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 						options.resources.push(resource_manager::OptionResource {
 							url: resource.url.clone(),
 							buffers: vec![
-								resource_manager::Buffer{ buffer: vertex_positions_buffer, tag: "Vertex.Position".to_string() },
-								resource_manager::Buffer{ buffer: vertex_normals_buffer, tag: "Vertex.Normal".to_string() },
-								resource_manager::Buffer{ buffer: index_buffer, tag: "Index".to_string() }
+								resource_manager::Buffer{ buffer: &mut vertex_positions_buffer[(self.visiblity_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], tag: "Vertex.Position".to_string() },
+								resource_manager::Buffer{ buffer: &mut vertex_normals_buffer[(self.visiblity_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], tag: "Vertex.Normal".to_string() },
+								resource_manager::Buffer{ buffer: &mut index_buffer[(self.visiblity_info.triangle_count as usize * 3 * std::mem::size_of::<u16>())..], tag: "MeshletIndices".to_string() }
 							],
 						});
 					}
@@ -1709,25 +1752,30 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 
 						{
 							let vertex_offset = self.visiblity_info.vertex_count;
-							let triangle_offset = self.visiblity_info.triangle_count / 3;
+							let triangle_offset = self.visiblity_info.triangle_count;
 
-							let meshlet_count = (mesh.index_count / 3).div_ceil(TRIANGLE_COUNT);
+							let meshlet_count = (mesh.vertex_count).div_ceil(63);
 
 							let mut mesh_vertex_count = 0;
 							let mut mesh_triangle_count = 0;
 
 							let mut meshlets = Vec::with_capacity(meshlet_count as usize);
 
+							let meshlet_index_stream = mesh.index_streams.iter().find(|is| is.stream_type == mesh_resource_handler::IndexStreamTypes::Meshlets).unwrap();
+
+							assert_eq!(meshlet_index_stream.data_type, mesh_resource_handler::IntegralTypes::U16, "Meshlet index stream is not u16");
+
 							for _ in 0..meshlet_count {
-								let meshlet_vertex_count = (mesh.vertex_count - mesh_vertex_count).min(TRIANGLE_COUNT) as u8;
-								let meshlet_triangle_count = (mesh.index_count / 3 - mesh_triangle_count).min(TRIANGLE_COUNT) as u8;
+								let meshlet_vertex_count = (mesh.vertex_count - mesh_vertex_count).min(63) as u8;
+								let meshlet_triangle_count = (meshlet_index_stream.count / 3 - mesh_triangle_count).min(21) as u8;
 
 								let meshlet_data = ShaderMeshletData {
 									instance_index: self.visiblity_info.instance_count,
 									vertex_offset: vertex_offset as u16 + mesh_vertex_count as u16,
-									primitive_offset:triangle_offset as u16 + mesh_triangle_count as u16,
+									triangle_offset:triangle_offset as u16 + mesh_triangle_count as u16,
 									vertex_count: meshlet_vertex_count,
 									triangle_count: meshlet_triangle_count,
+									pad: [0u8; 6],
 								};
 								
 								meshlets.push(meshlet_data);
@@ -1757,7 +1805,7 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 
 		let meshlets_data_slice = render_system.get_mut_buffer_slice(self.meshlets_data_buffer);
 
-		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, 128) };
+		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, 256) };
 
 		let mesh = self.meshes.get(mesh.resource_id).expect("Mesh not loaded");
 

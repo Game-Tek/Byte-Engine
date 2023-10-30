@@ -55,7 +55,10 @@ bitflags::bitflags! {
 // HANDLES
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct BufferHandle(pub(super) u64);
+pub struct BaseBufferHandle(pub(super) u64);
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+pub struct BufferHandle<T>(pub(super) u64, std::marker::PhantomData<T>);
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct AccelerationStructureHandle(pub(super) u64);
@@ -104,7 +107,7 @@ pub struct TextureCopyHandle(pub(crate) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handle {
-	Buffer(BufferHandle),
+	Buffer(BaseBufferHandle),
 	AccelerationStructure(AccelerationStructureHandle),
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
@@ -132,9 +135,9 @@ pub struct Consumption {
 
 pub enum AccelerationStructureBuildAA {
 	Mesh {
-		vertex_buffer: BufferHandle,
-		index_buffer: BufferHandle,
-		transform_buffer: BufferHandle,
+		vertex_buffer: BaseBufferHandle,
+		index_buffer: BaseBufferHandle,
+		transform_buffer: BaseBufferHandle,
 		vertex_format: Formats,
 		vertex_stride: u32,
 		index_format: DataTypes,
@@ -143,25 +146,25 @@ pub enum AccelerationStructureBuildAA {
 		vertex_count: u32,
 	},
 	AABB {
-		aabb_buffer: BufferHandle,
-		transform_buffer: BufferHandle,
+		aabb_buffer: BaseBufferHandle,
+		transform_buffer: BaseBufferHandle,
 		transform_count: u32,
 	},
 	Instance {
 		acceleration_structure: AccelerationStructureHandle,
-		transform_buffer: BufferHandle,
+		transform_buffer: BaseBufferHandle,
 		transform_count: u32,
 	},
 }
 
 pub struct AccelerationStructureBuild {
 	pub acceleration_structure: AccelerationStructureHandle,
-	pub scratch_buffer: BufferHandle,
+	pub scratch_buffer: BaseBufferHandle,
 	pub acceleration_structure_build_type: AccelerationStructureBuildAA,
 }
 
 pub struct BufferStridedRange {
-	pub buffer: BufferHandle,
+	pub buffer: BaseBufferHandle,
 	pub offset: u64,
 	pub stride: u64,
 	pub size: u64,
@@ -222,7 +225,7 @@ pub trait CommandBufferRecording {
 	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 
 	fn clear_textures(&mut self, textures: &[(ImageHandle, ClearValue)]);
-	fn clear_buffers(&mut self, buffer_handles: &[BufferHandle]);
+	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
 
 	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]);
 
@@ -254,7 +257,7 @@ pub enum Ranges {
 
 pub enum Descriptor {
 	Buffer {
-		handle: BufferHandle,
+		handle: BaseBufferHandle,
 		size: Ranges,
 	},
 	Image {
@@ -321,14 +324,14 @@ pub trait RenderSystem: orchestrator::System {
 	/// # Returns
 	/// 
 	/// The handle of the buffer.
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle;
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle;
 
-	fn get_buffer_address(&self, buffer_handle: BufferHandle) -> u64;
+	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
 
-	fn get_buffer_slice(&mut self, buffer_handle: BufferHandle) -> &[u8];
+	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8];
 
 	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice(&self, buffer_handle: BufferHandle) -> &mut [u8];
+	fn get_mut_buffer_slice(&self, buffer_handle: BaseBufferHandle) -> &mut [u8];
 
 	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8];
 
@@ -337,7 +340,7 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn create_sampler(&mut self) -> SamplerHandle;
 
-	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BufferHandle;
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle;
 	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: AccelerationStructureTypes, buffer_descriptor: BufferDescriptor,) -> AccelerationStructureHandle;
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
@@ -1397,9 +1400,9 @@ pub struct ImageCopy {
 /// Stores the information of a buffer copy.
 pub struct BufferCopy {
 	/// The source buffer.
-	pub(super)	source: BufferHandle,
+	pub(super)	source: BaseBufferHandle,
 	/// The destination buffer.
-	pub(super)	destination: BufferHandle,
+	pub(super)	destination: BaseBufferHandle,
 	/// The size of the copy.
 	pub(super) size: usize,
 }
@@ -1429,7 +1432,7 @@ pub enum Barrier {
 	/// An image barrier.
 	Image(ImageHandle),
 	/// A buffer barrier.
-	Buffer(BufferHandle),
+	Buffer(BaseBufferHandle),
 	/// A memory barrier.
 	Memory,
 }
@@ -1568,7 +1571,7 @@ pub enum DescriptorInfo {
 	/// A buffer descriptor.
 	Buffer {
 		/// The buffer of the descriptor.
-		buffer: BufferHandle,
+		buffer: BaseBufferHandle,
 		/// The offset to start reading from inside the buffer.
 		offset: usize,
 		/// How much to read from the buffer after `offset`.
@@ -1634,7 +1637,7 @@ pub enum SwapchainStates {
 }
 
 pub struct BufferDescriptor {
-	pub buffer: BufferHandle,
+	pub buffer: BaseBufferHandle,
 	pub offset: u64,
 	pub range: u64,
 	pub slot: u32,
@@ -1736,7 +1739,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_shader(shader_source_type, stage, shader)
 	}
 
-	fn get_buffer_address(&self, buffer_handle: BufferHandle) -> u64 {
+	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
 		self.pointer.get_buffer_address(buffer_handle)
 	}
 
@@ -1744,11 +1747,11 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.write(descriptor_set_writes)
 	}
 
-	fn get_buffer_slice(&mut self, buffer_handle: BufferHandle) -> &[u8] {
+	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8] {
 		self.pointer.get_buffer_slice(buffer_handle)
 	}
 
-	fn get_mut_buffer_slice(&self, buffer_handle: BufferHandle) -> &mut [u8] {
+	fn get_mut_buffer_slice(&self, buffer_handle: BaseBufferHandle) -> &mut [u8] {
 		self.pointer.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -1784,7 +1787,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.acquire_swapchain_image(swapchain_handle, synchronizer_handle)
 	}
 
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle {
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle {
 		self.pointer.create_buffer(name, size, uses, accesses, use_case)
 	}
 
@@ -1828,7 +1831,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_sampler()
 	}
 
-	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BufferHandle {
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle {
 		self.pointer.create_acceleration_structure_instance_buffer(name, max_instance_count)
 	}
 

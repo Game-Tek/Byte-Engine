@@ -4,8 +4,11 @@ use ash::vk;
 
 use crate::{orchestrator, window_system, render_debugger::RenderDebugger, rendering::render_system};
 
+#[cfg(not(test))]
+use log::{warn, error, debug};
+
 #[cfg(test)]
-use std::{println as error, println as warn};
+use std::{println as error, println as warn, println as debug};
 
 pub struct VulkanRenderSystem {
 	entry: ash::Entry,
@@ -112,9 +115,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				let mut options = shaderc::CompileOptions::new().unwrap();
 		
 				options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-				options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_2 as u32);
+				options.set_target_env(shaderc::TargetEnv::Vulkan, (1 << 22) | (3 << 12));
 				options.set_generate_debug_info();
-				options.set_target_spirv(shaderc::SpirvVersion::V1_5);
+				options.set_target_spirv(shaderc::SpirvVersion::V1_6);
 				options.set_invert_y(true);
 		
 				let shader_text = std::str::from_utf8(shader).unwrap();
@@ -611,7 +614,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	/// # Returns
 	/// 
 	/// The handle of the buffer.
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::BufferHandle {
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: render_system::Uses, device_accesses: render_system::DeviceAccesses, use_case: render_system::UseCases) -> render_system::BaseBufferHandle {
 		if device_accesses.contains(render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead) {
 			match use_case {
 				render_system::UseCases::STATIC => {
@@ -621,7 +624,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 					let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-					let buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+					let buffer_handle = render_system::BaseBufferHandle(self.buffers.len() as u64);
 
 					self.buffers.push(Buffer {
 						buffer: buffer_creation_result.resource,
@@ -639,7 +642,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	
 					let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 	
-					let buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+					let buffer_handle = render_system::BaseBufferHandle(self.buffers.len() as u64);
 
 					self.buffers.push(Buffer {
 						buffer: buffer_creation_result.resource,
@@ -671,7 +674,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-			let buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+			let buffer_handle = render_system::BaseBufferHandle(self.buffers.len() as u64);
 
 			self.buffers.push(Buffer {
 				buffer: buffer_creation_result.resource,
@@ -686,11 +689,11 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		}
 	}
 
-	fn get_buffer_address(&self, buffer_handle: render_system::BufferHandle) -> u64 {
+	fn get_buffer_address(&self, buffer_handle: render_system::BaseBufferHandle) -> u64 {
 		self.buffers[buffer_handle.0 as usize].device_address
 	}
 
-	fn get_buffer_slice(&mut self, buffer_handle: render_system::BufferHandle) -> &[u8] {
+	fn get_buffer_slice(&mut self, buffer_handle: render_system::BaseBufferHandle) -> &[u8] {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		unsafe {
 			std::slice::from_raw_parts(buffer.pointer, buffer.size as usize)
@@ -698,7 +701,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 
 	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice(&self, buffer_handle: render_system::BufferHandle) -> &mut [u8] {
+	fn get_mut_buffer_slice(&self, buffer_handle: render_system::BaseBufferHandle) -> &mut [u8] {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		unsafe {
 			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size)
@@ -746,7 +749,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
 
-				let staging_buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+				let staging_buffer_handle = render_system::BaseBufferHandle(self.buffers.len() as u64);
 
 				self.buffers.push(Buffer {
 					buffer: staging_buffer_creation_result.resource,
@@ -763,7 +766,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
 
-				let staging_buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+				let staging_buffer_handle = render_system::BaseBufferHandle(self.buffers.len() as u64);
 
 				self.buffers.push(Buffer {
 					buffer: staging_buffer_creation_result.resource,
@@ -805,7 +808,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		render_system::SamplerHandle(self.create_vulkan_sampler().as_raw())
 	}
 
-	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> render_system::BufferHandle {
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> render_system::BaseBufferHandle {
 		let size = max_instance_count as usize * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>();
 
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
@@ -814,7 +817,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-		let buffer_handle = render_system::BufferHandle(self.buffers.len() as u64);
+		let buffer_handle = render_system::BaseBufferHandle(self.buffers.len() as u64);
 
 		self.buffers.push(Buffer {
 			buffer: buffer_creation_result.resource,
@@ -1048,9 +1051,6 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
 
-#[cfg(not(test))]
-use log::{warn, error, debug};
-
 use super::render_system::{CommandBufferRecording, Formats, DispatchExtent};
 
 #[derive(Clone)]
@@ -1122,7 +1122,7 @@ pub(crate) struct Synchronizer {
 #[derive(Clone, Copy)]
 pub(crate) struct Texture {
 	next: Option<render_system::ImageHandle>,
-	staging_buffer: Option<render_system::BufferHandle>,
+	staging_buffer: Option<render_system::BaseBufferHandle>,
 	allocation_handle: render_system::AllocationHandle,
 	image: vk::Image,
 	image_view: vk::ImageView,
@@ -1145,6 +1145,9 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
     let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
 
 	match message_severity {
+		vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
+			debug!("{}", message.to_str().unwrap());
+		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
 			warn!("{}", message.to_str().unwrap());
 		}
@@ -1521,6 +1524,9 @@ impl VulkanRenderSystem {
 		let enabled_validation_features = [
 			ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
 			ValidationFeatureEnableEXT::BEST_PRACTICES,
+			// ValidationFeatureEnableEXT::GPU_ASSISTED,
+			ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT,
+			ValidationFeatureEnableEXT::DEBUG_PRINTF,
 		];
 
 		let mut validation_features = vk::ValidationFeaturesEXT::default()
@@ -2040,7 +2046,7 @@ impl VulkanRenderSystem {
 		memory
 	}
 
-	fn get_vulkan_buffer_address(&self, buffer: &render_system::BufferHandle, _allocation: &render_system::AllocationHandle) -> u64 {
+	fn get_vulkan_buffer_address(&self, buffer: &render_system::BaseBufferHandle, _allocation: &render_system::AllocationHandle) -> u64 {
 		let buffer = self.buffers.get(buffer.0 as usize).expect("No buffer with that handle.").buffer.clone();
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
@@ -2448,7 +2454,7 @@ impl VulkanCommandBufferRecording<'_> {
 	// 	}
 	// }
 
-	fn get_buffer(&self, buffer_handle: render_system::BufferHandle) -> (render_system::BufferHandle, &Buffer) {
+	fn get_buffer(&self, buffer_handle: render_system::BaseBufferHandle) -> (render_system::BaseBufferHandle, &Buffer) {
 		(buffer_handle, &self.render_system.buffers[buffer_handle.0 as usize])
 	}
 
@@ -2922,7 +2928,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
 	}
 
-	fn clear_buffers(&mut self, buffer_handles: &[render_system::BufferHandle]) {
+	fn clear_buffers(&mut self, buffer_handles: &[render_system::BaseBufferHandle]) {
 		self.consume_resources(&buffer_handles.iter().map(|buffer_handle|
 			render_system::Consumption{
 				handle: render_system::Handle::Buffer(*buffer_handle),

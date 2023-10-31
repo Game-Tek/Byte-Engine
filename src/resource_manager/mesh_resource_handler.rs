@@ -53,7 +53,10 @@ impl ResourceHandler for MeshResourceHandler {
 
 				let vertex_count = if let Some(positions) = reader.read_positions() {
 					let vertex_count = positions.clone().count();
-					positions.for_each(|position| position.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
+					positions.for_each(|mut position| {
+						position[2] = -position[2];
+						position.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)))
+				});
 					vertex_components.push(VertexComponent { semantic: VertexSemantics::Position, format: "vec3f".to_string(), channel: 0 });
 					vertex_count
 				} else {
@@ -65,7 +68,11 @@ impl ResourceHandler for MeshResourceHandler {
 				let optimized_indices = meshopt::optimize::optimize_vertex_cache(&indices, vertex_count);				
 	
 				if let Some(normals) = reader.read_normals() {
-					normals.for_each(|normal| normal.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
+					normals.for_each(|mut normal| {
+						normal[2] = -normal[2];
+						normal.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)));
+					});
+
 					vertex_components.push(VertexComponent { semantic: VertexSemantics::Normal, format: "vec3f".to_string(), channel: 1 });
 				}
 	

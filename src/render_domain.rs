@@ -168,7 +168,7 @@ impl VisibilityWorldRenderDomain {
 					binding: 6,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
-					stages: render_system::Stages::MESH,
+					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
 			];
@@ -321,7 +321,7 @@ void main() {{
 		uint triangle_indices[3] = uint[](indices[triangle_index * 3 + 0], indices[triangle_index * 3 + 1], indices[triangle_index * 3 + 2]);
 		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
 		out_instance_index[gl_LocalInvocationID.x] = instance_index;
-		out_primitive_index[gl_LocalInvocationID.x] = triangle_index;
+		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
 	}}
 }}", TRIANGLE_COUNT=TRIANGLE_COUNT, VERTEX_COUNT=VERTEX_COUNT);
 

@@ -104,6 +104,19 @@ impl VisibilityShaderGenerator {
 
 		string.push_str("layout(set=0,binding=5) uniform sampler2D textures[1];
 
+struct Meshlet {
+	uint32_t instance_index;
+	uint16_t vertex_offset;
+	uint16_t triangle_offset;
+	uint8_t vertex_count;
+	uint8_t triangle_count;
+	uint8_t padding[6];
+};
+
+layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
+	Meshlet meshlets[];
+};
+
 layout(set=1,binding=0,scalar) buffer MaterialCount {
 	uint material_count[];
 };
@@ -113,8 +126,8 @@ layout(set=1,binding=1,scalar) buffer MaterialOffset {
 layout(set=1,binding=4,scalar) buffer PixelMapping {
 	u16vec2 pixel_mapping[];
 };
-layout(set=1, binding=6, r8ui) uniform readonly uimage2D triangle_index;
-layout(set=1, binding=7, r8ui) uniform readonly uimage2D instance_id;
+layout(set=1, binding=6, r32ui) uniform readonly uimage2D triangle_index;
+layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_id;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
 layout(set=2, binding=7, rgba16) uniform image2D out_position;
 layout(set=2, binding=8, rgba16) uniform image2D out_normals;
@@ -317,16 +330,19 @@ void main() {{
 	uint offset = material_offset[pc.material_id];
 	u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];
 	ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);
-	uint BE_TRIANGLE_INDEX = imageLoad(triangle_index, be_pixel_coordinate).r;
+	uint BE_TRIANGLE_MESHLET_INDEX = imageLoad(triangle_index, be_pixel_coordinate).r;
+	uint BE_TRIANGLE_INDEX = BE_TRIANGLE_MESHLET_INDEX & 0xFF;
+	uint BE_MESHLET_INDEX = BE_TRIANGLE_MESHLET_INDEX >> 8;
 	uint be_instance_id = imageLoad(instance_id, be_pixel_coordinate).r;
 
 	Mesh mesh = meshes[be_instance_id];
 	Material material = materials[pc.material_id];
+	Meshlet meshlet = meshlets[BE_MESHLET_INDEX];
 
 	uint vertex_indeces[3] = uint[3](
-		uint(indeces[BE_TRIANGLE_INDEX * 3 + 0]),
-		uint(indeces[BE_TRIANGLE_INDEX * 3 + 1]),
-		uint(indeces[BE_TRIANGLE_INDEX * 3 + 2])
+		uint(indeces[meshlet.triangle_offset * 3 + BE_TRIANGLE_INDEX * 3 + 0] + meshlet.vertex_offset),
+		uint(indeces[meshlet.triangle_offset * 3 + BE_TRIANGLE_INDEX * 3 + 1] + meshlet.vertex_offset),
+		uint(indeces[meshlet.triangle_offset * 3 + BE_TRIANGLE_INDEX * 3 + 2] + meshlet.vertex_offset)
 	);
 
 	vec4 vertex_positions[3] = vec4[3](

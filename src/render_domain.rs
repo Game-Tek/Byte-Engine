@@ -276,7 +276,6 @@ struct Meshlet {{
 	uint16_t triangle_offset;
 	uint8_t vertex_count;
 	uint8_t triangle_count;
-	uint8_t padding[6];
 }};
 
 layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {{
@@ -1667,7 +1666,6 @@ struct ShaderMeshletData {
 	triangle_offset: u16,
 	vertex_count: u8,
 	triangle_count: u8,
-	pad: [u8; 6],
 }
 
 #[repr(C)]
@@ -1775,7 +1773,6 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 									triangle_offset:triangle_offset as u16 + mesh_triangle_count as u16,
 									vertex_count: meshlet_vertex_count,
 									triangle_count: meshlet_triangle_count,
-									pad: [0u8; 6],
 								};
 								
 								meshlets.push(meshlet_data);

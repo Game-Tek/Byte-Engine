@@ -110,7 +110,6 @@ struct Meshlet {
 	uint16_t triangle_offset;
 	uint8_t vertex_count;
 	uint8_t triangle_count;
-	uint8_t padding[6];
 };
 
 layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {

@@ -107,6 +107,13 @@ pub struct VisibilityWorldRenderDomain {
 const VERTEX_COUNT: u32 = 64;
 const TRIANGLE_COUNT: u32 = 126;
 
+const MAX_MESHLETS: usize = 1024;
+const MAX_INSTANCES: usize = 1024;
+const MAX_MATERIALS: usize = 1024;
+const MAX_LIGHTS: usize = 16;
+const MAX_TRIANGLES: usize = 65536;
+const MAX_VERTICES: usize = 65536;
+
 impl VisibilityWorldRenderDomain {
 	pub fn new() -> orchestrator::EntityReturn<Self> {
 		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
@@ -179,10 +186,9 @@ impl VisibilityWorldRenderDomain {
 
 			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout], &[]);
 			
-			let vertex_positions_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Positions Buffer"), 1024 * 1024 * 16, render_system::Uses::Vertex | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let vertex_normals_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Normals Buffer"), 1024 * 1024 * 16, render_system::Uses::Vertex | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-
-			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), 1024 * 1024 * 16, render_system::Uses::Index | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let vertex_positions_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), render_system::Uses::Vertex | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let vertex_normals_buffer_handle = render_system.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), render_system::Uses::Vertex | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let indices_buffer_handle = render_system.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), render_system::Uses::Index | render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let debug_position = render_system.create_image(Some("debug position"), Extent::new(1920, 1080, 1), render_system::Formats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			let debug_normals = render_system.create_image(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::Formats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -200,8 +206,8 @@ impl VisibilityWorldRenderDomain {
 
 			let camera_data_buffer_handle = render_system.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-			let meshes_data_buffer = render_system.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<ShaderInstanceData>() * 1024, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let meshlets_data_buffer = render_system.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<ShaderMeshletData>() * 1024, render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let meshes_data_buffer = render_system.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderInstanceData; MAX_INSTANCES]>(), render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let meshlets_data_buffer = render_system.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), render_system::Uses::Storage, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			render_system.write(&[
 				render_system::DescriptorWrite {
@@ -395,10 +401,10 @@ void main() {{
 				render_system::PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 			]);
 
-			let material_count = render_system.create_buffer(Some("Material Count"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_offset = render_system.create_buffer(Some("Material Offset"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_offset_scratch = render_system.create_buffer(Some("Material Offset Scratch"), 1024 /* max materials */ * 4 /* u32 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-			let material_evaluation_dispatches = render_system.create_buffer(Some("Material Evaluation Dipatches"), 1024 /* max materials */ * 12 /* uvec3 size */, render_system::Uses::Storage | render_system::Uses::TransferDestination | render_system::Uses::Indirect, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_count = render_system.create_buffer(Some("Material Count"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset = render_system.create_buffer(Some("Material Offset"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_offset_scratch = render_system.create_buffer(Some("Material Offset Scratch"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+			let material_evaluation_dispatches = render_system.create_buffer(Some("Material Evaluation Dipatches"), std::mem::size_of::<[[u32; 3]; MAX_MATERIALS]>(), render_system::Uses::Storage | render_system::Uses::TransferDestination | render_system::Uses::Indirect, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let material_xy = render_system.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
@@ -648,13 +654,13 @@ void main() {{
 			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let light_data_buffer = render_system.create_buffer(Some("Light Data"), 1024 * 4, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let light_data_buffer = render_system.create_buffer(Some("Light Data"), std::mem::size_of::<LightingData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 			
 			let lighting_data = unsafe { (render_system.get_mut_buffer_slice(light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 			
 			lighting_data.count = 0; // Initially, no lights
 			
-			let materials_data_buffer_handle = render_system.create_buffer(Some("Materials Data"), 1024 * 4 * 4, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let materials_data_buffer_handle = render_system.create_buffer(Some("Materials Data"), MAX_MATERIALS * std::mem::size_of::<MaterialData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
@@ -946,7 +952,7 @@ void main() {{
 				}
 			};
 
-			let _instance_buffer = render_system.create_acceleration_structure_instance_buffer(Some("Scene Instance Buffer"), 16);
+			let _instance_buffer = render_system.create_acceleration_structure_instance_buffer(Some("Scene Instance Buffer"), MAX_INSTANCES as u32);
 			
 			let buffer = render_system.create_buffer(None, 65565, render_system::Uses::AccelerationStructure, render_system::DeviceAccesses::GpuWrite, render_system::UseCases::STATIC);
 			let top_level_acceleration_structure = render_system.create_acceleration_structure(Some("Top Level Acceleration Structure"), render_system::AccelerationStructureTypes::TopLevel{ instance_count: 16 }, render_system::BufferDescriptor { buffer: buffer, offset: 0, range: 4096, slot: 0 });
@@ -1676,7 +1682,7 @@ struct ShaderInstanceData {
 #[repr(C)]
 struct LightingData {
 	count: u32,
-	lights: [LightData; 16],
+	lights: [LightData; MAX_LIGHTS],
 }
 
 #[repr(C)]
@@ -1729,7 +1735,7 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 							buffers: vec![
 								resource_manager::Buffer{ buffer: &mut vertex_positions_buffer[(self.visiblity_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], tag: "Vertex.Position".to_string() },
 								resource_manager::Buffer{ buffer: &mut vertex_normals_buffer[(self.visiblity_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], tag: "Vertex.Normal".to_string() },
-								resource_manager::Buffer{ buffer: &mut index_buffer[(self.visiblity_info.triangle_count as usize * 3 * std::mem::size_of::<u16>())..], tag: "MeshletIndices".to_string() }
+								resource_manager::Buffer{ buffer: &mut index_buffer[(self.visiblity_info.triangle_count as usize * 3 * std::mem::size_of::<u8>())..], tag: "MeshletIndices".to_string() }
 							],
 						});
 					}
@@ -1796,13 +1802,13 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 			material_id: self.material_evaluation_materials.get(mesh.material_id).unwrap().0,
 		};
 
-		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderInstanceData, 16) };
+		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderInstanceData, MAX_INSTANCES) };
 
 		meshes_data_slice[self.visiblity_info.instance_count as usize] = mesh_data;
 
 		let meshlets_data_slice = render_system.get_mut_buffer_slice(self.meshlets_data_buffer);
 
-		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, 256) };
+		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
 
 		let mesh = self.meshes.get(mesh.resource_id).expect("Mesh not loaded");
 
@@ -1815,6 +1821,11 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 		self.visiblity_info.vertex_count += mesh.vertex_count;
 		self.visiblity_info.triangle_count += mesh.triangle_count;
 		self.visiblity_info.instance_count += 1;
+
+		assert!((self.visiblity_info.meshlet_count as usize) < MAX_MESHLETS, "Meshlet count exceeded");
+		assert!((self.visiblity_info.instance_count as usize) < MAX_INSTANCES, "Instance count exceeded");
+		assert!((self.visiblity_info.vertex_count as usize) < MAX_VERTICES, "Vertex count exceeded");
+		assert!((self.visiblity_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
 	}
 }
 

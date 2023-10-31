@@ -330,7 +330,7 @@ void main() {{
 	u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];
 	ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);
 	uint BE_TRIANGLE_MESHLET_INDEX = imageLoad(triangle_index, be_pixel_coordinate).r;
-	uint BE_TRIANGLE_INDEX = BE_TRIANGLE_MESHLET_INDEX & 0xFF;
+	uint BE_MESHLET_TRIANGLE_INDEX = BE_TRIANGLE_MESHLET_INDEX & 0xFF;
 	uint BE_MESHLET_INDEX = BE_TRIANGLE_MESHLET_INDEX >> 8;
 	uint be_instance_id = imageLoad(instance_id, be_pixel_coordinate).r;
 
@@ -339,9 +339,9 @@ void main() {{
 	Meshlet meshlet = meshlets[BE_MESHLET_INDEX];
 
 	uint vertex_indeces[3] = uint[3](
-		uint(indeces[meshlet.triangle_offset * 3 + BE_TRIANGLE_INDEX * 3 + 0] + meshlet.vertex_offset),
-		uint(indeces[meshlet.triangle_offset * 3 + BE_TRIANGLE_INDEX * 3 + 1] + meshlet.vertex_offset),
-		uint(indeces[meshlet.triangle_offset * 3 + BE_TRIANGLE_INDEX * 3 + 2] + meshlet.vertex_offset)
+		uint(indeces[meshlet.triangle_offset * 3 + BE_MESHLET_TRIANGLE_INDEX * 3 + 0] + meshlet.vertex_offset),
+		uint(indeces[meshlet.triangle_offset * 3 + BE_MESHLET_TRIANGLE_INDEX * 3 + 1] + meshlet.vertex_offset),
+		uint(indeces[meshlet.triangle_offset * 3 + BE_MESHLET_TRIANGLE_INDEX * 3 + 2] + meshlet.vertex_offset)
 	);
 
 	vec4 vertex_positions[3] = vec4[3](

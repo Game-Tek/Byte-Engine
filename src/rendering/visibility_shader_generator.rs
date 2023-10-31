@@ -196,7 +196,7 @@ layout(set=2, binding=3, scalar) buffer readonly Normals {
 };
 
 layout(set=2, binding=4, scalar) buffer readonly Indeces {
-	uint16_t indeces[];
+	uint8_t indeces[];
 };
 
 const float PI = 3.14159265359;

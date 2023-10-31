@@ -292,7 +292,7 @@ layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {{
 }};
 
 layout(set=0,binding=4,scalar) buffer readonly MeshIndices {{
-	uint16_t indices[];
+	uint8_t indices[];
 }};
 
 layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {{
@@ -1763,7 +1763,7 @@ impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
 
 							let meshlet_index_stream = mesh.index_streams.iter().find(|is| is.stream_type == mesh_resource_handler::IndexStreamTypes::Meshlets).unwrap();
 
-							assert_eq!(meshlet_index_stream.data_type, mesh_resource_handler::IntegralTypes::U16, "Meshlet index stream is not u16");
+							assert_eq!(meshlet_index_stream.data_type, mesh_resource_handler::IntegralTypes::U8, "Meshlet index stream is not u8");
 
 							for _ in 0..meshlet_count {
 								let meshlet_vertex_count = (mesh.vertex_count - mesh_vertex_count).min(63) as u8;

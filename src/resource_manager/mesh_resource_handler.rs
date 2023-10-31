@@ -116,14 +116,15 @@ impl ResourceHandler for MeshResourceHandler {
 						index_count += meshlet.triangle_count as usize * 3;
 						for i in 0..meshlet.triangle_count as usize {
 							for x in meshlet.indices[i] {
-								(x as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
+								assert!(x <= 64, "Meshlet index out of bounds"); // Max vertices per meshlet
+								buffer.push(x as u8);
 							}
 						}
 					}
 
 					assert_eq!(index_count, optimized_indices.len());
 
-					index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Meshlets, offset, count: optimized_indices.len() as u32 });
+					index_streams.push(IndexStream{ data_type: IntegralTypes::U8, stream_type: IndexStreamTypes::Meshlets, offset, count: optimized_indices.len() as u32 });
 				}
 
 				let mesh = Mesh {
@@ -404,7 +405,7 @@ mod tests {
 		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
 		assert_eq!(mesh.index_streams[1].offset, offset);
 		assert_eq!(mesh.index_streams[1].count, 36);
-		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U16);
+		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
 
 		let resource_request = resource_manager.request_resource("Box");
 
@@ -486,23 +487,23 @@ mod tests {
 		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
 		assert_eq!(mesh.index_streams[1].offset, offset);
 		assert_eq!(mesh.index_streams[1].count, 3936 * 3);
-		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U16);
+		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
 
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_positions.len(), 11808);
 
-		assert_eq!(vertex_positions[0], Vector3::new(0.492188f32, 0.185547f32, 0.720703f32));
-		assert_eq!(vertex_positions[1], Vector3::new(0.472656f32, 0.243042f32, 0.751221f32));
-		assert_eq!(vertex_positions[2], Vector3::new(0.463867f32, 0.198242f32, 0.753418f32));
+		assert_eq!(vertex_positions[0], Vector3::new(0.492188f32, 0.185547f32, -0.720703f32));
+		assert_eq!(vertex_positions[1], Vector3::new(0.472656f32, 0.243042f32, -0.751221f32));
+		assert_eq!(vertex_positions[2], Vector3::new(0.463867f32, 0.198242f32, -0.753418f32));
 
 		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const Vector3).add(11808), mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_normals.len(), 11808);
 
-		assert_eq!(vertex_normals[0], Vector3::new(0.703351f32, -0.228379f32, 0.673156f32));
-		assert_eq!(vertex_normals[1], Vector3::new(0.818977f32, -0.001884f32, 0.573824f32));
-		assert_eq!(vertex_normals[2], Vector3::new(0.776439f32, -0.262265f32, 0.573027f32));
+		assert_eq!(vertex_normals[0], Vector3::new(0.703351f32, -0.228379f32, -0.673156f32));
+		assert_eq!(vertex_normals[1], Vector3::new(0.818977f32, -0.001884f32, -0.573824f32));
+		assert_eq!(vertex_normals[2], Vector3::new(0.776439f32, -0.262265f32, -0.573027f32));
 	}
 
 	#[test]
@@ -546,23 +547,23 @@ mod tests {
 		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
 		assert_eq!(mesh.index_streams[1].offset, offset);
 		assert_eq!(mesh.index_streams[1].count, 36);
-		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U16);
+		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
 
 		// Cast buffer to Vector3<f32>
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_positions.len(), 24);
-		assert_eq!(vertex_positions[0], Vector3::new(-0.5f32, -0.5f32, 0.5f32));
-		assert_eq!(vertex_positions[1], Vector3::new(0.5f32, -0.5f32, 0.5f32));
-		assert_eq!(vertex_positions[2], Vector3::new(-0.5f32, 0.5f32, 0.5f32));
+		assert_eq!(vertex_positions[0], Vector3::new(-0.5f32, -0.5f32, -0.5f32));
+		assert_eq!(vertex_positions[1], Vector3::new(0.5f32, -0.5f32, -0.5f32));
+		assert_eq!(vertex_positions[2], Vector3::new(-0.5f32, 0.5f32, -0.5f32));
 
 		// Cast buffer + 12 * 24 to Vector3<f32>
 		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const Vector3).add(24), mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_normals.len(), 24);
-		assert_eq!(vertex_normals[0], Vector3::new(0f32, 0f32, 1f32));
-		assert_eq!(vertex_normals[1], Vector3::new(0f32, 0f32, 1f32));
-		assert_eq!(vertex_normals[2], Vector3::new(0f32, 0f32, 1f32));
+		assert_eq!(vertex_normals[0], Vector3::new(0f32, 0f32, -1f32));
+		assert_eq!(vertex_normals[1], Vector3::new(0f32, 0f32, -1f32));
+		assert_eq!(vertex_normals[2], Vector3::new(0f32, 0f32, -1f32));
 
 		// Cast buffer + 12 * 24 + 12 * 24 to u16
 		let indeces = unsafe { std::slice::from_raw_parts((buffer.as_ptr().add(12 * 24 + 12 * 24)) as *const u16, mesh.index_streams[0].count as usize) };
@@ -609,17 +610,17 @@ mod tests {
 					let vertex_positions = unsafe { std::slice::from_raw_parts(vertex_buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_positions.len(), 24);
-					assert_eq!(vertex_positions[0], Vector3::new(-0.5f32, -0.5f32, 0.5f32));
-					assert_eq!(vertex_positions[1], Vector3::new(0.5f32, -0.5f32, 0.5f32));
-					assert_eq!(vertex_positions[2], Vector3::new(-0.5f32, 0.5f32, 0.5f32));
+					assert_eq!(vertex_positions[0], Vector3::new(-0.5f32, -0.5f32, -0.5f32));
+					assert_eq!(vertex_positions[1], Vector3::new(0.5f32, -0.5f32, -0.5f32));
+					assert_eq!(vertex_positions[2], Vector3::new(-0.5f32, 0.5f32, -0.5f32));
 
 					// Cast vertex_buffer + 12 * 24 to Vector3<f32>
 					let vertex_normals = unsafe { std::slice::from_raw_parts((vertex_buffer.as_ptr() as *const Vector3).add(24) as *const Vector3, mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_normals.len(), 24);
-					assert_eq!(vertex_normals[0], Vector3::new(0f32, 0f32, 1f32));
-					assert_eq!(vertex_normals[1], Vector3::new(0f32, 0f32, 1f32));
-					assert_eq!(vertex_normals[2], Vector3::new(0f32, 0f32, 1f32));
+					assert_eq!(vertex_normals[0], Vector3::new(0f32, 0f32, -1f32));
+					assert_eq!(vertex_normals[1], Vector3::new(0f32, 0f32, -1f32));
+					assert_eq!(vertex_normals[2], Vector3::new(0f32, 0f32, -1f32));
 
 
 					// Cast index_buffer to u16
@@ -676,17 +677,17 @@ mod tests {
 					let vertex_positions_buffer = unsafe { std::slice::from_raw_parts(vertex_positions_buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_positions_buffer.len(), 24);
-					assert_eq!(vertex_positions_buffer[0], Vector3::new(-0.5f32, -0.5f32, 0.5f32));
-					assert_eq!(vertex_positions_buffer[1], Vector3::new(0.5f32, -0.5f32, 0.5f32));
-					assert_eq!(vertex_positions_buffer[2], Vector3::new(-0.5f32, 0.5f32, 0.5f32));
+					assert_eq!(vertex_positions_buffer[0], Vector3::new(-0.5f32, -0.5f32, -0.5f32));
+					assert_eq!(vertex_positions_buffer[1], Vector3::new(0.5f32, -0.5f32, -0.5f32));
+					assert_eq!(vertex_positions_buffer[2], Vector3::new(-0.5f32, 0.5f32, -0.5f32));
 
 					// Cast vertex_normals_buffer to Vector3<f32>
 					let vertex_normals_buffer = unsafe { std::slice::from_raw_parts(vertex_normals_buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_normals_buffer.len(), 24);
-					assert_eq!(vertex_normals_buffer[0], Vector3::new(0f32, 0f32, 1f32));
-					assert_eq!(vertex_normals_buffer[1], Vector3::new(0f32, 0f32, 1f32));
-					assert_eq!(vertex_normals_buffer[2], Vector3::new(0f32, 0f32, 1f32));
+					assert_eq!(vertex_normals_buffer[0], Vector3::new(0f32, 0f32, -1f32));
+					assert_eq!(vertex_normals_buffer[1], Vector3::new(0f32, 0f32, -1f32));
+					assert_eq!(vertex_normals_buffer[2], Vector3::new(0f32, 0f32, -1f32));
 
 					// Cast index_buffer to u16
 

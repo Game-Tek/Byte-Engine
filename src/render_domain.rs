@@ -101,7 +101,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	pending_texture_loads: Vec<render_system::ImageHandle>,
 
-	top_level_acceleration_structure: render_system::AccelerationStructureHandle,
+	top_level_acceleration_structure: render_system::TopLevelAccelerationStructureHandle,
 }
 
 const VERTEX_COUNT: u32 = 64;
@@ -954,8 +954,7 @@ void main() {{
 
 			let _instance_buffer = render_system.create_acceleration_structure_instance_buffer(Some("Scene Instance Buffer"), MAX_INSTANCES as u32);
 			
-			let buffer = render_system.create_buffer(None, 65565, render_system::Uses::AccelerationStructure, render_system::DeviceAccesses::GpuWrite, render_system::UseCases::STATIC);
-			let top_level_acceleration_structure = render_system.create_acceleration_structure(Some("Top Level Acceleration Structure"), render_system::AccelerationStructureTypes::TopLevel{ instance_count: 16 }, render_system::BufferDescriptor { buffer: buffer, offset: 0, range: 4096, slot: 0 });
+			let top_level_acceleration_structure = render_system.create_top_level_acceleration_structure(Some("Top Level Acceleration Structure"));
 
 			let rt_pass_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("RT Pass Set Layout"), &[
 				render_system::DescriptorSetLayoutBinding {

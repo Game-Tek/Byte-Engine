@@ -61,7 +61,10 @@ pub struct BaseBufferHandle(pub(super) u64);
 pub struct BufferHandle<T>(pub(super) u64, std::marker::PhantomData<T>);
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct AccelerationStructureHandle(pub(super) u64);
+pub struct TopLevelAccelerationStructureHandle(pub(super) u64);
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+pub struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct CommandBufferHandle(pub(super) u64);
@@ -108,7 +111,7 @@ pub struct TextureCopyHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handle {
 	Buffer(BaseBufferHandle),
-	AccelerationStructure(AccelerationStructureHandle),
+	// AccelerationStructure(AccelerationStructureHandle),
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
 	Pipeline(PipelineHandle),
@@ -133,34 +136,39 @@ pub struct Consumption {
 	pub layout: Layouts,
 }
 
-pub enum AccelerationStructureBuildAA {
+pub enum BottomLevelAccelerationStructureBuildDescriptions {
 	Mesh {
-		vertex_buffer: BaseBufferHandle,
-		index_buffer: BaseBufferHandle,
-		transform_buffer: BaseBufferHandle,
-		vertex_format: Formats,
-		vertex_stride: u32,
-		index_format: DataTypes,
-		index_count: u32,
-		transform_count: u32,
+		vertex_buffer: BufferStridedRange,
 		vertex_count: u32,
+		vertex_position_encoding: Encodings,
+		index_buffer: BufferStridedRange,
+		triangle_count: u32,
+		index_format: DataTypes,
 	},
 	AABB {
 		aabb_buffer: BaseBufferHandle,
 		transform_buffer: BaseBufferHandle,
 		transform_count: u32,
 	},
+}
+
+pub enum TopLevelAccelerationStructureBuildDescriptions {
 	Instance {
-		acceleration_structure: AccelerationStructureHandle,
-		transform_buffer: BaseBufferHandle,
-		transform_count: u32,
+		instances_buffer: BaseBufferHandle,
+		instance_count: u32,
 	},
 }
 
-pub struct AccelerationStructureBuild {
-	pub acceleration_structure: AccelerationStructureHandle,
-	pub scratch_buffer: BaseBufferHandle,
-	pub acceleration_structure_build_type: AccelerationStructureBuildAA,
+pub struct BottomLevelAccelerationStructureBuild {
+	pub acceleration_structure: BottomLevelAccelerationStructureHandle,
+	pub scratch_buffer: BufferDescriptor,
+	pub description: BottomLevelAccelerationStructureBuildDescriptions,
+}
+
+pub struct TopLevelAccelerationStructureBuild {
+	pub acceleration_structure: TopLevelAccelerationStructureHandle,
+	pub scratch_buffer: BufferDescriptor,
+	pub description: TopLevelAccelerationStructureBuildDescriptions,
 }
 
 pub struct BufferStridedRange {
@@ -174,7 +182,7 @@ pub struct BindingTables {
 	pub raygen: BufferStridedRange,
 	pub hit: BufferStridedRange,
 	pub miss: BufferStridedRange,
-	pub callable: BufferStridedRange,
+	pub callable: Option<BufferStridedRange>,
 }
 
 pub struct DispatchExtent {
@@ -182,11 +190,28 @@ pub struct DispatchExtent {
 	pub dispatch_extent: Extent,
 }
 
+pub enum BottomLevelAccelerationStructureDescriptions {
+	Mesh {
+		vertex_count: u32,
+		vertex_position_encoding: Encodings,
+		triangle_count: u32,
+		index_format: DataTypes,
+	},
+	AABB {
+		transform_count: u32,
+	},
+}
+
+pub struct BottomLevelAccelerationStructure {
+	pub description: BottomLevelAccelerationStructureDescriptions,
+}
+
 pub trait CommandBufferRecording {
 	/// Enables recording on the command buffer.
 	fn begin(&self);
 
-	fn build_acceleration_structures(&mut self, acceleration_structure_builds: &[AccelerationStructureBuild]);
+	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
+	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
@@ -270,7 +295,7 @@ pub enum Descriptor {
 		layout: Layouts,
 	},
 	AccelerationStructure {
-		handle: AccelerationStructureHandle,
+		handle: TopLevelAccelerationStructureHandle,
 	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
@@ -341,7 +366,11 @@ pub trait RenderSystem: orchestrator::System {
 	fn create_sampler(&mut self) -> SamplerHandle;
 
 	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle;
-	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: AccelerationStructureTypes, buffer_descriptor: BufferDescriptor,) -> AccelerationStructureHandle;
+
+	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> TopLevelAccelerationStructureHandle;
+	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure) -> BottomLevelAccelerationStructureHandle;
+
+	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle);
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
 
@@ -378,6 +407,596 @@ pub struct RGBAu8 {
 	g: u8,
 	b: u8,
 	a: u8,
+}
+
+/// Enumerates the types of command buffers that can be created.
+pub enum CommandBufferType {
+	/// A command buffer that can perform graphics operations. Draws, blits, presentations, etc.
+	GRAPHICS,
+	/// A command buffer that can perform compute operations. Dispatches, etc.
+	COMPUTE,
+	/// A command buffer that is optimized for transfer operations. Copies, etc.
+	TRANSFER
+}
+
+/// Enumerates the types of buffers that can be created.
+pub enum BufferType {
+	/// A buffer that can be used as a vertex buffer.
+	VERTEX,
+	/// A buffer that can be used as an index buffer.
+	INDEX,
+	/// A buffer that can be used as a uniform buffer.
+	UNIFORM,
+	/// A buffer that can be used as a storage buffer.
+	STORAGE,
+	/// A buffer that can be used as an indirect buffer.
+	INDIRECT
+}
+
+/// Enumerates the types of shaders that can be created.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+pub enum ShaderTypes {
+	/// A vertex shader.
+	Vertex,
+	/// A fragment shader.
+	Fragment,
+	/// A compute shader.
+	Compute,
+	Task,
+	Mesh,
+	Raygen,
+	ClosestHit,
+	AnyHit,
+	Intersection,
+	Miss,
+	Callable,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum Encodings {
+	IEEE754,
+	UnsignedNormalized,
+	SignedNormalized,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+/// Enumerates the formats that textures can have.
+pub enum Formats {
+	/// 8 bit unsigned per component normalized RGBA.
+	RGBAu8,
+	/// 16 bit unsigned per component normalized RGBA.
+	RGBAu16,
+	/// 32 bit unsigned per component normalized RGBA.
+	RGBAu32,
+	/// 16 bit float per component RGBA.
+	RGBAf16,
+	/// 32 bit float per component RGBA.
+	RGBAf32,
+	/// 10 bit unsigned for R, G and 11 bit unsigned for B normalized RGB.
+	RGBu10u10u11,
+	/// 8 bit unsigned per component normalized BGRA.
+	BGRAu8,
+	/// 32 bit float depth.
+	Depth32,
+	U32,
+}
+
+#[derive(Clone, Copy)]
+pub enum CompressionSchemes {
+	BC7,
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of a memory region.
+pub struct Memory<'a> {
+	/// The allocation that the memory region is associated with.
+	allocation: &'a AllocationHandle,
+	/// The offset of the memory region.
+	offset: usize,
+	/// The size of the memory region.
+	size: usize,
+}
+
+#[derive(Clone, Copy)]
+pub enum ClearValue {
+	None,
+	Color(crate::RGBA),
+	Integer(u32, u32, u32, u32),
+	Depth(f32),
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of an attachment.
+pub struct AttachmentInformation {
+	/// The image view of the attachment.
+	pub image: ImageHandle,
+	/// The format of the attachment.
+	pub format: Formats,
+	/// The layout of the attachment.
+	pub layout: Layouts,
+	/// The clear color of the attachment.
+	pub clear: ClearValue,
+	/// Whether to load the contents of the attchment when starting a render pass.
+	pub load: bool,
+	/// Whether to store the contents of the attachment when ending a render pass.
+	pub store: bool,
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of a image copy.
+pub struct ImageCopy {
+	/// The source image.
+	pub(super) source: ImageHandle,
+	pub(super) source_format: Formats,
+	/// The destination image.
+	pub(super) destination: ImageHandle,
+	pub(super) destination_format: Formats,
+	/// The images extent.
+	pub(super) extent: crate::Extent,
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of a buffer copy.
+pub struct BufferCopy {
+	/// The source buffer.
+	pub(super)	source: BaseBufferHandle,
+	/// The destination buffer.
+	pub(super)	destination: BaseBufferHandle,
+	/// The size of the copy.
+	pub(super) size: usize,
+}
+
+use serde::{Serialize, Deserialize};
+
+bitflags::bitflags! {
+	#[derive(Clone, Copy, PartialEq, Eq)]
+	/// Bit flags for the available access policies.
+	pub struct AccessPolicies : u8 {
+		/// Will perform read access.
+		const READ = 0b00000001;
+		/// Will perform write access.
+		const WRITE = 0b00000010;
+	}
+}
+
+#[derive(Clone, Copy)]
+pub struct TextureState {
+	/// The layout of the resource.
+	pub layout: Layouts,
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of a barrier.
+pub enum Barrier {
+	/// An image barrier.
+	Image(ImageHandle),
+	/// A buffer barrier.
+	Buffer(BaseBufferHandle),
+	/// A memory barrier.
+	Memory,
+}
+
+bitflags::bitflags! {
+	#[derive(Clone, Copy, PartialEq, Eq)]
+	/// Bit flags for the available pipeline stages.
+	pub struct Stages : u64 {
+		/// No stage.
+		const NONE = 0b0;
+		/// The vertex stage.
+		const VERTEX = 0b1;
+		/// The mesh shader execution stage.
+		const MESH = 0b10;
+		/// The fragment stage.
+		const FRAGMENT = 0b100;
+		/// The compute stage.
+		const COMPUTE = 0b1000;
+		/// The transfer stage.
+		const TRANSFER = 0b10000;
+		/// The acceleration structure stage.
+		const ACCELERATION_STRUCTURE = 0b100000;
+		/// The presentation stage.
+		const PRESENTATION = 0b1000000;
+		/// The host stage.
+		const HOST = 0b10000000;
+		/// The shader write stage.
+		const SHADER_WRITE = 0b1000000000;
+		/// The indirect commands evaluation stage.
+		const INDIRECT = 0b10000000000;
+	}
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of a transition state.
+pub struct TransitionState {
+	/// The stages this transition will either wait or block on.
+	pub stage: Stages,
+	/// The type of access that will be done on the resource by the process the operation that requires this transition.
+	pub access: AccessPolicies,
+	pub layout: Layouts,
+}
+
+/// Stores the information of a barrier descriptor.
+#[derive(Clone, Copy)]
+pub struct BarrierDescriptor {
+	/// The barrier.
+	pub barrier: Barrier,
+	/// The state of the resource previous to the barrier. If None, the resource state will be discarded.
+	pub source: Option<TransitionState>,
+	/// The state of the resource after the barrier.
+	pub destination: TransitionState,
+}
+
+bitflags::bitflags! {
+	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+	/// Bit flags for the available resource uses.
+	pub struct Uses : u32 {
+		/// Resource will be used as a vertex buffer.
+		const Vertex = 1 << 0;
+		/// Resource will be used as an index buffer.
+		const Index = 1 << 1;
+		/// Resource will be used as a uniform buffer.
+		const Uniform = 1 << 2;
+		/// Resource will be used as a storage buffer.
+		const Storage = 1 << 3;
+		/// Resource will be used as an indirect buffer.
+		const Indirect = 1 << 4;
+		/// Resource will be used as an image.
+		const Image = 1 << 5;
+		/// Resource will be used as a render target.
+		const RenderTarget = 1 << 6;
+		/// Resource will be used as a depth stencil.
+		const DepthStencil = 1 << 7;
+		/// Resource will be used as an acceleration structure.
+		const AccelerationStructure = 1 << 8;
+		/// Resource will be used as a transfer source.
+		const TransferSource = 1 << 9;
+		/// Resource will be used as a transfer destination.
+		const TransferDestination = 1 << 10;
+		/// Resource will be used as a shader binding table.
+		const ShaderBindingTable = 1 << 11;
+		/// Resource will be used as a acceleration structure build scratch buffer.
+		const AccelerationStructureBuildScratch = 1 << 12;
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+/// Enumerates the available layouts.
+pub enum Layouts {
+	/// The layout is undefined. We don't mind what the layout is.
+	Undefined,
+	/// The image will be used as render target.
+	RenderTarget,
+	/// The resource will be used in a transfer operation.
+	Transfer,
+	/// The resource will be used as a presentation source.
+	Present,
+	/// The resource will be used as a read only sample source.
+	Read,
+	/// The resource will be used as a read/write storage.
+	General,
+}
+
+#[derive(Clone, Copy)]
+/// Enumerates the available descriptor types.
+pub enum DescriptorType {
+	/// A uniform buffer.
+	UniformBuffer,
+	/// A storage buffer.
+	StorageBuffer,
+	/// An image.
+	SampledImage,
+	/// A combined image sampler.
+	CombinedImageSampler,
+	/// A storage image.
+	StorageImage,
+	/// A sampler.
+	Sampler,
+AccelerationStructure,
+}
+
+/// Stores the information of a descriptor set layout binding.
+pub struct DescriptorSetLayoutBinding {
+	pub name: &'static str,
+	/// The binding of the descriptor set layout binding.
+	pub binding: u32,
+	/// The descriptor type of the descriptor set layout binding.
+	pub descriptor_type: DescriptorType,
+	/// The number of descriptors in the descriptor set layout binding.
+	pub descriptor_count: u32,
+	/// The stages the descriptor set layout binding will be used in.
+	pub stages: Stages,
+	/// The immutable samplers of the descriptor set layout binding.
+	pub immutable_samplers: Option<Vec<SamplerHandle>>,
+}
+
+/// Stores the information of a descriptor.
+pub enum DescriptorInfo {
+	/// A buffer descriptor.
+	Buffer {
+		/// The buffer of the descriptor.
+		buffer: BaseBufferHandle,
+		/// The offset to start reading from inside the buffer.
+		offset: usize,
+		/// How much to read from the buffer after `offset`.
+		range: usize,
+	},
+	/// An image descriptor.
+	Image {
+		/// The image of the descriptor.
+		image: ImageHandle,
+		/// The format of the texture.
+		format: Formats,
+		/// The layout of the texture.
+		layout: Layouts,
+	},
+	/// A sampler descriptor.
+	Sampler {
+		/// The sampler of the descriptor.
+		sampler: u32,
+	}
+}
+
+/// Stores the information of a descriptor set write.
+pub struct DescriptorWrite {
+	/// The descriptor set to write to.
+	pub descriptor_set: DescriptorSetHandle,
+	/// The binding to write to.
+	pub binding: u32,
+	/// The index of the array element to write to in the binding(if the binding is an array).
+	pub array_element: u32,
+	/// Information describing the descriptor.
+	pub descriptor: Descriptor,
+}
+
+/// Describes the details of the memory layout of a particular image.
+pub struct ImageSubresourceLayout {
+	/// The offset inside a memory region where the texture will read it's first texel from.
+	pub(super) offset: u64,
+	/// The size of the texture in bytes.
+	pub(super) size: u64,
+	/// The row pitch of the texture.
+	pub(super) row_pitch: u64,
+	/// The array pitch of the texture.
+	pub(super) array_pitch: u64,
+	/// The depth pitch of the texture.
+	pub(super) depth_pitch: u64,
+}
+
+/// Describes the properties of a particular surface.
+pub struct SurfaceProperties {
+	/// The current extent of the surface.
+	pub(super) extent: crate::Extent,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+/// Enumerates the states of a swapchain's validity for presentation.
+pub enum SwapchainStates {
+	/// The swapchain is valid for presentation.
+	Ok,
+	/// The swapchain is suboptimal for presentation.
+	Suboptimal,
+	/// The swapchain can't be used for presentation.
+	Invalid,
+}
+
+pub struct BufferDescriptor {
+	pub buffer: BaseBufferHandle,
+	pub offset: u64,
+	pub range: u64,
+	pub slot: u32,
+}
+
+pub trait SpecializationMapEntry {
+	fn get_constant_id(&self) -> u32;
+	fn get_size(&self) -> usize;
+	fn get_data(&self) -> &[u8];
+	fn get_type(&self) -> String;
+}
+
+pub struct GenericSpecializationMapEntry<T> {
+	pub r#type: String,
+	pub constant_id: u32,
+	pub value: T,
+}
+
+impl <T> SpecializationMapEntry for GenericSpecializationMapEntry<T> {
+	fn get_constant_id(&self) -> u32 {
+		self.constant_id
+	}
+
+	fn get_type(&self) -> String {
+		self.r#type.clone()
+	}
+
+	fn get_size(&self) -> usize {
+		std::mem::size_of::<T>()
+	}
+
+	fn get_data(&self) -> &[u8] {
+		unsafe { std::slice::from_raw_parts(&self.value as *const T as *const u8, std::mem::size_of::<T>()) }
+	}
+}
+
+pub type ShaderParameter<'a> = (&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>);
+
+pub enum PipelineConfigurationBlocks<'a> {
+	VertexInput {
+		vertex_elements: &'a [VertexElement]
+	},
+	InputAssembly {
+	
+	},
+	RenderTargets {
+		targets: &'a [AttachmentInformation],
+	},
+	Shaders {
+		shaders: &'a [(&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>)],
+	},
+	Layout {
+		layout: &'a PipelineLayoutHandle,
+	}
+}
+
+pub struct PushConstantRange {
+	pub offset: u32,
+	pub size: u32,
+}
+
+pub enum AccelerationStructureTypes {
+	TopLevel {
+		instance_count: u32,
+	},
+	BottomLevel {
+		vertex_count: u32,
+		triangle_count: u32,
+		vertex_position_format: DataTypes,
+		index_format: DataTypes,
+	},
+}
+
+pub struct RenderSystemImplementation {
+	pointer: Box<dyn RenderSystem>,
+}
+
+impl RenderSystemImplementation {
+	pub fn new(pointer: Box<dyn RenderSystem>) -> Self {
+		Self {
+			pointer: pointer,
+		}
+	}
+}
+
+impl orchestrator::Entity for RenderSystemImplementation {}
+impl orchestrator::System for RenderSystemImplementation {}
+
+impl RenderSystem for RenderSystemImplementation {
+	fn has_errors(&self) -> bool {
+		self.pointer.has_errors()
+	}
+
+	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle {
+		self.pointer.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
+	}
+
+	fn create_shader(&mut self, shader_source_type: ShaderSourceType, stage: ShaderTypes, shader: &[u8]) -> ShaderHandle {
+		self.pointer.create_shader(shader_source_type, stage, shader)
+	}
+
+	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
+		self.pointer.get_buffer_address(buffer_handle)
+	}
+
+	fn write(&self, descriptor_set_writes: &[DescriptorWrite]) {
+		self.pointer.write(descriptor_set_writes)
+	}
+
+	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8] {
+		self.pointer.get_buffer_slice(buffer_handle)
+	}
+
+	fn get_mut_buffer_slice(&self, buffer_handle: BaseBufferHandle) -> &mut [u8] {
+		self.pointer.get_mut_buffer_slice(buffer_handle)
+	}
+
+	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8] {
+		self.pointer.get_texture_slice_mut(texture_handle)
+	}
+
+	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
+		self.pointer.get_image_data(texture_copy_handle)
+	}
+
+	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle {
+		self.pointer.bind_to_window(window_os_handles)
+	}
+
+	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle) {
+		self.pointer.present(image_index, swapchains, synchronizer_handle)
+	}
+
+	fn wait(&self, synchronizer_handle: SynchronizerHandle) {
+		self.pointer.wait(synchronizer_handle)
+	}
+
+	fn start_frame_capture(&self) {
+		self.pointer.start_frame_capture()
+	}
+
+	fn end_frame_capture(&self) {
+		self.pointer.end_frame_capture()
+	}
+
+	fn acquire_swapchain_image(&self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32 {
+		self.pointer.acquire_swapchain_image(swapchain_handle, synchronizer_handle)
+	}
+
+	fn create_buffer(&mut self, name: Option<&str>, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle {
+		self.pointer.create_buffer(name, size, uses, accesses, use_case)
+	}
+
+	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {
+		self.pointer.create_allocation(size, _resource_uses, resource_device_accesses)
+	}
+
+	fn create_command_buffer(&mut self) -> CommandBufferHandle {
+		self.pointer.create_command_buffer()
+	}
+
+	fn create_command_buffer_recording<'a>(&'a self, command_buffer_handle: CommandBufferHandle, frame: Option<u32>) -> Box<dyn CommandBufferRecording + 'a> {
+		self.pointer.create_command_buffer_recording(command_buffer_handle, frame)
+	}
+
+	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle {
+		self.pointer.create_descriptor_set(name, descriptor_set_layout, bindings)
+	}
+
+	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle {
+		self.pointer.create_descriptor_set_layout(name, bindings)
+	}
+
+	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle {
+		self.pointer.create_raster_pipeline(pipeline_blocks)
+	}
+
+	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle {
+		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
+	}
+
+	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle {
+		self.pointer.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
+	}
+
+	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {
+		self.pointer.create_pipeline_layout(descriptor_set_layout_handles, push_constant_ranges)
+	}
+
+	fn create_sampler(&mut self) -> SamplerHandle {
+		self.pointer.create_sampler()
+	}
+
+	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle {
+		self.pointer.create_acceleration_structure_instance_buffer(name, max_instance_count)
+	}
+
+	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure,) -> BottomLevelAccelerationStructureHandle {
+		self.pointer.create_bottom_level_acceleration_structure(description,)
+	}
+
+	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> TopLevelAccelerationStructureHandle {
+		self.pointer.create_top_level_acceleration_structure(name,)
+	}
+
+	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle) {
+		self.pointer.write_instance(instances_buffer_handle, transform, custom_index, mask, sbt_record_offset, acceleration_structure)
+	}
+
+	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {
+		self.pointer.create_synchronizer(signaled)
+	}
+
+	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle {
+		self.pointer.create_image(name, extent, format, compression, resource_uses, device_accesses, use_case)
+	}
 }
 
 #[cfg(test)]
@@ -1275,575 +1894,229 @@ pub(super) mod tests {
 
 		assert!(!renderer.has_errors());
 	}
+
+	pub(crate) fn ray_tracing(renderer: &mut dyn RenderSystem) {
+		//! Tests that the render system can perform rendering with multiple frames in flight.
+		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
+
+		const FRAMES_IN_FLIGHT: usize = 2;
+
+		// Use and odd width to make sure there is a middle/center pixel
+		let _extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
+
+		let positions: [f32; 3 * 3] = [
+			0.0, 1.0, 0.0,
+			1.0, -1.0, 0.0,
+			-1.0, -1.0, 0.0,
+		];
+
+		let colors: [f32; 4 * 3] = [
+			1.0, 0.0, 0.0, 1.0,
+			0.0, 1.0, 0.0, 1.0, 
+			0.0, 0.0, 1.0, 1.0,
+		];
+
+		let vertex_layout = [
+			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
+			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+		];
+
+		let vertex_positions_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Vertex, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let vertex_colors_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Vertex, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let index_buffer = renderer.create_buffer(None, positions.len() * 2, Uses::Index, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+
+		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, positions.len() * 4) });
+		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) });
+		renderer.get_mut_buffer_slice(index_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2) });
+
+		let raygen_shader_code = "
+#version 450
+#pragma shader_stage(ray_gen)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_ray_tracing: require
+
+layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
+layout(binding = 1, set = 0, rgba8) uniform image2D image;
+
+layout(location = 0) rayPayloadEXT vec3 hitValue;
+
+void main() {
+	const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+	const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
+	vec2 d = inUV * 2.0 - 1.0;
+
+	uint rayFlags = gl_RayFlagsOpaqueEXT;
+	uint cullMask = 0xff;
+	float tmin = 0.001;
+	float tmax = 10000.0;
+
+	traceRayEXT(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
+
+	imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(hitValue, 0.0));
 }
+		";
 
-/// Enumerates the types of command buffers that can be created.
-pub enum CommandBufferType {
-	/// A command buffer that can perform graphics operations. Draws, blits, presentations, etc.
-	GRAPHICS,
-	/// A command buffer that can perform compute operations. Dispatches, etc.
-	COMPUTE,
-	/// A command buffer that is optimized for transfer operations. Copies, etc.
-	TRANSFER
+		let closest_hit_shader_code = "
+#version 450
+#pragma shader_stage(closest_hit)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_ray_tracing: require
+
+layout(location = 0) rayPayloadInEXT vec3 hitValue;
+hitAttributeEXT vec2 attribs;
+
+layout(binding = 3, set = 0) buffer Vertices { vec4 v[]; } vertices;
+layout(binding = 4, set = 0) buffer Indices { uint16_t i[]; } indices;
+
+void main() {
+	const vec3 barycentricCoords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
+	ivec3 index = ivec3(indices.i[3 * gl_PrimitiveID], indices.i[3 * gl_PrimitiveID + 1], indices.i[3 * gl_PrimitiveID + 2]);
 }
+		";
 
-/// Enumerates the types of buffers that can be created.
-pub enum BufferType {
-	/// A buffer that can be used as a vertex buffer.
-	VERTEX,
-	/// A buffer that can be used as an index buffer.
-	INDEX,
-	/// A buffer that can be used as a uniform buffer.
-	UNIFORM,
-	/// A buffer that can be used as a storage buffer.
-	STORAGE,
-	/// A buffer that can be used as an indirect buffer.
-	INDIRECT
+		let miss_shader_code = "
+#version 450
+#pragma shader_stage(miss)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_ray_tracing: require
+
+layout(location = 0) rayPayloadInEXT vec3 hitValue;
+
+void main() {
+    hitValue = vec3(0.0, 0.0, 0.2);
 }
+		";
 
-/// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-pub enum ShaderTypes {
-	/// A vertex shader.
-	Vertex,
-	/// A fragment shader.
-	Fragment,
-	/// A compute shader.
-	Compute,
-	Task,
-	Mesh,
-	Raygen,
-	ClosestHit,
-	AnyHit,
-	Intersection,
-	Miss,
-	Callable,
-}
+		let raygen_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Raygen, raygen_shader_code.as_bytes());
+		let closest_hit_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::ClosestHit, closest_hit_shader_code.as_bytes());
+		let miss_shader = renderer.create_shader(ShaderSourceType::GLSL, ShaderTypes::Miss, miss_shader_code.as_bytes());
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-/// Enumerates the formats that textures can have.
-pub enum Formats {
-	/// 8 bit unsigned per component normalized RGBA.
-	RGBAu8,
-	/// 16 bit unsigned per component normalized RGBA.
-	RGBAu16,
-	/// 32 bit unsigned per component normalized RGBA.
-	RGBAu32,
-	/// 16 bit float per component RGBA.
-	RGBAf16,
-	/// 32 bit float per component RGBA.
-	RGBAf32,
-	/// 10 bit unsigned for R, G and 11 bit unsigned for B normalized RGB.
-	RGBu10u10u11,
-	/// 8 bit unsigned per component normalized BGRA.
-	BGRAu8,
-	/// 32 bit float depth.
-	Depth32,
-U32,
-}
+		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"));
+		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{
+			description: BottomLevelAccelerationStructureDescriptions::Mesh {
+				vertex_count: 3,
+				vertex_position_encoding: Encodings::IEEE754,
+				triangle_count: 1,
+				index_format: DataTypes::U16,
+			}
+		});
 
-#[derive(Clone, Copy)]
-pub enum CompressionSchemes {
-	BC7,
-}
+		let bindings = [
+			DescriptorSetLayoutBinding {
+				name: "acceleration structure",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::AccelerationStructure,
+				binding: 0,
+				stages: Stages::ACCELERATION_STRUCTURE,
+				immutable_samplers: None,
+			},
+		];
 
-#[derive(Clone, Copy)]
-/// Stores the information of a memory region.
-pub struct Memory<'a> {
-	/// The allocation that the memory region is associated with.
-	allocation: &'a AllocationHandle,
-	/// The offset of the memory region.
-	offset: usize,
-	/// The size of the memory region.
-	size: usize,
-}
+		let descriptor_set_layout_handle = renderer.create_descriptor_set_layout(None, &bindings);
 
-#[derive(Clone, Copy)]
-pub enum ClearValue {
-	None,
-	Color(crate::RGBA),
-	Integer(u32, u32, u32, u32),
-	Depth(f32),
-}
+		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle, &bindings);
 
-#[derive(Clone, Copy)]
-/// Stores the information of an attachment.
-pub struct AttachmentInformation {
-	/// The image view of the attachment.
-	pub image: ImageHandle,
-	/// The format of the attachment.
-	pub format: Formats,
-	/// The layout of the attachment.
-	pub layout: Layouts,
-	/// The clear color of the attachment.
-	pub clear: ClearValue,
-	/// Whether to load the contents of the attchment when starting a render pass.
-	pub load: bool,
-	/// Whether to store the contents of the attachment when ending a render pass.
-	pub store: bool,
-}
+		renderer.write(&[
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure } },
+		]);
 
-#[derive(Clone, Copy)]
-/// Stores the information of a image copy.
-pub struct ImageCopy {
-	/// The source image.
-	pub(super) source: ImageHandle,
-	pub(super) source_format: Formats,
-	/// The destination image.
-	pub(super) destination: ImageHandle,
-	pub(super) destination_format: Formats,
-	/// The images extent.
-	pub(super) extent: crate::Extent,
-}
+		// Use and odd width to make sure there is a middle/center pixel
+		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-#[derive(Clone, Copy)]
-/// Stores the information of a buffer copy.
-pub struct BufferCopy {
-	/// The source buffer.
-	pub(super)	source: BaseBufferHandle,
-	/// The destination buffer.
-	pub(super)	destination: BaseBufferHandle,
-	/// The size of the copy.
-	pub(super) size: usize,
-}
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
-use serde::{Serialize, Deserialize};
+		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq)]
-	/// Bit flags for the available access policies.
-	pub struct AccessPolicies : u8 {
-		/// Will perform read access.
-		const READ = 0b00000001;
-		/// Will perform write access.
-		const WRITE = 0b00000010;
-	}
-}
+		let pipeline = renderer.create_ray_tracing_pipeline(
+			&pipeline_layout,
+			&[(&raygen_shader, ShaderTypes::Raygen, vec![]), (&closest_hit_shader, ShaderTypes::ClosestHit, vec![]), (&miss_shader, ShaderTypes::Miss, vec![])],
+		);
 
-#[derive(Clone, Copy)]
-pub struct TextureState {
-	/// The layout of the resource.
-	pub layout: Layouts,
-}
+		let command_buffer_handle = renderer.create_command_buffer();
 
-#[derive(Clone, Copy)]
-/// Stores the information of a barrier.
-pub enum Barrier {
-	/// An image barrier.
-	Image(ImageHandle),
-	/// A buffer barrier.
-	Buffer(BaseBufferHandle),
-	/// A memory barrier.
-	Memory,
-}
+		let render_finished_synchronizer = renderer.create_synchronizer(false);
 
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq)]
-	/// Bit flags for the available pipeline stages.
-	pub struct Stages : u64 {
-		/// No stage.
-		const NONE = 0b0;
-		/// The vertex stage.
-		const VERTEX = 0b1;
-		/// The mesh shader execution stage.
-		const MESH = 0b10;
-		/// The fragment stage.
-		const FRAGMENT = 0b100;
-		/// The compute stage.
-		const COMPUTE = 0b1000;
-		/// The transfer stage.
-		const TRANSFER = 0b10000;
-		/// The acceleration structure stage.
-		const ACCELERATION_STRUCTURE = 0b100000;
-		/// The presentation stage.
-		const PRESENTATION = 0b1000000;
-		/// The host stage.
-		const HOST = 0b10000000;
-		/// The shader write stage.
-		const SHADER_WRITE = 0b1000000000;
-		/// The indirect commands evaluation stage.
-		const INDIRECT = 0b10000000000;
-	}
-}
+		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
-#[derive(Clone, Copy)]
-/// Stores the information of a transition state.
-pub struct TransitionState {
-	/// The stages this transition will either wait or block on.
-	pub stage: Stages,
-	/// The type of access that will be done on the resource by the process the operation that requires this transition.
-	pub access: AccessPolicies,
-	pub layout: Layouts,
-}
+		renderer.write_instance(instances_buffer, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
 
-/// Stores the information of a barrier descriptor.
-#[derive(Clone, Copy)]
-pub struct BarrierDescriptor {
-	/// The barrier.
-	pub barrier: Barrier,
-	/// The state of the resource previous to the barrier. If None, the resource state will be discarded.
-	pub source: Option<TransitionState>,
-	/// The state of the resource after the barrier.
-	pub destination: TransitionState,
-}
+		let build_sync = renderer.create_synchronizer(false);
 
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-	/// Bit flags for the available resource uses.
-	pub struct Uses : u32 {
-		/// Resource will be used as a vertex buffer.
-		const Vertex = 1 << 0;
-		/// Resource will be used as an index buffer.
-		const Index = 1 << 1;
-		/// Resource will be used as a uniform buffer.
-		const Uniform = 1 << 2;
-		/// Resource will be used as a storage buffer.
-		const Storage = 1 << 3;
-		/// Resource will be used as an indirect buffer.
-		const Indirect = 1 << 4;
-		/// Resource will be used as an image.
-		const Image = 1 << 5;
-		/// Resource will be used as a render target.
-		const RenderTarget = 1 << 6;
-		/// Resource will be used as a depth stencil.
-		const DepthStencil = 1 << 7;
-		/// Resource will be used as an acceleration structure.
-		const AccelerationStructure = 1 << 8;
-		/// Resource will be used as a transfer source.
-		const TransferSource = 1 << 9;
-		/// Resource will be used as a transfer destination.
-		const TransferDestination = 1 << 10;
-	}
-}
+		let scratch_buffer = renderer.create_buffer(None, 1024 * 1024, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-/// Enumerates the available layouts.
-pub enum Layouts {
-	/// The layout is undefined. We don't mind what the layout is.
-	Undefined,
-	/// The image will be used as render target.
-	RenderTarget,
-	/// The resource will be used in a transfer operation.
-	Transfer,
-	/// The resource will be used as a presentation source.
-	Present,
-	/// The resource will be used as a read only sample source.
-	Read,
-	/// The resource will be used as a read/write storage.
-	General,
-}
+		let raygen_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let miss_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let hit_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
-#[derive(Clone, Copy)]
-/// Enumerates the available descriptor types.
-pub enum DescriptorType {
-	/// A uniform buffer.
-	UniformBuffer,
-	/// A storage buffer.
-	StorageBuffer,
-	/// An image.
-	SampledImage,
-	/// A combined image sampler.
-	CombinedImageSampler,
-	/// A storage image.
-	StorageImage,
-	/// A sampler.
-	Sampler,
-AccelerationStructure,
-}
+		for i in 0..FRAMES_IN_FLIGHT * 10 {
+			{
+				let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
 
-/// Stores the information of a descriptor set layout binding.
-pub struct DescriptorSetLayoutBinding {
-	pub name: &'static str,
-	/// The binding of the descriptor set layout binding.
-	pub binding: u32,
-	/// The descriptor type of the descriptor set layout binding.
-	pub descriptor_type: DescriptorType,
-	/// The number of descriptors in the descriptor set layout binding.
-	pub descriptor_count: u32,
-	/// The stages the descriptor set layout binding will be used in.
-	pub stages: Stages,
-	/// The immutable samplers of the descriptor set layout binding.
-	pub immutable_samplers: Option<Vec<SamplerHandle>>,
-}
+				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
+					acceleration_structure: bottom_level_acceleration_structure,
+					description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+						vertex_buffer: BufferStridedRange { buffer: vertex_positions_buffer, offset: 0, stride: 12, size: 12 * 3 },
+						vertex_count: 3,
+						index_buffer: BufferStridedRange { buffer: index_buffer, offset: 0, stride: 2, size: 2 * 3 },
+						vertex_position_encoding: Encodings::IEEE754,
+						index_format: DataTypes::U16,
+						triangle_count: 1,
+					},
+					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 0, range: 1024 * 512, slot: 0 },
+				}]);
 
-/// Stores the information of a descriptor.
-pub enum DescriptorInfo {
-	/// A buffer descriptor.
-	Buffer {
-		/// The buffer of the descriptor.
-		buffer: BaseBufferHandle,
-		/// The offset to start reading from inside the buffer.
-		offset: usize,
-		/// How much to read from the buffer after `offset`.
-		range: usize,
-	},
-	/// An image descriptor.
-	Image {
-		/// The image of the descriptor.
-		image: ImageHandle,
-		/// The format of the texture.
-		format: Formats,
-		/// The layout of the texture.
-		layout: Layouts,
-	},
-	/// A sampler descriptor.
-	Sampler {
-		/// The sampler of the descriptor.
-		sampler: u32,
-	}
-}
+				command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
+					acceleration_structure: top_level_acceleration_structure,
+					description: TopLevelAccelerationStructureBuildDescriptions::Instance {
+						instances_buffer,
+						instance_count: 1,
+					},
+					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 1024 * 512, range: 1024 * 512, slot: 0 },
+				});
 
-/// Stores the information of a descriptor set write.
-pub struct DescriptorWrite {
-	/// The descriptor set to write to.
-	pub descriptor_set: DescriptorSetHandle,
-	/// The binding to write to.
-	pub binding: u32,
-	/// The index of the array element to write to in the binding(if the binding is an array).
-	pub array_element: u32,
-	/// Information describing the descriptor.
-	pub descriptor: Descriptor,
-}
+				command_buffer_recording.execute(&[], &[build_sync], render_finished_synchronizer);
+			}
 
-/// Describes the details of the memory layout of a particular image.
-pub struct ImageSubresourceLayout {
-	/// The offset inside a memory region where the texture will read it's first texel from.
-	pub(super) offset: u64,
-	/// The size of the texture in bytes.
-	pub(super) size: u64,
-	/// The row pitch of the texture.
-	pub(super) row_pitch: u64,
-	/// The array pitch of the texture.
-	pub(super) array_pitch: u64,
-	/// The depth pitch of the texture.
-	pub(super) depth_pitch: u64,
-}
+			// renderer.wait(render_finished_synchronizer);
 
-/// Describes the properties of a particular surface.
-pub struct SurfaceProperties {
-	/// The current extent of the surface.
-	pub(super) extent: crate::Extent,
-}
+			renderer.start_frame_capture();
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-/// Enumerates the states of a swapchain's validity for presentation.
-pub enum SwapchainStates {
-	/// The swapchain is valid for presentation.
-	Ok,
-	/// The swapchain is suboptimal for presentation.
-	Suboptimal,
-	/// The swapchain can't be used for presentation.
-	Invalid,
-}
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
 
-pub struct BufferDescriptor {
-	pub buffer: BaseBufferHandle,
-	pub offset: u64,
-	pub range: u64,
-	pub slot: u32,
-}
+			command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
 
-pub trait SpecializationMapEntry {
-	fn get_constant_id(&self) -> u32;
-	fn get_size(&self) -> usize;
-	fn get_data(&self) -> &[u8];
-	fn get_type(&self) -> String;
-}
+			command_buffer_recording.trace_rays(BindingTables {
+				raygen: BufferStridedRange { buffer: raygen_sbt_buffer, offset: 0, stride: 64, size: 64 },
+				hit: BufferStridedRange { buffer: hit_sbt_buffer, offset: 0, stride: 64, size: 64 },
+				miss: BufferStridedRange { buffer: miss_sbt_buffer, offset: 0, stride: 64, size: 64 },
+				callable: None,
+			}, 1920, 1080, 1);
 
-pub struct GenericSpecializationMapEntry<T> {
-	pub r#type: String,
-	pub constant_id: u32,
-	pub value: T,
-}
+			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-impl <T> SpecializationMapEntry for GenericSpecializationMapEntry<T> {
-	fn get_constant_id(&self) -> u32 {
-		self.constant_id
-	}
+			command_buffer_recording.execute(&[build_sync], &[], render_finished_synchronizer);
 
-	fn get_type(&self) -> String {
-		self.r#type.clone()
-	}
+			renderer.end_frame_capture();
 
-	fn get_size(&self) -> usize {
-		std::mem::size_of::<T>()
-	}
+			renderer.wait(render_finished_synchronizer);
 
-	fn get_data(&self) -> &[u8] {
-		unsafe { std::slice::from_raw_parts(&self.value as *const T as *const u8, std::mem::size_of::<T>()) }
-	}
-}
+			assert!(!renderer.has_errors());
 
-pub type ShaderParameter<'a> = (&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>);
+			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
 
-pub enum PipelineConfigurationBlocks<'a> {
-	VertexInput {
-		vertex_elements: &'a [VertexElement]
-	},
-	InputAssembly {
-	
-	},
-	RenderTargets {
-		targets: &'a [AttachmentInformation],
-	},
-	Shaders {
-		shaders: &'a [(&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>)],
-	},
-	Layout {
-		layout: &'a PipelineLayoutHandle,
-	}
-}
-
-pub struct PushConstantRange {
-	pub offset: u32,
-	pub size: u32,
-}
-
-pub enum AccelerationStructureTypes {
-	TopLevel {
-		instance_count: u32,
-	},
-	BottomLevel {
-		vertex_count: u32,
-		triangle_count: u32,
-		vertex_position_format: DataTypes,
-		index_format: DataTypes,
-	},
-}
-
-pub struct RenderSystemImplementation {
-	pointer: Box<dyn RenderSystem>,
-}
-
-impl RenderSystemImplementation {
-	pub fn new(pointer: Box<dyn RenderSystem>) -> Self {
-		Self {
-			pointer: pointer,
+			check_triangle(pixels, extent);
 		}
-	}
-}
-
-impl orchestrator::Entity for RenderSystemImplementation {}
-impl orchestrator::System for RenderSystemImplementation {}
-
-impl RenderSystem for RenderSystemImplementation {
-	fn has_errors(&self) -> bool {
-		self.pointer.has_errors()
-	}
-
-	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle {
-		self.pointer.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
-	}
-
-	fn create_shader(&mut self, shader_source_type: ShaderSourceType, stage: ShaderTypes, shader: &[u8]) -> ShaderHandle {
-		self.pointer.create_shader(shader_source_type, stage, shader)
-	}
-
-	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
-		self.pointer.get_buffer_address(buffer_handle)
-	}
-
-	fn write(&self, descriptor_set_writes: &[DescriptorWrite]) {
-		self.pointer.write(descriptor_set_writes)
-	}
-
-	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8] {
-		self.pointer.get_buffer_slice(buffer_handle)
-	}
-
-	fn get_mut_buffer_slice(&self, buffer_handle: BaseBufferHandle) -> &mut [u8] {
-		self.pointer.get_mut_buffer_slice(buffer_handle)
-	}
-
-	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8] {
-		self.pointer.get_texture_slice_mut(texture_handle)
-	}
-
-	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
-		self.pointer.get_image_data(texture_copy_handle)
-	}
-
-	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle {
-		self.pointer.bind_to_window(window_os_handles)
-	}
-
-	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle) {
-		self.pointer.present(image_index, swapchains, synchronizer_handle)
-	}
-
-	fn wait(&self, synchronizer_handle: SynchronizerHandle) {
-		self.pointer.wait(synchronizer_handle)
-	}
-
-	fn start_frame_capture(&self) {
-		self.pointer.start_frame_capture()
-	}
-
-	fn end_frame_capture(&self) {
-		self.pointer.end_frame_capture()
-	}
-
-	fn acquire_swapchain_image(&self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32 {
-		self.pointer.acquire_swapchain_image(swapchain_handle, synchronizer_handle)
-	}
-
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle {
-		self.pointer.create_buffer(name, size, uses, accesses, use_case)
-	}
-
-	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {
-		self.pointer.create_allocation(size, _resource_uses, resource_device_accesses)
-	}
-
-	fn create_command_buffer(&mut self) -> CommandBufferHandle {
-		self.pointer.create_command_buffer()
-	}
-
-	fn create_command_buffer_recording<'a>(&'a self, command_buffer_handle: CommandBufferHandle, frame: Option<u32>) -> Box<dyn CommandBufferRecording + 'a> {
-		self.pointer.create_command_buffer_recording(command_buffer_handle, frame)
-	}
-
-	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle {
-		self.pointer.create_descriptor_set(name, descriptor_set_layout, bindings)
-	}
-
-	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle {
-		self.pointer.create_descriptor_set_layout(name, bindings)
-	}
-
-	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle {
-		self.pointer.create_raster_pipeline(pipeline_blocks)
-	}
-
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle {
-		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
-	}
-
-	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle {
-		self.pointer.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
-	}
-
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {
-		self.pointer.create_pipeline_layout(descriptor_set_layout_handles, push_constant_ranges)
-	}
-
-	fn create_sampler(&mut self) -> SamplerHandle {
-		self.pointer.create_sampler()
-	}
-
-	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle {
-		self.pointer.create_acceleration_structure_instance_buffer(name, max_instance_count)
-	}
-
-	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: AccelerationStructureTypes, buffer_descriptor: BufferDescriptor,) -> AccelerationStructureHandle {
-		self.pointer.create_acceleration_structure(name,r#type,buffer_descriptor)
-	}
-
-	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {
-		self.pointer.create_synchronizer(signaled)
-	}
-
-	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle {
-		self.pointer.create_image(name, extent, format, compression, resource_uses, device_accesses, use_case)
 	}
 }

@@ -62,6 +62,8 @@ fn uses_to_vk_usage_flags(usage: render_system::Uses) -> vk::BufferUsageFlags {
 	flags |= if usage.contains(render_system::Uses::TransferDestination) { vk::BufferUsageFlags::TRANSFER_DST } else { vk::BufferUsageFlags::empty() };
 	flags |= if usage.contains(render_system::Uses::AccelerationStructure) { vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR } else { vk::BufferUsageFlags::empty() };
 	flags |= if usage.contains(render_system::Uses::Indirect) { vk::BufferUsageFlags::INDIRECT_BUFFER } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::ShaderBindingTable) { vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR } else { vk::BufferUsageFlags::empty() };
+	flags |= if usage.contains(render_system::Uses::AccelerationStructureBuildScratch) { vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR } else { vk::BufferUsageFlags::empty() };
 	flags
 }
 
@@ -829,66 +831,35 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		buffer_handle
 	}
 
-	fn create_acceleration_structure(&mut self, name: Option<&str>, r#type: render_system::AccelerationStructureTypes, buffer_descriptor: render_system::BufferDescriptor,) -> render_system::AccelerationStructureHandle {
-		let (acceleration_structure_type, geometry, instances) = match r#type {
-			render_system::AccelerationStructureTypes::TopLevel { instance_count } => {
-				(
-					vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-					vk::AccelerationStructureGeometryKHR::default()
-					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-					}),
-					instance_count
-				)
-			}
-			render_system::AccelerationStructureTypes::BottomLevel { vertex_position_format, triangle_count, vertex_count, index_format } => {
-				(
-					vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-					vk::AccelerationStructureGeometryKHR::default()
-					.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-							.vertex_format(match vertex_position_format {
-								render_system::DataTypes::Float3 => vk::Format::R32G32B32_SFLOAT,
-								_ => panic!("Invalid vertex position format"),
-							})
-							.vertex_stride(vertex_position_format.size() as u64)
-							.max_vertex(vertex_count)
-							.index_type(match index_format {
-								render_system::DataTypes::U8 => vk::IndexType::UINT16,
-								render_system::DataTypes::U16 => vk::IndexType::UINT16,
-								render_system::DataTypes::U32 => vk::IndexType::UINT32,
-								_ => panic!("Invalid index format"),
-							})
-					}),
-					0,
-				)
-			}
-		};
+	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> render_system::TopLevelAccelerationStructureHandle {
+		let geometry = vk::AccelerationStructureGeometryKHR::default()
+			.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+			.geometry(vk::AccelerationStructureGeometryDataKHR { instances: vk::AccelerationStructureGeometryInstancesDataKHR::default() });
 
 		let geometries = [geometry];
 
 		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-			.ty(acceleration_structure_type)
+			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
 			.geometries(&geometries);
 
 		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
 		unsafe {
-			self.acceleration_structure.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[instances], &mut size_info);
+			self.acceleration_structure.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[0], &mut size_info);
 		}
 
-		let acceleration_structure_size = size_info.acceleration_structure_size;
-		let scratch_size = size_info.build_scratch_size;
+		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
+		let scratch_size = size_info.build_scratch_size as usize;
+
+		let buffer = self.create_vulkan_buffer(None, acceleration_structure_size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
 		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
-			.buffer(self.buffers[buffer_descriptor.buffer.0 as usize].buffer)
-			.size(acceleration_structure_size)
-			.offset(buffer_descriptor.offset)
-			.ty(acceleration_structure_type);
+			.buffer(buffer.resource)
+			.size(acceleration_structure_size as u64)
+			.offset(0)
+			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
 
-		let handle = render_system::AccelerationStructureHandle(self.acceleration_structures.len() as u64);
+		let handle = render_system::TopLevelAccelerationStructureHandle(self.acceleration_structures.len() as u64);
 
 		{
 			let handle = unsafe {
@@ -897,6 +868,8 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			self.acceleration_structures.push(AccelerationStructure {
 				acceleration_structure: handle,
+				buffer: buffer.resource,
+				scratch_size,
 			});
 
 			if let Some(name) = name {
@@ -915,6 +888,110 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		}
 
 		handle
+	}
+
+	fn create_bottom_level_acceleration_structure(&mut self, description: &render_system::BottomLevelAccelerationStructure,) -> render_system::BottomLevelAccelerationStructureHandle {
+		let (geometry, primitive_count) = match &description.description {
+			render_system::BottomLevelAccelerationStructureDescriptions::Mesh { vertex_count, vertex_position_encoding, triangle_count, index_format } => {
+				(vk::AccelerationStructureGeometryKHR::default()
+					.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+					.geometry(vk::AccelerationStructureGeometryDataKHR {
+						triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+							.vertex_format(match vertex_position_encoding {
+								render_system::Encodings::IEEE754 => vk::Format::R32G32B32_SFLOAT,
+								_ => panic!("Invalid vertex position format"),
+							})
+							.max_vertex(*vertex_count - 1)
+							.index_type(match index_format {
+								render_system::DataTypes::U8 => vk::IndexType::UINT8_EXT,
+								render_system::DataTypes::U16 => vk::IndexType::UINT16,
+								render_system::DataTypes::U32 => vk::IndexType::UINT32,
+								_ => panic!("Invalid index format"),
+							})
+					}),
+				*triangle_count)
+			}
+			render_system::BottomLevelAccelerationStructureDescriptions::AABB { transform_count } => {
+				(vk::AccelerationStructureGeometryKHR::default()
+					.geometry_type(vk::GeometryTypeKHR::AABBS)
+					.geometry(vk::AccelerationStructureGeometryDataKHR {
+						aabbs: vk::AccelerationStructureGeometryAabbsDataKHR::default()
+					}),
+				*transform_count)
+			}
+		};
+
+		let geometries = [geometry];
+
+		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+			.geometries(&geometries);
+
+		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+
+		unsafe {
+			self.acceleration_structure.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[primitive_count], &mut size_info);
+		}
+
+		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
+		let scratch_size = size_info.build_scratch_size as usize;
+
+		let buffer_descriptor = self.create_vulkan_buffer(None, acceleration_structure_size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+
+		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
+			.buffer(buffer_descriptor.resource)
+			.size(acceleration_structure_size as u64)
+			.offset(0)
+			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+
+		let handle = render_system::BottomLevelAccelerationStructureHandle(self.acceleration_structures.len() as u64);
+
+		{
+			let handle = unsafe {
+				self.acceleration_structure.create_acceleration_structure(&create_info, None).expect("No acceleration structure")
+			};
+
+			self.acceleration_structures.push(AccelerationStructure {
+				acceleration_structure: handle,
+				buffer: buffer_descriptor.resource,
+				scratch_size,
+			});
+
+			// if let Some(name) = None {
+			// 	if let Some(debug_utils) = &self.debug_utils {
+			// 		unsafe {
+			// 			debug_utils.set_debug_utils_object_name(
+			// 				self.device.handle(),
+			// 				&vk::DebugUtilsObjectNameInfoEXT::default()
+			// 					.object_handle(handle)
+			// 					.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+			// 					/* .build() */
+			// 			).expect("No debug utils object name");
+			// 		}
+			// 	}
+			// }
+		}
+
+		handle
+	}
+
+	fn write_instance(&mut self, instances_buffer: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: render_system::BottomLevelAccelerationStructureHandle) {
+		let instance = vk::AccelerationStructureInstanceKHR{
+			transform: vk::TransformMatrixKHR {
+				matrix: [transform[0][0], transform[0][1], transform[0][2], transform[0][3], transform[1][0], transform[1][1], transform[1][2], transform[1][3], transform[2][0], transform[2][1], transform[2][2], transform[2][3]],
+			},
+			instance_custom_index_and_mask: vk::Packed24_8::new(custom_index as u32, mask),
+			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(sbt_record_offset as u32, 0),
+			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+				device_handle: self.acceleration_structures[acceleration_structure.0 as usize].acceleration_structure.as_raw() as u64,
+			},
+		};
+
+		let instance_buffer = &mut self.buffers[instances_buffer.0 as usize];
+
+		let instance_buffer_slice = unsafe { std::slice::from_raw_parts_mut(instance_buffer.pointer as *mut vk::AccelerationStructureInstanceKHR, instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()) };
+
+		instance_buffer_slice[0] = instance;
 	}
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> render_system::SwapchainHandle {
@@ -1051,7 +1128,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
 
-use super::render_system::{CommandBufferRecording, Formats, DispatchExtent};
+use super::render_system::{CommandBufferRecording, Formats, DispatchExtent, BaseBufferHandle, RenderSystem};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -2035,6 +2112,11 @@ impl VulkanRenderSystem {
 		}
 	}
 
+	fn destroy_vulkan_buffer(&self, buffer: &render_system::BaseBufferHandle) {
+		let buffer = self.buffers.get(buffer.0 as usize).expect("No buffer with that handle.").buffer.clone();
+		unsafe { self.device.destroy_buffer(buffer, None) };
+	}
+
 	fn create_vulkan_allocation(&self, size: usize,) -> vk::DeviceMemory {
 		let memory_allocate_info = vk::MemoryAllocateInfo::default()
 			.allocation_size(size as u64)
@@ -2470,7 +2552,11 @@ impl VulkanCommandBufferRecording<'_> {
 		}
 	}
 
-	fn get_acceleration_structure(&self, acceleration_structure_handle: render_system::AccelerationStructureHandle) -> (render_system::AccelerationStructureHandle, &AccelerationStructure) {
+	fn get_top_level_acceleration_structure(&self, acceleration_structure_handle: render_system::TopLevelAccelerationStructureHandle) -> (render_system::TopLevelAccelerationStructureHandle, &AccelerationStructure) {
+		(acceleration_structure_handle, &self.render_system.acceleration_structures[acceleration_structure_handle.0 as usize])
+	}
+
+	fn get_bottom_level_acceleration_structure(&self, acceleration_structure_handle: render_system::BottomLevelAccelerationStructureHandle) -> (render_system::BottomLevelAccelerationStructureHandle, &AccelerationStructure) {
 		(acceleration_structure_handle, &self.render_system.acceleration_structures[acceleration_structure_handle.0 as usize])
 	}
 
@@ -2580,21 +2666,82 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		self.in_render_pass = false;
 	}
 
-	fn build_acceleration_structures(&mut self, acceleration_structure_builds: &[render_system::AccelerationStructureBuild]) {
-		fn visit(this: &mut VulkanCommandBufferRecording, acceleration_structure_builds: &[render_system::AccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>) {
-			if let Some(build) = acceleration_structure_builds.first() {
-				let (acceleration_structure_handle, acceleration_structure) = this.get_acceleration_structure(build.acceleration_structure);
+	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &render_system::TopLevelAccelerationStructureBuild) {
+		let (_, acceleration_structure) = self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
-				let (as_geometries, offsets) = match build.acceleration_structure_build_type {
-					render_system::AccelerationStructureBuildAA::AABB { aabb_buffer, transform_buffer, transform_count } => {
+		let (as_geometries, offsets) = match acceleration_structure_build.description {
+			render_system::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, instance_count } => {
+				(vec![
+					vk::AccelerationStructureGeometryKHR::default()
+						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+						.geometry(vk::AccelerationStructureGeometryDataKHR{ instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+							.array_of_pointers(false)
+							.data(vk::DeviceOrHostAddressConstKHR {
+								device_address: self.render_system.get_buffer_address(instances_buffer),
+							})
+							/* .build() */
+						})
+						.flags(vk::GeometryFlagsKHR::OPAQUE)
+						/* .build() */
+				], vec![
+					vk::AccelerationStructureBuildRangeInfoKHR::default()
+						.primitive_count(instance_count)
+						.primitive_offset(0)
+						.first_vertex(0)
+						.transform_offset(0)
+						/* .build() */
+				])
+			}
+		};
+
+		let scratch_buffer_address = unsafe {
+			let (_, buffer) = self.get_buffer(acceleration_structure_build.scratch_buffer.buffer);
+			self.render_system.device.get_buffer_device_address(
+				&vk::BufferDeviceAddressInfo::default()
+					.buffer(buffer.buffer)
+					/* .build() */
+			) + acceleration_structure_build.scratch_buffer.offset as u64
+		};
+
+		let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+			.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+			.dst_acceleration_structure(acceleration_structure.acceleration_structure)
+			.scratch_data(vk::DeviceOrHostAddressKHR {
+				device_address: scratch_buffer_address,
+			})
+			/* .build() */;
+
+		let infos = vec![build_geometry_info];
+		let build_range_infos = vec![offsets];
+		let geometries = vec![as_geometries];
+
+		let command_buffer = self.get_command_buffer();
+
+		for (info, geos) in infos.iter().zip(geometries) {
+			info.geometries(&geos);
+		}
+
+		let build_range_infos = build_range_infos.iter().map(|build_range_info| build_range_info.as_slice()).collect::<Vec<_>>();
+
+		unsafe {
+			self.render_system.acceleration_structure.cmd_build_acceleration_structures(command_buffer.command_buffer, &infos, &build_range_infos)
+		}
+	}
+
+	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[render_system::BottomLevelAccelerationStructureBuild]) {
+		fn visit(this: &mut VulkanCommandBufferRecording, acceleration_structure_builds: &[render_system::BottomLevelAccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,) {
+			if let Some(build) = acceleration_structure_builds.first() {
+				let (_, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
+
+				let (as_geometries, offsets) = match &build.description {
+					render_system::BottomLevelAccelerationStructureBuildDescriptions::AABB { aabb_buffer, transform_buffer, transform_count } => {
 						(vec![], vec![])
 					}
-					render_system::AccelerationStructureBuildAA::Instance { acceleration_structure, transform_buffer, transform_count } => {
-						(vec![], vec![])
-					}
-					render_system::AccelerationStructureBuildAA::Mesh { vertex_buffer, index_buffer, transform_buffer, vertex_format, vertex_stride, index_format, index_count, transform_count, vertex_count } => {
+					render_system::BottomLevelAccelerationStructureBuildDescriptions::Mesh { vertex_buffer, index_buffer, vertex_position_encoding, index_format, triangle_count, vertex_count } => {
 						let vertex_data_address = unsafe {
-							let (_, buffer) = this.get_buffer(vertex_buffer);
+							let (_, buffer) = this.get_buffer(vertex_buffer.buffer);
 							this.render_system.device.get_buffer_device_address(
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
@@ -2603,16 +2750,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 						};
 
 						let index_data_address = unsafe {
-							let (_, buffer) = this.get_buffer(index_buffer);
-							this.render_system.device.get_buffer_device_address(
-								&vk::BufferDeviceAddressInfo::default()
-									.buffer(buffer.buffer)
-									/* .build() */
-							)
-						};
-
-						let transform_data_address = unsafe {
-							let (_, buffer) = this.get_buffer(transform_buffer);
+							let (_, buffer) = this.get_buffer(index_buffer.buffer);
 							this.render_system.device.get_buffer_device_address(
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
@@ -2628,20 +2766,20 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								device_address: index_data_address,
 							})
 							.max_vertex(vertex_count - 1)
-							.transform_data(vk::DeviceOrHostAddressConstKHR {
-								device_address: transform_data_address,
+							.vertex_format(match vertex_position_encoding {
+								render_system::Encodings::IEEE754 => vk::Format::R32G32B32_SFLOAT,
+								_ => panic!("Invalid vertex position encoding"),
 							})
-							.vertex_format(to_format(vertex_format, None))
 							.index_type(match index_format {
 								render_system::DataTypes::U8 => vk::IndexType::UINT16,
 								render_system::DataTypes::U16 => vk::IndexType::UINT16,
 								render_system::DataTypes::U32 => vk::IndexType::UINT32,
 								_ => panic!("Invalid index format"),
 							})
-							.vertex_stride(vertex_stride as u64);
+							.vertex_stride(vertex_buffer.stride as u64);
 
 						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-							.primitive_count(index_count / 3)
+							.primitive_count(*triangle_count)
 							.primitive_offset(0)
 							.first_vertex(0)
 							.transform_offset(0)
@@ -2655,12 +2793,12 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				};
 
 				let scratch_buffer_address = unsafe {
-					let (_, buffer) = this.get_buffer(build.scratch_buffer);
+					let (_, buffer) = this.get_buffer(build.scratch_buffer.buffer);
 					this.render_system.device.get_buffer_device_address(
 						&vk::BufferDeviceAddressInfo::default()
 							.buffer(buffer.buffer)
 							/* .build() */
-					)
+					) + build.scratch_buffer.offset as u64
 				};
 
 				let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -2677,7 +2815,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				build_range_infos.push(offsets);
 				geometries.push(as_geometries);
 
-				visit(this, &acceleration_structure_builds[1..], infos, geometries, build_range_infos);
+				visit(this, &acceleration_structure_builds[1..], infos, geometries, build_range_infos,);
 			} else {
 				let command_buffer = this.get_command_buffer();
 
@@ -2693,7 +2831,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			}
 		}
 
-		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new());
+		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new(),);
 	}
 
 	/// Binds a shader to the GPU.
@@ -2992,7 +3130,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let raygen_shader_binding_tables = make_strided_range(binding_tables.raygen);
 		let miss_shader_binding_tables = make_strided_range(binding_tables.miss);
 		let hit_shader_binding_tables = make_strided_range(binding_tables.hit);
-		let callable_shader_binding_tables = make_strided_range(binding_tables.callable);
+		let callable_shader_binding_tables = if let Some(binding_table) = binding_tables.callable { make_strided_range(binding_table) } else { vk::StridedDeviceAddressRegionKHR::default() };
 
 		unsafe {
 			self.render_system.ray_tracing_pipeline.cmd_trace_rays(command_buffer.command_buffer, &raygen_shader_binding_tables, &miss_shader_binding_tables, &hit_shader_binding_tables, &callable_shader_binding_tables, x, y, z)
@@ -3402,6 +3540,8 @@ struct Mesh {
 
 struct AccelerationStructure {
 	acceleration_structure: vk::AccelerationStructureKHR,
+	buffer: vk::Buffer,
+	scratch_size: usize,
 }
 
 struct Frame {
@@ -3457,5 +3597,11 @@ mod tests {
 	fn descriptor_sets() {
 		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: false });
 		render_system::tests::descriptor_sets(&mut vulkan_render_system);
+	}
+
+	#[test]
+	fn ray_tracing() {
+		let mut vulkan_render_system = VulkanRenderSystem::new(&Settings { validation: true, ray_tracing: true });
+		render_system::tests::ray_tracing(&mut vulkan_render_system);
 	}
 }

@@ -107,12 +107,14 @@ impl ResourceHandler for MeshResourceHandler {
 
 				let offset = buffer.len();
 
+				let meshlet_stream;
+
 				if MESHLETIZE {
 					let meshlets = meshopt::clusterize::build_meshlets(&optimized_indices, vertex_count, 64, 126);
 
 					let mut index_count: usize = 0;
 
-					for meshlet in meshlets {
+					for meshlet in &meshlets {
 						index_count += meshlet.triangle_count as usize * 3;
 						for i in 0..meshlet.triangle_count as usize {
 							for x in meshlet.indices[i] {
@@ -125,6 +127,17 @@ impl ResourceHandler for MeshResourceHandler {
 					assert_eq!(index_count, optimized_indices.len());
 
 					index_streams.push(IndexStream{ data_type: IntegralTypes::U8, stream_type: IndexStreamTypes::Meshlets, offset, count: optimized_indices.len() as u32 });
+
+					let offset = buffer.len();
+
+					meshlet_stream = Some(MeshletStream{ offset, count: meshlets.len() as u32 });
+
+					for meshlet in &meshlets {
+						buffer.push(meshlet.vertex_count as u8);
+						buffer.push(meshlet.triangle_count as u8);
+					}
+				} else {
+					meshlet_stream = None;
 				}
 
 				let mesh = Mesh {
@@ -133,6 +146,7 @@ impl ResourceHandler for MeshResourceHandler {
 					vertex_components,
 					vertex_count: vertex_count as u32,
 					index_streams,
+					meshlet_stream,
 				};
 	
 				let resource_document = GenericResourceSerialization::new(asset_url.to_string(), mesh);
@@ -188,6 +202,15 @@ impl ResourceHandler for MeshResourceHandler {
 
 					file.seek(std::io::SeekFrom::Start(meshlet_indices_streams.offset as u64)).expect("Failed to seek to index buffer");
 					file.read(&mut buffer.buffer[0..(meshlet_indices_streams.count as usize * meshlet_indices_streams.data_type.size())]).unwrap();
+				}
+				"Meshlets" => {
+					#[cfg(debug_assertions)]
+					if !mesh.meshlet_stream.is_some() { error!("Requested Meshlets stream but mesh does not have meshlets."); continue; }
+
+					let meshlet_stream = mesh.meshlet_stream.as_ref().unwrap();
+
+					file.seek(std::io::SeekFrom::Start(meshlet_stream.offset as u64)).expect("Failed to seek to index buffer");
+					file.read(&mut buffer.buffer[0..(meshlet_stream.count as usize * 2)]).unwrap();
 				}
 				_ => {
 					error!("Unknown buffer tag: {}", buffer.tag);
@@ -250,12 +273,19 @@ pub struct IndexStream {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct MeshletStream {
+	pub offset: usize,
+	pub count: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Mesh {
 	pub compression: CompressionSchemes,
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_components: Vec<VertexComponent>,
 	pub vertex_count: u32,
 	pub index_streams: Vec<IndexStream>,
+	pub meshlet_stream: Option<MeshletStream>,
 }
 
 impl Resource for Mesh {

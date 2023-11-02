@@ -123,6 +123,7 @@ pub enum Handle {
 	Swapchain(SwapchainHandle),
 	Allocation(AllocationHandle),
 	TextureCopy(TextureCopyHandle),
+	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
 // HANDLES
@@ -1918,13 +1919,13 @@ pub(super) mod tests {
 
 		const FRAMES_IN_FLIGHT: usize = 2;
 
-		let mut window_system = window_system::WindowSystem::new();
+		// let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let window_handle = window_system.create_window("Renderer Test", extent, "test");
-		let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
+		// let window_handle = window_system.create_window("Renderer Test", extent, "test");
+		// let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
 
 		let positions: [f32; 3 * 3] = [
 			0.0, 1.0, 0.0,
@@ -1936,11 +1937,6 @@ pub(super) mod tests {
 			1.0, 0.0, 0.0, 1.0,
 			0.0, 1.0, 0.0, 1.0, 
 			0.0, 0.0, 1.0, 1.0,
-		];
-
-		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
 		];
 
 		let vertex_positions_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
@@ -2115,8 +2111,8 @@ void main() {
 		let building_command_buffer_handle = renderer.create_command_buffer();
 		let rendering_command_buffer_handle = renderer.create_command_buffer();
 
-		let render_finished_synchronizer = renderer.create_synchronizer(true);
-		let image_ready = renderer.create_synchronizer(true);
+		let render_finished_synchronizer = renderer.create_synchronizer(false);
+		// let image_ready = renderer.create_synchronizer(true);
 
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
@@ -2134,9 +2130,7 @@ void main() {
 		renderer.write_sbt_entry(miss_sbt_buffer, 0, pipeline, miss_shader);
 		renderer.write_sbt_entry(hit_sbt_buffer, 0, pipeline, closest_hit_shader);
 
-		for i in 0..FRAMES_IN_FLIGHT * 1000 {
-			renderer.wait(render_finished_synchronizer);
-
+		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			// {
 			// 	renderer.wait(build_sync);
 
@@ -2171,7 +2165,7 @@ void main() {
 
 			renderer.start_frame_capture();
 
-			let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
+			// let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
 
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, Some(i as u32));
 
@@ -2192,6 +2186,15 @@ void main() {
 					},
 					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 0, range: 1024 * 512, slot: 0 },
 				}]);
+
+				command_buffer_recording.consume_resources(&[
+					Consumption {
+						handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
+						stages: Stages::RAYGEN,
+						access: AccessPolicies::READ,
+						layout: Layouts::General,
+					}
+				]);
 
 				command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
 					acceleration_structure: top_level_acceleration_structure,
@@ -2222,6 +2225,30 @@ void main() {
 					access: AccessPolicies::READ,
 					layout: Layouts::General,
 				},
+				Consumption {
+					handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::Buffer(raygen_sbt_buffer),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::Buffer(miss_sbt_buffer),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::Buffer(hit_sbt_buffer),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
 			]);
 
 			command_buffer_recording.trace_rays(BindingTables {
@@ -2231,13 +2258,13 @@ void main() {
 				callable: None,
 			}, 1920, 1080, 1);
 
-			command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
+			// command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
 
 			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-			command_buffer_recording.execute(&[/*build_sync,*/image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
+			command_buffer_recording.execute(&[/*build_sync,*/], &[], render_finished_synchronizer);
 
-			renderer.present(image_index, &[swapchain], render_finished_synchronizer);
+			// renderer.present(image_index, &[swapchain], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
@@ -2245,7 +2272,9 @@ void main() {
 
 			assert!(!renderer.has_errors());
 
-			// let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
+			renderer.wait(render_finished_synchronizer);
+
+			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
 
 			// let mut file = std::fs::File::create("test.png").unwrap();
 // 
@@ -2257,7 +2286,7 @@ void main() {
 			// let mut writer = encoder.write_header().unwrap();
 			// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 			
-			// check_triangle(pixels, extent);
+			check_triangle(pixels, extent);
 		}
 	}
 }

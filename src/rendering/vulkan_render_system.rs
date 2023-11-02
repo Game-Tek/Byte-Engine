@@ -2751,7 +2751,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &render_system::TopLevelAccelerationStructureBuild) {
-		let (_, acceleration_structure) = self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
+		let (acceleration_structure_handle, acceleration_structure) = self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
 		let (as_geometries, offsets) = match acceleration_structure_build.description {
 			render_system::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, instance_count } => {
@@ -2797,6 +2797,12 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			})
 			/* .build() */;
 
+		self.states.insert(render_system::Handle::TopLevelAccelerationStructure(acceleration_structure_handle), TransitionState {
+			stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+			access: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+			layout: vk::ImageLayout::UNDEFINED,
+		});
+
 		let infos = vec![build_geometry_info];
 		let build_range_infos = vec![offsets];
 		let geometries = vec![as_geometries];
@@ -2815,7 +2821,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[render_system::BottomLevelAccelerationStructureBuild]) {
 		fn visit(this: &mut VulkanCommandBufferRecording, acceleration_structure_builds: &[render_system::BottomLevelAccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,) {
 			if let Some(build) = acceleration_structure_builds.first() {
-				let (_, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
+				let (acceleration_structure_handle, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
 
 				let (as_geometries, offsets) = match &build.description {
 					render_system::BottomLevelAccelerationStructureBuildDescriptions::AABB { aabb_buffer, transform_buffer, transform_count } => {
@@ -2892,6 +2898,12 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 						device_address: scratch_buffer_address,
 					})
 					/* .build() */;
+				
+				this.states.insert(render_system::Handle::BottomLevelAccelerationStructure(acceleration_structure_handle), TransitionState {
+					stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+					access: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+					layout: vk::ImageLayout::UNDEFINED,
+				});
 
 				infos.push(build_geometry_info);
 				build_range_infos.push(offsets);
@@ -3086,21 +3098,21 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 					buffer_memory_barriers.push(buffer_memory_barrier);
 
-					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
-						vk::MemoryBarrier2::default()
-						.src_stage_mask(source.stage)
-						.src_access_mask(source.access)
-					} else {
-						vk::MemoryBarrier2::default()
-						.src_stage_mask(vk::PipelineStageFlags2::empty())
-						.src_access_mask(vk::AccessFlags2KHR::empty())
-					}
-					.dst_stage_mask(new_stage_mask)
-					.dst_access_mask(new_access_mask);
+					// let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+					// 	vk::MemoryBarrier2::default()
+					// 	.src_stage_mask(source.stage)
+					// 	.src_access_mask(source.access)
+					// } else {
+					// 	vk::MemoryBarrier2::default()
+					// 	.src_stage_mask(vk::PipelineStageFlags2::empty())
+					// 	.src_access_mask(vk::AccessFlags2KHR::empty())
+					// }
+					// .dst_stage_mask(new_stage_mask)
+					// .dst_access_mask(new_access_mask);
 
-					memory_barriers.push(memory_barrier);
+					// memory_barriers.push(memory_barrier);
 				},
-				render_system::Handle::TopLevelAccelerationStructure(handle) => {
+				render_system::Handle::TopLevelAccelerationStructure(_) | render_system::Handle::BottomLevelAccelerationStructure(_)=> {
 					// let (handle, acceleration_structure) = self.get_top_level_acceleration_structure(handle);
 
 					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {

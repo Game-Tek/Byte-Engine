@@ -112,6 +112,7 @@ pub struct TextureCopyHandle(pub(crate) u64);
 pub enum Handle {
 	Buffer(BaseBufferHandle),
 	// AccelerationStructure(AccelerationStructureHandle),
+	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
 	Pipeline(PipelineHandle),
@@ -371,6 +372,7 @@ pub trait RenderSystem: orchestrator::System {
 	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure) -> BottomLevelAccelerationStructureHandle;
 
 	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle);
+	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
 
@@ -592,8 +594,6 @@ bitflags::bitflags! {
 		const COMPUTE = 0b1000;
 		/// The transfer stage.
 		const TRANSFER = 0b10000;
-		/// The acceleration structure stage.
-		const ACCELERATION_STRUCTURE = 0b100000;
 		/// The presentation stage.
 		const PRESENTATION = 0b1000000;
 		/// The host stage.
@@ -602,6 +602,20 @@ bitflags::bitflags! {
 		const SHADER_WRITE = 0b1000000000;
 		/// The indirect commands evaluation stage.
 		const INDIRECT = 0b10000000000;
+		/// The task stage.
+		const TASK = 0b100000000000;
+		/// The ray generation stage.
+		const RAYGEN = 0b100000000000;
+		/// The closest hit stage.
+		const CLOSEST_HIT = 0b1000000000000;
+		/// The any hit stage.
+		const ANY_HIT = 0b10000000000000;
+		/// The intersection stage.
+		const INTERSECTION = 0b100000000000000;
+		/// The miss stage.
+		const MISS = 0b1000000000000000;
+		/// The callable stage.
+		const CALLABLE = 0b10000000000000000;
 	}
 }
 
@@ -656,6 +670,8 @@ bitflags::bitflags! {
 		const ShaderBindingTable = 1 << 11;
 		/// Resource will be used as a acceleration structure build scratch buffer.
 		const AccelerationStructureBuildScratch = 1 << 12;
+		
+		const AccelerationStructureBuild = 1 << 13;
 	}
 }
 
@@ -988,6 +1004,10 @@ impl RenderSystem for RenderSystemImplementation {
 
 	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle) {
 		self.pointer.write_instance(instances_buffer_handle, transform, custom_index, mask, sbt_record_offset, acceleration_structure)
+	}
+
+	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle) {
+		self.pointer.write_sbt_entry(sbt_buffer_handle, sbt_record_offset, pipeline_handle, shader_handle)
 	}
 
 	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {
@@ -1901,8 +1921,13 @@ pub(super) mod tests {
 
 		const FRAMES_IN_FLIGHT: usize = 2;
 
+		let mut window_system = window_system::WindowSystem::new();
+
 		// Use and odd width to make sure there is a middle/center pixel
-		let _extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
+		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
+
+		let window_handle = window_system.create_window("Renderer Test", extent, "test");
+		let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
 
 		let positions: [f32; 3 * 3] = [
 			0.0, 1.0, 0.0,
@@ -1921,17 +1946,17 @@ pub(super) mod tests {
 			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
 		];
 
-		let vertex_positions_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Vertex, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let vertex_colors_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Vertex, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let index_buffer = renderer.create_buffer(None, positions.len() * 2, Uses::Index, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let vertex_positions_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let vertex_colors_buffer = renderer.create_buffer(None, colors.len() * 4, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let index_buffer = renderer.create_buffer(None, 3 * 2, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, positions.len() * 4) });
 		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) });
 		renderer.get_mut_buffer_slice(index_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2) });
 
 		let raygen_shader_code = "
-#version 450
-#pragma shader_stage(ray_gen)
+#version 460 core
+#pragma shader_stage(raygen)
 
 #extension GL_EXT_scalar_block_layout: enable
 #extension GL_EXT_buffer_reference: enable
@@ -1948,21 +1973,25 @@ void main() {
 	const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
 	const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
 	vec2 d = inUV * 2.0 - 1.0;
+	d.y *= -1.0;
 
 	uint rayFlags = gl_RayFlagsOpaqueEXT;
 	uint cullMask = 0xff;
 	float tmin = 0.001;
-	float tmax = 10000.0;
+	float tmax = 10.0;
 
-	traceRayEXT(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
+	vec3 origin = vec3(d, -1.0);
+	vec3 direction = vec3(0.0, 0.0, 1.0);
 
-	imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(hitValue, 0.0));
+	traceRayEXT(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin, tmin, direction, tmax, 0);
+
+	imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(hitValue, 1.0));
 }
 		";
 
 		let closest_hit_shader_code = "
-#version 450
-#pragma shader_stage(closest_hit)
+#version 460 core
+#pragma shader_stage(closest)
 
 #extension GL_EXT_scalar_block_layout: enable
 #extension GL_EXT_buffer_reference: enable
@@ -1973,17 +2002,26 @@ void main() {
 layout(location = 0) rayPayloadInEXT vec3 hitValue;
 hitAttributeEXT vec2 attribs;
 
-layout(binding = 3, set = 0) buffer Vertices { vec4 v[]; } vertices;
-layout(binding = 4, set = 0) buffer Indices { uint16_t i[]; } indices;
+layout(binding = 2, set = 0) buffer VertexPositions { vec3 positions[3]; };
+layout(binding = 3, set = 0) buffer VertexColors { vec4 colors[3]; };
+layout(binding = 4, set = 0) buffer Indices { uint16_t indices[3]; };
 
 void main() {
 	const vec3 barycentricCoords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
-	ivec3 index = ivec3(indices.i[3 * gl_PrimitiveID], indices.i[3 * gl_PrimitiveID + 1], indices.i[3 * gl_PrimitiveID + 2]);
+	ivec3 index = ivec3(indices[3 * gl_PrimitiveID], indices[3 * gl_PrimitiveID + 1], indices[3 * gl_PrimitiveID + 2]);
+
+	vec3[3] vertex_positions = vec3[3](positions[index.x], positions[index.y], positions[index.z]);
+	vec4[3] vertex_colors = vec4[3](colors[index.x], colors[index.y], colors[index.z]);
+
+	vec3 position = vertex_positions[0] * barycentricCoords.x + vertex_positions[1] * barycentricCoords.y + vertex_positions[2] * barycentricCoords.z;
+	vec4 color = vertex_colors[0] * barycentricCoords.x + vertex_colors[1] * barycentricCoords.y + vertex_colors[2] * barycentricCoords.z;
+
+	hitValue = color.xyz;
 }
 		";
 
 		let miss_shader_code = "
-#version 450
+#version 460 core
 #pragma shader_stage(miss)
 
 #extension GL_EXT_scalar_block_layout: enable
@@ -1995,7 +2033,7 @@ void main() {
 layout(location = 0) rayPayloadInEXT vec3 hitValue;
 
 void main() {
-    hitValue = vec3(0.0, 0.0, 0.2);
+    hitValue = vec3(0.0, 0.0, 0.0);
 }
 		";
 
@@ -2019,7 +2057,39 @@ void main() {
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::AccelerationStructure,
 				binding: 0,
-				stages: Stages::ACCELERATION_STRUCTURE,
+				stages: Stages::RAYGEN,
+				immutable_samplers: None,
+			},
+			DescriptorSetLayoutBinding {
+				name: "render target",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageImage,
+				binding: 1,
+				stages: Stages::RAYGEN,
+				immutable_samplers: None,
+			},
+			DescriptorSetLayoutBinding {
+				name: "vertex positions",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 2,
+				stages: Stages::CLOSEST_HIT,
+				immutable_samplers: None,
+			},
+			DescriptorSetLayoutBinding {
+				name: "vertex colors",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 3,
+				stages: Stages::CLOSEST_HIT,
+				immutable_samplers: None,
+			},
+			DescriptorSetLayoutBinding {
+				name: "indices",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 4,
+				stages: Stages::CLOSEST_HIT,
 				immutable_samplers: None,
 			},
 		];
@@ -2028,14 +2098,15 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle, &bindings);
 
+		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+
 		renderer.write(&[
 			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure } },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Image { handle: render_target, layout: Layouts::General } },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_positions_buffer, size: Ranges::Size(12 * 3) } },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 3, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_colors_buffer, size: Ranges::Size(16 * 3) } },
+			DescriptorWrite { descriptor_set: descriptor_set, binding: 4, array_element: 0, descriptor: Descriptor::Buffer { handle: index_buffer, size: Ranges::Size(2 * 3) } },
 		]);
-
-		// Use and odd width to make sure there is a middle/center pixel
-		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
-
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
@@ -2044,15 +2115,17 @@ void main() {
 			&[(&raygen_shader, ShaderTypes::Raygen, vec![]), (&closest_hit_shader, ShaderTypes::ClosestHit, vec![]), (&miss_shader, ShaderTypes::Miss, vec![])],
 		);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let building_command_buffer_handle = renderer.create_command_buffer();
+		let rendering_command_buffer_handle = renderer.create_command_buffer();
 
-		let render_finished_synchronizer = renderer.create_synchronizer(false);
+		let render_finished_synchronizer = renderer.create_synchronizer(true);
+		let image_ready = renderer.create_synchronizer(true);
 
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
 		renderer.write_instance(instances_buffer, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
 
-		let build_sync = renderer.create_synchronizer(false);
+		let build_sync = renderer.create_synchronizer(true);
 
 		let scratch_buffer = renderer.create_buffer(None, 1024 * 1024, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
@@ -2060,9 +2133,55 @@ void main() {
 		let miss_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 		let hit_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
-		for i in 0..FRAMES_IN_FLIGHT * 10 {
+		renderer.write_sbt_entry(raygen_sbt_buffer, 0, pipeline, raygen_shader);
+		renderer.write_sbt_entry(miss_sbt_buffer, 0, pipeline, miss_shader);
+		renderer.write_sbt_entry(hit_sbt_buffer, 0, pipeline, closest_hit_shader);
+
+		for i in 0..FRAMES_IN_FLIGHT * 1000 {
+			renderer.wait(render_finished_synchronizer);
+
+			// {
+			// 	renderer.wait(build_sync);
+
+			// 	let mut command_buffer_recording = renderer.create_command_buffer_recording(building_command_buffer_handle, Some(i as u32));
+
+			// 	command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
+			// 		acceleration_structure: bottom_level_acceleration_structure,
+			// 		description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+			// 			vertex_buffer: BufferStridedRange { buffer: vertex_positions_buffer, offset: 0, stride: 12, size: 12 * 3 },
+			// 			vertex_count: 3,
+			// 			index_buffer: BufferStridedRange { buffer: index_buffer, offset: 0, stride: 2, size: 2 * 3 },
+			// 			vertex_position_encoding: Encodings::IEEE754,
+			// 			index_format: DataTypes::U16,
+			// 			triangle_count: 1,
+			// 		},
+			// 		scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 0, range: 1024 * 512, slot: 0 },
+			// 	}]);
+
+			// 	command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
+			// 		acceleration_structure: top_level_acceleration_structure,
+			// 		description: TopLevelAccelerationStructureBuildDescriptions::Instance {
+			// 			instances_buffer,
+			// 			instance_count: 1,
+			// 		},
+			// 		scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 1024 * 512, range: 1024 * 512, slot: 0 },
+			// 	});
+
+			// 	command_buffer_recording.execute(&[], &[build_sync], build_sync);
+			// }
+
+			// renderer.wait(render_finished_synchronizer);
+
+			renderer.start_frame_capture();
+
+			let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
+
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, Some(i as u32));
+
 			{
-				let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
+				// renderer.wait(build_sync);
+
+				// let mut command_buffer_recording = renderer.create_command_buffer_recording(building_command_buffer_handle, Some(i as u32));
 
 				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
 					acceleration_structure: bottom_level_acceleration_structure,
@@ -2086,16 +2205,27 @@ void main() {
 					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 1024 * 512, range: 1024 * 512, slot: 0 },
 				});
 
-				command_buffer_recording.execute(&[], &[build_sync], render_finished_synchronizer);
+				// command_buffer_recording.execute(&[], &[build_sync], build_sync);
 			}
 
-			// renderer.wait(render_finished_synchronizer);
-
-			renderer.start_frame_capture();
-
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
-
 			command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
+
+			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[(descriptor_set, 0)]);
+
+			command_buffer_recording.consume_resources(&[
+				Consumption {
+					handle: Handle::Image(render_target),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::WRITE,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+			]);
 
 			command_buffer_recording.trace_rays(BindingTables {
 				raygen: BufferStridedRange { buffer: raygen_sbt_buffer, offset: 0, stride: 64, size: 64 },
@@ -2104,19 +2234,33 @@ void main() {
 				callable: None,
 			}, 1920, 1080, 1);
 
+			command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
+
 			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-			command_buffer_recording.execute(&[build_sync], &[], render_finished_synchronizer);
+			command_buffer_recording.execute(&[/*build_sync,*/image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
+
+			renderer.present(image_index, &[swapchain], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
-			renderer.wait(render_finished_synchronizer);
+			// renderer.wait(render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
+			// let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
 
-			check_triangle(pixels, extent);
+			// let mut file = std::fs::File::create("test.png").unwrap();
+// 
+			// let mut encoder = png::Encoder::new(&mut file, extent.width, extent.height);
+// 
+			// encoder.set_color(png::ColorType::Rgba);
+			// encoder.set_depth(png::BitDepth::Eight);
+// 
+			// let mut writer = encoder.write_header().unwrap();
+			// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
+			
+			// check_triangle(pixels, extent);
 		}
 	}
 }

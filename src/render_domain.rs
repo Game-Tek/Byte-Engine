@@ -962,7 +962,7 @@ void main() {{
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::AccelerationStructure,
 					descriptor_count: 1,
-					stages: render_system::Stages::ACCELERATION_STRUCTURE,
+					stages: render_system::Stages::RAYGEN,
 					immutable_samplers: None,
 				},
 			]);
@@ -975,7 +975,7 @@ void main() {{
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::AccelerationStructure,
 					descriptor_count: 1,
-					stages: render_system::Stages::ACCELERATION_STRUCTURE,
+					stages: render_system::Stages::RAYGEN,
 					immutable_samplers: None,
 				},
 			]);
@@ -990,8 +990,8 @@ void main() {{
 			]);
 
 			const _SHADOW_RAY_GEN_SHADER: &'static str = "
-#version 450
-#pragma shader_stage(ray_gen)
+#version 460 core
+#pragma shader_stage(raygen)
 
 #extension GL_EXT_scalar_block_layout: enable
 #extension GL_EXT_buffer_reference: enable

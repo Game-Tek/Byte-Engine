@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::{rendering::render_system, jspd::{self}};
 
-use super::{SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
+use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
 
 pub struct MaterialResourcerHandler {
 
@@ -100,7 +100,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 				_ => { panic!("Invalid domain") }
 			};
 
-			let material_type = match &asset_json["type"] {
+			let _material_type = match &asset_json["type"] {
 				json::JsonValue::Null => { "Raw".to_string() }
 				json::JsonValue::Short(s) => { s.to_string() }
 				json::JsonValue::String(s) => { s.to_string() }
@@ -210,7 +210,7 @@ impl MaterialResourcerHandler {
 		};
 
 		let resource = GenericResourceSerialization::new(path.to_string(), Shader {
-			stage: stage,
+			stage,
 		});
 
 		Some(Ok(ProcessedResources::Generated((resource, Vec::from(result_shader_bytes)))))

@@ -1,11 +1,9 @@
 //! The orchestrator synchronizes and manages most of the application data.
 //! It contains systems and task to accomplish that feat.
 
-use std::{collections::HashMap, ops::{DerefMut, Deref}, any::Any};
+use std::{collections::HashMap, any::Any};
 
 use log::{trace, warn};
-
-use crate::rendering::render_system;
 
 /// System handle is a handle to a system in an [`Orchestrator`]
 pub struct SystemHandle(u32);
@@ -285,16 +283,16 @@ impl Orchestrator {
 
 		let mut ties = self.ties.write().unwrap();
 
-		if ties.contains_key(&(property_function_pointer as usize)) {
+		if let std::collections::hash_map::Entry::Vacant(e) = ties.entry(property_function_pointer as usize) {
+			let mut ties_new = Vec::new();
+			ties_new.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
+			e.insert(ties_new);
+		} else {
 			let ties = ties.get_mut(&(property_function_pointer as usize)).unwrap();
 
 			if !ties.iter().any(|tie| tie.destination_system_handle == receiver_component_handle.internal_id) {
 				ties.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
 			}
-		} else {
-			let mut ties_new = Vec::new();
-			ties_new.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
-			ties.insert(property_function_pointer as usize, ties_new);
 		}
 	}
 
@@ -843,7 +841,7 @@ impl <R: Entity + Send + 'static> IntoHandler<(), R> for EntityReturn<R> {
 		}
 
 		{
-			let mut obj = obj.write().unwrap();
+			// let mut obj = obj.write().unwrap();
 
 			for (type_id, f) in self.listens_to {
 				let mut listeners = orchestrator.listeners_by_class.lock().unwrap();

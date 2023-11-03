@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::resource_manager::GenericResourceSerialization;
 
-use super::{SerializedResourceDocument, Resource, ProcessedResources, resource_manager::ResourceManager, resource_handler::ResourceHandler};
+use super::{Resource, ProcessedResources, resource_manager::ResourceManager, resource_handler::ResourceHandler};
 
 pub(crate) struct ImageResourceHandler {
 

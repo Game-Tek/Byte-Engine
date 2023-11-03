@@ -207,10 +207,10 @@ impl ResourceManager {
 							for e in &g.0.required_resources {
 								match e {
 									ProcessedResources::Generated(g) => {
-										loaded_resource_documents.push(self.write_resource_to_cache(&g,)?);
+										loaded_resource_documents.push(self.write_resource_to_cache(g,)?);
 									},
 									ProcessedResources::Ref(r) => {
-										loaded_resource_documents.append(&mut self.gather(db, &r)?);
+										loaded_resource_documents.append(&mut self.gather(db, r)?);
 									}
 								}
 							}
@@ -224,7 +224,7 @@ impl ResourceManager {
 				}
 			}
 
-			if loaded_resource_documents.len() == 0 {
+			if loaded_resource_documents.is_empty() {
 				warn!("No resource handler could handle resource: {}", url);
 			}
 
@@ -247,7 +247,7 @@ impl ResourceManager {
 		let request = Request {
 			resources: resource_descriptions.iter().map(|r|
 				ResourceRequest { 
-					_id: r.get_object_id("_id").unwrap().clone(),
+					_id: r.get_object_id("_id").unwrap(),
 					id: r.get_i64("id").unwrap() as u64,
 					url: r.get_str("url").unwrap().to_string(),
 					size: r.get_i64("size").unwrap() as u64,
@@ -320,7 +320,7 @@ impl ResourceManager {
 
 		resource_document.insert("_id", resource_id);
 
-		return Some(resource_document);
+		Some(resource_document)
 	}
 
 	/// Tries to load a resource from cache.\
@@ -441,9 +441,7 @@ impl ResourceManager {
 				}
 			);
 
-			let file_path = files.last()?.unwrap().path();
-
-			file_path
+			files.last()?.unwrap().path()
 		} else { return None; };
 
 		Some(path)
@@ -469,7 +467,7 @@ impl ResourceManager {
 			},
 			_ => {
 				// Could not resolve how to get raw resource, return empty bytes
-				return "unknown".to_string();
+				"unknown".to_string()
 			}
 		}
 	}

@@ -52,7 +52,7 @@ impl Application for BaseApplication {
 		info!("Deinitialized base Byte-Engine application.");
 	}
 
-	fn tick(&mut self) { return; }
+	fn tick(&mut self) {}
 
 	fn get_name(&self) -> String { self.name.clone() }
 }
@@ -171,7 +171,7 @@ impl Application for GraphicsApplication {
 
 		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
-		GraphicsApplication { application, file_tracker_handle: file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
+		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {

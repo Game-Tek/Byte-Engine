@@ -102,7 +102,7 @@ fn execute_lexers<'a>(lexers: &[Lexer<'a>], iterator: std::slice::Iter<'a, Strin
 		}
 	}
 
-	return Err(LexError::Undefined); // No lexer could handle this syntax.
+	Err(LexError::Undefined) // No lexer could handle this syntax.
 }
 
 /// Tries to execute a list of lexers on a stream of tokens. But it's ok if none of them can handle the syntax.
@@ -113,7 +113,7 @@ fn try_execute_lexers<'a>(lexers: &[Lexer<'a>], iterator: std::slice::Iter<'a, S
 		}
 	}
 
-	return None;
+	None
 }
 
 fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramState, program: &mut ProgramState) -> Result<Rc<Node>, LexError> {
@@ -125,9 +125,9 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 				ch.push(lex_parsed_node(child, parser_program, program)?);
 			}
 
-			return Ok(Rc::new(Node {
+			Ok(Rc::new(Node {
 				node: Nodes::Scope{ name: name.clone(), children: ch, }
-			}));
+			}))
 		}
 		parser::Nodes::Struct { name, fields } => {
 			if let Some(n) = program.types.get(name) { // If the type already exists, return it.
@@ -154,7 +154,7 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 			program.types.insert(name.clone(), node.clone());
 			program.types.insert(format!("{}*", name.clone()), node.clone());
 
-			return Ok(node);
+			Ok(node)
 		}
 		parser::Nodes::Member { name, r#type } => {
 			let t = if r#type.contains('<') {
@@ -166,11 +166,11 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 
 				let inner_type_name = s.next().ok_or(LexError::Undefined)?;
 
-				let inner_type = if inner_type_name.ends_with('*') {
+				let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
 					let x = Rc::new(
 						Node {
 							node: Nodes::Struct {
-								name: format!("{}*", &inner_type_name[..inner_type_name.len() - 1]),
+								name: format!("{}*", stripped),
 								template: Some(outer_type.clone()),
 								fields: Vec::new(),
 								types: Vec::new(),
@@ -178,7 +178,7 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 						}
 					);
 
-					program.types.insert(format!("{}*", &inner_type_name[..inner_type_name.len() - 1]), x.clone());
+					program.types.insert(format!("{}*", stripped), x.clone());
 
 					x
 				} else {					
@@ -214,12 +214,12 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 				lex_parsed_node(t, parser_program, program)?
 			};
 
-			return Ok(Rc::new(Node {
+			Ok(Rc::new(Node {
 				node: Nodes::Member {
 					name: name.clone(),
 					r#type: t,
 				},
-			}));
+			}))
 		}
 		parser::Nodes::Function { name, params, return_type, statements, raw } => {
 			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::NoSuchType{ type_name: return_type.clone() })?;
@@ -238,38 +238,38 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 		parser::Nodes::Expression(expression) => {
 			match expression {
 				parser::Expressions::Accessor{ left, right } => {
-					return Ok(Rc::new(Node {
+					Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::Accessor {
-							left: lex_parsed_node(&left, parser_program, program)?,
-							right: lex_parsed_node(&right, parser_program, program)?,
+							left: lex_parsed_node(left, parser_program, program)?,
+							right: lex_parsed_node(right, parser_program, program)?,
 						}),
-					}));
+					}))
 				}
 				parser::Expressions::Member{ name } => {
-					return Ok(Rc::new(Node {
+					Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::Member {
 							name: name.clone(),
 
 						}),
-					}));
+					}))
 				}
 				parser::Expressions::Literal{ value } => {
-					return Ok(Rc::new(Node {
+					Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::Literal {
 							value: value.clone(),
 						}),
-					}));
+					}))
 				}
 				parser::Expressions::FunctionCall{ name, parameters } => {
-					return Ok(Rc::new(Node {
+					Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::FunctionCall {
 							name: name.clone(),
 							parameters: parameters.iter().map(|e| lex_parsed_node(e, parser_program, program).unwrap()).collect(),
 						}),
-					}));
+					}))
 				}
 				parser::Expressions::Operator{ name, left, right } => {
-					return Ok(Rc::new(Node {
+					Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::Operator {
 							operator: match name.as_str() {
 								"+" => Operators::Plus,
@@ -281,19 +281,19 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 								"==" => Operators::Equality,
 								_ => { panic!("Invalid operator") }
 							},
-							left: lex_parsed_node(&left, parser_program, program)?,
-							right: lex_parsed_node(&right, parser_program, program)?,
+							left: lex_parsed_node(left, parser_program, program)?,
+							right: lex_parsed_node(right, parser_program, program)?,
 						}),
-					}));
+					}))
 				}
 				parser::Expressions::VariableDeclaration{ name, r#type } => {
-					return Ok(Rc::new(Node {
+					Ok(Rc::new(Node {
 						node: Nodes::Expression(Expressions::VariableDeclaration {
 							name: name.clone(),
 							// r#type: lex_parsed_node(&r#type, parser_program, program)?,
 							r#type: r#type.clone(),
 						}),
-					}));
+					}))
 				}
 			}
 		}

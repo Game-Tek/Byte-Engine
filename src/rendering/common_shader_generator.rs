@@ -45,7 +45,7 @@ impl ShaderGenerator for CommonShaderGenerator {
 }
 
 impl CommonShaderGenerator {
-	pub const SCOPE: &str = "Common";
+	pub const SCOPE: &'static str = "Common";
 
 	pub fn new() -> Self {
 		Self {

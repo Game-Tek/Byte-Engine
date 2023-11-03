@@ -126,7 +126,7 @@ impl Executor {
 			let mut future_slot = task.future.lock().unwrap();
 			if let Some(mut future) = future_slot.take() {
 				let waker = futures::task::waker_ref(&task);
-				let context = &mut futures::task::Context::from_waker(&*waker);
+				let context = &mut futures::task::Context::from_waker(&waker);
 				if let std::task::Poll::Pending = future.as_mut().poll(context) {
 					*future_slot = Some(future);
 				}

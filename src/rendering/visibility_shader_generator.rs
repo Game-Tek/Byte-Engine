@@ -322,9 +322,9 @@ layout(push_constant, scalar) uniform PushConstant {
 
 		string.push_str(&format!("layout(local_size_x=32) in;\n"));
 
-string.push_str(&format!("
-void main() {{
-	if (gl_GlobalInvocationID.x >= material_count[pc.material_id]) {{ return; }}
+string.push_str("
+void main() {
+	if (gl_GlobalInvocationID.x >= material_count[pc.material_id]) { return; }
 
 	uint offset = material_offset[pc.material_id];
 	u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];
@@ -376,7 +376,7 @@ void main() {{
 	vec3 BE_ALBEDO = vec3(1, 0, 0);
 	vec3 BE_METALLIC = vec3(0);
 	float BE_ROUGHNESS = float(0.5);
-"));
+");
 
 		fn visit_node(string: &mut String, shader_node: &lexer::Node) {
 			match &shader_node.node {
@@ -404,7 +404,7 @@ void main() {{
 
 				}
 				lexer::Nodes::GLSL { code } => {
-					string.push_str(&code);
+					string.push_str(code);
 				}
 				lexer::Nodes::Expression(expression) => {
 					match expression {

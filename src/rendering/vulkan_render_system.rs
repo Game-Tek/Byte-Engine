@@ -93,9 +93,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		unsafe {
 			let vertex_buffer_pointer = pointer.expect("No pointer");
-			std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_buffer_pointer, vertex_buffer_size as usize);
-			let index_buffer_pointer = vertex_buffer_pointer.offset(vertex_buffer_size.next_multiple_of(16) as isize);
-			std::ptr::copy_nonoverlapping(indices.as_ptr(), index_buffer_pointer, index_buffer_size as usize);
+			std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_buffer_pointer, vertex_buffer_size);
+			let index_buffer_pointer = vertex_buffer_pointer.add(vertex_buffer_size.next_multiple_of(16));
+			std::ptr::copy_nonoverlapping(indices.as_ptr(), index_buffer_pointer, index_buffer_size);
 		}
 
 		let mesh_handle = render_system::MeshHandle(self.meshes.len() as u64);
@@ -185,7 +185,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 				m(rs, &bindings[1..], layout_bindings, map)
 			} else {
-				let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
+				let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(layout_bindings);
 		
 				let descriptor_set_layout = unsafe { rs.device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None).expect("No descriptor set layout") };
 
@@ -312,7 +312,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 						let buffer = &self.buffers[handle.0 as usize];
 
-						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0 as u64).range(match size { render_system::Ranges::Size(size) => { size as u64 } render_system::Ranges::Whole => { vk::WHOLE_SIZE } })];
+						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0u64).range(match size { render_system::Ranges::Size(size) => { size as u64 } render_system::Ranges::Whole => { vk::WHOLE_SIZE } })];
 
 						let write_info = vk::WriteDescriptorSet::default()
 							.dst_set(descriptor_set.descriptor_set)
@@ -393,7 +393,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				},
 				render_system::Descriptor::Sampler(handle) => {
 					let mut descriptor_set_handle_option = Some(descriptor_set_write.descriptor_set);
-					let mut sampler_handle_option = Some(handle);
+					let sampler_handle_option = Some(handle);
 
 					while let (Some(descriptor_set_handle), Some(sampler_handle)) = (descriptor_set_handle_option, sampler_handle_option) {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
@@ -464,7 +464,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 
 	fn create_raster_pipeline(&mut self, pipeline_blocks: &[render_system::PipelineConfigurationBlocks]) -> render_system::PipelineHandle {
-		self.create_vulkan_pipeline(&pipeline_blocks)
+		self.create_vulkan_pipeline(pipeline_blocks)
 	}
 
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shader_parameter: render_system::ShaderParameter) -> render_system::PipelineHandle {
@@ -478,7 +478,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					for i in 0..4 {
 						spcialization_map_entries.push(vk::SpecializationMapEntry::default()
 						.constant_id(specialization_map_entry.get_constant_id() + i)
-						.offset(specialization_entries_buffer.len() as u32 + i as u32 * 4)
+						.offset(specialization_entries_buffer.len() as u32 + i * 4)
 						.size(specialization_map_entry.get_size() / 4));
 					}
 
@@ -740,7 +740,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	fn get_buffer_slice(&mut self, buffer_handle: render_system::BaseBufferHandle) -> &[u8] {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		unsafe {
-			std::slice::from_raw_parts(buffer.pointer, buffer.size as usize)
+			std::slice::from_raw_parts(buffer.pointer, buffer.size)
 		}
 	}
 
@@ -1103,7 +1103,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		let buffer_handle = texture.staging_buffer.expect("No staging buffer");
 		let buffer = &self.buffers[buffer_handle.0 as usize];
 		if buffer.pointer.is_null() { panic!("Texture data was requested but texture has no memory associated."); }
-		let slice = unsafe { std::slice::from_raw_parts::<'static, u8>(buffer.pointer as *mut u8, (texture.extent.width * texture.extent.height * texture.extent.depth) as usize) };
+		let slice = unsafe { std::slice::from_raw_parts::<'static, u8>(buffer.pointer, (texture.extent.width * texture.extent.height * texture.extent.depth) as usize) };
 		slice
 	}
 
@@ -1192,7 +1192,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
 
-use super::render_system::{CommandBufferRecording, Formats, DispatchExtent, BaseBufferHandle, RenderSystem, ShaderHandle};
+use super::render_system::{CommandBufferRecording, BaseBufferHandle, RenderSystem, ShaderHandle};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -1728,13 +1728,13 @@ impl VulkanRenderSystem {
 
 		{
 			let best_physical_device = physical_devices.iter().max_by_key(|physical_device| {
-				let properties = unsafe { instance.get_physical_device_properties((*physical_device).clone()) };
-				let features = unsafe { instance.get_physical_device_features((*physical_device).clone()) };
+				let properties = unsafe { instance.get_physical_device_properties(*(*physical_device)) };
+				let features = unsafe { instance.get_physical_device_features(*(*physical_device)) };
 
 				// If the device doesn't support sample rate shading, don't even consider it.
 				if features.sample_rate_shading == vk::FALSE { return 0; }
 
-				let mut device_score = 0 as u64;
+				let mut device_score = 0u64;
 
 				device_score += if features.shader_storage_image_array_dynamic_indexing == vk::TRUE { 1 } else { 0 };
 				device_score += if features.shader_sampled_image_array_dynamic_indexing == vk::TRUE { 1 } else { 0 };
@@ -1759,7 +1759,7 @@ impl VulkanRenderSystem {
 		let queue_family_index = queue_family_properties
 			.iter()
 			.enumerate()
-			.find_map(|(index, ref info)| {
+			.find_map(|(index, info)| {
 				let supports_graphics = info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
 				let supports_compute = info.queue_flags.contains(vk::QueueFlags::COMPUTE);
 				let supports_transfer = info.queue_flags.contains(vk::QueueFlags::TRANSFER);
@@ -1972,7 +1972,7 @@ impl VulkanRenderSystem {
 
 						let pipeline_create_info = pipeline_create_info.vertex_input_state(&vertex_input_state);
 
-						return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
+						build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 					}
 					render_system::PipelineConfigurationBlocks::InputAssembly {  } => {
 						let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -1981,7 +1981,7 @@ impl VulkanRenderSystem {
 
 						let pipeline_create_info = pipeline_create_info.input_assembly_state(&input_assembly_state);
 
-						return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
+						build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 					}
 					render_system::PipelineConfigurationBlocks::RenderTargets { targets } => {
 						let pipeline_color_blend_attachments = targets.iter().filter(|a| a.format != render_system::Formats::Depth32).map(|_| {
@@ -2026,11 +2026,11 @@ impl VulkanRenderSystem {
 							let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
 							let pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
 
-							return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
+							build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 						} else {
 							let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
 
-							return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
+							build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 						}
 					}
 					render_system::PipelineConfigurationBlocks::Shaders { shaders } => {
@@ -2071,14 +2071,14 @@ impl VulkanRenderSystem {
 
 						let pipeline_create_info = pipeline_create_info.stages(&stages);
 
-						return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
+						build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 					}
 					render_system::PipelineConfigurationBlocks::Layout { layout } => {
 						let pipeline_layout = vk::PipelineLayout::from_raw(layout.0);
 
 						let pipeline_create_info = pipeline_create_info.layout(pipeline_layout);
 
-						return build_block(vulkan_render_system, pipeline_create_info, block_iterator);
+						build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 					}
 				}
 			} else {
@@ -2086,7 +2086,7 @@ impl VulkanRenderSystem {
 
 				let pipelines = unsafe { vulkan_render_system.device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None).expect("No pipeline") };
 
-				return pipelines[0];
+				pipelines[0]
 			}
 		}
 
@@ -2828,7 +2828,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
 									/* .build() */
-							) + vertex_buffer.offset as u64
+							) + vertex_buffer.offset
 						};
 
 						let index_data_address = unsafe {
@@ -2837,7 +2837,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
 									/* .build() */
-							) + index_buffer.offset as u64
+							) + index_buffer.offset
 						};
 
 						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -2858,7 +2858,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								render_system::DataTypes::U32 => vk::IndexType::UINT32,
 								_ => panic!("Invalid index format"),
 							})
-							.vertex_stride(vertex_buffer.stride as u64);
+							.vertex_stride(vertex_buffer.stride);
 
 						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
 							.primitive_count(*triangle_count)
@@ -2969,7 +2969,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let command_buffer = self.get_command_buffer();
 
 		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.render_system.buffers[buffer_descriptor.buffer.0 as usize].buffer).collect::<Vec<_>>();
-		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset as u64).collect::<Vec<_>>();
+		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
 
 		// TODO: implent slot splitting
 		unsafe { self.render_system.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets); }
@@ -3220,7 +3220,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		let make_strided_range = |range: render_system::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
 			vk::StridedDeviceAddressRegionKHR::default()
-				.device_address(self.render_system.get_buffer_address(range.buffer) + range.offset as u64)
+				.device_address(self.render_system.get_buffer_address(range.buffer) + range.offset)
 				.stride(range.stride)
 				.size(range.size)
 		};
@@ -3607,7 +3607,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let name = std::ffi::CString::new(name).unwrap();
 
 		let marker_info = vk::DebugUtilsLabelEXT::default()
-			.label_name(&name.as_c_str());
+			.label_name(name.as_c_str());
 
 		unsafe {
 			if let Some(debug_utils) = &self.render_system.debug_utils {

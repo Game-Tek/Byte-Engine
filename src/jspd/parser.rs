@@ -75,10 +75,9 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 		}
 	}
 
-	return Ok((make_scope("root", children), program_state));
+	Ok((make_scope("root", children), program_state))
 }
 
-use std::borrow::BorrowMut;
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Clone, Debug)]
@@ -225,7 +224,7 @@ fn execute_parsers<'a>(parsers: &[FeatureParser<'a>], mut iterator: std::slice::
 		}
 	}
 
-	return Err(ParsingFailReasons::BadSyntax{ message: format!("Tried several parsers none could handle the syntax for statement: {}", iterator.next().unwrap()) }); // No parser could handle this syntax.
+	Err(ParsingFailReasons::BadSyntax{ message: format!("Tried several parsers none could handle the syntax for statement: {}", iterator.next().unwrap()) }) // No parser could handle this syntax.
 }
 
 /// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
@@ -236,7 +235,7 @@ fn try_execute_parsers<'a>(parsers: &[FeatureParser<'a>], iterator: std::slice::
 		}
 	}
 
-	return None;
+	None
 }
 
 /// Execute a list of parsers on a stream of tokens.
@@ -247,7 +246,7 @@ fn execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], mut iterator
 		}
 	}
 
-	return Err(ParsingFailReasons::BadSyntax{ message: format!("Tried several parsers none could handle the syntax for statement: {}", iterator.next().unwrap()) }); // No parser could handle this syntax.
+	Err(ParsingFailReasons::BadSyntax{ message: format!("Tried several parsers none could handle the syntax for statement: {}", iterator.next().unwrap()) }) // No parser could handle this syntax.
 }
 
 /// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
@@ -258,7 +257,7 @@ fn try_execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], iterator
 		}
 	}
 
-	return None;
+	None
 }
 
 fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
@@ -281,7 +280,7 @@ fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 	iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected semicolon") })?; // Skip semicolon
 
-	return Ok(((node, program.clone()), iterator));
+	Ok(((node, program.clone()), iterator))
 }
 
 fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
@@ -292,7 +291,7 @@ fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramStat
 	iter.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find macro name.") })?;
 	iter.next().and_then(|v| if v == "]" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find ] after macro.") })?;
 
-	return Ok(((Rc::new(make_scope("MACRO", vec![])), program.clone()), iter));
+	Ok(((Rc::new(make_scope("MACRO", vec![])), program.clone()), iter))
 }
 
 fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
@@ -327,7 +326,7 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 	program.types.insert(name.clone(), node.clone());
 
-	return Ok(((node, program.clone()), iterator));
+	Ok(((node, program.clone()), iterator))
 }
 
 fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
@@ -343,7 +342,7 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 
 	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, program, expressions)?;
 
-	return Ok(expressions);
+	Ok(expressions)
 }
 
 fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
@@ -376,7 +375,7 @@ fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progr
 
 	expressions.push(Atoms::Literal{ value: value.clone() });
 
-	return Ok((expressions, iterator));
+	Ok((expressions, iterator))
 }
 
 fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState, expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
@@ -477,7 +476,7 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &Program
 		}
 	}
 
-	return Ok(((dandc(&expressions), program.clone()), iterator));
+	Ok(((dandc(&expressions), program.clone()), iterator))
 }
 
 fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
@@ -508,10 +507,10 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		}
 	}
 
-	return Ok(((Rc::new(make_function(name, vec![], return_type, statements, None)), program.clone()), iterator));
+	Ok(((Rc::new(make_function(name, vec![], return_type, statements, None)), program.clone()), iterator))
 }
 
-use std::ops::{Index, DerefMut};
+use std::ops::Index;
 
 impl Index<&str> for Node {
     type Output = Node;
@@ -521,10 +520,10 @@ impl Index<&str> for Node {
 			Nodes::Scope { name, children } => {
 				for child in children {
 					match &child.node {
-						Nodes::Scope { name: child_name, children: _ } => { if child_name == index { return &child; } }
-						Nodes::Struct { name: child_name, fields: _ } => { if child_name == index { return &child; } }
-						Nodes::Member { name: child_name, r#type: _ } => { if child_name == index { return &child; } }
-						Nodes::Function { name: child_name, params: _, return_type: _, statements: _, raw: _ } => { if child_name == index { return &child; } }
+						Nodes::Scope { name: child_name, children: _ } => { if child_name == index { return child; } }
+						Nodes::Struct { name: child_name, fields: _ } => { if child_name == index { return child; } }
+						Nodes::Member { name: child_name, r#type: _ } => { if child_name == index { return child; } }
+						Nodes::Function { name: child_name, params: _, return_type: _, statements: _, raw: _ } => { if child_name == index { return child; } }
 						_ => {}
 					}
 				}

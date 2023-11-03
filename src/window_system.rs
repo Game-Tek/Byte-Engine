@@ -320,11 +320,7 @@ impl Iterator for WindowIterator<'_> {
 				return None;
 			};
 
-			let event = if let Some(event) = event {
-				event
-			} else {
-				return None;
-			};
+			let event = event?;
 
 			let ev = match event {
 				xcb::Event::X(x::Event::KeyPress(ev)) => {
@@ -521,11 +517,7 @@ impl WindowInternal {
 				return None;
 			};
 
-			let event = if let Some(event) = event {
-				event
-			} else {
-				return None;
-			};
+			let event = event?;
 
 			let ev = match event {
 				xcb::Event::X(x::Event::KeyPress(ev)) => {
@@ -538,22 +530,22 @@ impl WindowInternal {
 				xcb::Event::X(x::Event::KeyRelease(ev)) => {
 					let key: Result<Keys, _> = ev.detail().try_into();
 
-					key.ok().and_then(|key| {
-						Some(WindowEvents::Key { pressed: false, key })
+					key.ok().map(|key| {
+						WindowEvents::Key { pressed: false, key }
 					})
 				},
 				xcb::Event::X(x::Event::ButtonPress(ev)) => {
 					let key: Result<MouseKeys, _> = ev.detail().try_into();
 
-					key.ok().and_then(|key| {
-						Some(WindowEvents::Button { pressed: true, button: key })
+					key.ok().map(|key| {
+						WindowEvents::Button { pressed: true, button: key }
 					})
 				},
 				xcb::Event::X(x::Event::ButtonRelease(ev)) => {
 					let key: Result<MouseKeys, _> = ev.detail().try_into();
 
-					key.ok().and_then(|key| {
-						Some(WindowEvents::Button { pressed: false, button: key })
+					key.ok().map(|key| {
+						WindowEvents::Button { pressed: false, button: key }
 					})
 				},
 				xcb::Event::X(x::Event::ClientMessage(ev)) => {
@@ -641,7 +633,7 @@ impl WindowSystem {
 			}
 		}
 
-		return true;
+		true
 	}
 
 	pub fn update_window(&self, window_handle: u32) -> Option<WindowEvents> {
@@ -688,7 +680,7 @@ impl WindowSystem {
 
 		let window = window.window.to_owned().resource_id();
 
-		return WindowOsHandles{ xcb_connection: connection, xcb_window: window };
+		WindowOsHandles{ xcb_connection: connection, xcb_window: window }
 	}
 
 	/// Gets the OS handles for a window.
@@ -707,12 +699,12 @@ impl WindowSystem {
 
 		let window = window.window.to_owned().resource_id();
 
-		return WindowOsHandles{ xcb_connection: connection, xcb_window: window };
+		WindowOsHandles{ xcb_connection: connection, xcb_window: window }
 	}
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<Window>, window: &Window) {
+	fn on_create(&mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: orchestrator::EntityHandle<Window>, _window: &Window) {
 		self.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 	}
 }

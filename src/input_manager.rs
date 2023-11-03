@@ -324,7 +324,7 @@ impl InputManager {
 	/// ```
 	pub fn register_input_source(&mut self, device_handle: &DeviceClassHandle, name: &str, value_type: InputTypes) -> InputSourceHandle {
 		let input_source = InputSource {
-			device_class_handle: device_handle.clone(),
+			device_class_handle: *device_handle,
 			name: name.to_string(),
 			type_: value_type,
 		};
@@ -506,7 +506,7 @@ impl InputManager {
 			InputTypes::Float(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Float(0f32)),
 			InputTypes::Int(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Int(0)),
 			InputTypes::Rgba(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 })),
-			InputTypes::Vector2(_) => std::mem::discriminant(&value) == std::mem::discriminant(&&Value::Vector2(Vector2 { x: 0f32, y: 0f32 })),
+			InputTypes::Vector2(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Vector2(Vector2 { x: 0f32, y: 0f32 })),
 			InputTypes::Vector3(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 })),
 			InputTypes::Quaternion(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Quaternion(Quaternion::identity())),
 		};
@@ -576,7 +576,7 @@ impl InputManager {
 	pub fn update(&mut self, orchestrator: orchestrator::OrchestratorReference) {
 		let records = &self.records;
 
-		if records.len() == 0 { return; }
+		if records.is_empty() { return; }
 
 		for (i, action) in self.actions.iter().enumerate() {
 			let action_records = records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle));

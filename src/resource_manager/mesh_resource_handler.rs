@@ -1,10 +1,10 @@
 use std::io::{Seek, Read};
 
 use log::error;
-use polodb_core::bson::{Document, doc};
+use polodb_core::bson::doc;
 use serde::{Serialize, Deserialize};
 
-use super::{SerializedResourceDocument, GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
+use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
 
 pub struct MeshResourceHandler {
 
@@ -119,7 +119,7 @@ impl ResourceHandler for MeshResourceHandler {
 						for i in 0..meshlet.triangle_count as usize {
 							for x in meshlet.indices[i] {
 								assert!(x <= 64, "Meshlet index out of bounds"); // Max vertices per meshlet
-								buffer.push(x as u8);
+								buffer.push(x);
 							}
 						}
 					}
@@ -133,8 +133,8 @@ impl ResourceHandler for MeshResourceHandler {
 					meshlet_stream = Some(MeshletStream{ offset, count: meshlets.len() as u32 });
 
 					for meshlet in &meshlets {
-						buffer.push(meshlet.vertex_count as u8);
-						buffer.push(meshlet.triangle_count as u8);
+						buffer.push(meshlet.vertex_count);
+						buffer.push(meshlet.triangle_count);
 					}
 				} else {
 					meshlet_stream = None;
@@ -205,7 +205,7 @@ impl ResourceHandler for MeshResourceHandler {
 				}
 				"Meshlets" => {
 					#[cfg(debug_assertions)]
-					if !mesh.meshlet_stream.is_some() { error!("Requested Meshlets stream but mesh does not have meshlets."); continue; }
+					if mesh.meshlet_stream.is_none() { error!("Requested Meshlets stream but mesh does not have meshlets."); continue; }
 
 					let meshlet_stream = mesh.meshlet_stream.as_ref().unwrap();
 

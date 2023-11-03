@@ -1,26 +1,26 @@
 /// Tokenize consumes a string and returns a stream of tokens.
 pub fn tokenize(source: &str) -> Result<Vec<String>, ()> {
 	let interrupt = |c: char| -> bool {
-		return c.is_whitespace();
+		c.is_whitespace()
 	};
 
 	let can_sequence_continue = |sequence: &str, c: char| -> bool {
-		if sequence.len() == 0 { return true; }
+		if sequence.is_empty() { return true; }
 
 		let last = sequence.chars().last().unwrap();
 
 		if last.is_alphabetic() {
-			return c.is_alphanumeric() || c == '_';
+			c.is_alphanumeric() || c == '_'
 		} else if last.is_numeric() {
-			return c.is_numeric() || c == '.' || c.is_alphabetic();
+			c.is_numeric() || c == '.' || c.is_alphabetic()
 		} else if last == '.' {
-			return c.is_numeric();
+			c.is_numeric()
 		} else if last == '_' {
-			return c.is_alphanumeric() || c == '_';
+			c.is_alphanumeric() || c == '_'
 		} else if last == '-' && c == '>' {
-			return true;
+			true
 		} else {
-			return false;
+			false
 		}
 	};
 
@@ -45,7 +45,7 @@ pub fn tokenize(source: &str) -> Result<Vec<String>, ()> {
 					}
 				},
 				None => {
-					if token.len() > 0 {
+					if !token.is_empty() {
 						tokens.push(token);
 					}
 
@@ -59,7 +59,7 @@ pub fn tokenize(source: &str) -> Result<Vec<String>, ()> {
 		}
 	}
 
-	return Ok(tokens);
+	Ok(tokens)
 }
 
 #[cfg(test)]

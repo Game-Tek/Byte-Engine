@@ -15,11 +15,7 @@ impl RenderDebugger {
 	/// Creates a new render debugger instance.
 	/// It will automatically detect any available render debugger and connect to it.
 	pub fn new() -> RenderDebugger {
-		let renderdoc = if let Some(renderdoc) =  RenderDoc::new().ok() {
-			Some(std::sync::Mutex::new(renderdoc))
-		} else {
-			None
-		};
+		let renderdoc = RenderDoc::new().ok().map(std::sync::Mutex::new);
 
 		RenderDebugger { renderdoc }
 	}

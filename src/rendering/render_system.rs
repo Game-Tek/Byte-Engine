@@ -2,9 +2,6 @@
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 
-use std::collections::HashMap;
-use std::hash::Hasher;
-
 use crate::{window_system, orchestrator::{self}, Extent};
 
 /// Possible types of a shader source
@@ -877,7 +874,7 @@ pub struct RenderSystemImplementation {
 impl RenderSystemImplementation {
 	pub fn new(pointer: Box<dyn RenderSystem>) -> Self {
 		Self {
-			pointer: pointer,
+			pointer,
 		}
 	}
 }

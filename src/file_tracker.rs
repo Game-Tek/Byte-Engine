@@ -99,7 +99,7 @@ impl FileTracker {
 
 			let res = self.db.collection::<polodb_core::bson::Document>("files").find_one(polodb_core::bson::doc! { "path": path.to_str().unwrap(),}).unwrap();
 
-			if !res.is_some() {
+			if res.is_none() {
 				self.db.collection("files").insert_one(polodb_core::bson::doc! {
 					"path": path.to_str().unwrap(),
 					"last_modified": _m as i64,

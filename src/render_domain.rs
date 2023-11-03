@@ -1156,25 +1156,6 @@ void main() {
 							(shader, *shader_type)
 						}).collect::<Vec<_>>();
 
-						let targets = [
-							render_system::AttachmentInformation {
-								image: self.albedo,
-								layout: render_system::Layouts::RenderTarget,
-								format: render_system::Formats::RGBAu8,
-								clear: render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-								load: false,
-								store: true,
-							},
-							render_system::AttachmentInformation {
-								image: self.depth_target,
-								layout: render_system::Layouts::RenderTarget,
-								format: render_system::Formats::Depth32,
-								clear: render_system::ClearValue::Depth(0f32),
-								load: false,
-								store: true,
-							},
-						];
-
 						let mut specialization_constants: Vec<Box<dyn render_system::SpecializationMapEntry>> = vec![];
 
 						for (i, variable) in variant.variables.iter().enumerate() {
@@ -1300,7 +1281,7 @@ void main() {
 	pub const fn transform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
-		if self.swapchain_handles.len() == 0 { return; }
+		if self.swapchain_handles.is_empty() { return; }
 
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut binding = render_system.get_mut();

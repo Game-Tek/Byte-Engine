@@ -47,39 +47,38 @@ impl ShaderGenerator {
 
 	/// Generates a shader from a source string and an environment\
 	/// Environment:
-	/// 	glsl:
-	/// 		version: expects a string, if this value is not present, the default version is 450
-	/// 	shader:
-	/// 		type: expects a string, can be "vertex", "fragment" or "compute"
-	/// 		vertex_layout: expects an array of objects, each object must have a "type" and a "name" field
-	/// 		input: expects an array of objects, each object must have a "type" and a "name" field
-	/// 		output: expects an array of objects, each object must have a "type" and a "name" field
-	/// 		local_size: expects an array of 3 numbers
-	/// 		descriptor_sets: expects an array of objects, each object must have a "set", "binding" and "value" field
-	/// 			set: expects a number
-	/// 			binding: expects a number
-	/// 			value: expects an object with a "type" and a "name" field
-	/// 		push_constants: expects an array of objects, each object must have a "type" and a "name" field
-	/// 		structs: expects an array of objects, each object must have a "name" and a "members" field
-	/// 			name: expects a string
-	/// 			members: expects an array of objects, each object must have a "type" and a "name" field
+	/// glsl:
+	/// version: expects a string, if this value is not present, the default version is 450
+	/// shader:
+	/// type: expects a string, can be "vertex", "fragment" or "compute"
+	/// vertex_layout: expects an array of objects, each object must have a "type" and a "name" field
+	/// input: expects an array of objects, each object must have a "type" and a "name" field
+	/// output: expects an array of objects, each object must have a "type" and a "name" field
+	/// local_size: expects an array of 3 numbers
+	/// descriptor_sets: expects an array of objects, each object must have a "set", "binding" and "value" field
+	/// set: expects a number
+	/// binding: expects a number
+	/// value: expects an object with a "type" and a "name" field
+	/// push_constants: expects an array of objects, each object must have a "type" and a "name" field
+	/// structs: expects an array of objects, each object must have a "name" and a "members" field
+	/// name: expects a string
+	/// members: expects an array of objects, each object must have a "type" and a "name" field
 	/// 
 	/// Result:
-	/// 	Returns a string with the generated shader
-	/// 	Generated shaders will always look like
-	/// 		#version
-	/// 		#shader type
-	/// 		#extensions
-	/// 		memory layout declarations
-	/// 		struct declarations
-	/// 		descritor set declarations
-	/// 		push constant declarations
-	/// 		in blocks
-	/// 		out blocks
-	/// 		function declarations
-	/// 		"main decorators"
-	/// 		main function
-	/// 		
+	/// Returns a string with the generated shader
+	/// Generated shaders will always look like
+	/// #version
+	/// #shader type
+	/// #extensions
+	/// memory layout declarations
+	/// struct declarations
+	/// descritor set declarations
+	/// push constant declarations
+	/// in blocks
+	/// out blocks
+	/// function declarations
+	/// "main decorators"
+	/// main function	
 	pub fn generate_shader(&self, base_shader: &str, environment: json::JsonValue) -> String {
 		let mut shader_string = String::new();
 
@@ -89,7 +88,7 @@ impl ShaderGenerator {
 
 		if let json::JsonValue::String(glsl_version) = glsl_version {
 			shader_string.push_str("#version ");
-			shader_string.push_str(&glsl_version); // TODO: Get only first number
+			shader_string.push_str(glsl_version); // TODO: Get only first number
 			shader_string.push_str(" core\n");
 		} else {
 			shader_string.push_str("#version 450 core\n");
@@ -131,8 +130,8 @@ impl ShaderGenerator {
 				if let json::JsonValue::Array(members) = members {
 					for e in members {
 						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
-						shader_string.push_str(" ");
-						shader_string.push_str(&e["name"].as_str().unwrap());
+						shader_string.push(' ');
+						shader_string.push_str(e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
 					}
 				}
@@ -149,9 +148,9 @@ impl ShaderGenerator {
 
 				if let json::JsonValue::Array(members) = members {
 					for e in members {
-						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
-						shader_string.push_str(" ");
-						shader_string.push_str(&e["name"].as_str().unwrap());
+						shader_string.push_str(&translate_type_str(e["type"].as_str().unwrap()));
+						shader_string.push(' ');
+						shader_string.push_str(e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
 					}
 				}
@@ -173,7 +172,7 @@ impl ShaderGenerator {
 				shader_string.push_str(") uniform ");
 				shader_string.push_str(&translate_type_str(&e["value"]["type"].as_str().unwrap()));
 				shader_string.push_str(" ");
-				shader_string.push_str(&e["value"]["name"].as_str().unwrap());
+				shader_string.push_str(e["value"]["name"].as_str().unwrap());
 				shader_string.push_str(";\n");
 			}
 		}
@@ -187,8 +186,8 @@ impl ShaderGenerator {
 
 			for e in push_constants {
 				shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
-				shader_string.push_str(" ");
-				shader_string.push_str(&e["name"].as_str().unwrap());
+				shader_string.push(' ');
+				shader_string.push_str(e["name"].as_str().unwrap());
 				shader_string.push_str(";\n");
 			}
 
@@ -201,19 +200,16 @@ impl ShaderGenerator {
 			"Vertex" => {
 				let vertex_layout = &environment["shader"]["vertex_layout"];
 
-				if let json::JsonValue::Array(vertex_layout) = vertex_layout {
-					let mut pos = 0;
-		
-					for e in vertex_layout {
+				if let json::JsonValue::Array(vertex_layout) = vertex_layout {		
+					for (pos, e) in vertex_layout.iter().enumerate() {
 						shader_string.push_str("layout(location=");
 						shader_string.push_str(&pos.to_string());
 						shader_string.push_str(") in ");
 						shader_string.push_str(&translate_type_str(&e["type"].as_str().unwrap()));
-						shader_string.push_str(" ");
-						shader_string.push_str(&e["name"].as_str().unwrap());
+						shader_string.push(' ');
+						shader_string.push_str(e["name"].as_str().unwrap());
 						shader_string.push_str(";\n");
-		
-						pos += 1;
+	
 					}
 				}
 			}
@@ -586,7 +582,7 @@ impl ShaderGenerator {
 											format!("layout(push_constant) uniform push_constants {{")
 										};						
 										
-										if let lexer::Nodes::Struct { name: type_name, template, fields, types } = &types[0].node {
+										if let lexer::Nodes::Struct { name: type_name, template: _, fields: _, types: _ } = &types[0].node {
 											shader_string.push_str(&format!("{type} {name};", type = translate_type_str(&type_name), name = name));
 										}
 
@@ -659,7 +655,7 @@ impl ShaderGenerator {
 					program_state.nodes.push((name.to_string(), s));
 				}
 				lexer::Nodes::Scope{ name, children } => {
-					let mut s = String::new();
+					let s = String::new();
 
 					let is_some = match name.as_str() { "Vertex" | "Fragment" => true, _ => false };
 					if is_some {
@@ -690,7 +686,7 @@ impl ShaderGenerator {
 
 							string.push_str(&format!(")"));
 						}
-						lexer::Expressions::Operator { operator, left, right } => {
+						lexer::Expressions::Operator { operator: _, left, right } => {
 							process_node(Some(&mut string), left, compilation_settings, program_state);
 
 							string.push_str(&format!("="));

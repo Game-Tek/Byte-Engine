@@ -13,7 +13,7 @@ pub(crate) fn compile_to_jspd(source: &str) -> Result<lexer::Node, CompilationEr
 	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
 	let jspd = lexer::lex(&parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?;
 
-	return Ok(jspd);
+	Ok(jspd)
 }
 
 #[derive(Debug)]
@@ -100,7 +100,7 @@ pub(crate) fn json_to_jspd(source: &json::JsonValue) -> Result<lexer::Node, ()> 
 			_ => { panic!("Unsupported node type;") }
 		};
 
-		return Ok(Rc::new(parser_node));
+		Ok(Rc::new(parser_node))
 	}
 
 	let mut parser_program = parser::ProgramState {

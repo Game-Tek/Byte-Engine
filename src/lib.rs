@@ -61,5 +61,5 @@ pub struct RGBA {
 fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {
 	let length = collection.len();
 	collection.push(value);
-	return length;
+	length
 }

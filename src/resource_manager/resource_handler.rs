@@ -1,4 +1,4 @@
-use super::{resource_manager, ProcessedResources, Buffer};
+use super::{resource_manager, ProcessedResources, Stream};
 
 pub trait ResourceHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool;
@@ -18,5 +18,5 @@ pub trait ResourceHandler {
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)>;
 
-	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [Buffer]);
+	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [Stream]);
 }

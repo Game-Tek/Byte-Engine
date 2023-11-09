@@ -81,7 +81,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Buffer]) {
+	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
 		file.read_exact(buffers[0].buffer).unwrap();
 	}
 
@@ -191,8 +191,19 @@ impl MaterialResourcerHandler {
 		// TODO: if shader fails to compile try to generate a failsafe shader
 
 		let compilation_artifact = match binary { Ok(binary) => { binary } Err(err) => {
-			error!("Failed to compile shader: {}", err);
-			error!("{}", &glsl);
+			let error_string = err.to_string();
+			let errors = error_string.lines().filter(|error| error.starts_with("shader_name:")).map(|error| (error.split(':').nth(1).unwrap(), error.split(':').nth(4).unwrap())).map(|(error_line_number_string, error)| (error_line_number_string.trim().parse::<usize>().unwrap(), error.trim())).collect::<Vec<_>>();
+			let mut error_string = String::new();
+
+			for (error_line_index, error) in errors {
+				let previous_line = glsl.lines().nth(error_line_index - 1).unwrap_or("");
+				let current_line = glsl.lines().nth(error_line_index).unwrap_or("");
+				let next_line = glsl.lines().nth(error_line_index + 1).unwrap_or("");
+
+				error_string.push_str(&format!("{}	Error: {}\n{}\n{}\n", previous_line, current_line, next_line, error));
+			}
+
+			error!("Error compiling shader:\n{}", error_string);
 			return Some(Err(err.to_string()));
 		} };
 

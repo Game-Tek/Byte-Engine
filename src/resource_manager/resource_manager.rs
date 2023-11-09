@@ -354,7 +354,7 @@ impl ResourceManager {
 			let _slice = if let Some(options) = &mut options {
 				if let Some(x) = options.resources.iter_mut().find(|e| e.url == resource_container.url) {
 					self.resource_handlers.iter().find(|h| h.can_handle_type(resource_container.class.as_str())).unwrap().
-					read(&response.resource, &mut file, x.buffers.as_mut_slice());
+					read(&response.resource, &mut file, x.streams.as_mut_slice());
 				} else {
 					let range = &mut buffer[offset..(offset + resource_container.size as usize)];
 					offset += resource_container.size as usize;

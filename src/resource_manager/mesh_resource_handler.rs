@@ -78,7 +78,7 @@ impl ResourceHandler for MeshResourceHandler {
 	
 				if let Some(tangents) = reader.read_tangents() {
 					tangents.for_each(|tangent| tangent.iter().for_each(|m| m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))));
-					vertex_components.push(VertexComponent { semantic: VertexSemantics::Tangent, format: "vec3f".to_string(), channel: 2 });
+					vertex_components.push(VertexComponent { semantic: VertexSemantics::Tangent, format: "vec4f".to_string(), channel: 2 });
 				}
 	
 				if let Some(uv) = reader.read_tex_coords(0) {
@@ -91,26 +91,32 @@ impl ResourceHandler for MeshResourceHandler {
 
 				let mut index_streams = Vec::with_capacity(2);
 
-				let offset = buffer.len();
-
-				{
-					let index_type = IntegralTypes::U16;
-
-					match index_type {
-						IntegralTypes::U16 => {
-							optimized_indices.iter().map(|i| *i as u16).for_each(|index| index.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)));
-							index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Raw, offset, count: optimized_indices.len() as u32 });
-						}
-						_ => panic!("Unsupported index type")
-					}
-				}
-
-				let offset = buffer.len();
-
 				let meshlet_stream;
 
 				if MESHLETIZE {
 					let meshlets = meshopt::clusterize::build_meshlets(&optimized_indices, vertex_count, 64, 126);
+
+					let offset = buffer.len();
+
+					{
+						let index_type = IntegralTypes::U16;
+						
+						match index_type {
+							IntegralTypes::U16 => {
+								let mut index_count = 0usize;
+								for meshlet in &meshlets {
+									index_count += meshlet.vertex_count as usize;
+									for i in 0..meshlet.vertex_count as usize {
+										(meshlet.vertices[i] as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
+									}
+								}
+								index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Raw, offset, count: index_count as u32 });
+							}
+							_ => panic!("Unsupported index type")
+						}
+					}
+	
+					let offset = buffer.len();
 
 					let mut index_count: usize = 0;
 
@@ -126,7 +132,7 @@ impl ResourceHandler for MeshResourceHandler {
 
 					assert_eq!(index_count, optimized_indices.len());
 
-					index_streams.push(IndexStream{ data_type: IntegralTypes::U8, stream_type: IndexStreamTypes::Meshlets, offset, count: optimized_indices.len() as u32 });
+					index_streams.push(IndexStream{ data_type: IntegralTypes::U8, stream_type: IndexStreamTypes::Meshlets, offset, count: index_count as u32 });
 
 					let offset = buffer.len();
 
@@ -137,6 +143,20 @@ impl ResourceHandler for MeshResourceHandler {
 						buffer.push(meshlet.triangle_count);
 					}
 				} else {
+					let offset = buffer.len();
+
+					{
+						let index_type = IntegralTypes::U16;
+	
+						match index_type {
+							IntegralTypes::U16 => {
+								optimized_indices.iter().map(|i| *i as u16).for_each(|i| i.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)));
+								index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Raw, offset, count: optimized_indices.len() as u32 });
+							}
+							_ => panic!("Unsupported index type")
+						}
+					}
+
 					meshlet_stream = None;
 				}
 
@@ -165,11 +185,11 @@ impl ResourceHandler for MeshResourceHandler {
 		}))]
 	}
 
-	fn read(&self, resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Buffer]) {
+	fn read(&self, resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
 		let mesh: &Mesh = resource.downcast_ref().unwrap();
 
 		for buffer in buffers {
-			match buffer.tag.as_str() {
+			match buffer.name.as_str() {
 				"Vertex" => {
 					file.seek(std::io::SeekFrom::Start(0)).unwrap();
 					file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * mesh.vertex_components.size())]).unwrap();
@@ -213,7 +233,7 @@ impl ResourceHandler for MeshResourceHandler {
 					file.read(&mut buffer.buffer[0..(meshlet_stream.count as usize * 2)]).unwrap();
 				}
 				_ => {
-					error!("Unknown buffer tag: {}", buffer.tag);
+					error!("Unknown buffer tag: {}", buffer.name);
 				}
 			}
 		}
@@ -375,7 +395,7 @@ impl Size for IntegralTypes {
 
 #[cfg(test)]
 mod tests {
-	use crate::{resource_manager::{resource_manager::ResourceManager, Options, OptionResource, Buffer}, Vector3};
+	use crate::{resource_manager::{resource_manager::ResourceManager, Options, OptionResource, Stream}, Vector3};
 
 	use super::*;
 
@@ -430,6 +450,8 @@ mod tests {
 		assert_eq!(mesh.index_streams[0].count, 36);
 		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
 
+		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
+
 		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
 
 		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
@@ -452,7 +474,7 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Indices".to_string() }],
+					streams: vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "Indices".to_string() }],
 				});
 			}
 			_ => {}
@@ -621,7 +643,7 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					buffers: vec![Buffer{ buffer: vertex_buffer.as_mut_slice(), tag: "Vertex".to_string() }, Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Indices".to_string() }],
+					streams: vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "Indices".to_string() }],
 				});
 			}
 			_ => {}
@@ -684,10 +706,10 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					buffers: vec![
-						Buffer{ buffer: vertex_positions_buffer.as_mut_slice(), tag: "Vertex.Position".to_string() },
-						Buffer{ buffer: vertex_normals_buffer.as_mut_slice(), tag: "Vertex.Normal".to_string() },
-						Buffer{ buffer: index_buffer.as_mut_slice(), tag: "Indices".to_string() }
+					streams: vec![
+						Stream{ buffer: vertex_positions_buffer.as_mut_slice(), name: "Vertex.Position".to_string() },
+						Stream{ buffer: vertex_normals_buffer.as_mut_slice(), name: "Vertex.Normal".to_string() },
+						Stream{ buffer: index_buffer.as_mut_slice(), name: "Indices".to_string() }
 					],
 				});
 			}

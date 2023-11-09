@@ -138,7 +138,11 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 						let mut error_string = String::new();
 
 						for (error_line_index, error) in errors {
-							error_string.push_str(&format!("{}	Error: {}\n", shader_text.lines().nth(error_line_index).unwrap(), error));
+							let previous_line = shader_text.lines().nth(error_line_index - 1).unwrap_or("");
+							let current_line = shader_text.lines().nth(error_line_index).unwrap_or("");
+							let next_line = shader_text.lines().nth(error_line_index + 1).unwrap_or("");
+
+							error_string.push_str(&format!("{}\n{}	Error: {}\n{}\n", previous_line, current_line, error, next_line));
 						}
 
 						error!("Error compiling shader:\n{}", error_string);
@@ -3098,19 +3102,19 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 					buffer_memory_barriers.push(buffer_memory_barrier);
 
-					// let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
-					// 	vk::MemoryBarrier2::default()
-					// 	.src_stage_mask(source.stage)
-					// 	.src_access_mask(source.access)
-					// } else {
-					// 	vk::MemoryBarrier2::default()
-					// 	.src_stage_mask(vk::PipelineStageFlags2::empty())
-					// 	.src_access_mask(vk::AccessFlags2KHR::empty())
-					// }
-					// .dst_stage_mask(new_stage_mask)
-					// .dst_access_mask(new_access_mask);
+					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+						vk::MemoryBarrier2::default()
+						.src_stage_mask(source.stage)
+						.src_access_mask(source.access)
+					} else {
+						vk::MemoryBarrier2::default()
+						.src_stage_mask(vk::PipelineStageFlags2::empty())
+						.src_access_mask(vk::AccessFlags2KHR::empty())
+					}
+					.dst_stage_mask(new_stage_mask)
+					.dst_access_mask(new_access_mask);
 
-					// memory_barriers.push(memory_barrier);
+					memory_barriers.push(memory_barrier);
 				},
 				render_system::Handle::TopLevelAccelerationStructure(_) | render_system::Handle::BottomLevelAccelerationStructure(_)=> {
 					// let (handle, acceleration_structure) = self.get_top_level_acceleration_structure(handle);

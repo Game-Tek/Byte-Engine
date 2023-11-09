@@ -46,11 +46,11 @@ pub enum ProcessedResources {
 	Ref(String),
 }
 
-pub struct Buffer<'a> {
+pub struct Stream<'a> {
 	/// The slice of the buffer to load the resource binary data into.
 	pub buffer: &'a mut [u8],
 	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
-	pub tag: String,
+	pub name: String,
 }
 
 /// Enumaration for all the possible results of a resource load fails.
@@ -113,7 +113,7 @@ pub struct OptionResource<'a> {
 	/// The resource to apply this option to.
 	pub url: String,
 	/// The buffers to load the resource binary data into.
-	pub buffers: Vec<Buffer<'a>>,
+	pub streams: Vec<Stream<'a>>,
 }
 
 /// Represents the options for performing a bundled/batch resource load.

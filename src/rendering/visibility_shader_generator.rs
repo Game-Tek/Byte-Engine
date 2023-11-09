@@ -102,7 +102,32 @@ impl VisibilityShaderGenerator {
 	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &lexer::Node) -> String {
 		let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
 
-		string.push_str("layout(set=0,binding=5) uniform sampler2D textures[1];
+		string.push_str("
+struct Mesh {
+	mat4 model;
+	uint material_id;
+	uint32_t base_vertex_index;
+};
+
+layout(set=0, binding=1, scalar) buffer readonly MeshBuffer {
+	Mesh meshes[];
+};
+
+layout(set=0, binding=2, scalar) buffer readonly Positions {
+	vec3 positions[];
+};
+
+layout(set=0, binding=3, scalar) buffer readonly Normals {
+	vec3 normals[];
+};
+
+layout(set=0, binding=4, scalar) buffer readonly VertexIndices {
+	uint16_t vertex_indices[];
+};
+
+layout(set=0, binding=5, scalar) buffer readonly PrimitiveIndeces {
+	uint8_t primitive_indeces[];
+};
 
 struct Meshlet {
 	uint32_t instance_index;
@@ -116,15 +141,20 @@ layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
 	Meshlet meshlets[];
 };
 
+layout(set=0,binding=7) uniform sampler2D textures[1];
+
 layout(set=1,binding=0,scalar) buffer MaterialCount {
 	uint material_count[];
 };
+
 layout(set=1,binding=1,scalar) buffer MaterialOffset {
 	uint material_offset[];
 };
+
 layout(set=1,binding=4,scalar) buffer PixelMapping {
 	u16vec2 pixel_mapping[];
 };
+
 layout(set=1, binding=6, r32ui) uniform readonly uimage2D triangle_index;
 layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_id;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
@@ -176,27 +206,6 @@ BarycentricDeriv CalcFullBary(vec4 pt0, vec4 pt1, vec4 pt2, vec2 pixelNdc, vec2 
 
 	return ret;
 }
-
-struct Mesh {
-	mat4 model;
-	uint material_id;
-};
-
-layout(set=2, binding=1, scalar) buffer readonly MeshBuffer {
-	Mesh meshes[];
-};
-
-layout(set=2, binding=2, scalar) buffer readonly Positions {
-	vec3 positions[];
-};
-
-layout(set=2, binding=3, scalar) buffer readonly Normals {
-	vec3 normals[];
-};
-
-layout(set=2, binding=4, scalar) buffer readonly Indeces {
-	uint8_t indeces[];
-};
 
 const float PI = 3.14159265359;
 
@@ -338,10 +347,16 @@ void main() {
 	Material material = materials[pc.material_id];
 	Meshlet meshlet = meshlets[BE_MESHLET_INDEX];
 
+	uint primitive_indices[3] = uint[3](
+		uint(primitive_indeces[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 0]),
+		uint(primitive_indeces[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 1]),
+		uint(primitive_indeces[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 2])
+	);
+
 	uint vertex_indeces[3] = uint[3](
-		uint(indeces[meshlet.triangle_offset * 3 + BE_MESHLET_TRIANGLE_INDEX * 3 + 0] + meshlet.vertex_offset),
-		uint(indeces[meshlet.triangle_offset * 3 + BE_MESHLET_TRIANGLE_INDEX * 3 + 1] + meshlet.vertex_offset),
-		uint(indeces[meshlet.triangle_offset * 3 + BE_MESHLET_TRIANGLE_INDEX * 3 + 2] + meshlet.vertex_offset)
+		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[0]]),
+		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[1]]),
+		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[2]])
 	);
 
 	vec4 vertex_positions[3] = vec4[3](

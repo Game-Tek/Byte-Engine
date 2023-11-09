@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
+use crate::orchestrator::EntityHandle;
+use crate::rendering::mesh;
 use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight, point_light::PointLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self}, math, window_system};
 
 struct VisibilityInfo {
@@ -116,6 +118,297 @@ const MAX_LIGHTS: usize = 16;
 const MAX_TRIANGLES: usize = 65536;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536;
 const MAX_VERTICES: usize = 65536;
+
+const VISIBILITY_PASS_MESH_SOURCE: &'static str = "
+#version 450
+#pragma shader_stage(mesh)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_shader_explicit_arithmetic_types: enable
+#extension GL_EXT_mesh_shader: require
+#extension GL_EXT_debug_printf : enable
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+layout(location=0) perprimitiveEXT out uint out_instance_index[126];
+layout(location=1) perprimitiveEXT out uint out_primitive_index[126];
+
+struct Camera {
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+
+struct Mesh {
+	mat4 model;
+	uint material_id;
+	uint32_t base_vertex_index;
+};
+
+struct Meshlet {
+	uint32_t instance_index;
+	uint16_t vertex_offset;
+	uint16_t triangle_offset;
+	uint8_t vertex_count;
+	uint8_t triangle_count;
+};
+
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+	Camera camera;
+};
+
+layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {
+	Mesh meshes[];
+};
+
+layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
+	vec3 vertex_positions[];
+};
+
+layout(set=0,binding=4,scalar) buffer readonly VertexIndices {
+	uint16_t vertex_indices[];
+};
+
+layout(set=0,binding=5,scalar) buffer readonly PrimitiveIndices {
+	uint8_t primitive_indices[];
+};
+
+layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
+	Meshlet meshlets[];
+};
+
+layout(triangles, max_vertices=64, max_primitives=126) out;
+layout(local_size_x=128) in;
+void main() {
+	uint meshlet_index = gl_WorkGroupID.x;
+
+	Meshlet meshlet = meshlets[meshlet_index];
+	Mesh mesh = meshes[meshlet.instance_index];
+
+	uint instance_index = meshlet.instance_index;
+
+	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+
+	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
+		uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
+		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
+		// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions[vertex_index], 1.0);
+	}
+	
+	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
+		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
+		uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
+		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+		out_instance_index[gl_LocalInvocationID.x] = instance_index;
+		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
+	}
+}";
+
+const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
+#version 450
+#pragma shader_stage(fragment)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_mesh_shader: require
+
+layout(location=0) perprimitiveEXT flat in uint in_instance_index;
+layout(location=1) perprimitiveEXT flat in uint in_primitive_index;
+
+layout(location=0) out uint out_primitive_index;
+layout(location=1) out uint out_instance_id;
+
+void main() {
+	out_primitive_index = in_primitive_index;
+	out_instance_id = in_instance_index;
+}
+"#;
+
+const MATERIAL_COUNT_SOURCE: &'static str = r#"
+#version 450
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+struct Mesh {
+	mat4 model;
+	uint material_index;
+	uint32_t base_vertex_index;
+};
+
+layout(set=0,binding=1,scalar) buffer MeshesBuffer {
+	Mesh meshes[];
+};
+
+layout(set=1,binding=0,scalar) buffer MaterialCount {
+	uint material_count[];
+};
+
+layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
+
+layout(local_size_x=32, local_size_y=32) in;
+void main() {
+	// If thread is out of bound respect to the material_id texture, return
+	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+
+	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+
+	if (pixel_instance_index == 0xFFFFFFFF) { return; }
+
+	uint material_index = meshes[pixel_instance_index].material_index;
+
+	atomicAdd(material_count[material_index], 1);
+}
+"#;
+
+const MATERIAL_OFFSET_SOURCE: &'static str = r#"
+#version 450
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+layout(set=1,binding=0,scalar) buffer MaterialCount {
+	uint material_count[];
+};
+
+layout(set=1,binding=1,scalar) buffer MaterialOffset {
+	uint material_offset[];
+};
+
+layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
+	uint material_offset_scratch[];
+};
+
+layout(set=1,binding=3,scalar) buffer MaterialEvaluationDispatches {
+	uvec3 material_evaluation_dispatches[];
+};
+
+layout(local_size_x=1) in;
+void main() {
+	uint sum = 0;
+
+	for (uint i = 0; i < 4; i++) {
+		material_offset[i] = sum;
+		material_offset_scratch[i] = sum;
+		material_evaluation_dispatches[i] = uvec3((material_count[i] + 31) / 32, 1, 1);
+		sum += material_count[i];
+	}
+}
+"#;
+
+const PIXEL_MAPPING_SOURCE: &'static str = r#"
+#version 450
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+struct Mesh {
+	mat4 model;
+	uint material_index;
+	uint32_t base_vertex_index;
+};
+
+layout(set=0,binding=1,scalar) buffer MeshesBuffer {
+	Mesh meshes[];
+};
+
+layout(set=1,binding=1,scalar) buffer MaterialOffset {
+	uint material_offset[];
+};
+
+layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
+	uint material_offset_scratch[];
+};
+
+layout(set=1,binding=4,scalar) buffer PixelMapping {
+	u16vec2 pixel_mapping[];
+};
+
+layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
+
+layout(local_size_x=32, local_size_y=32) in;
+void main() {
+	// If thread is out of bound respect to the material_id texture, return
+	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+
+	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+
+	if (pixel_instance_index == 0xFFFFFFFF) { return; }
+
+	uint material_index = meshes[pixel_instance_index].material_index;
+
+	uint offset = atomicAdd(material_offset_scratch[material_index], 1);
+
+	pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
+}
+"#;
+
+const TONE_MAPPING_SHADER: &'static str = r#"
+#version 450
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+
+layout(set=0, binding=0, rgba16) uniform readonly image2D source;
+layout(set=0, binding=1, rgba8) uniform image2D result;
+
+vec3 ACESNarkowicz(vec3 x) {
+	const float a = 2.51;
+	const float b = 0.03;
+	const float c = 2.43;
+	const float d = 0.59;
+	const float e = 0.14;
+	return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+}
+
+const mat3 ACES_INPUT_MAT = mat3(
+	vec3( 0.59719,  0.35458,  0.04823),
+	vec3( 0.07600,  0.90834,  0.01566),
+	vec3( 0.02840,  0.13383,  0.83777)
+);
+
+const mat3 ACES_OUTPUT_MAT = mat3(
+	vec3( 1.60475, -0.53108, -0.07367),
+	vec3(-0.10208,  1.10813, -0.00605),
+	vec3(-0.00327, -0.07276,  1.07602)
+);
+
+vec3 RRTAndODTFit(vec3 v) {
+	vec3 a = v * (v + 0.0245786) - 0.000090537;
+	vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+	return a / b;
+}
+
+vec3 ACESFitted(vec3 x) {
+	return clamp(ACES_OUTPUT_MAT * RRTAndODTFit(ACES_INPUT_MAT * x), 0.0, 1.0);
+}
+
+layout(local_size_x=32, local_size_y=32) in;
+void main() {
+	if (gl_GlobalInvocationID.x >= imageSize(source).x || gl_GlobalInvocationID.y >= imageSize(source).y) { return; }
+
+	vec4 source_color = imageLoad(source, ivec2(gl_GlobalInvocationID.xy));
+
+	vec3 result_color = ACESNarkowicz(source_color.rgb);
+
+	result_color = pow(result_color, vec3(1.0 / 2.2));
+
+	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(result_color, 1.0));
+}
+"#;
 
 impl VisibilityWorldRenderDomain {
 	pub fn new() -> orchestrator::EntityReturn<Self> {
@@ -266,119 +559,8 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let visibility_pass_mesh_source = format!("
-#version 450
-#pragma shader_stage(mesh)
-
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_buffer_reference: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_shader_16bit_storage: require
-#extension GL_EXT_shader_explicit_arithmetic_types: enable
-#extension GL_EXT_mesh_shader: require
-#extension GL_EXT_debug_printf : enable
-
-layout(row_major) uniform; layout(row_major) buffer;
-
-layout(location=0) perprimitiveEXT out uint out_instance_index[{TRIANGLE_COUNT}];
-layout(location=1) perprimitiveEXT out uint out_primitive_index[{TRIANGLE_COUNT}];
-
-struct Camera {{
-	mat4 view_matrix;
-	mat4 projection_matrix;
-	mat4 view_projection;
-}};
-
-struct Mesh {{
-	mat4 model;
-	uint material_id;
-	uint32_t base_vertex_index;
-}};
-
-struct Meshlet {{
-	uint32_t instance_index;
-	uint16_t vertex_offset;
-	uint16_t triangle_offset;
-	uint8_t vertex_count;
-	uint8_t triangle_count;
-}};
-
-layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {{
-	Camera camera;
-}};
-
-layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {{
-	Mesh meshes[];
-}};
-
-layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {{
-	vec3 vertex_positions[];
-}};
-
-layout(set=0,binding=4,scalar) buffer readonly VertexIndices {{
-	uint16_t vertex_indices[];
-}};
-
-layout(set=0,binding=5,scalar) buffer readonly PrimitiveIndices {{
-	uint8_t primitive_indices[];
-}};
-
-layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {{
-	Meshlet meshlets[];
-}};
-
-layout(triangles, max_vertices={VERTEX_COUNT}, max_primitives={TRIANGLE_COUNT}) out;
-layout(local_size_x=128) in;
-void main() {{
-	uint meshlet_index = gl_WorkGroupID.x;
-
-	Meshlet meshlet = meshlets[meshlet_index];
-	Mesh mesh = meshes[meshlet.instance_index];
-
-	uint instance_index = meshlet.instance_index;
-
-	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
-
-	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {{
-		uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
-		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
-		// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions[vertex_index], 1.0);
-	}}
-	
-	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {{
-		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
-		uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
-		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-		out_instance_index[gl_LocalInvocationID.x] = instance_index;
-		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
-	}}
-}}", TRIANGLE_COUNT=TRIANGLE_COUNT, VERTEX_COUNT=VERTEX_COUNT);
-
-			let visibility_pass_fragment_source = r#"
-				#version 450
-				#pragma shader_stage(fragment)
-
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_shader_explicit_arithmetic_types : enable
-				#extension GL_EXT_buffer_reference: enable
-				#extension GL_EXT_buffer_reference2: enable
-				#extension GL_EXT_mesh_shader: require
-
-				layout(location=0) perprimitiveEXT flat in uint in_instance_index;
-				layout(location=1) perprimitiveEXT flat in uint in_primitive_index;
-
-				layout(location=0) out uint out_primitive_index;
-				layout(location=1) out uint out_instance_id;
-
-				void main() {
-					out_primitive_index = in_primitive_index;
-					out_instance_id = in_instance_index;
-				}
-			"#;
-
-			// let visibility_pass_vertex_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Vertex, visibility_pass_vertex_source.as_bytes());
-			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Mesh, visibility_pass_mesh_source.as_bytes());
-			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Fragment, visibility_pass_fragment_source.as_bytes());
+			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Mesh, VISIBILITY_PASS_MESH_SOURCE.as_bytes());
+			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Fragment, VISIBILITY_PASS_FRAGMENT_SOURCE.as_bytes());
 
 			let visibility_pass_shaders = [
 				(&visibility_pass_mesh_shader, render_system::ShaderTypes::Mesh, vec![]),
@@ -432,131 +614,6 @@ void main() {{
 			let material_evaluation_dispatches = render_system.create_buffer(Some("Material Evaluation Dipatches"), std::mem::size_of::<[[u32; 3]; MAX_MATERIALS]>(), render_system::Uses::Storage | render_system::Uses::TransferDestination | render_system::Uses::Indirect, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let material_xy = render_system.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
-
-			let material_count_source = r#"
-				#version 450
-				#pragma shader_stage(compute)
-
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_buffer_reference2: enable
-				#extension GL_EXT_shader_explicit_arithmetic_types : enable
-
-				struct Mesh {
-					mat4 model;
-					uint material_index;
-					uint32_t base_vertex_index;
-				};
-
-				layout(set=0,binding=1,scalar) buffer MeshesBuffer {
-					Mesh meshes[];
-				};
-
-				layout(set=1,binding=0,scalar) buffer MaterialCount {
-					uint material_count[];
-				};
-
-				layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
-
-				layout(local_size_x=32, local_size_y=32) in;
-				void main() {
-					// If thread is out of bound respect to the material_id texture, return
-					if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
-
-					uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
-
-					if (pixel_instance_index == 0xFFFFFFFF) { return; }
-
-					uint material_index = meshes[pixel_instance_index].material_index;
-
-					atomicAdd(material_count[material_index], 1);
-				}
-			"#;
-
-			let material_offset_source = r#"
-				#version 450
-				#pragma shader_stage(compute)
-
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_buffer_reference2: enable
-				#extension GL_EXT_shader_explicit_arithmetic_types : enable
-
-				layout(set=1,binding=0,scalar) buffer MaterialCount {
-					uint material_count[];
-				};
-
-				layout(set=1,binding=1,scalar) buffer MaterialOffset {
-					uint material_offset[];
-				};
-
-				layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
-					uint material_offset_scratch[];
-				};
-
-				layout(set=1,binding=3,scalar) buffer MaterialEvaluationDispatches {
-					uvec3 material_evaluation_dispatches[];
-				};
-
-				layout(local_size_x=1) in;
-				void main() {
-					uint sum = 0;
-
-					for (uint i = 0; i < 4; i++) {
-						material_offset[i] = sum;
-						material_offset_scratch[i] = sum;
-						material_evaluation_dispatches[i] = uvec3((material_count[i] + 31) / 32, 1, 1);
-						sum += material_count[i];
-					}
-				}
-			"#;
-
-			let pixel_mapping_source = r#"
-				#version 450
-				#pragma shader_stage(compute)
-
-				#extension GL_EXT_scalar_block_layout: enable
-				#extension GL_EXT_buffer_reference2: enable
-				#extension GL_EXT_shader_explicit_arithmetic_types : enable
-
-				struct Mesh {
-					mat4 model;
-					uint material_index;
-					uint32_t base_vertex_index;
-				};
-
-				layout(set=0,binding=1,scalar) buffer MeshesBuffer {
-					Mesh meshes[];
-				};
-
-				layout(set=1,binding=1,scalar) buffer MaterialOffset {
-					uint material_offset[];
-				};
-
-				layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
-					uint material_offset_scratch[];
-				};
-
-				layout(set=1,binding=4,scalar) buffer PixelMapping {
-					u16vec2 pixel_mapping[];
-				};
-
-				layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
-
-				layout(local_size_x=32, local_size_y=32) in;
-				void main() {
-					// If thread is out of bound respect to the material_id texture, return
-					if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
-
-					uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
-
-					if (pixel_instance_index == 0xFFFFFFFF) { return; }
-
-					uint material_index = meshes[pixel_instance_index].material_index;
-
-					uint offset = atomicAdd(material_offset_scratch[material_index], 1);
-
-					pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
-				}
-			"#;
 
 			let bindings = [
 				render_system::DescriptorSetLayoutBinding {
@@ -674,13 +731,13 @@ void main() {{
 				},
 			]);
 
-			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_count_source.as_bytes());
+			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, MATERIAL_COUNT_SOURCE.as_bytes());
 			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_count_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let material_offset_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, material_offset_source.as_bytes());
+			let material_offset_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, MATERIAL_OFFSET_SOURCE.as_bytes());
 			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_offset_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, pixel_mapping_source.as_bytes());
+			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, PIXEL_MAPPING_SOURCE.as_bytes());
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let light_data_buffer = render_system.create_buffer(Some("Light Data"), std::mem::size_of::<LightingData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -856,62 +913,6 @@ void main() {{
 
 			let material_evaluation_pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[render_system::PushConstantRange{ offset: 0, size: 4 }]);
 
-			let tone_mapping_shader = r#"
-			#version 450
-			#pragma shader_stage(compute)
-
-			#extension GL_EXT_scalar_block_layout: enable
-			#extension GL_EXT_buffer_reference2: enable
-			#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
-
-			layout(set=0, binding=0, rgba16) uniform readonly image2D source;
-			layout(set=0, binding=1, rgba8) uniform image2D result;
-
-			vec3 ACESNarkowicz(vec3 x) {
-				const float a = 2.51;
-				const float b = 0.03;
-				const float c = 2.43;
-				const float d = 0.59;
-				const float e = 0.14;
-				return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
-			}
-
-			const mat3 ACES_INPUT_MAT = mat3(
-				vec3( 0.59719,  0.35458,  0.04823),
-				vec3( 0.07600,  0.90834,  0.01566),
-				vec3( 0.02840,  0.13383,  0.83777)
-			);
-
-			const mat3 ACES_OUTPUT_MAT = mat3(
-				vec3( 1.60475, -0.53108, -0.07367),
-				vec3(-0.10208,  1.10813, -0.00605),
-				vec3(-0.00327, -0.07276,  1.07602)
-			);
-
-			vec3 RRTAndODTFit(vec3 v) {
-				vec3 a = v * (v + 0.0245786) - 0.000090537;
-				vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
-				return a / b;
-			}
-
-			vec3 ACESFitted(vec3 x) {
-				return clamp(ACES_OUTPUT_MAT * RRTAndODTFit(ACES_INPUT_MAT * x), 0.0, 1.0);
-			}
-
-			layout(local_size_x=32, local_size_y=32) in;
-			void main() {
-				if (gl_GlobalInvocationID.x >= imageSize(source).x || gl_GlobalInvocationID.y >= imageSize(source).y) { return; }
-
-				vec4 source_color = imageLoad(source, ivec2(gl_GlobalInvocationID.xy));
-
-				vec3 result_color = ACESNarkowicz(source_color.rgb);
-
-				result_color = pow(result_color, vec3(1.0 / 2.2));
-
-				imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(result_color, 1.0));
-			}
-			"#;
-
 			let result = render_system.create_image(Some("result"), Extent::new(1920, 1080, 1), render_system::Formats::RGBAu8, None, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let tone_map_pass = {
@@ -970,7 +971,7 @@ void main() {{
 					},
 				]);
 
-				let tone_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, tone_mapping_shader.as_bytes());
+				let tone_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, TONE_MAPPING_SHADER.as_bytes());
 				let tone_mapping_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 				ToneMapPass {
@@ -1117,7 +1118,7 @@ void main() {
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
 			.add_listener::<camera::Camera>()
-			.add_listener::<Mesh>()
+			.add_listener::<mesh::Mesh>()
 			.add_listener::<window_system::Window>()
 			.add_listener::<DirectionalLight>()
 			.add_listener::<PointLight>()
@@ -1708,13 +1709,13 @@ struct MaterialData {
 	textures: [u32; 16],
 }
 
-impl orchestrator::EntitySubscriber<Mesh> for VisibilityWorldRenderDomain {
-	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Mesh>, mesh: &Mesh) {
+impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
+	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
 		let mut render_system = render_system.get_mut();
 		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
-		orchestrator.tie_self(Self::transform, &handle, Mesh::transform);
+		orchestrator.tie_self(Self::transform, &handle, mesh::Mesh::transform);
 
 		{
 			let resource_manager = orchestrator.get_by_class::<resource_manager::resource_manager::ResourceManager>();
@@ -1920,31 +1921,3 @@ impl orchestrator::EntitySubscriber<PointLight> for VisibilityWorldRenderDomain 
 
 impl Entity for VisibilityWorldRenderDomain {}
 impl System for VisibilityWorldRenderDomain {}
-
-use crate::orchestrator::{Component, EntityHandle};
-
-#[derive(component_derive::Component)]
-pub struct Mesh{
-	pub resource_id: &'static str,
-	pub material_id: &'static str,
-	#[field] pub transform: maths_rs::Mat4f,
-}
-
-pub struct MeshParameters {
-	pub resource_id: &'static str,
-	pub transform: maths_rs::Mat4f,
-}
-
-impl Entity for Mesh {}
-
-impl Mesh {
-	fn set_transform(&mut self, _orchestrator: orchestrator::OrchestratorReference, value: maths_rs::Mat4f) { self.transform = value; }
-
-	fn get_transform(&self) -> maths_rs::Mat4f { self.transform }
-
-	pub const fn transform() -> orchestrator::Property<(), Self, maths_rs::Mat4f> { orchestrator::Property::Component { getter: Mesh::get_transform, setter: Mesh::set_transform } }
-}
-
-impl Component for Mesh {
-	// type Parameters<'a> = MeshParameters;
-}

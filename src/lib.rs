@@ -19,7 +19,6 @@ pub mod input_manager;
 pub mod file_tracker;
 pub mod executor;
 pub mod camera;
-pub mod render_domain;
 
 pub mod math;
 pub mod rendering;

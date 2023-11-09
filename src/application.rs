@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, render_domain, resource_manager, file_tracker};
+use crate::{orchestrator, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -127,7 +127,7 @@ pub struct GraphicsApplication {
 	window_system_handle: orchestrator::EntityHandle<window_system::WindowSystem>,
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
-	visibility_render_domain_handle: orchestrator::EntityHandle<render_domain::VisibilityWorldRenderDomain>,
+	visibility_render_domain_handle: orchestrator::EntityHandle<rendering::visibility_model::render_domain::VisibilityWorldRenderDomain>,
 	render_system_handle: orchestrator::EntityHandle<render_system::RenderSystemImplementation>,
 }
 
@@ -165,7 +165,7 @@ impl Application for GraphicsApplication {
 
 		let render_system_handle = rendering::create_render_system(&orchestrator);
 
-		let visibility_render_domain_handle = orchestrator.spawn_entity(render_domain::VisibilityWorldRenderDomain::new()).unwrap();
+		let visibility_render_domain_handle = orchestrator.spawn_entity(rendering::visibility_model::render_domain::VisibilityWorldRenderDomain::new()).unwrap();
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
@@ -224,7 +224,7 @@ impl Application for GraphicsApplication {
 		// 	visibility_render_domain.render(self.get_orchestrator(), render_system, self.tick_count as u32);
 		// });
 		
-		self.application.get_orchestrator().invoke_mut(self.visibility_render_domain_handle.copy(), render_domain::VisibilityWorldRenderDomain::render);
+		self.application.get_orchestrator().invoke_mut(self.visibility_render_domain_handle.copy(), rendering::visibility_model::render_domain::VisibilityWorldRenderDomain::render);
 
 		if !window_res {
 			self.application.close();

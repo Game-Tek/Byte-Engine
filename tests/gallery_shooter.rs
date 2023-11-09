@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self, System,}, render_domain::{Mesh, MeshParameters}, math};
+use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh};
 use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
@@ -29,10 +29,10 @@ fn gallery_shooter() {
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
-	let duck_1: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
-	let duck_2: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
-	let duck_3: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
-	let duck_4: EntityHandle<Mesh> = orchestrator.spawn(Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
+	let duck_1: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale, });
+	let duck_2: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
+	let duck_3: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
+	let duck_4: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
 
 	app.do_loop();
 
@@ -40,7 +40,7 @@ fn gallery_shooter() {
 }
 
 struct Player {
-	mesh: EntityHandle<Mesh>,
+	mesh: EntityHandle<mesh::Mesh>,
 	camera: EntityHandle<byte_engine::camera::Camera>,
 }
 
@@ -73,7 +73,7 @@ impl Player {
 
 			Self {
 				camera: camera_handle,
-				mesh: orchestrator.spawn(Mesh{ resource_id: "Box", material_id: "solid", transform, }),
+				mesh: orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform, }),
 			}
 		})
 	}
@@ -94,6 +94,6 @@ impl Player {
 		transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.0f32));
 		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
 
-		orchestrator.set_property(&self.mesh, Mesh::transform, transform);
+		orchestrator.set_property(&self.mesh, mesh::Mesh::transform, transform);
 	}
 }

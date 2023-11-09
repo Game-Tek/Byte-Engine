@@ -17,7 +17,7 @@ struct VisibilityInfo {
 struct ToneMapPass {
 	pipeline_layout: render_system::PipelineLayoutHandle,
 	pipeline: render_system::PipelineHandle,
-	descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
+	descriptor_set_layout: render_system::DescriptorSetTemplateHandle,
 	descriptor_set: render_system::DescriptorSetHandle,
 }
 
@@ -52,8 +52,10 @@ pub struct VisibilityWorldRenderDomain {
 	camera_data_buffer_handle: render_system::BaseBufferHandle,
 	materials_data_buffer_handle: render_system::BaseBufferHandle,
 
-	descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
+	descriptor_set_layout: render_system::DescriptorSetTemplateHandle,
 	descriptor_set: render_system::DescriptorSetHandle,
+
+	textures_binding: render_system::DescriptorSetBindingHandle,
 
 	transfer_synchronizer: render_system::SynchronizerHandle,
 	transfer_command_buffer: render_system::CommandBufferHandle,
@@ -92,7 +94,7 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_dispatches: render_system::BaseBufferHandle,
 	material_xy: render_system::BaseBufferHandle,
 
-	material_evaluation_descriptor_set_layout: render_system::DescriptorSetLayoutHandle,
+	material_evaluation_descriptor_set_layout: render_system::DescriptorSetTemplateHandle,
 	material_evaluation_descriptor_set: render_system::DescriptorSetHandle,
 	material_evaluation_pipeline_layout: render_system::PipelineLayoutHandle,
 
@@ -418,7 +420,7 @@ impl VisibilityWorldRenderDomain {
 			let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
 
 			let bindings = [
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "CameraData",
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -426,7 +428,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MeshData",
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -434,7 +436,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "vertex positions",
 					binding: 2,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -442,7 +444,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "vertex normals",
 					binding: 3,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -450,7 +452,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "vertex indices",
 					binding: 4,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -458,7 +460,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "primitive indices",
 					binding: 5,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -466,7 +468,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "meshlet data",
 					binding: 6,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -474,7 +476,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "textures",
 					binding: 7,
 					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
@@ -484,9 +486,18 @@ impl VisibilityWorldRenderDomain {
 				},
 			];
 
-			let descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Base Set Layout"), &bindings);
+			let descriptor_set_layout = render_system.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
 
-			let descriptor_set = render_system.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout, &bindings);
+			let descriptor_set = render_system.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
+
+			let camera_data_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[0]);
+			let meshes_data_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[1]);
+			let vertex_positions_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[2]);
+			let vertex_normals_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[3]);
+			let vertex_indices_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[4]);
+			let primitive_indices_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[5]);
+			let meshlets_data_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[6]);
+			let textures_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[7]);
 
 			let pipeline_layout_handle = render_system.create_pipeline_layout(&[descriptor_set_layout], &[]);
 			
@@ -516,44 +527,37 @@ impl VisibilityWorldRenderDomain {
 
 			render_system.write(&[
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 0,
+					binding_handle: camera_data_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 1,
+					binding_handle: meshes_data_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 2,
+					binding_handle: vertex_positions_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: vertex_positions_buffer_handle, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 3,
+					binding_handle: vertex_normals_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: vertex_normals_buffer_handle, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 4,
+					binding_handle: vertex_indices_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: vertex_indices_buffer_handle, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 5,
+					binding_handle: primitive_indices_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: primitive_indices_buffer_handle, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite {
-					descriptor_set,
-					binding: 6,
+					binding_handle: meshlets_data_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer { handle: meshlets_data_buffer, size: render_system::Ranges::Whole },
 				},
@@ -616,7 +620,7 @@ impl VisibilityWorldRenderDomain {
 			let material_xy = render_system.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let bindings = [
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialCount",
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -624,7 +628,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialOffset",
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -632,7 +636,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialOffsetScratch",
 					binding: 2,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -640,7 +644,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialEvaluationDispatches",
 					binding: 3,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -648,7 +652,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialXY",
 					binding: 4,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
@@ -656,7 +660,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialId",
 					binding: 5,
 					descriptor_type: render_system::DescriptorType::StorageImage,
@@ -664,7 +668,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "VertexId",
 					binding: 6,
 					descriptor_type: render_system::DescriptorType::StorageImage,
@@ -672,7 +676,7 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "InstanceId",
 					binding: 7,
 					descriptor_type: render_system::DescriptorType::StorageImage,
@@ -682,50 +686,52 @@ impl VisibilityWorldRenderDomain {
 				},
 			];
 
-			let visibility_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Visibility Set Layout"), &bindings);
+			let visibility_descriptor_set_layout = render_system.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
 			let visibility_pass_pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout], &[]);
-			let visibility_passes_descriptor_set = render_system.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout, &bindings);
+			let visibility_passes_descriptor_set = render_system.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout);
+
+			let material_count_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[0]);
+			let material_offset_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[1]);
+			let material_offset_scratch_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[2]);
+			let material_evaluation_dispatches_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[3]);
+			let material_xy_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[4]);
+			let material_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[5]);
+			let vertex_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[6]);
+			let instance_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[7]);
 
 			render_system.write(&[
 				render_system::DescriptorWrite { // MaterialCount
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 0,
+					binding_handle: material_count_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_count, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite { // MaterialOffset
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 1,
+					binding_handle: material_offset_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_offset, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite { // MaterialOffsetScratch
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 2,
+					binding_handle: material_offset_scratch_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_offset_scratch, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite { // MaterialEvaluationDispatches
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 3,
+					binding_handle: material_evaluation_dispatches_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_evaluation_dispatches, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite { // MaterialXY
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 4,
+					binding_handle: material_xy_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: material_xy, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite { // Primitive Index
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 6,
+					binding_handle: vertex_id_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Image{ handle: primitive_index, layout: render_system::Layouts::General },
 				},
 				render_system::DescriptorWrite { // InstanceId
-					descriptor_set: visibility_passes_descriptor_set,
-					binding: 7,
+					binding_handle: instance_id_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Image{ handle: instance_id, layout: render_system::Layouts::General },
 				},
@@ -749,7 +755,7 @@ impl VisibilityWorldRenderDomain {
 			let materials_data_buffer_handle = render_system.create_buffer(Some("Materials Data"), MAX_MATERIALS * std::mem::size_of::<MaterialData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let bindings = [
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "albedo",
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::StorageImage,
@@ -757,81 +763,41 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "MeshBuffer",
+				render_system::DescriptorSetBindingTemplate {
+					name: "CameraData",
 					binding: 1,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "Positions",
+				render_system::DescriptorSetBindingTemplate {
+					name: "debug_position",
 					binding: 2,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "Normals",
+				render_system::DescriptorSetBindingTemplate {
+					name: "debug_normals",
 					binding: 3,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
+					descriptor_type: render_system::DescriptorType::StorageImage,
 					descriptor_count: 1,
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "Indeces",
+				render_system::DescriptorSetBindingTemplate {
+					name: "LightData",
 					binding: 4,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
 					stages: render_system::Stages::COMPUTE,
 					immutable_samplers: None,
 				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "CameraData",
-					binding: 5,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "MeshData",
-					binding: 6,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "debug_position",
-					binding: 7,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "debug_normals",
-					binding: 8,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetLayoutBinding {
-					name: "LightData",
-					binding: 9,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetLayoutBinding {
+				render_system::DescriptorSetBindingTemplate {
 					name: "MaterialsData",
-					binding: 10,
+					binding: 5,
 					descriptor_type: render_system::DescriptorType::StorageBuffer,
 					descriptor_count: 1,
 					stages: render_system::Stages::COMPUTE,
@@ -839,73 +805,44 @@ impl VisibilityWorldRenderDomain {
 				},
 			];	
 
-			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Material Evaluation Set Layout"), &bindings);
-			let material_evaluation_descriptor_set = render_system.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout, &bindings);
+			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
+			let material_evaluation_descriptor_set = render_system.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
+
+			let albedo_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[0]);
+			let camera_data_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[1]);
+			let debug_position_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[2]);
+			let debug_normals_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[3]);
+			let light_data_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[4]);
+			let materials_data_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[5]);
 
 			render_system.write(&[
 				render_system::DescriptorWrite { // albedo
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 0,
+					binding_handle: albedo_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Image{ handle: albedo, layout: render_system::Layouts::General },
 				},
-				render_system::DescriptorWrite { // MeshBuffer
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 1,
-					array_element: 0,
-					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: render_system::Ranges::Whole },
-				},
-				render_system::DescriptorWrite { // Positions
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 2,
-					array_element: 0,
-					descriptor: render_system::Descriptor::Buffer{ handle: vertex_positions_buffer_handle, size: render_system::Ranges::Whole },
-				},
-				render_system::DescriptorWrite { // Normals
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 3,
-					array_element: 0,
-					descriptor: render_system::Descriptor::Buffer{ handle: vertex_normals_buffer_handle, size: render_system::Ranges::Whole },
-				},
-				render_system::DescriptorWrite { // Indeces
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 4,
-					array_element: 0,
-					descriptor: render_system::Descriptor::Buffer{ handle: vertex_indices_buffer_handle, size: render_system::Ranges::Whole },
-				},
 				render_system::DescriptorWrite { // CameraData
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 5,
+					binding_handle: camera_data_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: render_system::Ranges::Whole },
 				},
-				render_system::DescriptorWrite { // MeshData
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 6,
-					array_element: 0,
-					descriptor: render_system::Descriptor::Buffer{ handle: meshes_data_buffer, size: render_system::Ranges::Whole },
-				},
 				render_system::DescriptorWrite { // debug_position
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 7,
+					binding_handle: debug_position_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Image{ handle: debug_position, layout: render_system::Layouts::General }
 				},
 				render_system::DescriptorWrite { // debug_normals
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 8,
+					binding_handle: debug_normals_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Image{ handle: debug_normals, layout: render_system::Layouts::General }
 				},
 				render_system::DescriptorWrite { // LightData
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 9,
+					binding_handle: light_data_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: light_data_buffer, size: render_system::Ranges::Whole },
 				},
 				render_system::DescriptorWrite { // MaterialsData
-					descriptor_set: material_evaluation_descriptor_set,
-					binding: 10,
+					binding_handle: materials_data_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::Buffer{ handle: materials_data_buffer_handle, size: render_system::Ranges::Whole },
 				},
@@ -916,8 +853,8 @@ impl VisibilityWorldRenderDomain {
 			let result = render_system.create_image(Some("result"), Extent::new(1920, 1080, 1), render_system::Formats::RGBAu8, None, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let tone_map_pass = {
-				let descriptor_set_layout = render_system.create_descriptor_set_layout(Some("Tonemap Pass Set Layout"), &[
-					render_system::DescriptorSetLayoutBinding {
+				let bindings = [
+					render_system::DescriptorSetBindingTemplate {
 						name: "source",
 						binding: 0,
 						descriptor_type: render_system::DescriptorType::StorageImage,
@@ -925,7 +862,7 @@ impl VisibilityWorldRenderDomain {
 						stages: render_system::Stages::COMPUTE,
 						immutable_samplers: None,
 					},
-					render_system::DescriptorSetLayoutBinding {
+					render_system::DescriptorSetBindingTemplate {
 						name: "result",
 						binding: 1,
 						descriptor_type: render_system::DescriptorType::StorageImage,
@@ -933,39 +870,25 @@ impl VisibilityWorldRenderDomain {
 						stages: render_system::Stages::COMPUTE,
 						immutable_samplers: None,
 					},
-				]);
+				];
+
+				let descriptor_set_layout = render_system.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &bindings);
 
 				let pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
-				let descriptor_set = render_system.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout, &[
-					render_system::DescriptorSetLayoutBinding {
-						name: "source",
-						binding: 0,
-						descriptor_type: render_system::DescriptorType::StorageImage,
-						descriptor_count: 1,
-						stages: render_system::Stages::COMPUTE,
-						immutable_samplers: None,
-					},
-					render_system::DescriptorSetLayoutBinding {
-						name: "result",
-						binding: 1,
-						descriptor_type: render_system::DescriptorType::StorageImage,
-						descriptor_count: 1,
-						stages: render_system::Stages::COMPUTE,
-						immutable_samplers: None,
-					},
-				]);
+				let descriptor_set = render_system.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
+
+				let albedo_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[0]);
+				let result_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[1]);
 
 				render_system.write(&[
 					render_system::DescriptorWrite {
-						descriptor_set,
-						binding: 0,
+						binding_handle: albedo_binding,
 						array_element: 0,
 						descriptor: render_system::Descriptor::Image{ handle: albedo, layout: render_system::Layouts::General },
 					},
 					render_system::DescriptorWrite {
-						descriptor_set,
-						binding: 1,
+						binding_handle: result_binding,
 						array_element: 0,
 						descriptor: render_system::Descriptor::Image{ handle: result, layout: render_system::Layouts::General },
 					},
@@ -986,8 +909,8 @@ impl VisibilityWorldRenderDomain {
 			
 			let top_level_acceleration_structure = render_system.create_top_level_acceleration_structure(Some("Top Level Acceleration Structure"));
 
-			let rt_pass_descriptor_set_layout = render_system.create_descriptor_set_layout(Some("RT Pass Set Layout"), &[
-				render_system::DescriptorSetLayoutBinding {
+			let bindings = [
+				render_system::DescriptorSetBindingTemplate {
 					name: "top level acc str",
 					binding: 0,
 					descriptor_type: render_system::DescriptorType::AccelerationStructure,
@@ -995,25 +918,19 @@ impl VisibilityWorldRenderDomain {
 					stages: render_system::Stages::RAYGEN,
 					immutable_samplers: None,
 				},
-			]);
+			];
+
+			let rt_pass_descriptor_set_layout = render_system.create_descriptor_set_template(Some("RT Pass Set Layout"), &bindings);
 
 			let _rt_pass_pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout, rt_pass_descriptor_set_layout], &[]);
+				
+			let rt_pass_descriptor_set = render_system.create_descriptor_set(Some("RT Pass Descriptor Set"), &rt_pass_descriptor_set_layout);
 
-			let rt_pass_descriptor_set = render_system.create_descriptor_set(Some("RT Pass Descriptor Set"), &rt_pass_descriptor_set_layout, &[
-				render_system::DescriptorSetLayoutBinding {
-					name: "top level acc str",
-					binding: 0,
-					descriptor_type: render_system::DescriptorType::AccelerationStructure,
-					descriptor_count: 1,
-					stages: render_system::Stages::RAYGEN,
-					immutable_samplers: None,
-				},
-			]);
+			let top_level_binding = render_system.create_descriptor_binding(rt_pass_descriptor_set, &bindings[0]);
 
 			render_system.write(&[
 				render_system::DescriptorWrite {
-					descriptor_set: rt_pass_descriptor_set,
-					binding: 0,
+					binding_handle: top_level_binding,
 					array_element: 0,
 					descriptor: render_system::Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure },
 				},
@@ -1047,6 +964,8 @@ void main() {
 
 				descriptor_set_layout,
 				descriptor_set,
+
+				textures_binding,
 
 				albedo,
 				depth_target,
@@ -1148,8 +1067,7 @@ void main() {
 
 					render_system.write(&[
 						render_system::DescriptorWrite {
-							descriptor_set: self.descriptor_set,
-							binding: 5,
+							binding_handle: self.textures_binding,
 							array_element: 0,
 							descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: new_texture, sampler_handle: sampler, layout: render_system::Layouts::Read },
 						},

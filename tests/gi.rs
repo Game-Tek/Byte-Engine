@@ -21,7 +21,7 @@ fn gi() {
 	});
 
 	let _floor: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "white_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, -0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(5.0, 1.0, 2.5)), });
-	let _a: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Suzanne", material_id: "white_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.4, 0.4, 0.4)), });
+	let _a: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Sphere", material_id: "white_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.4, 0.4, 0.4)), });
 	let _b: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "red_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-0.6, 0.17, -0.1)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.34, 0.34, 0.34)), });
 	let _c: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "green_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.13, -0.3)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.26, 0.26, 0.26)), });
 

@@ -158,8 +158,8 @@ layout(set=1,binding=4,scalar) buffer PixelMapping {
 layout(set=1, binding=6, r32ui) uniform readonly uimage2D triangle_index;
 layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_id;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
-layout(set=2, binding=7, rgba16) uniform image2D out_position;
-layout(set=2, binding=8, rgba16) uniform image2D out_normals;
+layout(set=2, binding=2, rgba16) uniform image2D out_position;
+layout(set=2, binding=3, rgba16) uniform image2D out_normals;
 
 struct BarycentricDeriv {
 	vec3 lambda;
@@ -295,7 +295,7 @@ struct Camera {
 	mat4 view_projection;
 };
 
-layout(set=2,binding=5,scalar) buffer CameraBuffer {
+layout(set=2,binding=1,scalar) buffer CameraBuffer {
 	Camera camera;
 };
 
@@ -313,11 +313,11 @@ struct Material {
 	uint textures[16];
 };
 
-layout(set=2,binding=9,scalar) buffer readonly LightingBuffer {
+layout(set=2,binding=4,scalar) buffer readonly LightingBuffer {
 	LightingData lighting_data;
 };
 
-layout(set=2,binding=10,scalar) buffer readonly MaterialsBuffer {
+layout(set=2,binding=5,scalar) buffer readonly MaterialsBuffer {
 	Material materials[];
 };
 

@@ -82,10 +82,13 @@ pub struct MeshHandle(pub(super) u64);
 pub struct SynchronizerHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct DescriptorSetLayoutHandle(pub(super) u64);
+pub struct DescriptorSetTemplateHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetHandle(pub(super) u64);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DescriptorSetBindingHandle(pub(super) u64);
 
 /// Handle to a Pipeline Layout
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -116,7 +119,7 @@ pub enum Handle {
 	Image(ImageHandle),
 	Mesh(MeshHandle),
 	Synchronizer(SynchronizerHandle),
-	DescriptorSetLayout(DescriptorSetLayoutHandle),
+	DescriptorSetLayout(DescriptorSetTemplateHandle),
 	DescriptorSet(DescriptorSetHandle),
 	PipelineLayout(PipelineLayoutHandle),
 	Sampler(SamplerHandle),
@@ -317,13 +320,15 @@ pub trait RenderSystem: orchestrator::System {
 	/// Creates a shader.
 	fn create_shader(&mut self, shader_source_type: ShaderSourceType, stage: ShaderTypes, shader: &[u8]) -> ShaderHandle;
 
-	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle;
+	fn create_descriptor_set_template(&mut self, name: Option<&str>, binding_templates: &[DescriptorSetBindingTemplate]) -> DescriptorSetTemplateHandle;
 
-	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle;
+	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_template_handle: &DescriptorSetTemplateHandle) -> DescriptorSetHandle;
+
+	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding_template: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle;
 
 	fn write(&self, descriptor_set_writes: &[DescriptorWrite]);
 
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
+	fn create_pipeline_layout(&mut self, descriptor_set_template_handles: &[DescriptorSetTemplateHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
 
 	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle;
 
@@ -709,7 +714,7 @@ AccelerationStructure,
 }
 
 /// Stores the information of a descriptor set layout binding.
-pub struct DescriptorSetLayoutBinding {
+pub struct DescriptorSetBindingTemplate {
 	pub name: &'static str,
 	/// The binding of the descriptor set layout binding.
 	pub binding: u32,
@@ -752,10 +757,7 @@ pub enum DescriptorInfo {
 
 /// Stores the information of a descriptor set write.
 pub struct DescriptorWrite {
-	/// The descriptor set to write to.
-	pub descriptor_set: DescriptorSetHandle,
-	/// The binding to write to.
-	pub binding: u32,
+	pub binding_handle: DescriptorSetBindingHandle,
 	/// The index of the array element to write to in the binding(if the binding is an array).
 	pub array_element: u32,
 	/// Information describing the descriptor.
@@ -960,12 +962,16 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_command_buffer_recording(command_buffer_handle, frame)
 	}
 
-	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout: &DescriptorSetLayoutHandle, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetHandle {
-		self.pointer.create_descriptor_set(name, descriptor_set_layout, bindings)
+	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle {
+		self.pointer.create_descriptor_binding(descriptor_set, binding)
 	}
 
-	fn create_descriptor_set_layout(&mut self, name: Option<&str>, bindings: &[DescriptorSetLayoutBinding]) -> DescriptorSetLayoutHandle {
-		self.pointer.create_descriptor_set_layout(name, bindings)
+	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &DescriptorSetTemplateHandle) -> DescriptorSetHandle {
+		self.pointer.create_descriptor_set(name, descriptor_set_layout_handle)
+	}
+
+	fn create_descriptor_set_template(&mut self, name: Option<&str>, bindings: &[DescriptorSetBindingTemplate]) -> DescriptorSetTemplateHandle {
+		self.pointer.create_descriptor_set_template(name, bindings)
 	}
 
 	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle {
@@ -980,7 +986,7 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
 	}
 
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetLayoutHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {
+	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetTemplateHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {
 		self.pointer.create_pipeline_layout(descriptor_set_layout_handles, push_constant_ranges)
 	}
 
@@ -1795,8 +1801,8 @@ pub(super) mod tests {
 
 		let sampler =  renderer.create_sampler();
 
-		let bindings = [
-			DescriptorSetLayoutBinding {
+		let descriptor_set_layout_handle = renderer.create_descriptor_set_template(None, &[
+			DescriptorSetBindingTemplate {
 				name: "sampler",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::Sampler,
@@ -1804,7 +1810,7 @@ pub(super) mod tests {
 				stages: Stages::FRAGMENT,
 				immutable_samplers: Some(vec![sampler]),
 			},
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "ubo",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageBuffer,
@@ -1812,7 +1818,7 @@ pub(super) mod tests {
 				stages: Stages::VERTEX,
 				immutable_samplers: None,
 			},
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "tex",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::SampledImage,
@@ -1820,16 +1826,46 @@ pub(super) mod tests {
 				stages: Stages::FRAGMENT,
 				immutable_samplers: None,
 			},
-		];
+		]);
 
-		let descriptor_set_layout_handle = renderer.create_descriptor_set_layout(None, &bindings);
+		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle,);
 
-		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle, &bindings);
+		let sampler_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "sampler",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::Sampler,
+				binding: 0,
+				stages: Stages::FRAGMENT,
+				immutable_samplers: Some(vec![sampler]),
+			},);
+
+		let ubo_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "ubo",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 1,
+				stages: Stages::VERTEX,
+				immutable_samplers: None,
+			},
+		);
+
+		let tex_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "tex",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::SampledImage,
+				binding: 2,
+				stages: Stages::FRAGMENT,
+				immutable_samplers: None,
+			},
+		);
 
 		renderer.write(&[
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: Ranges::Size(64) } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Image{ handle: sampled_texture, layout: Layouts::Read } },
+			DescriptorWrite { binding_handle: sampler_binding, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
+			DescriptorWrite { binding_handle: ubo_binding, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: Ranges::Size(64) } },
+			DescriptorWrite { binding_handle: tex_binding, array_element: 0, descriptor: Descriptor::Image{ handle: sampled_texture, layout: Layouts::Read } },
 		]);
 
 		assert!(!renderer.has_errors());
@@ -2045,7 +2081,7 @@ void main() {
 		});
 
 		let bindings = [
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "acceleration structure",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::AccelerationStructure,
@@ -2053,7 +2089,7 @@ void main() {
 				stages: Stages::RAYGEN,
 				immutable_samplers: None,
 			},
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "render target",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageImage,
@@ -2061,7 +2097,7 @@ void main() {
 				stages: Stages::RAYGEN,
 				immutable_samplers: None,
 			},
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "vertex positions",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageBuffer,
@@ -2069,7 +2105,7 @@ void main() {
 				stages: Stages::CLOSEST_HIT,
 				immutable_samplers: None,
 			},
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "vertex colors",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageBuffer,
@@ -2077,7 +2113,7 @@ void main() {
 				stages: Stages::CLOSEST_HIT,
 				immutable_samplers: None,
 			},
-			DescriptorSetLayoutBinding {
+			DescriptorSetBindingTemplate {
 				name: "indices",
 				descriptor_count: 1,
 				descriptor_type: DescriptorType::StorageBuffer,
@@ -2087,18 +2123,73 @@ void main() {
 			},
 		];
 
-		let descriptor_set_layout_handle = renderer.create_descriptor_set_layout(None, &bindings);
+		let descriptor_set_layout_handle = renderer.create_descriptor_set_template(None, &bindings);
 
-		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle, &bindings);
+		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
+
+		let acceleration_structure_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "acceleration structure",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::AccelerationStructure,
+				binding: 0,
+				stages: Stages::RAYGEN,
+				immutable_samplers: None,
+			},
+		);
+
+		let render_target_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "render target",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageImage,
+				binding: 1,
+				stages: Stages::RAYGEN,
+				immutable_samplers: None,
+			},
+		);
+
+		let vertex_positions_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "vertex positions",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 2,
+				stages: Stages::CLOSEST_HIT,
+				immutable_samplers: None,
+			},
+		);
+
+		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "vertex colors",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 3,
+				stages: Stages::CLOSEST_HIT,
+				immutable_samplers: None,
+			},
+		);
+
+		let indices_binding = renderer.create_descriptor_binding(descriptor_set,
+			&DescriptorSetBindingTemplate {
+				name: "indices",
+				descriptor_count: 1,
+				descriptor_type: DescriptorType::StorageBuffer,
+				binding: 4,
+				stages: Stages::CLOSEST_HIT,
+				immutable_samplers: None,
+			},
+		);
 
 		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		renderer.write(&[
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 0, array_element: 0, descriptor: Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 1, array_element: 0, descriptor: Descriptor::Image { handle: render_target, layout: Layouts::General } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 2, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_positions_buffer, size: Ranges::Size(12 * 3) } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 3, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_colors_buffer, size: Ranges::Size(16 * 3) } },
-			DescriptorWrite { descriptor_set: descriptor_set, binding: 4, array_element: 0, descriptor: Descriptor::Buffer { handle: index_buffer, size: Ranges::Size(2 * 3) } },
+			DescriptorWrite { binding_handle: acceleration_structure_binding, array_element: 0, descriptor: Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure } },
+			DescriptorWrite { binding_handle: render_target_binding, array_element: 0, descriptor: Descriptor::Image { handle: render_target, layout: Layouts::General } },
+			DescriptorWrite { binding_handle: vertex_positions_binding, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_positions_buffer, size: Ranges::Size(12 * 3) } },
+			DescriptorWrite { binding_handle: vertex_colors_binding, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_colors_buffer, size: Ranges::Size(16 * 3) } },
+			DescriptorWrite { binding_handle: indices_binding, array_element: 0, descriptor: Descriptor::Buffer { handle: index_buffer, size: Ranges::Size(2 * 3) } },
 		]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);

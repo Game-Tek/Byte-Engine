@@ -443,21 +443,30 @@ mod tests {
 
 		assert_eq!(mesh.index_streams.len(), 2);
 
+		let raw_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Raw).unwrap();
+
 		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
 
-		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
-		assert_eq!(mesh.index_streams[0].offset, offset);
-		assert_eq!(mesh.index_streams[0].count, 36);
-		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
+		assert_eq!(raw_index_stream.stream_type, IndexStreamTypes::Raw);
+		assert_eq!(raw_index_stream.offset, offset);
+		assert_eq!(raw_index_stream.count, 24);
+		assert_eq!(raw_index_stream.data_type, IntegralTypes::U16);
 
-		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
+		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
 		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
 
-		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
-		assert_eq!(mesh.index_streams[1].offset, offset);
-		assert_eq!(mesh.index_streams[1].count, 36);
-		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
+		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
+		assert_eq!(meshlet_index_stream.offset, offset);
+		assert_eq!(meshlet_index_stream.count, 36);
+		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
+
+		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
+
+		let offset = offset + meshlet_index_stream.count as usize * meshlet_index_stream.data_type.size();
+
+		assert_eq!(meshlet_stream_info.offset, offset);
+		assert_eq!(meshlet_stream_info.count, 1);
 
 		let resource_request = resource_manager.request_resource("Box");
 
@@ -591,7 +600,7 @@ mod tests {
 
 		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
 		assert_eq!(mesh.index_streams[0].offset, offset);
-		assert_eq!(mesh.index_streams[0].count, 36);
+		assert_eq!(mesh.index_streams[0].count, 24);
 		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
 
 		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
@@ -600,6 +609,13 @@ mod tests {
 		assert_eq!(mesh.index_streams[1].offset, offset);
 		assert_eq!(mesh.index_streams[1].count, 36);
 		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
+
+		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
+
+		let offset = offset + mesh.index_streams[1].count as usize * mesh.index_streams[1].data_type.size();
+
+		assert_eq!(meshlet_stream_info.offset, offset);
+		assert_eq!(meshlet_stream_info.count, 1);
 
 		// Cast buffer to Vector3<f32>
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
@@ -620,7 +636,7 @@ mod tests {
 		// Cast buffer + 12 * 24 + 12 * 24 to u16
 		let indeces = unsafe { std::slice::from_raw_parts((buffer.as_ptr().add(12 * 24 + 12 * 24)) as *const u16, mesh.index_streams[0].count as usize) };
 
-		assert_eq!(indeces.len(), 36);
+		assert_eq!(indeces.len(), 24);
 		assert_eq!(indeces[0], 0);
 		assert_eq!(indeces[1], 1);
 		assert_eq!(indeces[2], 2);
@@ -678,7 +694,7 @@ mod tests {
 					// Cast index_buffer to u16
 					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_streams[0].count as usize) };
 
-					assert_eq!(index_buffer.len(), 36);
+					assert_eq!(index_buffer.len(), 24);
 					assert_eq!(index_buffer[0], 0);
 					assert_eq!(index_buffer[1], 1);
 					assert_eq!(index_buffer[2], 2);
@@ -745,7 +761,7 @@ mod tests {
 
 					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_streams[0].count as usize) };
 
-					assert_eq!(index_buffer.len(), 36);
+					assert_eq!(index_buffer.len(), 24);
 					assert_eq!(index_buffer[0], 0);
 					assert_eq!(index_buffer[1], 1);
 					assert_eq!(index_buffer[2], 2);

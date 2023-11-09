@@ -3,7 +3,7 @@ use std::io::Read;
 use log::{warn, debug, error};
 use serde::{Serialize, Deserialize};
 
-use crate::{rendering::render_system, jspd::{self}};
+use crate::{rendering::{render_system, self}, jspd::{self}};
 
 use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
 
@@ -192,17 +192,7 @@ impl MaterialResourcerHandler {
 
 		let compilation_artifact = match binary { Ok(binary) => { binary } Err(err) => {
 			let error_string = err.to_string();
-			let errors = error_string.lines().filter(|error| error.starts_with("shader_name:")).map(|error| (error.split(':').nth(1).unwrap(), error.split(':').nth(4).unwrap())).map(|(error_line_number_string, error)| (error_line_number_string.trim().parse::<usize>().unwrap(), error.trim())).collect::<Vec<_>>();
-			let mut error_string = String::new();
-
-			for (error_line_index, error) in errors {
-				let previous_line = glsl.lines().nth(error_line_index - 1).unwrap_or("");
-				let current_line = glsl.lines().nth(error_line_index).unwrap_or("");
-				let next_line = glsl.lines().nth(error_line_index + 1).unwrap_or("");
-
-				error_string.push_str(&format!("{}	Error: {}\n{}\n{}\n", previous_line, current_line, next_line, error));
-			}
-
+			let error_string = rendering::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
 			error!("Error compiling shader:\n{}", error_string);
 			return Some(Err(err.to_string()));
 		} };

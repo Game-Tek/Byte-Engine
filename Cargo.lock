@@ -143,6 +143,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "bitflags 2.4.1",
+ "colored",
  "component_derive",
  "dual_quaternion",
  "futures",

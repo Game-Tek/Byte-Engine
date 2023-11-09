@@ -15,6 +15,8 @@ mod vulkan_render_system;
 
 pub mod visibility_model;
 
+pub(crate) mod shader_compilation;
+
 pub fn create_render_system(orchestrator: &orchestrator::Orchestrator) -> orchestrator::EntityHandle<render_system::RenderSystemImplementation> {
 	orchestrator.spawn_entity(vulkan_render_system::VulkanRenderSystem::new_as_system()).unwrap()
 }

@@ -2,7 +2,7 @@ use std::{collections::HashMap,};
 
 use ash::vk;
 
-use crate::{orchestrator, window_system, render_debugger::RenderDebugger, rendering::render_system};
+use crate::{orchestrator, window_system, render_debugger::RenderDebugger, rendering::{render_system, self}};
 
 #[cfg(not(test))]
 use log::{warn, error, debug};
@@ -134,16 +134,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					},
 					Err(err) => {
 						let error_string = err.to_string();
-						let errors = error_string.lines().filter(|error| error.starts_with("shader_name:")).map(|error| (error.split(':').nth(1).unwrap(), error.split(':').nth(4).unwrap())).map(|(error_line_number_string, error)| (error_line_number_string.trim().parse::<usize>().unwrap(), error.trim())).collect::<Vec<_>>();
-						let mut error_string = String::new();
-
-						for (error_line_index, error) in errors {
-							let previous_line = shader_text.lines().nth(error_line_index - 1).unwrap_or("");
-							let current_line = shader_text.lines().nth(error_line_index).unwrap_or("");
-							let next_line = shader_text.lines().nth(error_line_index + 1).unwrap_or("");
-
-							error_string.push_str(&format!("{}\n{}	Error: {}\n{}\n", previous_line, current_line, error, next_line));
-						}
+						let error_string = rendering::shader_compilation::format_glslang_error("shader_name:", &error_string, &shader_text).unwrap_or(error_string);
 
 						error!("Error compiling shader:\n{}", error_string);
 						panic!("Error compiling shader: {}", err);

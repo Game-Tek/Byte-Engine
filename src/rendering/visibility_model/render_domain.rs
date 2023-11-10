@@ -1068,7 +1068,7 @@ void main() {
 					render_system.write(&[
 						render_system::DescriptorWrite {
 							binding_handle: self.textures_binding,
-							array_element: 0,
+							array_element: 0, // TODO: use actual array element
 							descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: new_texture, sampler_handle: sampler, layout: render_system::Layouts::Read },
 						},
 					]);

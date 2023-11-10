@@ -274,21 +274,8 @@ vec4 get_debug_color(uint i) {
 	);
 
 	return colors[i % 16];
-}\n");
+}
 
-		for variable in material["variables"].members() {
-			if variable["type"] == "Static" {
-				if variable["data_type"] == "vec4f" { // Since GLSL doesn't support vec4f constants, we have to split it into 4 floats.
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 0, "float", format!("{}_r", variable["name"]), "1.0"));
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 1, "float", format!("{}_g", variable["name"]), "0.0"));
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 2, "float", format!("{}_b", variable["name"]), "0.0"));
-					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 3, "float", format!("{}_a", variable["name"]), "1.0"));
-					string.push_str(&format!("const {} {} = {};\n", "vec4", variable["name"], format!("vec4({name}_r, {name}_g, {name}_b, {name}_a)", name=variable["name"])));
-				}
-			}
-		}
-
-		string.push_str("
 struct Camera {
 	mat4 view;
 	mat4 projection_matrix;
@@ -323,13 +310,26 @@ layout(set=2,binding=5,scalar) buffer readonly MaterialsBuffer {
 
 layout(push_constant, scalar) uniform PushConstant {
 	uint material_id;
-} pc;");
+} pc;
 
-		string.push_str("\nvec3 fresnelSchlick(float cosTheta, vec3 F0) {
-			return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-		}");
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+	return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}");
 
 		string.push_str(&format!("layout(local_size_x=32) in;\n"));
+
+		for variable in material["variables"].members() {
+			match variable["data_type"].as_str().unwrap() {
+				"vec4f" => { // Since GLSL doesn't support vec4f constants, we have to split it into 4 floats.
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 0, "float", format!("{}_r", variable["name"]), "1.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 1, "float", format!("{}_g", variable["name"]), "0.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 2, "float", format!("{}_b", variable["name"]), "0.0"));
+					string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 3, "float", format!("{}_a", variable["name"]), "1.0"));
+					string.push_str(&format!("const {} {} = {};\n", "vec4", variable["name"], format!("vec4({name}_r, {name}_g, {name}_b, {name}_a)", name=variable["name"])));
+				}
+				_ => {}
+			}
+		}
 
 string.push_str("
 void main() {
@@ -393,18 +393,19 @@ void main() {
 	float BE_ROUGHNESS = float(0.5);
 ");
 
-		fn visit_node(string: &mut String, shader_node: &lexer::Node) {
+
+		fn visit_node(string: &mut String, shader_node: &lexer::Node, material: &json::JsonValue) {
 			match &shader_node.node {
 				lexer::Nodes::Scope { name: _, children } => {
 					for child in children {
-						visit_node(string, child);
+						visit_node(string, child, material);
 					}
 				}
 				lexer::Nodes::Function { name, params: _, return_type: _, statements, raw: _ } => {
 					match name.as_str() {
 						_ => {
 							for statement in statements {
-								visit_node(string, statement);
+								visit_node(string, statement, material);
 								string.push_str(";\n");
 							}
 						}
@@ -412,7 +413,7 @@ void main() {
 				}
 				lexer::Nodes::Struct { name, template, fields, types } => {
 					for field in fields {
-						visit_node(string, field);
+						visit_node(string, field, material);
 					}
 				}
 				lexer::Nodes::Member { name, r#type } => {
@@ -426,7 +427,7 @@ void main() {
 						lexer::Expressions::Operator { operator, left: _, right } => {
 							if operator == &lexer::Operators::Assignment {
 								string.push_str(&format!("BE_ALBEDO = vec3("));
-								visit_node(string, right);
+								visit_node(string, right, material);
 								string.push_str(")");
 							}
 						}
@@ -435,24 +436,36 @@ void main() {
 								"sample" => {
 									string.push_str(&format!("textureGrad("));
 									for parameter in parameters {
-										visit_node(string, parameter);
+										visit_node(string, parameter, material);
 									}
 									string.push_str(&format!(", uv, vec2(0.5), vec2(0.5f))"));
 								}
 								_ => {
 									string.push_str(&format!("{}(", name));
 									for parameter in parameters {
-										visit_node(string, parameter);
+										visit_node(string, parameter, material);
 									}
 									string.push_str(&format!(")"));
 								}
 							}
 						}
 						lexer::Expressions::Member { name } => {
-							match name.as_str() {
-								_ => {
+							let variable_names = material["variables"].members().map(|variable| variable["name"].as_str().unwrap()).collect::<Vec<_>>();
+
+							if variable_names.contains(&name.as_str()) {
+								if material["variables"].members().find(|variable| variable["name"].as_str().unwrap() == name.as_str()).unwrap()["data_type"].as_str().unwrap() == "Texture2D" {
+									let mut variables = material["variables"].members().filter(|variable| variable["data_type"].as_str().unwrap() == "Texture2D").collect::<Vec<_>>();
+
+									variables.sort_by(|a, b| a["name"].as_str().unwrap().cmp(b["name"].as_str().unwrap()));
+
+									let index = variables.iter().position(|variable| variable["name"].as_str().unwrap() == name.as_str()).unwrap();
+
+									string.push_str(&format!("textures[nonuniformEXT(material.textures[{}])]", index));
+								} else {
 									string.push_str(name);
 								}
+							} else {
+								string.push_str(name);
 							}
 						}
 						_ => panic!("Invalid expression")
@@ -461,7 +474,7 @@ void main() {
 			}
 		}
 
-		visit_node(&mut string, shader_node);
+		visit_node(&mut string, shader_node, material);
 
 string.push_str(&format!("
 	vec3 Lo = vec3(0.0);
@@ -504,5 +517,59 @@ string.push_str(&format!("
 		string.push_str(&format!("\n}}")); // Close main()
 
 		string
+	}
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::jspd;
+
+	#[test]
+	fn vec4f_variable() {
+		let material = json::object! {
+			"variables": [
+				{
+					"name": "albedo",
+					"data_type": "vec4f",
+					"value": "Purple"
+				}
+			]
+		};
+
+		let shader_source = "main: fn () -> void { out_color = albedo; }";
+
+		let shader_node = jspd::compile_to_jspd(shader_source).unwrap();
+
+		let shader_generator = super::VisibilityShaderGenerator::new();
+
+		let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
+
+		shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+	}
+
+	#[test]
+	fn multiple_textures() {
+		let material = json::object! {
+			"variables": [
+				{
+					"name": "albedo",
+					"data_type": "Texture2D",
+				},
+				{
+					"name": "normal",
+					"data_type": "Texture2D",
+				}
+			]
+		};
+
+		let shader_source = "main: fn () -> void { out_color = sample(albedo); }";
+
+		let shader_node = jspd::compile_to_jspd(shader_source).unwrap();
+
+		let shader_generator = super::VisibilityShaderGenerator::new();
+
+		let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
+
+		shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
 	}
 }

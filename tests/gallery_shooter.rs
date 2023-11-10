@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh};
+use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh, rendering::point_light::PointLight};
 use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
@@ -33,6 +33,8 @@ fn gallery_shooter() {
 	let duck_2: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale, });
 	let duck_3: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale, });
 	let duck_4: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale, });
+
+	let _sun: EntityHandle<PointLight> = orchestrator.spawn(PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
 
 	app.do_loop();
 

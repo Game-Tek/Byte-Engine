@@ -195,8 +195,8 @@ BarycentricDeriv CalcFullBary(vec4 pt0, vec4 pt1, vec4 pt2, vec2 pixelNdc, vec2 
 	ddxSum  *= (2.0 / winSize.x);
 	ddySum  *= (2.0 / winSize.y);
 
-	ret.ddy *= -1.0;
-	ddySum  *= -1.0;
+	// ret.ddy *= -1.0;
+	// ddySum  *= -1.0;
 
 	float interpW_ddx = 1.0 / (interpInvW + ddxSum);
 	float interpW_ddy = 1.0 / (interpInvW + ddySum);
@@ -372,8 +372,6 @@ void main() {
 	);
 
 	vec2 uv = ((be_pixel_xy) / vec2(1920.0, 1080.0)) * 2 - 1;
-
-	uv.y = -uv.y;
 
 	vec4 a = camera.view_projection * mesh.model * vertex_positions[0];
 	vec4 b = camera.view_projection * mesh.model * vertex_positions[1];

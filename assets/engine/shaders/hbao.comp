@@ -1,0 +1,206 @@
+#version 460 core
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+const float PI = 3.14159265359;
+const float MAX_PIXEL_RADIUS = 100.0f; // Radiuses lower than 50 pixel produce artifacts
+const float TANGENT_BIAS = tan(50.0 * PI / 180.0);
+const float R = 0.1;
+const uint32_t SAMPLE_COUNT = 4; // Samples per ray direction
+const uint32_t DIRECTION_COUNT = 6; // Number of directions to sample each hemisphere
+const uvec2 AO_RESOLUTION = uvec2(1920, 1080);
+const vec2 AO_PIXEL_SIZE = vec2(1.0 / AO_RESOLUTION.x, 1.0 / AO_RESOLUTION.y);
+const vec3 NOISE[32] = vec3[32](
+	vec3(-0.763874, -0.596439, 0.246489),
+	vec3(0.396055, 0.904518, 0.158073),
+	vec3(-0.499004, -0.8665, 0.0131631),
+	vec3(0.468724, -0.824756, 0.316346),
+	vec3(0.829598, 0.43195, 0.353816),
+	vec3(-0.454473, 0.629497, 0.630228),
+	vec3(-0.162349, -0.869962, 0.465628),
+	vec3(0.932805, 0.253451, 0.256198),
+	vec3(-0.345419, 0.927299, 0.144227),
+	vec3(-0.715026, -0.293698, 0.634413),
+	vec3(-0.245997, 0.717467, 0.651711),
+	vec3(-0.967409, -0.250435, 0.037451),
+	vec3(-0.744597, -0.455467, 0.487055),
+	vec3(0.679409, -0.53838, 0.498691),
+	vec3(0.0836837, 0.978921, 0.185156),
+	vec3(0.345419, -0.927299, 0.144227),
+	vec3(0.234646, 0.753769, 0.612635),
+	vec3(-0.0734617, 0.544422, 0.835899),
+	vec3(-0.447941, -0.788629, 0.422294),
+	vec3(-0.838765, -0.127726, 0.529893),
+	vec3(-0.34369, 0.528524, 0.776651),
+	vec3(0.782651, -0.28665, 0.550557),
+	vec3(0.449201, 0.754865, 0.478147),
+	vec3(-0.0159311, 0.747786, 0.663662),
+	vec3(-0.316955, -0.195914, 0.928612),
+	vec3(-0.815442, -0.162675, 0.554499),
+	vec3(-0.705761, 0.702225, 0.0897017),
+	vec3(0.611057, -0.503461, 0.610209),
+	vec3(-0.457597, 0.392708, 0.798133),
+	vec3(-0.50077, 0.438894, 0.745239),
+	vec3(0.178914, 0.0707083, 0.981148),
+	vec3(0.345419, 0.927299, 0.144227)
+);
+
+struct Camera {
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+	Camera camera;
+};
+
+layout(set=1, binding=0) uniform sampler2D depth;
+layout(set=1, binding=1) uniform writeonly image2D result;
+
+vec3 get_view_position(uvec2 texel, uvec2 resolution) {
+	float depth_value = texelFetch(depth, ivec2(texel), 0).r;
+	vec2 uv = (vec2(texel) + vec2(0.5)) / vec2(resolution);
+	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	view_space /= view_space.w;
+	return view_space.xyz;
+}
+
+vec2 snap_uv_offset(vec2 uv, vec2 pixel_size) {
+    return (round(uv * vec2(AO_RESOLUTION)) + vec2(0.5)) / vec2(AO_RESOLUTION);
+}
+
+vec3 get_view_position(vec2 uv) {
+	uv = snap_uv_offset(uv, AO_PIXEL_SIZE);
+	float depth_value = texture(depth, uv).r;
+	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	view_space /= view_space.w;
+	return view_space.xyz;
+}
+
+float length_squared(float v) { return v * v; }
+float length_squared(vec2 v) { return dot(v, v); }
+float length_squared(vec3 v) { return dot(v, v); }
+
+vec3 min_diff(vec3 p, vec3 a, vec3 b) {
+    vec3 ap = a - p;
+    vec3 bp = p - b;
+    return (length_squared(ap) < length_squared(bp)) ? ap : bp;
+}
+
+struct AOParameters {
+	vec2 step_size_uv;
+	uint32_t num_steps;
+};
+
+vec2 rotate_direction(vec2 direction, vec2 offset) {
+    return vec2(direction.x * offset.x - direction.y * offset.y, direction.x * offset.y + direction.y * offset.x);
+}
+
+float reciprocal_length(vec2 v) {
+	return inversesqrt(length_squared(v));
+}
+
+float biased_tangent(vec3 V) {
+	// return V.z * reciprocal_length(V.xy) + TANGENT_BIAS;
+	return atan(V.y, V.x);
+}
+
+float tan_to_sin(float x) {
+	return x * inversesqrt(x * x + 1.0);
+}
+
+float tangent(vec3 V) {
+	return -V.z * reciprocal_length(V.xy);
+}
+
+float tangent(vec3 P, vec3 S) {
+    return (P.z - S.z) * reciprocal_length(S.xy - P.xy);
+}
+
+float fallof(float d2, float reciprocal_squared_radius) {
+	return d2 * -reciprocal_squared_radius + 1.0f;
+}
+
+//----------------------------------------------------------------------------------
+// P = view-space position at the kernel center
+// N = view-space normal at the kernel center
+// S = view-space position of the current sample
+//----------------------------------------------------------------------------------
+vec3 compute_ao(vec3 p, vec3 n, vec3 s) {
+	vec3 v = s - p;
+	float d_squared = length_squared(v);
+	float n_dot_v = dot(n, v) * 1.0 / sqrt(d_squared);
+
+	return vec3(clamp(n_dot_v + TANGENT_BIAS, 0, 1) * clamp(fallof(d_squared, 1.0f / (R * R)), 0, 1));
+}
+
+vec3 evaluate_ao(vec2 uv, float ray_pixel_radius, vec3 p, vec3 n) {
+	if(ray_pixel_radius <= 1.0f) { return vec3(0.0f); }
+
+    uint32_t num_steps = uint32_t(min(float(SAMPLE_COUNT), ray_pixel_radius));
+
+    float step_pixel_size = ray_pixel_radius / float(num_steps + 1);
+
+	vec2 random_circle = normalize(NOISE[gl_LocalInvocationIndex % 32].xy);
+	float random = NOISE[gl_LocalInvocationIndex % 32].z;
+
+	const float ALPHA = 2.0f * PI / float(DIRECTION_COUNT);
+	float start_offset = step_pixel_size * random + 1.0f;
+
+	// float occlusion = 0.0;
+	vec3 occlusion = vec3(0.0);
+
+	for(uint d = 0; d < DIRECTION_COUNT; ++d) {
+		float theta = float(d) * ALPHA;
+		vec2 direction = rotate_direction(vec2(cos(theta), sin(theta)), random_circle);
+
+		for(uint s = 0; s < num_steps; ++s) {
+			vec3 s_p = get_view_position(uv + ((R * R) / float(DIRECTION_COUNT) * float(s)) * direction);
+
+			occlusion += compute_ao(p, n, s_p);
+		}
+	}
+
+	const float AO_STRENGTH = 1.0;
+
+	occlusion = 1 - occlusion / float(DIRECTION_COUNT);
+
+	return occlusion;
+}
+
+layout(local_size_x=32, local_size_y=32) in;
+void main() {
+	if (gl_GlobalInvocationID.x >= AO_RESOLUTION.x || gl_GlobalInvocationID.y >= AO_RESOLUTION.y) { return; }
+
+	vec2 uv = (vec2(gl_GlobalInvocationID.xy) + vec2(0.5f)) / vec2(imageSize(result).xy);
+
+	uvec2 resolution = uvec2(textureSize(depth, 0).xy);
+	uvec2 texel = uvec2(gl_GlobalInvocationID.xy);
+
+	vec3 P = get_view_position(texel, resolution);
+	vec3 Pr = get_view_position(texel + uvec2(1, 0), resolution);
+	vec3 Pl = get_view_position(texel - uvec2(1, 0), resolution);
+	vec3 Pt = get_view_position(texel + uvec2(0, 1), resolution);
+	vec3 Pb = get_view_position(texel - uvec2(0, 1), resolution);
+
+	vec3 dPdu = min_diff(P, Pr, Pl);
+	vec3 dPdv = min_diff(P, Pt, Pb);
+
+	vec3 n = normalize(cross(dPdu, dPdv));
+
+	const vec2 FOCAL_LENGTH = vec2(1.0f / tan(0.785398 * 0.5f) * (1080.0f / 1920.0f), 1.0f / tan(0.785398 * 0.5f));
+
+	float ray_pixel_radius = R * imageSize(result).x * FOCAL_LENGTH.x / P.z;
+
+	vec3 oclussion = evaluate_ao(uv, ray_pixel_radius, P, n);
+
+	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(oclussion, 1.0));
+}

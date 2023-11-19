@@ -1,0 +1,154 @@
+#version 460 core
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_shader_explicit_arithmetic_types: enable
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+const vec3 HEMISPHERE_POSITIONS[32] = vec3[32](
+	vec3(-0.763874, -0.596439, 0.246489),
+	vec3(0.396055, 0.904518, 0.158073),
+	vec3(-0.499004, -0.8665, 0.0131631),
+	vec3(0.468724, -0.824756, 0.316346),
+	vec3(0.829598, 0.43195, 0.353816),
+	vec3(-0.454473, 0.629497, 0.630228),
+	vec3(-0.162349, -0.869962, 0.465628),
+	vec3(0.932805, 0.253451, 0.256198),
+	vec3(-0.345419, 0.927299, 0.144227),
+	vec3(-0.715026, -0.293698, 0.634413),
+	vec3(-0.245997, 0.717467, 0.651711),
+	vec3(-0.967409, -0.250435, 0.037451),
+	vec3(-0.744597, -0.455467, 0.487055),
+	vec3(0.679409, -0.53838, 0.498691),
+	vec3(0.0836837, 0.978921, 0.185156),
+	vec3(0.345419, -0.927299, 0.144227),
+	vec3(0.234646, 0.753769, 0.612635),
+	vec3(-0.0734617, 0.544422, 0.835899),
+	vec3(-0.447941, -0.788629, 0.422294),
+	vec3(-0.838765, -0.127726, 0.529893),
+	vec3(-0.34369, 0.528524, 0.776651),
+	vec3(0.782651, -0.28665, 0.550557),
+	vec3(0.449201, 0.754865, 0.478147),
+	vec3(-0.0159311, 0.747786, 0.663662),
+	vec3(-0.316955, -0.195914, 0.928612),
+	vec3(-0.815442, -0.162675, 0.554499),
+	vec3(-0.705761, 0.702225, 0.0897017),
+	vec3(0.611057, -0.503461, 0.610209),
+	vec3(-0.457597, 0.392708, 0.798133),
+	vec3(-0.50077, 0.438894, 0.745239),
+	vec3(0.178914, 0.0707083, 0.981148),
+	vec3(0.345419, 0.927299, 0.144227)
+);
+
+const vec2 RANDOM_TANGENTS[16] = vec2[16](
+	vec2(0.115248, -0.825734),
+	vec2(-0.901704, 0.179745),
+	vec2(0.556876, -0.269708),
+	vec2(0.011993, -0.664286),
+	vec2(0.316935, 0.469955),
+	vec2(-0.524888, 0.037935),
+	vec2(0.719443, -0.269936),
+	vec2(0.771508, 0.865413),
+	vec2(-0.074704, 0.439924),
+	vec2(0.152837, -0.820215),
+	vec2(0.611988, -0.907285),
+	vec2(0.359264, 0.048341),
+	vec2(-0.645741, 0.547929),
+	vec2(0.188208, 0.075655),
+	vec2(0.96466, 0.770684),
+	vec2(0.622425, -0.016297)
+);
+
+const float R = 0.05; // radius of the hemisphere in view space
+const uint32_t SAMPLE_COUNT = 32;
+const uint32_t KERNEL_COUNT = 16;
+
+struct Camera {
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+	Camera camera;
+};
+
+layout(set=1, binding=0) uniform sampler2D depth;
+layout(set=1, binding=2) uniform writeonly image2D result;
+
+vec3 get_view_position(vec2 uv) {
+	// snap to center of pixel
+	uv *= textureSize(depth, 0).xy;
+	uv = floor(uv) + vec2(0.5);
+	uv /= textureSize(depth, 0).xy;
+	float depth_value = texture(depth, uv).r;
+	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	view_space /= view_space.w;
+	return view_space.xyz;
+}
+
+vec3 get_view_position(uvec2 coords) {
+	float depth_value = texelFetch(depth, ivec2(coords), 0).r;
+	vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth, 0).xy);
+	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	view_space /= view_space.w;
+	return view_space.xyz;
+}
+
+vec2 get_uv_from_view_position(vec3 view_position) {
+	vec4 clip_space = camera.projection_matrix * vec4(view_position, 1.0);
+	vec2 uv = clip_space.xy / clip_space.w;
+	uv = (uv * 0.5) + 0.5;
+	return uv;
+}
+
+float length_squared(float v) { return v * v; }
+float length_squared(vec2 v) { return dot(v, v); }
+float length_squared(vec3 v) { return dot(v, v); }
+
+vec3 min_diff(vec3 p, vec3 a, vec3 b) {
+    vec3 ap = a - p;
+    vec3 bp = p - b;
+    return (length_squared(ap) < length_squared(bp)) ? ap : bp;
+}
+
+layout(local_size_x=32, local_size_y=32) in;
+void main() {
+	if (gl_GlobalInvocationID.x >= imageSize(result).x || gl_GlobalInvocationID.y >= imageSize(result).y) { return; }
+
+	uvec2 coords = uvec2(gl_GlobalInvocationID.xy);
+
+	vec3 p = get_view_position(coords + uvec2(0, 0));
+	vec3 pt = get_view_position(coords + uvec2(0, 1));
+	vec3 pl = get_view_position(coords + uvec2(-1, 0));
+	vec3 pr = get_view_position(coords + uvec2(1, 0));
+	vec3 pb = get_view_position(coords + uvec2(0, -1));
+
+	vec3 n = normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)));
+
+	vec3 random = vec3(normalize(RANDOM_TANGENTS[(gl_GlobalInvocationID.x * 326545 + gl_GlobalInvocationID.y * 651) % KERNEL_COUNT]), 0);
+
+	vec3 t = normalize(random - n * dot(random, n));
+	vec3 b = cross(n, t);
+
+	mat3 tbn = mat3(t, b, n);
+
+	float32_t oclussion = 0;
+
+	for (uint32_t i = 0; i < SAMPLE_COUNT; ++i) {
+		vec3 s = tbn * normalize(HEMISPHERE_POSITIONS[i]); // sample in view space
+		s = p + s * R;
+
+		vec3 sampled_position = get_view_position(get_uv_from_view_position(s));
+
+		float32_t tweak = smoothstep(0.0, 1.0, R / abs(p.z - sampled_position.z));
+		oclussion += (sampled_position.z <= s.z ? 1.0 : 0.0) * tweak;
+	}
+
+	oclussion = 1.0 - (oclussion / float(SAMPLE_COUNT));
+
+	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(oclussion), 1.0));
+}

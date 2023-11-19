@@ -113,9 +113,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 
 	/// Creates a shader.
-	fn create_shader(&mut self, shader_source_type: render_system::ShaderSourceType, stage: render_system::ShaderTypes, shader: &[u8]) -> render_system::ShaderHandle {
+	fn create_shader(&mut self, shader_source_type: render_system::ShaderSource, stage: render_system::ShaderTypes,) -> render_system::ShaderHandle {
 		match shader_source_type {
-			render_system::ShaderSourceType::GLSL => {
+			render_system::ShaderSource::GLSL(source_code) => {
 				let compiler = shaderc::Compiler::new().unwrap();
 				let mut options = shaderc::CompileOptions::new().unwrap();
 		
@@ -125,9 +125,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				options.set_target_spirv(shaderc::SpirvVersion::V1_6);
 				options.set_invert_y(true);
 		
-				let shader_text = std::str::from_utf8(shader).unwrap();
-		
-				let binary = compiler.compile_into_spirv(shader_text, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
+				let binary = compiler.compile_into_spirv(source_code, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
 				
 				match binary {
 					Ok(binary) => {		
@@ -135,15 +133,14 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					},
 					Err(err) => {
 						let error_string = err.to_string();
-						let error_string = rendering::shader_compilation::format_glslang_error("shader_name:", &error_string, &shader_text).unwrap_or(error_string);
+						let error_string = rendering::shader_compilation::format_glslang_error("shader_name:", &error_string, &source_code).unwrap_or(error_string);
 
-						error!("Error compiling shader:\n{}", error_string);
-						panic!("Error compiling shader: {}", err);
+						panic!("Error compiling shader:\n {}", error_string);
 					}
 				}
 			}
-			render_system::ShaderSourceType::SPIRV => {
-				self.create_vulkan_shader(stage, shader)
+			render_system::ShaderSource::SPIRV(spirv) => {
+				self.create_vulkan_shader(stage, spirv)
 			}
 		}
 	}
@@ -488,13 +485,24 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		let mut spcialization_map_entries = Vec::with_capacity(48);
 		
 		for specialization_map_entry in shader_parameter.2 {
+			// TODO: accumulate offset
 			match specialization_map_entry.get_type().as_str() {
+				"vec2f" => {
+					for i in 0..2 {
+						spcialization_map_entries.push(vk::SpecializationMapEntry::default()
+						.constant_id(specialization_map_entry.get_constant_id() + i)
+						.offset(specialization_entries_buffer.len() as u32 + i * 4)
+						.size(4));
+					}
+
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
+				}
 				"vec4f" => {
 					for i in 0..4 {
 						spcialization_map_entries.push(vk::SpecializationMapEntry::default()
 						.constant_id(specialization_map_entry.get_constant_id() + i)
 						.offset(specialization_entries_buffer.len() as u32 + i * 4)
-						.size(specialization_map_entry.get_size() / 4));
+						.size(4));
 					}
 
 					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
@@ -1384,6 +1392,71 @@ fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
 
 fn to_format(format: render_system::Formats, compression: Option<render_system::CompressionSchemes>) -> vk::Format {
 	match format {
+		render_system::Formats::R16(encoding) => {
+			match encoding {
+				render_system::Encodings::IEEE754 => {
+					vk::Format::R16_SFLOAT
+				}
+				render_system::Encodings::UnsignedNormalized => {
+					vk::Format::R16_UNORM
+				}
+				render_system::Encodings::SignedNormalized => {
+					vk::Format::R16_SNORM
+				}
+			}
+		}
+		render_system::Formats::R32(encoding) => {
+			match encoding {
+				render_system::Encodings::IEEE754 => {
+					vk::Format::R32_SFLOAT
+				}
+				render_system::Encodings::UnsignedNormalized => {
+					vk::Format::UNDEFINED
+				}
+				render_system::Encodings::SignedNormalized => {
+					vk::Format::UNDEFINED
+				}
+			}
+		}
+		render_system::Formats::RG16(encoding) => {
+			match encoding {
+				render_system::Encodings::IEEE754 => {
+					vk::Format::R16G16_SFLOAT
+				}
+				render_system::Encodings::UnsignedNormalized => {
+					vk::Format::R16G16_UNORM
+				}
+				render_system::Encodings::SignedNormalized => {
+					vk::Format::R16G16_SNORM
+				}
+			}
+		}
+		render_system::Formats::RGB16(encoding) => {
+			match encoding {
+				render_system::Encodings::IEEE754 => {
+					vk::Format::R16G16B16_SFLOAT
+				}
+				render_system::Encodings::UnsignedNormalized => {
+					vk::Format::R16G16B16_UNORM
+				}
+				render_system::Encodings::SignedNormalized => {
+					vk::Format::R16G16B16_SNORM
+				}
+			}
+		}
+		render_system::Formats::RGBA16(encoding) => {
+			match encoding {
+				render_system::Encodings::IEEE754 => {
+					vk::Format::R16G16B16A16_SFLOAT
+				}
+				render_system::Encodings::UnsignedNormalized => {
+					vk::Format::R16G16B16A16_UNORM
+				}
+				render_system::Encodings::SignedNormalized => {
+					vk::Format::R16G16B16A16_SNORM
+				}
+			}
+		}
 		render_system::Formats::RGBAu8 => {
 			if let Some(compression) = compression {
 				match compression {
@@ -2032,7 +2105,7 @@ impl VulkanRenderSystem {
 							let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
 								.depth_test_enable(true)
 								.depth_write_enable(true)
-								.depth_compare_op(vk::CompareOp::LESS)
+								.depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
 								.depth_bounds_test_enable(false)
 								.stencil_test_enable(false)
 								.front(vk::StencilOpState::default()/* .build() */)
@@ -2112,7 +2185,7 @@ impl VulkanRenderSystem {
 			.x(0.0)
 			.y(9.0)
 			.width(16.0)
-			.height(-9.0)
+			.height(9.0)
 			.min_depth(0.0)
 			.max_depth(1.0)
 			/* .build() */];
@@ -2298,16 +2371,16 @@ impl VulkanRenderSystem {
 
 	fn create_vulkan_sampler(&self) -> vk::Sampler {
 		let sampler_create_info = vk::SamplerCreateInfo::default()
-			.mag_filter(vk::Filter::NEAREST)
-			.min_filter(vk::Filter::NEAREST)
-			.mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-			.address_mode_u(vk::SamplerAddressMode::REPEAT)
-			.address_mode_v(vk::SamplerAddressMode::REPEAT)
-			.address_mode_w(vk::SamplerAddressMode::REPEAT)
+			.mag_filter(vk::Filter::LINEAR)
+			.min_filter(vk::Filter::LINEAR)
+			.mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+			.address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+			.address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+			.address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
 			.anisotropy_enable(false)
 			.max_anisotropy(1.0)
 			.compare_enable(false)
-			.compare_op(vk::CompareOp::ALWAYS)
+			.compare_op(vk::CompareOp::NEVER)
 			.min_lod(0.0)
 			.max_lod(0.0)
 			.mip_lod_bias(0.0)
@@ -2744,9 +2817,9 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let viewports = [
 			vk::Viewport {
 				x: 0.0,
-				y: extent.height as f32,
+				y: 0.0,
 				width: extent.width as f32,
-				height: -(extent.height as f32),
+				height: (extent.height as f32),
 				min_depth: 0.0,
 				max_depth: 1.0,
 			}

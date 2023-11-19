@@ -14,6 +14,21 @@ struct VisibilityInfo {
 	vertex_count: u32,
 }
 
+struct HBAOPass {
+	pipeline_layout: render_system::PipelineLayoutHandle,
+	pipeline: render_system::PipelineHandle,
+	blur_x_pipeline: render_system::PipelineHandle,
+	blur_y_pipeline: render_system::PipelineHandle,
+	descriptor_set_layout: render_system::DescriptorSetTemplateHandle,
+	descriptor_set: render_system::DescriptorSetHandle,
+	blur_x_descriptor_set: render_system::DescriptorSetHandle,
+	blur_y_descriptor_set: render_system::DescriptorSetHandle,
+	depth_binding: render_system::DescriptorSetBindingHandle,
+	result: render_system::ImageHandle,
+	x_blur_target: render_system::ImageHandle,
+	y_blur_target: render_system::ImageHandle,
+}
+
 struct ToneMapPass {
 	pipeline_layout: render_system::PipelineLayoutHandle,
 	pipeline: render_system::PipelineHandle,
@@ -104,6 +119,8 @@ pub struct VisibilityWorldRenderDomain {
 	debug_position: render_system::ImageHandle,
 	debug_normal: render_system::ImageHandle,
 	light_data_buffer: render_system::BaseBufferHandle,
+
+	hbao_pass: HBAOPass,
 
 	pending_texture_loads: Vec<render_system::ImageHandle>,
 
@@ -412,6 +429,9 @@ void main() {
 }
 "#;
 
+const HBAO_SHADER: &'static str = include_str!("../../../assets/engine/shaders/ssao.comp");
+const BLUR_SHADER: &'static str = include_str!("../../../assets/engine/shaders/blur.comp");
+
 impl VisibilityWorldRenderDomain {
 	pub fn new() -> orchestrator::EntityReturn<Self> {
 		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
@@ -510,7 +530,7 @@ impl VisibilityWorldRenderDomain {
 			let debug_normals = render_system.create_image(Some("debug normal"), Extent::new(1920, 1080, 1), render_system::Formats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let albedo = render_system.create_image(Some("albedo"), Extent::new(1920, 1080, 1), render_system::Formats::RGBAu16, None, render_system::Uses::RenderTarget | render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-			let depth_target = render_system.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::Formats::Depth32, None, render_system::Uses::DepthStencil, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+			let depth_target = render_system.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), render_system::Formats::Depth32, None, render_system::Uses::DepthStencil | render_system::Uses::Image, render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let render_finished_synchronizer = render_system.create_synchronizer(true);
 			let image_ready = render_system.create_synchronizer(false);
@@ -563,8 +583,8 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Mesh, VISIBILITY_PASS_MESH_SOURCE.as_bytes());
-			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Fragment, VISIBILITY_PASS_FRAGMENT_SOURCE.as_bytes());
+			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), render_system::ShaderTypes::Mesh,);
+			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE), render_system::ShaderTypes::Fragment,);
 
 			let visibility_pass_shaders = [
 				(&visibility_pass_mesh_shader, render_system::ShaderTypes::Mesh, vec![]),
@@ -737,13 +757,13 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let material_count_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, MATERIAL_COUNT_SOURCE.as_bytes());
+			let material_count_shader = render_system.create_shader(render_system::ShaderSource::GLSL(MATERIAL_COUNT_SOURCE), render_system::ShaderTypes::Compute,);
 			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_count_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let material_offset_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, MATERIAL_OFFSET_SOURCE.as_bytes());
+			let material_offset_shader = render_system.create_shader(render_system::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE), render_system::ShaderTypes::Compute,);
 			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_offset_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, PIXEL_MAPPING_SOURCE.as_bytes());
+			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(PIXEL_MAPPING_SOURCE), render_system::ShaderTypes::Compute,);
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let light_data_buffer = render_system.create_buffer(Some("Light Data"), std::mem::size_of::<LightingData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -894,7 +914,7 @@ impl VisibilityWorldRenderDomain {
 					},
 				]);
 
-				let tone_mapping_shader = render_system.create_shader(render_system::ShaderSourceType::GLSL, render_system::ShaderTypes::Compute, TONE_MAPPING_SHADER.as_bytes());
+				let tone_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(TONE_MAPPING_SHADER), render_system::ShaderTypes::Compute,);
 				let tone_mapping_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 				ToneMapPass {
@@ -953,6 +973,121 @@ void main() {
 	const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
 	vec2 d = inUV * 2.0 - 1.0;
 }";
+
+			let hbao_pass = {
+				let depth_binding_template = render_system::DescriptorSetBindingTemplate {
+					name: "depth",
+					binding: 0,
+					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
+					descriptor_count: 1,
+					stages: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				};
+
+				let source_binding_template = render_system::DescriptorSetBindingTemplate {
+					name: "source",
+					binding: 1,
+					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
+					descriptor_count: 1,
+					stages: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				};
+
+				let result_binding_template = render_system::DescriptorSetBindingTemplate {
+					name: "result",
+					binding: 2,
+					descriptor_type: render_system::DescriptorType::StorageImage,
+					descriptor_count: 1,
+					stages: render_system::Stages::COMPUTE,
+					immutable_samplers: None,
+				};
+
+				let hbao_pass_descriptor_set_layout = render_system.create_descriptor_set_template(Some("HBAO Pass Set Layout"), &[depth_binding_template.clone(), source_binding_template.clone(), result_binding_template.clone()]);
+
+				let hbao_pass_pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout, hbao_pass_descriptor_set_layout], &[]);
+
+				let hbao_pass_descriptor_set = render_system.create_descriptor_set(Some("HBAO Descriptor Set"), &hbao_pass_descriptor_set_layout);
+				let blur_x_descriptor_set = render_system.create_descriptor_set(Some("HBAO Blur X Descriptor Set"), &hbao_pass_descriptor_set_layout);
+				let blur_y_descriptor_set = render_system.create_descriptor_set(Some("HBAO Blur Y Descriptor Set"), &hbao_pass_descriptor_set_layout);
+
+				let depth_binding = render_system.create_descriptor_binding(hbao_pass_descriptor_set, &depth_binding_template);
+				let result_binding = render_system.create_descriptor_binding(hbao_pass_descriptor_set, &result_binding_template);
+
+				let blur_x_source_binding = render_system.create_descriptor_binding(blur_x_descriptor_set, &source_binding_template);
+				let blur_x_result_binding = render_system.create_descriptor_binding(blur_x_descriptor_set, &result_binding_template);
+
+				let blur_y_source_binding = render_system.create_descriptor_binding(blur_y_descriptor_set, &source_binding_template);
+				let blur_y_result_binding = render_system.create_descriptor_binding(blur_y_descriptor_set, &result_binding_template);
+
+				let shader = render_system.create_shader(render_system::ShaderSource::GLSL(HBAO_SHADER), render_system::ShaderTypes::Compute,);
+
+				let pipeline = render_system.create_compute_pipeline(&hbao_pass_pipeline_layout, (&shader, render_system::ShaderTypes::Compute, vec![]));
+
+				let result = render_system.create_image(Some("HBAO Result"), Extent::new(1920, 1080, 1), render_system::Formats::RGBA16(render_system::Encodings::IEEE754), None, render_system::Uses::Storage | render_system::Uses::Image, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+				let x_blur_target = render_system.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), render_system::Formats::RGBA16(render_system::Encodings::IEEE754), None, render_system::Uses::Storage | render_system::Uses::Image, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+				let y_blur_target = render_system.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), render_system::Formats::RGBA16(render_system::Encodings::IEEE754), None, render_system::Uses::Storage | render_system::Uses::Image, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
+
+				let sampler = render_system.create_sampler();
+
+				render_system.write(&[
+					render_system::DescriptorWrite {
+						binding_handle: depth_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: depth_target, sampler_handle: sampler, layout: render_system::Layouts::Read },
+					},
+					render_system::DescriptorWrite {
+						binding_handle: result_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::Image{ handle: result, layout: render_system::Layouts::General },
+					},
+				]);
+
+				render_system.write(&[
+					render_system::DescriptorWrite {
+						binding_handle: blur_x_source_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: result, sampler_handle: sampler, layout: render_system::Layouts::Read },
+					},
+					render_system::DescriptorWrite {
+						binding_handle: blur_x_result_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::Image{ handle: x_blur_target, layout: render_system::Layouts::General },
+					},
+				]);
+
+				render_system.write(&[
+					render_system::DescriptorWrite {
+						binding_handle: blur_y_source_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: x_blur_target, sampler_handle: sampler, layout: render_system::Layouts::Read },
+					},
+					render_system::DescriptorWrite {
+						binding_handle: blur_y_result_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::Image{ handle: y_blur_target, layout: render_system::Layouts::General },
+					},
+				]);
+
+				let blur_shader = render_system.create_shader(render_system::ShaderSource::GLSL(BLUR_SHADER), render_system::ShaderTypes::Compute,);
+
+				let blur_x_pipeline = render_system.create_compute_pipeline(&hbao_pass_pipeline_layout, (&blur_shader, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: [1f32, 0f32,] })]));
+				let blur_y_pipeline = render_system.create_compute_pipeline(&hbao_pass_pipeline_layout, (&blur_shader, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: [0f32, 1f32,] })]));
+
+				HBAOPass {
+					pipeline_layout: hbao_pass_pipeline_layout,
+					descriptor_set_layout: hbao_pass_descriptor_set_layout,
+					descriptor_set: hbao_pass_descriptor_set,
+					blur_x_descriptor_set,
+					blur_y_descriptor_set,
+					blur_x_pipeline,
+					blur_y_pipeline,
+					pipeline,
+					depth_binding,
+					result,
+					x_blur_target,
+					y_blur_target,
+				}
+			};
 
 			Self {
 				pipeline_layout_handle,
@@ -1029,6 +1164,7 @@ void main() {
 				material_evaluation_materials: HashMap::new(),
 
 				tone_map_pass,
+				hbao_pass,
 
 				pending_texture_loads: Vec::new(),
 
@@ -1087,7 +1223,7 @@ void main() {
 					let offset = resource_document.offset as usize;
 					let size = resource_document.size as usize;
 
-					let new_shader = render_system.create_shader(render_system::ShaderSourceType::SPIRV, shader.stage, &buffer[offset..(offset + size)]);
+					let new_shader = render_system.create_shader(render_system::ShaderSource::SPIRV(&buffer[offset..(offset + size)]), shader.stage,);
 
 					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
@@ -1229,6 +1365,12 @@ void main() {
 	/// Return the property for the transform of a mesh
 	pub const fn transform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
 
+	fn execute_compute_render_pass<F: FnOnce(&mut dyn render_system::CommandBufferRecording)>(&self, name: &str, command_buffer_recording: &mut dyn render_system::CommandBufferRecording, fun: F) {
+		command_buffer_recording.start_region(name);
+		fun(command_buffer_recording);
+		command_buffer_recording.end_region();
+	}
+
 	pub fn render(&mut self, orchestrator: OrchestratorReference) {
 		if self.swapchain_handles.is_empty() { return; }
 
@@ -1333,7 +1475,7 @@ void main() {
 				image: self.depth_target,
 				layout: render_system::Layouts::RenderTarget,
 				format: render_system::Formats::Depth32,
-				clear: render_system::ClearValue::Depth(1f32),
+				clear: render_system::ClearValue::Depth(0f32),
 				load: false,
 				store: true,
 			},
@@ -1396,180 +1538,221 @@ void main() {
 
 		command_buffer_recording.clear_buffers(&[self.material_count, self.material_offset, self.material_offset_scratch, self.material_evaluation_dispatches, self.material_xy]);
 
-		// Material count pass
+		self.execute_compute_render_pass("Material Count", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_count),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.instance_id),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+			]);
 
-		command_buffer_recording.start_region("Material Count Pass");
+			command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		});
 
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_count),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.instance_id),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-		]);
+		self.execute_compute_render_pass("Material Offset", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_count),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_offset),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_offset_scratch),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+			command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 1, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1, height: 1, depth: 1 } });
+		});
 
-		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
-		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		self.execute_compute_render_pass("Pixel Mapping", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_offset),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_offset_scratch),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_xy),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
 
-		command_buffer_recording.end_region();
+			command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		});
 
-		// Material offset pass
+		self.execute_compute_render_pass("Material Evaluation", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.clear_textures(&[(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })), (self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }))]);
 
-		command_buffer_recording.start_region("Material Offset Pass");
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption {
+					handle: render_system::Handle::Image(self.albedo),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption {
+					handle: render_system::Handle::Image(self.primitive_index),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption {
+					handle: render_system::Handle::Image(self.instance_id),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_evaluation_dispatches),
+					stages: render_system::Stages::INDIRECT,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(self.material_xy),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.debug_position),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.debug_normal),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
 
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_count),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset_scratch),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
-		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
-		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 1, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1, height: 1, depth: 1 } });
+			command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1), (self.material_evaluation_descriptor_set, 2)]);
 
-		command_buffer_recording.end_region();
+			for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
+				// No need for sync here, as each thread across all invocations will write to a different pixel
+				command_buffer_recording.bind_compute_pipeline(pipeline);
+				command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
+					std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
+				});
+				command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
+			}
+		});
 
-		// Pixel mapping pass
-
-		command_buffer_recording.start_region("Pixel Mapping Pass");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset_scratch),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_xy),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
-		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1)]);
-		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-
-		command_buffer_recording.end_region();
-
-		// Material evaluation pass
-
-		command_buffer_recording.clear_textures(&[(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })), (self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }))]);
-
-		command_buffer_recording.start_region("Material Evaluation Pass");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption {
-				handle: render_system::Handle::Image(self.albedo),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Image(self.primitive_index),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Image(self.instance_id),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_evaluation_dispatches),
-				stages: render_system::Stages::INDIRECT,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_xy),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.debug_position),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.debug_normal),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
-		command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1), (self.material_evaluation_descriptor_set, 2)]);
-
-		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
-			// No need for sync here, as each thread across all invocations will write to a different pixel
-			command_buffer_recording.bind_compute_pipeline(pipeline);
-			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
-				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
-			});
-			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
-		}
-
-		command_buffer_recording.end_region();
+		self.execute_compute_render_pass("HBAO Render Pass", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.depth_target),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+	
+			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+	
+			// Blur X
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.x_blur_target),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.blur_x_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.blur_x_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+	
+			// Blur Y
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.x_blur_target),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.blur_y_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.blur_y_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		});
 
 		// Tone mapping pass
 
-		command_buffer_recording.start_region("Tone Mapping Pass");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.albedo),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.result),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
-		command_buffer_recording.bind_compute_pipeline(&self.tone_map_pass.pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.tone_map_pass.pipeline_layout, &[(self.tone_map_pass.descriptor_set, 0)]);
-		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-
-		command_buffer_recording.end_region();
+		self.execute_compute_render_pass("Tone Mapping", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.albedo),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::General,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+	
+			command_buffer_recording.bind_compute_pipeline(&self.tone_map_pass.pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.tone_map_pass.pipeline_layout, &[(self.tone_map_pass.descriptor_set, 0)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		});
 
 		// Copy to swapchain
 
@@ -1817,6 +2000,8 @@ impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderD
 		lighting_data.lights[light_index].color = light.color;
 		
 		lighting_data.count += 1;
+
+		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 }
 
@@ -1834,6 +2019,8 @@ impl orchestrator::EntitySubscriber<PointLight> for VisibilityWorldRenderDomain 
 		lighting_data.lights[light_index].color = light.color;
 		
 		lighting_data.count += 1;
+
+		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 }
 

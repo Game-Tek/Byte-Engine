@@ -1,0 +1,101 @@
+#version 460 core
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_shader_explicit_arithmetic_types: enable
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+struct Camera {
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+	Camera camera;
+};
+
+layout(set=1, binding=0) uniform sampler2D depth;
+layout(set=1, binding=1) uniform sampler2D source;
+layout(set=1, binding=2) uniform writeonly image2D result;
+
+layout(constant_id=0) const float DIRECTION_X = 1;
+layout(constant_id=1) const float DIRECTION_Y = 0;
+const vec2 DIRECTION = vec2(DIRECTION_X, DIRECTION_Y);
+
+vec3 get_view_position(uvec2 coords) {
+	float depth_value = texelFetch(depth, ivec2(coords), 0).r;
+	vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth, 0).xy);
+	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	view_space /= view_space.w;
+	return view_space.xyz;
+}
+
+const uint32_t M = 16;
+const uint32_t SAMPLE_COUNT = M + 1;
+
+const float OFFSETS[17] = float[17](
+    -15.153610827558811,
+    -13.184471765481433,
+    -11.219917592867032,
+    -9.260003189282239,
+    -7.304547036499911,
+    -5.353083811756559,
+    -3.4048471718931532,
+    -1.4588111840004858,
+    0.48624268466894843,
+    2.431625915613778,
+    4.378621204796657,
+    6.328357272092126,
+    8.281739853232981,
+    10.239385576926011,
+    12.201613265873693,
+    14.1684792568739,
+    16
+);
+
+const float WEIGHTS[17] = float[17](
+    6.531899156556559e-7,
+    0.000014791298968627152,
+    0.00021720986764341157,
+    0.0020706559053401204,
+    0.012826757713634169,
+    0.05167714650813829,
+    0.13552110360479683,
+    0.23148784424126953,
+    0.25764630768379954,
+    0.18686497997661272,
+    0.0882961181645837,
+    0.027166770533840135,
+    0.0054386298156352516,
+    0.0007078187356988374,
+    0.00005983099317322662,
+    0.0000032814299066650715,
+    1.0033704349693544e-7
+);
+
+// blurDirection is:
+//     vec2(1,0) for horizontal pass
+//     vec2(0,1) for vertical pass
+// The sourceTexture to be blurred MUST use linear filtering!
+vec4 blur(in sampler2D sourceTexture, vec2 blurDirection, vec2 uv)
+{
+    vec4 result = vec4(0.0);
+    for (int i = 0; i < SAMPLE_COUNT; ++i) {
+        vec2 offset = blurDirection * OFFSETS[i] / textureSize(sourceTexture, 0);
+        float weight = WEIGHTS[i];
+        result += texture(sourceTexture, uv + offset) * weight;
+    }
+    return result;
+}
+
+layout(local_size_x=128) in;
+void main() {
+	if (gl_GlobalInvocationID.x >= imageSize(result).x || gl_GlobalInvocationID.y >= imageSize(result).y) { return; }
+
+	float value = blur(source, DIRECTION, vec2(gl_GlobalInvocationID.xy) / vec2(imageSize(result).xy)).r;
+
+	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(value), 1.0));
+}

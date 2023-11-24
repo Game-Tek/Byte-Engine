@@ -440,70 +440,14 @@ impl VisibilityWorldRenderDomain {
 			let render_system: &mut render_system::RenderSystemImplementation = render_system.downcast_mut().unwrap();
 
 			let bindings = [
-				render_system::DescriptorSetBindingTemplate {
-					name: "CameraData",
-					binding: 0,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MeshData",
-					binding: 1,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "vertex positions",
-					binding: 2,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "vertex normals",
-					binding: 3,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "vertex indices",
-					binding: 4,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "primitive indices",
-					binding: 5,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "meshlet data",
-					binding: 6,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::MESH | render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "textures",
-					binding: 7,
-					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
+				render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::FRAGMENT | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::FRAGMENT | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(2, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(3, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(4, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(5, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(6, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(7, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::COMPUTE),
 			];
 
 			let descriptor_set_layout = render_system.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
@@ -640,70 +584,14 @@ impl VisibilityWorldRenderDomain {
 			let material_xy = render_system.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
 
 			let bindings = [
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialCount",
-					binding: 0,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialOffset",
-					binding: 1,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialOffsetScratch",
-					binding: 2,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialEvaluationDispatches",
-					binding: 3,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialXY",
-					binding: 4,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialId",
-					binding: 5,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "VertexId",
-					binding: 6,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "InstanceId",
-					binding: 7,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
+				render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(2, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(3, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(4, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(5, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(6, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(7, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
 			];
 
 			let visibility_descriptor_set_layout = render_system.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
@@ -715,9 +603,10 @@ impl VisibilityWorldRenderDomain {
 			let material_offset_scratch_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[2]);
 			let material_evaluation_dispatches_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[3]);
 			let material_xy_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[4]);
-			let material_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[5]);
+			let _material_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[5]);
 			let vertex_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[6]);
 			let instance_id_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[7]);
+			// let ao_texture_binding = render_system.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[8]);
 
 			render_system.write(&[
 				render_system::DescriptorWrite { // MaterialCount
@@ -775,55 +664,14 @@ impl VisibilityWorldRenderDomain {
 			let materials_data_buffer_handle = render_system.create_buffer(Some("Materials Data"), MAX_MATERIALS * std::mem::size_of::<MaterialData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
 			let bindings = [
-				render_system::DescriptorSetBindingTemplate {
-					name: "albedo",
-					binding: 0,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "CameraData",
-					binding: 1,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "debug_position",
-					binding: 2,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "debug_normals",
-					binding: 3,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "LightData",
-					binding: 4,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-				render_system::DescriptorSetBindingTemplate {
-					name: "MaterialsData",
-					binding: 5,
-					descriptor_type: render_system::DescriptorType::StorageBuffer,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				},
-			];	
+				render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(2, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(3, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(4, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(5, render_system::DescriptorType::StorageBuffer, render_system::Stages::COMPUTE),
+				render_system::DescriptorSetBindingTemplate::new(10, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::COMPUTE),
+			];
 
 			let material_evaluation_descriptor_set_layout = render_system.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 			let material_evaluation_descriptor_set = render_system.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
@@ -834,6 +682,7 @@ impl VisibilityWorldRenderDomain {
 			let debug_normals_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[3]);
 			let light_data_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[4]);
 			let materials_data_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[5]);
+			let ao_texture_binding = render_system.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[6]);
 
 			render_system.write(&[
 				render_system::DescriptorWrite { // albedo
@@ -874,22 +723,8 @@ impl VisibilityWorldRenderDomain {
 
 			let tone_map_pass = {
 				let bindings = [
-					render_system::DescriptorSetBindingTemplate {
-						name: "source",
-						binding: 0,
-						descriptor_type: render_system::DescriptorType::StorageImage,
-						descriptor_count: 1,
-						stages: render_system::Stages::COMPUTE,
-						immutable_samplers: None,
-					},
-					render_system::DescriptorSetBindingTemplate {
-						name: "result",
-						binding: 1,
-						descriptor_type: render_system::DescriptorType::StorageImage,
-						descriptor_count: 1,
-						stages: render_system::Stages::COMPUTE,
-						immutable_samplers: None,
-					},
+					render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+					render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
 				];
 
 				let descriptor_set_layout = render_system.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &bindings);
@@ -930,14 +765,7 @@ impl VisibilityWorldRenderDomain {
 			let top_level_acceleration_structure = render_system.create_top_level_acceleration_structure(Some("Top Level Acceleration Structure"));
 
 			let bindings = [
-				render_system::DescriptorSetBindingTemplate {
-					name: "top level acc str",
-					binding: 0,
-					descriptor_type: render_system::DescriptorType::AccelerationStructure,
-					descriptor_count: 1,
-					stages: render_system::Stages::RAYGEN,
-					immutable_samplers: None,
-				},
+				render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::AccelerationStructure, render_system::Stages::RAYGEN),
 			];
 
 			let rt_pass_descriptor_set_layout = render_system.create_descriptor_set_template(Some("RT Pass Set Layout"), &bindings);
@@ -975,32 +803,9 @@ void main() {
 }";
 
 			let hbao_pass = {
-				let depth_binding_template = render_system::DescriptorSetBindingTemplate {
-					name: "depth",
-					binding: 0,
-					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				};
-
-				let source_binding_template = render_system::DescriptorSetBindingTemplate {
-					name: "source",
-					binding: 1,
-					descriptor_type: render_system::DescriptorType::CombinedImageSampler,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				};
-
-				let result_binding_template = render_system::DescriptorSetBindingTemplate {
-					name: "result",
-					binding: 2,
-					descriptor_type: render_system::DescriptorType::StorageImage,
-					descriptor_count: 1,
-					stages: render_system::Stages::COMPUTE,
-					immutable_samplers: None,
-				};
+				let depth_binding_template = render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::COMPUTE);
+				let source_binding_template = render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::COMPUTE);
+				let result_binding_template = render_system::DescriptorSetBindingTemplate::new(2, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE);
 
 				let hbao_pass_descriptor_set_layout = render_system.create_descriptor_set_template(Some("HBAO Pass Set Layout"), &[depth_binding_template.clone(), source_binding_template.clone(), result_binding_template.clone()]);
 
@@ -1027,7 +832,7 @@ void main() {
 				let x_blur_target = render_system.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), render_system::Formats::RGBA16(render_system::Encodings::IEEE754), None, render_system::Uses::Storage | render_system::Uses::Image, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 				let y_blur_target = render_system.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), render_system::Formats::RGBA16(render_system::Encodings::IEEE754), None, render_system::Uses::Storage | render_system::Uses::Image, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
 
-				let sampler = render_system.create_sampler();
+				let sampler = render_system.create_sampler(render_system::FilteringModes::Linear, render_system::FilteringModes::Linear, render_system::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 
 				render_system.write(&[
 					render_system::DescriptorWrite {
@@ -1065,6 +870,11 @@ void main() {
 						binding_handle: blur_y_result_binding,
 						array_element: 0,
 						descriptor: render_system::Descriptor::Image{ handle: y_blur_target, layout: render_system::Layouts::General },
+					},
+					render_system::DescriptorWrite { // AO Texture
+						binding_handle: ao_texture_binding,
+						array_element: 0,
+						descriptor: render_system::Descriptor::CombinedImageSampler{ image_handle: result, sampler_handle: sampler, layout: render_system::Layouts::Read },
 					},
 				]);
 
@@ -1199,7 +1009,7 @@ void main() {
 
 					render_system.get_texture_slice_mut(new_texture).copy_from_slice(&buffer[resource_document.offset as usize..(resource_document.offset + resource_document.size) as usize]);
 					
-					let sampler = render_system.create_sampler(); // TODO: use actual sampler
+					let sampler = render_system.create_sampler(render_system::FilteringModes::Linear, render_system::FilteringModes::Linear, render_system::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
 					render_system.write(&[
 						render_system::DescriptorWrite {
@@ -1288,8 +1098,6 @@ void main() {
 							}
 
 						}
-
-						let material = self.material_evaluation_materials.get(&variant.parent).unwrap();
 
 						let pipeline = render_system.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, render_system::ShaderTypes::Compute, specialization_constants));
 						
@@ -1481,6 +1289,8 @@ void main() {
 			},
 		];
 
+		command_buffer_recording.start_region("Visibility Render Model");
+
 		command_buffer_recording.start_region("Visibility Pass");
 
 		command_buffer_recording.consume_resources(&[
@@ -1524,8 +1334,6 @@ void main() {
 
 		command_buffer_recording.start_render_pass(Extent::new(1920, 1080, 1), &attachments);
 
-		// Visibility pass
-
 		command_buffer_recording.bind_raster_pipeline(&self.visibility_pass_pipeline);
 
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[(self.descriptor_set, 0)]);
@@ -1534,9 +1342,9 @@ void main() {
 
 		command_buffer_recording.end_render_pass();
 
-		command_buffer_recording.end_region();
-
 		command_buffer_recording.clear_buffers(&[self.material_count, self.material_offset, self.material_offset_scratch, self.material_evaluation_dispatches, self.material_xy]);
+
+		command_buffer_recording.end_region();
 
 		self.execute_compute_render_pass("Material Count", command_buffer_recording.as_mut(), |command_buffer_recording| {
 			command_buffer_recording.consume_resources(&[
@@ -1612,6 +1420,63 @@ void main() {
 			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
 		});
 
+		self.execute_compute_render_pass("HBAO Render Pass", command_buffer_recording.as_mut(), |command_buffer_recording| {
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.depth_target),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+
+			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.x_blur_target),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.blur_x_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.blur_x_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+
+			command_buffer_recording.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.x_blur_target),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::WRITE,
+					layout: render_system::Layouts::General,
+				},
+			]);
+			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.blur_y_pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.blur_y_descriptor_set, 1)]);
+			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		});
+
 		self.execute_compute_render_pass("Material Evaluation", command_buffer_recording.as_mut(), |command_buffer_recording| {
 			command_buffer_recording.clear_textures(&[(self.albedo, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })), (self.result, render_system::ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }))]);
 
@@ -1658,6 +1523,12 @@ void main() {
 					access: render_system::AccessPolicies::WRITE,
 					layout: render_system::Layouts::General,
 				},
+				render_system::Consumption{
+					handle: render_system::Handle::Image(self.hbao_pass.result),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Read,
+				},
 			]);
 
 			command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[(self.descriptor_set, 0), (self.visibility_passes_descriptor_set, 1), (self.material_evaluation_descriptor_set, 2)]);
@@ -1672,66 +1543,7 @@ void main() {
 			}
 		});
 
-		self.execute_compute_render_pass("HBAO Render Pass", command_buffer_recording.as_mut(), |command_buffer_recording| {
-			command_buffer_recording.consume_resources(&[
-				render_system::Consumption{
-					handle: render_system::Handle::Image(self.depth_target),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-					layout: render_system::Layouts::Read,
-				},
-				render_system::Consumption{
-					handle: render_system::Handle::Image(self.hbao_pass.result),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::WRITE,
-					layout: render_system::Layouts::General,
-				},
-			]);
-	
-			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.pipeline);
-			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.descriptor_set, 1)]);
-			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-	
-			// Blur X
-			command_buffer_recording.consume_resources(&[
-				render_system::Consumption{
-					handle: render_system::Handle::Image(self.hbao_pass.result),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-					layout: render_system::Layouts::Read,
-				},
-				render_system::Consumption{
-					handle: render_system::Handle::Image(self.hbao_pass.x_blur_target),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::WRITE,
-					layout: render_system::Layouts::General,
-				},
-			]);
-			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.blur_x_pipeline);
-			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.blur_x_descriptor_set, 1)]);
-			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-	
-			// Blur Y
-			command_buffer_recording.consume_resources(&[
-				render_system::Consumption{
-					handle: render_system::Handle::Image(self.hbao_pass.x_blur_target),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-					layout: render_system::Layouts::Read,
-				},
-				render_system::Consumption{
-					handle: render_system::Handle::Image(self.hbao_pass.result),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::WRITE,
-					layout: render_system::Layouts::General,
-				},
-			]);
-			command_buffer_recording.bind_compute_pipeline(&self.hbao_pass.blur_y_pipeline);
-			command_buffer_recording.bind_descriptor_sets(&self.hbao_pass.pipeline_layout, &[(self.descriptor_set, 0), (self.hbao_pass.blur_y_descriptor_set, 1)]);
-			command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-		});
-
-		// Tone mapping pass
+		command_buffer_recording.end_region(); // End "Visibility Render Model"
 
 		self.execute_compute_render_pass("Tone Mapping", command_buffer_recording.as_mut(), |command_buffer_recording| {
 			command_buffer_recording.consume_resources(&[

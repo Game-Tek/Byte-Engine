@@ -125,8 +125,8 @@ layout(set=0, binding=4, scalar) buffer readonly VertexIndices {
 	uint16_t vertex_indices[];
 };
 
-layout(set=0, binding=5, scalar) buffer readonly PrimitiveIndeces {
-	uint8_t primitive_indeces[];
+layout(set=0, binding=5, scalar) buffer readonly PrimitiveIndices {
+	uint8_t primitive_indices[];
 };
 
 struct Meshlet {
@@ -194,9 +194,6 @@ BarycentricDeriv CalcFullBary(vec4 pt0, vec4 pt1, vec4 pt2, vec2 pixelNdc, vec2 
 	ret.ddy *= (2.0 / winSize.y);
 	ddxSum  *= (2.0 / winSize.x);
 	ddySum  *= (2.0 / winSize.y);
-
-	// ret.ddy *= -1.0;
-	// ddySum  *= -1.0;
 
 	float interpW_ddx = 1.0 / (interpInvW + ddxSum);
 	float interpW_ddy = 1.0 / (interpInvW + ddySum);
@@ -308,6 +305,8 @@ layout(set=2,binding=5,scalar) buffer readonly MaterialsBuffer {
 	Material materials[];
 };
 
+layout(set=2,binding=10) uniform sampler2D ao;
+
 layout(push_constant, scalar) uniform PushConstant {
 	uint material_id;
 } pc;
@@ -348,36 +347,38 @@ void main() {
 	Meshlet meshlet = meshlets[BE_MESHLET_INDEX];
 
 	uint primitive_indices[3] = uint[3](
-		uint(primitive_indeces[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 0]),
-		uint(primitive_indeces[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 1]),
-		uint(primitive_indeces[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 2])
+		uint(primitive_indices[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 0]),
+		uint(primitive_indices[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 1]),
+		uint(primitive_indices[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 2])
 	);
 
-	uint vertex_indeces[3] = uint[3](
+	uint vertex_indices[3] = uint[3](
 		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[0]]),
 		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[1]]),
 		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[2]])
 	);
 
 	vec4 vertex_positions[3] = vec4[3](
-		vec4(positions[vertex_indeces[0]], 1.0),
-		vec4(positions[vertex_indeces[1]], 1.0),
-		vec4(positions[vertex_indeces[2]], 1.0)
+		vec4(positions[vertex_indices[0]], 1.0),
+		vec4(positions[vertex_indices[1]], 1.0),
+		vec4(positions[vertex_indices[2]], 1.0)
 	);
 
 	vec4 vertex_normals[3] = vec4[3](
-		vec4(normals[vertex_indeces[0]], 0.0),
-		vec4(normals[vertex_indeces[1]], 0.0),
-		vec4(normals[vertex_indeces[2]], 0.0)
+		vec4(normals[vertex_indices[0]], 0.0),
+		vec4(normals[vertex_indices[1]], 0.0),
+		vec4(normals[vertex_indices[2]], 0.0)
 	);
 
-	vec2 uv = ((be_pixel_xy) / vec2(1920.0, 1080.0)) * 2 - 1;
+	vec2 uv = be_pixel_xy / vec2(1920.0, 1080.0);
+
+	vec2 nc = uv * 2 - 1;
 
 	vec4 a = camera.view_projection * mesh.model * vertex_positions[0];
 	vec4 b = camera.view_projection * mesh.model * vertex_positions[1];
 	vec4 c = camera.view_projection * mesh.model * vertex_positions[2];
 
-	BarycentricDeriv barycentric_deriv = CalcFullBary(a, b, c, uv, vec2(1920.0, 1080.0));
+	BarycentricDeriv barycentric_deriv = CalcFullBary(a, b, c, nc, vec2(1920.0, 1080.0));
 	vec3 barycenter = barycentric_deriv.lambda;
 
 	vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
@@ -476,6 +477,10 @@ void main() {
 
 string.push_str(&format!("
 	vec3 Lo = vec3(0.0);
+
+	float ao_factor = texture(ao, uv).r;
+
+	BE_ALBEDO *= ao_factor;
 
 	for (uint i = 0; i < lighting_data.light_count; ++i) {{
 		vec3 light_pos = lighting_data.lights[i].position;

@@ -871,8 +871,24 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		texture_handle
 	}
 
-	fn create_sampler(&mut self) -> render_system::SamplerHandle {
-		render_system::SamplerHandle(self.create_vulkan_sampler().as_raw())
+	fn create_sampler(&mut self, filtering_mode: render_system::FilteringModes, mip_map_filter: render_system::FilteringModes, address_mode: render_system::SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> render_system::SamplerHandle {
+		let filtering_mode = match filtering_mode {
+			FilteringModes::Closest => { vk::Filter::NEAREST }
+			FilteringModes::Linear => { vk::Filter::LINEAR }
+		};
+
+		let mip_map_filter = match mip_map_filter {
+			FilteringModes::Closest => { vk::SamplerMipmapMode::NEAREST }
+			FilteringModes::Linear => { vk::SamplerMipmapMode::LINEAR }
+		};
+
+		let address_mode = match address_mode {
+			SamplerAddressingModes::Repeat => { vk::SamplerAddressMode::REPEAT }
+			SamplerAddressingModes::Mirror => { vk::SamplerAddressMode::MIRRORED_REPEAT }
+			SamplerAddressingModes::Clamp => { vk::SamplerAddressMode::CLAMP_TO_EDGE }
+		};
+
+		render_system::SamplerHandle(self.create_vulkan_sampler(filtering_mode, mip_map_filter, address_mode, anisotropy, min_lod, max_lod).as_raw())
 	}
 
 	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> render_system::BaseBufferHandle {
@@ -1214,8 +1230,9 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 }
 
 use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
+use bitflags::Flags;
 
-use super::render_system::{CommandBufferRecording, BaseBufferHandle, RenderSystem, ShaderHandle};
+use super::render_system::{CommandBufferRecording, BaseBufferHandle, RenderSystem, ShaderHandle, FilteringModes, SamplerAddressingModes};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -2369,20 +2386,20 @@ impl VulkanRenderSystem {
 		}
 	}
 
-	fn create_vulkan_sampler(&self) -> vk::Sampler {
+	fn create_vulkan_sampler(&self, min_mag_filter: vk::Filter, mip_map_filter: vk::SamplerMipmapMode, address_mode: vk::SamplerAddressMode, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> vk::Sampler {
 		let sampler_create_info = vk::SamplerCreateInfo::default()
-			.mag_filter(vk::Filter::LINEAR)
-			.min_filter(vk::Filter::LINEAR)
-			.mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-			.address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-			.address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-			.address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
-			.anisotropy_enable(false)
-			.max_anisotropy(1.0)
+			.mag_filter(min_mag_filter)
+			.min_filter(min_mag_filter)
+			.mipmap_mode(mip_map_filter)
+			.address_mode_u(address_mode)
+			.address_mode_v(address_mode)
+			.address_mode_w(address_mode)
+			.anisotropy_enable(anisotropy.is_some())
+			.max_anisotropy(anisotropy.unwrap_or(0f32))
 			.compare_enable(false)
 			.compare_op(vk::CompareOp::NEVER)
-			.min_lod(0.0)
-			.max_lod(0.0)
+			.min_lod(min_lod)
+			.max_lod(max_lod)
 			.mip_lod_bias(0.0)
 			.unnormalized_coordinates(false)
 			/* .build() */;

@@ -115,6 +115,18 @@ vec3 min_diff(vec3 p, vec3 a, vec3 b) {
     return (length_squared(ap) < length_squared(bp)) ? ap : bp;
 }
 
+float blue_noise_hash(vec2 p ) {
+	return fract(sin(dot(p, vec2(11.9898, 78.233))) * 43758.5453);
+}
+
+float blue_noise(vec2 U) {
+	float v =  hash(U + vec2(-1, 0))
+		+ hash(U + vec2(1,  0))
+		+ hash(U + vec2(0,  1))
+		+ hash(U + vec2(0, -1));
+	return hash(U) - v/4. + .5;
+}
+
 layout(local_size_x=32, local_size_y=32) in;
 void main() {
 	if (gl_GlobalInvocationID.x >= imageSize(result).x || gl_GlobalInvocationID.y >= imageSize(result).y) { return; }
@@ -136,7 +148,7 @@ void main() {
 
 	mat3 tbn = mat3(t, b, n);
 
-	float32_t oclussion = 0;
+	float32_t occlusion = 0;
 
 	for (uint32_t i = 0; i < SAMPLE_COUNT; ++i) {
 		vec3 s = tbn * normalize(HEMISPHERE_POSITIONS[i]); // sample in view space
@@ -145,10 +157,14 @@ void main() {
 		vec3 sampled_position = get_view_position(get_uv_from_view_position(s));
 
 		float32_t tweak = smoothstep(0.0, 1.0, R / abs(p.z - sampled_position.z));
-		oclussion += (sampled_position.z <= s.z ? 1.0 : 0.0) * tweak;
+		occlusion += (sampled_position.z <= s.z ? 1.0 : 0.0) * tweak;
 	}
 
-	oclussion = 1.0 - (oclussion / float(SAMPLE_COUNT));
+//	oclussion *= 2.0f;
 
-	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(oclussion), 1.0));
+	occlusion = 1.0 - (occlusion / float(SAMPLE_COUNT));
+
+	occlusion = pow(occlusion, 4.0);
+
+	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(occlusion), 1.0));
 }

@@ -874,7 +874,7 @@ void main() {
 					render_system::DescriptorWrite { // AO Texture
 						binding_handle: ao_texture_binding,
 						array_element: 0,
-						descriptor: render_system::Descriptor::CombinedImageSampler{ image_handle: result, sampler_handle: sampler, layout: render_system::Layouts::Read },
+						descriptor: render_system::Descriptor::CombinedImageSampler{ image_handle: y_blur_target, sampler_handle: sampler, layout: render_system::Layouts::Read },
 					},
 				]);
 
@@ -1466,7 +1466,7 @@ void main() {
 					layout: render_system::Layouts::Read,
 				},
 				render_system::Consumption{
-					handle: render_system::Handle::Image(self.hbao_pass.result),
+					handle: render_system::Handle::Image(self.hbao_pass.y_blur_target),
 					stages: render_system::Stages::COMPUTE,
 					access: render_system::AccessPolicies::WRITE,
 					layout: render_system::Layouts::General,

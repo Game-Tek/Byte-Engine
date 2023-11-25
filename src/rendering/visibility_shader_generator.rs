@@ -156,7 +156,6 @@ layout(set=1,binding=4,scalar) buffer PixelMapping {
 };
 
 layout(set=1, binding=6, r32ui) uniform readonly uimage2D triangle_index;
-layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_id;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
 layout(set=2, binding=2, rgba16) uniform image2D out_position;
 layout(set=2, binding=3, rgba16) uniform image2D out_normals;
@@ -335,27 +334,29 @@ void main() {
 	if (gl_GlobalInvocationID.x >= material_count[pc.material_id]) { return; }
 
 	uint offset = material_offset[pc.material_id];
-	u16vec2 be_pixel_xy = pixel_mapping[offset + gl_GlobalInvocationID.x];
-	ivec2 be_pixel_coordinate = ivec2(be_pixel_xy.x, be_pixel_xy.y);
-	uint BE_TRIANGLE_MESHLET_INDEX = imageLoad(triangle_index, be_pixel_coordinate).r;
-	uint BE_MESHLET_TRIANGLE_INDEX = BE_TRIANGLE_MESHLET_INDEX & 0xFF;
-	uint BE_MESHLET_INDEX = BE_TRIANGLE_MESHLET_INDEX >> 8;
-	uint be_instance_id = imageLoad(instance_id, be_pixel_coordinate).r;
+	ivec2 pixel_coordinates = ivec2(pixel_mapping[offset + gl_GlobalInvocationID.x]);
+	uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;
+	uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
+	uint meshlet_index = triangle_meshlet_indices >> 8;
 
-	Mesh mesh = meshes[be_instance_id];
+	Meshlet meshlet = meshlets[meshlet_index];
+
+	uint instance_index = meshlet.instance_index;
+
+	Mesh mesh = meshes[instance_index];
+
 	Material material = materials[pc.material_id];
-	Meshlet meshlet = meshlets[BE_MESHLET_INDEX];
 
 	uint primitive_indices[3] = uint[3](
-		uint(primitive_indices[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 0]),
-		uint(primitive_indices[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 1]),
-		uint(primitive_indices[(meshlet.triangle_offset + BE_MESHLET_TRIANGLE_INDEX) * 3 + 2])
+		primitive_indices[(meshlet.triangle_offset + meshlet_triangle_index) * 3 + 0],
+		primitive_indices[(meshlet.triangle_offset + meshlet_triangle_index) * 3 + 1],
+		primitive_indices[(meshlet.triangle_offset + meshlet_triangle_index) * 3 + 2]
 	);
 
 	uint vertex_indices[3] = uint[3](
-		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[0]]),
-		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[1]]),
-		mesh.base_vertex_index + uint(vertex_indices[meshlet.vertex_offset + primitive_indices[2]])
+		mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + primitive_indices[0]],
+		mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + primitive_indices[1]],
+		mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + primitive_indices[2]]
 	);
 
 	vec4 vertex_positions[3] = vec4[3](
@@ -370,28 +371,27 @@ void main() {
 		vec4(normals[vertex_indices[2]], 0.0)
 	);
 
-	vec2 uv = be_pixel_xy / vec2(1920.0, 1080.0);
+	vec2 image_extent = imageSize(triangle_index);
+
+	vec2 uv = pixel_coordinates / image_extent;
 
 	vec2 nc = uv * 2 - 1;
 
-	vec4 a = camera.view_projection * mesh.model * vertex_positions[0];
-	vec4 b = camera.view_projection * mesh.model * vertex_positions[1];
-	vec4 c = camera.view_projection * mesh.model * vertex_positions[2];
+	vec4 clip_space_vertex_positions[3] = vec4[3](camera.view_projection * mesh.model * vertex_positions[0], camera.view_projection * mesh.model * vertex_positions[1], camera.view_projection * mesh.model * vertex_positions[2]);
 
-	BarycentricDeriv barycentric_deriv = CalcFullBary(a, b, c, nc, vec2(1920.0, 1080.0));
+	BarycentricDeriv barycentric_deriv = CalcFullBary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, image_extent);
 	vec3 barycenter = barycentric_deriv.lambda;
 
-	vec3 BE_VERTEX_POSITION = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
-	vec3 BE_VERTEX_NORMAL = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
+	vec3 vertex_position = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
+	vec3 vertex_normal = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
 
-	vec3 N = normalize(BE_VERTEX_NORMAL);
-	vec3 V = normalize(camera.view[3].xyz - BE_VERTEX_POSITION);
+	vec3 N = normalize(vertex_normal);
+	vec3 V = normalize(-(camera.view[3].xyz - vertex_position));
 
-	vec3 BE_ALBEDO = vec3(1, 0, 0);
-	vec3 BE_METALLIC = vec3(0);
-	float BE_ROUGHNESS = float(0.5);
+	vec3 albedo = vec3(1, 0, 0);
+	vec3 metalness = vec3(0);
+	float roughness = float(0.5);
 ");
-
 
 		fn visit_node(string: &mut String, shader_node: &lexer::Node, material: &json::JsonValue) {
 			match &shader_node.node {
@@ -425,7 +425,7 @@ void main() {
 					match expression {
 						lexer::Expressions::Operator { operator, left: _, right } => {
 							if operator == &lexer::Operators::Assignment {
-								string.push_str(&format!("BE_ALBEDO = vec3("));
+								string.push_str(&format!("albedo = vec3("));
 								visit_node(string, right, material);
 								string.push_str(")");
 							}
@@ -476,29 +476,29 @@ void main() {
 		visit_node(&mut string, shader_node, material);
 
 string.push_str(&format!("
-	vec3 Lo = vec3(0.0);
+	vec3 lo = vec3(0.0);
 
 	float ao_factor = texture(ao, uv).r;
 
-	BE_ALBEDO *= ao_factor;
+	albedo *= ao_factor;
 
 	for (uint i = 0; i < lighting_data.light_count; ++i) {{
 		vec3 light_pos = lighting_data.lights[i].position;
 		vec3 light_color = lighting_data.lights[i].color;
 
-		vec3 L = normalize(light_pos - BE_VERTEX_POSITION);
+		vec3 L = normalize(light_pos - vertex_position);
 		vec3 H = normalize(V + L);
 
-		float distance = length(light_pos - BE_VERTEX_POSITION);
+		float distance = length(light_pos - vertex_position);
 		float attenuation = 1.0 / (distance * distance);
 		vec3 radiance = light_color * attenuation;
 
 		vec3 F0 = vec3(0.04);
-		F0 = mix(F0, BE_ALBEDO, BE_METALLIC);
+		F0 = mix(F0, albedo, metalness);
 		vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
 
-		float NDF = DistributionGGX(N, H, BE_ROUGHNESS);
-		float G = GeometrySmith(N, V, L, BE_ROUGHNESS);
+		float NDF = DistributionGGX(N, H, roughness);
+		float G = GeometrySmith(N, V, L, roughness);
 		vec3 numerator = NDF * G * F;
 		float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.000001;
 		vec3 specular = numerator / denominator;
@@ -506,16 +506,16 @@ string.push_str(&format!("
 		vec3 kS = F;
 		vec3 kD = vec3(1.0) - kS;
 
-		kD *= 1.0 - BE_METALLIC;
+		kD *= 1.0 - metalness;
 
 		float NdotL = max(dot(N, L), 0.0);
-		Lo += (kD * BE_ALBEDO / PI + specular) * radiance * NdotL;
+		lo += (kD * albedo / PI + specular) * radiance * NdotL;
 	}}
 "));
 
-		string.push_str(&format!("imageStore(out_albedo, be_pixel_coordinate, vec4(Lo, 1.0));"));
-		string.push_str(&format!("imageStore(out_position, be_pixel_coordinate, vec4(BE_VERTEX_POSITION, 1.0));"));
-		string.push_str(&format!("imageStore(out_normals, be_pixel_coordinate, vec4(BE_VERTEX_NORMAL, 1.0));"));
+		string.push_str(&format!("imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));"));
+		string.push_str(&format!("imageStore(out_position, pixel_coordinates, vec4(vertex_position, 1.0));"));
+		string.push_str(&format!("imageStore(out_normals, pixel_coordinates, vec4(vertex_normal, 1.0));"));
 
 		string.push_str(&format!("\n}}")); // Close main()
 

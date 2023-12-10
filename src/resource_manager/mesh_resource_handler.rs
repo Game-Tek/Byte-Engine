@@ -110,7 +110,7 @@ impl ResourceHandler for MeshResourceHandler {
 										(meshlet.vertices[i] as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
 									}
 								}
-								index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Raw, offset, count: index_count as u32 });
+								index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Vertices, offset, count: index_count as u32 });
 							}
 							_ => panic!("Unsupported index type")
 						}
@@ -143,21 +143,23 @@ impl ResourceHandler for MeshResourceHandler {
 						buffer.push(meshlet.triangle_count);
 					}
 				} else {
+					meshlet_stream = None;
+				}
+
+				let add_triangle_stream_even_if_using_meshlets = true;
+
+				if !MESHLETIZE || add_triangle_stream_even_if_using_meshlets {
 					let offset = buffer.len();
 
-					{
-						let index_type = IntegralTypes::U16;
-	
-						match index_type {
-							IntegralTypes::U16 => {
-								optimized_indices.iter().map(|i| *i as u16).for_each(|i| i.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)));
-								index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Raw, offset, count: optimized_indices.len() as u32 });
-							}
-							_ => panic!("Unsupported index type")
-						}
-					}
+					let index_type = IntegralTypes::U16;
 
-					meshlet_stream = None;
+					match index_type {
+						IntegralTypes::U16 => {
+							optimized_indices.iter().map(|i| *i as u16).for_each(|i| i.to_le_bytes().iter().for_each(|byte| buffer.push(*byte)));
+							index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Triangles, offset, count: optimized_indices.len() as u32 });
+						}
+						_ => panic!("Unsupported index type")
+					}
 				}
 
 				let mesh = Mesh {
@@ -205,23 +207,32 @@ impl ResourceHandler for MeshResourceHandler {
 					file.seek(std::io::SeekFrom::Start(mesh.vertex_count as u64 * 12)).unwrap(); // 12 bytes per vertex
 					file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).unwrap();
 				}
-				"Indices" => {
+				"TriangleIndices" => {
 					#[cfg(debug_assertions)]
-					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Raw) { error!("Requested Index stream but mesh does not have RAW indices."); continue; }
+					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Triangles) { error!("Requested Index stream but mesh does not have triangle indices."); continue; }
 
-					let raw_index_stram = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Raw).unwrap();
+					let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-					file.seek(std::io::SeekFrom::Start(raw_index_stram.offset as u64)).expect("Failed to seek to index buffer");
-					file.read(&mut buffer.buffer[0..(raw_index_stram.count as usize * raw_index_stram.data_type.size())]).unwrap();
+					file.seek(std::io::SeekFrom::Start(triangle_index_stream.offset as u64)).expect("Failed to seek to index buffer");
+					file.read(&mut buffer.buffer[0..(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())]).unwrap();
+				}
+				"VertexIndices" => {
+					#[cfg(debug_assertions)]
+					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Vertices) { error!("Requested Index stream but mesh does not have vertex indices."); continue; }
+
+					let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
+
+					file.seek(std::io::SeekFrom::Start(vertex_index_stream.offset as u64)).expect("Failed to seek to index buffer");
+					file.read(&mut buffer.buffer[0..(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())]).unwrap();
 				}
 				"MeshletIndices" => {
 					#[cfg(debug_assertions)]
-					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Meshlets) { error!("Requested MeshletIndices stream but mesh does not have meshlet indices indices."); continue; }
+					if !mesh.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Meshlets) { error!("Requested MeshletIndices stream but mesh does not have meshlet indices."); continue; }
 
-					let meshlet_indices_streams = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
+					let meshlet_indices_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
-					file.seek(std::io::SeekFrom::Start(meshlet_indices_streams.offset as u64)).expect("Failed to seek to index buffer");
-					file.read(&mut buffer.buffer[0..(meshlet_indices_streams.count as usize * meshlet_indices_streams.data_type.size())]).unwrap();
+					file.seek(std::io::SeekFrom::Start(meshlet_indices_stream.offset as u64)).expect("Failed to seek to index buffer");
+					file.read(&mut buffer.buffer[0..(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())]).unwrap();
 				}
 				"Meshlets" => {
 					#[cfg(debug_assertions)]
@@ -280,8 +291,9 @@ pub enum CompressionSchemes {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum IndexStreamTypes {
-	Raw,
+	Vertices,
 	Meshlets,
+	Triangles,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -441,31 +453,40 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
 
-		assert_eq!(mesh.index_streams.len(), 2);
+		assert_eq!(mesh.index_streams.len(), 3);
 
-		let raw_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Raw).unwrap();
+		let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
 
-		assert_eq!(raw_index_stream.stream_type, IndexStreamTypes::Raw);
-		assert_eq!(raw_index_stream.offset, offset);
-		assert_eq!(raw_index_stream.count, 24);
-		assert_eq!(raw_index_stream.data_type, IntegralTypes::U16);
+		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
+		// assert_eq!(vertex_index_stream.offset, offset);
+		assert_eq!(triangle_index_stream.count, 36);
+		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
+
+		let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
+
+		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+
+		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
+		// assert_eq!(vertex_index_stream.offset, offset);
+		assert_eq!(vertex_index_stream.count, 24);
+		assert_eq!(vertex_index_stream.data_type, IntegralTypes::U16);
 
 		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
-		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+		// let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
 
 		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
-		assert_eq!(meshlet_index_stream.offset, offset);
+		// assert_eq!(meshlet_index_stream.offset, offset);
 		assert_eq!(meshlet_index_stream.count, 36);
 		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
 
 		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
 
-		let offset = offset + meshlet_index_stream.count as usize * meshlet_index_stream.data_type.size();
+		// let offset = offset + meshlet_index_stream.count as usize * meshlet_index_stream.data_type.size();
 
-		assert_eq!(meshlet_stream_info.offset, offset);
+		// assert_eq!(meshlet_stream_info.offset, offset);
 		assert_eq!(meshlet_stream_info.count, 1);
 
 		let resource_request = resource_manager.request_resource("Box");
@@ -483,7 +504,7 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					streams: vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "Indices".to_string() }],
+					streams: vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices".to_string() }],
 				});
 			}
 			_ => {}
@@ -500,7 +521,7 @@ mod tests {
 
 					assert_eq!(buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize], vertex_buffer[0..(mesh.vertex_count * mesh.vertex_components.size() as u32) as usize]);
 
-					assert_eq!(buffer[576..(576 + mesh.index_streams[0].count * 2) as usize], index_buffer[0..(mesh.index_streams[0].count * 2) as usize]);
+					assert_eq!(buffer[triangle_index_stream.offset..(triangle_index_stream.offset + triangle_index_stream.count as usize * 2) as usize], index_buffer[0..(triangle_index_stream.count * 2) as usize]);
 				}
 				_ => {}
 			}
@@ -534,21 +555,34 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
 
-		assert_eq!(mesh.index_streams.len(), 2);
+		assert_eq!(mesh.index_streams.len(), 3);
 
-		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+		let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
-		assert_eq!(mesh.index_streams[0].offset, offset);
-		assert_eq!(mesh.index_streams[0].count, 3936 * 3);
-		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
+		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
 
-		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
+		// assert_eq!(vertex_index_stream.offset, offset);
+		assert_eq!(triangle_index_stream.count, 3936 * 3);
+		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
 
-		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
-		assert_eq!(mesh.index_streams[1].offset, offset);
-		assert_eq!(mesh.index_streams[1].count, 3936 * 3);
-		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
+		let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
+
+		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+
+		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
+		// assert_eq!(mesh.index_streams[0].offset, offset);
+		assert_eq!(vertex_index_stream.count, 3936 * 3);
+		assert_eq!(vertex_index_stream.data_type, IntegralTypes::U16);
+
+		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
+
+		// let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+
+		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
+		// assert_eq!(mesh.index_streams[1].offset, offset);
+		assert_eq!(meshlet_index_stream.count, 3936 * 3);
+		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
 
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
 
@@ -565,6 +599,11 @@ mod tests {
 		assert_eq!(vertex_normals[0], Vector3::new(0.703351f32, -0.228379f32, -0.673156f32));
 		assert_eq!(vertex_normals[1], Vector3::new(0.818977f32, -0.001884f32, -0.573824f32));
 		assert_eq!(vertex_normals[2], Vector3::new(0.776439f32, -0.262265f32, -0.573027f32));
+
+		let triangle_indices = unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(triangle_index_stream.offset) as *const u16, triangle_index_stream.count as usize) };
+
+		assert_eq!(triangle_indices[0..3], [0, 1, 2]);
+		assert_eq!(triangle_indices[3935 * 3..3936 * 3], [11805, 11806, 11807]);
 	}
 
 	#[test]
@@ -594,27 +633,38 @@ mod tests {
 		assert_eq!(mesh.vertex_components[1].semantic, VertexSemantics::Normal);
 		assert_eq!(mesh.vertex_components[1].format, "vec3f");
 		assert_eq!(mesh.vertex_components[1].channel, 1);
-		assert_eq!(mesh.index_streams.len(), 2);
 
-		let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+		assert_eq!(mesh.index_streams.len(), 3);
 
-		assert_eq!(mesh.index_streams[0].stream_type, IndexStreamTypes::Raw);
-		assert_eq!(mesh.index_streams[0].offset, offset);
-		assert_eq!(mesh.index_streams[0].count, 24);
-		assert_eq!(mesh.index_streams[0].data_type, IntegralTypes::U16);
+		let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-		let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
 
-		assert_eq!(mesh.index_streams[1].stream_type, IndexStreamTypes::Meshlets);
-		assert_eq!(mesh.index_streams[1].offset, offset);
-		assert_eq!(mesh.index_streams[1].count, 36);
-		assert_eq!(mesh.index_streams[1].data_type, IntegralTypes::U8);
+		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
+		// assert_eq!(vertex_index_stream.offset, offset);
+		assert_eq!(triangle_index_stream.count, 36);
+		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
+
+		let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
+
+		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
+
+		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
+		// assert_eq!(vertex_index_stream.offset, offset);
+		assert_eq!(vertex_index_stream.count, 24);
+		assert_eq!(vertex_index_stream.data_type, IntegralTypes::U16);
+
+		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
+
+		// let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
+
+		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
+		// assert_eq!(meshlet_index_stream.offset, offset);
+		assert_eq!(meshlet_index_stream.count, 36);
+		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
 
 		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
 
-		let offset = offset + mesh.index_streams[1].count as usize * mesh.index_streams[1].data_type.size();
-
-		assert_eq!(meshlet_stream_info.offset, offset);
 		assert_eq!(meshlet_stream_info.count, 1);
 
 		// Cast buffer to Vector3<f32>
@@ -659,7 +709,7 @@ mod tests {
 			"Mesh" => {
 				options.resources.push(OptionResource {
 					url: resource.url.clone(),
-					streams: vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "Indices".to_string() }],
+					streams: vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices".to_string() }],
 				});
 			}
 			_ => {}
@@ -673,6 +723,8 @@ mod tests {
 			match resource.class.as_str() {
 				"Mesh" => {
 					let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
+
+					let triangle_indices_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
 					// Cast vertex_buffer to Vector3<f32>
 					let vertex_positions = unsafe { std::slice::from_raw_parts(vertex_buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
@@ -690,11 +742,10 @@ mod tests {
 					assert_eq!(vertex_normals[1], Vector3::new(0f32, 0f32, -1f32));
 					assert_eq!(vertex_normals[2], Vector3::new(0f32, 0f32, -1f32));
 
-
 					// Cast index_buffer to u16
-					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_streams[0].count as usize) };
+					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, triangle_indices_stream.count as usize) };
 
-					assert_eq!(index_buffer.len(), 24);
+					assert_eq!(index_buffer.len(), 36);
 					assert_eq!(index_buffer[0], 0);
 					assert_eq!(index_buffer[1], 1);
 					assert_eq!(index_buffer[2], 2);
@@ -725,7 +776,7 @@ mod tests {
 					streams: vec![
 						Stream{ buffer: vertex_positions_buffer.as_mut_slice(), name: "Vertex.Position".to_string() },
 						Stream{ buffer: vertex_normals_buffer.as_mut_slice(), name: "Vertex.Normal".to_string() },
-						Stream{ buffer: index_buffer.as_mut_slice(), name: "Indices".to_string() }
+						Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices".to_string() }
 					],
 				});
 			}
@@ -740,6 +791,8 @@ mod tests {
 			match resource.class.as_str() {
 				"Mesh" => {
 					let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
+
+					let triangle_indices_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
 					// Cast vertex_positions_buffer to Vector3<f32>
 					let vertex_positions_buffer = unsafe { std::slice::from_raw_parts(vertex_positions_buffer.as_ptr() as *const Vector3, mesh.vertex_count as usize) };
@@ -759,9 +812,9 @@ mod tests {
 
 					// Cast index_buffer to u16
 
-					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, mesh.index_streams[0].count as usize) };
+					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, triangle_indices_stream.count as usize) };
 
-					assert_eq!(index_buffer.len(), 24);
+					assert_eq!(index_buffer.len(), 36);
 					assert_eq!(index_buffer[0], 0);
 					assert_eq!(index_buffer[1], 1);
 					assert_eq!(index_buffer[2], 2);

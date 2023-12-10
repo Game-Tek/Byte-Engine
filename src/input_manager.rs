@@ -271,7 +271,7 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<InputManager> {
+	pub fn new_as_system() -> orchestrator::EntityReturn<'static, InputManager> {
 		orchestrator::EntityReturn::new(Self::new())
 			.add_listener::<Action<bool>>()
 			.add_listener::<Action<Vector2>>()

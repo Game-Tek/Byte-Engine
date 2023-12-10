@@ -53,7 +53,7 @@ impl Component for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<input_manager::Action<Vec3f>>) -> orchestrator::EntityReturn<Self> {
+	fn new(lookaround: EntityHandle<input_manager::Action<Vec3f>>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 

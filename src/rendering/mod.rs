@@ -13,7 +13,16 @@ pub mod mesh;
 pub mod cct;
 mod vulkan_render_system;
 
+pub mod world_render_domain;
 pub mod visibility_model;
+
+pub mod renderer;
+
+pub mod tonemap_render_pass;
+
+pub mod shadow_render_pass;
+pub mod ssao_render_pass;
+pub mod aces_tonemap_render_pass;
 
 pub(crate) mod shader_compilation;
 

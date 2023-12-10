@@ -175,9 +175,9 @@ pub struct TopLevelAccelerationStructureBuild {
 
 pub struct BufferStridedRange {
 	pub buffer: BaseBufferHandle,
-	pub offset: u64,
-	pub stride: u64,
-	pub size: u64,
+	pub offset: usize,
+	pub stride: usize,
+	pub size: usize,
 }
 
 pub struct BindingTables {
@@ -190,6 +190,15 @@ pub struct BindingTables {
 pub struct DispatchExtent {
 	pub workgroup_extent: Extent,
 	pub dispatch_extent: Extent,
+}
+
+impl DispatchExtent {
+	pub fn new(dispatch_extent: Extent, workgroup_extent: Extent) -> Self {
+		Self {
+			workgroup_extent,
+			dispatch_extent,
+		}
+	}
 }
 
 pub enum BottomLevelAccelerationStructureDescriptions {
@@ -251,7 +260,7 @@ pub trait CommandBufferRecording {
 
 	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 
-	fn clear_textures(&mut self, textures: &[(ImageHandle, ClearValue)]);
+	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
 
 	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]);
@@ -263,7 +272,7 @@ pub trait CommandBufferRecording {
 	fn end(&mut self);
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&self, pipeline_layout: &PipelineLayoutHandle, sets: &[(DescriptorSetHandle, u32)]);
+	fn bind_descriptor_sets(&self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]);
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
 
@@ -336,7 +345,7 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle;
 
-	fn create_command_buffer(&mut self) -> CommandBufferHandle;
+	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
 
 	fn create_command_buffer_recording(&self, command_buffer_handle: CommandBufferHandle, frame_index: Option<u32>) -> Box<dyn CommandBufferRecording + '_>;
 
@@ -374,7 +383,8 @@ pub trait RenderSystem: orchestrator::System {
 	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> TopLevelAccelerationStructureHandle;
 	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure) -> BottomLevelAccelerationStructureHandle;
 
-	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle);
+	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle);
+
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
 
 	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle;
@@ -383,7 +393,7 @@ pub trait RenderSystem: orchestrator::System {
 
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
 	/// Multiple underlying synchronization primitives are created, one for each frame
-	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle;
+	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	/// 
@@ -477,7 +487,6 @@ pub enum Formats {
 	RGBAf16,
 	/// 32 bit float per component RGBA.
 	RGBAf32,
-	R32(Encodings),
 	/// 10 bit unsigned for R, G and 11 bit unsigned for B normalized RGB.
 	RGBu10u10u11,
 	/// 8 bit unsigned per component normalized BGRA.
@@ -485,7 +494,9 @@ pub enum Formats {
 	/// 32 bit float depth.
 	Depth32,
 	U32,
+	R8(Encodings),
 	R16(Encodings),
+	R32(Encodings),
 	RG16(Encodings),
 	RGB16(Encodings),
 	RGBA16(Encodings),
@@ -624,6 +635,8 @@ bitflags::bitflags! {
 		const MISS = 0b1000000000000000;
 		/// The callable stage.
 		const CALLABLE = 0b10000000000000000;
+		/// The acceleration structure build stage.
+		const ACCELERATION_STRUCTURE_BUILD = 0b100000000000000000;
 	}
 }
 
@@ -698,6 +711,8 @@ pub enum Layouts {
 	Read,
 	/// The resource will be used as a read/write storage.
 	General,
+	/// The resource will be used as a shader binding table.
+	ShaderBindingTable,
 }
 
 #[derive(Clone, Copy)]
@@ -1002,8 +1017,8 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_allocation(size, _resource_uses, resource_device_accesses)
 	}
 
-	fn create_command_buffer(&mut self) -> CommandBufferHandle {
-		self.pointer.create_command_buffer()
+	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle {
+		self.pointer.create_command_buffer(name)
 	}
 
 	fn create_command_buffer_recording<'a>(&'a self, command_buffer_handle: CommandBufferHandle, frame: Option<u32>) -> Box<dyn CommandBufferRecording + 'a> {
@@ -1054,16 +1069,16 @@ impl RenderSystem for RenderSystemImplementation {
 		self.pointer.create_top_level_acceleration_structure(name,)
 	}
 
-	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle) {
-		self.pointer.write_instance(instances_buffer_handle, transform, custom_index, mask, sbt_record_offset, acceleration_structure)
+	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle) {
+		self.pointer.write_instance(instances_buffer_handle, instance_index, transform, custom_index, mask, sbt_record_offset, acceleration_structure)
 	}
 
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle) {
 		self.pointer.write_sbt_entry(sbt_buffer_handle, sbt_record_offset, pipeline_handle, shader_handle)
 	}
 
-	fn create_synchronizer(&mut self, signaled: bool) -> SynchronizerHandle {
-		self.pointer.create_synchronizer(signaled)
+	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
+		self.pointer.create_synchronizer(name, signaled)
 	}
 
 	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle {
@@ -1100,7 +1115,7 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn render_triangle(renderer: &mut dyn RenderSystem) {
-		let signal = renderer.create_synchronizer(false);
+		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1175,7 +1190,7 @@ pub(super) mod tests {
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let command_buffer_handle = renderer.create_command_buffer(None);
 
 		renderer.start_frame_capture();
 
@@ -1306,10 +1321,10 @@ pub(super) mod tests {
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(false);
-		let image_ready = renderer.create_synchronizer(false);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
+		let image_ready = renderer.create_synchronizer(None, false);
 
 		let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
 
@@ -1431,10 +1446,10 @@ pub(super) mod tests {
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(true);
-		let image_ready = renderer.create_synchronizer(true);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
+		let image_ready = renderer.create_synchronizer(None, true);
 
 		for i in 0..2*64 {
 			renderer.wait(render_finished_synchronizer);
@@ -1560,9 +1575,9 @@ pub(super) mod tests {
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(false);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			// renderer.wait(render_finished_synchronizer);
@@ -1698,9 +1713,9 @@ pub(super) mod tests {
 
 		let _buffer = renderer.create_buffer(None, 64, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(false);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			// renderer.wait(render_finished_synchronizer);
@@ -1779,7 +1794,7 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn descriptor_sets(renderer: &mut dyn RenderSystem) {
-		let signal = renderer.create_synchronizer(false);
+		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1894,7 +1909,7 @@ pub(super) mod tests {
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 
-		let command_buffer_handle = renderer.create_command_buffer();
+		let command_buffer_handle = renderer.create_command_buffer(None);
 
 		renderer.start_frame_capture();
 
@@ -1926,7 +1941,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.bind_raster_pipeline(&pipeline);
 
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[(descriptor_set, 0)]);
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
 
 		command_buffer_recording.draw_mesh(&mesh);
 
@@ -2114,19 +2129,19 @@ void main() {
 			&[(&raygen_shader, ShaderTypes::Raygen, vec![]), (&closest_hit_shader, ShaderTypes::ClosestHit, vec![]), (&miss_shader, ShaderTypes::Miss, vec![])],
 		);
 
-		let building_command_buffer_handle = renderer.create_command_buffer();
-		let rendering_command_buffer_handle = renderer.create_command_buffer();
+		let building_command_buffer_handle = renderer.create_command_buffer(None);
+		let rendering_command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(false);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 		// let image_ready = renderer.create_synchronizer(true);
 
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
-		renderer.write_instance(instances_buffer, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
+		renderer.write_instance(instances_buffer, 0, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
 
-		let build_sync = renderer.create_synchronizer(true);
+		let build_sync = renderer.create_synchronizer(None, true);
 
-		let scratch_buffer = renderer.create_buffer(None, 1024 * 1024, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let scratch_buffer = renderer.create_buffer(None, 1024 * 1024, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let raygen_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 		let miss_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
@@ -2196,7 +2211,7 @@ void main() {
 				command_buffer_recording.consume_resources(&[
 					Consumption {
 						handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
-						stages: Stages::RAYGEN,
+						stages: Stages::ACCELERATION_STRUCTURE_BUILD,
 						access: AccessPolicies::READ,
 						layout: Layouts::General,
 					}
@@ -2216,7 +2231,7 @@ void main() {
 
 			command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
 
-			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[(descriptor_set, 0)]);
+			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
 
 			command_buffer_recording.consume_resources(&[
 				Consumption {

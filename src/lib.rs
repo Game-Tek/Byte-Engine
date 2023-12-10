@@ -47,6 +47,38 @@ impl Extent {
 			depth,
 		}
 	}
+
+	pub fn line(width: u32) -> Self {
+		Self {
+			width,
+			height: 1,
+			depth: 1,
+		}
+	}
+
+	pub fn square(size: u32) -> Self {
+		Self {
+			width: size,
+			height: size,
+			depth: 1,
+		}
+	}
+
+	pub fn plane(width: u32, height: u32) -> Self {
+		Self {
+			width,
+			height,
+			depth: 1,
+		}
+	}
+
+	pub fn volume(width: u32, height: u32, depth: u32) -> Self {
+		Self {
+			width,
+			height,
+			depth,
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,6 +87,11 @@ pub struct RGBA {
 	pub g: f32,
 	pub b: f32,
 	pub a: f32,
+}
+
+impl RGBA {
+	pub fn black() -> Self { Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0, } }	
+	pub fn white() -> Self { Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0, } }
 }
 
 fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {

@@ -41,6 +41,7 @@ pub struct VulkanRenderSystem {
 	textures: Vec<Texture>,
 	allocations: Vec<Allocation>,
 	descriptor_sets_layouts: Vec<DescriptorSetLayout>,
+	pipeline_layouts: Vec<PipelineLayout>,
 	bindings: Vec<Binding>,
 	descriptor_sets: Vec<DescriptorSet>,
 	meshes: Vec<Mesh>,
@@ -472,7 +473,14 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let pipeline_layout = unsafe { self.device.create_pipeline_layout(&pipeline_layout_create_info, None).expect("No pipeline layout") };
 
-		render_system::PipelineLayoutHandle(pipeline_layout.as_raw())
+		let handle = render_system::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
+
+		self.pipeline_layouts.push(PipelineLayout {
+			pipeline_layout,
+			descriptor_set_template_indices: descriptor_set_layout_handles.iter().enumerate().map(|(i, handle)| (handle.clone(), i as u32)).collect(),
+		});
+
+		handle
 	}
 
 	fn create_raster_pipeline(&mut self, pipeline_blocks: &[render_system::PipelineConfigurationBlocks]) -> render_system::PipelineHandle {
@@ -522,6 +530,8 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			.data(&specialization_entries_buffer)
 			.map_entries(&spcialization_map_entries);
 
+		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
+
 		let create_infos = [
 			vk::ComputePipelineCreateInfo::default()
 				.stage(vk::PipelineShaderStageCreateInfo::default()
@@ -531,7 +541,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 					.specialization_info(&specialization_info)
 					/* .build() */
 				)
-				.layout(vk::PipelineLayout::from_raw(pipeline_layout_handle.0))
+				.layout(pipeline_layout.pipeline_layout)
 		];
 
 		let pipeline_handle = unsafe {
@@ -600,8 +610,10 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			}
 		}
 
+		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
+
 		let create_info = vk::RayTracingPipelineCreateInfoKHR::default()
-			.layout(vk::PipelineLayout::from_raw(pipeline_layout_handle.0))
+			.layout(pipeline_layout.pipeline_layout)
 			.stages(&stages)
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
@@ -632,7 +644,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		handle
 	}
 
-	fn create_command_buffer(&mut self) -> render_system::CommandBufferHandle {
+	fn create_command_buffer(&mut self, name: Option<&str>) -> render_system::CommandBufferHandle {
 		let command_buffer_handle = render_system::CommandBufferHandle(self.command_buffers.len() as u64);
 
 		let command_buffers = (0..self.frames).map(|_| {
@@ -652,7 +664,23 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 			let command_buffers = unsafe { self.device.allocate_command_buffers(&command_buffer_allocate_info).expect("No command buffer") };
 
-			CommandBufferInternal { command_pool, command_buffer: command_buffers[0], }
+			let command_buffer = command_buffers[0];
+
+			if let Some(name) = name {
+				if let Some(debug_utils) = &self.debug_utils {
+					unsafe {
+						debug_utils.set_debug_utils_object_name(
+							self.device.handle(),
+							&vk::DebugUtilsObjectNameInfoEXT::default()
+								.object_handle(command_buffer)
+								.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+								/* .build() */
+						).expect("No debug utils object name");
+					}
+				}
+			}
+
+			CommandBufferInternal { command_pool, command_buffer, }
 		}).collect::<Vec<_>>();
 
 		self.command_buffers.push(CommandBuffer {
@@ -979,6 +1007,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		let (geometry, primitive_count) = match &description.description {
 			render_system::BottomLevelAccelerationStructureDescriptions::Mesh { vertex_count, vertex_position_encoding, triangle_count, index_format } => {
 				(vk::AccelerationStructureGeometryKHR::default()
+					.flags(vk::GeometryFlagsKHR::OPAQUE)
 					.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
 					.geometry(vk::AccelerationStructureGeometryDataKHR {
 						triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -998,6 +1027,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			}
 			render_system::BottomLevelAccelerationStructureDescriptions::AABB { transform_count } => {
 				(vk::AccelerationStructureGeometryKHR::default()
+					.flags(vk::GeometryFlagsKHR::OPAQUE)
 					.geometry_type(vk::GeometryTypeKHR::AABBS)
 					.geometry(vk::AccelerationStructureGeometryDataKHR {
 						aabbs: vk::AccelerationStructureGeometryAabbsDataKHR::default()
@@ -1009,6 +1039,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		let geometries = [geometry];
 
 		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
 			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
 			.geometries(&geometries);
 
@@ -1064,7 +1095,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		handle
 	}
 
-	fn write_instance(&mut self, instances_buffer: BaseBufferHandle, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: render_system::BottomLevelAccelerationStructureHandle) {
+	fn write_instance(&mut self, instances_buffer: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: render_system::BottomLevelAccelerationStructureHandle) {
 		let buffer = self.acceleration_structures[acceleration_structure.0 as usize].buffer;
 
 		let address = unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) };
@@ -1074,7 +1105,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				matrix: [transform[0][0], transform[0][1], transform[0][2], transform[0][3], transform[1][0], transform[1][1], transform[1][2], transform[1][3], transform[2][0], transform[2][1], transform[2][2], transform[2][3]],
 			},
 			instance_custom_index_and_mask: vk::Packed24_8::new(custom_index as u32, mask),
-			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(sbt_record_offset as u32, 0),
+			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(sbt_record_offset as u32, vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8),
 			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
 				device_handle: address,
 			},
@@ -1084,7 +1115,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let instance_buffer_slice = unsafe { std::slice::from_raw_parts_mut(instance_buffer.pointer as *mut vk::AccelerationStructureInstanceKHR, instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()) };
 
-		instance_buffer_slice[0] = instance;
+		instance_buffer_slice[instance_index] = instance;
 	}
 
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: render_system::PipelineHandle, shader_handle: render_system::ShaderHandle) {
@@ -1148,7 +1179,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
 	/// Multiple underlying synchronization primitives are created, one for each frame
-	fn create_synchronizer(&mut self, signaled: bool) -> render_system::SynchronizerHandle {
+	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> render_system::SynchronizerHandle {
 		let synchronizer_handle = render_system::SynchronizerHandle(self.synchronizers.len() as u64);
 
 		let mut previous_synchronizer_handle: Option<render_system::SynchronizerHandle> = None;
@@ -1157,7 +1188,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			let synchronizer_handle = render_system::SynchronizerHandle(self.synchronizers.len() as u64);
 			self.synchronizers.push(Synchronizer {
 				fence: self.create_vulkan_fence(signaled),
-				semaphore: self.create_vulkan_semaphore(signaled),
+				semaphore: self.create_vulkan_semaphore(name, signaled),
 			});
 			previous_synchronizer_handle = Some(synchronizer_handle);
 		}
@@ -1232,7 +1263,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 use ash::{vk::{ValidationFeatureEnableEXT, Handle}, Entry};
 use bitflags::Flags;
 
-use super::render_system::{CommandBufferRecording, BaseBufferHandle, RenderSystem, ShaderHandle, FilteringModes, SamplerAddressingModes};
+use super::render_system::*;
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -1245,6 +1276,12 @@ pub(crate) struct Swapchain {
 pub(crate) struct DescriptorSetLayout {
 	bindings: Vec<(vk::DescriptorType, u32)>,
 	descriptor_set_layout: vk::DescriptorSetLayout,
+}
+
+#[derive(Clone)]
+pub(crate) struct PipelineLayout {
+	pipeline_layout: vk::PipelineLayout,
+	descriptor_set_template_indices: HashMap<render_system::DescriptorSetTemplateHandle, u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -1388,6 +1425,7 @@ fn texture_format_and_resource_use_to_image_layout(_texture_format: render_syste
 		render_system::Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
 		render_system::Layouts::Read => vk::ImageLayout::READ_ONLY_OPTIMAL,
 		render_system::Layouts::General => vk::ImageLayout::GENERAL,
+		render_system::Layouts::ShaderBindingTable => vk::ImageLayout::UNDEFINED,
 	}
 }
 
@@ -1409,6 +1447,13 @@ fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
 
 fn to_format(format: render_system::Formats, compression: Option<render_system::CompressionSchemes>) -> vk::Format {
 	match format {
+		render_system::Formats::R8(encoding) => {
+			match encoding {
+				Encodings::IEEE754 => { vk::Format::UNDEFINED }
+				Encodings::UnsignedNormalized => { vk::Format::R8_UNORM }
+				Encodings::SignedNormalized => { vk::Format::R8_SNORM }
+			}
+		}
 		render_system::Formats::R16(encoding) => {
 			match encoding {
 				render_system::Encodings::IEEE754 => {
@@ -1428,10 +1473,10 @@ fn to_format(format: render_system::Formats, compression: Option<render_system::
 					vk::Format::R32_SFLOAT
 				}
 				render_system::Encodings::UnsignedNormalized => {
-					vk::Format::UNDEFINED
+					vk::Format::R32_UINT
 				}
 				render_system::Encodings::SignedNormalized => {
-					vk::Format::UNDEFINED
+					vk::Format::R32_SINT
 				}
 			}
 		}
@@ -1545,6 +1590,10 @@ fn to_pipeline_stage_flags(stages: render_system::Stages) -> vk::PipelineStageFl
 		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
 	}
 
+	if stages.contains(render_system::Stages::ACCELERATION_STRUCTURE_BUILD) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR;
+	}
+
 	pipeline_stage_flags
 }
 
@@ -1585,10 +1634,14 @@ fn to_pipeline_stage_flags_with_format(stages: render_system::Stages, format: re
 		pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT;
 	}
 
+	if stages.contains(render_system::Stages::RAYGEN) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+	}
+
 	pipeline_stage_flags
 }
 
-fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_system::Stages,) -> vk::AccessFlags2 {
+fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_system::Stages, layout: render_system::Layouts) -> vk::AccessFlags2 {
 	let mut access_flags = vk::AccessFlags2::empty();
 
 	if accesses.contains(render_system::AccessPolicies::READ) {
@@ -1608,6 +1661,13 @@ fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_syste
 			access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
 		}
 		if stages.intersects(render_system::Stages::RAYGEN) {
+			if layout == render_system::Layouts::ShaderBindingTable {
+				access_flags |= vk::AccessFlags2::SHADER_BINDING_TABLE_READ_KHR
+			} else {
+				access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR
+			}
+		}
+		if stages.intersects(render_system::Stages::ACCELERATION_STRUCTURE_BUILD) {
 			access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR
 		}
 	}
@@ -1621,6 +1681,12 @@ fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_syste
 		}
 		if stages.intersects(render_system::Stages::FRAGMENT) {
 			access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+		}
+		if stages.intersects(render_system::Stages::RAYGEN) {
+			access_flags |= vk::AccessFlags2::SHADER_WRITE
+		}
+		if stages.intersects(render_system::Stages::ACCELERATION_STRUCTURE_BUILD) {
+			access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR
 		}
 	}
 
@@ -1650,6 +1716,9 @@ fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: 
 		if stages.intersects(render_system::Stages::INDIRECT) {
 			access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
 		}
+		if stages.intersects(render_system::Stages::RAYGEN) {
+			access_flags |= vk::AccessFlags2::SHADER_READ
+		}
 	}
 
 	if accesses.contains(render_system::AccessPolicies::WRITE) {
@@ -1665,6 +1734,9 @@ fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: 
 			} else {
 				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
 			}
+		}
+		if stages.intersects(render_system::Stages::RAYGEN) {
+			access_flags |= vk::AccessFlags2::SHADER_WRITE
 		}
 	}
 
@@ -1951,11 +2023,19 @@ impl VulkanRenderSystem {
 			(vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(), vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default())
 		};
 
+		let mut shader_atomic_float_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+			.shader_buffer_float32_atomics(true)
+			.shader_image_float32_atomics(true)
+		;
+
+		device_extension_names.push("VK_EXT_shader_atomic_float\0".as_ptr() as *const i8);
+
   		let device_create_info = vk::DeviceCreateInfo::default()
 			.push_next(&mut physical_device_vulkan_11_features/* .build() */)
 			.push_next(&mut physical_device_vulkan_12_features/* .build() */)
 			.push_next(&mut physical_device_vulkan_13_features/* .build() */)
 			.push_next(&mut physical_device_mesh_shading_features/* .build() */)
+			.push_next(&mut shader_atomic_float_features/* .build() */)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features/* .build() */)
@@ -2004,21 +2084,22 @@ impl VulkanRenderSystem {
 			frames: 2, // Assuming double buffering
 
 			allocations: Vec::new(),
-			buffers: Vec::new(),
-			textures: Vec::new(),
-			descriptor_sets_layouts: Vec::new(),
-			bindings: Vec::new(),
-			descriptor_sets: Vec::new(),
+			buffers: Vec::with_capacity(1024),
+			textures: Vec::with_capacity(512),
+			descriptor_sets_layouts: Vec::with_capacity(128),
+			pipeline_layouts: Vec::with_capacity(64),
+			bindings: Vec::with_capacity(1024),
+			descriptor_sets: Vec::with_capacity(512),
 			acceleration_structures: Vec::new(),
-			pipelines: Vec::new(),
+			pipelines: Vec::with_capacity(1024),
 			meshes: Vec::new(),
-			command_buffers: Vec::new(),
-			synchronizers: Vec::new(),
-			swapchains: Vec::new(),
+			command_buffers: Vec::with_capacity(32),
+			synchronizers: Vec::with_capacity(32),
+			swapchains: Vec::with_capacity(4),
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<render_system::RenderSystemImplementation> {
+	pub fn new_as_system() -> orchestrator::EntityReturn<'static, render_system::RenderSystemImplementation> {
 		let settings = Settings {
 			validation: true,
 			ray_tracing: true,
@@ -2182,9 +2263,9 @@ impl VulkanRenderSystem {
 						build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 					}
 					render_system::PipelineConfigurationBlocks::Layout { layout } => {
-						let pipeline_layout = vk::PipelineLayout::from_raw(layout.0);
+						let pipeline_layout = &vulkan_render_system.pipeline_layouts[layout.0 as usize];
 
-						let pipeline_create_info = pipeline_create_info.layout(pipeline_layout);
+						let pipeline_create_info = pipeline_create_info.layout(pipeline_layout.pipeline_layout);
 
 						build_block(vulkan_render_system, pipeline_create_info, block_iterator)
 					}
@@ -2452,10 +2533,26 @@ impl VulkanRenderSystem {
 		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
 	}
 
-	fn create_vulkan_semaphore(&self, signaled: bool) -> vk::Semaphore {
+	fn create_vulkan_semaphore(&self, name: Option<&str>, signaled: bool) -> vk::Semaphore {
 		let semaphore_create_info = vk::SemaphoreCreateInfo::default()
 			/* .build() */;
-		unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") }
+		let handle = unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") };
+
+		if let Some(name) = name {
+			unsafe {
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils.set_debug_utils_object_name(
+						self.device.handle(),
+						&vk::DebugUtilsObjectNameInfoEXT::default()
+							.object_handle(handle)
+							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
+							/* .build() */
+					).expect("No debug utils object name");
+				}
+			}
+		}
+
+		handle
 	}
 
 	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: render_system::Formats, compression: Option<render_system::CompressionSchemes>, _mip_levels: u32) -> vk::ImageView {
@@ -2736,7 +2833,7 @@ impl VulkanCommandBufferRecording<'_> {
 		let mut i = 0;
 		loop {
 			let texture = &self.render_system.textures[texture_handle.0 as usize];
-			if i == self.modulo_frame_index {
+			if i == self.modulo_frame_index || texture.next.is_none() {
 				return (texture_handle, texture);
 			}
 			texture_handle = texture.next.unwrap();
@@ -2921,18 +3018,22 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		let build_range_infos = build_range_infos.iter().map(|build_range_info| build_range_info.as_slice()).collect::<Vec<_>>();
 
+
+
 		unsafe {
 			self.render_system.acceleration_structure.cmd_build_acceleration_structures(command_buffer.command_buffer, &infos, &build_range_infos)
 		}
 	}
 
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[render_system::BottomLevelAccelerationStructureBuild]) {
+		if acceleration_structure_builds.is_empty() { return; }
+
 		fn visit(this: &mut VulkanCommandBufferRecording, acceleration_structure_builds: &[render_system::BottomLevelAccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,) {
 			if let Some(build) = acceleration_structure_builds.first() {
 				let (acceleration_structure_handle, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
 
 				let (as_geometries, offsets) = match &build.description {
-					render_system::BottomLevelAccelerationStructureBuildDescriptions::AABB { aabb_buffer, transform_buffer, transform_count } => {
+					render_system::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => {
 						(vec![], vec![])
 					}
 					render_system::BottomLevelAccelerationStructureBuildDescriptions::Mesh { vertex_buffer, index_buffer, vertex_position_encoding, index_format, triangle_count, vertex_count } => {
@@ -2942,7 +3043,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
 									/* .build() */
-							) + vertex_buffer.offset
+							) + vertex_buffer.offset as u64
 						};
 
 						let index_data_address = unsafe {
@@ -2951,7 +3052,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
 									/* .build() */
-							) + index_buffer.offset
+							) + index_buffer.offset as u64
 						};
 
 						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -2967,12 +3068,12 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 								_ => panic!("Invalid vertex position encoding"),
 							})
 							.index_type(match index_format {
-								render_system::DataTypes::U8 => vk::IndexType::UINT16,
+								render_system::DataTypes::U8 => vk::IndexType::UINT8_EXT,
 								render_system::DataTypes::U16 => vk::IndexType::UINT16,
 								render_system::DataTypes::U32 => vk::IndexType::UINT32,
 								_ => panic!("Invalid index format"),
 							})
-							.vertex_stride(vertex_buffer.stride);
+							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
 
 						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
 							.primitive_count(*triangle_count)
@@ -2982,6 +3083,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 							/* .build() */];
 
 						(vec![vk::AccelerationStructureGeometryKHR::default()
+							.flags(vk::GeometryFlagsKHR::OPAQUE)
 							.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
 							.geometry(vk::AccelerationStructureGeometryDataKHR{ triangles })],
 						build_range_info)
@@ -3064,7 +3166,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	/// Writes to the push constant register.
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, offset: u32, data: &[u8]) {
 		let command_buffer = self.get_command_buffer();
-		let pipeline_layout = vk::PipelineLayout::from_raw(pipeline_layout_handle.0);
+		let pipeline_layout = self.render_system.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
 		unsafe { self.render_system.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
 	}
 
@@ -3110,7 +3212,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn clear_textures(&mut self, textures: &[(render_system::ImageHandle, render_system::ClearValue)]) {
+	fn clear_images(&mut self, textures: &[(render_system::ImageHandle, render_system::ClearValue)]) {
 		self.consume_resources(textures.iter().map(|(texture_handle, _)| render_system::Consumption {
 			handle: render_system::Handle::Image(*texture_handle),
 			stages: render_system::Stages::TRANSFER,
@@ -3147,7 +3249,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		for consumption in consumptions {
 			let mut new_stage_mask = to_pipeline_stage_flags(consumption.stages);
-			let mut new_access_mask = to_access_flags(consumption.access, consumption.stages);
+			let mut new_access_mask = to_access_flags(consumption.access, consumption.stages, consumption.layout);
 
 			match consumption.handle {
 				render_system::Handle::Image(texture_handle) => {
@@ -3340,9 +3442,9 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 
 		let make_strided_range = |range: render_system::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
 			vk::StridedDeviceAddressRegionKHR::default()
-				.device_address(self.render_system.get_buffer_address(range.buffer) + range.offset)
-				.stride(range.stride)
-				.size(range.size)
+				.device_address(self.render_system.get_buffer_address(range.buffer) as vk::DeviceSize + range.offset as vk::DeviceSize)
+				.stride(range.stride as vk::DeviceSize)
+				.size(range.size as vk::DeviceSize)
 		};
 
 		let raygen_shader_binding_tables = make_strided_range(binding_tables.raygen);
@@ -3605,19 +3707,26 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&self, pipeline_layout: &render_system::PipelineLayoutHandle, sets: &[(render_system::DescriptorSetHandle, u32)]) {
+	fn bind_descriptor_sets(&self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, sets: &[render_system::DescriptorSetHandle]) {
 		let command_buffer = self.get_command_buffer();
+		
+		let pipeline_layout = &self.render_system.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
-		let pipeline_layout = vk::PipelineLayout::from_raw(pipeline_layout.0);
+		let s = sets.iter().map(|set| {
+			let (_, descriptor_set) = self.get_descriptor_set(set);
+			let index_in_layout = pipeline_layout.descriptor_set_template_indices.get(&descriptor_set.descriptor_set_layout).unwrap();
+			(*index_in_layout, descriptor_set.descriptor_set)
+		});
 
-		assert!(sets.is_sorted_by(|a, b| Some(a.1.cmp(&b.1))));
+		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
 
-		for (descriptor_set_handle, set_index) in sets {
-			let (_, descriptor_set) = self.get_descriptor_set(descriptor_set_handle);
-			let descriptor_sets = [descriptor_set.descriptor_set];
+		// TODO: partion sets by index_in_layout
+
+		for (i, descriptor_set_handle) in s {
+			let descriptor_sets = [descriptor_set_handle];
 	
 			unsafe {
-				self.render_system.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, pipeline_layout, *set_index, &descriptor_sets, &[]);
+				self.render_system.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, vulkan_pipeline_layout_handle, i, &descriptor_sets, &[]);
 			}
 		}
 	}

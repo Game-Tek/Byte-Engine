@@ -617,7 +617,7 @@ impl WindowSystem {
 		WindowSystem { windows: Vec::new() }
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<WindowSystem> {
+	pub fn new_as_system() -> orchestrator::EntityReturn<'static, WindowSystem> {
 		orchestrator::EntityReturn::new(Self::new()).add_listener::<Window>()
 	}
 

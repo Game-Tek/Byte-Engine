@@ -113,14 +113,14 @@ pub enum PPP<T> {
 }
 
 /// Entity creation functions must return this type.
-pub struct EntityReturn<T> {
+pub struct EntityReturn<'c, T> {
 	// entity: T,
-	create: std::boxed::Box<dyn FnOnce(OrchestratorReference) -> T>,
+	create: std::boxed::Box<dyn FnOnce(OrchestratorReference) -> T + 'c>,
 	post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut T, OrchestratorReference)>>,
 	listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, u32, (u32, u32))>)>,
 }
 
-impl <T: 'static> EntityReturn<T> {
+impl <'c, T: 'static> EntityReturn<'c, T> {
 	// pub fn new(entity: T) -> Self {
 	// 	Self {
 	// 		entity,
@@ -137,7 +137,7 @@ impl <T: 'static> EntityReturn<T> {
 		}
 	}
 
-	pub fn new_from_function(function: fn(OrchestratorReference) -> T) -> Self {
+	pub fn new_from_function(function: impl FnOnce(OrchestratorReference) -> T + 'c) -> Self {
 		Self {
 			create: std::boxed::Box::new(function),
 			post_creation_functions: Vec::new(),
@@ -216,7 +216,7 @@ impl Orchestrator {
 	}
 
 	/// Spawn entity is a function that spawns an entity and returns a handle to it.
-	pub fn spawn_entity<T, P, F>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + Send + 'static, F: IntoHandler<P, T> {
+	pub fn spawn_entity<'c, T, P, F: 'c>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + Send + 'static, F: IntoHandler<P, T> {
 		let handle = function.call(self)?;
 
 		trace!("{}", std::any::type_name::<T>());
@@ -427,6 +427,11 @@ impl Orchestrator {
 		let systems_data = self.systems_data.read().unwrap();
 		EntityReference { lock: systems_data.systems[&systems_data.systems_by_name[std::any::type_name::<S>()]].clone(), phantom: std::marker::PhantomData }
 	}
+
+	pub fn get_entity<S: System + 'static>(&self, entity_handle: &EntityHandle<S>) -> EntityReference<S> {
+		let systems_data = self.systems_data.read().unwrap();
+		EntityReference { lock: systems_data.systems[&entity_handle.internal_id].clone(), phantom: std::marker::PhantomData }
+	}
 }
 
 pub struct EntityReference<T> where T: ?Sized {
@@ -559,7 +564,7 @@ mod tests {
 		impl super::System for System {}
 
 		impl System {
-			fn new() -> EntityReturn<System> {
+			fn new<'c>() -> EntityReturn<'c, System> {
 				EntityReturn::new(System {}).add_listener::<Component>()
 			}
 		}
@@ -782,8 +787,8 @@ impl <'a> OrchestratorReference<'a> {
 		self.orchestrator.tie(&EntityHandle::<T>{ internal_id: self.internal_id, external_id: 0, phantom: std::marker::PhantomData }, consuming_property, sender_component_handle, j);
 	}
 
-	pub fn spawn_entity<T, P, F>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + Send + 'static, F: IntoHandler<P, T> {
-		self.orchestrator.spawn_entity::<T, P, F>(function)
+	pub fn spawn_entity<'c, T, P, F: 'c>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + Send + 'static, F: IntoHandler<P, T> {
+		self.orchestrator.spawn_entity::<'c, T, P, F>(function)
 	}
 
 	pub fn spawn<C: Component>(&self, component: C) -> EntityHandle<C> {
@@ -796,6 +801,10 @@ impl <'a> OrchestratorReference<'a> {
 
 	pub fn set_owned_property<T: Copy + 'static, S: 'static, E: Clone + 'static>(&self, internal_id: InternalId, property: fn() -> Property<S, E, T>, value: T) {
 		self.orchestrator.set_owned_property::<E, T, S>(self.internal_id, internal_id, property, value);
+	}
+
+	pub fn get_entity<S: System + 'static>(&self, entity_handle: &EntityHandle<S>) -> EntityReference<S> {
+		self.orchestrator.get_entity::<S>(entity_handle)
 	}
 
 	pub fn get_by_class<S: System + 'static>(&self) -> EntityReference<S> {
@@ -814,7 +823,7 @@ pub trait IntoHandler<P, R> {
 	fn call(self, orchestrator: &Orchestrator,) -> Option<EntityHandle<R>>;
 }
 
-impl <R: Entity + Send + 'static> IntoHandler<(), R> for EntityReturn<R> {
+impl <R: Entity + Send + 'static> IntoHandler<(), R> for EntityReturn<'_, R> {
     fn call(self, orchestrator: &Orchestrator,) -> Option<EntityHandle<R>> {
 		let internal_id = {
 			let mut systems_data = orchestrator.systems_data.write().unwrap();

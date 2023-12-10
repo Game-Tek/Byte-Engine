@@ -113,7 +113,7 @@ impl ResourceManager {
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<ResourceManager> {
+	pub fn new_as_system() -> orchestrator::EntityReturn<'static, ResourceManager> {
 		orchestrator::EntityReturn::new(Self::new())
 	}
 

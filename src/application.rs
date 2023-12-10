@@ -127,7 +127,7 @@ pub struct GraphicsApplication {
 	window_system_handle: orchestrator::EntityHandle<window_system::WindowSystem>,
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
-	visibility_render_domain_handle: orchestrator::EntityHandle<rendering::visibility_model::render_domain::VisibilityWorldRenderDomain>,
+	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
 	render_system_handle: orchestrator::EntityHandle<render_system::RenderSystemImplementation>,
 }
 
@@ -165,13 +165,13 @@ impl Application for GraphicsApplication {
 
 		let render_system_handle = rendering::create_render_system(&orchestrator);
 
-		let visibility_render_domain_handle = orchestrator.spawn_entity(rendering::visibility_model::render_domain::VisibilityWorldRenderDomain::new()).unwrap();
+		let renderer_handle = orchestrator.spawn_entity(rendering::renderer::Renderer::new_as_system()).unwrap();
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
 		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
-		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, visibility_render_domain_handle, tick_count: 0, render_system_handle }
+		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, render_system_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -224,7 +224,7 @@ impl Application for GraphicsApplication {
 		// 	visibility_render_domain.render(self.get_orchestrator(), render_system, self.tick_count as u32);
 		// });
 		
-		self.application.get_orchestrator().invoke_mut(self.visibility_render_domain_handle.copy(), rendering::visibility_model::render_domain::VisibilityWorldRenderDomain::render);
+		self.application.get_orchestrator().invoke_mut(self.renderer_handle.copy(), rendering::renderer::Renderer::render);
 
 		if !window_res {
 			self.application.close();

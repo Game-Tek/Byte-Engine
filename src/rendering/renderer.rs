@@ -71,7 +71,7 @@ impl Renderer {
 		if self.swapchain_handles.is_empty() { return; }
 
 		let render_system = orchestrator.get_entity(&self.render_system);
-		let mut render_system = render_system.get_mut();
+		let render_system = render_system.get();
 
 		let swapchain_handle = self.swapchain_handles[0];
 
@@ -89,7 +89,7 @@ impl Renderer {
 		visibility_render_model.render(&orchestrator, render_system.deref(), command_buffer_recording.as_mut());
 
 		let tonemap_render_model = orchestrator.get_entity(&self.tonemap_render_model);
-		let mut tonemap_render_model = tonemap_render_model.get_mut();
+		let tonemap_render_model = tonemap_render_model.get();
 
 		tonemap_render_model.render(command_buffer_recording.as_mut());
 
@@ -118,6 +118,10 @@ impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
 		let swapchain_handle = render_system.bind_to_window(&window_system.get_os_handles(&handle));
 
 		self.swapchain_handles.push(swapchain_handle);
+	}
+
+	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<window_system::Window>, params: &window_system::Window) {
+		
 	}
 }
 

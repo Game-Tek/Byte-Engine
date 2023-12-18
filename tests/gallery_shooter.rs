@@ -11,19 +11,17 @@ fn gallery_shooter() {
 
 	let orchestrator = app.get_mut_orchestrator();
 
-	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn(input_manager::Action{ name: "Lookaround", bindings: vec![
+	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn(input_manager::Action::new("Lookaround", &[
 			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")).mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
 			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
-		],
-		phantom: std::marker::PhantomData,
-	});
+		],)
+	);
 
-	let _trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn(input_manager::Action{ name: "Trigger", bindings: vec![
+	let _trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn(input_manager::Action::new("Trigger", &[
 			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton")),
 			// input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightTrigger")),
-		],
-		phantom: std::marker::PhantomData,
-	});
+		],)
+	);
 
 	let player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle)).expect("Failed to spawn player");
 
@@ -69,7 +67,7 @@ impl Player {
 				focus_distance: 0.0,
 			});
 	
-			// orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
+			orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
 	
 			// orchestrator.tie_self(Player::lookaround, &handle, input_manager::Action::value);
 

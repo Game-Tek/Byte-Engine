@@ -7,6 +7,7 @@
 #![feature(iter_map_windows)]
 #![feature(pointer_is_aligned)]
 #![feature(coerce_unsized, unsize)]
+#![feature(fn_ptr_trait)]
 // #![warn(missing_docs)] # Disable now because we are writing a lot of code
 // #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
 
@@ -20,6 +21,7 @@ pub mod input_manager;
 pub mod file_tracker;
 pub mod executor;
 pub mod camera;
+pub mod audio;
 
 pub mod math;
 pub mod rendering;

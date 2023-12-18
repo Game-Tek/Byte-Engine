@@ -33,6 +33,14 @@ pub struct EntityHandle<T: Entity + ?Sized> {
 	external_id: u32,
 }
 
+pub type EntityHash = u32;
+
+impl <T: Entity + ?Sized> From<EntityHandle<T>> for EntityHash {
+	fn from(handle: EntityHandle<T>) -> Self {
+		handle.internal_id
+	}
+}
+
 impl <T: Entity> EntityHandle<T> {
 	pub fn new(object: std::rc::Rc<std::sync::RwLock<T>>, internal_id: u32, external_id: u32) -> Self {
 		Self {
@@ -82,8 +90,8 @@ impl <T: Entity + ?Sized> Clone for EntityHandle<T> {
 	}
 }
 
-use std::marker::Unsize;
-use std::ops::CoerceUnsized;
+use std::marker::{Unsize, FnPtr};
+use std::ops::{CoerceUnsized, DerefMut, Deref};
 impl<T: Entity, U: Entity> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where
     T: Unsize<U> + ?Sized,
@@ -117,7 +125,7 @@ pub trait OwnedComponent<T: Entity> : Entity {
 }
 
 struct Tie {
-	update_function: std::boxed::Box<dyn std::any::Any>,
+	update_function: std::boxed::Box<dyn Fn(&HashMap<u32, EntityStorage>, OrchestratorReference, &dyn Any)>,
 	destination_system_handle: u32,
 }
 
@@ -324,41 +332,43 @@ impl Orchestrator {
 	}
 
 	/// Ties a property of a component to a property of another component.
-	pub fn tie<T: Entity + 'static, U: Entity, V: 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> Property<T, V>, _sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
+	pub fn tie<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> Property<T, V>, _sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
+		self.tie_internal(receiver_component_handle.internal_id, i, _sender_component_handle, j)
+	}
+
+	/// Ties a property of a component to a property of another component.
+	pub fn tie_internal<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, receiver_internal_id: u32, i: fn() -> Property<T, V>, _sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
 		let property_function_pointer = j as *const (); // Use the property function pointer as a key to the ties hashmap.
 
 		let property = i();
 
 		let mut ties = self.ties.write().unwrap();
 
-		let update_function = Box::new(property.setter);
+		let update_function = Box::new(move |systems: &HashMap<u32, EntityStorage>, orchestrator_reference: OrchestratorReference, value: &dyn Any| {
+			(property.setter)(systems[&receiver_internal_id].write().unwrap().downcast_mut::<T>().unwrap(), orchestrator_reference, *value.downcast_ref().unwrap())
+		});
 
 		if let std::collections::hash_map::Entry::Vacant(e) = ties.entry(property_function_pointer as usize) {
 			let mut ties_new = Vec::new();
-			ties_new.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
+			ties_new.push(Tie { update_function, destination_system_handle: receiver_internal_id });
 			e.insert(ties_new);
 		} else {
 			let ties = ties.get_mut(&(property_function_pointer as usize)).unwrap();
 
-			if !ties.iter().any(|tie| tie.destination_system_handle == receiver_component_handle.internal_id) {
-				ties.push(Tie { update_function, destination_system_handle: receiver_component_handle.internal_id });
+			if !ties.iter().any(|tie| tie.destination_system_handle == receiver_internal_id) {
+				ties.push(Tie { update_function, destination_system_handle: receiver_internal_id });
 			}
 		}
 	}
 
 	pub fn set_property<C: Entity + 'static, V: Clone + Copy + 'static>(&self, component_handle: &EntityHandle<C>, function: fn() -> Property<C, V>, value: V) {
-		let po = function as *const ();
 		let ties = self.ties.read().unwrap();
 		
-		if let Some(ties) = ties.get(&(po as usize)) {
+		if let Some(ties) = ties.get(&(function.addr() as usize)) {
 			let systems_data = self.systems_data.read().unwrap();
 
 			for tie in ties {
-				unsafe {
-					let mut component = systems_data.systems[&tie.destination_system_handle].write().unwrap();
-					let setter = tie.update_function.downcast_ref_unchecked::<fn(&mut C, OrchestratorReference, V)>();
-					(setter)(component.downcast_mut::<C>().unwrap(), OrchestratorReference { orchestrator: self, internal_id: tie.destination_system_handle }, value);
-				}
+				(tie.update_function)(&systems_data.systems, OrchestratorReference { orchestrator: self, internal_id: tie.destination_system_handle }, &value);
 			}
 		}
 	}
@@ -526,6 +536,7 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 
 pub trait EntitySubscriber<T: Entity + Component> {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
+	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
 }
 
 #[cfg(test)]
@@ -614,6 +625,8 @@ mod tests {
 					COUNTER += 1;
 				}
 			}
+
+			fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
 		}
 		
 		let _: Option<EntityHandle<System>> = orchestrator.spawn_entity(System::new());
@@ -816,13 +829,13 @@ pub struct OrchestratorReference<'a> {
 }
 
 impl <'a> OrchestratorReference<'a> {
-	pub fn tie<'b, T: Entity + 'static, U: Entity + 'b, V: 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> Property<T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
+	pub fn tie<'b, T: Entity + 'static, U: Entity + 'b, V: Any + Copy + 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> Property<T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
 		self.orchestrator.tie(receiver_component_handle, i, sender_component_handle, j);
 	}
 
-	// pub fn tie_self<T: Entity + 'static, U: Entity, V: 'static, S0: 'static, S1: 'static>(&self, consuming_property: fn() -> Property<S0, T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> Property<S1, U, V>) {
-	// 	self.orchestrator.tie(&EntityHandle::<T>::new(object, internal_id, external_id){ internal_id: self.internal_id, external_id: 0, phantom: std::marker::PhantomData }, consuming_property, sender_component_handle, j);
-	// }
+	pub fn tie_self<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, consuming_property: fn() -> Property<T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
+		self.orchestrator.tie_internal(self.internal_id, consuming_property, sender_component_handle, j);
+	}
 
 	pub fn spawn_entity<'c, T, P, F: 'c>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + 'static, F: IntoHandler<P, T> {
 		self.orchestrator.spawn_entity::<'c, T, P, F>(function)

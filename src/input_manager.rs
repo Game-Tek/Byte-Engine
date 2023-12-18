@@ -17,11 +17,11 @@
 //! - [ ] Remove panics.
 //! - [ ] Add device class and device grouping.
 
-use std::f32::consts::PI;
+use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property, System, self, Entity, EntitySubscriber}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property, System, self, Entity, EntitySubscriber, EntityHash}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -257,6 +257,10 @@ pub struct InputManager {
 	devices: Vec<Device>,
 	records: Vec<Record>,
 	actions: Vec<InputAction>,
+
+	input_sources_map: HashMap<EntityHash, InputSourceHandle>,
+	actions_ei_map: HashMap<EntityHash, ActionHandle>,
+	actions_ie_map: HashMap<ActionHandle, EntityHandle<Action<Vector3>>>,
 }
 
 impl InputManager {
@@ -268,6 +272,10 @@ impl InputManager {
 			devices: Vec::new(),
 			records: Vec::new(),
 			actions: Vec::new(),
+
+			input_sources_map: HashMap::new(),
+			actions_ei_map: HashMap::new(),
+			actions_ie_map: HashMap::new(),
 		}
 	}
 
@@ -591,7 +599,7 @@ impl InputManager {
 						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
 					}
 					Value::Vector3(v) => {
-						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector3>::value, v);
+						orchestrator.set_property(self.actions_ie_map.get(&ActionHandle(i as u32)).unwrap(), Action::<Vector3>::value, v);
 					}
 					_ => {}
 				}
@@ -788,7 +796,10 @@ impl InputManager {
 
 impl EntitySubscriber<Action<bool>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
-		self.create_action(action.name, Types::Bool, &action.bindings);
+		let internal_handle = self.create_action(action.name, Types::Bool, &action.bindings);
+	}
+
+	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
 	}
 }
 
@@ -796,11 +807,19 @@ impl EntitySubscriber<Action<Vector2>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
 		self.create_action(action.name, Types::Vector2, &action.bindings);
 	}
+
+	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
+	}
 }
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
-		self.create_action(action.name, Types::Vector3, &action.bindings);
+		let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
+
+		self.actions_ie_map.insert(internal_handle, handle);
+	}
+
+	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
 	}
 }
 
@@ -1272,7 +1291,7 @@ mod tests {
 	}
 }
 
-pub trait Extract<T: GetType> {
+pub trait Extract<T: InputValue> {
 	fn extract(&self) -> T;
 }
 
@@ -1309,12 +1328,12 @@ impl InputManager {
 		orchestrator::InternalId(handle.0)
 	}
 
-	pub fn get_action_value<T: GetType + Clone + 'static>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
+	pub fn get_action_value<T: InputValue + Clone + 'static>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
 		let state = self.get_action_state(ActionHandle(action_handle.get_external_key()), &DeviceHandle(0));
 		state.value.extract()
 	}
 
-	pub fn set_action_value<T: GetType + Clone + 'static>(&mut self, _action_handle: &EntityHandle<Action<T>>, _value: T) {
+	pub fn set_action_value<T: InputValue + Clone + 'static>(&mut self, _action_handle: &EntityHandle<Action<T>>, _value: T) {
 
 	}
 }
@@ -1323,30 +1342,44 @@ impl Entity for InputManager {}
 impl System for InputManager {}
 
 #[derive(Clone, Debug)]
-pub struct Action<T: Clone> {
+pub struct Action<T: InputValue> {
 	pub name: &'static str,
 	pub bindings: Vec<ActionBindingDescription>,
-	pub phantom: std::marker::PhantomData<T>,
+	pub value: T,
 }
 
-impl <T: GetType + Clone + 'static> orchestrator::Entity for Action<T> {}
+impl <T: InputValue> orchestrator::Entity for Action<T> {}
 
-pub trait GetType {
+pub trait InputValue: Default + Clone + Copy + 'static {
 	fn get_type() -> Types;
 }
 
-impl GetType for bool {
+impl InputValue for bool {
 	fn get_type() -> Types { Types::Bool }
 }
 
-impl GetType for Vector2 {
+impl InputValue for Vector2 {
 	fn get_type() -> Types { Types::Vector2 }
 }
 
-impl GetType for Vector3 {
+impl InputValue for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
-impl <T: Clone + GetType + 'static> orchestrator::Component for Action<T> {
+impl <T: Clone + InputValue + 'static> orchestrator::Component for Action<T> {
 	// type Parameters<'a> = ActionParameters<'a>;
+}
+
+impl <T: InputValue + Clone + 'static> Action<T> {
+	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action<T> {
+		Action {
+			name,
+			bindings: bindings.to_vec(),
+			value: T::default(),
+		}
+	}
+
+	pub fn get_value(&self) -> T { self.value }
+	pub fn set_value(&mut self, _: orchestrator::OrchestratorReference, value: T) { self.value = value; }
+	pub const fn value() -> orchestrator::Property<Action<T>, T> { return orchestrator::Property { getter: Self::get_value, setter: Self::set_value } }
 }

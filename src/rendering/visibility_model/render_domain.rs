@@ -860,6 +860,10 @@ impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDom
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
 		self.camera = Some(handle);
 	}
+
+	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, params: &camera::Camera) {
+		
+	}
 }
 
 #[derive(Copy, Clone)]
@@ -1084,6 +1088,10 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 		assert!((self.visibility_info.vertex_count as usize) < MAX_PRIMITIVE_TRIANGLES, "Primitive triangle count exceeded");
 		assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
 	}
+
+	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, params: &mesh::Mesh) {
+		
+	}
 }
 
 impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderDomain {
@@ -1102,6 +1110,10 @@ impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderD
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
+
+	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<DirectionalLight>, params: &DirectionalLight) {
+		
+	}
 }
 
 impl orchestrator::EntitySubscriber<PointLight> for VisibilityWorldRenderDomain {
@@ -1119,6 +1131,10 @@ impl orchestrator::EntitySubscriber<PointLight> for VisibilityWorldRenderDomain 
 		lighting_data.count += 1;
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
+	}
+
+	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<PointLight>, params: &PointLight) {
+		
 	}
 }
 

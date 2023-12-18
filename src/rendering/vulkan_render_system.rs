@@ -3524,10 +3524,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			.image_memory_barriers(&image_memory_barriers)
 			.buffer_memory_barriers(&buffer_memory_barriers)
 			.memory_barriers(&memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-			/* .build() */;
-
-		dbg!(dependency_info);
+			.dependency_flags(vk::DependencyFlags::BY_REGION);
 
 		let command_buffer = self.get_command_buffer();
 

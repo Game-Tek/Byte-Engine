@@ -637,6 +637,7 @@ impl WindowSystem {
 	}
 
 	pub fn update_window(&self, window_handle: u32) -> Option<WindowEvents> {
+		if window_handle as usize >= self.windows.len() { return None; }
 		self.windows[window_handle as usize].update()
 	}
 

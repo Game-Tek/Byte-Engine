@@ -588,10 +588,10 @@ impl InputManager {
 
 				match value {
 					Value::Vector2(v) => {
-						orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
+						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
 					}
 					Value::Vector3(v) => {
-						orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector3>::value, v);
+						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector3>::value, v);
 					}
 					_ => {}
 				}
@@ -1309,12 +1309,12 @@ impl InputManager {
 		orchestrator::InternalId(handle.0)
 	}
 
-	pub fn get_action_value<T: GetType + Clone>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
+	pub fn get_action_value<T: GetType + Clone + 'static>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
 		let state = self.get_action_state(ActionHandle(action_handle.get_external_key()), &DeviceHandle(0));
 		state.value.extract()
 	}
 
-	pub fn set_action_value<T: Clone>(&mut self, _action_handle: &EntityHandle<Action<T>>, _value: T) {
+	pub fn set_action_value<T: GetType + Clone + 'static>(&mut self, _action_handle: &EntityHandle<Action<T>>, _value: T) {
 
 	}
 }
@@ -1329,7 +1329,7 @@ pub struct Action<T: Clone> {
 	pub phantom: std::marker::PhantomData<T>,
 }
 
-impl <T: GetType + Clone + Send + 'static> orchestrator::Entity for Action<T> {}
+impl <T: GetType + Clone + 'static> orchestrator::Entity for Action<T> {}
 
 pub trait GetType {
 	fn get_type() -> Types;
@@ -1347,10 +1347,6 @@ impl GetType for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
-impl <T: Clone + Send + GetType + 'static> orchestrator::Component for Action<T> {
+impl <T: Clone + GetType + 'static> orchestrator::Component for Action<T> {
 	// type Parameters<'a> = ActionParameters<'a>;
-}
-
-impl <T: Clone + Send + GetType> Action<T> {
-	pub const fn value() -> Property<InputManager, Self, T> where T: GetType, Value: Extract<T> { Property::System { getter: InputManager::get_action_value, setter: InputManager::set_action_value } }
 }

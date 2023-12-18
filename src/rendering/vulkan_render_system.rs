@@ -46,6 +46,7 @@ pub struct VulkanRenderSystem {
 	descriptor_sets: Vec<DescriptorSet>,
 	meshes: Vec<Mesh>,
 	acceleration_structures: Vec<AccelerationStructure>,
+	shaders: Vec<Shader>,
 	pipelines: Vec<Pipeline>,
 	command_buffers: Vec<CommandBuffer>,
 	synchronizers: Vec<Synchronizer>,
@@ -114,7 +115,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	}
 
 	/// Creates a shader.
-	fn create_shader(&mut self, shader_source_type: render_system::ShaderSource, stage: render_system::ShaderTypes,) -> render_system::ShaderHandle {
+	fn create_shader(&mut self, shader_source_type: render_system::ShaderSource, stage: render_system::ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> render_system::ShaderHandle {
 		match shader_source_type {
 			render_system::ShaderSource::GLSL(source_code) => {
 				let compiler = shaderc::Compiler::new().unwrap();
@@ -130,7 +131,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				
 				match binary {
 					Ok(binary) => {		
-						self.create_vulkan_shader(stage, binary.as_binary_u8())
+						self.create_vulkan_shader(stage, binary.as_binary_u8(), shader_binding_descriptors)
 					},
 					Err(err) => {
 						let error_string = err.to_string();
@@ -141,7 +142,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				}
 			}
 			render_system::ShaderSource::SPIRV(spirv) => {
-				self.create_vulkan_shader(stage, spirv)
+				self.create_vulkan_shader(stage, spirv, shader_binding_descriptors)
 			}
 		}
 	}
@@ -227,8 +228,11 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		let created_binding = Binding {
 			descriptor_set_handle: descriptor_set,
 			descriptor_type,
+			type_: binding.descriptor_type,
 			count: binding.descriptor_count,
 			index: binding.binding,
+			stages: binding.stages,
+			pipeline_stages: to_pipeline_stage_flags(binding.stages),
 		};
 
 		let binding_handle = render_system::DescriptorSetBindingHandle(self.bindings.len() as u64);
@@ -275,6 +279,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 			self.descriptor_sets.push(
 				DescriptorSet {
 					next: None,
+					resources: Vec::with_capacity(16),
 					descriptor_set,
 					descriptor_set_layout: *descriptor_set_layout_handle,
 				}
@@ -304,7 +309,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 		handle
 	}
 
-	fn write(&self, descriptor_set_writes: &[render_system::DescriptorWrite]) {		
+	fn write(&mut self, descriptor_set_writes: &[render_system::DescriptorWrite]) {		
 		for descriptor_set_write in descriptor_set_writes {
 			let binding = &self.bindings[descriptor_set_write.binding_handle.0 as usize];
 			let descriptor_set = &self.descriptor_sets[binding.descriptor_set_handle.0 as usize];
@@ -460,6 +465,32 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 				}
 			}
 		}
+
+		for dsw in descriptor_set_writes {
+			let binding = &self.bindings[dsw.binding_handle.0 as usize];
+
+			let mut descriptor_set_handle_option = Some(binding.descriptor_set_handle);
+
+			while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+				let descriptor_set = &mut self.descriptor_sets[descriptor_set_handle.0 as usize];
+	
+				match dsw.descriptor {
+					Descriptor::Buffer { handle, .. } => {
+						descriptor_set.resources.push((dsw.binding_handle, render_system::Handle::Buffer(handle)));
+					}
+					Descriptor::Image { handle, .. } => {
+						descriptor_set.resources.push((dsw.binding_handle, render_system::Handle::Image(handle)));
+					}
+					Descriptor::CombinedImageSampler { image_handle, .. } => {
+						descriptor_set.resources.push((dsw.binding_handle, render_system::Handle::Image(image_handle)));
+					}
+					_ => {}
+				}
+
+				descriptor_set_handle_option = descriptor_set.next;
+			}
+
+		}
 	}
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[render_system::DescriptorSetTemplateHandle], push_constant_ranges: &[render_system::PushConstantRange]) -> render_system::PipelineLayoutHandle {
@@ -532,11 +563,13 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
+		let shader = &self.shaders[shader_parameter.0.0 as usize];
+
 		let create_infos = [
 			vk::ComputePipelineCreateInfo::default()
 				.stage(vk::PipelineShaderStageCreateInfo::default()
 					.stage(vk::ShaderStageFlags::COMPUTE)
-					.module(vk::ShaderModule::from_raw(shader_parameter.0.0))
+					.module(shader.shader)
 					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
 					.specialization_info(&specialization_info)
 					/* .build() */
@@ -550,9 +583,15 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let handle = render_system::PipelineHandle(self.pipelines.len() as u64);
 
+		let resource_access = shader.shader_binding_descriptors.iter().map(|descriptor| {
+			((descriptor.set, descriptor.binding), (render_system::Stages::COMPUTE, descriptor.access))
+		}).collect::<Vec<_>>();
+
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			shader_handles: HashMap::new(),
+			shaders: vec![*shader_parameter.0],
+			resource_access,
 		});
 
 		handle
@@ -561,10 +600,12 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, shaders: &[render_system::ShaderParameter]) -> render_system::PipelineHandle {
 		let mut groups = Vec::with_capacity(1024);
 		
-		let stages = shaders.iter().map(|shader| {
+		let stages = shaders.iter().map(|stage| {
+			let shader = &self.shaders[stage.0.0 as usize];
+
 			vk::PipelineShaderStageCreateInfo::default()
-				.stage(to_shader_stage_flags(shader.1))
-				.module(vk::ShaderModule::from_raw(shader.0.0))
+				.stage(to_shader_stage_flags(stage.1))
+				.module(shader.shader)
 				.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
 				// .specialization_info(&specilization_infos[specilization_info_count - 1])
 				/* .build() */
@@ -572,7 +613,7 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		for (i, shader) in shaders.iter().enumerate() {
 			match shader.1 {
-				render_system::ShaderTypes::Raygen | render_system::ShaderTypes::Miss | render_system::ShaderTypes::Callable => {
+				render_system::ShaderTypes::RayGen | render_system::ShaderTypes::Miss | render_system::ShaderTypes::Callable => {
 					groups.push(vk::RayTracingShaderGroupCreateInfoKHR::default()
 						.ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
 						.general_shader(i as u32)
@@ -636,9 +677,19 @@ impl render_system::RenderSystem for VulkanRenderSystem {
 
 		let handle = render_system::PipelineHandle(self.pipelines.len() as u64);
 
+		let resource_access = shaders.iter().map(|shader| {
+			let shader = &self.shaders[shader.0.0 as usize];
+
+			shader.shader_binding_descriptors.iter().map(|descriptor| {
+				((descriptor.set, descriptor.binding), (shader.stage, descriptor.access))
+			}).collect::<Vec<_>>()
+		}).flatten().collect::<Vec<_>>();
+
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			shader_handles: handles,
+			shaders: shaders.iter().map(|shader| *shader.0).collect(),
+			resource_access,
 		});
 
 		handle
@@ -1284,17 +1335,28 @@ pub(crate) struct PipelineLayout {
 	descriptor_set_template_indices: HashMap<render_system::DescriptorSetTemplateHandle, u32>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct DescriptorSet {
 	next: Option<render_system::DescriptorSetHandle>,
 	descriptor_set: vk::DescriptorSet,
 	descriptor_set_layout: render_system::DescriptorSetTemplateHandle,
+
+	resources: Vec<(render_system::DescriptorSetBindingHandle, render_system::Handle)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Shader {
+	shader: vk::ShaderModule,
+	stage: render_system::Stages,
+	shader_binding_descriptors: Vec<ShaderBindingDescriptor>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	shader_handles: HashMap<ShaderHandle, [u8; 32]>,
+	shaders: Vec<ShaderHandle>,
+	resource_access: Vec<((u32, u32), (render_system::Stages, render_system::AccessPolicies))>,
 }
 
 #[derive(Clone, Copy)]
@@ -1306,7 +1368,10 @@ pub(crate) struct CommandBufferInternal {
 #[derive(Clone)]
 pub(crate) struct Binding {
 	descriptor_set_handle: render_system::DescriptorSetHandle,
+	type_: render_system::DescriptorType,
 	descriptor_type: vk::DescriptorType,
+	stages: render_system::Stages,
+	pipeline_stages: vk::PipelineStageFlags2,
 	index: u32,
 	count: u32,
 }
@@ -1426,6 +1491,7 @@ fn texture_format_and_resource_use_to_image_layout(_texture_format: render_syste
 		render_system::Layouts::Read => vk::ImageLayout::READ_ONLY_OPTIMAL,
 		render_system::Layouts::General => vk::ImageLayout::GENERAL,
 		render_system::Layouts::ShaderBindingTable => vk::ImageLayout::UNDEFINED,
+		render_system::Layouts::Indirect => vk::ImageLayout::UNDEFINED,
 	}
 }
 
@@ -1546,7 +1612,7 @@ fn to_shader_stage_flags(shader_type: render_system::ShaderTypes) -> vk::ShaderS
 		render_system::ShaderTypes::Compute => vk::ShaderStageFlags::COMPUTE,
 		render_system::ShaderTypes::Task => vk::ShaderStageFlags::TASK_EXT,
 		render_system::ShaderTypes::Mesh => vk::ShaderStageFlags::MESH_EXT,
-		render_system::ShaderTypes::Raygen => vk::ShaderStageFlags::RAYGEN_KHR,
+		render_system::ShaderTypes::RayGen => vk::ShaderStageFlags::RAYGEN_KHR,
 		render_system::ShaderTypes::ClosestHit => vk::ShaderStageFlags::CLOSEST_HIT_KHR,
 		render_system::ShaderTypes::AnyHit => vk::ShaderStageFlags::ANY_HIT_KHR,
 		render_system::ShaderTypes::Intersection => vk::ShaderStageFlags::INTERSECTION_KHR,
@@ -1582,8 +1648,46 @@ fn to_pipeline_stage_flags(stages: render_system::Stages) -> vk::PipelineStageFl
 		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
 	}
 
-	if stages.contains(render_system::Stages::INDIRECT) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT;
+	if stages.contains(render_system::Stages::RAYGEN) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+	}
+
+	if stages.contains(render_system::Stages::ACCELERATION_STRUCTURE_BUILD) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR;
+	}
+
+	pipeline_stage_flags
+}
+
+fn to_pipeline_stage_flags_with_layout(stages: render_system::Stages, layout: render_system::Layouts) -> vk::PipelineStageFlags2 {
+	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
+
+	if stages.contains(render_system::Stages::VERTEX) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER
+	}
+
+	if stages.contains(render_system::Stages::MESH) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::MESH_SHADER_EXT;
+	}
+
+	if stages.contains(render_system::Stages::FRAGMENT) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
+	}
+
+	if stages.contains(render_system::Stages::COMPUTE) {
+		if layout == render_system::Layouts::Indirect {
+			pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT
+		} else {
+			pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
+		}
+	}
+
+	if stages.contains(render_system::Stages::TRANSFER) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
+	}
+
+	if stages.contains(render_system::Stages::PRESENTATION) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
 	}
 
 	if stages.contains(render_system::Stages::RAYGEN) {
@@ -1630,10 +1734,6 @@ fn to_pipeline_stage_flags_with_format(stages: render_system::Stages, format: re
 		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
 	}
 
-	if stages.contains(render_system::Stages::INDIRECT) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT;
-	}
-
 	if stages.contains(render_system::Stages::RAYGEN) {
 		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
 	}
@@ -1655,10 +1755,11 @@ fn to_access_flags(accesses: render_system::AccessPolicies, stages: render_syste
 			access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ;
 		}
 		if stages.intersects(render_system::Stages::COMPUTE) {
-			access_flags |= vk::AccessFlags2::SHADER_READ
-		}
-		if stages.intersects(render_system::Stages::INDIRECT) {
-			access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
+			if layout == render_system::Layouts::Indirect {
+				access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
+			} else {
+				access_flags |= vk::AccessFlags2::SHADER_READ
+			}
 		}
 		if stages.intersects(render_system::Stages::RAYGEN) {
 			if layout == render_system::Layouts::ShaderBindingTable {
@@ -1712,9 +1813,6 @@ fn to_access_flags_with_format(accesses: render_system::AccessPolicies, stages: 
 			} else {
 				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
 			}
-		}
-		if stages.intersects(render_system::Stages::INDIRECT) {
-			access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
 		}
 		if stages.intersects(render_system::Stages::RAYGEN) {
 			access_flags |= vk::AccessFlags2::SHADER_READ
@@ -1820,6 +1918,24 @@ impl Size for &[render_system::VertexElement] {
 		}
 
 		size
+	}
+}
+
+impl Into<render_system::Stages> for render_system::ShaderTypes {
+	fn into(self) -> render_system::Stages {
+		match self {
+			ShaderTypes::Vertex => render_system::Stages::VERTEX,
+			ShaderTypes::Fragment => render_system::Stages::FRAGMENT,
+			ShaderTypes::Compute => render_system::Stages::COMPUTE,
+			ShaderTypes::Task => render_system::Stages::TASK,
+			ShaderTypes::Mesh => render_system::Stages::MESH,
+			ShaderTypes::RayGen => render_system::Stages::RAYGEN,
+			ShaderTypes::ClosestHit => render_system::Stages::CLOSEST_HIT,
+			ShaderTypes::AnyHit => render_system::Stages::ANY_HIT,
+			ShaderTypes::Intersection => render_system::Stages::INTERSECTION,
+			ShaderTypes::Miss => render_system::Stages::MISS,
+			ShaderTypes::Callable => render_system::Stages::CALLABLE,
+		}
 	}
 }
 
@@ -2091,6 +2207,7 @@ impl VulkanRenderSystem {
 			bindings: Vec::with_capacity(1024),
 			descriptor_sets: Vec::with_capacity(512),
 			acceleration_structures: Vec::new(),
+			shaders: Vec::with_capacity(1024),
 			pipelines: Vec::with_capacity(1024),
 			meshes: Vec::new(),
 			command_buffers: Vec::with_capacity(32),
@@ -2099,24 +2216,32 @@ impl VulkanRenderSystem {
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<'static, render_system::RenderSystemImplementation> {
+	pub fn new_as_system() -> orchestrator::EntityReturn<'static, VulkanRenderSystem> {
 		let settings = Settings {
 			validation: true,
 			ray_tracing: true,
 		};
-		orchestrator::EntityReturn::new(render_system::RenderSystemImplementation::new(Box::new(VulkanRenderSystem::new(&settings))))
+		orchestrator::EntityReturn::new(VulkanRenderSystem::new(&settings))
 	}
 
 	fn get_log_count(&self) -> u64 { self.debug_data.error_count }
 
-	fn create_vulkan_shader(&self, stage: render_system::ShaderTypes, shader: &[u8]) -> render_system::ShaderHandle {
+	fn create_vulkan_shader(&mut self, stage: render_system::ShaderTypes, shader: &[u8], shader_binding_descriptors: &[ShaderBindingDescriptor]) -> render_system::ShaderHandle {
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default()
 			.code(unsafe { shader.align_to::<u32>().1 })
 			/* .build() */;
 
 		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).expect("No shader module") };
 
-		render_system::ShaderHandle(shader_module.as_raw())
+		let handle = render_system::ShaderHandle(self.shaders.len() as u64);
+
+		self.shaders.push(Shader {
+			shader: shader_module,
+			stage: stage.into(),
+			shader_binding_descriptors: shader_binding_descriptors.to_vec(),
+		});
+
+		handle
 	}
 
 	fn create_vulkan_pipeline(&mut self, blocks: &[render_system::PipelineConfigurationBlocks]) -> render_system::PipelineHandle {
@@ -2231,10 +2356,10 @@ impl VulkanRenderSystem {
 
 						let stages = shaders
 							.iter()
-							.map(move |shader| {
+							.map(move |stage| {
 								let entries_offset = entry_count;
 
-								for entry in &shader.2 {
+								for entry in &stage.2 {
 									specialization_entries_buffer.extend_from_slice(entry.get_data());
 
 									entries[entry_count] = vk::SpecializationMapEntry::default()
@@ -2249,9 +2374,11 @@ impl VulkanRenderSystem {
 								// 	.data(&specialization_entries_buffer)
 								// 	.map_entries(&entries[entries_offset..entry_count]);
 
+								let shader = &vulkan_render_system.shaders[stage.0.0 as usize];
+
 								vk::PipelineShaderStageCreateInfo::default()
-									.stage(to_shader_stage_flags(shader.1))
-									.module(vk::ShaderModule::from_raw(shader.0.0))
+									.stage(to_shader_stage_flags(stage.1))
+									.module(shader.shader)
 									.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
 									// .specialization_info(&specilization_infos[specilization_info_count - 1])
 									/* .build() */
@@ -2337,7 +2464,26 @@ impl VulkanRenderSystem {
 
 		let handle = render_system::PipelineHandle(self.pipelines.len() as u64);
 
-		self.pipelines.push(Pipeline { pipeline, shader_handles: HashMap::new() });
+		let resource_access: Vec<((u32, u32), (render_system::Stages, render_system::AccessPolicies))> = blocks.iter().find_map(|b| {
+			match b {
+				render_system::PipelineConfigurationBlocks::Shaders { shaders } => {
+					Some(shaders.iter().map(|s| {
+						let shader = &self.shaders[s.0.0 as usize];
+						shader.shader_binding_descriptors.iter().map(|sbd| {
+							((sbd.set, sbd.binding), (Into::<render_system::Stages>::into(s.1), sbd.access))
+						}).collect::<Vec<_>>()
+					}))
+				},
+				_ => None,
+			}
+		}).unwrap().flatten().collect::<Vec<_>>();
+
+		self.pipelines.push(Pipeline {
+			pipeline,
+			shader_handles: HashMap::new(),
+			shaders: Vec::new(),
+			resource_access,
+		});
 
 		handle
 	}
@@ -2794,6 +2940,10 @@ pub struct VulkanCommandBufferRecording<'a> {
 	modulo_frame_index: u32,
 	states: HashMap<render_system::Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
+
+	stages: vk::PipelineStageFlags2,
+
+	bound_pipeline: Option<render_system::PipelineHandle>,
 }
 
 impl VulkanCommandBufferRecording<'_> {
@@ -2805,6 +2955,10 @@ impl VulkanCommandBufferRecording<'_> {
 			modulo_frame_index: frame_index.map(|frame_index| frame_index % render_system.frames as u32).unwrap_or(0),
 			in_render_pass: false,
 			states: HashMap::new(),
+
+			stages: vk::PipelineStageFlags2::empty(),
+
+			bound_pipeline: None,
 		}
 	}
 
@@ -2853,9 +3007,9 @@ impl VulkanCommandBufferRecording<'_> {
 		&self.render_system.command_buffers[self.command_buffer.0 as usize].frames[self.modulo_frame_index as usize]
 	}
 
-	fn get_descriptor_set(&self, desciptor_set_handle: &render_system::DescriptorSetHandle) -> (render_system::DescriptorSetHandle, &DescriptorSet) {
+	fn get_descriptor_set(&self, descriptor_set_handle: &render_system::DescriptorSetHandle) -> (render_system::DescriptorSetHandle, &DescriptorSet) {
 		let mut i = 0;
-		let mut handle = desciptor_set_handle.clone();
+		let mut handle = descriptor_set_handle.clone();
 		loop {
 			let descriptor_set = &self.render_system.descriptor_sets[handle.0 as usize];
 			if i == self.modulo_frame_index {
@@ -2884,15 +3038,17 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
 	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[render_system::AttachmentInformation]) {
-		self.consume_resources(&attachments.iter().map(|attachment|
-			render_system::Consumption{
-				handle: render_system::Handle::Image(attachment.image),
-				stages: render_system::Stages::FRAGMENT,
-				access: render_system::AccessPolicies::WRITE,
-				layout: attachment.layout,
-			}
-			// r(false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
-		).collect::<Vec<_>>());
+		unsafe {
+			self.consume_resources(&attachments.iter().map(|attachment|
+				render_system::Consumption{
+					handle: render_system::Handle::Image(attachment.image),
+					stages: render_system::Stages::FRAGMENT,
+					access: render_system::AccessPolicies::WRITE,
+					layout: attachment.layout,
+				}
+				// r(false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
+			).collect::<Vec<_>>());
+		}
 
 		let render_area = vk::Rect2D::default()
 			.offset(vk::Offset2D::default().x(0).y(0)/* .build() */)
@@ -3146,21 +3302,27 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.render_system.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.render_system.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline); }
+
 		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
+		self.bound_pipeline = Some(*pipeline_handle);
 	}
 
 	fn bind_compute_pipeline(&mut self, pipeline_handle: &render_system::PipelineHandle) {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.render_system.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.render_system.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline); }
+
 		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
+		self.bound_pipeline = Some(*pipeline_handle);
 	}
 
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &render_system::PipelineHandle) {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.render_system.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.render_system.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline); }
+
 		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
+		self.bound_pipeline = Some(*pipeline_handle);
 	}
 
 	/// Writes to the push constant register.
@@ -3213,12 +3375,12 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn clear_images(&mut self, textures: &[(render_system::ImageHandle, render_system::ClearValue)]) {
-		self.consume_resources(textures.iter().map(|(texture_handle, _)| render_system::Consumption {
+		unsafe { self.consume_resources(textures.iter().map(|(texture_handle, _)| render_system::Consumption {
 			handle: render_system::Handle::Image(*texture_handle),
 			stages: render_system::Stages::TRANSFER,
 			access: render_system::AccessPolicies::WRITE,
 			layout: render_system::Layouts::Transfer,
-		}).collect::<Vec<_>>().as_slice());
+		}).collect::<Vec<_>>().as_slice()) };
 
 		for (texture_handle, clear_value) in textures {
 			let (_, texture) = self.get_texture(*texture_handle);
@@ -3242,13 +3404,13 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 		}
 	}
 
-	fn consume_resources(&mut self, consumptions: &[render_system::Consumption]) {
+	unsafe fn consume_resources(&mut self, consumptions: &[render_system::Consumption]) {
 		let mut image_memory_barriers = Vec::new();
 		let mut buffer_memory_barriers = Vec::new();
 		let mut memory_barriers = Vec::new();
 
 		for consumption in consumptions {
-			let mut new_stage_mask = to_pipeline_stage_flags(consumption.stages);
+			let mut new_stage_mask = to_pipeline_stage_flags_with_layout(consumption.stages, consumption.layout);
 			let mut new_access_mask = to_access_flags(consumption.access, consumption.stages, consumption.layout);
 
 			match consumption.handle {
@@ -3358,22 +3520,6 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			);
 		}
 
-		// let memory_barrier = if let Some(source) = barrier.source {
-		// 	vk::MemoryBarrier2::default()
-		// 		.src_stage_mask(to_pipeline_stage_flags(source.stage))
-		// 		.src_access_mask(to_access_flags(source.access, source.stage))
-
-		// } else {
-		// 	vk::MemoryBarrier2::default()
-		// 		.src_stage_mask(vk::PipelineStageFlags2::empty())
-		// 		.src_access_mask(vk::AccessFlags2KHR::empty())
-		// }
-		// .dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
-		// .dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
-		// /* .build() */;
-
-		// memory_barriers.push(memory_barrier);
-
 		let dependency_info = vk::DependencyInfo::default()
 			.image_memory_barriers(&image_memory_barriers)
 			.buffer_memory_barriers(&buffer_memory_barriers)
@@ -3381,20 +3527,22 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 			.dependency_flags(vk::DependencyFlags::BY_REGION)
 			/* .build() */;
 
+		dbg!(dependency_info);
+
 		let command_buffer = self.get_command_buffer();
 
 		unsafe { self.render_system.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[render_system::BaseBufferHandle]) {
-		self.consume_resources(&buffer_handles.iter().map(|buffer_handle|
+		unsafe { self.consume_resources(&buffer_handles.iter().map(|buffer_handle|
 			render_system::Consumption{
 				handle: render_system::Handle::Buffer(*buffer_handle),
 				stages: render_system::Stages::TRANSFER,
 				access: render_system::AccessPolicies::WRITE,
 				layout: render_system::Layouts::Transfer,
 			}
-		).collect::<Vec<_>>());
+		).collect::<Vec<_>>()) };
 
 		for buffer_handle in buffer_handles {
 			unsafe {
@@ -3430,8 +3578,21 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn indirect_dispatch(&mut self, buffer_descriptor: &render_system::BufferDescriptor) {
-		let command_buffer = self.get_command_buffer();
 		let buffer = self.render_system.buffers[buffer_descriptor.buffer.0 as usize];
+
+		unsafe {
+			self.consume_resources(&[
+				render_system::Consumption{
+					handle: render_system::Handle::Buffer(buffer_descriptor.buffer),
+					stages: render_system::Stages::COMPUTE,
+					access: render_system::AccessPolicies::READ,
+					layout: render_system::Layouts::Indirect,
+				}
+			])
+		}
+
+		let command_buffer = self.get_command_buffer();
+
 		unsafe {
 			self.render_system.device.cmd_dispatch_indirect(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset);
 		}
@@ -3458,7 +3619,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn transfer_textures(&mut self, texture_handles: &[render_system::ImageHandle]) {
-		self.consume_resources(&texture_handles.iter().map(|texture_handle|
+		unsafe { self.consume_resources(&texture_handles.iter().map(|texture_handle|
 			render_system::Consumption{
 				handle: render_system::Handle::Image(*texture_handle),
 				stages: render_system::Stages::TRANSFER,
@@ -3466,7 +3627,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				layout: render_system::Layouts::Transfer,
 			}
 			// r(false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
-		).collect::<Vec<_>>());
+		).collect::<Vec<_>>()) };
 
 		let command_buffer = self.get_command_buffer();
 
@@ -3503,14 +3664,14 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn write_image_data(&mut self, texture_handle: render_system::ImageHandle, data: &[render_system::RGBAu8]) {
-		self.consume_resources(
+		unsafe { self.consume_resources(
 			&[render_system::Consumption{
 				handle: render_system::Handle::Image(texture_handle),
 				stages: render_system::Stages::TRANSFER,
 				access: render_system::AccessPolicies::WRITE,
 				layout: render_system::Layouts::Transfer,
 			}]
-		);
+		) };
 
 		let (texture_handle, texture) = self.get_texture(texture_handle);
 
@@ -3569,14 +3730,14 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: render_system::ImageHandle, present_image_index: u32, swapchain_handle: render_system::SwapchainHandle) {
-		self.consume_resources(&[
+		unsafe { self.consume_resources(&[
 			render_system::Consumption {
 				handle: render_system::Handle::Image(source_texture_handle),
 				stages: render_system::Stages::TRANSFER,
 				access: render_system::AccessPolicies::READ,
 				layout: render_system::Layouts::Transfer,
 			},
-		]);
+		]) };
 
 		let (_, source_texture) = self.get_texture(source_texture_handle);
 		let swapchain = &self.render_system.swapchains[swapchain_handle.0 as usize];
@@ -3707,7 +3868,7 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 	}
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, sets: &[render_system::DescriptorSetHandle]) {
+	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &render_system::PipelineLayoutHandle, sets: &[render_system::DescriptorSetHandle]) {
 		let command_buffer = self.get_command_buffer();
 		
 		let pipeline_layout = &self.render_system.pipeline_layouts[pipeline_layout_handle.0 as usize];
@@ -3729,15 +3890,50 @@ impl render_system::CommandBufferRecording for VulkanCommandBufferRecording<'_> 
 				self.render_system.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, vulkan_pipeline_layout_handle, i, &descriptor_sets, &[]);
 			}
 		}
+
+		let mut consumptions = Vec::with_capacity(32);
+
+		let bound_pipeline_handle = self.bound_pipeline.expect("No bound pipeline");
+
+		let pipeline = &self.render_system.pipelines[bound_pipeline_handle.0 as usize];
+
+		for ((set_index, binding_index), (stages, accesses)) in &pipeline.resource_access {
+			let set_handle = if let Some(h) = sets.get(*set_index as usize) { h } else { continue; }; // TODO: log error
+
+			let (_, descriptor_set) = self.get_descriptor_set(set_handle);
+
+			for (binding_handle, resource_handle) in descriptor_set.resources.iter().filter(|(binding_handle, _)| self.render_system.bindings[binding_handle.0 as usize].index == *binding_index) {
+				let binding = self.render_system.bindings.get(binding_handle.0 as usize).expect("No binding found");
+
+				consumptions.push(
+					render_system::Consumption {
+						handle: resource_handle.clone(),
+						stages: *stages,
+						access: *accesses,
+						layout: match binding.type_ {
+							render_system::DescriptorType::UniformBuffer => render_system::Layouts::General,
+							render_system::DescriptorType::StorageBuffer => render_system::Layouts::General,
+							render_system::DescriptorType::StorageImage => render_system::Layouts::General,
+							render_system::DescriptorType::Sampler => render_system::Layouts::General,
+							render_system::DescriptorType::CombinedImageSampler => render_system::Layouts::Read,
+							render_system::DescriptorType::AccelerationStructure => render_system::Layouts::General,
+							render_system::DescriptorType::SampledImage => render_system::Layouts::Read,
+						},
+					}
+				);
+			}
+		}
+
+		unsafe { self.consume_resources(&consumptions) };
 	}
 
 	fn sync_textures(&mut self, texture_handles: &[render_system::ImageHandle]) -> Vec<render_system::TextureCopyHandle> {
-		self.consume_resources(&texture_handles.iter().map(|texture_handle| render_system::Consumption {
+		unsafe { self.consume_resources(&texture_handles.iter().map(|texture_handle| render_system::Consumption {
 			handle: render_system::Handle::Image(*texture_handle),
 			stages: render_system::Stages::TRANSFER,
 			access: render_system::AccessPolicies::READ,
 			layout: render_system::Layouts::Transfer,
-		}).collect::<Vec<_>>());
+		}).collect::<Vec<_>>()) };
 
 		let command_buffer = self.get_command_buffer();
 

@@ -20,5 +20,5 @@ impl Mesh {
 
 	fn get_transform(&self) -> maths_rs::Mat4f { self.transform }
 
-	pub const fn transform() -> orchestrator::Property<(), Self, maths_rs::Mat4f> { orchestrator::Property::Component { getter: Mesh::get_transform, setter: Mesh::set_transform } }
+	pub const fn transform() -> orchestrator::Property<Self, maths_rs::Mat4f> { orchestrator::Property { getter: Mesh::get_transform, setter: Mesh::set_transform } }
 }

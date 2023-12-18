@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 rust-version = "1.73.0"
 
+[features]
+multithreading = []
+
 [dependencies]
 component_derive = { path = "component_derive" }
 
@@ -31,6 +34,8 @@ log = "0.4.20"
 simple_logger = "4.2.0"
 meshopt = "0.1.9"
 colored = "2.0.4"
+downcast-rs = "1.2.0"
+intertrait = "0.2.2"
 
 [profile.dev]
 incremental = true

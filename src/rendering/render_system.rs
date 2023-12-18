@@ -251,7 +251,7 @@ pub trait CommandBufferRecording {
 
 	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
 
-	fn consume_resources(&mut self, handles: &[Consumption]);
+	unsafe fn consume_resources(&mut self, handles: &[Consumption]);
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 
@@ -272,7 +272,7 @@ pub trait CommandBufferRecording {
 	fn end(&mut self);
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]);
+	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]);
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
 
@@ -317,6 +317,23 @@ pub enum UseCases {
 	DYNAMIC
 }
 
+#[derive(Clone,)]
+pub struct ShaderBindingDescriptor {
+	pub(crate) set: u32,
+	pub(crate) binding: u32,
+	pub(crate) access: AccessPolicies,
+}
+
+impl ShaderBindingDescriptor {
+	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
+		Self {
+			set,
+			binding,
+			access,
+		}
+	}
+}
+
 pub trait RenderSystem: orchestrator::System {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	fn has_errors(&self) -> bool;
@@ -327,7 +344,7 @@ pub trait RenderSystem: orchestrator::System {
 	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle;
 
 	/// Creates a shader.
-	fn create_shader(&mut self, shader_source_type: ShaderSource, stage: ShaderTypes) -> ShaderHandle;
+	fn create_shader(&mut self, shader_source_type: ShaderSource, stage: ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> ShaderHandle;
 
 	fn create_descriptor_set_template(&mut self, name: Option<&str>, binding_templates: &[DescriptorSetBindingTemplate]) -> DescriptorSetTemplateHandle;
 
@@ -335,7 +352,7 @@ pub trait RenderSystem: orchestrator::System {
 
 	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding_template: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle;
 
-	fn write(&self, descriptor_set_writes: &[DescriptorWrite]);
+	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
 
 	fn create_pipeline_layout(&mut self, descriptor_set_template_handles: &[DescriptorSetTemplateHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
 
@@ -459,7 +476,7 @@ pub enum ShaderTypes {
 	Compute,
 	Task,
 	Mesh,
-	Raygen,
+	RayGen,
 	ClosestHit,
 	AnyHit,
 	Intersection,
@@ -619,8 +636,6 @@ bitflags::bitflags! {
 		const HOST = 0b10000000;
 		/// The shader write stage.
 		const SHADER_WRITE = 0b1000000000;
-		/// The indirect commands evaluation stage.
-		const INDIRECT = 0b10000000000;
 		/// The task stage.
 		const TASK = 0b100000000000;
 		/// The ray generation stage.
@@ -713,6 +728,8 @@ pub enum Layouts {
 	General,
 	/// The resource will be used as a shader binding table.
 	ShaderBindingTable,
+	/// Indirect.
+	Indirect,
 }
 
 #[derive(Clone, Copy)]
@@ -933,159 +950,6 @@ pub enum AccelerationStructureTypes {
 	},
 }
 
-pub struct RenderSystemImplementation {
-	pointer: Box<dyn RenderSystem>,
-}
-
-impl RenderSystemImplementation {
-	pub fn new(pointer: Box<dyn RenderSystem>) -> Self {
-		Self {
-			pointer,
-		}
-	}
-}
-
-impl orchestrator::Entity for RenderSystemImplementation {}
-impl orchestrator::System for RenderSystemImplementation {}
-
-impl RenderSystem for RenderSystemImplementation {
-	fn has_errors(&self) -> bool {
-		self.pointer.has_errors()
-	}
-
-	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle {
-		self.pointer.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
-	}
-
-	fn create_shader(&mut self, shader_source_type: ShaderSource, stage: ShaderTypes) -> ShaderHandle {
-		self.pointer.create_shader(shader_source_type, stage)
-	}
-
-	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64 {
-		self.pointer.get_buffer_address(buffer_handle)
-	}
-
-	fn write(&self, descriptor_set_writes: &[DescriptorWrite]) {
-		self.pointer.write(descriptor_set_writes)
-	}
-
-	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8] {
-		self.pointer.get_buffer_slice(buffer_handle)
-	}
-
-	fn get_mut_buffer_slice(&self, buffer_handle: BaseBufferHandle) -> &mut [u8] {
-		self.pointer.get_mut_buffer_slice(buffer_handle)
-	}
-
-	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8] {
-		self.pointer.get_texture_slice_mut(texture_handle)
-	}
-
-	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8] {
-		self.pointer.get_image_data(texture_copy_handle)
-	}
-
-	fn bind_to_window(&mut self, window_os_handles: &window_system::WindowOsHandles) -> SwapchainHandle {
-		self.pointer.bind_to_window(window_os_handles)
-	}
-
-	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle) {
-		self.pointer.present(image_index, swapchains, synchronizer_handle)
-	}
-
-	fn wait(&self, synchronizer_handle: SynchronizerHandle) {
-		self.pointer.wait(synchronizer_handle)
-	}
-
-	fn start_frame_capture(&self) {
-		self.pointer.start_frame_capture()
-	}
-
-	fn end_frame_capture(&self) {
-		self.pointer.end_frame_capture()
-	}
-
-	fn acquire_swapchain_image(&self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32 {
-		self.pointer.acquire_swapchain_image(swapchain_handle, synchronizer_handle)
-	}
-
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, uses: Uses, accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle {
-		self.pointer.create_buffer(name, size, uses, accesses, use_case)
-	}
-
-	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle {
-		self.pointer.create_allocation(size, _resource_uses, resource_device_accesses)
-	}
-
-	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle {
-		self.pointer.create_command_buffer(name)
-	}
-
-	fn create_command_buffer_recording<'a>(&'a self, command_buffer_handle: CommandBufferHandle, frame: Option<u32>) -> Box<dyn CommandBufferRecording + 'a> {
-		self.pointer.create_command_buffer_recording(command_buffer_handle, frame)
-	}
-
-	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle {
-		self.pointer.create_descriptor_binding(descriptor_set, binding)
-	}
-
-	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &DescriptorSetTemplateHandle) -> DescriptorSetHandle {
-		self.pointer.create_descriptor_set(name, descriptor_set_layout_handle)
-	}
-
-	fn create_descriptor_set_template(&mut self, name: Option<&str>, bindings: &[DescriptorSetBindingTemplate]) -> DescriptorSetTemplateHandle {
-		self.pointer.create_descriptor_set_template(name, bindings)
-	}
-
-	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle {
-		self.pointer.create_raster_pipeline(pipeline_blocks)
-	}
-
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle {
-		self.pointer.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
-	}
-
-	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle {
-		self.pointer.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
-	}
-
-	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[DescriptorSetTemplateHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle {
-		self.pointer.create_pipeline_layout(descriptor_set_layout_handles, push_constant_ranges)
-	}
-
-	fn create_sampler(&mut self, filtering_mode: FilteringModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32,) -> SamplerHandle {
-		self.pointer.create_sampler(filtering_mode, mip_map_mode, addressing_mode, anisotropy, min_lod, max_lod)
-	}
-
-	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle {
-		self.pointer.create_acceleration_structure_instance_buffer(name, max_instance_count)
-	}
-
-	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure,) -> BottomLevelAccelerationStructureHandle {
-		self.pointer.create_bottom_level_acceleration_structure(description,)
-	}
-
-	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> TopLevelAccelerationStructureHandle {
-		self.pointer.create_top_level_acceleration_structure(name,)
-	}
-
-	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle) {
-		self.pointer.write_instance(instances_buffer_handle, instance_index, transform, custom_index, mask, sbt_record_offset, acceleration_structure)
-	}
-
-	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle) {
-		self.pointer.write_sbt_entry(sbt_buffer_handle, sbt_record_offset, pipeline_handle, shader_handle)
-	}
-
-	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
-		self.pointer.create_synchronizer(name, signaled)
-	}
-
-	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle {
-		self.pointer.create_image(name, extent, format, compression, resource_uses, device_accesses, use_case)
-	}
-}
-
 #[cfg(test)]
 pub(super) mod tests {
 	use super::*;
@@ -1162,8 +1026,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1296,8 +1160,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex,);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment,);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1421,8 +1285,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex,);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment,);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1547,8 +1411,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex,);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment,);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1683,8 +1547,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex,);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment,);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
@@ -1848,8 +1712,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex,);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment,);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]);
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
@@ -1917,14 +1781,14 @@ pub(super) mod tests {
 
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
-		command_buffer_recording.consume_resources(&[
-			Consumption{
-				handle: Handle::Image(sampled_texture),
-				stages: Stages::FRAGMENT,
-				access: AccessPolicies::READ,
-				layout: Layouts::Read,
-			}
-		]);
+		// command_buffer_recording.consume_resources(&[
+		// 	Consumption{
+		// 		handle: Handle::Image(sampled_texture),
+		// 		stages: Stages::FRAGMENT,
+		// 		access: AccessPolicies::READ,
+		// 		layout: Layouts::Read,
+		// 	}
+		// ]);
 
 		let attachments = [
 			AttachmentInformation {
@@ -2080,9 +1944,9 @@ void main() {
 }
 		";
 
-		let raygen_shader = renderer.create_shader(ShaderSource::GLSL(raygen_shader_code), ShaderTypes::Raygen,);
-		let closest_hit_shader = renderer.create_shader(ShaderSource::GLSL(closest_hit_shader_code), ShaderTypes::ClosestHit,);
-		let miss_shader = renderer.create_shader(ShaderSource::GLSL(miss_shader_code), ShaderTypes::Miss,);
+		let raygen_shader = renderer.create_shader(ShaderSource::GLSL(raygen_shader_code), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]);
+		let closest_hit_shader = renderer.create_shader(ShaderSource::GLSL(closest_hit_shader_code), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]);
+		let miss_shader = renderer.create_shader(ShaderSource::GLSL(miss_shader_code), ShaderTypes::Miss, &[]);
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"));
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{
@@ -2126,7 +1990,7 @@ void main() {
 
 		let pipeline = renderer.create_ray_tracing_pipeline(
 			&pipeline_layout,
-			&[(&raygen_shader, ShaderTypes::Raygen, vec![]), (&closest_hit_shader, ShaderTypes::ClosestHit, vec![]), (&miss_shader, ShaderTypes::Miss, vec![])],
+			&[(&raygen_shader, ShaderTypes::RayGen, vec![]), (&closest_hit_shader, ShaderTypes::ClosestHit, vec![]), (&miss_shader, ShaderTypes::Miss, vec![])],
 		);
 
 		let building_command_buffer_handle = renderer.create_command_buffer(None);
@@ -2208,14 +2072,14 @@ void main() {
 					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 0, range: 1024 * 512, slot: 0 },
 				}]);
 
-				command_buffer_recording.consume_resources(&[
+				unsafe { command_buffer_recording.consume_resources(&[
 					Consumption {
 						handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
 						stages: Stages::ACCELERATION_STRUCTURE_BUILD,
 						access: AccessPolicies::READ,
 						layout: Layouts::General,
 					}
-				]);
+				]) };
 
 				command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
 					acceleration_structure: top_level_acceleration_structure,
@@ -2233,44 +2097,44 @@ void main() {
 
 			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
 
-			command_buffer_recording.consume_resources(&[
-				Consumption {
-					handle: Handle::Image(render_target),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::WRITE,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::Buffer(raygen_sbt_buffer),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::Buffer(miss_sbt_buffer),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::Buffer(hit_sbt_buffer),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-			]);
+			// unsafe { command_buffer_recording.consume_resources(&[
+			// 	Consumption {
+			// 		handle: Handle::Image(render_target),
+			// 		stages: Stages::RAYGEN,
+			// 		access: AccessPolicies::WRITE,
+			// 		layout: Layouts::General,
+			// 	},
+			// 	Consumption {
+			// 		handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
+			// 		stages: Stages::RAYGEN,
+			// 		access: AccessPolicies::READ,
+			// 		layout: Layouts::General,
+			// 	},
+			// 	Consumption {
+			// 		handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
+			// 		stages: Stages::RAYGEN,
+			// 		access: AccessPolicies::READ,
+			// 		layout: Layouts::General,
+			// 	},
+			// 	Consumption {
+			// 		handle: Handle::Buffer(raygen_sbt_buffer),
+			// 		stages: Stages::RAYGEN,
+			// 		access: AccessPolicies::READ,
+			// 		layout: Layouts::General,
+			// 	},
+			// 	Consumption {
+			// 		handle: Handle::Buffer(miss_sbt_buffer),
+			// 		stages: Stages::RAYGEN,
+			// 		access: AccessPolicies::READ,
+			// 		layout: Layouts::General,
+			// 	},
+			// 	Consumption {
+			// 		handle: Handle::Buffer(hit_sbt_buffer),
+			// 		stages: Stages::RAYGEN,
+			// 		access: AccessPolicies::READ,
+			// 		layout: Layouts::General,
+			// 	},
+			// ]) };
 
 			command_buffer_recording.trace_rays(BindingTables {
 				raygen: BufferStridedRange { buffer: raygen_sbt_buffer, offset: 0, stride: 64, size: 64 },

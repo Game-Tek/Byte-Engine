@@ -35,11 +35,11 @@ impl Camera {
 
 	fn get_orientation(&self) -> Vec3f { self.direction }
 	fn set_orientation(&mut self, _orchestrator: orchestrator::OrchestratorReference, orientation: Vec3f) { self.direction = orientation; }
-	pub const fn orientation() -> Property<(), Camera, Vec3f> { Property::Component { getter: Self::get_orientation, setter: Self::set_orientation } }
+	pub const fn orientation() -> Property<Camera, Vec3f> { Property { getter: Self::get_orientation, setter: Self::set_orientation } }
 
 	fn get_position(&self) -> Vec3f { self.position }
 	fn set_position(&mut self, _orchestrator: orchestrator::OrchestratorReference, position: Vec3f) { self.position = position; }
-	pub const fn position() -> Property<(), Camera, Vec3f> { Property::Component { getter: Self::get_position, setter: Self::set_position } }
+	pub const fn position() -> Property<Camera, Vec3f> { Property { getter: Self::get_position, setter: Self::set_position } }
 }
 
 impl Entity for Camera {}

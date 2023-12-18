@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker};
+use crate::{orchestrator::{self, EntityHandle}, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -128,7 +128,7 @@ pub struct GraphicsApplication {
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
 	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
-	render_system_handle: orchestrator::EntityHandle<render_system::RenderSystemImplementation>,
+	render_system_handle: orchestrator::EntityHandle<dyn render_system::RenderSystem>,
 }
 
 impl Application for GraphicsApplication {
@@ -139,7 +139,7 @@ impl Application for GraphicsApplication {
 
 		let orchestrator = application.get_mut_orchestrator();
 
-		orchestrator.spawn_entity(resource_manager::resource_manager::ResourceManager::new_as_system());
+		let resource_manager_handle = orchestrator.spawn_entity(resource_manager::resource_manager::ResourceManager::new_as_system()).unwrap();
 		
 		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system()).unwrap();
 		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();
@@ -165,7 +165,7 @@ impl Application for GraphicsApplication {
 
 		let render_system_handle = rendering::create_render_system(&orchestrator);
 
-		let renderer_handle = orchestrator.spawn_entity(rendering::renderer::Renderer::new_as_system()).unwrap();
+		let renderer_handle = EntityHandle::spawn(orchestrator, rendering::renderer::Renderer::new_as_system(render_system_handle.clone(), window_system_handle.clone(), resource_manager_handle)).unwrap();
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
@@ -205,7 +205,7 @@ impl Application for GraphicsApplication {
 			true
 		});
 
-		self.application.get_orchestrator().invoke_mut(self.input_system_handle.copy(), input_manager::InputManager::update);
+		self.application.get_orchestrator().invoke_mut(&self.input_system_handle, input_manager::InputManager::update);
 
 		// self.application.get_orchestrator().get_2_mut_and(&self.render_system_handle, &self.visibility_render_domain_handle, |render_system, visibility_render_domain| {
 		// 	// let files = changed_files.iter().filter(|event| {
@@ -224,7 +224,7 @@ impl Application for GraphicsApplication {
 		// 	visibility_render_domain.render(self.get_orchestrator(), render_system, self.tick_count as u32);
 		// });
 		
-		self.application.get_orchestrator().invoke_mut(self.renderer_handle.copy(), rendering::renderer::Renderer::render);
+		self.application.get_orchestrator().invoke_mut(&self.renderer_handle, rendering::renderer::Renderer::render);
 
 		if !window_res {
 			self.application.close();
@@ -244,8 +244,8 @@ impl GraphicsApplication {
 	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { self.application.get_orchestrator() }
 	pub fn get_mut_orchestrator(&mut self) -> &mut orchestrator::Orchestrator { self.application.get_mut_orchestrator() }
 
-	pub fn get_input_system_handle(&self) -> orchestrator::EntityHandle<crate::input_manager::InputManager> {
-		self.input_system_handle.copy()
+	pub fn get_input_system_handle_ref(&self) -> &orchestrator::EntityHandle<crate::input_manager::InputManager> {
+		&self.input_system_handle
 	}
 
 	pub fn do_loop(&mut self) {

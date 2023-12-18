@@ -1,4 +1,6 @@
-use crate::{orchestrator, window_system, Extent};
+use std::ops::{DerefMut, Deref};
+
+use crate::{orchestrator::{self, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_manager::resource_manager::ResourceManager};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, render_system::{self, RenderSystem}, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 
@@ -13,26 +15,32 @@ pub struct Renderer {
 
 	result: render_system::ImageHandle,
 
+	render_system: EntityHandle<dyn render_system::RenderSystem>,
+	window_system: EntityHandle<window_system::WindowSystem>,
+
 	visibility_render_model: orchestrator::EntityHandle<VisibilityWorldRenderDomain>,
 	tonemap_render_model: orchestrator::EntityHandle<AcesToneMapPass>,
 }
 
 impl Renderer {
-	pub fn new_as_system() -> orchestrator::EntityReturn<'static, Self> {
+	pub fn new_as_system(render_system_handle: EntityHandle<dyn RenderSystem>, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
-			let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+			let result = {
+				let render_system = orchestrator.get_entity(&render_system_handle);
+				let mut render_system = render_system.get_mut();
+
+				render_system.create_image(Some("result"), Extent::plane(1920, 1080), render_system::Formats::RGBAu8, None, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC)
+			};
+
+			let visibility_render_model = orchestrator.spawn_entity(VisibilityWorldRenderDomain::new(render_system_handle.clone(), resource_manager_handle)).unwrap();
+
+			let render_system = orchestrator.get_entity(&render_system_handle);
 			let mut render_system = render_system.get_mut();
-			let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
-
-			let result = render_system.create_image(Some("result"), Extent::plane(1920, 1080), render_system::Formats::RGBAu8, None, render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
-
-			let visibility_render_model = orchestrator.spawn_entity(VisibilityWorldRenderDomain::new(render_system)).unwrap();
 			
 			let tonemap_render_model = {
 				let visibility_render_model = orchestrator.get_entity(&visibility_render_model);
-				let mut visibility_render_model = visibility_render_model.get_mut();
-				let visibility_render_model = visibility_render_model.downcast_mut::<VisibilityWorldRenderDomain>().unwrap();
-				orchestrator.spawn_entity(AcesToneMapPass::new_as_system(render_system, visibility_render_model.get_result_image(), result)).unwrap()
+				let visibility_render_model = visibility_render_model.get();
+				orchestrator.spawn_entity(AcesToneMapPass::new_as_system(render_system.deref_mut(), visibility_render_model.get_result_image(), result)).unwrap()
 			};
 
 			let render_command_buffer = render_system.create_command_buffer(Some("Render"));
@@ -50,6 +58,9 @@ impl Renderer {
 
 				result,
 
+				render_system: render_system_handle,
+				window_system: window_system_handle,
+
 				visibility_render_model,
 				tonemap_render_model,
 			}
@@ -59,11 +70,10 @@ impl Renderer {
 	pub fn render(&mut self, orchestrator: orchestrator::OrchestratorReference) {
 		if self.swapchain_handles.is_empty() { return; }
 
-		let swapchain_handle = self.swapchain_handles[0];
-
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let render_system = orchestrator.get_entity(&self.render_system);
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
+
+		let swapchain_handle = self.swapchain_handles[0];
 
 		render_system.wait(self.render_finished_synchronizer);
 
@@ -75,13 +85,11 @@ impl Renderer {
 
 		let visibility_render_model = orchestrator.get_entity(&self.visibility_render_model);
 		let mut visibility_render_model = visibility_render_model.get_mut();
-		let visibility_render_model = visibility_render_model.downcast_mut::<VisibilityWorldRenderDomain>().unwrap();
 
-		visibility_render_model.render(&orchestrator, render_system, command_buffer_recording.as_mut());
+		visibility_render_model.render(&orchestrator, render_system.deref(), command_buffer_recording.as_mut());
 
 		let tonemap_render_model = orchestrator.get_entity(&self.tonemap_render_model);
 		let mut tonemap_render_model = tonemap_render_model.get_mut();
-		let tonemap_render_model = tonemap_render_model.downcast_mut::<AcesToneMapPass>().unwrap();
 
 		tonemap_render_model.render(command_buffer_recording.as_mut());
 
@@ -101,13 +109,11 @@ impl Renderer {
 
 impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let render_system = orchestrator.get_entity(&self.render_system);
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
-		let window_system = orchestrator.get_by_class::<window_system::WindowSystem>();
+		let window_system = orchestrator.get_entity(&self.window_system);
 		let mut window_system = window_system.get_mut();
-		let window_system = window_system.downcast_mut::<window_system::WindowSystem>().unwrap();
 
 		let swapchain_handle = render_system.bind_to_window(&window_system.get_os_handles(&handle));
 

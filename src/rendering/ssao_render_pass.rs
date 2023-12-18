@@ -43,7 +43,11 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let blur_y_source_binding = render_system.create_descriptor_binding(blur_y_descriptor_set, &source_binding_template);
 		let blur_y_result_binding = render_system.create_descriptor_binding(blur_y_descriptor_set, &result_binding_template);
 
-		let shader = render_system.create_shader(render_system::ShaderSource::GLSL(HBAO_SHADER), render_system::ShaderTypes::Compute,);
+		let shader = render_system.create_shader(render_system::ShaderSource::GLSL(HBAO_SHADER), render_system::ShaderTypes::Compute, &[
+			render_system::ShaderBindingDescriptor::new(0, 0, render_system::AccessPolicies::READ),
+			render_system::ShaderBindingDescriptor::new(1, 0, render_system::AccessPolicies::READ),
+			render_system::ShaderBindingDescriptor::new(1, 2, render_system::AccessPolicies::WRITE),
+		]);
 
 		let pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&shader, render_system::ShaderTypes::Compute, vec![]));
 
@@ -97,7 +101,12 @@ impl ScreenSpaceAmbientOcclusionPass {
 			// },
 		]);
 
-		let blur_shader = render_system.create_shader(render_system::ShaderSource::GLSL(BLUR_SHADER), render_system::ShaderTypes::Compute,);
+		let blur_shader = render_system.create_shader(render_system::ShaderSource::GLSL(BLUR_SHADER), render_system::ShaderTypes::Compute, &[
+			render_system::ShaderBindingDescriptor::new(0, 0, render_system::AccessPolicies::READ),
+			render_system::ShaderBindingDescriptor::new(1, 0, render_system::AccessPolicies::READ),
+			render_system::ShaderBindingDescriptor::new(1, 1, render_system::AccessPolicies::READ),
+			render_system::ShaderBindingDescriptor::new(1, 2, render_system::AccessPolicies::WRITE),
+		]);
 
 		let blur_x_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&blur_shader, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: [1f32, 0f32,] })]));
 		let blur_y_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&blur_shader, render_system::ShaderTypes::Compute, vec![Box::new(render_system::GenericSpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: [0f32, 1f32,] })]));
@@ -121,57 +130,57 @@ impl ScreenSpaceAmbientOcclusionPass {
 	}
 
 	fn render(&self, command_buffer_recording: &mut dyn render_system::CommandBufferRecording) {
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.depth_target),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::Read,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.result),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
+		// command_buffer_recording.consume_resources(&[
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.depth_target),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::READ,
+		// 		layout: render_system::Layouts::Read,
+		// 	},
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.result),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::WRITE,
+		// 		layout: render_system::Layouts::General,
+		// 	},
+		// ]);
 
 		command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
 		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
 
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.result),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::Read,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.x_blur_target),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
+		// command_buffer_recording.consume_resources(&[
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.result),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::READ,
+		// 		layout: render_system::Layouts::Read,
+		// 	},
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.x_blur_target),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::WRITE,
+		// 		layout: render_system::Layouts::General,
+		// 	},
+		// ]);
 		command_buffer_recording.bind_compute_pipeline(&self.blur_x_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]);
 		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
 
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.x_blur_target),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::Read,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.y_blur_target),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
+		// command_buffer_recording.consume_resources(&[
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.x_blur_target),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::READ,
+		// 		layout: render_system::Layouts::Read,
+		// 	},
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.y_blur_target),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::WRITE,
+		// 		layout: render_system::Layouts::General,
+		// 	},
+		// ]);
 		command_buffer_recording.bind_compute_pipeline(&self.blur_y_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]);
 		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });

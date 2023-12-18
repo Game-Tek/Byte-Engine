@@ -1,4 +1,4 @@
-use crate::orchestrator;
+use crate::orchestrator::{self, EntityHandle};
 
 pub mod render_orchestrator;
 pub mod shader_generator;
@@ -26,6 +26,6 @@ pub mod aces_tonemap_render_pass;
 
 pub(crate) mod shader_compilation;
 
-pub fn create_render_system(orchestrator: &orchestrator::Orchestrator) -> orchestrator::EntityHandle<render_system::RenderSystemImplementation> {
-	orchestrator.spawn_entity(vulkan_render_system::VulkanRenderSystem::new_as_system()).unwrap()
+pub fn create_render_system(orchestrator: &orchestrator::Orchestrator) -> EntityHandle<dyn render_system::RenderSystem> {
+	EntityHandle::spawn(orchestrator, vulkan_render_system::VulkanRenderSystem::new_as_system()).unwrap()
 }

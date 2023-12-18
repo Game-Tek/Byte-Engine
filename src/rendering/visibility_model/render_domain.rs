@@ -1,5 +1,5 @@
-use std::cmp::min;
 use std::collections::HashMap;
+use std::ops::DerefMut;
 
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
@@ -7,8 +7,9 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 use crate::orchestrator::EntityHandle;
 use crate::rendering::mesh;
 use crate::rendering::world_render_domain::WorldRenderDomain;
+use crate::resource_manager::resource_manager::ResourceManager;
 use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, rendering::{render_system::{RenderSystem, self}, directional_light::DirectionalLight, point_light::PointLight}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self}, math, window_system};
-use crate::rendering::render_system::{BindingTables, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions, BottomLevelAccelerationStructureDescriptions, BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, ShaderTypes, TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions, UseCases, Uses, CommandBufferRecording};
+use crate::rendering::render_system::{BottomLevelAccelerationStructure, BottomLevelAccelerationStructureDescriptions, DataTypes, Encodings, Uses, CommandBufferRecording};
 
 struct VisibilityInfo {
 	instance_count: u32,
@@ -57,6 +58,9 @@ struct RayTracing {
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
+	render_system: EntityHandle<dyn RenderSystem>,
+	resource_manager: EntityHandle<ResourceManager>,
+
 	visibility_info: VisibilityInfo,
 
 	camera: Option<EntityHandle<crate::camera::Camera>>,
@@ -135,8 +139,11 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(render_system: &'a mut dyn render_system::RenderSystem) -> orchestrator::EntityReturn<'a, Self> {
+	pub fn new<'a>(render_system_handle: EntityHandle<dyn RenderSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'a, Self> {
 		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
+			let render_system = orchestrator.get_entity(&render_system_handle);
+			let mut render_system = render_system.get_mut();
+
 			let bindings = [
 				render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::FRAGMENT | render_system::Stages::RAYGEN | render_system::Stages::COMPUTE),
 				render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::StorageBuffer, render_system::Stages::MESH | render_system::Stages::FRAGMENT | render_system::Stages::COMPUTE),
@@ -218,8 +225,19 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), render_system::ShaderTypes::Mesh,);
-			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE), render_system::ShaderTypes::Fragment,);
+			let visibility_pass_mesh_shader = render_system.create_shader(render_system::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), render_system::ShaderTypes::Mesh,
+				&[
+					render_system::ShaderBindingDescriptor::new(0, 0, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(0, 1, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(0, 2, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(0, 3, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(0, 4, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(0, 5, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(0, 6, render_system::AccessPolicies::READ),
+				]
+			);
+
+			let visibility_pass_fragment_shader = render_system.create_shader(render_system::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE), render_system::ShaderTypes::Fragment, &[]);
 
 			let visibility_pass_shaders = [
 				(&visibility_pass_mesh_shader, render_system::ShaderTypes::Mesh, vec![]),
@@ -336,13 +354,34 @@ impl VisibilityWorldRenderDomain {
 				},
 			]);
 
-			let material_count_shader = render_system.create_shader(render_system::ShaderSource::GLSL(MATERIAL_COUNT_SOURCE), render_system::ShaderTypes::Compute,);
+			let material_count_shader = render_system.create_shader(render_system::ShaderSource::GLSL(MATERIAL_COUNT_SOURCE), render_system::ShaderTypes::Compute,
+				&[
+					render_system::ShaderBindingDescriptor::new(0, 0, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(1, 0, render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE),
+					render_system::ShaderBindingDescriptor::new(1, 7, render_system::AccessPolicies::READ),
+				]
+			);
 			let material_count_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_count_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let material_offset_shader = render_system.create_shader(render_system::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE), render_system::ShaderTypes::Compute,);
+			let material_offset_shader = render_system.create_shader(render_system::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE), render_system::ShaderTypes::Compute,
+				&[
+					render_system::ShaderBindingDescriptor::new(1, 0, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(1, 1, render_system::AccessPolicies::WRITE),
+					render_system::ShaderBindingDescriptor::new(1, 2, render_system::AccessPolicies::WRITE),
+					render_system::ShaderBindingDescriptor::new(1, 3, render_system::AccessPolicies::WRITE),
+				]
+			);
 			let material_offset_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_offset_shader, render_system::ShaderTypes::Compute, vec![]));
 
-			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(PIXEL_MAPPING_SOURCE), render_system::ShaderTypes::Compute,);
+			let pixel_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(PIXEL_MAPPING_SOURCE), render_system::ShaderTypes::Compute,
+				&[
+					render_system::ShaderBindingDescriptor::new(0, 1, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(1, 1, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(1, 2, render_system::AccessPolicies::READ),
+					render_system::ShaderBindingDescriptor::new(1, 4, render_system::AccessPolicies::WRITE),
+					render_system::ShaderBindingDescriptor::new(1, 7, render_system::AccessPolicies::READ),
+				]
+			);
 			let pixel_mapping_pipeline = render_system.create_compute_pipeline(&visibility_pass_pipeline_layout, (&pixel_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 			let light_data_buffer = render_system.create_buffer(Some("Light Data"), std::mem::size_of::<LightingData>(), render_system::Uses::Storage | render_system::Uses::TransferDestination, render_system::DeviceAccesses::CpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::DYNAMIC);
@@ -421,6 +460,9 @@ impl VisibilityWorldRenderDomain {
 			let transfer_command_buffer = render_system.create_command_buffer(Some("Transfer"));
 
 			Self {
+				render_system: render_system_handle,
+				resource_manager: resource_manager_handle,
+
 				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, },
 
 				shaders: HashMap::new(),
@@ -499,7 +541,7 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<PointLight>()
 	}
 
-	fn load_material(&mut self, resource_manager: &mut resource_manager::resource_manager::ResourceManager, render_system: &mut render_system::RenderSystemImplementation, asset_url: &str) {
+	fn load_material(&mut self, resource_manager: &mut resource_manager::resource_manager::ResourceManager, render_system: &mut dyn render_system::RenderSystem, asset_url: &str) {
 		let (response, buffer) = resource_manager.get(asset_url).unwrap();
 
 		for resource_document in &response.resources {
@@ -543,7 +585,26 @@ impl VisibilityWorldRenderDomain {
 					let offset = resource_document.offset as usize;
 					let size = resource_document.size as usize;
 
-					let new_shader = render_system.create_shader(render_system::ShaderSource::SPIRV(&buffer[offset..(offset + size)]), shader.stage,);
+					let new_shader = render_system.create_shader(render_system::ShaderSource::SPIRV(&buffer[offset..(offset + size)]), shader.stage, &[
+						render_system::ShaderBindingDescriptor::new(0, 1, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(0, 2, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(0, 3, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(0, 4, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(0, 5, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(0, 6, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(0, 7, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(1, 0, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(1, 1, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(1, 4, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(1, 6, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(2, 0, render_system::AccessPolicies::WRITE),
+						render_system::ShaderBindingDescriptor::new(2, 1, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(2, 2, render_system::AccessPolicies::WRITE),
+						render_system::ShaderBindingDescriptor::new(2, 3, render_system::AccessPolicies::WRITE),
+						render_system::ShaderBindingDescriptor::new(2, 4, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(2, 5, render_system::AccessPolicies::READ),
+						render_system::ShaderBindingDescriptor::new(2, 10, render_system::AccessPolicies::READ),
+					]);
 
 					self.shaders.insert(resource_id, (hash, new_shader, shader.stage));
 				}
@@ -661,9 +722,8 @@ impl VisibilityWorldRenderDomain {
 
 	fn get_transform(&self) -> Mat4f { return Mat4f::identity(); }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let render_system = orchestrator.get_entity(&self.render_system);
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<&mut render_system::RenderSystemImplementation>().unwrap();
 
 		// let closed_frame_index = self.current_frame % 2;
 
@@ -680,9 +740,6 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	/// Return the property for the transform of a mesh
-	pub const fn transform() -> orchestrator::Property<(), Self, Mat4f> { orchestrator::Property::Component { getter: Self::get_transform, setter: Self::set_transform } }
-
 	pub fn render(&mut self, orchestrator: &OrchestratorReference, render_system: &dyn render_system::RenderSystem, command_buffer_recording: &mut dyn render_system::CommandBufferRecording) {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 
@@ -690,17 +747,6 @@ impl VisibilityWorldRenderDomain {
 			let mut command_buffer_recording = render_system.create_command_buffer_recording(self.transfer_command_buffer, None);
 
 			command_buffer_recording.transfer_textures(&self.pending_texture_loads);
-
-			let consumption = self.pending_texture_loads.iter().map(|handle|{
-				render_system::Consumption{
-					handle: render_system::Handle::Image(*handle),
-					stages: render_system::Stages::COMPUTE,
-					access: render_system::AccessPolicies::READ,
-					layout: render_system::Layouts::Read,
-				}
-			}).collect::<Vec<_>>();
-
-			command_buffer_recording.consume_resources(&consumption);
 
 			self.pending_texture_loads.clear();
 
@@ -734,26 +780,6 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_region("Visibility Model");
 
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.vertex_positions_buffer),
-				stages: render_system::Stages::MESH,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.vertex_normals_buffer),
-				stages: render_system::Stages::MESH,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.primitive_indices_buffer),
-				stages: render_system::Stages::MESH,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
 		let attachments = [
 			render_system::AttachmentInformation {
 				image: self.primitive_index,
@@ -784,206 +810,44 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.start_region("Visibility Render Model");
 
 		command_buffer_recording.start_region("Visibility Buffer");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption {
-				handle: render_system::Handle::Buffer(self.camera_data_buffer_handle),
-				stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Buffer(self.vertex_positions_buffer),
-				stages: render_system::Stages::MESH,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Buffer(self.vertex_normals_buffer),
-				stages: render_system::Stages::MESH,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Buffer(self.primitive_indices_buffer),
-				stages: render_system::Stages::MESH,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Buffer(self.meshes_data_buffer),
-				stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Buffer(self.meshlets_data_buffer),
-				stages: render_system::Stages::MESH | render_system::Stages::FRAGMENT,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
-		command_buffer_recording.start_render_pass(Extent::plane(1920, 1080), &attachments);
-
 		command_buffer_recording.bind_raster_pipeline(&self.visibility_pass_pipeline);
-
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
-
+		command_buffer_recording.start_render_pass(Extent::plane(1920, 1080), &attachments);
 		command_buffer_recording.dispatch_meshes(self.visibility_info.meshlet_count, 1, 1);
-
 		command_buffer_recording.end_render_pass();
+		command_buffer_recording.end_region();
 
 		command_buffer_recording.clear_buffers(&[self.material_count, self.material_offset, self.material_offset_scratch, self.material_evaluation_dispatches, self.material_xy]);
 
-		command_buffer_recording.end_region();
-
 		command_buffer_recording.start_region("Material Count");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_count),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.instance_id),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
 		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
 		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent::plane(1920, 1080) });
-
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.start_region("Material Offset");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_count),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset_scratch),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
 		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
 		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent { width: 1, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1, height: 1, depth: 1 } });
-
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.start_region("Pixel Mapping");
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_offset_scratch),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ | render_system::AccessPolicies::WRITE, // Atomic operations are read/write
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_xy),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
-
 		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
 		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.start_region("Material Evaluation");
-		
 		command_buffer_recording.clear_images(&[(self.albedo, render_system::ClearValue::Color(crate::RGBA::black())),(self.occlusion_map, render_system::ClearValue::Color(crate::RGBA::white()))]);
-
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption {
-				handle: render_system::Handle::Image(self.albedo),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Image(self.primitive_index),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption {
-				handle: render_system::Handle::Image(self.instance_id),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_evaluation_dispatches),
-				stages: render_system::Stages::INDIRECT,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Buffer(self.material_xy),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.debug_position),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.debug_normal),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.occlusion_map),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::Read,
-			},
-		]);
-
-		command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
-
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			command_buffer_recording.bind_compute_pipeline(pipeline);
+			command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
 			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
 				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
 			command_buffer_recording.indirect_dispatch(&render_system::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
 		}
-
 		command_buffer_recording.end_region();
 
 		// render_system.wait(self.transfer_synchronizer); // Wait for buffers to be copied over to the GPU, or else we might overwrite them on the CPU before they are copied over
@@ -1034,24 +898,21 @@ struct MaterialData {
 
 impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let render_system = orchestrator.get_entity(&self.render_system);
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
-		orchestrator.tie_self(Self::transform, &handle, mesh::Mesh::transform);
+		// orchestrator.tie_self(Self::transform, &handle, mesh::Mesh::transform);
 
 		{
-			let resource_manager = orchestrator.get_by_class::<resource_manager::resource_manager::ResourceManager>();
+			let resource_manager = orchestrator.get_entity(&self.resource_manager);
 			let mut resource_manager = resource_manager.get_mut();
-			let resource_manager: &mut resource_manager::resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
-			self.load_material(resource_manager, render_system, mesh.material_id);
+			self.load_material(resource_manager.deref_mut(), render_system.deref_mut(), mesh.material_id);
 		}
 
 		if !self.mesh_resources.contains_key(mesh.resource_id) { // Load only if not already loaded
-			let resource_manager = orchestrator.get_by_class::<resource_manager::resource_manager::ResourceManager>();
+			let resource_manager = orchestrator.get_entity(&self.resource_manager);
 			let mut resource_manager = resource_manager.get_mut();
-			let resource_manager: &mut resource_manager::resource_manager::ResourceManager = resource_manager.downcast_mut().unwrap();
 
 			let resource_request = resource_manager.request_resource(mesh.resource_id);
 
@@ -1227,9 +1088,8 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 
 impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<DirectionalLight>, light: &DirectionalLight) {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let render_system = orchestrator.get_entity(&self.render_system);
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
 		let lighting_data = unsafe { (render_system.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
@@ -1246,9 +1106,8 @@ impl orchestrator::EntitySubscriber<DirectionalLight> for VisibilityWorldRenderD
 
 impl orchestrator::EntitySubscriber<PointLight> for VisibilityWorldRenderDomain {
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<PointLight>, light: &PointLight) {
-		let render_system = orchestrator.get_by_class::<render_system::RenderSystemImplementation>();
+		let render_system = orchestrator.get_entity(&self.render_system);
 		let mut render_system = render_system.get_mut();
-		let render_system = render_system.downcast_mut::<render_system::RenderSystemImplementation>().unwrap();
 
 		let lighting_data = unsafe { (render_system.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 

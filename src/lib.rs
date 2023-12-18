@@ -6,6 +6,7 @@
 #![feature(is_sorted)]
 #![feature(iter_map_windows)]
 #![feature(pointer_is_aligned)]
+#![feature(coerce_unsized, unsize)]
 // #![warn(missing_docs)] # Disable now because we are writing a lot of code
 // #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
 

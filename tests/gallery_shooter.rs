@@ -69,7 +69,7 @@ impl Player {
 				focus_distance: 0.0,
 			});
 	
-			orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
+			// orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
 	
 			// orchestrator.tie_self(Player::lookaround, &handle, input_manager::Action::value);
 
@@ -82,7 +82,7 @@ impl Player {
 }
 
 impl Player {
-	pub const fn lookaround() -> orchestrator::Property<(), Player, Vec3f> { orchestrator::Property::Component { getter: Self::get_lookaround, setter: Self::set_lookaround } }
+	pub const fn lookaround() -> orchestrator::Property<Player, Vec3f> { orchestrator::Property { getter: Self::get_lookaround, setter: Self::set_lookaround } }
 
 	fn get_lookaround(&self) -> Vec3f {
 		Vec3f::new(0.0, 0.0, 0.0)

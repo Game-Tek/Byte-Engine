@@ -41,7 +41,12 @@ impl AcesToneMapPass {
 			},
 		]);
 
-		let tone_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(TONE_MAPPING_SHADER), render_system::ShaderTypes::Compute,);
+		let tone_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(TONE_MAPPING_SHADER), render_system::ShaderTypes::Compute,
+			&[
+				render_system::ShaderBindingDescriptor::new(0, 0, render_system::AccessPolicies::READ),
+				render_system::ShaderBindingDescriptor::new(0, 1, render_system::AccessPolicies::WRITE),
+			]);
+			
 		let tone_mapping_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
 
 		AcesToneMapPass {
@@ -64,20 +69,20 @@ impl AcesToneMapPass {
 
 impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {
 	fn render(&self, command_buffer_recording: &mut dyn render_system::CommandBufferRecording,) {
-		command_buffer_recording.consume_resources(&[
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.source_image_handle),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::READ,
-				layout: render_system::Layouts::General,
-			},
-			render_system::Consumption{
-				handle: render_system::Handle::Image(self.result_image_handle),
-				stages: render_system::Stages::COMPUTE,
-				access: render_system::AccessPolicies::WRITE,
-				layout: render_system::Layouts::General,
-			},
-		]);
+		// command_buffer_recording.consume_resources(&[
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.source_image_handle),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::READ,
+		// 		layout: render_system::Layouts::General,
+		// 	},
+		// 	render_system::Consumption{
+		// 		handle: render_system::Handle::Image(self.result_image_handle),
+		// 		stages: render_system::Stages::COMPUTE,
+		// 		access: render_system::AccessPolicies::WRITE,
+		// 		layout: render_system::Layouts::General,
+		// 	},
+		// ]);
 
 		command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);

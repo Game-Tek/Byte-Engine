@@ -70,11 +70,11 @@ impl ResourceHandler for ImageResourceHandler {
 		Ok(vec![ProcessedResources::Generated((resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)))])
 	}
 
-	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
+	fn read(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
 		file.read_exact(buffers[0].buffer).unwrap();
 	}
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
 		vec![("Texture", Box::new(|document| {
 			let texture = Texture::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(texture)

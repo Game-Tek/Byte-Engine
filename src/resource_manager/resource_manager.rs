@@ -4,7 +4,7 @@ use log::{info, warn, error, trace, debug};
 
 use crate::orchestrator;
 
-use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse};
+use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -23,7 +23,7 @@ use super::{resource_handler, texture_resource_handler, mesh_resource_handler, m
 pub struct ResourceManager {
 	db: polodb_core::Database,
 	resource_handlers: Vec<Box<dyn resource_handler::ResourceHandler + Send>>,
-	deserializers: std::collections::HashMap<&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>>,
+	deserializers: std::collections::HashMap<&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>>,
 }
 
 impl orchestrator::Entity for ResourceManager {}

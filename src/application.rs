@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker};
+use crate::{orchestrator::{self, EntityHandle}, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker, ahi};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -129,6 +129,7 @@ pub struct GraphicsApplication {
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
 	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
 	render_system_handle: orchestrator::EntityHandle<dyn render_system::RenderSystem>,
+	audio_system_handle: Box<dyn ahi::audio_hardware_interface::AudioHardwareInterface>,
 }
 
 impl Application for GraphicsApplication {
@@ -171,7 +172,9 @@ impl Application for GraphicsApplication {
 
 		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
-		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, render_system_handle }
+		let audio_system_handle = Box::new(ahi::audio_hardware_interface::create_ahi());
+
+		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, render_system_handle, audio_system_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {

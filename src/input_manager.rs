@@ -592,7 +592,7 @@ impl InputManager {
 			let most_recent_record = action_records.max_by_key(|r| r.time);
 
 			if let Some(record) = most_recent_record {
-				let value = self.resolve_action_value_from_record(action, record);
+				let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
 
 				match value {
 					Value::Vector2(v) => {
@@ -650,7 +650,7 @@ impl InputManager {
 		let action = &self.actions[input_event_handle.0 as usize];
 
 		if let Some(record) = self.records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time) {
-			let value = self.resolve_action_value_from_record(action, record);
+			let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
 	
 			InputEventState {
 				device_handle: device_handle.clone(),
@@ -683,10 +683,10 @@ impl InputManager {
 		}
 	}
 
-	fn resolve_action_value_from_record(&self, action: &InputAction, record: &Record) -> Value {
+	fn resolve_action_value_from_record(&self, action: &InputAction, record: &Record) -> Option<Value> {
 		let mapping = action.input_event_descriptions.iter().find(|ied| ied.input_source_handle == record.input_source_handle).unwrap();
 
-		match action.type_ {
+		let value = match action.type_ {
 			Types::Float => {
 				let float = match record.value {
 					Value::Bool(record_value) => {
@@ -720,18 +720,36 @@ impl InputManager {
 							}
 						}
 					}
-					_ => panic!("Not implemented!"),
+					_ => {
+						log::error!("Not implemented!");
+						return None;
+					},
 				};
 
 				Value::Float(float)
 			}
 			Types::Vector3 => {
 				match record.value {
-					Value::Bool(_) => panic!("Not implemented!"),
-					Value::Unicode(_) => panic!("Not implemented!"),
-					Value::Float(_) => panic!("Not implemented!"),
-					Value::Int(_) => panic!("Not implemented!"),
-					Value::Rgba(_) => panic!("Not implemented!"),
+					Value::Bool(_) => {
+						log::error!("Not implemented!");
+						return None;
+					},
+					Value::Unicode(_) => {
+						log::error!("Not implemented!");
+						return None;
+					},
+					Value::Float(_) => {
+						log::error!("Not implemented!");
+						return None;
+					},
+					Value::Int(_) => {
+						log::error!("Not implemented!");
+						return None;
+					},
+					Value::Rgba(_) => {
+						log::error!("Not implemented!");
+						return None;
+					},
 					Value::Vector2(record_value) => {
 						if let Some(function) = mapping.function {
 							if let Function::Sphere = function {
@@ -744,22 +762,31 @@ impl InputManager {
 								let y = y_pi.sin();
 								let z = x_pi.cos() * y_pi.cos();
 
-								let transformation = if let Value::Vector3(transformation) = mapping.mapping { transformation } else { panic!("Not implemented!"); };
+								let transformation = if let Value::Vector3(transformation) = mapping.mapping { transformation } else { log::error!("Not implemented!"); return None; };
 
 								Value::Vector3(Vector3 { x, y, z } * transformation)
 							} else {
-								panic!("Not implemented!");
+								log::error!("Not implemented!");
+								return None;
 							}
 						} else {
 							Value::Vector3(Vector3 { x: record_value.x, y: record_value.y, z: 0f32 })
 						}
 					},
 					Value::Vector3(value) => Value::Vector3(value),
-					Value::Quaternion(_) => panic!("Not implemented!"),
+					Value::Quaternion(_) => {
+						log::error!("Not implemented!");
+						return None;
+					},
 				}
 			}
-			_ => panic!("Not implemented!"),
-		}
+			_ => {
+				log::error!("Not implemented!");
+				return None;
+			},
+		};
+
+		Some(value)
 	}
 
 	fn get_input_source_from_input_source_action(&self, input_source_action: &InputSourceAction) -> Option<&InputSource> {

@@ -8,6 +8,7 @@ pub mod resource_handler;
 pub mod texture_resource_handler;
 pub mod mesh_resource_handler;
 pub mod material_resource_handler;
+pub mod audio_resource_handler;
 
 // https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
 
@@ -74,7 +75,7 @@ pub struct ResourceRequest {
 	pub size: u64,
 	pub hash: u64,
 	pub class: String,
-	pub resource: Box<dyn std::any::Any>,
+	pub resource: Box<dyn Resource>,
 	pub required_resources: Vec<String>,
 }
 
@@ -85,17 +86,19 @@ pub struct ResourceResponse {
 	pub offset: u64,
 	pub hash: u64,
 	pub class: String,
-	pub resource: Box<dyn std::any::Any>,
+	pub resource: Box<dyn Resource>,
 	pub required_resources: Vec<String>,
 }
 
 /// Trait that defines a resource.
-pub trait Resource {
+pub trait Resource: downcast_rs::Downcast {
 	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	/// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
 	/// Is needed by the deserialize function.
 	fn get_class(&self) -> &'static str;
 }
+
+downcast_rs::impl_downcast!(Resource);
 
 #[derive(Debug, Clone)]
 pub struct SerializedResourceDocument(polodb_core::bson::Document);

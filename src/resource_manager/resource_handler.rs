@@ -1,4 +1,4 @@
-use super::{resource_manager, ProcessedResources, Stream};
+use super::{resource_manager, ProcessedResources, Stream, Resource};
 
 pub trait ResourceHandler {
 	fn can_handle_type(&self, resource_type: &str) -> bool;
@@ -16,7 +16,7 @@ pub trait ResourceHandler {
 	/// - **required_resources**(optional): A list of resources that this resource depends on. This is used to load resources that depend on other resources.
 	fn process(&self, resource_manager: &resource_manager::ResourceManager, asset_url: &str) -> Result<Vec<ProcessedResources>, String>;
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)>;
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)>;
 
-	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [Stream]);
+	fn read(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [Stream]);
 }

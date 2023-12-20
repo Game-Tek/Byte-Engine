@@ -81,7 +81,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn read(&self, _resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
+	fn read(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
 		file.read_exact(buffers[0].buffer).unwrap();
 	}
 
@@ -144,7 +144,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
 		vec![("Material",
 			Box::new(|_document| {
 				Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())

@@ -36,7 +36,7 @@ meshopt = "0.1.9"
 colored = "2.0.4"
 downcast-rs = "1.2.0"
 intertrait = "0.2.2"
-cpal = "0.15.2"
+alsa = "0.8.1"
 
 [profile.dev]
 incremental = true

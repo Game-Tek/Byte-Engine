@@ -180,14 +180,14 @@ impl ResourceHandler for MeshResourceHandler {
 		Ok(resources)
 	}
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn std::any::Any> + Send>)> {
+	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
 		vec![("Mesh", Box::new(|document| {
 			let mesh = Mesh::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
 			Box::new(mesh)
 		}))]
 	}
 
-	fn read(&self, resource: &Box<dyn std::any::Any>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
+	fn read(&self, resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
 		let mesh: &Mesh = resource.downcast_ref().unwrap();
 
 		for buffer in buffers {

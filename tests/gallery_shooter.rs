@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh, rendering::point_light::PointLight};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh, rendering::point_light::PointLight};
 use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
@@ -17,13 +17,13 @@ fn gallery_shooter() {
 		],)
 	);
 
-	let _trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn(input_manager::Action::new("Trigger", &[
+	let trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn(input_manager::Action::new("Trigger", &[
 			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton")),
 			// input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightTrigger")),
 		],)
 	);
 
-	let player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle)).expect("Failed to spawn player");
+	let _player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, trigger_action)).expect("Failed to spawn player");
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
@@ -51,7 +51,7 @@ impl Component for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<input_manager::Action<Vec3f>>) -> orchestrator::EntityReturn<'static, Self> {
+	fn new(lookaround: EntityHandle<Action<Vec3f>>, _trigger_action: EntityHandle<Action<bool>>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 

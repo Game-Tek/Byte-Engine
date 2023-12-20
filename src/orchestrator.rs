@@ -638,6 +638,61 @@ mod tests {
 		assert_eq!(unsafe { COUNTER }, 1);
 	}
 
+	#[test]
+	fn events() {
+		let mut orchestrator = Orchestrator::new();
+
+		struct Component {
+			name: String,
+			value: u32,
+		}
+
+		// struct ComponentParameters {
+		// 	name: String,
+		// }
+
+		impl Entity for Component {}
+
+		impl super::Component for Component {
+			// type Parameters<'a> = ComponentParameters;
+		}
+
+		let handle: EntityHandle<Component> = orchestrator.spawn(Component { name: "test".to_string(), value: 1 });
+
+		struct System {
+
+		}
+
+		impl Entity for System {}
+		impl super::System for System {}
+
+		impl System {
+			fn new<'c>() -> EntityReturn<'c, System> {
+				EntityReturn::new(System {}).add_listener::<Component>()
+			}
+		}
+
+		static mut COUNTER: u32 = 0;
+
+		impl EntitySubscriber<Component> for System {
+			fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
+				unsafe {
+					COUNTER += 1;
+				}
+			}
+
+			fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
+		}
+		
+		let _: Option<EntityHandle<System>> = orchestrator.spawn_entity(System::new());
+		
+		assert_eq!(unsafe { COUNTER }, 0);
+
+		let component: EntityHandle<Component> = orchestrator.spawn(Component { name: "test".to_string(), value: 1 });
+
+		assert_eq!(unsafe { COUNTER }, 1);
+	}
+
 	// #[test]
 	// fn test_systems() {
 	// 	let mut orchestrator = Orchestrator::new();

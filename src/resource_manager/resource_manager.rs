@@ -4,7 +4,7 @@ use log::{info, warn, error, trace, debug};
 
 use crate::orchestrator;
 
-use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource};
+use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource, audio_resource_handler};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -95,7 +95,8 @@ impl ResourceManager {
 		let resource_handlers: Vec<Box<dyn resource_handler::ResourceHandler + Send>> = vec![
 			Box::new(texture_resource_handler::ImageResourceHandler::new()),
 			Box::new(mesh_resource_handler::MeshResourceHandler::new()),
-			Box::new(material_resource_handler::MaterialResourcerHandler::new())
+			Box::new(material_resource_handler::MaterialResourcerHandler::new()),
+			Box::new(audio_resource_handler::AudioResourceHandler::new()),
 		];
 
 		let mut deserializers = std::collections::HashMap::new();

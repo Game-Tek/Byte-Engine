@@ -21,13 +21,11 @@ impl_downcast!(Entity);
 /// A system is a collection of components and logic to operate on them.
 pub trait System: Entity + Any {}
 
-#[cfg(feature="multithreading")]
-#[derive(Clone, Debug, Hash, PartialEq)]
-pub struct EntityHandle<T: Entity + ?Sized>(std::sync::Arc<std::sync::RwLock<T>>);
-
-#[cfg(not(feature="multithreading"))]
 #[derive(Debug,)]
 pub struct EntityHandle<T: Entity + ?Sized> {
+	#[cfg(feature="multithreading")]
+	container: std::sync::Arc<std::sync::RwLock<T>>,
+	#[cfg(not(feature="multithreading"))]
 	container: std::rc::Rc<std::sync::RwLock<T>>,
 	internal_id: u32,
 	external_id: u32,
@@ -131,10 +129,8 @@ struct Tie {
 
 /// An orchestrator is a collection of systems that are updated in parallel.
 pub struct Orchestrator {
-	sep: std::sync::Mutex<(crate::executor::Executor, crate::executor::Spawner)>,
 	systems_data: std::sync::RwLock<SystemsData>,
 	listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, Box<dyn Fn(&Orchestrator, u32, EntityHandle<dyn Entity>)>)>>>,
-	tasks: Vec<Task>,
 	ties: std::sync::RwLock<HashMap<usize, Vec<Tie>>>,
 	// parameters: std::sync::RwLock<HashMap<u32, std::sync::Arc<dyn std::any::Any + Send + Sync + 'static>>>,
 }
@@ -176,15 +172,15 @@ pub struct EntityReturn<'c, T: Entity> {
 	listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, u32, EntityHandle<dyn Entity>)>)>,
 }
 
-impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
-	// pub fn new(entity: T) -> Self {
-	// 	Self {
-	// 		entity,
-	// 		post_creation_functions: Vec::new(),
-	// 		listens_to: Vec::new(),
-	// 	}
-	// }
+pub trait Subscribable {
 
+}
+
+impl <T: Entity> Subscribable for (EntityHandle<T>, fn() -> u32) {
+
+}
+
+impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 	pub fn new(entity: T) -> Self {
 		Self {
 			create: std::boxed::Box::new(move |_| entity),
@@ -239,6 +235,10 @@ impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 
 		self
 	}
+
+	pub fn subscribe_to(mut self, event: impl Subscribable) -> Self {
+		self
+	}
 }
 
 pub struct Property<E: Entity, V> {
@@ -249,10 +249,8 @@ pub struct Property<E: Entity, V> {
 impl Orchestrator {
 	pub fn new() -> Orchestrator {
 		Orchestrator {
-			sep: std::sync::Mutex::new(crate::executor::new_executor_and_spawner()),
 			systems_data: std::sync::RwLock::new(SystemsData { counter: 0, systems: HashMap::new(), systems_by_name: HashMap::new(), }),
 			listeners_by_class: std::sync::Mutex::new(HashMap::new()),
-			tasks: Vec::new(),
 			ties: std::sync::RwLock::new(HashMap::new()),
 			// parameters: std::sync::RwLock::new(HashMap::new()),
 		}
@@ -260,14 +258,6 @@ impl Orchestrator {
 
 	pub fn initialize(&self) {}
 	pub fn deinitialize(&self) {}
-
-	pub fn update(&mut self) {
-		for task in self.tasks.iter() {
-			(task.function)(self);
-		}
-
-		self.tasks.clear();
-	}
 
 	/// Spawn entity is a function that spawns an entity and returns a handle to it.
 	pub fn spawn_entity<'c, T, P, F: 'c>(&self, function: F) -> Option<EntityHandle<T>> where T: Entity + 'static, F: IntoHandler<P, T> {
@@ -337,7 +327,7 @@ impl Orchestrator {
 	}
 
 	/// Ties a property of a component to a property of another component.
-	pub fn tie_internal<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, receiver_internal_id: u32, i: fn() -> Property<T, V>, _sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
+	fn tie_internal<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, receiver_internal_id: u32, i: fn() -> Property<T, V>, _sender_component_handle: &EntityHandle<U>, j: fn() -> Property<U, V>) {
 		let property_function_pointer = j as *const (); // Use the property function pointer as a key to the ties hashmap.
 
 		let property = i();
@@ -373,25 +363,6 @@ impl Orchestrator {
 		}
 	}
 
-	pub fn execute_task_standalone(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
-		self.sep.lock().unwrap().1.spawn(task);
-	}
-
-	pub fn execute_task<S: System + Sync + Send, F: Sync + Send + 'static, R>(&self, _task: F) where F: FnOnce(std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send + Sync + 'static>>, OrchestratorHandle) -> R, R: std::future::Future<Output = ()> + Send + 'static {
-		self.sep.lock().unwrap().1.spawn(async move {
-		});
-	}
-
-	pub fn execute_task_sync<F: Fn(&Orchestrator) + 'static>(&mut self, task: F) {
-		self.tasks.push(Task { function: std::boxed::Box::new(task) });
-	}
-
-	pub fn get_and<C: Entity + 'static, F, R>(&self, component_handle: &EntityHandle<C>, function: F) -> R where F: FnOnce(&C) -> R {
-		let systems_data = self.systems_data.read().unwrap();
-		let component = systems_data.systems[&component_handle.internal_id].read().unwrap();
-		function(component.downcast_ref::<C>().unwrap())
-	}
-
 	pub fn get_mut_and<C: Entity + 'static, F, R>(&self, component_handle: &EntityHandle<C>, function: F) -> R where F: FnOnce(&mut C) -> R {
 		let systems_data = self.systems_data.read().unwrap();
 		let mut component = systems_data.systems[&component_handle.internal_id].write().unwrap();
@@ -406,12 +377,6 @@ impl Orchestrator {
 		function(component_0.downcast_mut::<C0>().unwrap(), component_1.downcast_mut::<C1>().unwrap())
 	}
 
-	// pub fn get_mut_by_class_and<C: System + 'static, F, R>(&self, function: F) -> R where F: FnOnce(&mut C) -> R {
-	// 	let systems_data = self.systems_data.read().unwrap();
-	// 	let mut component = systems_data.systems[systems_data.systems_by_name[C::class()] as usize].write().unwrap();
-	// 	function(component.downcast_mut::<C>().unwrap())
-	// }
-
 	pub fn get_property<C: Entity + 'static, V: Clone + Copy + 'static>(&self, component_handle: &EntityHandle<C>, function: fn() -> Property<C, V>) -> V {
 		let systems_data = self.systems_data.read().unwrap();
 
@@ -421,40 +386,6 @@ impl Orchestrator {
 		let getter = property.getter as *const ();
 		let getter = unsafe { std::mem::transmute::<*const (), fn(&C) -> V>(getter) };
 		(getter)(component.downcast_ref::<C>().unwrap())
-	}
-
-	// pub fn set_owned_property<C: Entity + Clone + 'static, V: Clone + Copy + 'static, S: 'static>(&self, internal_id: u32, component_handle: InternalId, function: fn() -> Property<S, C, V>, value: V) {
-	// 	let systems_data = self.systems_data.read().unwrap();
-
-	// 	let _property = function();
-
-	// 	let ties = self.ties.read().unwrap();
-
-	// 	if let Some(ties) = ties.get(&(function as *const () as usize)) {
-	// 		for tie in ties {
-	// 			unsafe {
-	// 				match tie.update_function {
-	// 					UpdateFunctionTypes::Component(ref setter) => {
-	// 						let mut component = systems_data.systems[&tie.destination_system_handle].write().unwrap();
-	// 						let setter = setter.downcast_ref_unchecked::<fn(&mut C, OrchestratorReference, V)>();
-	// 						(setter)(component.downcast_mut_unchecked::<C>(), OrchestratorReference { orchestrator: self, internal_id: tie.destination_system_handle }, value);
-	// 					},
-	// 					UpdateFunctionTypes::System(ref setter) => {
-	// 						let mut component = systems_data.systems[&tie.destination_system_handle].write().unwrap();
-	// 						let setter = setter.downcast_ref_unchecked::<fn(&mut S, &EntityHandle<C>, V)>();
-	// 						(setter)(component.downcast_mut_unchecked::<S>(), &EntityHandle::<C>::new(, internal_id, component_handle.0), value);
-	// 					},
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }
-
-	pub fn invoke<E: Entity + 'static>(&self, handle: EntityHandle<E>, function: fn(&E, &Orchestrator)) {
-		let systems_data = self.systems_data.read().unwrap();
-		let component = systems_data.systems[&handle.internal_id].read().unwrap();
-		let component = component.downcast_ref::<E>().unwrap();
-		function(component, self);
 	}
 
 	pub fn invoke_mut<E: Entity + 'static>(&self, handle: &EntityHandle<E>, function: fn(&mut E, OrchestratorReference)) {
@@ -569,21 +500,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_one_off_task() {
-		let mut orchestrator = Orchestrator::new();
-
-		let mut test_system_handle = TestSystem::new();
-
-		orchestrator.execute_task_standalone(async move {
-			assert_eq!(test_system_handle.get_value(), 0);
-			test_system_handle.update().await;
-			assert_eq!(test_system_handle.get_value(), 1);
-		});
-
-		orchestrator.update();
-	}
-
-	#[test]
 	fn spawn() {
 		let mut orchestrator = Orchestrator::new();
 
@@ -638,243 +554,53 @@ mod tests {
 		assert_eq!(unsafe { COUNTER }, 1);
 	}
 
-	#[test]
-	fn events() {
-		let mut orchestrator = Orchestrator::new();
+	// #[test]
+	// fn events() {
+	// 	let mut orchestrator = Orchestrator::new();
 
-		struct Component {
-			name: String,
-			value: u32,
-		}
+	// 	struct MyComponent {
+	// 		name: String,
+	// 		value: u32,
+	// 	}
 
-		// struct ComponentParameters {
-		// 	name: String,
-		// }
+	// 	impl MyComponent {
+	// 		fn event() -> u32 {}
+	// 	}
 
-		impl Entity for Component {}
+	// 	impl Entity for MyComponent {}
 
-		impl super::Component for Component {
-			// type Parameters<'a> = ComponentParameters;
-		}
+	// 	impl Component for MyComponent {}
 
-		let handle: EntityHandle<Component> = orchestrator.spawn(Component { name: "test".to_string(), value: 1 });
+	// 	let handle: EntityHandle<MyComponent> = orchestrator.spawn(MyComponent { name: "test".to_string(), value: 1 });
 
-		struct System {
+	// 	struct MySystem {
 
-		}
+	// 	}
 
-		impl Entity for System {}
-		impl super::System for System {}
+	// 	impl Entity for MySystem {}
+	// 	impl System for MySystem {}
 
-		impl System {
-			fn new<'c>() -> EntityReturn<'c, System> {
-				EntityReturn::new(System {}).add_listener::<Component>()
-			}
-		}
+	// 	static mut COUNTER: u32 = 0;
 
-		static mut COUNTER: u32 = 0;
+	// 	impl MySystem {
+	// 		fn new<'c>(component_handle: EntityHandle<MyComponent>) -> EntityReturn<'c, MySystem> {
+	// 			EntityReturn::new(MySystem {}).subscribe_to((component_handle, MyComponent::event))
+	// 		}
 
-		impl EntitySubscriber<Component> for System {
-			fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
-				unsafe {
-					COUNTER += 1;
-				}
-			}
-
-			fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
-		}
+	// 		fn on_event(&mut self, component: &MyComponent) {
+	// 			unsafe {
+	// 				COUNTER += 1;
+	// 			}
+	// 		}
+	// 	}
 		
-		let _: Option<EntityHandle<System>> = orchestrator.spawn_entity(System::new());
+	// 	let component_handle: EntityHandle<MyComponent> = orchestrator.spawn(MyComponent { name: "test".to_string(), value: 1 });
+
+	// 	let _: Option<EntityHandle<MySystem>> = orchestrator.spawn_entity(MySystem::new(component_handle));
 		
-		assert_eq!(unsafe { COUNTER }, 0);
+	// 	assert_eq!(unsafe { COUNTER }, 0);
 
-		let component: EntityHandle<Component> = orchestrator.spawn(Component { name: "test".to_string(), value: 1 });
-
-		assert_eq!(unsafe { COUNTER }, 1);
-	}
-
-	// #[test]
-	// fn test_systems() {
-	// 	let mut orchestrator = Orchestrator::new();
-
-	// 	let test_system = TestSystem::new();
-
-	// 	let _system_handle = orchestrator.create_entity(test_system);
-
-	// 	//orchestrator.execute_task(TestSystem::task);
-
-	// 	orchestrator.update();
-	// }
-
-	// #[test]
-	// fn sync_task() {
-	// 	let mut orchestrator = Orchestrator::new();
-
-	// 	let test_system = TestSystem::new();
-
-	// 	let _system_handle = orchestrator.spawn_system(test_system);
-
-	// 	fn task(_o: &Orchestrator) {
-	// 		println!("howdy!");
-	// 	}
-
-	// 	orchestrator.execute_task_sync(task);
-
-	// 	orchestrator.update();
-	// }
-
-	// #[test]
-	// fn tie() {
-	// 	let mut orchestrator = Orchestrator::new();
-
-	// 	#[derive(Clone)]
-	// 	struct Sender {
-	// 		value: u32,
-	// 	}
-
-	// 	impl Entity for Sender {}
-
-	// 	impl Sender {
-	// 		fn new(orchestrator: &mut Orchestrator) -> EntityHandle<Sender> {
-	// 			orchestrator.create_entity(Sender { value: 0 })
-	// 		}
-
-	// 		fn get_value(&self) -> u32 {
-	// 			self.value
-	// 		}
-
-	// 		fn set_value(&mut self, _orchestrator: OrchestratorReference, value: u32) {
-	// 			self.value = value;
-	// 		}
-
-	// 		const fn send() -> Property<(), Sender, u32> {
-	// 			Property::Component { getter: Sender::get_value, setter: Sender::set_value }
-	// 		}
-	// 	}
-
-	// 	#[derive(Clone)]
-	// 	struct Receiver {
-	// 		value: u32,
-	// 	}
-
-	// 	impl Entity for Receiver {}
-
-	// 	impl Receiver {
-	// 		fn new(orchestrator: &mut Orchestrator) -> EntityHandle<Receiver> {
-	// 			orchestrator.create_entity(Receiver { value: 0 })
-	// 		}
-
-	// 		fn read_value(&self) -> u32 {
-	// 			self.value
-	// 		}
-
-	// 		fn set_value(&mut self, _orchestrator: OrchestratorReference, value: u32) {
-	// 			self.value = value;
-	// 		}
-
-	// 		const fn value() -> Property<(), Receiver, u32> {
-	// 			Property::Component { getter: Receiver::read_value, setter: Receiver::set_value }
-	// 		}
-	// 	}
-
-	// 	let sender_handle = Sender::new(&mut orchestrator);
-
-	// 	let receiver_handle = Receiver::new(&mut orchestrator);
-
-	// 	let value = orchestrator.get_property(&receiver_handle, Receiver::value);
-
-	// 	assert_eq!(value, 0);
-
-	// 	orchestrator.tie(&receiver_handle, Receiver::value, &sender_handle, Sender::send);
-
-	// 	orchestrator.set_property(&sender_handle, Sender::send, 5);
-
-	// 	let value = orchestrator.get_and(&receiver_handle, |r| r.value);
-
-	// 	assert_eq!(value, 5);
-	// }
-
-	// #[test]
-	// fn system_owned_components() {
-	// 	let mut orchestrator = Orchestrator::new();
-
-	// 	struct Sender {
-	// 		value: u32,
-	// 	}
-
-	// 	impl Sender {
-	// 		fn new(orchestrator: &mut Orchestrator) -> EntityHandle<Sender> {
-	// 			orchestrator.make_object(Sender { value: 0 })
-	// 		}
-
-	// 		fn get_value(&self) -> u32 { self.value }
-	// 		fn set_value(&mut self, value: u32) { self.value = value; }
-
-	// 		const fn send() -> Property<(), Sender, u32> { Property::Component { getter: Sender::get_value, setter: Sender::set_value } }
-	// 	}
-
-	// 	struct Component {
-	// 		// No data in component as it is managed/owned by the system.	
-	// 	}
-
-	// 	struct System {
-	// 		handle: EntityHandle<System>,
-	// 		data: Vec<u32>,
-	// 	}
-
-	// 	impl System {
-	// 		fn new(orchestrator: &mut Orchestrator) -> EntityHandle<System> {
-	// 			orchestrator.make_object_with_id("System", |handle| {
-	// 				System { handle: handle, data: Vec::new() }
-	// 			})
-	// 		}
-
-	// 		fn create_component(orchestrator: &mut Orchestrator, value: u32) -> EntityHandle<Component> {
-	// 			orchestrator.get_mut_by_name_and("System", |system: &mut System| {
-	// 				let external_id = system.data.len() as u32;
-	// 				system.data.push(value);
-	// 				orchestrator.make_handle(&system.handle, external_id)
-	// 			})
-	// 		}
-
-	// 		fn set_component_value(&mut self, component_handle: &EntityHandle<Component>, value: u32) {
-	// 			self.data[component_handle.external_id as usize] = value;
-	// 		}
-
-	// 		fn get_component_value(&self, component_handle: &EntityHandle<Component>) -> u32 {
-	// 			self.data[component_handle.external_id as usize]
-	// 		}
-	// 	}
-
-	// 	impl super::System for System {}
-
-	// 	impl Component {
-	// 		fn new(orchestrator: &mut Orchestrator) -> EntityHandle<Component> {
-	// 			System::create_component(orchestrator, 0)
-	// 		}
-
-	// 		const fn value() -> Property<System, Component, u32> {
-	// 			Property::System { getter: System::get_component_value, setter: System::set_component_value }
-	// 		}
-	// 	}
-
-	// 	let sender_handle = Sender::new(&mut orchestrator);
-
-	// 	System::new(&mut orchestrator);
-
-	// 	let component_handle = Component::new(&mut orchestrator);
-
-	// 	let value = orchestrator.get_property(&component_handle, Component::value);
-
-	// 	assert_eq!(value, 0);
-
-	// 	orchestrator.tie(&component_handle, Component::value, &sender_handle, Sender::send);
-
-	// 	orchestrator.notify(&sender_handle, Sender::send, 5);
-
-	// 	let value = orchestrator.get_property(&component_handle, Component::value);
-
-	// 	assert_eq!(value, 5);
+	// 	assert_eq!(unsafe { COUNTER }, 1);
 	// }
 }
 

@@ -47,6 +47,14 @@ impl ResourceHandler for AudioResourceHandler {
 			return Err("Invalid audio format".to_string());
 		}
 
+		let subchunk_1_size = &bytes[16..20];
+
+		let subchunk_1_size = u32::from_le_bytes([subchunk_1_size[0], subchunk_1_size[1], subchunk_1_size[2], subchunk_1_size[3]]);
+
+		if subchunk_1_size != 16 {
+			return Err("Invalid subchunk 1 size".to_string());
+		}
+
 		let num_channels = &bytes[22..24];
 
 		let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
@@ -81,12 +89,15 @@ impl ResourceHandler for AudioResourceHandler {
 
 		let data_size = u32::from_le_bytes([data_size[0], data_size[1], data_size[2], data_size[3]]);
 
-		let data = &bytes[44..data_size as usize];
+		let sample_count = data_size / (bits_per_sample / 8) as u32 / num_channels as u32;
+
+		let data = &bytes[44..][..data_size as usize];
 
 		let audio_resource = Audio {
 			bit_depth,
 			channel_count: num_channels,
 			sample_rate,
+			sample_count,
 		};
 
 		Ok(
@@ -105,7 +116,7 @@ impl ResourceHandler for AudioResourceHandler {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
 enum BitDepths {
 	Eight,
 	Sixteen,
@@ -113,13 +124,62 @@ enum BitDepths {
 	ThirtyTwo,
 }
 
+impl From<BitDepths> for usize {
+	fn from(bit_depth: BitDepths) -> Self {
+		match bit_depth {
+			BitDepths::Eight => 8,
+			BitDepths::Sixteen => 16,
+			BitDepths::TwentyFour => 24,
+			BitDepths::ThirtyTwo => 32,
+		}
+	}
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Audio {
 	bit_depth: BitDepths,
 	channel_count: u16,
 	sample_rate: u32,
+	sample_count: u32,
 }
 
 impl Resource for Audio {
 	fn get_class(&self) -> &'static str { "Audio" }
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use crate::resource_manager::resource_manager::ResourceManager;
+
+	#[test]
+	fn test_audio_resource_handler() {
+		let audio_resource_handler = AudioResourceHandler::new();
+
+		let resource_manager = ResourceManager::new();
+
+		let processed_resources = audio_resource_handler.process(&resource_manager, "gun").unwrap();
+
+		assert_eq!(processed_resources.len(), 1);
+
+		let (generic_resource_serialization, data) = match processed_resources[0] {
+			ProcessedResources::Generated((ref generic_resource_serialization, ref data)) => (generic_resource_serialization, data),
+			_ => { panic!("Unexpected processed resource type"); }
+		};
+
+		assert_eq!(generic_resource_serialization.url, "gun");
+		assert_eq!(generic_resource_serialization.class, "Audio");
+
+		let audio_resource = (audio_resource_handler.get_deserializers().iter().find(|(class, _)| *class == "Audio").unwrap().1)(&generic_resource_serialization.resource);
+
+		let audio = audio_resource.downcast_ref::<Audio>().unwrap();
+
+		assert_eq!(audio.bit_depth, BitDepths::Sixteen);
+		assert_eq!(audio.channel_count, 1);
+		assert_eq!(audio.sample_rate, 48000);
+		assert_eq!(audio.sample_count, 152456 / 1 / (16 / 8));
+
+		assert_eq!(data.len(), audio.sample_count as usize * audio.channel_count as usize * (Into::<usize>::into(audio.bit_depth) / 8) as usize);
+	}
 }

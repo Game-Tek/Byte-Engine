@@ -98,8 +98,6 @@ impl Application for OrchestratedApplication {
 		}
 
 		self.last_tick_time = std::time::Instant::now();
-
-		self.orchestrator.update();
 	}
 
 	fn get_name(&self) -> String { self.application.get_name() }

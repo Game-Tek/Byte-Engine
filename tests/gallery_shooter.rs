@@ -1,12 +1,15 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh, rendering::point_light::PointLight};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::AudioSystem};
 use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
 
 #[ignore]
 #[test]
 fn gallery_shooter() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
+
+	let audio_system_handle = app.get_audio_system_handle().clone();
+
 	app.initialize(std::env::args());
 
 	let orchestrator = app.get_mut_orchestrator();
@@ -23,7 +26,9 @@ fn gallery_shooter() {
 		],)
 	);
 
-	let _player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, trigger_action)).expect("Failed to spawn player");
+	let player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, audio_system_handle)).expect("Failed to spawn player");
+
+	orchestrator.subscribe_to(&player, &trigger_action, input_manager::Action::<bool>::value, Player::shoot);
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
@@ -42,6 +47,8 @@ fn gallery_shooter() {
 struct Player {
 	mesh: EntityHandle<mesh::Mesh>,
 	camera: EntityHandle<byte_engine::camera::Camera>,
+
+	audio_system: EntityHandle<dyn byte_engine::audio::audio_system::AudioSystem>,
 }
 
 impl orchestrator::Entity for Player {}
@@ -51,7 +58,7 @@ impl Component for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<Action<Vec3f>>, _trigger_action: EntityHandle<Action<bool>>) -> orchestrator::EntityReturn<'static, Self> {
+	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<dyn AudioSystem>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 
@@ -68,10 +75,9 @@ impl Player {
 			});
 	
 			orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
-	
-			// orchestrator.tie_self(Player::lookaround, &handle, input_manager::Action::value);
 
 			Self {
+				audio_system: audio_system,
 				camera: camera_handle,
 				mesh: orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "solid", transform, }),
 			}
@@ -95,5 +101,11 @@ impl Player {
 		transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
 
 		orchestrator.set_property(&self.mesh, mesh::Mesh::transform, transform);
+	}
+
+	fn shoot(&mut self, value: bool) {
+		if value {
+			self.audio_system.get(|audio_system| audio_system.play("assets/audio/shotgun.wav"));
+		}
 	}
 }

@@ -18,7 +18,7 @@ impl ALSAAudioHardwareInterface {
 		{
 			let hwp = alsa::pcm::HwParams::any(&pcm).unwrap();
 			hwp.set_channels(1).unwrap();
-			hwp.set_rate(44100, alsa::ValueOr::Nearest).unwrap();
+			hwp.set_rate(44800, alsa::ValueOr::Nearest).unwrap();
 			hwp.set_format(alsa::pcm::Format::s16()).unwrap();
 			hwp.set_access(alsa::pcm::Access::RWInterleaved).unwrap();
 			pcm.hw_params(&hwp).unwrap();
@@ -50,14 +50,14 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 		let io = pcm.io_i16().unwrap();
 
 		// Play it back for 2 seconds.
-		for _ in 0..2*44100/1024 {
+		for _ in 0..2*44800/1024 {
 			assert_eq!(io.writei(&buf[..]).unwrap(), 1024);
 		}
 
-		// In case the buffer was larger than 2 seconds, start the stream manually.
-		if pcm.state() != alsa::pcm::State::Running { pcm.start().unwrap() };
-		// Wait for the stream to finish playback.
-		pcm.drain().unwrap();
+		// // In case the buffer was larger than 2 seconds, start the stream manually.
+		// if pcm.state() != alsa::pcm::State::Running { pcm.start().unwrap() };
+		// // Wait for the stream to finish playback.
+		// pcm.drain().unwrap();
 	}
 
 	fn pause(&self) {

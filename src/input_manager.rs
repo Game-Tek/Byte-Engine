@@ -260,6 +260,7 @@ pub struct InputManager {
 
 	input_sources_map: HashMap<EntityHash, InputSourceHandle>,
 	actions_ei_map: HashMap<EntityHash, ActionHandle>,
+	actions_ieb_map: HashMap<ActionHandle, EntityHandle<Action<bool>>>,
 	actions_ie_map: HashMap<ActionHandle, EntityHandle<Action<Vector3>>>,
 }
 
@@ -276,6 +277,7 @@ impl InputManager {
 			input_sources_map: HashMap::new(),
 			actions_ei_map: HashMap::new(),
 			actions_ie_map: HashMap::new(),
+			actions_ieb_map: HashMap::new(),
 		}
 	}
 
@@ -595,13 +597,18 @@ impl InputManager {
 				let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
 
 				match value {
+					Value::Bool(v) => {
+						orchestrator.set_property(self.actions_ieb_map.get(&ActionHandle(i as u32)).unwrap(), Action::<bool>::value, v);
+					}
 					Value::Vector2(v) => {
 						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
 					}
 					Value::Vector3(v) => {
 						orchestrator.set_property(self.actions_ie_map.get(&ActionHandle(i as u32)).unwrap(), Action::<Vector3>::value, v);
 					}
-					_ => {}
+					_ => {
+						log::error!("Not implemented!");
+					}
 				}
 			}
 		}
@@ -687,6 +694,17 @@ impl InputManager {
 		let mapping = action.input_event_descriptions.iter().find(|ied| ied.input_source_handle == record.input_source_handle).unwrap();
 
 		let value = match action.type_ {
+			Types::Bool => {
+				match record.value {
+					Value::Bool(record_value) => {
+						Value::Bool(record_value)
+					}
+					_ => {
+						log::error!("Not implemented!");
+						return None;
+					},
+				}
+			}
 			Types::Float => {
 				let float = match record.value {
 					Value::Bool(record_value) => {
@@ -824,6 +842,8 @@ impl InputManager {
 impl EntitySubscriber<Action<bool>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
 		let internal_handle = self.create_action(action.name, Types::Bool, &action.bindings);
+
+		self.actions_ieb_map.insert(internal_handle, handle);
 	}
 
 	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {

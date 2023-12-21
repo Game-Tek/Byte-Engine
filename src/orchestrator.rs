@@ -114,12 +114,18 @@ impl <T: Entity> EntityHandle<T> {
 	}
 }
 
+impl <T: System + ?Sized> EntityHandle<T> {
+	pub fn get(&self, function: impl Fn(&T)) {
+		let lock = self.container.read().unwrap();
+		let system = lock.deref();
+
+		function(system);
+	}
+}
+
 /// A component is a piece of data that is attached to an entity.
 pub trait Component : Entity {
 	// type Parameters<'a>: Send + Sync;
-}
-
-pub trait OwnedComponent<T: Entity> : Entity {
 }
 
 struct Tie {

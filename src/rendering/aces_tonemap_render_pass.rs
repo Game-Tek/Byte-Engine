@@ -1,53 +1,53 @@
-use crate::{Extent, orchestrator::{self, Entity, System}};
+use crate::{Extent, orchestrator::{self, Entity, System}, ghi};
 
-use super::{render_system, tonemap_render_pass};
+use super::tonemap_render_pass;
 
 pub struct AcesToneMapPass {
-	pipeline_layout: render_system::PipelineLayoutHandle,
-	pipeline: render_system::PipelineHandle,
-	descriptor_set_layout: render_system::DescriptorSetTemplateHandle,
-	descriptor_set: render_system::DescriptorSetHandle,
+	pipeline_layout: ghi::PipelineLayoutHandle,
+	pipeline: ghi::PipelineHandle,
+	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
 
-	source_image_handle: render_system::ImageHandle,
-	result_image_handle: render_system::ImageHandle,
+	source_image_handle: ghi::ImageHandle,
+	result_image_handle: ghi::ImageHandle,
 }
 
 impl AcesToneMapPass {
-    fn new(render_system: &mut dyn render_system::RenderSystem, source_image: render_system::ImageHandle, result_image: render_system::ImageHandle) -> AcesToneMapPass {
+    fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
         let bindings = [
-			render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
-			render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE),
+			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
+			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
 		];
 
-		let descriptor_set_layout = render_system.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &bindings);
+		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &bindings);
 
-		let pipeline_layout = render_system.create_pipeline_layout(&[descriptor_set_layout], &[]);
+		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
-		let descriptor_set = render_system.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
+		let descriptor_set = ghi.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
 
-		let albedo_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[0]);
-		let result_binding = render_system.create_descriptor_binding(descriptor_set, &bindings[1]);
+		let albedo_binding = ghi.create_descriptor_binding(descriptor_set, &bindings[0]);
+		let result_binding = ghi.create_descriptor_binding(descriptor_set, &bindings[1]);
 
-		render_system.write(&[
-			render_system::DescriptorWrite {
+		ghi.write(&[
+			ghi::DescriptorWrite {
 				binding_handle: albedo_binding,
 				array_element: 0,
-				descriptor: render_system::Descriptor::Image{ handle: source_image, layout: render_system::Layouts::General },
+				descriptor: ghi::Descriptor::Image{ handle: source_image, layout: ghi::Layouts::General },
 			},
-			render_system::DescriptorWrite {
+			ghi::DescriptorWrite {
 				binding_handle: result_binding,
 				array_element: 0,
-				descriptor: render_system::Descriptor::Image{ handle: result_image, layout: render_system::Layouts::General },
+				descriptor: ghi::Descriptor::Image{ handle: result_image, layout: ghi::Layouts::General },
 			},
 		]);
 
-		let tone_mapping_shader = render_system.create_shader(render_system::ShaderSource::GLSL(TONE_MAPPING_SHADER), render_system::ShaderTypes::Compute,
+		let tone_mapping_shader = ghi.create_shader(ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER), ghi::ShaderTypes::Compute,
 			&[
-				render_system::ShaderBindingDescriptor::new(0, 0, render_system::AccessPolicies::READ),
-				render_system::ShaderBindingDescriptor::new(0, 1, render_system::AccessPolicies::WRITE),
+				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
+				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
 			]);
 			
-		let tone_mapping_pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, render_system::ShaderTypes::Compute, vec![]));
+		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, ghi::ShaderTypes::Compute, vec![]));
 
 		AcesToneMapPass {
 			descriptor_set_layout,
@@ -60,33 +60,33 @@ impl AcesToneMapPass {
 		}
     }
 
-	pub fn new_as_system(render_system: &mut dyn render_system::RenderSystem, source_image: render_system::ImageHandle, result_image: render_system::ImageHandle) -> orchestrator::EntityReturn<Self> {
+	pub fn new_as_system(ghi: &mut dyn ghi::GraphicsHardwareInterface, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> orchestrator::EntityReturn<Self> {
 		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
-			AcesToneMapPass::new(render_system, source_image, result_image)
+			AcesToneMapPass::new(ghi, source_image, result_image)
 		})
 	}
 }
 
 impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {
-	fn render(&self, command_buffer_recording: &mut dyn render_system::CommandBufferRecording,) {
+	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording,) {
 		// command_buffer_recording.consume_resources(&[
-		// 	render_system::Consumption{
-		// 		handle: render_system::Handle::Image(self.source_image_handle),
-		// 		stages: render_system::Stages::COMPUTE,
-		// 		access: render_system::AccessPolicies::READ,
-		// 		layout: render_system::Layouts::General,
+		// 	ghi::Consumption{
+		// 		handle: ghi::Handle::Image(self.source_image_handle),
+		// 		stages: ghi::Stages::COMPUTE,
+		// 		access: ghi::AccessPolicies::READ,
+		// 		layout: ghi::Layouts::General,
 		// 	},
-		// 	render_system::Consumption{
-		// 		handle: render_system::Handle::Image(self.result_image_handle),
-		// 		stages: render_system::Stages::COMPUTE,
-		// 		access: render_system::AccessPolicies::WRITE,
-		// 		layout: render_system::Layouts::General,
+		// 	ghi::Consumption{
+		// 		handle: ghi::Handle::Image(self.result_image_handle),
+		// 		stages: ghi::Stages::COMPUTE,
+		// 		access: ghi::AccessPolicies::WRITE,
+		// 		layout: ghi::Layouts::General,
 		// 	},
 		// ]);
 
 		command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		command_buffer_recording.dispatch(render_system::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
 	}
 }
 

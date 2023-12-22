@@ -1,66 +1,66 @@
 // use crate::Extent;
 
-// use super::{render_system, world_render_domain::WorldRenderDomain};
+// use super::{ghi, world_render_domain::WorldRenderDomain};
 
 // struct ShadowRenderingPass {
-// 	pipeline: render_system::PipelineHandle,
-// 	pipeline_layout: render_system::PipelineLayoutHandle,
-// 	descriptor_set: render_system::DescriptorSetHandle,
-// 	shadow_map: render_system::ImageHandle,
+// 	pipeline: ghi::PipelineHandle,
+// 	pipeline_layout: ghi::PipelineLayoutHandle,
+// 	descriptor_set: ghi::DescriptorSetHandle,
+// 	shadow_map: ghi::ImageHandle,
 // }
 
 // impl ShadowRenderingPass {
-// 	fn new(render_system: &mut dyn render_system::RenderSystem, render_domain: &impl WorldRenderDomain) -> ShadowRenderingPass {
-// 		let shadow_map_binding_template = render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::StorageImage, render_system::Stages::MESH);
-// 		let depth_binding_template = render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::MESH);
+// 	fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, render_domain: &impl WorldRenderDomain) -> ShadowRenderingPass {
+// 		let shadow_map_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::MESH);
+// 		let depth_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::MESH);
 
 // 		let bindings = [shadow_map_binding_template.clone(), depth_binding_template.clone()];
 
-// 		let descriptor_set_template = render_system.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
+// 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
 
-// 		let pipeline_layout = render_system.create_pipeline_layout(&[render_domain.get_descriptor_set_template(), descriptor_set_template], &[]);
+// 		let pipeline_layout = ghi.create_pipeline_layout(&[render_domain.get_descriptor_set_template(), descriptor_set_template], &[]);
 
-// 		let descriptor_set = render_system.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
+// 		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
 
-// 		let shadow_map_binding = render_system.create_descriptor_binding(descriptor_set, &shadow_map_binding_template);
-// 		let depth_binding = render_system.create_descriptor_binding(descriptor_set, &depth_binding_template);
+// 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &shadow_map_binding_template);
+// 		let depth_binding = ghi.create_descriptor_binding(descriptor_set, &depth_binding_template);
 
 // 		let colored_shadow: bool = false;
 
 // 		let shadow_map_resolution = Extent::square(4096);
 
-// 		let shadow_map = render_system.create_image(Some("Shadow Map"), shadow_map_resolution, render_system::Formats::Depth32, None, render_system::Uses::Image, render_system::DeviceAccesses::GpuWrite | render_system::DeviceAccesses::GpuRead, render_system::UseCases::STATIC);
+// 		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-// 		render_system.write(&[
-// 			render_system::DescriptorWrite {
+// 		ghi.write(&[
+// 			ghi::DescriptorWrite {
 // 				binding_handle: shadow_map_binding,
 // 				array_element: 0,
-// 				descriptor: render_system::Descriptor::Image{ handle: shadow_map, layout: render_system::Layouts::General },
+// 				descriptor: ghi::Descriptor::Image{ handle: shadow_map, layout: ghi::Layouts::General },
 // 			},
 // 		]);
 
-// 		let ray_gen_shader = render_system.create_shader(render_system::ShaderSource::GLSL(SHADOW_RAY_GEN_SHADER), render_system::ShaderTypes::Raygen);
-// 		let hit_shader = render_system.create_shader(render_system::ShaderSource::GLSL(SHADOW_HIT_SHADER), render_system::ShaderTypes::ClosestHit);
-// 		let miss_shader = render_system.create_shader(render_system::ShaderSource::GLSL(SHADOW_MISS_SHADER), render_system::ShaderTypes::Miss);
+// 		let ray_gen_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_RAY_GEN_SHADER), ghi::ShaderTypes::Raygen);
+// 		let hit_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_HIT_SHADER), ghi::ShaderTypes::ClosestHit);
+// 		let miss_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_MISS_SHADER), ghi::ShaderTypes::Miss);
 
-// 		let pipeline = render_system.create_ray_tracing_pipeline(&pipeline_layout, &[
-// 			(&ray_gen_shader, render_system::ShaderTypes::Raygen, vec![]),
-// 			(&hit_shader, render_system::ShaderTypes::ClosestHit, vec![]),
-// 			(&miss_shader, render_system::ShaderTypes::Miss, vec![]),
+// 		let pipeline = ghi.create_ray_tracing_pipeline(&pipeline_layout, &[
+// 			(&ray_gen_shader, ghi::ShaderTypes::Raygen, vec![]),
+// 			(&hit_shader, ghi::ShaderTypes::ClosestHit, vec![]),
+// 			(&miss_shader, ghi::ShaderTypes::Miss, vec![]),
 // 		]);
 
 // 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map }
 // 	}
 
-// 	fn render(&self, command_buffer_recording: &mut dyn render_system::CommandBufferRecording) {
+// 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
 // 		command_buffer_recording.start_region("Shadow Rendering");
 
 // 		command_buffer_recording.consume_resources(&[
-// 			render_system::Consumption{
-// 				handle: render_system::Handle::Image(self.shadow_map),
-// 				stages: render_system::Stages::MESH,
-// 				access: render_system::AccessPolicies::WRITE,
-// 				layout: render_system::Layouts::General,
+// 			ghi::Consumption{
+// 				handle: ghi::Handle::Image(self.shadow_map),
+// 				stages: ghi::Stages::MESH,
+// 				access: ghi::AccessPolicies::WRITE,
+// 				layout: ghi::Layouts::General,
 // 			},
 // 		]);
 
@@ -216,50 +216,50 @@
 // }";
 
 // struct ShadowMappingPass {
-// 	pipeline_layout: render_system::PipelineLayoutHandle,
-// 	pipeline: render_system::PipelineHandle,
-// 	descriptor_set_template: render_system::DescriptorSetTemplateHandle,
-// 	descriptor_set: render_system::DescriptorSetHandle,
+// 	pipeline_layout: ghi::PipelineLayoutHandle,
+// 	pipeline: ghi::PipelineHandle,
+// 	descriptor_set_template: ghi::DescriptorSetTemplateHandle,
+// 	descriptor_set: ghi::DescriptorSetHandle,
 
-// 	depth_target: render_system::ImageHandle,
-// 	shadow_map: render_system::ImageHandle,
-// 	occlusion_map: render_system::ImageHandle,
+// 	depth_target: ghi::ImageHandle,
+// 	shadow_map: ghi::ImageHandle,
+// 	occlusion_map: ghi::ImageHandle,
 // }
 
 // impl ShadowMappingPass {
-// 	fn new(render_system: &mut dyn render_system::RenderSystem, shadow_rendering_pass: &ShadowRenderingPass, occlusion_map: render_system::ImageHandle, parent_descriptor_set_template: render_system::DescriptorSetTemplateHandle, depth_target: render_system::ImageHandle) -> ShadowMappingPass {
-// 		let shadow_map_binding_template = render_system::DescriptorSetBindingTemplate::new(0, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::COMPUTE);
-// 		let depth_binding_template = render_system::DescriptorSetBindingTemplate::new(1, render_system::DescriptorType::CombinedImageSampler, render_system::Stages::COMPUTE);
-// 		let result_binding_template = render_system::DescriptorSetBindingTemplate::new(2, render_system::DescriptorType::StorageImage, render_system::Stages::COMPUTE);
+// 	fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, shadow_rendering_pass: &ShadowRenderingPass, occlusion_map: ghi::ImageHandle, parent_descriptor_set_template: ghi::DescriptorSetTemplateHandle, depth_target: ghi::ImageHandle) -> ShadowMappingPass {
+// 		let shadow_map_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+// 		let depth_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+// 		let result_binding_template = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
-// 		let descriptor_set_template = render_system.create_descriptor_set_template(Some("Shadow Mapping Pass Set Layout"), &[shadow_map_binding_template.clone(), depth_binding_template.clone(), result_binding_template.clone()]);
-// 		let pipeline_layout = render_system.create_pipeline_layout(&[parent_descriptor_set_template, descriptor_set_template], &[]);
-// 		let descriptor_set = render_system.create_descriptor_set(Some("Shadow Mapping Pass Descriptor Set"), &descriptor_set_template);
+// 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Mapping Pass Set Layout"), &[shadow_map_binding_template.clone(), depth_binding_template.clone(), result_binding_template.clone()]);
+// 		let pipeline_layout = ghi.create_pipeline_layout(&[parent_descriptor_set_template, descriptor_set_template], &[]);
+// 		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Mapping Pass Descriptor Set"), &descriptor_set_template);
 
-// 		let shader = render_system.create_shader(render_system::ShaderSource::GLSL(BUILD_SHADOW_MAP_SHADER), render_system::ShaderTypes::Compute,);
-// 		let pipeline = render_system.create_compute_pipeline(&pipeline_layout, (&shader, render_system::ShaderTypes::Compute, vec![]));
+// 		let shader = ghi.create_shader(ghi::ShaderSource::GLSL(BUILD_SHADOW_MAP_SHADER), ghi::ShaderTypes::Compute,);
+// 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&shader, ghi::ShaderTypes::Compute, vec![]));
 
-// 		let shadow_map_binding = render_system.create_descriptor_binding(descriptor_set, &shadow_map_binding_template);
-// 		let depth_binding = render_system.create_descriptor_binding(descriptor_set, &depth_binding_template);
-// 		let result_binding = render_system.create_descriptor_binding(descriptor_set, &result_binding_template);
+// 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &shadow_map_binding_template);
+// 		let depth_binding = ghi.create_descriptor_binding(descriptor_set, &depth_binding_template);
+// 		let result_binding = ghi.create_descriptor_binding(descriptor_set, &result_binding_template);
 
-// 		let sampler = render_system.create_sampler(render_system::FilteringModes::Linear, render_system::FilteringModes::Linear, render_system::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+// 		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 
-// 		render_system.write(&[
-// 			render_system::DescriptorWrite {
+// 		ghi.write(&[
+// 			ghi::DescriptorWrite {
 // 				binding_handle: shadow_map_binding,
 // 				array_element: 0,
-// 				descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: shadow_rendering_pass.shadow_map, sampler_handle: sampler, layout: render_system::Layouts::Read },
+// 				descriptor: ghi::Descriptor::CombinedImageSampler { image_handle: shadow_rendering_pass.shadow_map, sampler_handle: sampler, layout: ghi::Layouts::Read },
 // 			},
-// 			render_system::DescriptorWrite {
+// 			ghi::DescriptorWrite {
 // 				binding_handle: depth_binding,
 // 				array_element: 0,
-// 				descriptor: render_system::Descriptor::CombinedImageSampler { image_handle: depth_target, sampler_handle: sampler, layout: render_system::Layouts::Read },
+// 				descriptor: ghi::Descriptor::CombinedImageSampler { image_handle: depth_target, sampler_handle: sampler, layout: ghi::Layouts::Read },
 // 			},
-// 			render_system::DescriptorWrite {
+// 			ghi::DescriptorWrite {
 // 				binding_handle: result_binding,
 // 				array_element: 0,
-// 				descriptor: render_system::Descriptor::Image{ handle: occlusion_map, layout: render_system::Layouts::General },
+// 				descriptor: ghi::Descriptor::Image{ handle: occlusion_map, layout: ghi::Layouts::General },
 // 			},
 // 		]);
 
@@ -275,31 +275,31 @@
 // 		}
 // 	}
 
-// 	fn render(&self, command_buffer_recording: &mut dyn render_system::CommandBufferRecording) {
+// 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
 // 		command_buffer_recording.consume_resources(&[
-// 			render_system::Consumption{
-// 				handle: render_system::Handle::Image(self.shadow_map),
-// 				stages: render_system::Stages::COMPUTE,
-// 				access: render_system::AccessPolicies::READ,
-// 				layout: render_system::Layouts::Read,
+// 			ghi::Consumption{
+// 				handle: ghi::Handle::Image(self.shadow_map),
+// 				stages: ghi::Stages::COMPUTE,
+// 				access: ghi::AccessPolicies::READ,
+// 				layout: ghi::Layouts::Read,
 // 			},
-// 			render_system::Consumption{
-// 				handle: render_system::Handle::Image(self.depth_target),
-// 				stages: render_system::Stages::COMPUTE,
-// 				access: render_system::AccessPolicies::READ,
-// 				layout: render_system::Layouts::Read,
+// 			ghi::Consumption{
+// 				handle: ghi::Handle::Image(self.depth_target),
+// 				stages: ghi::Stages::COMPUTE,
+// 				access: ghi::AccessPolicies::READ,
+// 				layout: ghi::Layouts::Read,
 // 			},
-// 			render_system::Consumption{
-// 				handle: render_system::Handle::Image(self.occlusion_map),
-// 				stages: render_system::Stages::COMPUTE,
-// 				access: render_system::AccessPolicies::WRITE,
-// 				layout: render_system::Layouts::General,
+// 			ghi::Consumption{
+// 				handle: ghi::Handle::Image(self.occlusion_map),
+// 				stages: ghi::Stages::COMPUTE,
+// 				access: ghi::AccessPolicies::WRITE,
+// 				layout: ghi::Layouts::General,
 // 			},
 // 		]);
 
 // 		command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 // 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-// 		command_buffer_recording.dispatch(render_system::DispatchExtent::new(Extent::plane(1920, 1080), Extent::square(32)));
+// 		command_buffer_recording.dispatch(ghi::DispatchExtent::new(Extent::plane(1920, 1080), Extent::square(32)));
 // 	}
 // }
 

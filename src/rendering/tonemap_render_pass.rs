@@ -1,5 +1,5 @@
-use super::render_system;
+use crate::ghi;
 
 pub trait ToneMapRenderPass {
-	fn render(&self, command_buffer_recording: &mut dyn render_system::CommandBufferRecording,);
+	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording,);
 }

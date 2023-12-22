@@ -3,7 +3,7 @@ use std::io::Read;
 use log::{warn, debug, error};
 use serde::{Serialize, Deserialize};
 
-use crate::{rendering::{render_system, self}, jspd::{self}};
+use crate::{jspd::{self}, ghi};
 
 use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
 
@@ -46,9 +46,28 @@ impl Resource for Variant {
 	fn get_class(&self) -> &'static str { "Variant" }
 }
 
+/// Enumerates the types of shaders that can be created.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+pub enum ShaderTypes {
+	/// A vertex shader.
+	Vertex,
+	/// A fragment shader.
+	Fragment,
+	/// A compute shader.
+	Compute,
+	Task,
+	Mesh,
+	RayGen,
+	ClosestHit,
+	AnyHit,
+	Intersection,
+	Miss,
+	Callable,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Shader {
-	pub stage: render_system::ShaderTypes,
+	pub stage: ShaderTypes,
 }
 
 impl Resource for Shader {
@@ -152,7 +171,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 			("Shader",
 			Box::new(|_document| {
 				Box::new(Shader {
-					stage: render_system::ShaderTypes::Compute,
+					stage: ShaderTypes::Compute,
 				})
 			})),
 			("Variant",
@@ -192,7 +211,7 @@ impl MaterialResourcerHandler {
 
 		let compilation_artifact = match binary { Ok(binary) => { binary } Err(err) => {
 			let error_string = err.to_string();
-			let error_string = rendering::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
+			let error_string = ghi::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
 			error!("Error compiling shader:\n{}", error_string);
 			return Some(Err(err.to_string()));
 		} };
@@ -204,9 +223,9 @@ impl MaterialResourcerHandler {
 		let result_shader_bytes = compilation_artifact.as_binary_u8();
 
 		let stage = match stage {
-			"Vertex" => render_system::ShaderTypes::Vertex,
-			"Fragment" => render_system::ShaderTypes::Fragment,
-			"Compute" => render_system::ShaderTypes::Compute,
+			"Vertex" => ShaderTypes::Vertex,
+			"Fragment" => ShaderTypes::Fragment,
+			"Compute" => ShaderTypes::Compute,
 			_ => { panic!("Invalid shader stage") }
 		};
 

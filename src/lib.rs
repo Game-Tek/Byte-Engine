@@ -22,6 +22,8 @@ pub mod file_tracker;
 pub mod executor;
 pub mod camera;
 pub mod audio;
+
+pub mod ghi;
 pub mod ahi;
 
 pub mod math;

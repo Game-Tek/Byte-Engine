@@ -1,8 +1,8 @@
-//! The [`RenderSystem`] implements easy to use rendering functionality.
+//! The [`GraphicsHardwareInterface`] implements easy to use rendering functionality.
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 
-use crate::{window_system, orchestrator::{self}, Extent};
+use crate::{window_system, Extent};
 
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
@@ -334,7 +334,7 @@ impl ShaderBindingDescriptor {
 	}
 }
 
-pub trait RenderSystem: orchestrator::System {
+pub trait GraphicsHardwareInterface {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	fn has_errors(&self) -> bool;
 
@@ -978,7 +978,7 @@ pub(super) mod tests {
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
 	}
 
-	pub(crate) fn render_triangle(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn render_triangle(renderer: &mut dyn GraphicsHardwareInterface) {
 		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -1105,7 +1105,7 @@ pub(super) mod tests {
 		// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 	}
 
-	pub(crate) fn present(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn present(renderer: &mut dyn GraphicsHardwareInterface) {
 		let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -1230,7 +1230,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_present(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn multiframe_present(renderer: &mut dyn GraphicsHardwareInterface) {
 		let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -1357,7 +1357,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn multiframe_rendering(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn multiframe_rendering(renderer: &mut dyn GraphicsHardwareInterface) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1487,7 +1487,7 @@ pub(super) mod tests {
 
 	// TODO: Test changing frames in flight count during rendering
 
-	pub(crate) fn dynamic_data(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn dynamic_data(renderer: &mut dyn GraphicsHardwareInterface) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1657,7 +1657,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn descriptor_sets(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn descriptor_sets(renderer: &mut dyn GraphicsHardwareInterface) {
 		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -1827,7 +1827,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors());
 	}
 
-	pub(crate) fn ray_tracing(renderer: &mut dyn RenderSystem) {
+	pub(crate) fn ray_tracing(renderer: &mut dyn GraphicsHardwareInterface) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 

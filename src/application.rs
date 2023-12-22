@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, rendering::render_system, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker, ahi, audio::audio_system};
+use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker, audio::audio_system};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -126,7 +126,6 @@ pub struct GraphicsApplication {
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
 	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
-	render_system_handle: orchestrator::EntityHandle<dyn render_system::RenderSystem>,
 	audio_system_handle: orchestrator::EntityHandle<dyn audio_system::AudioSystem>,
 }
 
@@ -162,9 +161,7 @@ impl Application for GraphicsApplication {
 
 		let file_tracker_handle = orchestrator.spawn_entity(file_tracker::FileTracker::new()).unwrap();
 
-		let render_system_handle = rendering::create_render_system(&orchestrator);
-
-		let renderer_handle = EntityHandle::spawn(orchestrator, rendering::renderer::Renderer::new_as_system(render_system_handle.clone(), window_system_handle.clone(), resource_manager_handle)).unwrap();
+		let renderer_handle = EntityHandle::spawn(orchestrator, rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle)).unwrap();
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
@@ -172,7 +169,7 @@ impl Application for GraphicsApplication {
 
 		let audio_system_handle = orchestrator.spawn_entity(audio_system::DefaultAudioSystem::new_as_system()).unwrap();
 
-		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, render_system_handle, audio_system_handle }
+		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -207,23 +204,6 @@ impl Application for GraphicsApplication {
 		});
 
 		self.application.get_orchestrator().invoke_mut(&self.input_system_handle, input_manager::InputManager::update);
-
-		// self.application.get_orchestrator().get_2_mut_and(&self.render_system_handle, &self.visibility_render_domain_handle, |render_system, visibility_render_domain| {
-		// 	// let files = changed_files.iter().filter(|event| {
-		// 	// 	println!("File changed: {:?}", event.event.paths);
-		// 	// 	event.kind.is_modify()
-		// 	// }).for_each(|event| {
-		// 	// 	println!("File changed: {:?}", event.event.paths);
-
-		// 	// 	let shader_source = std::fs::read_to_string(event.event.paths[0].to_str().unwrap()).unwrap();
-
-		// 	// 	println!("Shader source: {}", shader_source);
-
-		// 	// 	visibility_render_domain.update_shader(render_system, event.paths[0].to_str().unwrap(), shader_source.as_str());
-		// 	// });
-
-		// 	visibility_render_domain.render(self.get_orchestrator(), render_system, self.tick_count as u32);
-		// });
 		
 		self.application.get_orchestrator().invoke_mut(&self.renderer_handle, rendering::renderer::Renderer::render);
 

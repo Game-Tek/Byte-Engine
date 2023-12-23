@@ -9,5 +9,5 @@ pub mod vulkan_ghi;
 pub use crate::ghi::graphics_hardware_interface::*;
 
 pub fn create() -> impl GraphicsHardwareInterface {
-	vulkan_ghi::VulkanGHI::new(&self::vulkan_ghi::Settings{ validation: true, ray_tracing: false })
+	vulkan_ghi::VulkanGHI::new(&graphics_hardware_interface::Features{ validation: true, ray_tracing: false })
 }

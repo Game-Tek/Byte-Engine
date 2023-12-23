@@ -334,6 +334,12 @@ impl ShaderBindingDescriptor {
 	}
 }
 
+/// Configuration for which features to request from the underlying API.
+pub struct Features {
+	pub validation: bool,
+	pub ray_tracing: bool,
+}
+
 pub trait GraphicsHardwareInterface {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	fn has_errors(&self) -> bool;
@@ -1010,6 +1016,7 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1144,6 +1151,7 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1269,6 +1277,7 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1395,6 +1404,7 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1531,6 +1541,7 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = push_constants.matrix * vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1693,6 +1704,7 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1781,15 +1793,6 @@ pub(super) mod tests {
 
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
-		// command_buffer_recording.consume_resources(&[
-		// 	Consumption{
-		// 		handle: Handle::Image(sampled_texture),
-		// 		stages: Stages::FRAGMENT,
-		// 		access: AccessPolicies::READ,
-		// 		layout: Layouts::Read,
-		// 	}
-		// ]);
-
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
@@ -1801,11 +1804,11 @@ pub(super) mod tests {
 			}
 		];
 
-		command_buffer_recording.start_render_pass(extent, &attachments);
-
 		command_buffer_recording.bind_raster_pipeline(&pipeline);
 
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+
+		command_buffer_recording.start_render_pass(extent, &attachments);
 
 		command_buffer_recording.draw_mesh(&mesh);
 
@@ -2050,8 +2053,6 @@ void main() {
 
 			renderer.start_frame_capture();
 
-			// let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
-
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, Some(i as u32));
 
 			{
@@ -2097,44 +2098,38 @@ void main() {
 
 			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
 
-			// unsafe { command_buffer_recording.consume_resources(&[
-			// 	Consumption {
-			// 		handle: Handle::Image(render_target),
-			// 		stages: Stages::RAYGEN,
-			// 		access: AccessPolicies::WRITE,
-			// 		layout: Layouts::General,
-			// 	},
-			// 	Consumption {
-			// 		handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
-			// 		stages: Stages::RAYGEN,
-			// 		access: AccessPolicies::READ,
-			// 		layout: Layouts::General,
-			// 	},
-			// 	Consumption {
-			// 		handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
-			// 		stages: Stages::RAYGEN,
-			// 		access: AccessPolicies::READ,
-			// 		layout: Layouts::General,
-			// 	},
-			// 	Consumption {
-			// 		handle: Handle::Buffer(raygen_sbt_buffer),
-			// 		stages: Stages::RAYGEN,
-			// 		access: AccessPolicies::READ,
-			// 		layout: Layouts::General,
-			// 	},
-			// 	Consumption {
-			// 		handle: Handle::Buffer(miss_sbt_buffer),
-			// 		stages: Stages::RAYGEN,
-			// 		access: AccessPolicies::READ,
-			// 		layout: Layouts::General,
-			// 	},
-			// 	Consumption {
-			// 		handle: Handle::Buffer(hit_sbt_buffer),
-			// 		stages: Stages::RAYGEN,
-			// 		access: AccessPolicies::READ,
-			// 		layout: Layouts::General,
-			// 	},
-			// ]) };
+			unsafe { command_buffer_recording.consume_resources(&[
+				Consumption {
+					handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::Buffer(raygen_sbt_buffer),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::Buffer(miss_sbt_buffer),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+				Consumption {
+					handle: Handle::Buffer(hit_sbt_buffer),
+					stages: Stages::RAYGEN,
+					access: AccessPolicies::READ,
+					layout: Layouts::General,
+				},
+			]) };
 
 			command_buffer_recording.trace_rays(BindingTables {
 				raygen: BufferStridedRange { buffer: raygen_sbt_buffer, offset: 0, stride: 64, size: 64 },
@@ -2143,33 +2138,17 @@ void main() {
 				callable: None,
 			}, 1920, 1080, 1);
 
-			// command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
-
 			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
 			command_buffer_recording.execute(&[/*build_sync,*/], &[], render_finished_synchronizer);
 
-			// renderer.present(image_index, &[swapchain], render_finished_synchronizer);
-
 			renderer.end_frame_capture();
-
-			// renderer.wait(render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
 			renderer.wait(render_finished_synchronizer);
 
 			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width * extent.height) as usize) };
-
-			// let mut file = std::fs::File::create("test.png").unwrap();
-// 
-			// let mut encoder = png::Encoder::new(&mut file, extent.width, extent.height);
-// 
-			// encoder.set_color(png::ColorType::Rgba);
-			// encoder.set_depth(png::BitDepth::Eight);
-// 
-			// let mut writer = encoder.write_header().unwrap();
-			// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 			
 			check_triangle(pixels, extent);
 		}

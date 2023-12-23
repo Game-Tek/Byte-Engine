@@ -40,14 +40,14 @@ impl From<polodb_core::Error> for super::LoadResults {
 impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new() -> Self {
-		if let Err(error) = std::fs::create_dir_all("assets") {
+		if let Err(error) = std::fs::create_dir_all(Self::resolve_asset_path(std::path::Path::new(""))) {
 			match error.kind() {
 				std::io::ErrorKind::AlreadyExists => {},
 				_ => panic!("Could not create assets directory"),
 			}
 		}
 
-		if let Err(error) = std::fs::create_dir_all("resources") {
+		if let Err(error) = std::fs::create_dir_all(Self::resolve_resource_path(std::path::Path::new(""))) {
 			match error.kind() {
 				std::io::ErrorKind::AlreadyExists => {},
 				_ => panic!("Could not create resources directory"),
@@ -63,7 +63,7 @@ impl ResourceManager {
 		}
 
 		let db_res = if !memory_only {
-			polodb_core::Database::open_file("resources/resources.db")
+			polodb_core::Database::open_file(Self::resolve_resource_path(std::path::Path::new("resources.db")))
 		} else {
 			info!("Using memory database instead of file database.");
 			polodb_core::Database::open_memory()
@@ -73,11 +73,11 @@ impl ResourceManager {
 			Ok(db) => db,
 			Err(_) => {
 				// Delete file and try again
-				std::fs::remove_file("resources/resources.db").unwrap();
+				std::fs::remove_file(Self::resolve_resource_path(std::path::Path::new("resources.db"))).unwrap();
 
 				warn!("Database file was corrupted, deleting and trying again.");
 
-				let db_res = polodb_core::Database::open_file("resources/resources.db");
+				let db_res = polodb_core::Database::open_file(Self::resolve_resource_path(std::path::Path::new("resources.db")));
 
 				match db_res {
 					Ok(db) => db,
@@ -313,7 +313,7 @@ impl ResourceManager {
 
 		let resource_id = insert_result.inserted_id.as_object_id()?;
 
-		let resource_path = self.resolve_resource_path(resource_id.to_string().as_str());
+		let resource_path = Self::resolve_resource_path(std::path::Path::new(&resource_id.to_string()));
 
 		let mut file = std::fs::File::create(resource_path).ok()?;
 
@@ -332,7 +332,7 @@ impl ResourceManager {
 		let resources = request.resources.into_iter().map(|resource_container| {
 			let native_db_resource_id = resource_container._id.to_string();
 	
-			let mut file = match std::fs::File::open(self.resolve_resource_path(&native_db_resource_id)) {
+			let mut file = match std::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&native_db_resource_id))) {
 				Ok(it) => it,
 				Err(reason) => {
 					match reason { // TODO: handle specific errors
@@ -373,8 +373,17 @@ impl ResourceManager {
 		return Ok(Response { resources });
 	}
 
-	fn resolve_resource_path(&self, path: &str) -> String { "resources/".to_string() + path	}
-	fn resolve_asset_path(&self, path: &str) -> String { "assets/".to_string() + path }
+	fn resolve_resource_path(path: &std::path::Path) -> std::path::PathBuf {
+		if cfg!(test) {
+			std::env::temp_dir().join("resources").join(path)
+		} else {
+			std::path::PathBuf::from("resources/").join(path)
+		}
+	}
+
+	fn resolve_asset_path(path: &std::path::Path) -> std::path::PathBuf {
+		std::path::PathBuf::from("assets/").join(path)
+	}
 
 	/// Loads an asset from source.\
 	/// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
@@ -419,7 +428,7 @@ impl ResourceManager {
 	}
 
 	pub fn realize_asset_path(&self, url:&str) -> Option<std::path::PathBuf> {
-		let path = std::path::Path::new("assets/");
+		let path = Self::resolve_asset_path(std::path::Path::new(""));
 
 		let url_as_path = std::path::Path::new(url);
 

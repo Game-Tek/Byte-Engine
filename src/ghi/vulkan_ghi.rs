@@ -1939,17 +1939,12 @@ impl Into<graphics_hardware_interface::Stages> for graphics_hardware_interface::
 	}
 }
 
-pub struct Settings {
-	pub validation: bool,
-	pub ray_tracing: bool,
-}
-
 struct DebugCallbackData {
 	error_count: u64,
 }
 
 impl VulkanGHI {
-	pub fn new(settings: &Settings) -> VulkanGHI {
+	pub fn new(settings: &Features) -> VulkanGHI {
 		let entry: ash::Entry = Entry::linked();
 
 		let application_info = vk::ApplicationInfo::default()
@@ -2217,7 +2212,7 @@ impl VulkanGHI {
 	}
 
 	pub fn new_as_system() -> orchestrator::EntityReturn<'static, VulkanGHI> {
-		let settings = Settings {
+		let settings = Features {
 			validation: true,
 			ray_tracing: true,
 		};
@@ -4085,43 +4080,43 @@ mod tests {
 
 	#[test]
 	fn render_triangle() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
 		graphics_hardware_interface::tests::render_triangle(&mut ghi);
 	}
 
 	#[test]
 	fn present() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
 		graphics_hardware_interface::tests::present(&mut ghi);
 	}
 
 	#[test]
 	fn multiframe_present() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }); // TODO: investigate graphical corruption, most likely has to do with synchronization
 		graphics_hardware_interface::tests::multiframe_present(&mut ghi);
 	}
 
 	#[test]
 	fn multiframe_rendering() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
 		graphics_hardware_interface::tests::multiframe_rendering(&mut ghi);
 	}
 
 	#[test]
 	fn dynamic_data() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
 		graphics_hardware_interface::tests::dynamic_data(&mut ghi);
 	}
 
 	#[test]
 	fn descriptor_sets() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
 		graphics_hardware_interface::tests::descriptor_sets(&mut ghi);
 	}
 
 	#[test]
 	fn ray_tracing() {
-		let mut ghi = VulkanGHI::new(&Settings { validation: true, ray_tracing: true });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: true });
 		graphics_hardware_interface::tests::ray_tracing(&mut ghi);
 	}
 }

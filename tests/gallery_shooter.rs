@@ -105,7 +105,7 @@ impl Player {
 
 	fn shoot(&mut self, value: bool) {
 		if value {
-			self.audio_system.get(|audio_system| audio_system.play("assets/audio/shotgun.wav"));
+			self.audio_system.get_mut(|audio_system| audio_system.play("gun"));
 		}
 	}
 }

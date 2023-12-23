@@ -161,13 +161,13 @@ impl Application for GraphicsApplication {
 
 		let file_tracker_handle = orchestrator.spawn_entity(file_tracker::FileTracker::new()).unwrap();
 
-		let renderer_handle = EntityHandle::spawn(orchestrator, rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle)).unwrap();
+		let renderer_handle = EntityHandle::spawn(orchestrator, rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle.clone())).unwrap();
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
 		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
-		let audio_system_handle = orchestrator.spawn_entity(audio_system::DefaultAudioSystem::new_as_system()).unwrap();
+		let audio_system_handle = orchestrator.spawn_entity(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone())).unwrap();
 
 		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle }
 	}
@@ -204,8 +204,11 @@ impl Application for GraphicsApplication {
 		});
 
 		self.application.get_orchestrator().invoke_mut(&self.input_system_handle, input_manager::InputManager::update);
-		
 		self.application.get_orchestrator().invoke_mut(&self.renderer_handle, rendering::renderer::Renderer::render);
+		
+		self.audio_system_handle.get_mut(|audio_system| {
+			audio_system.render();
+		});
 
 		if !window_res {
 			self.application.close();

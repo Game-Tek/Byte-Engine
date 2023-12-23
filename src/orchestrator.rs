@@ -115,11 +115,18 @@ impl <T: Entity> EntityHandle<T> {
 }
 
 impl <T: System + ?Sized> EntityHandle<T> {
-	pub fn get(&self, function: impl Fn(&T)) {
+	pub fn get<R>(&self, function: impl FnOnce(&T) -> R) -> R {
 		let lock = self.container.read().unwrap();
 		let system = lock.deref();
 
-		function(system);
+		function(system)
+	}
+
+	pub fn get_mut<R>(&mut self, function: impl FnOnce(&mut T) -> R) -> R {
+		let mut lock = self.container.write().unwrap();
+		let system = lock.deref_mut();
+
+		function(system)
 	}
 }
 

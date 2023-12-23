@@ -125,7 +125,7 @@ impl ResourceManager {
 	/// If the resource is in cache but it's data cannot be parsed, it will return None.
 	/// Return is a tuple containing the resource description and it's associated binary data.\
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
-	pub fn get(&mut self, path: &str) -> Option<(Response, Vec<u8>)> {
+	pub fn get(&self, path: &str) -> Option<(Response, Vec<u8>)> {
 		let request = self.load_from_cache_or_source(path)?;
 
 		let size = request.resources.iter().map(|r| r.size).sum::<u64>() as usize;
@@ -326,7 +326,7 @@ impl ResourceManager {
 
 	/// Tries to load a resource from cache.\
 	/// If the resource cannot be found/loaded or if it's become stale it will return None.
-	fn load_data_from_cache(&mut self, request: Request, mut options: Option<Options>, buffer: &mut [u8]) -> Result<Response, LoadResults> {
+	fn load_data_from_cache(&self, request: Request, mut options: Option<Options>, buffer: &mut [u8]) -> Result<Response, LoadResults> {
 		let mut offset = 0usize;
 
 		let resources = request.resources.into_iter().map(|resource_container| {

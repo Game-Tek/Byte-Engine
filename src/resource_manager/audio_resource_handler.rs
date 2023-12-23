@@ -117,7 +117,7 @@ impl ResourceHandler for AudioResourceHandler {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
-enum BitDepths {
+pub enum BitDepths {
 	Eight,
 	Sixteen,
 	TwentyFour,
@@ -135,12 +135,12 @@ impl From<BitDepths> for usize {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Audio {
-	bit_depth: BitDepths,
-	channel_count: u16,
-	sample_rate: u32,
-	sample_count: u32,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Audio {
+	pub bit_depth: BitDepths,
+	pub channel_count: u16,
+	pub sample_rate: u32,
+	pub sample_count: u32,
 }
 
 impl Resource for Audio {

@@ -1,7 +1,7 @@
 use crate::orchestrator::{EntityReturn, Entity, System};
 
 pub trait AudioHardwareInterface {
-	fn play(&self);
+	fn play(&self, audio_data: &[i16]);
 
 	fn pause(&self);
 }
@@ -18,9 +18,12 @@ impl ALSAAudioHardwareInterface {
 		{
 			let hwp = alsa::pcm::HwParams::any(&pcm).unwrap();
 			hwp.set_channels(1).unwrap();
-			hwp.set_rate(44800, alsa::ValueOr::Nearest).unwrap();
+			hwp.set_rate(48000, alsa::ValueOr::Nearest).unwrap();
 			hwp.set_format(alsa::pcm::Format::s16()).unwrap();
 			hwp.set_access(alsa::pcm::Access::RWInterleaved).unwrap();
+
+			dbg!(hwp.get_rate().unwrap());
+
 			pcm.hw_params(&hwp).unwrap();
 		}
 
@@ -38,26 +41,12 @@ impl ALSAAudioHardwareInterface {
 }
 
 impl AudioHardwareInterface for ALSAAudioHardwareInterface {
-	fn play(&self) {
+	fn play(&self, audio_data: &[i16]) {
 		let pcm = if let Some(pcm) = &self.pcm { pcm } else { return; };
-
-		// Make a sine wave
-		let mut buf = [0i16; 1024];
-		for (i, a) in buf.iter_mut().enumerate() {
-			*a = ((i as f32 * 2.0 * ::std::f32::consts::PI / 32.0).sin() * 8192.0) as i16
-		}
 
 		let io = pcm.io_i16().unwrap();
 
-		// Play it back for 2 seconds.
-		for _ in 0..2*44800/1024 {
-			assert_eq!(io.writei(&buf[..]).unwrap(), 1024);
-		}
-
-		// // In case the buffer was larger than 2 seconds, start the stream manually.
-		// if pcm.state() != alsa::pcm::State::Running { pcm.start().unwrap() };
-		// // Wait for the stream to finish playback.
-		// pcm.drain().unwrap();
+		io.writei(&audio_data[..]).unwrap();
 	}
 
 	fn pause(&self) {

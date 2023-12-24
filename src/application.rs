@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_manager, file_tracker, audio::audio_system};
+use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management, file_tracker, audio::audio_system};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -137,7 +137,7 @@ impl Application for GraphicsApplication {
 
 		let orchestrator = application.get_mut_orchestrator();
 
-		let resource_manager_handle = orchestrator.spawn_entity(resource_manager::resource_manager::ResourceManager::new_as_system()).unwrap();
+		let resource_manager_handle = orchestrator.spawn_entity(resource_management::resource_manager::ResourceManager::new_as_system()).unwrap();
 		
 		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system()).unwrap();
 		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();

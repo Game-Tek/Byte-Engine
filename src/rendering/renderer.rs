@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{orchestrator::{self, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_manager::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}};
+use crate::{orchestrator::{self, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 

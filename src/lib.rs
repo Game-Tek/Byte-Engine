@@ -15,7 +15,7 @@ pub mod application;
 pub mod orchestrator;
 pub mod window_system;
 pub mod render_debugger;
-pub mod resource_manager;
+pub mod resource_management;
 pub mod shader_generator;
 pub mod input_manager;
 pub mod file_tracker;

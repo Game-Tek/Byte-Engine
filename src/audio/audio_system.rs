@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use crate::{orchestrator::{System, Entity, EntityReturn}, ahi::{audio_hardware_interface::AudioHardwareInterface, self}};
 use crate::orchestrator::EntityHandle;
-use crate::resource_manager::audio_resource_handler;
-use crate::resource_manager::resource_manager::ResourceManager;
+use crate::resource_management::audio_resource_handler;
+use crate::resource_management::resource_manager::ResourceManager;
 
 pub trait AudioSystem: System {
 	/// Plays an audio asset.

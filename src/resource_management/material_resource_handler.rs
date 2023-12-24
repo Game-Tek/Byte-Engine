@@ -295,7 +295,7 @@ impl MaterialResourcerHandler {
 
 #[cfg(test)]
 mod tests {
-    use crate::resource_manager::resource_manager::ResourceManager;
+    use crate::resource_management::resource_manager::ResourceManager;
 
 	#[test]
 	fn load_material() {

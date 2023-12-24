@@ -407,7 +407,7 @@ impl Size for IntegralTypes {
 
 #[cfg(test)]
 mod tests {
-	use crate::{resource_manager::{resource_manager::ResourceManager, Options, OptionResource, Stream}, Vector3};
+	use crate::{resource_management::{resource_manager::ResourceManager, Options, OptionResource, Stream}, Vector3};
 
 	use super::*;
 

@@ -11,8 +11,8 @@ use crate::ghi;
 use crate::orchestrator::EntityHandle;
 use crate::rendering::{mesh, directional_light, point_light};
 use crate::rendering::world_render_domain::WorldRenderDomain;
-use crate::resource_manager::resource_manager::ResourceManager;
-use crate::{resource_manager::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self}, math};
+use crate::resource_management::resource_manager::ResourceManager;
+use crate::{resource_management::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self}, math};
 
 struct VisibilityInfo {
 	instance_count: u32,
@@ -587,7 +587,7 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<point_light::PointLight>()
 	}
 
-	fn load_material(&mut self, resource_manager: &mut resource_manager::resource_manager::ResourceManager, asset_url: &str) {
+	fn load_material(&mut self, resource_manager: &mut resource_management::resource_manager::ResourceManager, asset_url: &str) {
 		let (response, buffer) = resource_manager.get(asset_url).unwrap();
 
 		let mut ghi = self.ghi.write().unwrap();
@@ -634,17 +634,17 @@ impl VisibilityWorldRenderDomain {
 					let size = resource_document.size as usize;
 
 					let stage = match shader.stage {
-						resource_manager::material_resource_handler::ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-						resource_manager::material_resource_handler::ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-						resource_manager::material_resource_handler::ShaderTypes::Compute => ghi::ShaderTypes::Compute,
-						resource_manager::material_resource_handler::ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
-						resource_manager::material_resource_handler::ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-						resource_manager::material_resource_handler::ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
-						resource_manager::material_resource_handler::ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-						resource_manager::material_resource_handler::ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
-						resource_manager::material_resource_handler::ShaderTypes::Callable => ghi::ShaderTypes::Callable,
-						resource_manager::material_resource_handler::ShaderTypes::Task => ghi::ShaderTypes::Task,
-						resource_manager::material_resource_handler::ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
+						resource_management::material_resource_handler::ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
+						resource_management::material_resource_handler::ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
+						resource_management::material_resource_handler::ShaderTypes::Compute => ghi::ShaderTypes::Compute,
+						resource_management::material_resource_handler::ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
+						resource_management::material_resource_handler::ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
+						resource_management::material_resource_handler::ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
+						resource_management::material_resource_handler::ShaderTypes::Miss => ghi::ShaderTypes::Miss,
+						resource_management::material_resource_handler::ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
+						resource_management::material_resource_handler::ShaderTypes::Callable => ghi::ShaderTypes::Callable,
+						resource_management::material_resource_handler::ShaderTypes::Task => ghi::ShaderTypes::Task,
+						resource_management::material_resource_handler::ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
 					};
 
 					let new_shader = ghi.create_shader(ghi::ShaderSource::SPIRV(&buffer[offset..(offset + size)]), stage, &[
@@ -977,7 +977,7 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
-			let mut options = resource_manager::Options { resources: Vec::new(), };
+			let mut options = resource_management::Options { resources: Vec::new(), };
 
 			let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
@@ -990,15 +990,15 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 						let primitive_indices_buffer = ghi.get_mut_buffer_slice(self.primitive_indices_buffer);
 						let triangle_indices_buffer = ghi.get_mut_buffer_slice(self.triangle_indices_buffer);
 
-						options.resources.push(resource_manager::OptionResource {
+						options.resources.push(resource_management::OptionResource {
 							url: resource.url.clone(),
 							streams: vec![
-								resource_manager::Stream{ buffer: &mut vertex_positions_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], name: "Vertex.Position".to_string() },
-								resource_manager::Stream{ buffer: &mut vertex_normals_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], name: "Vertex.Normal".to_string() },
-								resource_manager::Stream{ buffer: &mut triangle_indices_buffer[(self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>())..], name: "TriangleIndices".to_string() },
-								resource_manager::Stream{ buffer: &mut vertex_indices_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<u16>())..], name: "VertexIndices".to_string() },
-								resource_manager::Stream{ buffer: &mut primitive_indices_buffer[(self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>())..], name: "MeshletIndices".to_string() },
-								resource_manager::Stream{ buffer: meshlet_stream_buffer.as_mut_slice() , name: "Meshlets".to_string() },
+								resource_management::Stream{ buffer: &mut vertex_positions_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], name: "Vertex.Position".to_string() },
+								resource_management::Stream{ buffer: &mut vertex_normals_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], name: "Vertex.Normal".to_string() },
+								resource_management::Stream{ buffer: &mut triangle_indices_buffer[(self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>())..], name: "TriangleIndices".to_string() },
+								resource_management::Stream{ buffer: &mut vertex_indices_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<u16>())..], name: "VertexIndices".to_string() },
+								resource_management::Stream{ buffer: &mut primitive_indices_buffer[(self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>())..], name: "MeshletIndices".to_string() },
+								resource_management::Stream{ buffer: meshlet_stream_buffer.as_mut_slice() , name: "Meshlets".to_string() },
 							],
 						});
 

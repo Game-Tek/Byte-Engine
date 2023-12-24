@@ -151,7 +151,7 @@ impl Resource for Audio {
 mod tests {
 	use super::*;
 
-	use crate::resource_manager::resource_manager::ResourceManager;
+	use crate::resource_management::resource_manager::ResourceManager;
 
 	#[test]
 	fn test_audio_resource_handler() {

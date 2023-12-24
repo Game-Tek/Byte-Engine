@@ -2,7 +2,7 @@ use std::io::Read;
 
 use serde::{Serialize, Deserialize};
 
-use crate::resource_manager::GenericResourceSerialization;
+use crate::resource_management::GenericResourceSerialization;
 
 use super::{Resource, ProcessedResources, resource_manager::ResourceManager, resource_handler::ResourceHandler};
 
@@ -99,7 +99,7 @@ impl Resource for Texture {
 
 #[cfg(test)]
 mod tests {
-	use crate::resource_manager::resource_manager::ResourceManager;
+	use crate::resource_management::resource_manager::ResourceManager;
 
 	use super::*;
 

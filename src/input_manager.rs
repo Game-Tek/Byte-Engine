@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property, System, self, Entity, EntitySubscriber, EntityHash}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property2, System, self, Entity, EntitySubscriber, EntityHash}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -487,12 +487,12 @@ impl InputManager {
 			name: name.to_string(),
 			type_,
 			input_event_descriptions: input_events.iter().map(|input_event| {
-				InputSourceMapping {
-					input_source_handle: self.to_input_source_handle(&input_event.input_source).unwrap(),
+				Some(InputSourceMapping {
+					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
 					mapping: input_event.mapping,
 					function: input_event.function,
-				}			
-			}).collect::<Vec<_>>(),
+				})
+			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 			stack: Vec::new(),
 		};
 
@@ -1427,6 +1427,6 @@ impl <T: InputValue + Clone + 'static> Action<T> {
 	}
 
 	pub fn get_value(&self) -> T { self.value }
-	pub fn set_value(&mut self, _: orchestrator::OrchestratorReference, value: T) { self.value = value; }
-	pub const fn value() -> orchestrator::Property<Action<T>, T> { return orchestrator::Property { getter: Self::get_value, setter: Self::set_value } }
+	pub fn set_value(&mut self, value: T) { self.value = value; }
+	pub const fn value() -> orchestrator::Property2<Action<T>, T> { return orchestrator::Property2 { getter: Self::get_value, setter: Self::set_value } }
 }

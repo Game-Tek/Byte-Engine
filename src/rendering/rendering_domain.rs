@@ -1,3 +1,3 @@
-trait RenderingDomain {
+pub trait RenderingDomain {
 	
 }

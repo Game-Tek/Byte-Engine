@@ -965,15 +965,15 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 		{
 			let resource_manager = orchestrator.get_entity(&self.resource_manager);
 			let mut resource_manager = resource_manager.get_mut();
-			self.load_material(resource_manager.deref_mut(), mesh.material_id);
+			self.load_material(resource_manager.deref_mut(), mesh.get_material_id());
 		}
 
-		if !self.mesh_resources.contains_key(mesh.resource_id) { // Load only if not already loaded
+		if !self.mesh_resources.contains_key(mesh.get_resource_id()) { // Load only if not already loaded
 			let mut ghi = self.ghi.write().unwrap();
 			let resource_manager = orchestrator.get_entity(&self.resource_manager);
 			let mut resource_manager = resource_manager.get_mut();
 
-			let resource_request = resource_manager.request_resource(mesh.resource_id);
+			let resource_request = resource_manager.request_resource(mesh.get_resource_id());
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
@@ -1015,7 +1015,7 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 			for resource in &response.resources {
 				match resource.class.as_str() {
 					"Mesh" => {
-						self.mesh_resources.insert(mesh.resource_id, self.visibility_info.triangle_count);
+						self.mesh_resources.insert(mesh.get_resource_id(), self.visibility_info.triangle_count);
 
 						let mesh_resource: &mesh_resource_handler::Mesh = resource.resource.downcast_ref().unwrap();
 
@@ -1103,11 +1103,11 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
-		let mesh_data = self.meshes.get(mesh.resource_id).expect("Mesh not loaded");
+		let mesh_data = self.meshes.get(mesh.get_resource_id()).expect("Mesh not loaded");
 
 		let shader_mesh_data = ShaderInstanceData {
-			model: mesh.transform,
-			material_id: self.material_evaluation_materials.get(mesh.material_id).unwrap().0,
+			model: mesh.get_transform(),
+			material_id: self.material_evaluation_materials.get(mesh.get_material_id()).unwrap().0,
 			base_vertex_index: mesh_data.vertex_offset,
 		};
 
@@ -1116,10 +1116,12 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 		meshes_data_slice[self.visibility_info.instance_count as usize] = shader_mesh_data;
 
 		if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
+			let mesh_transform = mesh.get_transform();
+
 			let transform = [
-				[mesh.transform[0], mesh.transform[1], mesh.transform[2], mesh.transform[3]],
-				[mesh.transform[4], mesh.transform[5], mesh.transform[6], mesh.transform[7]],
-				[mesh.transform[8], mesh.transform[9], mesh.transform[10], mesh.transform[11]],
+				[mesh_transform[0], mesh_transform[1], mesh_transform[2], mesh_transform[3]],
+				[mesh_transform[4], mesh_transform[5], mesh_transform[6], mesh_transform[7]],
+				[mesh_transform[8], mesh_transform[9], mesh_transform[10], mesh_transform[11]],
 			];
 
 			ghi.write_instance(ray_tracing.instances_buffer, self.visibility_info.instance_count as usize, transform, self.visibility_info.instance_count as u16, 0xFF, 0, acceleration_structure);

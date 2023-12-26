@@ -11,20 +11,13 @@ fn gi() {
 
 	let orchestrator = app.get_mut_orchestrator();
 
-	orchestrator.spawn(byte_engine::camera::Camera {
-		position: Vec3f::new(0.0, 0.5, -2.0),
-		direction: Vec3f::new(0.0, 0.0, 1.0),
-		fov: 90.0,
-		aspect_ratio: 1.0,
-		aperture: 0.0,
-		focus_distance: 0.0,
-	});
+	orchestrator.spawn(byte_engine::camera::Camera::new(Vec3f::new(0.0, 0.5, -2.0),));
 
-	let _floor: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "white_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, -0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(5.0, 1.0, 2.5)), });
-	let _wall: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "white_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 1.0, 1.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(5.0, 2.0, 1.0)), });
-	let _a: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Suzanne", material_id: "white_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.4, 0.4, 0.4)), });
-	let _b: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "red_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(-0.6, 0.17, -0.1)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.34, 0.34, 0.34)), });
-	let _c: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh{ resource_id: "Box", material_id: "green_solid", transform: maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.13, -0.3)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.26, 0.26, 0.26)), });
+	let _floor: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh::new("Box", "white_solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, -0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(5.0, 1.0, 2.5))));
+	let _wall: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh::new("Box", "white_solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 1.0, 1.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(5.0, 2.0, 1.0))));
+	let _a: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh::new("Suzanne", "white_solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.5, 0.0)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.4, 0.4, 0.4))));
+	let _b: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh::new("Box", "red_solid", maths_rs::Mat4f::from_translation(Vec3f::new(-0.6, 0.17, -0.1)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.34, 0.34, 0.34))));
+	let _c: EntityHandle<mesh::Mesh> = orchestrator.spawn(mesh::Mesh::new("Box", "green_solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.13, -0.3)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.26, 0.26, 0.26))));
 
 	let _sun: EntityHandle<PointLight> = orchestrator.spawn(PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
 

@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{orchestrator::{self, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}};
+use crate::{orchestrator::{self, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 
@@ -20,6 +20,7 @@ pub struct Renderer {
 	window_system: EntityHandle<window_system::WindowSystem>,
 
 	visibility_render_model: orchestrator::EntityHandle<VisibilityWorldRenderDomain>,
+	ui_render_model: orchestrator::EntityHandle<UIRenderModel>,
 	tonemap_render_model: orchestrator::EntityHandle<AcesToneMapPass>,
 }
 
@@ -35,6 +36,7 @@ impl Renderer {
 			};
 
 			let visibility_render_model = orchestrator.spawn_entity(VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle)).unwrap();
+			let ui_render_model = orchestrator.spawn_entity(UIRenderModel::new_as_system()).unwrap();
 			
 			let render_command_buffer;
 			let render_finished_synchronizer;
@@ -71,6 +73,7 @@ impl Renderer {
 				window_system: window_system_handle,
 
 				visibility_render_model,
+				ui_render_model,
 				tonemap_render_model,
 			}
 		}).add_listener::<window_system::Window>()

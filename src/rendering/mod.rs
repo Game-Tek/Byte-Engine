@@ -13,6 +13,7 @@ pub mod cct;
 
 pub mod world_render_domain;
 pub mod visibility_model;
+pub mod rendering_domain;
 
 pub mod renderer;
 

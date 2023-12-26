@@ -60,7 +60,7 @@ impl Application for BaseApplication {
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management, file_tracker, audio::audio_system};
+use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management, file_tracker, audio::audio_system, physics};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -127,6 +127,7 @@ pub struct GraphicsApplication {
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
 	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
 	audio_system_handle: orchestrator::EntityHandle<dyn audio_system::AudioSystem>,
+	physics_system_handle: orchestrator::EntityHandle<physics::PhysicsWorld>,
 }
 
 impl Application for GraphicsApplication {
@@ -169,7 +170,9 @@ impl Application for GraphicsApplication {
 
 		let audio_system_handle = orchestrator.spawn_entity(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone())).unwrap();
 
-		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle }
+		let physics_system_handle = orchestrator.spawn_entity(physics::PhysicsWorld::new_as_system()).unwrap();
+
+		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -203,8 +206,13 @@ impl Application for GraphicsApplication {
 			true
 		});
 
-		self.application.get_orchestrator().invoke_mut(&self.input_system_handle, input_manager::InputManager::update);
-		self.application.get_orchestrator().invoke_mut(&self.renderer_handle, rendering::renderer::Renderer::render);
+		self.application.get_orchestrator().invoke_mut(&mut self.input_system_handle, input_manager::InputManager::update);
+		
+		self.physics_system_handle.get_mut(|physics_system| {
+			physics_system.update();
+		});
+
+		self.application.get_orchestrator().invoke_mut(&mut self.renderer_handle, rendering::renderer::Renderer::render);
 		
 		self.audio_system_handle.get_mut(|audio_system| {
 			audio_system.render();
@@ -234,6 +242,10 @@ impl GraphicsApplication {
 
 	pub fn get_audio_system_handle(&self) -> &orchestrator::EntityHandle<dyn crate::audio::audio_system::AudioSystem> {
 		&self.audio_system_handle
+	}
+
+	pub fn get_physics_world_handle(&self) -> &orchestrator::EntityHandle<crate::physics::PhysicsWorld> {
+		&self.physics_system_handle
 	}
 
 	pub fn do_loop(&mut self) {

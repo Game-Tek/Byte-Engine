@@ -143,11 +143,11 @@ pub trait Event {
 
 pub struct EventImplementation<I, V> where I: Entity {
 	entity: EntityHandle<I>,
-	function: fn(&mut I, V),
+	function: fn(&mut I, OrchestratorReference, V),
 }
 
 impl <I: Entity, V: Copy + 'static> EventImplementation<I, V> {
-	pub fn new(entity: EntityHandle<I>, function: fn(&mut I, V)) -> Self {
+	pub fn new(entity: EntityHandle<I>, function: fn(&mut I, OrchestratorReference, V)) -> Self {
 		Self {
 			entity,
 			function,
@@ -161,7 +161,7 @@ impl <T: Entity, V: Copy + 'static> Event for EventImplementation<T, V> {
 
 		let value = value.downcast_ref::<V>().unwrap();
 
-		(self.function)(lock.deref_mut(), *value);
+		(self.function)(lock.deref_mut(), OrchestratorReference { orchestrator, internal_id: self.entity.internal_id }, *value);
 	}
 }
 
@@ -221,7 +221,7 @@ impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 		}
 	}
 
-	pub fn new_from_closure<'a, F: FnOnce(OrchestratorReference) -> T + 'static>(function: F) -> Self {
+	pub fn new_from_closure<'a, F: FnOnce(OrchestratorReference) -> T + 'c>(function: F) -> Self {
 		Self {
 			create: std::boxed::Box::new(function),
 			post_creation_functions: Vec::new(),
@@ -420,11 +420,12 @@ impl Orchestrator {
 		(getter)(component.downcast_ref::<C>().unwrap())
 	}
 
-	pub fn invoke_mut<E: Entity + 'static>(&self, handle: &EntityHandle<E>, function: fn(&mut E, OrchestratorReference)) {
-		let systems_data = self.systems_data.read().unwrap();
-		let mut component = systems_data.systems[&handle.internal_id].write().unwrap();
-		let component = component.downcast_mut::<E>().unwrap();
-		function(component, OrchestratorReference { orchestrator: self, internal_id: handle.external_id });
+	pub fn invoke_mut<E: Entity + 'static>(&self, handle: &mut EntityHandle<E>, function: fn(&mut E, OrchestratorReference)) {
+		let external_id = handle.external_id;
+
+		handle.get_mut(|c| {
+			function(c, OrchestratorReference { orchestrator: self, internal_id: external_id });
+		})
 	}
 
 	pub fn get_entity<S: System + ?Sized + 'static>(&self, entity_handle: &EntityHandle<S>) -> EntityReference<S> {
@@ -432,7 +433,7 @@ impl Orchestrator {
 		EntityReference { lock: std::rc::Rc::clone(&entity_handle.container) }
 	}
 
-	pub fn subscribe_to<T: Entity, E: Entity, V: Copy + 'static>(&mut self, subscriber_handle: &EntityHandle<T>, provoking_component: &EntityHandle<E>, provoking_property: fn() -> Property2<E, V>, function_to_invoke: fn(&mut T, V)) {
+	pub fn subscribe_to<T: Entity, E: Entity, V: Copy + 'static>(&mut self, subscriber_handle: &EntityHandle<T>, provoking_component: &EntityHandle<E>, provoking_property: fn() -> Property2<E, V>, function_to_invoke: fn(&mut T, OrchestratorReference, V)) {
 		if let std::collections::hash_map::Entry::Occupied(mut e) = self.events.entry((EntityHash::from(provoking_component), provoking_property.addr())) {
 			e.get_mut().push(Box::new(EventImplementation::new(subscriber_handle.clone(), function_to_invoke)));
 		} else {
@@ -605,7 +606,7 @@ mod tests {
 				EntityReturn::new(MySystem {})
 			}
 
-			fn on_event(&mut self, value: bool) {
+			fn on_event(&mut self, _: OrchestratorReference, value: bool) {
 				unsafe {
 					COUNTER += 1;
 				}

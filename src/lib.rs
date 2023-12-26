@@ -31,7 +31,7 @@ pub mod math;
 pub mod rendering;
 pub mod gameplay;
 pub mod jspd;
-//pub mod gdeflate;
+pub mod physics;
 
 pub use maths_rs::{Vec2f, Vec3f, Quatf, prelude::Base};
 use serde::{Serialize, Deserialize};

@@ -1,7 +1,7 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::AudioSystem, ui::{self, Text}};
-use maths_rs::prelude::{MatTranslate, MatScale, MatInverse};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::AudioSystem, ui::{self, Text}, physics};
+use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
 
 #[ignore]
 #[test]
@@ -9,6 +9,7 @@ fn gallery_shooter() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
 
 	let audio_system_handle = app.get_audio_system_handle().clone();
+	let physics_world_handle = app.get_physics_world_handle().clone();
 
 	app.initialize(std::env::args());
 
@@ -26,7 +27,7 @@ fn gallery_shooter() {
 		],)
 	);
 
-	let mut player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, audio_system_handle)).expect("Failed to spawn player");
+	let mut player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle)).expect("Failed to spawn player");
 
 	orchestrator.subscribe_to(&player, &trigger_action, input_manager::Action::<bool>::value, Player::shoot);
 
@@ -53,6 +54,7 @@ struct Player {
 	camera: EntityHandle<byte_engine::camera::Camera>,
 
 	audio_system: EntityHandle<dyn byte_engine::audio::audio_system::AudioSystem>,
+	physics_world: EntityHandle<physics::PhysicsWorld>,
 
 	magazine_size: Property<usize>,
 	magazine_as_string: DerivedProperty<usize, String>,
@@ -67,7 +69,7 @@ impl Component for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<dyn AudioSystem>) -> orchestrator::EntityReturn<'static, Self> {
+	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<dyn AudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 
@@ -83,6 +85,8 @@ impl Player {
 
 			Self {
 				audio_system: audio_system,
+				physics_world: physics_world_handle,
+
 				camera: camera_handle,
 				mesh: orchestrator.spawn(mesh::Mesh::new("Box", "solid", transform)),
 
@@ -95,11 +99,11 @@ impl Player {
 }
 
 impl Player {
-	fn shoot(&mut self, value: bool) {
+	fn shoot(&mut self, orchestrator: orchestrator::OrchestratorReference, value: bool) {
 		if value {
 			self.audio_system.get_mut(|audio_system| audio_system.play("gun"));
 
-			// TODO: spawn bullet
+			orchestrator.spawn_entity(Bullet::new(&mut self.physics_world, Vec3::new(0.0, 0.0, 0.0)));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -117,15 +121,19 @@ struct Bullet {
 }
 
 impl orchestrator::Entity for Bullet {}
-impl orchestrator::System for Bullet {}
+impl orchestrator::Component for Bullet {}
 
 impl Bullet {
-	fn new(position: Vec3f) -> orchestrator::EntityReturn<'static, Self> {
+	fn new(physics_world_handle: &mut EntityHandle<physics::PhysicsWorld>, position: Vec3f) -> orchestrator::EntityReturn<'_, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 
 			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 0.0));
 			transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.05, 0.05));
+
+			physics_world_handle.get_mut(|physics_world| {
+				physics_world.add_sphere(physics::Sphere::new(position, Vec3f::new(0.0, 0.0, 1.0), 0.1));
+			});
 
 			Self {
 				mesh: orchestrator.spawn(mesh::Mesh::new("Sphere", "solid", transform,)),

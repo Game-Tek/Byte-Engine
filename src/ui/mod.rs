@@ -1,4 +1,4 @@
-use crate::orchestrator::{Entity, Component, Property2, SinkProperty, Property, DerivedProperty};
+use crate::orchestrator::{Entity, Component, EventDescription, SinkProperty, Property, DerivedProperty};
 
 pub mod render_model;
 

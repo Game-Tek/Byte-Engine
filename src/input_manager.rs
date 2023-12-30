@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, Property2, System, self, Entity, EntitySubscriber, EntityHash}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, System, self, Entity, EntitySubscriber, EntityHash, Event, EventImplementation}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -127,9 +127,9 @@ pub struct ActionBindingDescription {
 }
 
 impl ActionBindingDescription {
-	pub fn new(input_source: InputSourceAction) -> Self {
+	pub fn new(input_source: &'static str) -> Self {
 		ActionBindingDescription {
-			input_source,
+			input_source: InputSourceAction::Name(input_source),
 			mapping: Value::Bool(false),
 			function: None,
 		}
@@ -167,6 +167,7 @@ struct InputSourceMapping {
 }
 
 /// Enumerates the different types of types of values the input manager can handle.
+#[derive(Copy, Clone)]
 pub enum Types {
 	/// A boolean value.
 	Bool,
@@ -209,6 +210,7 @@ struct InputAction {
 	/// 	- Input source `B` is released.
 	/// 		(Value is None)
 	stack: Vec<Record>,
+	handle: EntityHandle<dyn ActionLike>,
 }
 
 /// A device represents a particular instance of a device class. Such as the current keyboard, or a specific gamepad.
@@ -257,11 +259,6 @@ pub struct InputManager {
 	devices: Vec<Device>,
 	records: Vec<Record>,
 	actions: Vec<InputAction>,
-
-	input_sources_map: HashMap<EntityHash, InputSourceHandle>,
-	actions_ei_map: HashMap<EntityHash, ActionHandle>,
-	actions_ieb_map: HashMap<ActionHandle, EntityHandle<Action<bool>>>,
-	actions_ie_map: HashMap<ActionHandle, EntityHandle<Action<Vector3>>>,
 }
 
 impl InputManager {
@@ -273,11 +270,6 @@ impl InputManager {
 			devices: Vec::new(),
 			records: Vec::new(),
 			actions: Vec::new(),
-
-			input_sources_map: HashMap::new(),
-			actions_ei_map: HashMap::new(),
-			actions_ie_map: HashMap::new(),
-			actions_ieb_map: HashMap::new(),
 		}
 	}
 
@@ -482,22 +474,6 @@ impl InputManager {
 	/// 	- 3D: Returns a 3D point when the RGBA color is reached.
 	/// 	- Quaternion: Returns a quaternion when the RGBA color is reached.
 	/// 	- RGBA: Returns the RGBA color.
-	pub fn create_action(&mut self, name: &str, type_: Types, input_events: &[ActionBindingDescription]) -> ActionHandle {
-		let input_event = InputAction {
-			name: name.to_string(),
-			type_,
-			input_event_descriptions: input_events.iter().map(|input_event| {
-				Some(InputSourceMapping {
-					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
-					mapping: input_event.mapping,
-					function: input_event.function,
-				})
-			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-			stack: Vec::new(),
-		};
-
-		ActionHandle(insert_return_length(&mut self.actions, input_event) as u32)
-	}
 
 	/// Records an input source action.
 	/// 
@@ -569,7 +545,7 @@ impl InputManager {
 		self.records.push(record);
 
 		if let Value::Bool(boo) = value {
-			let input_events = self.actions.iter_mut().filter(|ie| ie.input_event_descriptions.iter().any(|ied| ied.input_source_handle == input_source_handle));
+			let input_events = self.actions.iter_mut().filter(|ia| ia.input_event_descriptions.iter().any(|ied| ied.input_source_handle == input_source_handle));
 	
 			if boo {
 				for input_event in input_events {
@@ -598,13 +574,14 @@ impl InputManager {
 
 				match value {
 					Value::Bool(v) => {
-						orchestrator.set_property(self.actions_ieb_map.get(&ActionHandle(i as u32)).unwrap(), Action::<bool>::value, v);
+						action.handle.get(|a| a.ref_any().downcast_ref::<Action<bool>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
+						// orchestrator.set_property(self.actions_ieb_map.get(&ActionHandle(i as u32)).unwrap(), Action::<bool>::value, v);
 					}
 					Value::Vector2(v) => {
 						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
 					}
 					Value::Vector3(v) => {
-						orchestrator.set_property(self.actions_ie_map.get(&ActionHandle(i as u32)).unwrap(), Action::<Vector3>::value, v);
+						// orchestrator.set_property(self.actions_ie_map.get(&ActionHandle(i as u32)).unwrap(), Action::<Vector3>::value, v);
 					}
 					_ => {
 						log::error!("Not implemented!");
@@ -655,8 +632,9 @@ impl InputManager {
 	/// Gets the value of an input event.
 	pub fn get_action_state(&self, input_event_handle: ActionHandle, device_handle: &DeviceHandle) -> InputEventState {
 		let action = &self.actions[input_event_handle.0 as usize];
+		let (r#type, input_event_descriptions) = (action.type_, &action.input_event_descriptions);
 
-		if let Some(record) = self.records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time) {
+		if let Some(record) = self.records.iter().filter(|r| input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time) {
 			let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
 	
 			InputEventState {
@@ -665,9 +643,9 @@ impl InputManager {
 				value,
 			}
 		} else {
-			let value = match self.input_sources[action.input_event_descriptions[0].input_source_handle.0 as usize].type_ {
+			let value = match self.input_sources[input_event_descriptions[0].input_source_handle.0 as usize].type_ {
 				InputTypes::Bool(_v) => {
-					match action.type_ {
+					match r#type {
 						Types::Bool => {
 							Value::Bool(false)
 						}
@@ -841,9 +819,23 @@ impl InputManager {
 
 impl EntitySubscriber<Action<bool>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
-		let internal_handle = self.create_action(action.name, Types::Bool, &action.bindings);
+		let (name, r#type, input_events,) = (action.name, Types::Bool, &action.bindings);
 
-		self.actions_ieb_map.insert(internal_handle, handle);
+		let input_event = InputAction {
+			name: name.to_string(),
+			type_: r#type,
+			input_event_descriptions: input_events.iter().map(|input_event| {
+				Some(InputSourceMapping {
+					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
+					mapping: input_event.mapping,
+					function: input_event.function,
+				})
+			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
+			stack: Vec::new(),
+			handle: handle.clone(),
+		};
+
+		self.actions.push(input_event);
 	}
 
 	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
@@ -852,7 +844,7 @@ impl EntitySubscriber<Action<bool>> for InputManager {
 
 impl EntitySubscriber<Action<Vector2>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
-		self.create_action(action.name, Types::Vector2, &action.bindings);
+		// self.create_action(action.name, Types::Vector2, &action.bindings);
 	}
 
 	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
@@ -861,9 +853,9 @@ impl EntitySubscriber<Action<Vector2>> for InputManager {
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
-		let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
+		// let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
 
-		self.actions_ie_map.insert(internal_handle, handle);
+		// self.actions_ie_map.insert(internal_handle, handle);
 	}
 
 	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
@@ -1238,104 +1230,104 @@ mod tests {
 		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 })); // Must keep the previous value if the type is different.
 	}
 
-	#[test]
-	fn create_input_events() {
-		let mut input_manager = InputManager::new();
+	// #[test]
+	// fn create_input_events() {
+	// 	let mut input_manager = InputManager::new();
 
-		declare_keyboard_input_device_class(&mut input_manager);
+	// 	declare_keyboard_input_device_class(&mut input_manager);
 
-		input_manager.create_action("MoveLongitudinally", Types::Float, &[
-			ActionBindingDescription {
-				input_source: InputSourceAction::Name("Keyboard.Up"),
-				mapping: Value::Float(1.0),
-				function: Some(Function::Linear),
-			},
-			ActionBindingDescription {
-				input_source: InputSourceAction::Name("Keyboard.Down"),
-				mapping: Value::Float(-1.0),
-				function: Some(Function::Linear),
-			},]);
-	}
+	// 	input_manager.create_action("MoveLongitudinally", Types::Float, &[
+	// 		ActionBindingDescription {
+	// 			input_source: InputSourceAction::Name("Keyboard.Up"),
+	// 			mapping: Value::Float(1.0),
+	// 			function: Some(Function::Linear),
+	// 		},
+	// 		ActionBindingDescription {
+	// 			input_source: InputSourceAction::Name("Keyboard.Down"),
+	// 			mapping: Value::Float(-1.0),
+	// 			function: Some(Function::Linear),
+	// 		},]);
+	// }
 
-	#[test]
-	fn get_float_input_event_from_bool_input_source() {
-		let mut input_manager = InputManager::new();
+	// #[test]
+	// fn get_float_input_event_from_bool_input_source() {
+	// 	let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
+	// 	let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
 
-		let input_event = input_manager.create_action("MoveLongitudinally", Types::Float, &[
-			ActionBindingDescription {
-				input_source: InputSourceAction::Name("Keyboard.Up"),
-				mapping: Value::Float(1.0),
-				function: Some(Function::Linear),
-			},
-			ActionBindingDescription {
-				input_source: InputSourceAction::Name("Keyboard.Down"),
-				mapping: Value::Float(-1.0),
-				function: Some(Function::Linear),
-			},]);
+	// 	let input_event = input_manager.create_action("MoveLongitudinally", Types::Float, &[
+	// 		ActionBindingDescription {
+	// 			input_source: InputSourceAction::Name("Keyboard.Up"),
+	// 			mapping: Value::Float(1.0),
+	// 			function: Some(Function::Linear),
+	// 		},
+	// 		ActionBindingDescription {
+	// 			input_source: InputSourceAction::Name("Keyboard.Down"),
+	// 			mapping: Value::Float(-1.0),
+	// 			function: Some(Function::Linear),
+	// 		},]);
 
-		let device_handle = input_manager.create_device(&device_class_handle);
+	// 	let device_handle = input_manager.create_device(&device_class_handle);
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.device_handle, device_handle);
-		assert_eq!(value.value, Value::Float(0f32)); // Default value must be 0.
+	// 	assert_eq!(value.device_handle, device_handle);
+	// 	assert_eq!(value.value, Value::Float(0f32)); // Default value must be 0.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after recording.
+	// 	assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after recording.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording.
+	// 	assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after recording.
+	// 	assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after recording.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording.
+	// 	assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after recording down after up while up is still pressed.
+	// 	assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after recording down after up while up is still pressed.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording
+	// 	assert_eq!(value.value, Value::Float(0.0)); // Must be 0.0 after recording
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(false));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after releasing up while down down is still pressed.
+	// 	assert_eq!(value.value, Value::Float(-1.0)); // Must be -1.0 after releasing up while down down is still pressed.
 
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
-		input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Up"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(true));
+	// 	input_manager.record_input_source_action(&device_handle, InputSourceAction::Name("Keyboard.Down"), Value::Bool(false));
 
-		let value = input_manager.get_action_state(input_event, &device_handle);
+	// 	let value = input_manager.get_action_state(input_event, &device_handle);
 
-		assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after releasing down while up is still pressed.
-	}
+	// 	assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after releasing down while up is still pressed.
+	// }
 }
 
 pub trait Extract<T: InputValue> {
@@ -1370,11 +1362,6 @@ impl Extract<Vector3> for Value {
 }
 
 impl InputManager {
-	pub fn make_action<T: Clone + Send>(&mut self, name: &str, types: Types, bindings: &[ActionBindingDescription]) -> orchestrator::InternalId {
-		let handle = self.create_action(name, types, bindings);
-		orchestrator::InternalId(handle.0)
-	}
-
 	pub fn get_action_value<T: InputValue + Clone + 'static>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
 		let state = self.get_action_state(ActionHandle(action_handle.get_external_key()), &DeviceHandle(0));
 		state.value.extract()
@@ -1388,14 +1375,26 @@ impl InputManager {
 impl Entity for InputManager {}
 impl System for InputManager {}
 
-#[derive(Clone, Debug)]
+trait ActionLike: Entity {
+	fn get_bindings(&self) -> &[ActionBindingDescription];
+	fn get_inputs(&self) -> &[InputSourceMapping];
+}
+
 pub struct Action<T: InputValue> {
 	pub name: &'static str,
 	pub bindings: Vec<ActionBindingDescription>,
+	inputs: Vec<InputSourceMapping>,
 	pub value: T,
+
+	pub events: Vec<Box<dyn Event<T>>>,
 }
 
 impl <T: InputValue> orchestrator::Entity for Action<T> {}
+
+impl <T: InputValue> ActionLike for Action<T> {
+	fn get_bindings(&self) -> &[ActionBindingDescription] { &self.bindings }
+	fn get_inputs(&self) -> &[InputSourceMapping] { &self.inputs }
+}
 
 pub trait InputValue: Default + Clone + Copy + 'static {
 	fn get_type() -> Types;
@@ -1423,10 +1422,17 @@ impl <T: InputValue + Clone + 'static> Action<T> {
 			name,
 			bindings: bindings.to_vec(),
 			value: T::default(),
+			inputs: Vec::new(),
+
+			events: Vec::new(),
 		}
 	}
 
 	pub fn get_value(&self) -> T { self.value }
 	pub fn set_value(&mut self, value: T) { self.value = value; }
-	pub const fn value() -> orchestrator::Property2<Action<T>, T> { return orchestrator::Property2 { getter: Self::get_value, setter: Self::set_value } }
+	pub const fn value() -> orchestrator::EventDescription<Action<T>, T> { return orchestrator::EventDescription::new() }
+
+	pub fn subscribe<E: Entity>(&mut self, subscriber: &EntityHandle<E>, endpoint: fn(&mut E, &T)) {
+		self.events.push(Box::new(EventImplementation::new(subscriber.clone(), endpoint)));
+	}
 }

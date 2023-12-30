@@ -816,8 +816,7 @@ impl VisibilityWorldRenderDomain {
 
 		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
-		let camera_position = orchestrator.get_property(camera_handle, camera::Camera::position);
-		let camera_orientation = orchestrator.get_property(camera_handle, camera::Camera::orientation);
+		let (camera_position, camera_orientation) = camera_handle.get(|camera| (camera.get_position(), camera.get_orientation()));
 
 		let view_matrix = maths_rs::Mat4f::from_translation(-camera_position) * math::look_at(camera_orientation);
 

@@ -2,11 +2,10 @@
 
 use crate::orchestrator;
 
-#[derive(component_derive::Component)]
-pub struct Mesh{
+pub struct Mesh {
 	resource_id: &'static str,
 	material_id: &'static str,
-	#[field] transform: maths_rs::Mat4f,
+	transform: maths_rs::Mat4f,
 }
 
 impl orchestrator::Entity for Mesh {}
@@ -26,7 +25,7 @@ impl Mesh {
 
 	fn set_transform(&mut self, value: maths_rs::Mat4f) { self.transform = value; }
 	pub fn get_transform(&self) -> maths_rs::Mat4f { self.transform }
-	pub const fn transform() -> orchestrator::Property2<Self, maths_rs::Mat4f> { orchestrator::Property2 { getter: Mesh::get_transform, setter: Mesh::set_transform } }
+	pub const fn transform() -> orchestrator::EventDescription<Self, maths_rs::Mat4f> { orchestrator::EventDescription::new() }
 
 	pub fn get_resource_id(&self) -> &'static str { self.resource_id }
 	pub fn get_material_id(&self) -> &'static str { self.material_id }

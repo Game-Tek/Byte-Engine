@@ -276,7 +276,7 @@ impl TryFrom<u8> for MouseKeys {
 	}
 }
 
-#[derive(Component)]
+#[Component]
 pub struct Window {
 	pub name: String,
 	pub extent: Extent,

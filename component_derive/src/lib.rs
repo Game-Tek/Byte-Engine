@@ -1,34 +1,23 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn;
-
-#[proc_macro_derive(Component, attributes(field))]
-pub fn component_macro_derive(input: TokenStream) -> TokenStream {
-    // Construct a representation of Rust code as a syntax tree
-    // that we can manipulate
-    let ast = syn::parse(input).unwrap();
-
-    // Build the trait implementation
-    impl_component_macro(&ast)
-}
+use quote::ToTokens;
+use syn::parse::Parser;
 
 #[proc_macro_attribute]
-pub fn field(attr: TokenStream, item: TokenStream) -> TokenStream {
-	let gen = quote! {
-		impl Mesh {
-			fn set_transform(&mut self, value: maths_rs::Mat4f) { self.transform = value; }
+pub fn Component(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let mut ast = syn::parse_macro_input!(input as syn::DeriveInput);
 
-			fn get_transform(&self) -> maths_rs::Mat4f { self.transform }
+	if let syn::Data::Struct(ref mut data) = ast.data {
+		if let syn::Fields::Named(ref mut fields) = data.fields {
+			fields.named.push(syn::Field::parse_named.parse2(quote::quote!{ pub _internal_data: u32 }).unwrap());
 
-			pub const fn transform() -> Property<(), Self, maths_rs::Mat4f> { Property::Component { getter: Mesh::get_transform, setter: Mesh::set_transform } }
+			return ast.into_token_stream().into();
 		}
-	};
-	gen.into()
-}
+	}
 
-fn impl_component_macro(ast: &syn::DeriveInput) -> TokenStream {
-    let name = &ast.ident;
-    let gen = quote! {
-    };
-    gen.into()
+	TokenStream::from(
+        syn::Error::new(
+            ast.ident.span(),
+            "Only structs with named fields can derive `Component`"
+        ).to_compile_error()
+    )
 }

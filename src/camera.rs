@@ -1,7 +1,5 @@
-use crate::{Vec3f, orchestrator::{Property2, self, Component, Entity}};
+use crate::{Vec3f, orchestrator::{EventDescription, self, Component, Entity}};
 
-#[derive(component_derive::Component)]
-/// Camera struct
 pub struct Camera {
 	position: Vec3f,
 	direction: Vec3f,
@@ -35,13 +33,13 @@ impl Camera {
 	/// Returns the focus distance of the camera
 	fn get_focus_distance(&self) -> f32 { self.focus_distance }
 
-	fn get_orientation(&self) -> Vec3f { self.direction }
+	pub fn get_orientation(&self) -> Vec3f { self.direction }
 	fn set_orientation(&mut self, orientation: Vec3f) { self.direction = orientation; }
-	pub const fn orientation() -> Property2<Camera, Vec3f> { Property2 { getter: Self::get_orientation, setter: Self::set_orientation } }
+	pub const fn orientation() -> EventDescription<Camera, Vec3f> { EventDescription::new() }
 
-	fn get_position(&self) -> Vec3f { self.position }
+	pub fn get_position(&self) -> Vec3f { self.position }
 	fn set_position(&mut self, position: Vec3f) { self.position = position; }
-	pub const fn position() -> Property2<Camera, Vec3f> { Property2 { getter: Self::get_position, setter: Self::set_position } }
+	pub const fn position() -> EventDescription<Camera, Vec3f> { EventDescription::new() }
 }
 
 impl Entity for Camera {}

@@ -141,9 +141,9 @@ impl Application for GraphicsApplication {
 		let resource_manager_handle = orchestrator.spawn_entity(resource_management::resource_manager::ResourceManager::new_as_system()).unwrap();
 		
 		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system()).unwrap();
-		let input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();
+		let mut input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();
 
-		let (_mouse_device_class_handle, _gamepad_device_class_handle, mouse_device_handle) = orchestrator.get_mut_and(&input_system_handle, |input_system: &mut input_manager::InputManager| {
+		let (_mouse_device_class_handle, _gamepad_device_class_handle, mouse_device_handle) = input_system_handle.get_mut(|input_system| {
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
 
 			input_system.register_input_source(&mouse_device_class_handle, "Position", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
@@ -166,7 +166,7 @@ impl Application for GraphicsApplication {
 
 		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
 
-		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
+		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ _internal_data: 0, name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
 		let audio_system_handle = orchestrator.spawn_entity(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone())).unwrap();
 
@@ -188,22 +188,32 @@ impl Application for GraphicsApplication {
 		self.application.tick();
 		// let changed_files = self.file_tracker_handle.poll();
 
-		let window_res = self.application.get_orchestrator().get_2_mut_and(&self.window_system_handle, &self.input_system_handle, |window_system, input_system| {
-			while let Some(event) = window_system.update_window(0) {
-				match event {
-					window_system::WindowEvents::Close => return false,
-					window_system::WindowEvents::Button { pressed, button: _ } => {
-						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
-					},
-					window_system::WindowEvents::MouseMove { x, y, time: _ } => {
-						let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
-						input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
-					},
-					_ => {}
+		let window_res = self.window_system_handle.get_mut(|window_system| {
+			self.input_system_handle.get_mut(|input_system| {
+				while let Some(event) = window_system.update_window(0) {
+					match event {
+						window_system::WindowEvents::Close => return false,
+						window_system::WindowEvents::Button { pressed, button } => {
+							match button {
+								window_system::MouseKeys::Left => {
+									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
+								},
+								window_system::MouseKeys::Right => {
+									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.RightButton"), input_manager::Value::Bool(pressed));
+								},
+								_ => {}
+							}
+						},
+						window_system::WindowEvents::MouseMove { x, y, time: _ } => {
+							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
+							input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
+						},
+						_ => {}
+					}
 				}
-			}
-			
-			true
+				
+				true
+			})
 		});
 
 		self.application.get_orchestrator().invoke_mut(&mut self.input_system_handle, input_manager::InputManager::update);

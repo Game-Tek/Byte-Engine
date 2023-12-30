@@ -37,6 +37,7 @@ colored = "2.0.4"
 downcast-rs = "1.2.0"
 intertrait = "0.2.2"
 alsa = "0.8.1"
+gxhash = "3.0.0"
 
 [profile.dev]
 incremental = true

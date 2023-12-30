@@ -9,31 +9,36 @@ fn gallery_shooter() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
 
 	let audio_system_handle = app.get_audio_system_handle().clone();
-	let physics_world_handle = app.get_physics_world_handle().clone();
+	let mut physics_world_handle = app.get_physics_world_handle().clone();
 
 	app.initialize(std::env::args());
 
 	let orchestrator = app.get_mut_orchestrator();
 
-	let lookaround_action_handle: EntityHandle<input_manager::Action<Vector3>> = orchestrator.spawn(input_manager::Action::new("Lookaround", &[
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.Position")).mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightStick")),
+	let lookaround_action_handle = orchestrator.spawn(input_manager::Action::new("Lookaround", &[
+			input_manager::ActionBindingDescription::new("Mouse.Position").mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
+			input_manager::ActionBindingDescription::new("Gamepad.RightStick"),
 		],)
 	);
 
-	let trigger_action: orchestrator::EntityHandle<input_manager::Action<bool>> = orchestrator.spawn(input_manager::Action::new("Trigger", &[
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Mouse.LeftButton")),
-			input_manager::ActionBindingDescription::new(input_manager::InputSourceAction::Name("Gamepad.RightTrigger")),
+	let mut trigger_action = orchestrator.spawn(input_manager::Action::new("Trigger", &[
+			input_manager::ActionBindingDescription::new("Mouse.LeftButton"),
+			input_manager::ActionBindingDescription::new("Gamepad.RightTrigger"),
 		],)
 	);
 
-	let mut player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle)).expect("Failed to spawn player");
+	let mut player: EntityHandle<Player> = orchestrator.spawn_entity(Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle.clone())).expect("Failed to spawn player");
 
-	orchestrator.subscribe_to(&player, &trigger_action, input_manager::Action::<bool>::value, Player::shoot);
+	trigger_action.get_mut(|ta| {
+		ta.subscribe(&player, Player::shoot);
+	});
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
 	let duck_1 = orchestrator.spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale));
+
+	orchestrator.spawn(physics::Sphere::new(Vec3f::new(0.0, 0.0, 2.0), Vec3f::new(0.0, 0.0, 0.0), 0.1));
+
 	let duck_2 = orchestrator.spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale));
 	let duck_3 = orchestrator.spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale));
 	let duck_4 = orchestrator.spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale));
@@ -99,11 +104,11 @@ impl Player {
 }
 
 impl Player {
-	fn shoot(&mut self, orchestrator: orchestrator::OrchestratorReference, value: bool) {
-		if value {
+	fn shoot(&mut self, value: &bool) {
+		if *value {
 			self.audio_system.get_mut(|audio_system| audio_system.play("gun"));
 
-			orchestrator.spawn_entity(Bullet::new(&mut self.physics_world, Vec3::new(0.0, 0.0, 0.0)));
+			// orchestrator.spawn_entity(Bullet::new(&mut self.physics_world, Vec3::new(0.0, 0.0, 0.0)));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -118,6 +123,7 @@ impl Player {
 
 struct Bullet {
 	mesh: EntityHandle<mesh::Mesh>,
+	collision_object: EntityHandle<physics::Sphere>,
 }
 
 impl orchestrator::Entity for Bullet {}
@@ -131,13 +137,21 @@ impl Bullet {
 			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 0.0));
 			transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.05, 0.05));
 
-			physics_world_handle.get_mut(|physics_world| {
-				physics_world.add_sphere(physics::Sphere::new(position, Vec3f::new(0.0, 0.0, 1.0), 0.1));
-			});
+			let collision_object = orchestrator.spawn(physics::Sphere::new(position, Vec3f::new(0.0, 0.0, 0.1), 0.1));
 
 			Self {
 				mesh: orchestrator.spawn(mesh::Mesh::new("Sphere", "solid", transform,)),
+				collision_object,
 			}
+		}).add_post_creation_function(|s, orchestrator| {			
+			// s.get_mut(|se| {
+			// 	se.collision_object.
+			// 	// orchestrator.subscribe_to(&s, &se.collision_object, physics::Sphere::on_collision, Self::on_collision);
+			// })
 		})
+	}
+
+	fn on_collision(&mut self, orchestrator: orchestrator::OrchestratorReference, other: ()) {
+		log::info!("Bullet collided with");
 	}
 }

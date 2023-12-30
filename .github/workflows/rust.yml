@@ -17,6 +17,8 @@ jobs:
     - uses: rui314/setup-mold@v1
     - name: Install Vulkan runtime dependencies
       run: sudo add-apt-repository ppa:kisak/kisak-mesa && sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
+    - name: Install ALSA
+      run: sudo apt-get install libasound2-dev
     - name: Install Vulkan SDK
       uses: humbletim/setup-vulkan-sdk@v1.2.0
       with:

@@ -575,13 +575,12 @@ impl InputManager {
 				match value {
 					Value::Bool(v) => {
 						action.handle.get(|a| a.ref_any().downcast_ref::<Action<bool>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
-						// orchestrator.set_property(self.actions_ieb_map.get(&ActionHandle(i as u32)).unwrap(), Action::<bool>::value, v);
 					}
 					Value::Vector2(v) => {
-						// orchestrator.set_owned_property(orchestrator::InternalId(i as u32), Action::<Vector2>::value, v);
+						action.handle.get(|a| a.ref_any().downcast_ref::<Action<Vector2>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
 					}
 					Value::Vector3(v) => {
-						// orchestrator.set_property(self.actions_ie_map.get(&ActionHandle(i as u32)).unwrap(), Action::<Vector3>::value, v);
+						action.handle.get(|a| a.ref_any().downcast_ref::<Action<Vector3>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
 					}
 					_ => {
 						log::error!("Not implemented!");

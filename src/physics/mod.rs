@@ -8,8 +8,14 @@ pub struct Sphere {
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
-
 	events: Vec<Box<dyn Event<()>>>,
+}
+
+struct InternalSphere {
+	position: Vec3f,
+	velocity: Vec3f,
+	radius: f32,
+	handle: EntityHandle<Sphere>,
 }
 
 impl Sphere {
@@ -25,7 +31,7 @@ impl Sphere {
 
 	pub const fn on_collision() -> EventDescription<Self, ()> { EventDescription::new() }
 
-	pub fn subscribe_to_collision<T: Entity + Clone>(&mut self, handle: EntityHandle<T>, callback: fn(&mut T, &())) {
+	pub fn subscribe_to_collision<T: Entity>(&mut self, handle: EntityHandle<T>, callback: fn(&mut T, &())) {
 		self.events.push(Box::new(EventImplementation::new(handle, callback)));
 	}
 }
@@ -34,7 +40,7 @@ impl Entity for Sphere {}
 impl Component for Sphere {}
 
 pub struct PhysicsWorld {
-	spheres: Vec<Sphere>,
+	spheres: Vec<InternalSphere>,
 	spheres_map: HashMap<EntityHash, usize>,
 }
 
@@ -50,7 +56,7 @@ impl PhysicsWorld {
 		EntityReturn::new(Self::new()).add_listener::<Sphere>()
 	}
 
-	fn add_sphere(&mut self, sphere: Sphere) -> usize {
+	fn add_sphere(&mut self, sphere: InternalSphere) -> usize {
 		let index = self.spheres.len();
 		self.spheres.push(sphere);
 		index
@@ -76,10 +82,12 @@ impl PhysicsWorld {
 			}
 		}
 
-		for (i, _) in collisions {
-			for event in self.spheres[i].events.iter() {
-				event.fire(&())
-			}
+		for (_, j) in collisions {
+			self.spheres[j].handle.get(|e| {
+				for event in &e.events {
+					event.fire(&())
+				}
+			});
 		}
 	}
 }
@@ -89,7 +97,7 @@ impl System for PhysicsWorld {}
 
 impl EntitySubscriber<Sphere> for PhysicsWorld {
 	fn on_create(&mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
-		let index = self.add_sphere(Sphere{ position: params.position, velocity: params.velocity, radius: params.radius, events: Vec::new() });
+		let index = self.add_sphere(InternalSphere{ position: params.position, velocity: params.velocity, radius: params.radius, handle: handle.clone() });
 		self.spheres_map.insert(EntityHash::from(&handle), index);
 	}
 

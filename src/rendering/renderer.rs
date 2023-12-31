@@ -35,8 +35,10 @@ impl Renderer {
 				ghi.create_image(Some("result"), Extent::plane(1920, 1080), ghi::Formats::RGBAu8, None, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
-			let visibility_render_model = orchestrator.spawn_entity(VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle)).unwrap();
-			let ui_render_model = orchestrator.spawn_entity(UIRenderModel::new_as_system()).unwrap();
+			let orchestrator_handle = orchestrator.get_handle();
+
+			let visibility_render_model = orchestrator::spawn(orchestrator_handle.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle));
+			let ui_render_model = orchestrator::spawn(orchestrator_handle.clone(), UIRenderModel::new_as_system());
 			
 			let render_command_buffer;
 			let render_finished_synchronizer;
@@ -47,9 +49,8 @@ impl Renderer {
 				let mut ghi = ghi_instance.write().unwrap();
 
 				{
-					let visibility_render_model = orchestrator.get_entity(&visibility_render_model);
-					let visibility_render_model = visibility_render_model.get();
-					tonemap_render_model = orchestrator.spawn_entity(AcesToneMapPass::new_as_system(ghi.deref_mut(), visibility_render_model.get_result_image(), result)).unwrap();
+					let result_image = visibility_render_model.get(|e| e.get_result_image());
+					tonemap_render_model = orchestrator::spawn(orchestrator_handle.clone(), AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
 				}
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
@@ -79,7 +80,7 @@ impl Renderer {
 		}).add_listener::<window_system::Window>()
 	}
 
-	pub fn render(&mut self, orchestrator: orchestrator::OrchestratorReference) {
+	pub fn render(&mut self,) {
 		if self.swapchain_handles.is_empty() { return; }
 
 		let ghi = self.ghi.write().unwrap();
@@ -94,15 +95,13 @@ impl Renderer {
 
 		let mut command_buffer_recording = ghi.create_command_buffer_recording(self.render_command_buffer, Some(self.rendered_frame_count as u32));
 
-		let visibility_render_model = orchestrator.get_entity(&self.visibility_render_model);
-		let mut visibility_render_model = visibility_render_model.get_mut();
+		self.visibility_render_model.get_mut(|e| {
+			e.render(ghi.deref(), command_buffer_recording.as_mut())
+		});
 
-		visibility_render_model.render(&orchestrator, ghi.deref(), command_buffer_recording.as_mut());
-
-		let tonemap_render_model = orchestrator.get_entity(&self.tonemap_render_model);
-		let tonemap_render_model = tonemap_render_model.get();
-
-		tonemap_render_model.render(command_buffer_recording.as_mut());
+		self.tonemap_render_model.get(|e| {
+			e.render(command_buffer_recording.as_mut());
+		});			
 
 		// Copy to swapchain
 
@@ -120,12 +119,13 @@ impl Renderer {
 
 impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
 	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
-		let window_system = orchestrator.get_entity(&self.window_system);
-		let mut window_system = window_system.get_mut();
+		let os_handles = self.window_system.get(|e| {
+			e.get_os_handles(&handle)
+		});
 
 		let mut ghi = self.ghi.write().unwrap();
 
-		let swapchain_handle = ghi.bind_to_window(&window_system.get_os_handles(&handle));
+		let swapchain_handle = ghi.bind_to_window(&os_handles);
 
 		self.swapchain_handles.push(swapchain_handle);
 	}

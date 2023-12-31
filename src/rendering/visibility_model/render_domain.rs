@@ -587,9 +587,7 @@ impl VisibilityWorldRenderDomain {
 			.add_listener::<point_light::PointLight>()
 	}
 
-	fn load_material(&mut self, resource_manager: &mut resource_management::resource_manager::ResourceManager, asset_url: &str) {
-		let (response, buffer) = resource_manager.get(asset_url).unwrap();
-
+	fn load_material(&mut self, (response, buffer): (resource_management::Response, Vec<u8>),) {	
 		let mut ghi = self.ghi.write().unwrap();
 
 		for resource_document in &response.resources {
@@ -799,7 +797,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn render(&mut self, orchestrator: &OrchestratorReference, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
+	pub fn render(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 
 		{
@@ -962,17 +960,19 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		
 		{
-			let resource_manager = orchestrator.get_entity(&self.resource_manager);
-			let mut resource_manager = resource_manager.get_mut();
-			self.load_material(resource_manager.deref_mut(), mesh.get_material_id());
+			let response_and_data = self.resource_manager.get(|resource_manager| {
+				resource_manager.get(mesh.get_material_id()).unwrap()
+			});
+
+			self.load_material(response_and_data,);
 		}
 
 		if !self.mesh_resources.contains_key(mesh.get_resource_id()) { // Load only if not already loaded
 			let mut ghi = self.ghi.write().unwrap();
-			let resource_manager = orchestrator.get_entity(&self.resource_manager);
-			let mut resource_manager = resource_manager.get_mut();
 
-			let resource_request = resource_manager.request_resource(mesh.get_resource_id());
+			let resource_request = self.resource_manager.get(|resource_manager| {
+				resource_manager.request_resource(mesh.get_resource_id())
+			});
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
@@ -1007,7 +1007,7 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 				}
 			}
 
-			let resource = if let Ok(a) = resource_manager.load_resource(resource_request, Some(options), None) { a } else { return; };
+			let resource = if let Ok(a) = self.resource_manager.get(|resource_manager| { resource_manager.load_resource(resource_request, Some(options), None) }) { a } else { return; };
 
 			let (response, _buffer) = (resource.0, resource.1.unwrap());
 

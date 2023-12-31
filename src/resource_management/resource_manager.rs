@@ -141,7 +141,7 @@ impl ResourceManager {
 	/// Tries to load the information/metadata for a resource (and it's dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load_resource()` which will load the binary data.
-	pub fn request_resource(&mut self, path: &str) -> Option<Request> {
+	pub fn request_resource(&self, path: &str) -> Option<Request> {
 		let request = self.load_from_cache_or_source(path)?;
 		Some(request)
 	}
@@ -156,7 +156,7 @@ impl ResourceManager {
 	/// ```json
 	/// { "resources": [{ "path": "../..", "buffer":{ "index": 0, "offset": 0 } }]}
 	/// ```
-	pub fn load_resource(&mut self, request: Request, options: Option<Options>, buffer: Option<&mut [u8]>) -> Result<(Response, Option<Vec<u8>>), LoadResults> {
+	pub fn load_resource(&self, request: Request, options: Option<Options>, buffer: Option<&mut [u8]>) -> Result<(Response, Option<Vec<u8>>), LoadResults> {
 		if let Some(buffer) = buffer {
 			let response = self.load_data_from_cache(request, options, buffer)?;
 			Ok((response, None))

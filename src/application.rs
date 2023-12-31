@@ -57,6 +57,8 @@ impl Application for BaseApplication {
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
+use std::{borrow::BorrowMut, ops::{DerefMut, Deref}};
+
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
@@ -66,7 +68,7 @@ use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Ve
 /// It is the recommended way to create a simple application.
 pub struct OrchestratedApplication {
 	application: BaseApplication,
-	orchestrator: orchestrator::Orchestrator,
+	orchestrator: orchestrator::OrchestratorHandle,
 	last_tick_time: std::time::Instant,
 	close: bool,
 }
@@ -74,18 +76,16 @@ pub struct OrchestratedApplication {
 impl Application for OrchestratedApplication {
 	fn new(name: &str) -> Self {
 		let application = Application::new(name);
-		let orchestrator = orchestrator::Orchestrator::new();
+		let orchestrator = orchestrator::Orchestrator::new_handle();
 
 		OrchestratedApplication { application, orchestrator, last_tick_time: std::time::Instant::now(), close: false }
 	}
 
 	fn initialize(&mut self, arguments: std::env::Args) {
 		self.application.initialize(arguments);
-		self.orchestrator.initialize();
 	}
 
 	fn deinitialize(&mut self) {
-		self.orchestrator.deinitialize();
 		self.application.deinitialize();
 	}
 
@@ -109,11 +109,15 @@ impl OrchestratedApplication {
 		self.close = true;
 	}
 
+	pub fn get_orchestrator_handle(&self) -> orchestrator::OrchestratorHandle {
+		self.orchestrator.clone()
+	}
+
 	/// Returns a reference to the orchestrator.
-	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { &self.orchestrator }
+	pub fn get_orchestrator(&self) -> std::cell::Ref<'_, orchestrator::Orchestrator> { self.orchestrator.borrow() }
 
 	/// Returns a mutable reference to the orchestrator.
-	pub fn get_mut_orchestrator(&mut self) -> &mut orchestrator::Orchestrator { &mut self.orchestrator }
+	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.orchestrator.as_ref().borrow_mut() }
 }
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
@@ -136,12 +140,12 @@ impl Application for GraphicsApplication {
 
 		application.initialize(std::env::args()); // TODO: take arguments
 
-		let orchestrator = application.get_mut_orchestrator();
+		let orchestrator_handle = application.get_orchestrator_handle();
 
-		let resource_manager_handle = orchestrator.spawn_entity(resource_management::resource_manager::ResourceManager::new_as_system()).unwrap();
+		let resource_manager_handle = orchestrator::spawn(orchestrator_handle.clone(), resource_management::resource_manager::ResourceManager::new_as_system());
 		
-		let window_system_handle = orchestrator.spawn_entity(window_system::WindowSystem::new_as_system()).unwrap();
-		let mut input_system_handle = orchestrator.spawn_entity(input_manager::InputManager::new_as_system()).unwrap();
+		let window_system_handle = orchestrator::spawn(orchestrator_handle.clone(), window_system::WindowSystem::new_as_system());
+		let mut input_system_handle = orchestrator::spawn(orchestrator_handle.clone(), input_manager::InputManager::new_as_system());
 
 		let (_mouse_device_class_handle, _gamepad_device_class_handle, mouse_device_handle) = input_system_handle.get_mut(|input_system| {
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
@@ -160,17 +164,17 @@ impl Application for GraphicsApplication {
 			(mouse_device_class_handle, gamepad_device_class_handle, mouse_device_handle)
 		});
 
-		let file_tracker_handle = orchestrator.spawn_entity(file_tracker::FileTracker::new()).unwrap();
+		let file_tracker_handle = orchestrator::spawn(orchestrator_handle.clone(), file_tracker::FileTracker::new());
 
-		let renderer_handle = EntityHandle::spawn(orchestrator, rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle.clone())).unwrap();
+		let renderer_handle = orchestrator::spawn(orchestrator_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle.clone()));
 
-		orchestrator.spawn_entity(rendering::render_orchestrator::RenderOrchestrator::new());
+		orchestrator::spawn(orchestrator_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new());
 
-		let _: orchestrator::EntityHandle<window_system::Window> = orchestrator.spawn(window_system::Window{ _internal_data: 0, name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
+		orchestrator::spawn(orchestrator_handle.clone(), window_system::Window{ _internal_data: 0, name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
 
-		let audio_system_handle = orchestrator.spawn_entity(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone())).unwrap();
+		let audio_system_handle = orchestrator::spawn(orchestrator_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
 
-		let physics_system_handle = orchestrator.spawn_entity(physics::PhysicsWorld::new_as_system()).unwrap();
+		let physics_system_handle = orchestrator::spawn(orchestrator_handle.clone(), physics::PhysicsWorld::new_as_system());
 
 		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle }
 	}
@@ -216,13 +220,17 @@ impl Application for GraphicsApplication {
 			})
 		});
 
-		self.application.get_orchestrator().invoke_mut(&mut self.input_system_handle, input_manager::InputManager::update);
+		self.input_system_handle.get_mut(|e| {
+			e.update();
+		});
 		
 		self.physics_system_handle.get_mut(|physics_system| {
 			physics_system.update();
 		});
 
-		self.application.get_orchestrator().invoke_mut(&mut self.renderer_handle, rendering::renderer::Renderer::render);
+		self.renderer_handle.get_mut(|e| {
+			e.render();
+		});
 		
 		self.audio_system_handle.get_mut(|audio_system| {
 			audio_system.render();
@@ -242,9 +250,13 @@ impl GraphicsApplication {
 		self.application.close();
 	}
 
+	pub fn get_orchestrator_handle(&self) -> orchestrator::OrchestratorHandle {
+		self.application.orchestrator.clone()
+	}
+
 	/// Returns a reference to the orchestrator.
-	pub fn get_orchestrator(&self) -> &orchestrator::Orchestrator { self.application.get_orchestrator() }
-	pub fn get_mut_orchestrator(&mut self) -> &mut orchestrator::Orchestrator { self.application.get_mut_orchestrator() }
+	pub fn get_orchestrator(&self) -> std::cell::Ref<'_, orchestrator::Orchestrator> { self.application.get_orchestrator() }
+	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.application.get_mut_orchestrator() }
 
 	pub fn get_input_system_handle_ref(&self) -> &orchestrator::EntityHandle<crate::input_manager::InputManager> {
 		&self.input_system_handle

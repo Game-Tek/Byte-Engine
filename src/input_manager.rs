@@ -559,7 +559,7 @@ impl InputManager {
 		}
 	}
 
-	pub fn update(&mut self, orchestrator: orchestrator::OrchestratorReference) {
+	pub fn update(&mut self) {
 		let records = &self.records;
 
 		if records.is_empty() { return; }

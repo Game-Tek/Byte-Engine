@@ -83,7 +83,8 @@ impl PhysicsWorld {
 		}
 
 		for (_, j) in collisions {
-			self.spheres[j].handle.get(|e| {
+			self.spheres[j].handle.map(|e| {
+				let e = e.read_sync();
 				for event in &e.events {
 					event.fire(&())
 				}
@@ -96,12 +97,12 @@ impl Entity for PhysicsWorld {}
 impl System for PhysicsWorld {}
 
 impl EntitySubscriber<Sphere> for PhysicsWorld {
-	fn on_create(&mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
+	async fn on_create(&'static mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
 		let index = self.add_sphere(InternalSphere{ position: params.position, velocity: params.velocity, radius: params.radius, handle: handle.clone() });
 		self.spheres_map.insert(EntityHash::from(&handle), index);
 	}
 
-	fn on_update(&mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
+	async fn on_update(&'static mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
 		
 	}
 }

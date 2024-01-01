@@ -2,7 +2,9 @@ use std::io::Read;
 
 use serde::{Serialize, Deserialize};
 
-use super::{resource_handler::ResourceHandler, Resource, ProcessedResources, GenericResourceSerialization};
+use crate::utils;
+
+use super::{resource_handler::ResourceHandler, Resource, ProcessedResources, GenericResourceSerialization, Stream};
 
 pub struct AudioResourceHandler {
 }
@@ -26,93 +28,95 @@ impl ResourceHandler for AudioResourceHandler {
 		}))]
 	}
 
-	fn process(&self, resource_manager: &super::resource_manager::ResourceManager, asset_url: &str) -> Result<Vec<ProcessedResources>, String> {
-		let (bytes, _) = resource_manager.read_asset_from_source(asset_url).unwrap();
+	fn process(&self, resource_manager: &super::resource_manager::ResourceManager, asset_url: &str) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
+		Box::pin(async move {
+			let (bytes, _) = resource_manager.read_asset_from_source(asset_url).await.unwrap();
 
-		let riff = &bytes[0..4];
+			let riff = &bytes[0..4];
 
-		if riff != b"RIFF" {
-			return Err("Invalid RIFF header".to_string());
-		}
+			if riff != b"RIFF" {
+				return Err("Invalid RIFF header".to_string());
+			}
 
-		let format = &bytes[8..12];
+			let format = &bytes[8..12];
 
-		if format != b"WAVE" {
-			return Err("Invalid WAVE format".to_string());
-		}
+			if format != b"WAVE" {
+				return Err("Invalid WAVE format".to_string());
+			}
 
-		let audio_format = &bytes[20..22];
+			let audio_format = &bytes[20..22];
 
-		if audio_format != b"\x01\x00" {
-			return Err("Invalid audio format".to_string());
-		}
+			if audio_format != b"\x01\x00" {
+				return Err("Invalid audio format".to_string());
+			}
 
-		let subchunk_1_size = &bytes[16..20];
+			let subchunk_1_size = &bytes[16..20];
 
-		let subchunk_1_size = u32::from_le_bytes([subchunk_1_size[0], subchunk_1_size[1], subchunk_1_size[2], subchunk_1_size[3]]);
+			let subchunk_1_size = u32::from_le_bytes([subchunk_1_size[0], subchunk_1_size[1], subchunk_1_size[2], subchunk_1_size[3]]);
 
-		if subchunk_1_size != 16 {
-			return Err("Invalid subchunk 1 size".to_string());
-		}
+			if subchunk_1_size != 16 {
+				return Err("Invalid subchunk 1 size".to_string());
+			}
 
-		let num_channels = &bytes[22..24];
+			let num_channels = &bytes[22..24];
 
-		let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
+			let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
 
-		if num_channels != 1 && num_channels != 2 {
-			return Err("Invalid number of channels".to_string());
-		}
+			if num_channels != 1 && num_channels != 2 {
+				return Err("Invalid number of channels".to_string());
+			}
 
-		let sample_rate = &bytes[24..28];
+			let sample_rate = &bytes[24..28];
 
-		let sample_rate = u32::from_le_bytes([sample_rate[0], sample_rate[1], sample_rate[2], sample_rate[3]]);
+			let sample_rate = u32::from_le_bytes([sample_rate[0], sample_rate[1], sample_rate[2], sample_rate[3]]);
 
-		let bits_per_sample = &bytes[34..36];
+			let bits_per_sample = &bytes[34..36];
 
-		let bits_per_sample = u16::from_le_bytes([bits_per_sample[0], bits_per_sample[1]]);
+			let bits_per_sample = u16::from_le_bytes([bits_per_sample[0], bits_per_sample[1]]);
 
-		let bit_depth = match bits_per_sample {
-			8 => BitDepths::Eight,
-			16 => BitDepths::Sixteen,
-			24 => BitDepths::TwentyFour,
-			32 => BitDepths::ThirtyTwo,
-			_ => { return Err("Invalid bits per sample".to_string()); }
-		};
+			let bit_depth = match bits_per_sample {
+				8 => BitDepths::Eight,
+				16 => BitDepths::Sixteen,
+				24 => BitDepths::TwentyFour,
+				32 => BitDepths::ThirtyTwo,
+				_ => { return Err("Invalid bits per sample".to_string()); }
+			};
 
-		let data_header = &bytes[36..40];
+			let data_header = &bytes[36..40];
 
-		if data_header != b"data" {
-			return Err("Invalid data header".to_string());
-		}
+			if data_header != b"data" {
+				return Err("Invalid data header".to_string());
+			}
 
-		let data_size = &bytes[40..44];
+			let data_size = &bytes[40..44];
 
-		let data_size = u32::from_le_bytes([data_size[0], data_size[1], data_size[2], data_size[3]]);
+			let data_size = u32::from_le_bytes([data_size[0], data_size[1], data_size[2], data_size[3]]);
 
-		let sample_count = data_size / (bits_per_sample / 8) as u32 / num_channels as u32;
+			let sample_count = data_size / (bits_per_sample / 8) as u32 / num_channels as u32;
 
-		let data = &bytes[44..][..data_size as usize];
+			let data = &bytes[44..][..data_size as usize];
 
-		let audio_resource = Audio {
-			bit_depth,
-			channel_count: num_channels,
-			sample_rate,
-			sample_count,
-		};
+			let audio_resource = Audio {
+				bit_depth,
+				channel_count: num_channels,
+				sample_rate,
+				sample_count,
+			};
 
-		Ok(
-			vec![
-				ProcessedResources::Generated((
-					GenericResourceSerialization::new(asset_url.to_string(), audio_resource),
-					Vec::from(data),
-				))
-			]
-		
-		)
+			Ok(
+				vec![
+					ProcessedResources::Generated((
+						GenericResourceSerialization::new(asset_url.to_string(), audio_resource),
+						Vec::from(data),
+					))
+				]
+			
+			)
+		})
 	}
 
-	fn read(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
-		file.read_exact(buffers[0].buffer).unwrap();
+	fn read<'a>(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [Stream<'a>]) -> utils::BoxedFuture<()> {
+		Box::pin(async move { file.read_exact(buffers[0].buffer).unwrap(); })
 	}
 }
 
@@ -159,7 +163,7 @@ mod tests {
 
 		let resource_manager = ResourceManager::new();
 
-		let processed_resources = audio_resource_handler.process(&resource_manager, "gun").unwrap();
+		let processed_resources = smol::block_on(audio_resource_handler.process(&resource_manager, "gun")).unwrap();
 
 		assert_eq!(processed_resources.len(), 1);
 

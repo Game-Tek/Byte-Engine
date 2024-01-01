@@ -49,7 +49,7 @@ impl Renderer {
 				let mut ghi = ghi_instance.write().unwrap();
 
 				{
-					let result_image = visibility_render_model.get(|e| e.get_result_image());
+					let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
 					tonemap_render_model = orchestrator::spawn(orchestrator_handle.clone(), AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
 				}
 
@@ -95,11 +95,13 @@ impl Renderer {
 
 		let mut command_buffer_recording = ghi.create_command_buffer_recording(self.render_command_buffer, Some(self.rendered_frame_count as u32));
 
-		self.visibility_render_model.get_mut(|e| {
+		self.visibility_render_model.map(|e| {
+			let mut e = e.write_sync();
 			e.render(ghi.deref(), command_buffer_recording.as_mut())
 		});
 
-		self.tonemap_render_model.get(|e| {
+		self.tonemap_render_model.map(|e| {
+			let e = e.read_sync();
 			e.render(command_buffer_recording.as_mut());
 		});			
 
@@ -118,8 +120,9 @@ impl Renderer {
 }
 
 impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
-	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
-		let os_handles = self.window_system.get(|e| {
+	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
+		let os_handles = self.window_system.map(|e| {
+			let e = e.read_sync();
 			e.get_os_handles(&handle)
 		});
 
@@ -130,7 +133,7 @@ impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
 		self.swapchain_handles.push(swapchain_handle);
 	}
 
-	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<window_system::Window>, params: &window_system::Window) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<window_system::Window>, params: &window_system::Window) {
 		
 	}
 }

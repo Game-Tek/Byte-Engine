@@ -62,7 +62,7 @@ use std::{borrow::BorrowMut, ops::{DerefMut, Deref}};
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management, file_tracker, audio::audio_system, physics};
+use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -130,7 +130,7 @@ pub struct GraphicsApplication {
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
 	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
-	audio_system_handle: orchestrator::EntityHandle<dyn audio_system::AudioSystem>,
+	audio_system_handle: orchestrator::EntityHandle<audio_system::DefaultAudioSystem>,
 	physics_system_handle: orchestrator::EntityHandle<physics::PhysicsWorld>,
 }
 
@@ -147,22 +147,25 @@ impl Application for GraphicsApplication {
 		let window_system_handle = orchestrator::spawn(orchestrator_handle.clone(), window_system::WindowSystem::new_as_system());
 		let mut input_system_handle = orchestrator::spawn(orchestrator_handle.clone(), input_manager::InputManager::new_as_system());
 
-		let (_mouse_device_class_handle, _gamepad_device_class_handle, mouse_device_handle) = input_system_handle.get_mut(|input_system| {
-			let mouse_device_class_handle = input_system.register_device_class("Mouse");
+		let mouse_device_handle;
 
+		{
+			let input_system = input_system_handle.get_lock();
+			let mut input_system = input_system.write_arc_blocking();
+
+			let mouse_device_class_handle = input_system.register_device_class("Mouse");
+	
 			input_system.register_input_source(&mouse_device_class_handle, "Position", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 			input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input_manager::InputTypes::Bool(input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input_manager::InputTypes::Bool(input_manager::InputSourceDescription::new(false, false, false, true)));
-
+	
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
-
+	
 			input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 			input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-
-			let mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
-
-			(mouse_device_class_handle, gamepad_device_class_handle, mouse_device_handle)
-		});
+	
+			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
+		}
 
 		let file_tracker_handle = orchestrator::spawn(orchestrator_handle.clone(), file_tracker::FileTracker::new());
 
@@ -192,11 +195,21 @@ impl Application for GraphicsApplication {
 		self.application.tick();
 		// let changed_files = self.file_tracker_handle.poll();
 
-		let window_res = self.window_system_handle.get_mut(|window_system| {
-			self.input_system_handle.get_mut(|input_system| {
+		let mut close = false;
+
+		{
+			let window_system = self.window_system_handle.get_lock();
+			let mut window_system = window_system.write_arc_blocking();
+
+
+			{
+				let input_system = self.input_system_handle.get_lock();
+				let mut input_system = input_system.write_arc_blocking();
+
+				
 				while let Some(event) = window_system.update_window(0) {
 					match event {
-						window_system::WindowEvents::Close => return false,
+						window_system::WindowEvents::Close => { close = true },
 						window_system::WindowEvents::Button { pressed, button } => {
 							match button {
 								window_system::MouseKeys::Left => {
@@ -205,38 +218,40 @@ impl Application for GraphicsApplication {
 								window_system::MouseKeys::Right => {
 									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.RightButton"), input_manager::Value::Bool(pressed));
 								},
-								_ => {}
+								_ => { }
 							}
 						},
 						window_system::WindowEvents::MouseMove { x, y, time: _ } => {
 							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
 							input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
 						},
-						_ => {}
+						_ => { }
 					}
 				}
-				
-				true
-			})
-		});
+			}
+		}
 
-		self.input_system_handle.get_mut(|e| {
+		self.input_system_handle.map(|handle| {
+			let mut e = handle.write_sync();
 			e.update();
 		});
 		
-		self.physics_system_handle.get_mut(|physics_system| {
-			physics_system.update();
+		self.physics_system_handle.map(|handle| {
+			let mut e = handle.write_sync();
+			e.update();
 		});
 
-		self.renderer_handle.get_mut(|e| {
+		self.renderer_handle.map(|handle| {
+			let mut e = handle.write_sync();
 			e.render();
 		});
 		
-		self.audio_system_handle.get_mut(|audio_system| {
-			audio_system.render();
+		self.audio_system_handle.map(|handle| {
+			let mut e = handle.write_sync();
+			e.render();
 		});
 
-		if !window_res {
+		if !close {
 			self.application.close();
 		}
 
@@ -262,7 +277,7 @@ impl GraphicsApplication {
 		&self.input_system_handle
 	}
 
-	pub fn get_audio_system_handle(&self) -> &orchestrator::EntityHandle<dyn crate::audio::audio_system::AudioSystem> {
+	pub fn get_audio_system_handle(&self) -> &orchestrator::EntityHandle<crate::audio::audio_system::DefaultAudioSystem> {
 		&self.audio_system_handle
 	}
 

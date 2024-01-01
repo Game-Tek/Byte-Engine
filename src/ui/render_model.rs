@@ -26,11 +26,11 @@ impl Entity for UIRenderModel {
 }
 
 impl EntitySubscriber<dyn Text> for UIRenderModel {
-	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<dyn Text>, params: &dyn Text) {
+	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<dyn Text>, params: &dyn Text) {
 		
 	}
 
-	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<dyn Text>, params: &dyn Text) {
+	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<dyn Text>, params: &dyn Text) {
 		
 	}
 }

@@ -3,9 +3,9 @@ use std::io::Read;
 use log::{warn, debug, error};
 use serde::{Serialize, Deserialize};
 
-use crate::{jspd::{self}, ghi};
+use crate::{jspd::{self}, ghi, utils};
 
-use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager};
+use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager, Stream};
 
 pub struct MaterialResourcerHandler {
 
@@ -100,67 +100,69 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn read(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [super::Stream]) {
-		file.read_exact(buffers[0].buffer).unwrap();
+	fn read<'a>(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [Stream<'a>]) -> utils::BoxedFuture<()> {
+		Box::pin(async move { file.read_exact(buffers[0].buffer).unwrap(); })
 	}
 
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str,) -> Result<Vec<ProcessedResources>, String> {
-		let (bytes, _) = resource_manager.read_asset_from_source(asset_url).unwrap();
+	fn process(&self, resource_manager: &ResourceManager, asset_url: &str,) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
+		Box::pin(async move {
+			let (bytes, _) = resource_manager.read_asset_from_source(asset_url).await.unwrap();
 
-		let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+			let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
 
-		let is_material = asset_json["parent"].is_null();
+			let is_material = asset_json["parent"].is_null();
 
-		if is_material {
-			let material_domain = match &asset_json["domain"] {
-				json::JsonValue::Null => { "Common".to_string() }
-				json::JsonValue::Short(s) => { s.to_string() }
-				json::JsonValue::String(s) => { s.to_string() }
-				_ => { panic!("Invalid domain") }
-			};
+			if is_material {
+				let material_domain = match &asset_json["domain"] {
+					json::JsonValue::Null => { "Common".to_string() }
+					json::JsonValue::Short(s) => { s.to_string() }
+					json::JsonValue::String(s) => { s.to_string() }
+					_ => { panic!("Invalid domain") }
+				};
 
-			let _material_type = match &asset_json["type"] {
-				json::JsonValue::Null => { "Raw".to_string() }
-				json::JsonValue::Short(s) => { s.to_string() }
-				json::JsonValue::String(s) => { s.to_string() }
-				_ => { panic!("Invalid type") }
-			};
-			
-			let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-				Self::produce_shader(resource_manager, &material_domain, &asset_json, &shader_json, s_type)
-			}).collect::<Vec<_>>();
+				let _material_type = match &asset_json["type"] {
+					json::JsonValue::Null => { "Raw".to_string() }
+					json::JsonValue::Short(s) => { s.to_string() }
+					json::JsonValue::String(s) => { s.to_string() }
+					_ => { panic!("Invalid type") }
+				};
+				
+				let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
+					smol::block_on(Self::produce_shader(resource_manager, &material_domain, &asset_json, &shader_json, s_type))
+				}).collect::<Vec<_>>();
 
-			for variable in asset_json["variables"].members() {
-				if variable["data_type"].as_str().unwrap() == "Texture2D" {
-					let texture_url = variable["value"].as_str().unwrap();
+				for variable in asset_json["variables"].members() {
+					if variable["data_type"].as_str().unwrap() == "Texture2D" {
+						let texture_url = variable["value"].as_str().unwrap();
 
-					required_resources.push(ProcessedResources::Ref(texture_url.to_string()));
-				}
-			}
-
-			Ok(vec![ProcessedResources::Generated((GenericResourceSerialization::new(asset_url.to_string(), Material {
-				model: Model {
-					name: Self::RENDER_MODEL.to_string(),
-					pass: "MaterialEvaluation".to_string(),
-				},
-			}).required_resources(&required_resources), Vec::new()))])
-		} else {
-			let variant_json = asset_json;
-
-			let parent_material_url = variant_json["parent"].as_str().unwrap();
-
-			let material_resource_document = GenericResourceSerialization::new(asset_url.to_string(), Variant{
-				parent: parent_material_url.to_string(),
-				variables: variant_json["variables"].members().map(|v| {
-					VariantVariable {
-						name: v["name"].to_string(),
-						value: v["value"].to_string(),
+						required_resources.push(ProcessedResources::Ref(texture_url.to_string()));
 					}
-				}).collect::<Vec<_>>()
-			}).required_resources(&[ProcessedResources::Ref(parent_material_url.to_string())]);
+				}
 
-			Ok(vec![ProcessedResources::Generated((material_resource_document.into(), Vec::new()))])
-		}
+				Ok(vec![ProcessedResources::Generated((GenericResourceSerialization::new(asset_url.to_string(), Material {
+					model: Model {
+						name: Self::RENDER_MODEL.to_string(),
+						pass: "MaterialEvaluation".to_string(),
+					},
+				}).required_resources(&required_resources), Vec::new()))])
+			} else {
+				let variant_json = asset_json;
+
+				let parent_material_url = variant_json["parent"].as_str().unwrap();
+
+				let material_resource_document = GenericResourceSerialization::new(asset_url.to_string(), Variant{
+					parent: parent_material_url.to_string(),
+					variables: variant_json["variables"].members().map(|v| {
+						VariantVariable {
+							name: v["name"].to_string(),
+							value: v["value"].to_string(),
+						}
+					}).collect::<Vec<_>>()
+				}).required_resources(&[ProcessedResources::Ref(parent_material_url.to_string())]);
+
+				Ok(vec![ProcessedResources::Generated((material_resource_document.into(), Vec::new()))])
+			}
+		})
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
@@ -236,11 +238,11 @@ impl MaterialResourcerHandler {
 		Some(Ok(ProcessedResources::Generated((resource, Vec::from(result_shader_bytes)))))
 	}
 
-	fn produce_shader(resource_manager: &ResourceManager, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
+	async fn produce_shader(resource_manager: &ResourceManager, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
 		let shader_option = match shader_json {
 			json::JsonValue::Null => { None }
 			json::JsonValue::Short(path) => {
-				let (arlp, format) = resource_manager.read_asset_from_source(&path).ok()?;
+				let (arlp, format) = resource_manager.read_asset_from_source(&path).await.ok()?;
 
 				let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
@@ -301,7 +303,7 @@ mod tests {
 	fn load_material() {
 		let mut resource_manager = ResourceManager::new();
 
-		let (response, _) = resource_manager.get("solid").expect("Failed to load material");
+		let (response, _) = smol::block_on(resource_manager.get("solid")).expect("Failed to load material");
 
 		assert_eq!(response.resources.len(), 2); // 1 material, 1 shader
 

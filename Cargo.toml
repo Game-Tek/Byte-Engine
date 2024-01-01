@@ -6,7 +6,6 @@ license = "MIT"
 rust-version = "1.73.0"
 
 [features]
-multithreading = []
 
 [dependencies]
 component_derive = { path = "component_derive" }
@@ -38,6 +37,7 @@ downcast-rs = "1.2.0"
 intertrait = "0.2.2"
 alsa = "0.8.1"
 gxhash = "3.0.0"
+smol = "2.0.0"
 
 [profile.dev]
 incremental = true

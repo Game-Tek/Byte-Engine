@@ -187,6 +187,12 @@ pub enum Types {
 	Rgba,
 }
 
+enum TypedHandle {
+	Bool(EntityHandle<Action<bool>>),
+	Vector2(EntityHandle<Action<Vector2>>),
+	Vector3(EntityHandle<Action<Vector3>>),
+}
+
 /// An input event is an application specific event that is triggered by a combination of input sources.
 struct InputAction {
 	name: String,
@@ -210,7 +216,7 @@ struct InputAction {
 	/// 	- Input source `B` is released.
 	/// 		(Value is None)
 	stack: Vec<Record>,
-	handle: EntityHandle<dyn ActionLike>,
+	handle: TypedHandle,
 }
 
 /// A device represents a particular instance of a device class. Such as the current keyboard, or a specific gamepad.
@@ -574,13 +580,22 @@ impl InputManager {
 
 				match value {
 					Value::Bool(v) => {
-						action.handle.get(|a| a.ref_any().downcast_ref::<Action<bool>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
+						match &action.handle {
+							TypedHandle::Bool(handle) => { handle.map(|a| { let a = a.read_sync(); a.events.iter().for_each(|f| f.fire(&v)) }); }
+							_ => {}
+						}
 					}
 					Value::Vector2(v) => {
-						action.handle.get(|a| a.ref_any().downcast_ref::<Action<Vector2>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
+						match &action.handle {
+							TypedHandle::Vector2(handle) => { handle.map(|a| { let a = a.read_sync(); a.events.iter().for_each(|f| f.fire(&v)) }); }
+							_ => {}
+						}
 					}
 					Value::Vector3(v) => {
-						action.handle.get(|a| a.ref_any().downcast_ref::<Action<Vector3>>().unwrap().events.iter().for_each(|f| f.fire(&v)));
+						match &action.handle {
+							TypedHandle::Vector3(handle) => { handle.map(|a| { let a = a.read_sync(); a.events.iter().for_each(|f| f.fire(&v)) }); }
+							_ => {}
+						}
 					}
 					_ => {
 						log::error!("Not implemented!");
@@ -817,7 +832,7 @@ impl InputManager {
 }
 
 impl EntitySubscriber<Action<bool>> for InputManager {
-	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
+	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
 		let (name, r#type, input_events,) = (action.name, Types::Bool, &action.bindings);
 
 		let input_event = InputAction {
@@ -831,33 +846,33 @@ impl EntitySubscriber<Action<bool>> for InputManager {
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 			stack: Vec::new(),
-			handle: handle.clone(),
+			handle: TypedHandle::Bool(handle.clone()),
 		};
 
 		self.actions.push(input_event);
 	}
 
-	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
 	}
 }
 
 impl EntitySubscriber<Action<Vector2>> for InputManager {
-	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
+	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
 		// self.create_action(action.name, Types::Vector2, &action.bindings);
 	}
 
-	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
 	}
 }
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
-	fn on_create(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
+	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
 		// let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
 
 		// self.actions_ie_map.insert(internal_handle, handle);
 	}
 
-	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
 	}
 }
 

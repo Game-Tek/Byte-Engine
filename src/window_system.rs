@@ -705,11 +705,11 @@ impl WindowSystem {
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	fn on_create(&mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: orchestrator::EntityHandle<Window>, _window: &Window) {
+	async fn on_create(&'static mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: orchestrator::EntityHandle<Window>, _window: &Window) {
 		self.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 	}
 
-	fn on_update(&mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<Window>, params: &Window) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<Window>, params: &Window) {
 		
 	}
 }

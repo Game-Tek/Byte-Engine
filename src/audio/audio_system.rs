@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use crate::{orchestrator::{System, Entity, EntityReturn}, ahi::{audio_hardware_interface::AudioHardwareInterface, self}};
+use crate::{orchestrator::{System, Entity, EntityReturn}, ahi::{audio_hardware_interface::AudioHardwareInterface, self}, resource_management::resource_manager};
 use crate::orchestrator::EntityHandle;
 use crate::resource_management::audio_resource_handler;
 use crate::resource_management::resource_manager::ResourceManager;
 
 pub trait AudioSystem: System {
 	/// Plays an audio asset.
-	fn play(&mut self, audio_asset_url: &str);
+	async fn play(&mut self, audio_asset_url: &'static str);
 
 	/// Processes audio data and sends it to the audio hardware interface.
 	fn render(&mut self);
@@ -44,33 +44,36 @@ impl Entity for DefaultAudioSystem {}
 impl System for DefaultAudioSystem {}
 
 impl AudioSystem for DefaultAudioSystem {
-	fn play(&mut self, audio_asset_url: &str) {
+	async fn play(&mut self, audio_asset_url: &'static str) {
 		let data = if let Some(a) = self.audio_resources.get(audio_asset_url) {
 			Some(a)
 		} else {
-			self.resource_manager.get(|resource_manager|{
-				if let Some((response, bytes)) = resource_manager.get(audio_asset_url) {
-					let audio_resource = response.resources[0].resource.downcast_ref::<audio_resource_handler::Audio>().unwrap();
+			let resources = {
+				let resource_manager = self.resource_manager.read().await;
+				resource_manager.get(audio_asset_url).await
+			};
 
-					assert_eq!(audio_resource.bit_depth, audio_resource_handler::BitDepths::Sixteen);
+			if let Some((response, bytes)) = resources {
+				let audio_resource = response.resources[0].resource.downcast_ref::<audio_resource_handler::Audio>().unwrap();
 
-					let audio_data = bytes.chunks_exact(2).map(|chunk| {
-						let mut bytes = [0; 2];
-						bytes.copy_from_slice(chunk);
-						i16::from_le_bytes(bytes)
-					}).collect::<Vec<_>>();
+				assert_eq!(audio_resource.bit_depth, audio_resource_handler::BitDepths::Sixteen);
 
-					self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, audio_data));
+				let audio_data = bytes.chunks_exact(2).map(|chunk| {
+					let mut bytes = [0; 2];
+					bytes.copy_from_slice(chunk);
+					i16::from_le_bytes(bytes)
+				}).collect::<Vec<_>>();
 
-					Some(self.audio_resources.get(audio_asset_url).unwrap())
-				} else {
-					log::warn!("Audio asset {} not found.", audio_asset_url);
-					None
-				}
-			})
+				self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, audio_data));
+
+				Some(self.audio_resources.get(audio_asset_url).unwrap())
+			} else {
+				log::warn!("Audio asset {} not found.", audio_asset_url);
+				None
+			}
 		};
 
-		if let Some((_, audio_data)) = data {
+		if let Some(_) = data {
 			self.playing_audios.push(PlayingSound { audio_asset_url: audio_asset_url.to_string(), current_sample: 0 });
 		}
 	}

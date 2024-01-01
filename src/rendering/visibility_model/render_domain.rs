@@ -814,7 +814,7 @@ impl VisibilityWorldRenderDomain {
 
 		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
-		let (camera_position, camera_orientation) = camera_handle.get(|camera| (camera.get_position(), camera.get_orientation()));
+		let (camera_position, camera_orientation) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation()) });
 
 		let view_matrix = maths_rs::Mat4f::from_translation(-camera_position) * math::look_at(camera_orientation);
 
@@ -913,11 +913,11 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
-	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
+	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
 		self.camera = Some(handle);
 	}
 
-	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, params: &camera::Camera) {
+	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, params: &camera::Camera) {
 		
 	}
 }
@@ -957,12 +957,13 @@ struct MaterialData {
 }
 
 impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
-	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
+	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		
 		{
-			let response_and_data = self.resource_manager.get(|resource_manager| {
-				resource_manager.get(mesh.get_material_id()).unwrap()
-			});
+			let response_and_data = {
+				let resource_manager = self.resource_manager.read().await;
+				resource_manager.get(mesh.get_material_id()).await.unwrap()
+			};
 
 			self.load_material(response_and_data,);
 		}
@@ -970,9 +971,10 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 		if !self.mesh_resources.contains_key(mesh.get_resource_id()) { // Load only if not already loaded
 			let mut ghi = self.ghi.write().unwrap();
 
-			let resource_request = self.resource_manager.get(|resource_manager| {
-				resource_manager.request_resource(mesh.get_resource_id())
-			});
+			let resource_request = {
+				let resource_manager = self.resource_manager.read().await;
+				resource_manager.request_resource(mesh.get_resource_id()).await
+			};
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
@@ -1007,7 +1009,10 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 				}
 			}
 
-			let resource = if let Ok(a) = self.resource_manager.get(|resource_manager| { resource_manager.load_resource(resource_request, Some(options), None) }) { a } else { return; };
+			let resource = if let Ok(a) = {
+				let resource_manager = self.resource_manager.read().await;
+				resource_manager.load_resource(resource_request, Some(options), None).await
+			} { a } else { return; };
 
 			let (response, _buffer) = (resource.0, resource.1.unwrap());
 
@@ -1147,13 +1152,13 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 		assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
 	}
 
-	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, params: &mesh::Mesh) {
+	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, params: &mesh::Mesh) {
 		
 	}
 }
 
 impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
-	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
+	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -1168,13 +1173,13 @@ impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for Vis
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 
-	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, params: &directional_light::DirectionalLight) {
+	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, params: &directional_light::DirectionalLight) {
 		
 	}
 }
 
 impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
-	fn on_create(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
+	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -1189,7 +1194,7 @@ impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorld
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 
-	fn on_update(&mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, params: &point_light::PointLight) {
+	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, params: &point_light::PointLight) {
 		
 	}
 }

@@ -10,8 +10,11 @@
 #![feature(fn_ptr_trait)]
 #![feature(new_uninit)]
 #![feature(trivial_bounds)]
+#![feature(async_closure)]
 // #![warn(missing_docs)] # Disable now because we are writing a lot of code
 // #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
+
+pub mod utils;
 
 pub mod application;
 pub mod orchestrator;

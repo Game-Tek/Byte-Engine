@@ -105,6 +105,8 @@ impl Resource for Texture {
 
 #[cfg(test)]
 mod tests {
+	use smol::Timer;
+
 	use crate::resource_management::resource_manager::ResourceManager;
 
 	use super::*;
@@ -112,6 +114,12 @@ mod tests {
 	#[test]
 	fn load_net_image() {
 		let mut resource_manager = ResourceManager::new();
+
+		resource_manager.add_resource_handler(ImageResourceHandler::new());
+
+		// smol::block_on(async {
+		// 	Timer::after(std::time::Duration::from_secs(60 * 3)).await;
+		// });
 
 		let (response, _) = smol::block_on(resource_manager.get("https://camo.githubusercontent.com/dca6cdb597abc9c7ff4a0e066e6c35eb70b187683fbff2208d0440b4ef6c5a30/68747470733a2f2f692e696d6775722e636f6d2f56525261434f702e706e67")).expect("Failed to load image");
 
@@ -130,6 +138,8 @@ mod tests {
 	#[test]
 	fn load_local_image() {
 		let mut resource_manager = ResourceManager::new();
+
+		resource_manager.add_resource_handler(ImageResourceHandler::new());
 
 		let (response, _) = smol::block_on(resource_manager.get("patterned_brick_floor_02_diff_2k")).expect("Failed to load image");
 

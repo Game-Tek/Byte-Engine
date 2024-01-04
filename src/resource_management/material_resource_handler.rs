@@ -305,6 +305,8 @@ mod tests {
 	fn load_material() {
 		let mut resource_manager = ResourceManager::new();
 
+		resource_manager.add_resource_handler(super::MaterialResourcerHandler::new());
+
 		let (response, _) = smol::block_on(resource_manager.get("solid")).expect("Failed to load material");
 
 		assert_eq!(response.resources.len(), 2); // 1 material, 1 shader

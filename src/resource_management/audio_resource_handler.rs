@@ -165,29 +165,33 @@ mod tests {
 	fn test_audio_resource_handler() {
 		let audio_resource_handler = AudioResourceHandler::new();
 
-		let resource_manager = ResourceManager::new();
+		let mut resource_manager = ResourceManager::new();
 
-		let processed_resources = smol::block_on(audio_resource_handler.process(&resource_manager, "gun")).unwrap();
+		resource_manager.add_resource_handler(audio_resource_handler);
 
-		assert_eq!(processed_resources.len(), 1);
+		let (response, buffer) = smol::block_on(resource_manager.get("gun")).unwrap();
 
-		let (generic_resource_serialization, data) = match processed_resources[0] {
-			ProcessedResources::Generated((ref generic_resource_serialization, ref data)) => (generic_resource_serialization, data),
-			_ => { panic!("Unexpected processed resource type"); }
-		};
+		assert_eq!(response.resources.len(), 1);
 
-		assert_eq!(generic_resource_serialization.url, "gun");
-		assert_eq!(generic_resource_serialization.class, "Audio");
+		// let (generic_resource_serialization, data) = match processed_resources[0] {
+		// 	ProcessedResources::Generated((ref generic_resource_serialization, ref data)) => (generic_resource_serialization, data),
+		// 	_ => { panic!("Unexpected processed resource type"); }
+		// };
 
-		let audio_resource = (audio_resource_handler.get_deserializers().iter().find(|(class, _)| *class == "Audio").unwrap().1)(&generic_resource_serialization.resource);
+		let resource = &response.resources[0];
 
-		let audio = audio_resource.downcast_ref::<Audio>().unwrap();
+		assert_eq!(resource.url, "gun");
+		assert_eq!(resource.class, "Audio");
+
+		// let audio_resource = (audio_resource_handler.get_deserializers().iter().find(|(class, _)| *class == "Audio").unwrap().1)(&resource.resource);
+
+		let audio = resource.resource.downcast_ref::<Audio>().unwrap();
 
 		assert_eq!(audio.bit_depth, BitDepths::Sixteen);
 		assert_eq!(audio.channel_count, 1);
 		assert_eq!(audio.sample_rate, 48000);
 		assert_eq!(audio.sample_count, 152456 / 1 / (16 / 8));
 
-		assert_eq!(data.len(), audio.sample_count as usize * audio.channel_count as usize * (Into::<usize>::into(audio.bit_depth) / 8) as usize);
+		assert_eq!(buffer.len(), audio.sample_count as usize * audio.channel_count as usize * (Into::<usize>::into(audio.bit_depth) / 8) as usize);
 	}
 }

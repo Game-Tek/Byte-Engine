@@ -2,7 +2,7 @@ use std::{io::{Read, Write}, hash::{Hasher, Hash}, pin::Pin};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use log::{info, warn, error, trace, debug};
 use smol::fs::File;
-use crate::orchestrator;
+use crate::{orchestrator, utils};
 use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource, audio_resource_handler, Stream, LoadRequest, LoadResourceRequest, Lox};
 
 /// Resource manager.
@@ -91,30 +91,23 @@ impl ResourceManager {
 			}
 		};
 
-		let resource_handlers: Vec<Box<dyn resource_handler::ResourceHandler + Send>> = vec![
-			Box::new(texture_resource_handler::ImageResourceHandler::new()),
-			Box::new(mesh_resource_handler::MeshResourceHandler::new()),
-			Box::new(material_resource_handler::MaterialResourcerHandler::new()),
-			Box::new(audio_resource_handler::AudioResourceHandler::new()),
-		];
-
-		let mut deserializers = std::collections::HashMap::new();
-
-		for resource_handler in resource_handlers.as_slice() {
-			for deserializer in resource_handler.get_deserializers() {
-				deserializers.insert(deserializer.0, deserializer.1);
-			}
-		}
-
 		ResourceManager {
 			db,
-			resource_handlers,
-			deserializers,
+			resource_handlers: Vec::with_capacity(8),
+			deserializers: std::collections::HashMap::with_capacity(8),
 		}
 	}
 
 	pub fn new_as_system() -> orchestrator::EntityReturn<'static, ResourceManager> {
 		orchestrator::EntityReturn::new(Self::new())
+	}
+
+	pub fn add_resource_handler<T>(&mut self, resource_handler: T) where T: resource_handler::ResourceHandler + Send + 'static {
+		for deserializer in resource_handler.get_deserializers() {
+			self.deserializers.insert(deserializer.0, deserializer.1);
+		}
+
+		self.resource_handlers.push(Box::new(resource_handler));
 	}
 
 	/// Tries to load a resource from cache or source.\
@@ -133,8 +126,10 @@ impl ResourceManager {
 
 		unsafe { buffer.set_len(size); }
 
-		let request = request.resources.into_iter().map(|r| LoadResourceRequest::new(r)).collect::<Vec<_>>();
+		let mut a = utils::BufferAllocator::new(&mut buffer);
 
+		let request = request.resources.into_iter().map(|r| { let size = r.size as usize; LoadResourceRequest::new(r).buffer(a.take(size)) }).collect::<Vec<_>>();
+		
 		let response = self.load_data_from_cache(LoadRequest::new(request),).await.ok()?;
 
 		Some((response, buffer))
@@ -315,7 +310,8 @@ impl ResourceManager {
 
 		let mut file = smol::fs::File::create(resource_path).await.ok()?;
 
-		file.write_all(resource_package.1.as_slice()).await.unwrap();
+		file.write_all(resource_package.1.as_slice()).await.ok()?;
+		file.flush().await.ok()?; // Must flush to ensure the file is written to disk, or else reads can cause failures
 
 		resource_document.insert("_id", resource_id);
 
@@ -339,9 +335,9 @@ impl ResourceManager {
 				required_resources: resource_container.resource_request.required_resources,
 			};
 			
-			(resource_container.streams, response)
-		}).map(async move |(slice, response)| { // Load resources
-			let native_db_resource_id = response.id.to_string();
+			(resource_container.resource_request._id, resource_container.streams, response)
+		}).map(async move |(db_resource_id, slice, response)| { // Load resources
+			let native_db_resource_id = db_resource_id.to_string();
 	
 			let mut file = match File::open(Self::resolve_resource_path(std::path::Path::new(&native_db_resource_id))).await {
 				Ok(it) => it,
@@ -355,7 +351,9 @@ impl ResourceManager {
 			match slice {
 				Lox::None => {}
 				Lox::Buffer(buffer) => {
-					if let Err(_) = file.read_exact(buffer).await { return Err(LoadResults::LoadFailed); }
+					if let Err(err) = file.read_exact(buffer).await {
+						return Err(LoadResults::LoadFailed);
+					}
 				}
 				Lox::Streams(mut streams) => {
 					if let Some(resource_handler) = self.resource_handlers.iter().find(|h| h.can_handle_type(response.class.as_str())) {
@@ -407,7 +405,7 @@ impl ResourceManager {
 				request.into_reader().read_to_end(&mut source_bytes);
 			},
 			"local" => {
-				let path = self.realize_asset_path(url).unwrap();
+				let path = self.realize_asset_path(url).ok_or(None)?;
 
 				let mut file = smol::fs::File::open(&path).await.unwrap();
 

@@ -438,6 +438,8 @@ mod tests {
 	fn load_local_mesh() {
 		let mut resource_manager = ResourceManager::new();
 
+		resource_manager.add_resource_handler(MeshResourceHandler::new());
+
 		let (response, buffer) = smol::block_on(resource_manager.get("Box")).expect("Failed to get resource");
 
 		assert_eq!(response.resources.len(), 1);
@@ -519,7 +521,7 @@ mod tests {
 
 		let resource = if let Ok(a) = smol::block_on(resource_manager.load_resource(load_request,)) { a } else { return; };
 
-		let (response, _buffer) = (resource.0, resource.1.unwrap());
+		let response = resource.0;
 
 		for resource in &response.resources {
 			match resource.class.as_str() {
@@ -538,6 +540,8 @@ mod tests {
 	#[test]
 	fn load_local_gltf_mesh_with_external_binaries() {
 		let mut resource_manager = ResourceManager::new();
+
+		resource_manager.add_resource_handler(MeshResourceHandler::new());
 
 		let (response, buffer) = smol::block_on(resource_manager.get("Suzanne")).expect("Failed to get resource");
 
@@ -616,6 +620,8 @@ mod tests {
 	#[test]
 	fn load_with_manager_buffer() {
 		let mut resource_manager = ResourceManager::new();
+
+		resource_manager.add_resource_handler(MeshResourceHandler::new());
 
 		let (response, buffer) = smol::block_on(resource_manager.get("Box")).expect("Failed to get resource");
 
@@ -703,6 +709,8 @@ mod tests {
 	fn load_with_vertices_and_indices_with_provided_buffer() {
 		let mut resource_manager = ResourceManager::new();
 
+		resource_manager.add_resource_handler(MeshResourceHandler::new());
+
 		let resource_request = smol::block_on(resource_manager.request_resource("Box")).expect("Failed to request resource");
 
 		let mut options = Options { resources: Vec::new(), };
@@ -723,7 +731,7 @@ mod tests {
 
 		let resource = if let Ok(a) = smol::block_on(resource_manager.load_resource(request,)) { a } else { return; };
 
-		let (response, _buffer) = (resource.0, resource.1.unwrap());
+		let response = resource.0;
 
 		for resource in &response.resources {
 			match resource.class.as_str() {
@@ -765,6 +773,8 @@ mod tests {
 	fn load_with_non_interleaved_vertices_and_indices_with_provided_buffer() {
 		let mut resource_manager = ResourceManager::new();
 
+		resource_manager.add_resource_handler(MeshResourceHandler::new());
+
 		let resource_request = smol::block_on(resource_manager.request_resource("Box")).expect("Failed to request resource");
 
 		let mut options = Options { resources: Vec::new(), };
@@ -790,7 +800,7 @@ mod tests {
 
 		let resource = if let Ok(a) = smol::block_on(resource_manager.load_resource(request,)) { a } else { return; };
 
-		let (response, _buffer) = (resource.0, resource.1.unwrap());
+		let response = resource.0;
 
 		for resource in &response.resources {
 			match resource.class.as_str() {

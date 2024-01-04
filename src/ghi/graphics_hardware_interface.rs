@@ -340,6 +340,27 @@ pub struct Features {
 	pub ray_tracing: bool,
 }
 
+pub struct BufferSplitter<'a> {
+	buffer: &'a mut [u8],
+	offset: usize,
+}
+
+impl<'a> BufferSplitter<'a> {
+	pub fn new(buffer: &'a mut [u8], offset: usize) -> Self {
+		Self {
+			buffer,
+			offset,
+		}
+	}
+
+	pub fn take<u8>(&mut self, size: usize) -> &'a mut [u8] {
+		let buffer = &mut self.buffer[self.offset..][..size];
+		self.offset += size;
+		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
+		unsafe { std::mem::transmute(buffer) }
+	}
+}
+
 pub trait GraphicsHardwareInterface {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	fn has_errors(&self) -> bool;
@@ -437,6 +458,8 @@ pub trait GraphicsHardwareInterface {
 	fn start_frame_capture(&self);
 
 	fn end_frame_capture(&self);
+
+	fn get_splitter(&self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

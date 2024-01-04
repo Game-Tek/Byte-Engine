@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::ghi;
+use crate::{ghi, utils};
 use crate::orchestrator::EntityHandle;
 use crate::rendering::{mesh, directional_light, point_light};
 use crate::rendering::world_render_domain::WorldRenderDomain;
@@ -913,7 +913,7 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
-	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
+	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
 		self.camera = Some(handle);
 	}
 
@@ -957,7 +957,7 @@ struct MaterialData {
 }
 
 impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
-	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
+	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		
 		{
 			let response_and_data = {
@@ -978,40 +978,45 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 
 			let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
-			let mut options = resource_management::Options { resources: Vec::new(), };
+			let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
+			let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
+			let mut triangle_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>());
+			let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<u16>());
+			let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
 
 			let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
-			for resource in &resource_request.resources {
+			let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
+
+			let resources = resource_request.resources.into_iter().map(|resource| {
 				match resource.class.as_str() {
 					"Mesh" => {
-						let vertex_positions_buffer = ghi.get_mut_buffer_slice(self.vertex_positions_buffer);
-						let vertex_normals_buffer = ghi.get_mut_buffer_slice(self.vertex_normals_buffer);
-						let vertex_indices_buffer = ghi.get_mut_buffer_slice(self.vertex_indices_buffer);
-						let primitive_indices_buffer = ghi.get_mut_buffer_slice(self.primitive_indices_buffer);
-						let triangle_indices_buffer = ghi.get_mut_buffer_slice(self.triangle_indices_buffer);
+						let vertex_positions_buffer = vertex_positions_buffer.take(1024 * 1024);
+						let vertex_normals_buffer = vertex_normals_buffer.take(1024 * 1024);
+						let triangle_indices_buffer = triangle_indices_buffer.take(1024 * 1024);
+						let vertex_indices_buffer = vertex_indices_buffer.take(1024 * 1024);
+						let primitive_indices_buffer = primitive_indices_buffer.take(1024 * 1024);
+						let meshlet_stream_buffer = buffer_allocator.take(1024 * 8);
 
-						options.resources.push(resource_management::OptionResource {
-							url: resource.url.clone(),
-							streams: vec![
-								resource_management::Stream{ buffer: &mut vertex_positions_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], name: "Vertex.Position".to_string() },
-								resource_management::Stream{ buffer: &mut vertex_normals_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>())..], name: "Vertex.Normal".to_string() },
-								resource_management::Stream{ buffer: &mut triangle_indices_buffer[(self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>())..], name: "TriangleIndices".to_string() },
-								resource_management::Stream{ buffer: &mut vertex_indices_buffer[(self.visibility_info.vertex_count as usize * std::mem::size_of::<u16>())..], name: "VertexIndices".to_string() },
-								resource_management::Stream{ buffer: &mut primitive_indices_buffer[(self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>())..], name: "MeshletIndices".to_string() },
-								resource_management::Stream{ buffer: meshlet_stream_buffer.as_mut_slice() , name: "Meshlets".to_string() },
-							],
-						});
+						let streams = vec![
+							resource_management::Stream{ buffer: vertex_positions_buffer, name: "Vertex.Position".to_string() },
+							resource_management::Stream{ buffer: vertex_normals_buffer, name: "Vertex.Normal".to_string() },
+							resource_management::Stream{ buffer: triangle_indices_buffer, name: "TriangleIndices".to_string() },
+							resource_management::Stream{ buffer: vertex_indices_buffer, name: "VertexIndices".to_string() },
+							resource_management::Stream{ buffer: primitive_indices_buffer, name: "MeshletIndices".to_string() },
+							resource_management::Stream{ buffer: meshlet_stream_buffer , name: "Meshlets".to_string() },
+						];
 
-						break;
+						resource_management::LoadResourceRequest::new(resource).streams(streams)
 					}
-					_ => {}
+					_ => { resource_management::LoadResourceRequest::new(resource) }
 				}
-			}
+			}).collect::<Vec<_>>();
 
 			let resource = if let Ok(a) = {
 				let resource_manager = self.resource_manager.read().await;
-				resource_manager.load_resource(resource_request, Some(options), None).await
+				let resource_load_request = resource_management::LoadRequest::new(resources);
+				resource_manager.load_resource(resource_load_request,).await
 			} { a } else { return; };
 
 			let (response, _buffer) = (resource.0, resource.1.unwrap());
@@ -1158,7 +1163,7 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 }
 
 impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
-	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
+	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -1179,7 +1184,7 @@ impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for Vis
 }
 
 impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
-	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
+	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };

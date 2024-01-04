@@ -120,7 +120,7 @@ impl Renderer {
 }
 
 impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
-	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
+	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
 		let os_handles = self.window_system.map(|e| {
 			let e = e.read_sync();
 			e.get_os_handles(&handle)

@@ -1,7 +1,9 @@
 use std::io::Read;
 
+use futures::AsyncReadExt;
 use log::{warn, debug, error};
 use serde::{Serialize, Deserialize};
+use smol::fs::File;
 
 use crate::{jspd::{self}, ghi, utils};
 
@@ -100,11 +102,11 @@ impl ResourceHandler for MaterialResourcerHandler {
 		}
 	}
 
-	fn read<'a>(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [Stream<'a>]) -> utils::BoxedFuture<()> {
-		Box::pin(async move { file.read_exact(buffers[0].buffer).unwrap(); })
+	fn read<'a>(&'a self, _resource: &'a Box<dyn Resource>, file: &'a mut File, buffers: &'a mut [Stream<'a>]) -> utils::BoxedFuture<()> {
+		Box::pin(async move { file.read_exact(buffers[0].buffer).await; })
 	}
 
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str,) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
+	fn process<'a>(&'a self, resource_manager: &'a ResourceManager, asset_url: &'a str,) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
 		Box::pin(async move {
 			let (bytes, _) = resource_manager.read_asset_from_source(asset_url).await.unwrap();
 

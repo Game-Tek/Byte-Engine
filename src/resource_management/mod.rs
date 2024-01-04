@@ -47,6 +47,7 @@ pub enum ProcessedResources {
 	Ref(String),
 }
 
+#[derive(Debug)]
 pub struct Stream<'a> {
 	/// The slice of the buffer to load the resource binary data into.
 	pub buffer: &'a mut [u8],
@@ -79,6 +80,38 @@ pub struct ResourceRequest {
 	pub required_resources: Vec<String>,
 }
 
+enum Lox<'a> {
+	None,
+	Streams(Vec<Stream<'a>>),
+	Buffer(&'a mut [u8]),
+}
+
+pub struct LoadResourceRequest<'a> {
+	/// The resource to load.
+	resource_request: ResourceRequest,
+	/// The buffers to load the resource binary data into.
+	pub streams: Lox<'a>,
+}
+
+impl <'a> LoadResourceRequest<'a> {
+	pub fn new(resource_request: ResourceRequest) -> Self {
+		LoadResourceRequest {
+			resource_request,
+			streams: Lox::None,
+		}
+	}
+
+	pub fn streams(mut self, streams: Vec<Stream<'a>>) -> Self {
+		self.streams = Lox::Streams(streams);
+		self
+	}
+
+	pub fn buffer(mut self, buffer: &'a mut [u8]) -> Self {
+		self.streams = Lox::Buffer(buffer);
+		self
+	}
+}
+
 pub struct ResourceResponse {
 	pub id: u64,
 	pub	url: String,
@@ -107,11 +140,24 @@ pub struct Request {
 	pub resources: Vec<ResourceRequest>,
 }
 
+pub struct LoadRequest<'a> {
+	pub resources: Vec<LoadResourceRequest<'a>>,
+}
+
+impl <'a> LoadRequest<'a> {
+	pub fn new(resources: Vec<LoadResourceRequest<'a>>) -> Self {
+		LoadRequest {
+			resources,
+		}
+	}
+}
+
 pub struct Response {
 	pub resources: Vec<ResourceResponse>,
 }
 
 /// Options for loading a resource.
+#[derive(Debug)]
 pub struct OptionResource<'a> {
 	/// The resource to apply this option to.
 	pub url: String,

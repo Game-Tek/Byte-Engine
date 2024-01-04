@@ -97,7 +97,7 @@ impl Entity for PhysicsWorld {}
 impl System for PhysicsWorld {}
 
 impl EntitySubscriber<Sphere> for PhysicsWorld {
-	async fn on_create(&'static mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
+	async fn on_create<'a>(&'a mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
 		let index = self.add_sphere(InternalSphere{ position: params.position, velocity: params.velocity, radius: params.radius, handle: handle.clone() });
 		self.spheres_map.insert(EntityHash::from(&handle), index);
 	}

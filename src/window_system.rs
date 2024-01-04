@@ -705,7 +705,7 @@ impl WindowSystem {
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	async fn on_create(&'static mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: orchestrator::EntityHandle<Window>, _window: &Window) {
+	async fn on_create<'a>(&'a mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: orchestrator::EntityHandle<Window>, _window: &Window) {
 		self.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 	}
 

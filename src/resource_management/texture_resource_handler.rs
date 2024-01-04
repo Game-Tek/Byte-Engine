@@ -1,8 +1,10 @@
 use std::{io::Read, pin::Pin};
 
+use futures::AsyncReadExt;
 use serde::{Serialize, Deserialize};
+use smol::fs::File;
 
-use crate::resource_management::GenericResourceSerialization;
+use crate::{resource_management::GenericResourceSerialization, utils};
 
 use super::{Resource, ProcessedResources, resource_manager::ResourceManager, resource_handler::ResourceHandler, Stream};
 
@@ -25,7 +27,7 @@ impl ResourceHandler for ImageResourceHandler {
 		}
 	}
 
-	fn process(&self, resource_manager: &ResourceManager, asset_url: &str,) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<ProcessedResources>, String>>>> {
+	fn process<'a>(&'a self, resource_manager: &'a ResourceManager, asset_url: &'a str,) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
 		Box::pin(async move {
 			let (bytes, _) = resource_manager.read_asset_from_source(asset_url).await.unwrap();
 			let mut decoder = png::Decoder::new(bytes.as_slice());
@@ -72,9 +74,10 @@ impl ResourceHandler for ImageResourceHandler {
 		})
 	}
 
-	fn read<'a>(&self, _resource: &Box<dyn Resource>, file: &mut std::fs::File, buffers: &mut [Stream<'a>]) -> Pin<Box<dyn std::future::Future<Output = ()> + 'static>> {
-		file.read_exact(buffers[0].buffer).unwrap();
-		Box::pin(async move { })
+	fn read<'a>(&'a self, _resource: &'a Box<dyn Resource>, file: &'a mut File, buffers: &'a mut [Stream<'a>]) -> Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+		Box::pin(async move {
+			file.read_exact(buffers[0].buffer).await.unwrap()
+		})
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {

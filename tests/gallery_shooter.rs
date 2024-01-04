@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::AudioSystem, ui::{self, Text}, physics};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
 use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
 
 #[ignore]
@@ -31,9 +31,10 @@ fn gallery_shooter() {
 
 	let mut player = orchestrator::spawn(orchestrator_handle.clone(), Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle.clone()));
 
-	trigger_action.get_mut(|ta| {
+	{
+		let mut ta = trigger_action.write_sync();
 		ta.subscribe(&player, Player::shoot);
-	});
+	}
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 
@@ -47,9 +48,10 @@ fn gallery_shooter() {
 
 	let _sun: EntityHandle<PointLight> = orchestrator::spawn(orchestrator_handle.clone(), PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
 
-	let magazine_size_text = player.get_mut(|player| {
-		orchestrator::spawn(orchestrator_handle.clone(), ui::TextComponent::new(&mut player.magazine_as_string))
-	});
+	{
+		let mut player = player.write_sync();
+		orchestrator::spawn(orchestrator_handle.clone(), ui::TextComponent::new(&mut player.magazine_as_string));
+	}
 
 	app.do_loop();
 
@@ -62,7 +64,7 @@ struct Player {
 	mesh: EntityHandle<mesh::Mesh>,
 	camera: EntityHandle<byte_engine::camera::Camera>,
 
-	audio_system: EntityHandle<dyn byte_engine::audio::audio_system::AudioSystem>,
+	audio_system: EntityHandle<byte_engine::audio::audio_system::DefaultAudioSystem>,
 	physics_world: EntityHandle<physics::PhysicsWorld>,
 
 	magazine_size: Property<usize>,
@@ -78,7 +80,7 @@ impl Component for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<dyn AudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>) -> orchestrator::EntityReturn<'static, Self> {
+	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 
@@ -87,7 +89,7 @@ impl Player {
 	
 			let camera_handle = orchestrator::spawn(orchestrator.get_handle(), byte_engine::camera::Camera::new(Vec3f::new(0.0, 0.0, 0.0)));
 	
-			orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
+			// orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
 
 			let mut magazine_size = Property::new(5);
 			let magazine_as_string = DerivedProperty::new(&mut magazine_size, |magazine_size| { magazine_size.to_string() });
@@ -112,7 +114,10 @@ impl Player {
 impl Player {
 	fn shoot(&mut self, value: &bool) {
 		if *value {
-			self.audio_system.get_mut(|audio_system| audio_system.play("gun"));
+			{
+				let mut audio_system = self.audio_system.write_sync();
+				audio_system.play("gun");
+			}
 
 			orchestrator::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0)));
 
@@ -152,11 +157,11 @@ impl Bullet {
 		}).add_post_creation_function(|s, orchestrator| {
 			let me = s.clone();
 			
-			s.get_mut(|se| {
-				se.collision_object.get_mut(|co| {
-					co.subscribe_to_collision(me, Self::on_collision);
-				})
-			})
+			{
+				let se = s.write_sync();
+				let mut co = se.collision_object.write_sync();
+				co.subscribe_to_collision(me, Self::on_collision);
+			}
 		})
 	}
 

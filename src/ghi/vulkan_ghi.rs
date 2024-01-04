@@ -854,6 +854,14 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
+	fn get_splitter(&self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter {
+		let buffer = self.buffers[buffer_handle.0 as usize];
+		let slice = unsafe {
+			std::slice::from_raw_parts_mut(buffer.pointer as *mut u8, buffer.size)
+		};
+		BufferSplitter::new(slice, offset)
+	}
+
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
 		let texture = &self.textures[texture_handle.0 as usize];
 		unsafe {

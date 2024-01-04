@@ -78,6 +78,8 @@ impl <T: Entity + ?Sized> Clone for EntityHandle<T> {
 
 use std::marker::{Unsize, FnPtr};
 use std::ops::{CoerceUnsized, DerefMut, Deref};
+
+use crate::utils;
 impl<T: Entity, U: Entity> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where
     T: Unsize<U> + ?Sized,
@@ -157,7 +159,7 @@ impl <T: Entity, V: Clone + Copy + 'static> Event<V> for EventImplementation<T, 
 
 pub struct Orchestrator {
 	systems_data: std::sync::RwLock<SystemsData>,
-	listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, Box<dyn Fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>)>)>>>,
+	listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>>>,
 	ties: std::sync::RwLock<HashMap<usize, Vec<Tie>>>,
 }
 
@@ -183,7 +185,7 @@ pub struct EntityReturn<'c, T: Entity> {
 	create: std::boxed::Box<dyn FnOnce(OrchestratorReference) -> T + 'c>,
 	post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>, OrchestratorReference) + 'c>>,
 	// listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, u32, EntityHandle<dyn Entity>)>)>,
-	listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>)>)>,
+	listens_to: Vec<(&'static str, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>,
 }
 
 impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
@@ -220,23 +222,25 @@ impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 		// TODO: Notify listener of the entities that existed before they started to listen.
 		// Maybe add a parameter to choose whether to listen retroactively or not. With a default value of true.
 
-		let b = Box::new(move |orchestrator: &Orchestrator, orchestrator_handle: OrchestratorHandle, system_to_notify: u32, component_handle: EntityHandle<dyn Entity>| {
-			let systems_data = orchestrator.systems_data.read().unwrap();
+		let b: fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()> = |orchestrator: &Orchestrator, orchestrator_handle: OrchestratorHandle, system_to_notify: u32, component_handle: EntityHandle<dyn Entity>| {
+			Box::pin(async move {
+				let systems_data = orchestrator.systems_data.read().unwrap();
 
-			let mut lock_guard = systems_data.systems[&system_to_notify].write_arc_blocking();
-			let system: &mut T = lock_guard.downcast_mut().unwrap();
+				let mut lock_guard = systems_data.systems[&system_to_notify].write_arc().await;
+				let system: &mut T = lock_guard.downcast_mut().unwrap();
 
-			let orchestrator_reference = OrchestratorReference { handle: orchestrator_handle, internal_id: system_to_notify };
+				let orchestrator_reference = OrchestratorReference { handle: orchestrator_handle, internal_id: system_to_notify };
 
-			let component = systems_data.systems[&component_handle.internal_id].read_blocking();
-			let component: &C = component.downcast_ref().unwrap();
+				let component = systems_data.systems[&component_handle.internal_id].read().await;
+				let component: &C = component.downcast_ref().unwrap();
 
-			if let Some(x) = component_handle.downcast() {
-				system.on_create(orchestrator_reference, x, component);
-			} else {
-				panic!("Failed to downcast component");
-			}
-		});
+				if let Some(x) = component_handle.downcast() {
+					system.on_create(orchestrator_reference, x, component).await;
+				} else {
+					panic!("Failed to downcast component");
+				}
+			})
+		};
 
 		self.listens_to.push((std::any::type_name::<C>(), b));
 
@@ -364,7 +368,7 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 }
 
 pub trait EntitySubscriber<T: Entity + Component + ?Sized> {
-	async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
+	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
 	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
 }
 
@@ -403,7 +407,7 @@ mod tests {
 		}
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
+			async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
 			}
 
 			async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
@@ -447,7 +451,7 @@ mod tests {
 		static mut COUNTER: u32 = 0;
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
+			async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
 				unsafe {
 					COUNTER += 1;
 				}
@@ -630,7 +634,7 @@ impl <R: Entity + 'static> IntoHandler<(), R> for R {
 			let mut listeners = orchestrator.listeners_by_class.lock().unwrap();
 			let listeners = listeners.entry(std::any::type_name::<R>()).or_insert(Vec::new());
 			for (internal_id, f) in listeners {
-				f(&orchestrator, orchestrator_handle.clone(), *internal_id, handle.clone());
+				smol::block_on(f(&orchestrator, orchestrator_handle.clone(), *internal_id, handle.clone()));
 			}
 		}
 

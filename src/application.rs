@@ -251,7 +251,7 @@ impl Application for GraphicsApplication {
 			e.render();
 		});
 
-		if !close {
+		if close {
 			self.application.close();
 		}
 

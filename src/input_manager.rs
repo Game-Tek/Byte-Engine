@@ -832,7 +832,7 @@ impl InputManager {
 }
 
 impl EntitySubscriber<Action<bool>> for InputManager {
-	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
+	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
 		let (name, r#type, input_events,) = (action.name, Types::Bool, &action.bindings);
 
 		let input_event = InputAction {
@@ -857,7 +857,7 @@ impl EntitySubscriber<Action<bool>> for InputManager {
 }
 
 impl EntitySubscriber<Action<Vector2>> for InputManager {
-	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
+	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
 		// self.create_action(action.name, Types::Vector2, &action.bindings);
 	}
 
@@ -866,7 +866,7 @@ impl EntitySubscriber<Action<Vector2>> for InputManager {
 }
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
-	async fn on_create(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
+	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
 		// let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
 
 		// self.actions_ie_map.insert(internal_handle, handle);

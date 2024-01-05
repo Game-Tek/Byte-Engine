@@ -991,12 +991,20 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 			let resources = resource_request.resources.into_iter().map(|resource| {
 				match resource.class.as_str() {
 					"Mesh" => {
-						let vertex_positions_buffer = vertex_positions_buffer.take(1024 * 1024);
-						let vertex_normals_buffer = vertex_normals_buffer.take(1024 * 1024);
-						let triangle_indices_buffer = triangle_indices_buffer.take(1024 * 1024);
-						let vertex_indices_buffer = vertex_indices_buffer.take(1024 * 1024);
-						let primitive_indices_buffer = primitive_indices_buffer.take(1024 * 1024);
-						let meshlet_stream_buffer = buffer_allocator.take(1024 * 8);
+						let mesh_resource = resource.resource.downcast_ref::<mesh_resource_handler::Mesh>().unwrap();
+
+						let triangle_stream = mesh_resource.index_streams.iter().find(|is| is.stream_type == mesh_resource_handler::IndexStreamTypes::Triangles).unwrap();
+						let vertex_indices_stream = mesh_resource.index_streams.iter().find(|is| is.stream_type == mesh_resource_handler::IndexStreamTypes::Vertices).unwrap();
+						let primitive_indices_stream = mesh_resource.index_streams.iter().find(|is| is.stream_type == mesh_resource_handler::IndexStreamTypes::Meshlets).unwrap();
+
+						let meshlet_stream = mesh_resource.meshlet_stream.as_ref().unwrap();
+						
+						let vertex_positions_buffer = vertex_positions_buffer.take(mesh_resource.vertex_count as usize * std::mem::size_of::<Vector3>());
+						let vertex_normals_buffer = vertex_normals_buffer.take(mesh_resource.vertex_count as usize * std::mem::size_of::<Vector3>());
+						let triangle_indices_buffer = triangle_indices_buffer.take(triangle_stream.count as usize * std::mem::size_of::<u16>());
+						let vertex_indices_buffer = vertex_indices_buffer.take(vertex_indices_stream.count as usize * std::mem::size_of::<u16>());
+						let primitive_indices_buffer = primitive_indices_buffer.take(primitive_indices_stream.count as usize * std::mem::size_of::<u8>());
+						let meshlet_stream_buffer = buffer_allocator.take(meshlet_stream.count as usize * 2usize);
 
 						let streams = vec![
 							resource_management::Stream{ buffer: vertex_positions_buffer, name: "Vertex.Position".to_string() },
@@ -1019,7 +1027,7 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 				resource_manager.load_resource(resource_load_request,).await
 			} { a } else { return; };
 
-			let (response, _buffer) = (resource.0, resource.1.unwrap());
+			let response = resource.0;
 
 			for resource in &response.resources {
 				match resource.class.as_str() {

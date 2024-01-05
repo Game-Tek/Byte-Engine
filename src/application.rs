@@ -62,7 +62,7 @@ use std::{borrow::BorrowMut, ops::{DerefMut, Deref}};
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
+use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -143,6 +143,14 @@ impl Application for GraphicsApplication {
 		let orchestrator_handle = application.get_orchestrator_handle();
 
 		let resource_manager_handle = orchestrator::spawn(orchestrator_handle.clone(), resource_management::resource_manager::ResourceManager::new_as_system());
+
+		{
+			let mut resource_manager = resource_manager_handle.write_sync();
+			resource_manager.add_resource_handler(MeshResourceHandler::new());
+			resource_manager.add_resource_handler(ImageResourceHandler::new());
+			resource_manager.add_resource_handler(AudioResourceHandler::new());
+			resource_manager.add_resource_handler(MaterialResourcerHandler::new());
+		}
 		
 		let window_system_handle = orchestrator::spawn(orchestrator_handle.clone(), window_system::WindowSystem::new_as_system());
 		let mut input_system_handle = orchestrator::spawn(orchestrator_handle.clone(), input_manager::InputManager::new_as_system());

@@ -247,7 +247,7 @@ impl ResourceManager {
 					size: r.get_i64("size").unwrap() as u64,
 					hash: r.get_i64("hash").unwrap() as u64,
 					class: r.get_str("class").unwrap().to_string(),
-					resource: self.deserializers[r.get_str("class").unwrap()](r.get_document("resource").unwrap()),
+					resource: self.deserializers[r.get_str("class").unwrap()](r.get_document("resource").unwrap()), // TODO: handle errors
 					required_resources: if let Ok(rr) = r.get_array("required_resources") { rr.iter().map(|e| e.as_str().unwrap().to_string()).collect() } else { vec![] },
 				}
 			).collect(),

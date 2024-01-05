@@ -131,7 +131,7 @@ struct Tie {
 }
 
 pub trait Event<T> {
-	fn fire(&self, value: &T);
+	fn fire<'f>(&self, value: &'f T);
 }
 
 #[derive(Clone)]
@@ -149,11 +149,36 @@ impl <T: Entity, V: Clone + Copy + 'static> EventImplementation<T, V> {
 	}
 }
 
-impl <T: Entity, V: Clone + Copy + 'static> Event<V> for EventImplementation<T, V> {
-	fn fire(&self, value: &V) {
+impl <'a, T: Entity, V: Clone + Copy + 'static> Event<V> for EventImplementation<T, V> {
+	fn fire<'f>(&self, value: &'f V) {
 		let mut lock = self.entity.container.write_arc_blocking();
 
 		(self.endpoint)(lock.deref_mut(), value);
+	}
+}
+
+#[derive(Clone)]
+pub struct AsyncEventImplementation<T, V, R> where T: Entity, R: std::future::Future<Output = ()> {
+	entity: EntityHandle<T>,
+	endpoint: fn(&mut T, &V) -> R,
+}
+
+impl <T: Entity, V, R: std::future::Future<Output = ()>> AsyncEventImplementation<T, V, R> {
+	pub fn new(entity: EntityHandle<T>, endpoint: fn(&mut T, &V) -> R) -> Self {
+		Self {
+			entity,
+			endpoint,
+		}
+	}
+}
+
+impl <T: Entity, V, R: std::future::Future<Output = ()>> Event<V> for AsyncEventImplementation<T, V, R> {
+	fn fire<'f>(&self, value: &'f V) {
+		let mut lock = self.entity.container.write_arc_blocking();
+
+		let endpoint = &self.endpoint;
+
+		smol::block_on(endpoint(lock.deref_mut(), value));
 	}
 }
 

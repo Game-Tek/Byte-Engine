@@ -116,7 +116,7 @@ impl Player {
 		if *value {
 			{
 				let mut audio_system = self.audio_system.write_sync();
-				audio_system.play("gun");
+				smol::block_on(audio_system.play("gun"));
 			}
 
 			orchestrator::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0)));

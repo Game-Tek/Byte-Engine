@@ -959,7 +959,7 @@ struct MaterialData {
 impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		
-		{
+		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
 			let response_and_data = {
 				let resource_manager = self.resource_manager.read().await;
 				resource_manager.get(mesh.get_material_id()).await.unwrap()

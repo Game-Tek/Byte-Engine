@@ -62,7 +62,7 @@ use std::{borrow::BorrowMut, ops::{DerefMut, Deref}};
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{orchestrator::{self, EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
+use crate::{core::{orchestrator::{self,}, entity::EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -125,13 +125,13 @@ impl OrchestratedApplication {
 pub struct GraphicsApplication {
 	application: OrchestratedApplication,
 	tick_count: u64,
-	file_tracker_handle: orchestrator::EntityHandle<file_tracker::FileTracker>,
-	window_system_handle: orchestrator::EntityHandle<window_system::WindowSystem>,
+	file_tracker_handle: EntityHandle<file_tracker::FileTracker>,
+	window_system_handle: EntityHandle<window_system::WindowSystem>,
 	mouse_device_handle: input_manager::DeviceHandle,
-	input_system_handle: orchestrator::EntityHandle<input_manager::InputManager>,
-	renderer_handle: orchestrator::EntityHandle<rendering::renderer::Renderer>,
-	audio_system_handle: orchestrator::EntityHandle<audio_system::DefaultAudioSystem>,
-	physics_system_handle: orchestrator::EntityHandle<physics::PhysicsWorld>,
+	input_system_handle: EntityHandle<input_manager::InputManager>,
+	renderer_handle: EntityHandle<rendering::renderer::Renderer>,
+	audio_system_handle: EntityHandle<audio_system::DefaultAudioSystem>,
+	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
 }
 
 impl Application for GraphicsApplication {
@@ -281,15 +281,15 @@ impl GraphicsApplication {
 	pub fn get_orchestrator(&self) -> std::cell::Ref<'_, orchestrator::Orchestrator> { self.application.get_orchestrator() }
 	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.application.get_mut_orchestrator() }
 
-	pub fn get_input_system_handle_ref(&self) -> &orchestrator::EntityHandle<crate::input_manager::InputManager> {
+	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<crate::input_manager::InputManager> {
 		&self.input_system_handle
 	}
 
-	pub fn get_audio_system_handle(&self) -> &orchestrator::EntityHandle<crate::audio::audio_system::DefaultAudioSystem> {
+	pub fn get_audio_system_handle(&self) -> &EntityHandle<crate::audio::audio_system::DefaultAudioSystem> {
 		&self.audio_system_handle
 	}
 
-	pub fn get_physics_world_handle(&self) -> &orchestrator::EntityHandle<crate::physics::PhysicsWorld> {
+	pub fn get_physics_world_handle(&self) -> &EntityHandle<crate::physics::PhysicsWorld> {
 		&self.physics_system_handle
 	}
 

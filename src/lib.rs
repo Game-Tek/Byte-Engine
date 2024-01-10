@@ -17,8 +17,8 @@
 
 pub mod utils;
 
+pub mod core;
 pub mod application;
-pub mod orchestrator;
 pub mod window_system;
 pub mod render_debugger;
 pub mod resource_management;

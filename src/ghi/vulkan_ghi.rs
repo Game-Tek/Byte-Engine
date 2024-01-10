@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ash::vk;
 
-use crate::{orchestrator, window_system, render_debugger::RenderDebugger, ghi::{graphics_hardware_interface, shader_compilation}};
+use crate::{core::{orchestrator, Entity}, window_system, render_debugger::RenderDebugger, ghi::{graphics_hardware_interface, shader_compilation}};
 
 #[cfg(not(test))]
 use log::{warn, error, debug};
@@ -53,8 +53,7 @@ pub struct VulkanGHI {
 	swapchains: Vec<Swapchain>,
 }
 
-impl orchestrator::Entity for VulkanGHI {}
-impl orchestrator::System for VulkanGHI {}
+impl Entity for VulkanGHI {}
 
 fn uses_to_vk_usage_flags(usage: graphics_hardware_interface::Uses) -> vk::BufferUsageFlags {
 	let mut flags = vk::BufferUsageFlags::empty();

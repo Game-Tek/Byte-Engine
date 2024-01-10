@@ -1,4 +1,5 @@
-use crate::{Vec3f, orchestrator::{EventDescription, self, Component, Entity}};
+use crate::core::{orchestrator, Entity};
+use crate::{Vec3f, core::orchestrator::{EventDescription, Component,}};
 
 pub struct Camera {
 	position: Vec3f,

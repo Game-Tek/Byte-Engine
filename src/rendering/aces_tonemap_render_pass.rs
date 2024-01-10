@@ -1,4 +1,4 @@
-use crate::{Extent, orchestrator::{self, Entity, System}, ghi};
+use crate::{Extent, core::{orchestrator::{self,}, Entity}, ghi};
 
 use super::tonemap_render_pass;
 
@@ -91,7 +91,6 @@ impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {
 }
 
 impl Entity for AcesToneMapPass {}
-impl System for AcesToneMapPass {}
 
 const TONE_MAPPING_SHADER: &'static str = r#"
 #version 450

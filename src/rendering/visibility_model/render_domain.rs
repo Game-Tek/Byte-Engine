@@ -7,12 +7,12 @@ use std::sync::{Arc, RwLock};
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
+use crate::core::{Entity, EntityHandle};
 use crate::{ghi, utils};
-use crate::orchestrator::EntityHandle;
 use crate::rendering::{mesh, directional_light, point_light};
 use crate::rendering::world_render_domain::WorldRenderDomain;
 use crate::resource_management::resource_manager::ResourceManager;
-use crate::{resource_management::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, Extent, orchestrator::{Entity, System, self, OrchestratorReference}, Vector3, camera::{self}, math};
+use crate::{resource_management::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, Extent, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
 
 struct VisibilityInfo {
 	instance_count: u32,
@@ -780,7 +780,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	fn get_transform(&self) -> Mat4f { return Mat4f::identity(); }
+	fn get_transform(&self) -> Mat4f { Mat4f::identity() }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
 		let ghi = self.ghi.write().unwrap();
 
@@ -1213,7 +1213,6 @@ impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorld
 }
 
 impl Entity for VisibilityWorldRenderDomain {}
-impl System for VisibilityWorldRenderDomain {}
 
 impl WorldRenderDomain for VisibilityWorldRenderDomain {
 	fn get_descriptor_set_template(&self) -> ghi::DescriptorSetTemplateHandle {

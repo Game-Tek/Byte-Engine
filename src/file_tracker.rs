@@ -7,7 +7,7 @@ use log::{error, warn, trace};
 use notify_debouncer_full::{notify::{*}, new_debouncer, DebounceEventResult, FileIdMap, DebouncedEvent};
 use polodb_core;
 
-use crate::orchestrator;
+use crate::core::{orchestrator, Entity};
 
 pub struct FileTracker {
 	db: polodb_core::Database,
@@ -141,5 +141,4 @@ impl FileTracker {
 	}
 }
 
-impl orchestrator::Entity for FileTracker {}
-impl orchestrator::System for FileTracker {}
+impl Entity for FileTracker {}

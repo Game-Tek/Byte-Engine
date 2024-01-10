@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, System, self, Entity, EntitySubscriber, EntityHash, Event, EventImplementation, AsyncEventImplementation,}, utils};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{EntitySubscriber, Event, EventImplementation, self,}, Entity, EntityHandle}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -1387,7 +1387,6 @@ impl InputManager {
 }
 
 impl Entity for InputManager {}
-impl System for InputManager {}
 
 trait ActionLike: Entity {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
@@ -1403,7 +1402,7 @@ pub struct Action<T: InputValue> {
 	pub events: Vec<Box<dyn Event<T>>>,
 }
 
-impl <T: InputValue> orchestrator::Entity for Action<T> {}
+impl <T: InputValue> Entity for Action<T> {}
 
 impl <T: InputValue> ActionLike for Action<T> {
 	fn get_bindings(&self) -> &[ActionBindingDescription] { &self.bindings }

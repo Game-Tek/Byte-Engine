@@ -15,7 +15,7 @@ impl UIRenderModel {
 	
 }
 
-use crate::{rendering::rendering_domain::RenderingDomain, orchestrator::{Entity, EntityReturn, EntitySubscriber, OrchestratorReference, EntityHandle}};
+use crate::{rendering::rendering_domain::RenderingDomain, core::{orchestrator::{EntityReturn, EntitySubscriber, OrchestratorReference,}, Entity, entity::EntityHandle}};
 
 use super::Text;
 

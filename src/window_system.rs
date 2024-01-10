@@ -6,7 +6,7 @@ use component_derive::Component;
 use log::{trace};
 use xcb::{Xid, x};
 
-use crate::{Extent, orchestrator::{System, self, EntitySubscriber}};
+use crate::{Extent, core::{orchestrator::{EntitySubscriber, self}, Entity, EntityHandle}};
 
 #[derive(Debug, Clone, Copy)]
 /// The keys that can be pressed on a keyboard.
@@ -289,7 +289,7 @@ pub struct WindowParameters {
 	pub id_name: String,
 }
 
-impl orchestrator::Entity for Window {}
+impl Entity for Window {}
 impl orchestrator::Component for Window {
 	// type Parameters<'a> = WindowParameters;
 }
@@ -590,8 +590,7 @@ pub struct WindowSystem {
 	windows: Vec<WindowInternal>,
 }
 
-impl orchestrator::Entity for WindowSystem {}
-impl System for WindowSystem {}
+impl Entity for WindowSystem {}
 
 /// The handle of a window.
 pub struct WindowHandle(u64);
@@ -672,7 +671,7 @@ impl WindowSystem {
 	/// 
 	/// # Returns
 	/// The operationg system handles for the window.
-	pub fn get_os_handles(&self, window_handle: &orchestrator::EntityHandle<Window>,) -> WindowOsHandles {
+	pub fn get_os_handles(&self, window_handle: &EntityHandle<Window>,) -> WindowOsHandles {
 		if window_handle.get_external_key() as usize > self.windows.len() { return WindowOsHandles{ xcb_connection: std::ptr::null_mut(), xcb_window: 0 }; }
 
 		let window = &self.windows[window_handle.get_external_key() as usize];
@@ -705,11 +704,11 @@ impl WindowSystem {
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	async fn on_create<'a>(&'a mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: orchestrator::EntityHandle<Window>, _window: &Window) {
+	async fn on_create<'a>(&'a mut self, _orchestrator: orchestrator::OrchestratorReference, _handle: EntityHandle<Window>, _window: &Window) {
 		self.create_window("Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
 	}
 
-	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<Window>, params: &Window) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Window>, params: &Window) {
 		
 	}
 }

@@ -2,7 +2,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty, Event,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{orchestrator::{self, Component, Property, DerivedProperty, Event,}, Entity, EntityHandle}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
 use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
 
 #[ignore]
@@ -88,7 +88,7 @@ struct Player {
 	magazine_capacity: usize,
 }
 
-impl orchestrator::Entity for Player {}
+impl Entity for Player {}
 
 impl Component for Player {
 	// type Parameters<'a> = EntityHandle<input_manager::Action<Vec3f>>;
@@ -174,7 +174,7 @@ struct Bullet {
 	physics_duck: EntityHandle<physics::Sphere>,
 }
 
-impl orchestrator::Entity for Bullet {}
+impl Entity for Bullet {}
 impl orchestrator::Component for Bullet {}
 
 impl Bullet {

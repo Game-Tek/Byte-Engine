@@ -2,7 +2,8 @@ use std::{io::{Read, Write}, hash::{Hasher, Hash}, pin::Pin};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use log::{info, warn, error, trace, debug};
 use smol::fs::File;
-use crate::{orchestrator, utils};
+use crate::core::{orchestrator, Entity};
+use crate::{utils};
 use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource, audio_resource_handler, Stream, LoadRequest, LoadResourceRequest, Lox};
 
 /// Resource manager.
@@ -25,8 +26,7 @@ pub struct ResourceManager {
 	deserializers: std::collections::HashMap<&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>>,
 }
 
-impl orchestrator::Entity for ResourceManager {}
-impl orchestrator::System for ResourceManager {}
+impl Entity for ResourceManager {}
 
 impl From<polodb_core::Error> for super::LoadResults {
 	fn from(error: polodb_core::Error) -> Self {

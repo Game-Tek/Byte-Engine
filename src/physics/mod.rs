@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::orchestrator::{Entity, System, EntityReturn, EntitySubscriber, EntityHandle, Component, EntityHash, EventDescription, Event, EventImplementation,};
+use crate::core::{orchestrator::{EntityReturn, EntitySubscriber, Component, EventDescription, Event, EventImplementation, self,}, Entity, EntityHandle, entity::EntityHash};
+
 
 pub struct Sphere {
 	position: Vec3f,
@@ -93,15 +94,14 @@ impl PhysicsWorld {
 }
 
 impl Entity for PhysicsWorld {}
-impl System for PhysicsWorld {}
 
 impl EntitySubscriber<Sphere> for PhysicsWorld {
-	async fn on_create<'a>(&'a mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
+	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
 		let index = self.add_sphere(InternalSphere{ position: params.position, velocity: params.velocity, radius: params.radius, handle: handle.clone() });
 		self.spheres_map.insert(EntityHash::from(&handle), index);
 	}
 
-	async fn on_update(&'static mut self, orchestrator: crate::orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
+	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Sphere>, params: &Sphere) {
 		
 	}
 }

@@ -1,6 +1,6 @@
 #![feature(const_mut_refs)]
 
-use byte_engine::{application::Application, Vec3f, orchestrator::{EntityHandle, self}, rendering::mesh, rendering::point_light::PointLight};
+use byte_engine::{application::Application, Vec3f, core::{orchestrator::{self}, EntityHandle}, rendering::mesh, rendering::point_light::PointLight};
 use maths_rs::prelude::{MatTranslate, MatScale,};
 
 #[ignore]

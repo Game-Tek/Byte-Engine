@@ -1,6 +1,6 @@
 use maths_rs::Vec3f;
 
-use crate::orchestrator::{Component, Entity};
+use crate::core::{orchestrator::Component, Entity};
 
 use super::cct;
 

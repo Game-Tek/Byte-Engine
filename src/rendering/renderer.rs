@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{orchestrator::{self, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
+use crate::{core::{orchestrator::{self,}, Entity, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 
@@ -19,9 +19,9 @@ pub struct Renderer {
 
 	window_system: EntityHandle<window_system::WindowSystem>,
 
-	visibility_render_model: orchestrator::EntityHandle<VisibilityWorldRenderDomain>,
-	ui_render_model: orchestrator::EntityHandle<UIRenderModel>,
-	tonemap_render_model: orchestrator::EntityHandle<AcesToneMapPass>,
+	visibility_render_model: EntityHandle<VisibilityWorldRenderDomain>,
+	ui_render_model: EntityHandle<UIRenderModel>,
+	tonemap_render_model: EntityHandle<AcesToneMapPass>,
 }
 
 impl Renderer {
@@ -120,7 +120,7 @@ impl Renderer {
 }
 
 impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
-	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: orchestrator::EntityHandle<window_system::Window>, window: &window_system::Window) {
+	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<window_system::Window>, window: &window_system::Window) {
 		let os_handles = self.window_system.map(|e| {
 			let e = e.read_sync();
 			e.get_os_handles(&handle)
@@ -138,4 +138,4 @@ impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
 	}
 }
 
-impl orchestrator::Entity for Renderer {}
+impl Entity for Renderer {}

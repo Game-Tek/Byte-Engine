@@ -1,4 +1,4 @@
-use crate::orchestrator;
+use crate::core::Entity;
 
 pub struct Transform {
 	matrix: maths_rs::Mat4f,
@@ -12,4 +12,4 @@ impl Transform {
 	}
 }
 
-impl orchestrator::Entity for Transform {}
+impl Entity for Transform {}

@@ -1,6 +1,6 @@
 //! Mesh component module
 
-use crate::orchestrator;
+use crate::core::{orchestrator, Entity};
 
 pub struct Mesh {
 	resource_id: &'static str,
@@ -8,7 +8,7 @@ pub struct Mesh {
 	transform: maths_rs::Mat4f,
 }
 
-impl orchestrator::Entity for Mesh {}
+impl Entity for Mesh {}
 
 impl orchestrator::Component for Mesh {
 	// type Parameters<'a> = MeshParameters;

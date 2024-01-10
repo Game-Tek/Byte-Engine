@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use crate::{orchestrator::{System, Entity, EntityReturn}, ahi::{audio_hardware_interface::AudioHardwareInterface, self}, resource_management::resource_manager};
-use crate::orchestrator::EntityHandle;
+use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, orchestrator::EntityReturn}};
 use crate::resource_management::audio_resource_handler;
 use crate::resource_management::resource_manager::ResourceManager;
 
-pub trait AudioSystem: System {
+pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
 	async fn play(&mut self, audio_asset_url: &'static str);
 
@@ -41,7 +40,6 @@ impl DefaultAudioSystem {
 }
 
 impl Entity for DefaultAudioSystem {}
-impl System for DefaultAudioSystem {}
 
 impl AudioSystem for DefaultAudioSystem {
 	async fn play(&mut self, audio_asset_url: &'static str) {

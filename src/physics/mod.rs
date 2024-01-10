@@ -8,7 +8,7 @@ pub struct Sphere {
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
-	events: Vec<Box<dyn Event<()>>>,
+	events: Vec<Box<dyn Event<EntityHandle<Sphere>>>>,
 }
 
 struct InternalSphere {
@@ -31,7 +31,7 @@ impl Sphere {
 
 	pub const fn on_collision() -> EventDescription<Self, ()> { EventDescription::new() }
 
-	pub fn subscribe_to_collision<T: Entity>(&mut self, handle: EntityHandle<T>, callback: fn(&mut T, &())) {
+	pub fn subscribe_to_collision<T: Entity>(&mut self, handle: EntityHandle<T>, callback: fn(&mut T, &EntityHandle<Sphere>)) {
 		self.events.push(Box::new(EventImplementation::new(handle, callback)));
 	}
 }
@@ -76,17 +76,16 @@ impl PhysicsWorld {
 				if collisions.contains(&(j, i)) { continue; }
 
 				if mag(a.position - b.position) < a.radius + b.radius {
-					println!("Collision!");
 					collisions.push((i, j));
 				}
 			}
 		}
 
-		for (_, j) in collisions {
+		for (i, j) in collisions {
 			self.spheres[j].handle.map(|e| {
 				let e = e.read_sync();
 				for event in &e.events {
-					event.fire(&())
+					event.fire(&self.spheres[i].handle)
 				}
 			});
 		}

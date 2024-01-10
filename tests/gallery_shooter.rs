@@ -1,6 +1,8 @@
 #![feature(const_mut_refs)]
+#![feature(async_closure)]
+#![feature(closure_lifetime_binder)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, orchestrator::{Component, EntityHandle, self, Property, DerivedProperty, Event,}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
 use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
 
 #[ignore]
@@ -21,7 +23,7 @@ fn gallery_shooter() {
 		],)
 	);
 
-	let mut trigger_action = orchestrator::spawn(orchestrator_handle.clone(), input_manager::Action::new("Trigger", &[
+	let trigger_action = orchestrator::spawn(orchestrator_handle.clone(), input_manager::Action::new("Trigger", &[
 			input_manager::ActionBindingDescription::new("Mouse.LeftButton"),
 			input_manager::ActionBindingDescription::new("Gamepad.RightTrigger"),
 		],)
@@ -29,28 +31,39 @@ fn gallery_shooter() {
 
 	let orchestrator_handle = app.get_orchestrator_handle();
 
-	let mut player = orchestrator::spawn(orchestrator_handle.clone(), Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle.clone()));
+	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
+	
+	let duck_1 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale));
+	
+	let physics_duck_1 = orchestrator::spawn(orchestrator_handle.clone(), physics::Sphere::new(Vec3f::new(0.0, 0.0, 2.0), Vec3f::new(0.0, 0.0, 0.0), 0.1));
+	
+	let duck_2 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale));
+	let duck_3 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale));
+	let duck_4 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale));
+	
+	let _sun: EntityHandle<PointLight> = orchestrator::spawn(orchestrator_handle.clone(), PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
+
+	let mut player = orchestrator::spawn(orchestrator_handle.clone(), Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle.clone(), physics_duck_1.clone()));
 
 	{
 		let mut ta = trigger_action.write_sync();
 		ta.subscribe(&player, Player::shoot);
 	}
 
-	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
-
-	let duck_1 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale));
-
-	orchestrator::spawn(orchestrator_handle.clone(), physics::Sphere::new(Vec3f::new(0.0, 0.0, 2.0), Vec3f::new(0.0, 0.0, 0.0), 0.1));
-
-	let duck_2 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale));
-	let duck_3 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale));
-	let duck_4 = orchestrator::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale));
-
-	let _sun: EntityHandle<PointLight> = orchestrator::spawn(orchestrator_handle.clone(), PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
-
 	{
 		let mut player = player.write_sync();
-		orchestrator::spawn(orchestrator_handle.clone(), ui::TextComponent::new(&mut player.magazine_as_string));
+		orchestrator::spawn(orchestrator_handle.clone(), ui::TextComponent::new(&mut player.magazine_as_string),);
+	}
+
+	{
+		let mut events: Vec<Box<dyn orchestrator::Event<bool>>> = Vec::new();
+		events.push(Box::new(orchestrator::FreeEventImplementation::new(|_: &bool| {
+			log::info!("Duck 1 collided!");
+		})));
+
+		for d in events {
+			d.fire(&true);
+		}
 	}
 
 	app.do_loop();
@@ -67,6 +80,8 @@ struct Player {
 	audio_system: EntityHandle<byte_engine::audio::audio_system::DefaultAudioSystem>,
 	physics_world: EntityHandle<physics::PhysicsWorld>,
 
+	physics_duck: EntityHandle<physics::Sphere>,
+
 	magazine_size: Property<usize>,
 	magazine_as_string: DerivedProperty<usize, String>,
 
@@ -80,7 +95,7 @@ impl Component for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>) -> orchestrator::EntityReturn<'static, Self> {
+	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'static, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 
@@ -96,6 +111,8 @@ impl Player {
 
 			Self {
 				orchestrator: orchestrator.get_handle(),
+
+				physics_duck,
 
 				audio_system: audio_system,
 				physics_world: physics_world_handle,
@@ -119,7 +136,26 @@ impl Player {
 				smol::block_on(audio_system.play("gun"));
 			}
 
-			orchestrator::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0)));
+			orchestrator::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
+
+			self.magazine_size.set(|value| {
+				if value - 1 == 0 {
+					self.magazine_capacity
+				} else {
+					value - 1
+				}
+			});
+		}
+	}
+
+	async fn async_shoot(&mut self, value: &bool) {
+		if *value {
+			{
+				let mut audio_system = self.audio_system.write_sync();
+				audio_system.play("gun").await;
+			}
+
+			orchestrator::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -135,13 +171,14 @@ impl Player {
 struct Bullet {
 	mesh: EntityHandle<mesh::Mesh>,
 	collision_object: EntityHandle<physics::Sphere>,
+	physics_duck: EntityHandle<physics::Sphere>,
 }
 
 impl orchestrator::Entity for Bullet {}
 impl orchestrator::Component for Bullet {}
 
 impl Bullet {
-	fn new(physics_world_handle: &mut EntityHandle<physics::PhysicsWorld>, position: Vec3f) -> orchestrator::EntityReturn<'_, Self> {
+	fn new(physics_world_handle: &mut EntityHandle<physics::PhysicsWorld>, position: Vec3f, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'_, Self> {
 		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
 			let mut transform = maths_rs::Mat4f::identity();
 
@@ -152,6 +189,7 @@ impl Bullet {
 
 			Self {
 				mesh: orchestrator::spawn(orchestrator.get_handle(), mesh::Mesh::new("Sphere", "solid", transform,)),
+				physics_duck,
 				collision_object,
 			}
 		}).add_post_creation_function(|s, orchestrator| {
@@ -165,7 +203,9 @@ impl Bullet {
 		})
 	}
 
-	fn on_collision(&mut self, other: &()) {
-		log::info!("Bullet collided with");
+	fn on_collision(&mut self, other: &EntityHandle<physics::Sphere>) {
+		if other == &self.physics_duck {
+			log::info!("Bullet collided with duck!");
+		}
 	}
 }

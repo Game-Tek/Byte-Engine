@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, System, self, Entity, EntitySubscriber, EntityHash, Event, EventImplementation, AsyncEventImplementation}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, orchestrator::{EntityHandle, System, self, Entity, EntitySubscriber, EntityHash, Event, EventImplementation, AsyncEventImplementation,}, utils};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -1449,8 +1449,4 @@ impl <T: InputValue + Clone + 'static> Action<T> {
 	pub fn subscribe<E: Entity>(&mut self, subscriber: &EntityHandle<E>, endpoint: fn(&mut E, &T)) {
 		self.events.push(Box::new(EventImplementation::new(subscriber.clone(), endpoint)));
 	}
-
-	// pub fn subscribe_async<E: Entity, R>(&mut self, subscriber: &EntityHandle<E>, endpoint: fn(&mut E, &T) -> R) where R: std::future::Future<Output = ()> {
-	// 	AsyncEventImplementation::new(subscriber.clone(), endpoint);
-	// }
 }

@@ -45,6 +45,16 @@ impl <T: Entity> EntityHandle<T> {
 	}
 }
 
+impl <T: Entity + ?Sized> PartialEq for EntityHandle<T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.internal_id == other.internal_id
+	}
+
+	fn ne(&self, other: &Self) -> bool {
+		self.internal_id != other.internal_id
+	}
+}
+
 fn downcast_inner<U: Entity>(decoder: &EntityWrapper<dyn Entity>) -> Option<EntityWrapper<U>> {
 	let raw: *const smol::lock::RwLock<dyn Entity> = std::sync::Arc::into_raw(decoder.clone());
 	let raw: *const smol::lock::RwLock<U> = raw.cast();
@@ -140,7 +150,7 @@ pub struct EventImplementation<T, V> where T: Entity {
 	endpoint: fn(&mut T, &V),
 }
 
-impl <T: Entity, V: Clone + Copy + 'static> EventImplementation<T, V> {
+impl <T: Entity, V: Clone + 'static> EventImplementation<T, V> {
 	pub fn new(entity: EntityHandle<T>, endpoint: fn(&mut T, &V)) -> Self {
 		Self {
 			entity,
@@ -149,7 +159,7 @@ impl <T: Entity, V: Clone + Copy + 'static> EventImplementation<T, V> {
 	}
 }
 
-impl <'a, T: Entity, V: Clone + Copy + 'static> Event<V> for EventImplementation<T, V> {
+impl <'a, T: Entity, V: Clone + 'static> Event<V> for EventImplementation<T, V> {
 	fn fire<'f>(&self, value: &'f V) {
 		let mut lock = self.entity.container.write_arc_blocking();
 
@@ -158,12 +168,31 @@ impl <'a, T: Entity, V: Clone + Copy + 'static> Event<V> for EventImplementation
 }
 
 #[derive(Clone)]
-pub struct AsyncEventImplementation<T, V, R> where T: Entity, R: std::future::Future<Output = ()> {
+pub struct FreeEventImplementation<V> {
+	endpoint: fn(&V),
+}
+
+impl <V: Clone + 'static> FreeEventImplementation<V> {
+	pub fn new(endpoint: fn(&V)) -> Self {
+		Self {
+			endpoint,
+		}
+	}
+}
+
+impl <'a, V: Clone + 'static> Event<V> for FreeEventImplementation<V> {
+	fn fire<'f>(&self, value: &'f V) {
+		(self.endpoint)(value);
+	}
+}
+
+#[derive(Clone)]
+pub struct AsyncEventImplementation<T, V, R> where T: Entity, R: std::future::Future {
 	entity: EntityHandle<T>,
 	endpoint: fn(&mut T, &V) -> R,
 }
 
-impl <T: Entity, V, R: std::future::Future<Output = ()>> AsyncEventImplementation<T, V, R> {
+impl <T: Entity, V, R: std::future::Future> AsyncEventImplementation<T, V, R> {
 	pub fn new(entity: EntityHandle<T>, endpoint: fn(&mut T, &V) -> R) -> Self {
 		Self {
 			entity,
@@ -172,7 +201,7 @@ impl <T: Entity, V, R: std::future::Future<Output = ()>> AsyncEventImplementatio
 	}
 }
 
-impl <T: Entity, V, R: std::future::Future<Output = ()>> Event<V> for AsyncEventImplementation<T, V, R> {
+impl <T: Entity, V, R: std::future::Future> Event<V> for AsyncEventImplementation<T, V, R> {
 	fn fire<'f>(&self, value: &'f V) {
 		let mut lock = self.entity.container.write_arc_blocking();
 

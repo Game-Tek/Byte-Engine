@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{EntitySubscriber, Event, EventImplementation, self,}, Entity, EntityHandle}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{self, EntitySubscriber,}, Entity, EntityHandle, event::{Event, EventImplementation}}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.

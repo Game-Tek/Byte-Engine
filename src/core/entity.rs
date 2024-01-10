@@ -74,8 +74,8 @@ impl <T: Entity + ?Sized> Clone for EntityHandle<T> {
 	}
 }
 
-use std::marker::{Unsize, FnPtr};
-use std::ops::{CoerceUnsized, DerefMut, Deref};
+use std::marker::Unsize;
+use std::ops::CoerceUnsized;
 
 impl<T: Entity, U: Entity> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where

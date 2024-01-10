@@ -1,8 +1,6 @@
-use std::borrow::{BorrowMut, Borrow};
 use std::collections::HashMap;
-use std::ops::{DerefMut, Deref};
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};

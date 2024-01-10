@@ -2,6 +2,7 @@ pub mod orchestrator;
 
 pub mod entity;
 pub mod property;
+pub mod event;
 
 pub use entity::Entity;
 pub use entity::EntityHandle;

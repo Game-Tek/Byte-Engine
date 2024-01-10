@@ -2,7 +2,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{self, orchestrator::{self, Event,}, Entity, EntityHandle, property::{Property, DerivedProperty}}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{self, orchestrator::{self,}, Entity, EntityHandle, property::{Property, DerivedProperty}, event::{Event, FreeEventImplementation}}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
 use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
 
 #[ignore]
@@ -56,8 +56,8 @@ fn gallery_shooter() {
 	}
 
 	{
-		let mut events: Vec<Box<dyn orchestrator::Event<bool>>> = Vec::new();
-		events.push(Box::new(orchestrator::FreeEventImplementation::new(|_: &bool| {
+		let mut events: Vec<Box<dyn Event<bool>>> = Vec::new();
+		events.push(Box::new(FreeEventImplementation::new(|_: &bool| {
 			log::info!("Duck 1 collided!");
 		})));
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::core::{orchestrator::{EntityReturn, EntitySubscriber, EventDescription, Event, EventImplementation, self,}, Entity, EntityHandle, entity::EntityHash};
+use crate::core::{orchestrator::{self, EntityReturn, EntitySubscriber, EventDescription,}, Entity, EntityHandle, entity::EntityHash, event::{Event, EventImplementation}};
 
 
 pub struct Sphere {

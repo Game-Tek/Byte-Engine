@@ -57,8 +57,6 @@ impl Application for BaseApplication {
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
-use std::{borrow::BorrowMut, ops::{DerefMut, Deref}};
-
 use log::{info, trace};
 use maths_rs::prelude::Base;
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::core::{orchestrator::{EntityReturn, EntitySubscriber, Component, EventDescription, Event, EventImplementation, self,}, Entity, EntityHandle, entity::EntityHash};
+use crate::core::{orchestrator::{EntityReturn, EntitySubscriber, EventDescription, Event, EventImplementation, self,}, Entity, EntityHandle, entity::EntityHash};
 
 
 pub struct Sphere {
@@ -38,7 +38,6 @@ impl Sphere {
 }
 
 impl Entity for Sphere {}
-impl Component for Sphere {}
 
 pub struct PhysicsWorld {
 	spheres: Vec<InternalSphere>,

@@ -1,5 +1,5 @@
 use crate::core::{orchestrator, Entity};
-use crate::{Vec3f, core::orchestrator::{EventDescription, Component,}};
+use crate::{Vec3f, core::orchestrator::{EventDescription,}};
 
 pub struct Camera {
 	position: Vec3f,
@@ -44,7 +44,3 @@ impl Camera {
 }
 
 impl Entity for Camera {}
-
-impl Component for Camera {
-	// type Parameters<'a> = CameraParameters;
-}

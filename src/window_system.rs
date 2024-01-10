@@ -290,9 +290,6 @@ pub struct WindowParameters {
 }
 
 impl Entity for Window {}
-impl orchestrator::Component for Window {
-	// type Parameters<'a> = WindowParameters;
-}
 
 struct WindowInternal {
 	connection: xcb::Connection,

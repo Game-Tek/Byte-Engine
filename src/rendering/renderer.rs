@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{core::{orchestrator::{self,}, Entity, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
+use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 
@@ -37,8 +37,8 @@ impl Renderer {
 
 			let orchestrator_handle = orchestrator.get_handle();
 
-			let visibility_render_model = orchestrator::spawn(orchestrator_handle.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle));
-			let ui_render_model = orchestrator::spawn(orchestrator_handle.clone(), UIRenderModel::new_as_system());
+			let visibility_render_model = core::spawn(orchestrator_handle.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle));
+			let ui_render_model = core::spawn(orchestrator_handle.clone(), UIRenderModel::new_as_system());
 			
 			let render_command_buffer;
 			let render_finished_synchronizer;
@@ -50,7 +50,7 @@ impl Renderer {
 
 				{
 					let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
-					tonemap_render_model = orchestrator::spawn(orchestrator_handle.clone(), AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
+					tonemap_render_model = core::spawn(orchestrator_handle.clone(), AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
 				}
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));

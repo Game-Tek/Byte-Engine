@@ -1425,10 +1425,6 @@ impl InputValue for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
-impl <T: Clone + InputValue + 'static> orchestrator::Component for Action<T> {
-	// type Parameters<'a> = ActionParameters<'a>;
-}
-
 impl <T: InputValue + Clone + 'static> Action<T> {
 	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action<T> {
 		Action {

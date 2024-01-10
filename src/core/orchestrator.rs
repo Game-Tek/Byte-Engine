@@ -2,17 +2,11 @@
 //! It contains systems and task to accomplish that feat.
 
 use std::{collections::HashMap, any::Any, ops::DerefMut, marker::FnPtr};
-use smol::lock::RwLock;
-
-use crate::utils;
 
 use super::{Entity, entity::{EntityHandle, EntityWrapper}};
+use crate::utils;
 
-pub trait Component: Entity {
-	// type Parameters<'a>: Send + Sync;
-}
-
-struct Tie {
+pub(crate) struct Tie {
 	update_function: std::boxed::Box<dyn Fn(&HashMap<u32, EntityStorage>, &dyn Any)>,
 	destination_system_handle: u32,
 }
@@ -89,9 +83,9 @@ impl <T: Entity, V, R: std::future::Future> Event<V> for AsyncEventImplementatio
 }
 
 pub struct Orchestrator {
-	systems_data: std::sync::RwLock<SystemsData>,
-	listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>>>,
-	ties: std::sync::RwLock<HashMap<usize, Vec<Tie>>>,
+	pub(crate) systems_data: std::sync::RwLock<SystemsData>,
+	pub(crate) listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>>>,
+	pub(crate) ties: std::sync::RwLock<HashMap<usize, Vec<Tie>>>,
 }
 
 unsafe impl Send for Orchestrator {}
@@ -100,10 +94,10 @@ pub type OrchestratorHandle = std::rc::Rc<std::cell::RefCell<Orchestrator>>;
 
 type EntityStorage = EntityWrapper<dyn Entity + 'static>;
 
-struct SystemsData {
-	counter: u32,
-	systems: HashMap<u32, EntityStorage>,
-	systems_by_name: HashMap<&'static str, u32>,
+pub(crate) struct SystemsData {
+	pub(crate) counter: u32,
+	pub(crate) systems: HashMap<u32, EntityStorage>,
+	pub(crate) systems_by_name: HashMap<&'static str, u32>,
 }
 
 pub enum PPP<T> {
@@ -113,10 +107,10 @@ pub enum PPP<T> {
 /// Entity creation functions must return this type.
 pub struct EntityReturn<'c, T: Entity> {
 	// entity: T,
-	create: std::boxed::Box<dyn FnOnce(OrchestratorReference) -> T + 'c>,
-	post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>, OrchestratorReference) + 'c>>,
+	pub(crate) create: std::boxed::Box<dyn FnOnce(OrchestratorReference) -> T + 'c>,
+	pub(crate) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>, OrchestratorReference) + 'c>>,
 	// listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, u32, EntityHandle<dyn Entity>)>)>,
-	listens_to: Vec<(&'static str, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>,
+	pub(crate) listens_to: Vec<(&'static str, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>,
 }
 
 impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
@@ -149,7 +143,7 @@ impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 		self
 	}
 
-	pub fn add_listener<C: Component>(mut self,) -> Self where T: EntitySubscriber<C> {
+	pub fn add_listener<C: Entity>(mut self,) -> Self where T: EntitySubscriber<C> {
 		// TODO: Notify listener of the entities that existed before they started to listen.
 		// Maybe add a parameter to choose whether to listen retroactively or not. With a default value of true.
 
@@ -246,20 +240,6 @@ impl Orchestrator {
 	}
 }
 
-pub struct EntityReference<T> where T: ?Sized {
-	lock: EntityWrapper<T>,
-}
-
-impl <T: ?Sized> EntityReference<T> {
-	pub fn get(&self) -> smol::lock::futures::Read<'_, T> {
-		self.lock.read()
-	}
-
-	pub fn get_mut(&self) -> smol::lock::futures::Write<'_, T> {
-		self.lock.write()
-	}
-}
-
 trait Parameter where Self: Sized {
 	fn call<F: FnOnce(Self)>(orchestrator: &Orchestrator, closure: F);
 }
@@ -298,17 +278,19 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 	}
 }
 
-pub trait EntitySubscriber<T: Entity + Component + ?Sized> {
+pub trait EntitySubscriber<T: Entity + ?Sized> {
 	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
 	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
 }
 
 #[cfg(test)]
 mod tests {
+	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}};
+
 	use super::*;
 
 	#[test]
-	fn spawn() {
+	fn spawn_entities() {
 		let mut orchestrator = Orchestrator::new_handle();
 
 		struct Component {
@@ -318,11 +300,7 @@ mod tests {
 
 		impl Entity for Component {}
 
-		impl super::Component for Component {
-			// type Parameters<'a> = ComponentParameters;
-		}
-
-		let handle: EntityHandle<Component> = super::spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let handle: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
 
 		struct System {
 
@@ -343,9 +321,9 @@ mod tests {
 			async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
 		}
 		
-		let _: EntityHandle<System> = super::spawn(orchestrator.clone(), System::new());
+		let _: EntityHandle<System> = spawn(orchestrator.clone(), System::new());
 
-		let component: EntityHandle<Component> = super::spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
 	}
 
 	#[test]
@@ -359,11 +337,7 @@ mod tests {
 
 		impl Entity for Component {}
 
-		impl super::Component for Component {
-			// type Parameters<'a> = ComponentParameters;
-		}
-
-		let handle: EntityHandle<Component> = super::spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let handle: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
 
 		struct System {
 
@@ -389,11 +363,11 @@ mod tests {
 			async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
 		}
 		
-		let _: EntityHandle<System> = super::spawn(orchestrator.clone(), System::new());
+		let _: EntityHandle<System> = spawn(orchestrator.clone(), System::new());
 		
 		assert_eq!(unsafe { COUNTER }, 0);
 
-		let component: EntityHandle<Component> = super::spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}
@@ -427,8 +401,6 @@ mod tests {
 
 		impl Entity for MyComponent {}
 
-		impl Component for MyComponent {}
-
 		struct MySystem {
 
 		}
@@ -449,9 +421,9 @@ mod tests {
 			}
 		}
 
-		let mut component_handle: EntityHandle<MyComponent> = super::spawn(orchestrator_handle.clone(), MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
+		let mut component_handle: EntityHandle<MyComponent> = spawn(orchestrator_handle.clone(), MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
 
-		let system_handle: EntityHandle<MySystem> = super::spawn(orchestrator_handle.clone(), MySystem::new(&component_handle));
+		let system_handle: EntityHandle<MySystem> = spawn(orchestrator_handle.clone(), MySystem::new(&component_handle));
 
 		component_handle.map(|c| {
 			let mut c = c.write_sync();
@@ -483,16 +455,14 @@ mod tests {
 		}
 
 		impl Entity for SourceComponent {}
-		impl Component for SourceComponent {}
 
 		impl Entity for ReceiverComponent {}
-		impl Component for ReceiverComponent {}
 
 		let mut value = Property::new(1);
 		let derived = DerivedProperty::new(&mut value, |value| value.to_string());
 
-		let mut source_component_handle: EntityHandle<SourceComponent> = super::spawn(orchestrator.clone(), SourceComponent { value, derived });
-		let receiver_component_handle: EntityHandle<ReceiverComponent> = super::spawn(orchestrator.clone(), ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
+		let mut source_component_handle: EntityHandle<SourceComponent> = spawn(orchestrator.clone(), SourceComponent { value, derived });
+		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(orchestrator.clone(), ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
 
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");
@@ -509,8 +479,8 @@ mod tests {
 }
 
 pub struct OrchestratorReference {
-	handle: OrchestratorHandle,
-	internal_id: u32,
+	pub(crate) handle: OrchestratorHandle,
+	pub(crate) internal_id: u32,
 }
 
 impl <'a> OrchestratorReference {
@@ -527,256 +497,4 @@ impl <'a> OrchestratorReference {
 	pub fn get_handle(&self) -> OrchestratorHandle {
 		self.handle.clone()
 	}
-}
-
-pub struct InternalId(pub u32);
-
-/// Handles extractor pattern for most functions passed to the orchestrator.
-pub trait IntoHandler<P, R: Entity> {
-	fn call(self, orchestrator_handle: OrchestratorHandle,) -> Option<EntityHandle<R>>;
-}
-
-impl <R: Entity + 'static> IntoHandler<(), R> for R {
-    fn call(self, orchestrator_handle: OrchestratorHandle,) -> Option<EntityHandle<R>> {
-		let internal_id = {
-			let orchestrator = orchestrator_handle.as_ref().borrow();
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			let internal_id = systems_data.counter;
-			systems_data.counter += 1;
-			internal_id
-		};
-
-		let obj = std::sync::Arc::new(RwLock::new(self));
-
-		{
-			let orchestrator = orchestrator_handle.as_ref().borrow();
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			systems_data.systems.insert(internal_id, obj.clone());
-			systems_data.systems_by_name.insert(std::any::type_name::<R>(), internal_id);
-		}
-
-		let handle = EntityHandle::<R>::new(obj, internal_id, 0);
-
-		{
-			let orchestrator = orchestrator_handle.as_ref().borrow();
-			let mut listeners = orchestrator.listeners_by_class.lock().unwrap();
-			let listeners = listeners.entry(std::any::type_name::<R>()).or_insert(Vec::new());
-			for (internal_id, f) in listeners {
-				smol::block_on(f(&orchestrator, orchestrator_handle.clone(), *internal_id, handle.clone()));
-			}
-		}
-
-
-		Some(handle)
-    }
-}
-
-impl <R: Entity + 'static> IntoHandler<(), R> for EntityReturn<'_, R> {
-    fn call(self, orchestrator_handle: OrchestratorHandle,) -> Option<EntityHandle<R>> {
-		let internal_id = {
-			let orchestrator = orchestrator_handle.as_ref().borrow();
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			let internal_id = systems_data.counter;
-			systems_data.counter += 1;
-			internal_id
-		};
-
-		let entity = (self.create)(OrchestratorReference { handle: orchestrator_handle.clone(), internal_id });
-
-		let obj = std::sync::Arc::new(RwLock::new(entity));
-
-		{
-			let orchestrator = orchestrator_handle.as_ref().borrow();
-			let mut systems_data = orchestrator.systems_data.write().unwrap();
-			systems_data.systems.insert(internal_id, obj.clone());
-			systems_data.systems_by_name.insert(std::any::type_name::<R>(), internal_id);
-		}
-
-		let mut handle = EntityHandle::<R>::new(obj, internal_id, 0);
-
-		{
-			
-
-			for f in self.post_creation_functions {
-				f(&mut handle, OrchestratorReference { handle: orchestrator_handle.clone(), internal_id });
-			}
-		}
-
-		{
-			for (type_id, f) in self.listens_to {
-				let orchestrator = orchestrator_handle.as_ref().borrow();
-
-				let mut listeners = orchestrator.listeners_by_class.lock().unwrap();
-			
-				let listeners = listeners.entry(type_id).or_insert(Vec::new());
-
-				listeners.push((internal_id, f));
-			}
-		}
-
-		Some(handle)
-    }
-}
-
-struct PropertyState<T> {
-	subscribers: Vec<std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>>,
-}
-
-pub trait PropertyLike<T> {
-	fn add_subscriber(&mut self, subscriber: std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>);
-	fn get_value(&self) -> T;
-}
-
-/// A property is a piece of data that can be read and written, that signals when it is written to.
-pub struct Property<T> {
-	value: T,
-	internal_state: std::rc::Rc<std::sync::RwLock<PropertyState<T>>>,
-}
-
-impl <T: Clone + 'static> Property<T> {
-	/// Creates a new property with the given value.
-	pub fn new(value: T) -> Self {
-		Self {
-			internal_state: std::rc::Rc::new(std::sync::RwLock::new(PropertyState { subscribers: Vec::new() })),
-			value,
-		}
-	}
-
-	pub fn link_to<S: Entity>(&mut self, handle: EntityHandle<S>, destination_property: fn() -> EventDescription<S, T>) {
-		let mut internal_state = self.internal_state.write().unwrap();
-		
-		// internal_state.receivers.push(Box::new(SinkPropertyReceiver { handle, property: destination_property }));
-	}
-
-	pub fn get(&self) -> T where T: Copy {
-		self.value
-	}
-
-	/// Sets the value of the property.
-	pub fn set(&mut self, setter: impl FnOnce(&T) -> T) {
-		self.value = setter(&self.value);
-
-		let mut internal_state = self.internal_state.write().unwrap();
-
-		for subscriber in &mut internal_state.subscribers {
-			let mut subscriber = subscriber.write().unwrap();
-			subscriber.update(&self.value);
-		}
-	}
-}
-
-pub struct DerivedProperty<F, T> {
-	internal_state: std::rc::Rc<std::sync::RwLock<DerivedPropertyState<F, T>>>,
-}
-
-struct DerivedPropertyState<F, T> {
-	deriver: fn(&F) -> T,
-	value: T,
-	subscribers: Vec<std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>>,
-}
-
-impl <F, T> Subscriber<F> for DerivedPropertyState<F, T> {
-	fn update(&mut self, value: &F) {
-		self.value = (self.deriver)(value);
-
-		for receiver in &mut self.subscribers {
-			let mut receiver = receiver.write().unwrap();
-			receiver.update(&self.value);
-		}
-	}
-}
-
-impl <F: Clone + 'static, T: Clone + 'static> DerivedProperty<F, T> {
-	pub fn new(source_property: &mut Property<F>, deriver: fn(&F) -> T) -> Self {
-		let h = std::rc::Rc::new(std::sync::RwLock::new(DerivedPropertyState { subscribers: Vec::new(), value: deriver(&source_property.value), deriver }));
-
-		source_property.add_subscriber(h.clone());
-
-		Self {
-			internal_state: h,
-		}
-	}
-
-	pub fn link_to<S: Entity>(&mut self, subscriber: &SinkProperty<T>) {
-		let mut internal_state = self.internal_state.write().unwrap();
-		internal_state.subscribers.push(subscriber.internal_state.clone());
-	}
-
-	pub fn get(&self) -> T {
-		let internal_state = self.internal_state.read().unwrap();
-		internal_state.value.clone()
-	}
-}
-
-pub struct SinkProperty<T> {
-	internal_state: std::rc::Rc<std::sync::RwLock<SinkPropertyState<T>>>,
-}
-
-pub struct SinkPropertyState<T> {
-	value: T,
-}
-
-impl <T: Clone + 'static> Subscriber<T> for SinkPropertyState<T> {
-	fn update(&mut self, value: &T) {
-		self.value = value.clone();
-	}
-}
-
-impl <T: Clone + 'static> SinkProperty<T> {
-	pub fn new(source_property: &mut impl PropertyLike<T>) -> Self {
-		let internal_state = std::rc::Rc::new(std::sync::RwLock::new(SinkPropertyState { value: source_property.get_value() }));
-
-		source_property.add_subscriber(internal_state.clone());
-
-		Self {
-			internal_state: internal_state.clone(),
-		}
-	}
-
-	pub fn from_derived<F: Clone + 'static>(source_property: &mut DerivedProperty<F, T>) -> Self {
-		let internal_state = std::rc::Rc::new(std::sync::RwLock::new(SinkPropertyState { value: source_property.get() }));
-
-		let mut source_property_internal_state = source_property.internal_state.write().unwrap();
-		source_property_internal_state.subscribers.push(internal_state.clone());
-
-		Self {
-			internal_state: internal_state.clone(),
-		}
-	}
-
-	pub fn get(&self) -> T {
-		let internal_state = self.internal_state.read().unwrap();
-		internal_state.value.clone()
-	}
-}
-
-trait Subscriber<T> {
-	fn update(&mut self, value: &T);
-}
-
-impl <T: Clone + 'static> PropertyLike<T> for Property<T> {
-	fn add_subscriber(&mut self, subscriber: std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>) {
-		let mut internal_state = self.internal_state.write().unwrap();
-		internal_state.subscribers.push(subscriber);
-	}
-
-	fn get_value(&self) -> T {
-		self.value.clone()
-	}
-}
-
-impl <F: Clone + 'static, T: Clone + 'static> PropertyLike<T> for DerivedProperty<F, T> {
-	fn add_subscriber(&mut self, subscriber: std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>) {
-		let mut internal_state = self.internal_state.write().unwrap();
-		internal_state.subscribers.push(subscriber);
-	}
-
-	fn get_value(&self) -> T {
-		let internal_state = self.internal_state.read().unwrap();
-		internal_state.value.clone()
-	}
-}
-
-pub fn spawn<E: Entity>(orchestrator_handle: OrchestratorHandle, entity: impl IntoHandler<(), E>) -> EntityHandle<E> {
-	entity.call(orchestrator_handle,).unwrap()
 }

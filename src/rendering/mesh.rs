@@ -10,10 +10,6 @@ pub struct Mesh {
 
 impl Entity for Mesh {}
 
-impl orchestrator::Component for Mesh {
-	// type Parameters<'a> = MeshParameters;
-}
-
 impl Mesh {
 	pub fn new(resource_id: &'static str, material_id: &'static str, transform: maths_rs::Mat4f) -> Self {
 		Self {

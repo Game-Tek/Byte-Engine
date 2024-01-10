@@ -1,6 +1,6 @@
 use maths_rs::Vec3f;
 
-use crate::core::{orchestrator::Component, Entity};
+use crate::core::{Entity};
 
 use super::cct;
 
@@ -19,4 +19,3 @@ impl DirectionalLight {
 }
 
 impl Entity for DirectionalLight {}
-impl Component for DirectionalLight {}

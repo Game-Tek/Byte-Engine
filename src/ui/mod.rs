@@ -1,8 +1,8 @@
-use crate::core::{orchestrator::{Component, SinkProperty, DerivedProperty}, Entity};
+use crate::core::{Entity, property::{SinkProperty, DerivedProperty}};
 
 pub mod render_model;
 
-pub trait Text: Component {
+pub trait Text {
 }
 
 pub struct TextComponent {
@@ -21,6 +21,3 @@ impl Text for TextComponent {
 }
 
 impl Entity for TextComponent {}
-impl Component for TextComponent {
-	// type Parameters<'a> = &'a str;
-}

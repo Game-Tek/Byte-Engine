@@ -13,7 +13,7 @@ impl<'a> BufferAllocator<'a> {
 		}
 	}
 
-	pub fn take<u8>(&mut self, size: usize) -> &'a mut [u8] {
+	pub fn take(&mut self, size: usize) -> &'a mut [u8] {
 		let buffer = &mut self.buffer[self.offset..][..size];
 		self.offset += size;
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.

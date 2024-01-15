@@ -435,7 +435,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				}
 				graphics_hardware_interface::Descriptor::AccelerationStructure { handle } => {
 					let mut descriptor_set_handle_option = Some(binding.descriptor_set_handle);
-					let mut acceleration_structure_handle_option = Some(handle);
+					let acceleration_structure_handle_option = Some(handle);
 
 					while let (Some(descriptor_set_handle), Some(acceleration_structure_handle)) = (descriptor_set_handle_option, acceleration_structure_handle_option) {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
@@ -1240,15 +1240,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
 		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 
-		let mut previous_synchronizer_handle: Option<graphics_hardware_interface::SynchronizerHandle> = None;
-
 		for i in 0..self.frames {
 			let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 			self.synchronizers.push(Synchronizer {
 				fence: self.create_vulkan_fence(signaled),
 				semaphore: self.create_vulkan_semaphore(name, signaled),
 			});
-			previous_synchronizer_handle = Some(synchronizer_handle);
 		}
 
 		synchronizer_handle
@@ -1300,7 +1297,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			.wait_semaphores(&wait_semaphores)
 			.image_indices(&image_indices);
 
-		unsafe { self.swapchain.queue_present(self.queue, &present_info); }
+		unsafe { self.swapchain.queue_present(self.queue, &present_info).expect("No present"); }
 	}
 
 	fn wait(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
@@ -2353,8 +2350,8 @@ impl VulkanGHI {
 						let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
 						let mut entries = [vk::SpecializationMapEntry::default(); 32];
 						let mut entry_count = 0;
-						let mut specilization_infos = [vk::SpecializationInfo::default(); 16];
-						let mut specilization_info_count = 0;
+						let specilization_infos = [vk::SpecializationInfo::default(); 16];
+						let specilization_info_count = 0;
 
 						let stages = shaders
 							.iter()
@@ -3028,7 +3025,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	fn begin(&self) {
 		let command_buffer = self.get_command_buffer();
 
-		unsafe { self.ghi.device.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty()); } 
+		unsafe { self.ghi.device.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty()).expect("No command pool reset") };
 
 		let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
@@ -3862,7 +3859,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		}
 		
 		unsafe {
-			self.ghi.device.end_command_buffer(command_buffer.command_buffer);
+			self.ghi.device.end_command_buffer(command_buffer.command_buffer).expect("Failed to end command buffer.");
 		}
 	}
 
@@ -4022,7 +4019,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 
 		let execution_completion_synchronizer = &self.ghi.synchronizers[execution_synchronizer_handle.0 as usize];
 
-		unsafe { self.ghi.device.queue_submit2(self.ghi.queue, &[submit_info], execution_completion_synchronizer.fence); }
+		unsafe { self.ghi.device.queue_submit2(self.ghi.queue, &[submit_info], execution_completion_synchronizer.fence).expect("Failed to submit command buffer."); }
 	}
 
 	fn start_region(&self, name: &str) {

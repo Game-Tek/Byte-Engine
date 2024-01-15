@@ -12,6 +12,10 @@
 #![feature(trivial_bounds)]
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
+
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 // #![warn(missing_docs)] # Disable now because we are writing a lot of code
 // #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
 

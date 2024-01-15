@@ -3,7 +3,7 @@ use futures::{AsyncReadExt, AsyncWriteExt};
 use log::{info, warn, error, trace, debug};
 use smol::fs::File;
 use crate::core::{orchestrator, Entity, entity::EntityBuilder};
-use crate::{utils};
+use crate::utils;
 use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource, audio_resource_handler, Stream, LoadRequest, LoadResourceRequest, Lox};
 
 /// Resource manager.
@@ -321,7 +321,7 @@ impl ResourceManager {
 	/// Tries to load a resource from cache.\
 	/// If the resource cannot be found/loaded or if it's become stale it will return None.
 	async fn load_data_from_cache<'a>(&self, request: LoadRequest<'a>) -> Result<Response, LoadResults> {
-		let mut offset = 0usize;
+		let offset = 0usize;
 
 		let resources = request.resources.into_iter().map(|resource_container| { // Build responses			
 			let response = ResourceResponse {
@@ -402,7 +402,7 @@ impl ResourceManager {
 
 				source_bytes = Vec::new();
 
-				request.into_reader().read_to_end(&mut source_bytes);
+				request.into_reader().read_to_end(&mut source_bytes).unwrap();
 			},
 			"local" => {
 				let path = self.realize_asset_path(url).ok_or(None)?;

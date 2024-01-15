@@ -21,11 +21,11 @@ pub fn spawn<E>(entity: impl IntoHandler<E>) -> EntityHandle<E> {
 
 	struct NoneListener {}
 	impl Listener for NoneListener {
-		fn invoke_for<T: 'static>(&self, handle: EntityHandle<T>) {
+		fn invoke_for<T: 'static>(&self, _: EntityHandle<T>) {
 			
 		}
 
-		fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
+		fn add_listener<L, T: 'static>(&self, _: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
 		}
 	}
 

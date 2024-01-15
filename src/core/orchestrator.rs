@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, any::Any, marker::FnPtr};
 
-use super::{Entity, entity::{EntityHandle, EntityWrapper}, listener::Listener};
+use super::{Entity, entity::{EntityHandle, EntityWrapper}};
 use crate::utils;
 
 pub(crate) struct Tie {
@@ -53,31 +53,6 @@ impl Orchestrator {
 
 	pub fn new_handle() -> OrchestratorHandle {
 		std::rc::Rc::new(std::cell::RefCell::new(Orchestrator::new()))
-	}
-
-	// Ties a property of a component to a property of another component.
-	fn tie_internal<S: Entity + 'static, R: Entity, SV: Any + 'static, RV: From<SV> + Any + Clone + 'static,>(&self, receiver_internal_id: u32, i: fn() -> EventDescription<S, RV>, _sender_component_handle: &EntityHandle<R>, j: fn() -> EventDescription<R, SV>) {
-		let property_function_pointer = j as *const (); // Use the property function pointer as a key to the ties hashmap.
-
-		let property = i();
-
-		let mut ties = self.ties.write().unwrap();
-
-		let update_function = Box::new(move |systems: &HashMap<u32, EntityStorage>, value: &dyn Any| {
-			// (property.setter)(systems[&receiver_internal_id].write().unwrap().downcast_mut::<S>().unwrap(), value.downcast_ref::<RV>().unwrap().clone())
-		});
-
-		if let std::collections::hash_map::Entry::Vacant(e) = ties.entry(property_function_pointer as usize) {
-			let mut ties_new = Vec::new();
-			ties_new.push(Tie { update_function, destination_system_handle: receiver_internal_id });
-			e.insert(ties_new);
-		} else {
-			let ties = ties.get_mut(&(property_function_pointer as usize)).unwrap();
-
-			if !ties.iter().any(|tie| tie.destination_system_handle == receiver_internal_id) {
-				ties.push(Tie { update_function, destination_system_handle: receiver_internal_id });
-			}
-		}
 	}
 
 	pub fn set_property<C: Entity + 'static, V: Clone + Copy + 'static>(&self, component_handle: &EntityHandle<C>, function: fn() -> EventDescription<C, V>, value: V) {
@@ -137,13 +112,13 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 mod tests {
 	use std::ops::{DerefMut, Deref};
 
-	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::{BasicListener, EntitySubscriber}, spawn_in_domain, entity::EntityBuilder};
+	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::{BasicListener, EntitySubscriber, Listener}, spawn_in_domain, entity::EntityBuilder};
 
 	use super::*;
 
 	#[test]
 	fn spawn_entities() {
-		let mut orchestrator = Orchestrator::new_handle();
+		let orchestrator = Orchestrator::new_handle();
 
 		struct Component {
 			name: String,
@@ -180,7 +155,7 @@ mod tests {
 
 	#[test]
 	fn listeners() {
-		let mut orchestrator = Orchestrator::new_handle();
+		let orchestrator = Orchestrator::new_handle();
 
 		struct Component {
 			name: String,
@@ -206,13 +181,13 @@ mod tests {
 		static mut COUNTER: u32 = 0;
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create<'a>(&'a mut self, handle: EntityHandle<Component>, component: &Component) {
+			async fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, _: &Component) {
 				unsafe {
 					COUNTER += 1;
 				}
 			}
 
-			async fn on_update(&'static mut self, handle: EntityHandle<Component>, params: &Component) {}
+			async fn on_update(&'static mut self, _: EntityHandle<Component>, _: &Component) {}
 		}
 		
 		let listener_handle = spawn(BasicListener::new());
@@ -277,7 +252,7 @@ mod tests {
 			}
 		}
 
-		let mut component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
+		let component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
 
 		let system_handle: EntityHandle<MySystem> = spawn(MySystem::new(&component_handle));
 
@@ -298,7 +273,7 @@ mod tests {
 
 	#[test]
 	fn reactivity() {
-		let mut orchestrator = Orchestrator::new_handle();
+		let orchestrator = Orchestrator::new_handle();
 
 		struct SourceComponent {
 			value: Property<u32>,
@@ -317,7 +292,7 @@ mod tests {
 		let mut value = Property::new(1);
 		let derived = DerivedProperty::new(&mut value, |value| value.to_string());
 
-		let mut source_component_handle: EntityHandle<SourceComponent> = spawn(SourceComponent { value, derived });
+		let source_component_handle: EntityHandle<SourceComponent> = spawn(SourceComponent { value, derived });
 		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
 
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
@@ -347,7 +322,6 @@ impl <'a> OrchestratorReference {
 
 	pub fn tie_self<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, consuming_property: fn() -> EventDescription<T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> EventDescription<U, V>) {
 		let orchestrator = self.handle.as_ref().borrow();
-		orchestrator.tie_internal(self.internal_id, consuming_property, sender_component_handle, j);
 	}
 
 	pub fn get_handle(&self) -> OrchestratorHandle {

@@ -2,7 +2,7 @@
 
 use std::ops::DerefMut;
 
-use byte_engine::{application::Application, Vec3f, core::{self, orchestrator::{self}, EntityHandle}, rendering::mesh, rendering::point_light::PointLight, gameplay::space::Space};
+use byte_engine::{application::Application, Vec3f, core::{self, EntityHandle}, rendering::mesh, rendering::point_light::PointLight, gameplay::space::Space};
 use maths_rs::prelude::{MatTranslate, MatScale,};
 
 #[ignore]
@@ -10,8 +10,6 @@ use maths_rs::prelude::{MatTranslate, MatScale,};
 fn gi() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
 	app.initialize(std::env::args());
-
-	let orchestrator_handle = app.get_orchestrator_handle();
 
 	let space_handle: EntityHandle<Space> = core::spawn(Space::new());
 

@@ -2,8 +2,8 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{self, orchestrator::{self,}, Entity, EntityHandle, property::{Property, DerivedProperty}, event::{Event, FreeEventImplementation}, entity::EntityBuilder}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
-use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{self, orchestrator::{self,}, Entity, EntityHandle, property::{Property, DerivedProperty}, event::{Event, FreeEventImplementation}, entity::EntityBuilder}, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::self, physics};
+use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
 #[test]
@@ -11,11 +11,9 @@ fn gallery_shooter() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
 
 	let audio_system_handle = app.get_audio_system_handle().clone();
-	let mut physics_world_handle = app.get_physics_world_handle().clone();
+	let physics_world_handle = app.get_physics_world_handle().clone();
 
 	app.initialize(std::env::args());
-
-	let orchestrator_handle = app.get_orchestrator_handle();
 
 	let lookaround_action_handle = core::spawn(input_manager::Action::new("Lookaround", &[
 				input_manager::ActionBindingDescription::new("Mouse.Position").mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),

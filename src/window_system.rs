@@ -2,8 +2,8 @@
 
 use std::ffi::c_void;
 
-use component_derive::Component;
-use log::{trace};
+use component_derive::component;
+use log::trace;
 use xcb::{Xid, x};
 
 use crate::{Extent, core::{orchestrator::{ self}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}};

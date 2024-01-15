@@ -62,7 +62,7 @@ use std::ops::DerefMut;
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle, listener}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
+use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -140,8 +140,6 @@ impl Application for GraphicsApplication {
 
 		application.initialize(std::env::args()); // TODO: take arguments
 
-		let orchestrator_handle = application.get_orchestrator_handle();
-
 		let resource_manager_handle: EntityHandle<resource_management::resource_manager::ResourceManager> = core::spawn(resource_management::resource_manager::ResourceManager::new_as_system());
 
 		{
@@ -157,7 +155,7 @@ impl Application for GraphicsApplication {
 		let mut listener = listener_handle.write_sync();
 		
 		let window_system_handle = core::spawn(window_system::WindowSystem::new_as_system(listener.deref_mut()));
-		let mut input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(listener.deref_mut()));
+		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(listener.deref_mut()));
 
 		let mouse_device_handle;
 
@@ -211,8 +209,7 @@ impl Application for GraphicsApplication {
 
 		{
 			let window_system = self.window_system_handle.get_lock();
-			let mut window_system = window_system.write_arc_blocking();
-
+			let window_system = window_system.write_arc_blocking();
 
 			{
 				let input_system = self.input_system_handle.get_lock();

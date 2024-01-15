@@ -72,7 +72,7 @@ impl FileTracker {
 				}).unwrap();
 			}
 
-			watcher.watch(path, RecursiveMode::Recursive);
+			watcher.watch(path, RecursiveMode::Recursive).expect("Failed to watch path");
 		}
 
 		let file_tracker = FileTracker {

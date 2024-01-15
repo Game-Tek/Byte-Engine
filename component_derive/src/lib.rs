@@ -3,7 +3,7 @@ use quote::ToTokens;
 use syn::parse::Parser;
 
 #[proc_macro_attribute]
-pub fn Component(_attr: TokenStream, input: TokenStream) -> TokenStream {
+pub fn component(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut ast = syn::parse_macro_input!(input as syn::DeriveInput);
 
 	if let syn::Data::Struct(ref mut data) = ast.data {

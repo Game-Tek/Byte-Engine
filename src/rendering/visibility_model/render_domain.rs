@@ -1171,7 +1171,7 @@ impl EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
-		let mut ghi = self.ghi.write().unwrap();
+		let ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
@@ -1192,7 +1192,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
-		let mut ghi = self.ghi.write().unwrap();
+		let ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 

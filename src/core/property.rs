@@ -25,7 +25,7 @@ impl <T: Clone + 'static> Property<T> {
 	}
 
 	pub fn link_to<S: Entity>(&mut self, handle: EntityHandle<S>, destination_property: fn() -> EventDescription<S, T>) {
-		let mut internal_state = self.internal_state.write().unwrap();
+		let internal_state = self.internal_state.write().unwrap();
 		
 		// internal_state.receivers.push(Box::new(SinkPropertyReceiver { handle, property: destination_property }));
 	}
@@ -132,7 +132,7 @@ impl <T: Clone + 'static> SinkProperty<T> {
 	}
 }
 
-trait Subscriber<T> {
+pub trait Subscriber<T> {
 	fn update(&mut self, value: &T);
 }
 

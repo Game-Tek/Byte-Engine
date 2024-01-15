@@ -1138,7 +1138,7 @@ pub(super) mod tests {
 	use crate::core;
 
 	pub(crate) fn present(renderer: &mut dyn GraphicsHardwareInterface) {
-		let mut window_system = window_system::WindowSystem::new();
+		let window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
@@ -1264,7 +1264,7 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn multiframe_present(renderer: &mut dyn GraphicsHardwareInterface) {
-		let mut window_system = window_system::WindowSystem::new();
+		let window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };

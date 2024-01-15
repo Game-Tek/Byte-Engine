@@ -189,7 +189,7 @@ impl Precedence for Atoms {
 	fn precedence(&self) -> u8 {
 		match self {
 			Atoms::Accessor => 4,
-			Atoms::Member{ name } => 0,
+			Atoms::Member{ .. } => 0,
 			Atoms::Literal{ value } => 0,
 			Atoms::FunctionCall{ name, parameters } => 0,
 			Atoms::Operator{ name } => {

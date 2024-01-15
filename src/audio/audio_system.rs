@@ -5,7 +5,7 @@ use crate::resource_management::resource_manager::ResourceManager;
 
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
-	async fn play(&mut self, audio_asset_url: &'static str);
+	fn play(&mut self, audio_asset_url: &'static str) -> impl std::future::Future<Output = ()>;
 
 	/// Processes audio data and sends it to the audio hardware interface.
 	fn render(&mut self);
@@ -91,7 +91,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let audio_asset_url = &playing_sound.audio_asset_url;
 				let current_sample = &playing_sound.current_sample;
 
-				let (audio_resource, audio_data) = self.audio_resources.get(audio_asset_url).unwrap();
+				let (_, audio_data) = self.audio_resources.get(audio_asset_url).unwrap();
 
 				let audio_data = &audio_data[*current_sample as usize..];
 

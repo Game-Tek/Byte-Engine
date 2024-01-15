@@ -1,7 +1,5 @@
 use std::ops::Deref;
 
-use intertrait::cast::CastRef ;
-
 use super::EntityHandle;
 
 pub trait Listener {
@@ -10,8 +8,8 @@ pub trait Listener {
 }
 
 pub trait EntitySubscriber<T: ?Sized> {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &T);
-	async fn on_update(&'static mut self, handle: EntityHandle<T>, params: &T);
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &T) -> impl std::future::Future<Output = ()>;
+	fn on_update(&'static mut self, handle: EntityHandle<T>, params: &T) -> impl std::future::Future<Output = ()>;
 }
 
 pub struct BasicListener {

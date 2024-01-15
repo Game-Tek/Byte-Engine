@@ -189,7 +189,7 @@ fn lex_parsed_node(parser_node: &parser::Node, parser_program: &parser::ProgramS
 					return Ok(n.clone());
 				}
 
-				let mut children = Vec::new();
+				let children = Vec::new();
 
 				// for field in fields {
 				// 	children.push(lex_parsed_node(&field, parser_program, program)?);

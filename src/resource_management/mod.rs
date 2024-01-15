@@ -80,7 +80,7 @@ pub struct ResourceRequest {
 	pub required_resources: Vec<String>,
 }
 
-enum Lox<'a> {
+pub enum Lox<'a> {
 	None,
 	Streams(Vec<Stream<'a>>),
 	Buffer(&'a mut [u8]),

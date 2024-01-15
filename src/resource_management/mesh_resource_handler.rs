@@ -200,8 +200,8 @@ impl ResourceHandler for MeshResourceHandler {
 			for buffer in buffers {
 				match buffer.name.as_str() {
 					"Vertex" => {
-						file.seek(std::io::SeekFrom::Start(0)).await;
-						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * mesh.vertex_components.size())]).await;
+						file.seek(std::io::SeekFrom::Start(0)).await.expect("Failed to seek to vertex buffer");
+						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * mesh.vertex_components.size())]).await.expect("Failed to read vertex buffer");
 					}
 					"Vertex.Position" => {
 						file.seek(std::io::SeekFrom::Start(0)).await.expect("Failed to seek to vertex buffer");
@@ -503,7 +503,7 @@ mod tests {
 
 		let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
 
-		let mut options = Options { resources: Vec::new(), };
+		let options = Options { resources: Vec::new(), };
 
 		let mut vertex_buffer = vec![0u8; 1024];
 		let mut index_buffer = vec![0u8; 1024];
@@ -713,7 +713,7 @@ mod tests {
 
 		let resource_request = smol::block_on(resource_manager.request_resource("Box")).expect("Failed to request resource");
 
-		let mut options = Options { resources: Vec::new(), };
+		let options = Options { resources: Vec::new(), };
 
 		let mut vertex_buffer = vec![0u8; 1024];
 		let mut index_buffer = vec![0u8; 1024];
@@ -777,7 +777,7 @@ mod tests {
 
 		let resource_request = smol::block_on(resource_manager.request_resource("Box")).expect("Failed to request resource");
 
-		let mut options = Options { resources: Vec::new(), };
+		let options = Options { resources: Vec::new(), };
 
 		let mut vertex_positions_buffer = vec![0u8; 1024];
 		let mut vertex_normals_buffer = vec![0u8; 1024];

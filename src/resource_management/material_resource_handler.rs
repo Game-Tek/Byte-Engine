@@ -103,7 +103,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 	}
 
 	fn read<'a>(&'a self, _resource: &'a Box<dyn Resource>, file: &'a mut File, buffers: &'a mut [Stream<'a>]) -> utils::BoxedFuture<()> {
-		Box::pin(async move { file.read_exact(buffers[0].buffer).await; })
+		Box::pin(async move { file.read_exact(buffers[0].buffer).await.unwrap(); })
 	}
 
 	fn process<'a>(&'a self, resource_manager: &'a ResourceManager, asset_url: &'a str,) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {

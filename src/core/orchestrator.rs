@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, any::Any, marker::FnPtr};
 
-use super::{Entity, entity::{EntityHandle, EntityWrapper}};
+use super::{Entity, entity::{EntityHandle, EntityWrapper}, listener::Listener};
 use crate::utils;
 
 pub(crate) struct Tie {
@@ -13,7 +13,7 @@ pub(crate) struct Tie {
 
 pub struct Orchestrator {
 	pub(crate) systems_data: std::sync::RwLock<SystemsData>,
-	pub(crate) listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>>>,
+	pub(crate) listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn std::any::Any>) -> utils::BoxedFuture<()>)>>>,
 	pub(crate) ties: std::sync::RwLock<HashMap<usize, Vec<Tie>>>,
 }
 
@@ -21,37 +21,36 @@ unsafe impl Send for Orchestrator {}
 
 pub type OrchestratorHandle = std::rc::Rc<std::cell::RefCell<Orchestrator>>;
 
-type EntityStorage = EntityWrapper<dyn Entity + 'static>;
+type EntityStorage = EntityWrapper<dyn std::any::Any + 'static>;
 
 pub(crate) struct SystemsData {
-	pub(crate) counter: u32,
 	pub(crate) systems: HashMap<u32, EntityStorage>,
 	pub(crate) systems_by_name: HashMap<&'static str, u32>,
 }
 
 pub enum PPP<T> {
-	PostCreationFunction(std::boxed::Box<dyn Fn(&mut T, OrchestratorReference,)>),
+	PostCreationFunction(std::boxed::Box<dyn Fn(&mut T,)>),
 }
 
 /// Entity creation functions must return this type.
-pub struct EntityReturn<'c, T: Entity> {
+pub struct EntityReturn<'c, T> {
 	// entity: T,
-	pub(crate) create: std::boxed::Box<dyn FnOnce(OrchestratorReference) -> T + 'c>,
-	pub(crate) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>, OrchestratorReference) + 'c>>,
+	pub(crate) create: std::boxed::Box<dyn FnOnce() -> T + 'c>,
+	pub(crate) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
 	// listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, u32, EntityHandle<dyn Entity>)>)>,
-	pub(crate) listens_to: Vec<(&'static str, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()>)>,
+	pub(crate) listens_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
 }
 
-impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
+impl <'c, T: 'static> EntityReturn<'c, T> {
 	pub fn new(entity: T) -> Self {
 		Self {
-			create: std::boxed::Box::new(move |_| entity),
+			create: std::boxed::Box::new(move || entity),
 			post_creation_functions: Vec::new(),
 			listens_to: Vec::new(),
 		}
 	}
 
-	pub fn new_from_function(function: impl FnOnce(OrchestratorReference) -> T + 'c) -> Self {
+	pub fn new_from_function(function: impl FnOnce() -> T + 'c) -> Self {
 		Self {
 			create: std::boxed::Box::new(function),
 			post_creation_functions: Vec::new(),
@@ -59,7 +58,7 @@ impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 		}
 	}
 
-	pub fn new_from_closure<'a, F: FnOnce(OrchestratorReference) -> T + 'c>(function: F) -> Self {
+	pub fn new_from_closure<'a, F: FnOnce() -> T + 'c>(function: F) -> Self {
 		Self {
 			create: std::boxed::Box::new(function),
 			post_creation_functions: Vec::new(),
@@ -67,37 +66,15 @@ impl <'c, T: Entity + 'static> EntityReturn<'c, T> {
 		}
 	}
 
-	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>, OrchestratorReference) + 'c) -> Self {
+	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
 		self.post_creation_functions.push(Box::new(function));
 		self
 	}
 
-	pub fn add_listener<C: Entity>(mut self,) -> Self where T: EntitySubscriber<C> {
-		// TODO: Notify listener of the entities that existed before they started to listen.
-		// Maybe add a parameter to choose whether to listen retroactively or not. With a default value of true.
-
-		let b: fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn Entity>) -> utils::BoxedFuture<()> = |orchestrator: &Orchestrator, orchestrator_handle: OrchestratorHandle, system_to_notify: u32, component_handle: EntityHandle<dyn Entity>| {
-			Box::pin(async move {
-				let systems_data = orchestrator.systems_data.read().unwrap();
-
-				let mut lock_guard = systems_data.systems[&system_to_notify].write_arc().await;
-				let system: &mut T = lock_guard.downcast_mut().unwrap();
-
-				let orchestrator_reference = OrchestratorReference { handle: orchestrator_handle, internal_id: system_to_notify };
-
-				let component = systems_data.systems[&component_handle.internal_id].read().await;
-				let component: &C = component.downcast_ref().unwrap();
-
-				if let Some(x) = component_handle.downcast() {
-					system.on_create(orchestrator_reference, x, component).await;
-				} else {
-					panic!("Failed to downcast component");
-				}
-			})
-		};
-
-		self.listens_to.push((std::any::type_name::<C>(), b));
-
+	pub fn listen_to<C>(mut self, listener: &'c impl Listener) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
+		self.listens_to.push(Box::new(move |listener_handle| {
+			listener.add_listener::<T, C>(listener_handle);
+		}));
 		self
 	}
 }
@@ -119,7 +96,7 @@ impl <E: Entity, V> EventDescription<E, V> {
 impl Orchestrator {
 	pub fn new() -> Orchestrator {
 		Orchestrator {
-			systems_data: std::sync::RwLock::new(SystemsData { counter: 0, systems: HashMap::new(), systems_by_name: HashMap::new(), }),
+			systems_data: std::sync::RwLock::new(SystemsData { systems: HashMap::new(), systems_by_name: HashMap::new(), }),
 			listeners_by_class: std::sync::Mutex::new(HashMap::new()),
 			ties: std::sync::RwLock::new(HashMap::new()),
 		}
@@ -207,14 +184,16 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 	}
 }
 
-pub trait EntitySubscriber<T: Entity + ?Sized> {
-	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
-	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<T>, params: &T);
+pub trait EntitySubscriber<T: ?Sized> {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &T);
+	async fn on_update(&'static mut self, handle: EntityHandle<T>, params: &T);
 }
 
 #[cfg(test)]
 mod tests {
-	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}};
+	use std::ops::{DerefMut, Deref};
+
+use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::BasicListener, spawn_in_domain};
 
 	use super::*;
 
@@ -229,7 +208,7 @@ mod tests {
 
 		impl Entity for Component {}
 
-		let handle: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let handle: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
 
 		struct System {
 
@@ -244,15 +223,15 @@ mod tests {
 		}
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
+			async fn on_create<'a>(&'a mut self, handle: EntityHandle<Component>, component: &Component) {
 			}
 
-			async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
+			async fn on_update(&'static mut self, handle: EntityHandle<Component>, params: &Component) {}
 		}
 		
-		let _: EntityHandle<System> = spawn(orchestrator.clone(), System::new());
+		let _: EntityHandle<System> = spawn(System::new());
 
-		let component: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
 	}
 
 	#[test]
@@ -266,7 +245,7 @@ mod tests {
 
 		impl Entity for Component {}
 
-		let handle: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let handle: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
 
 		struct System {
 
@@ -275,28 +254,32 @@ mod tests {
 		impl Entity for System {}
 
 		impl System {
-			fn new<'c>() -> EntityReturn<'c, System> {
-				EntityReturn::new(System {}).add_listener::<Component>()
+			fn new<'c>(listener: &'c impl Listener) -> EntityReturn<'c, System> {
+				EntityReturn::new(System {}).listen_to::<Component>(listener)
 			}
 		}
 
 		static mut COUNTER: u32 = 0;
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, component: &Component) {
+			async fn on_create<'a>(&'a mut self, handle: EntityHandle<Component>, component: &Component) {
 				unsafe {
 					COUNTER += 1;
 				}
 			}
 
-			async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<Component>, params: &Component) {}
+			async fn on_update(&'static mut self, handle: EntityHandle<Component>, params: &Component) {}
 		}
 		
-		let _: EntityHandle<System> = spawn(orchestrator.clone(), System::new());
+		let listener_handle = spawn(BasicListener::new());
+
+		let mut listener = listener_handle.write_sync();
+
+		let _: EntityHandle<System> = spawn_in_domain(listener.deref(), System::new(listener.deref()));
 		
 		assert_eq!(unsafe { COUNTER }, 0);
 
-		let component: EntityHandle<Component> = spawn(orchestrator.clone(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn_in_domain(listener.deref_mut(), Component { name: "test".to_string(), value: 1 });
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}
@@ -350,9 +333,9 @@ mod tests {
 			}
 		}
 
-		let mut component_handle: EntityHandle<MyComponent> = spawn(orchestrator_handle.clone(), MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
+		let mut component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
 
-		let system_handle: EntityHandle<MySystem> = spawn(orchestrator_handle.clone(), MySystem::new(&component_handle));
+		let system_handle: EntityHandle<MySystem> = spawn(MySystem::new(&component_handle));
 
 		component_handle.map(|c| {
 			let mut c = c.write_sync();
@@ -390,8 +373,8 @@ mod tests {
 		let mut value = Property::new(1);
 		let derived = DerivedProperty::new(&mut value, |value| value.to_string());
 
-		let mut source_component_handle: EntityHandle<SourceComponent> = spawn(orchestrator.clone(), SourceComponent { value, derived });
-		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(orchestrator.clone(), ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
+		let mut source_component_handle: EntityHandle<SourceComponent> = spawn(SourceComponent { value, derived });
+		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
 
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");

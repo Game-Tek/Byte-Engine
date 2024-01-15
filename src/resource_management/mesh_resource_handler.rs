@@ -204,15 +204,15 @@ impl ResourceHandler for MeshResourceHandler {
 						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * mesh.vertex_components.size())]).await;
 					}
 					"Vertex.Position" => {
-						file.seek(std::io::SeekFrom::Start(0)).await;
-						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await;
+						file.seek(std::io::SeekFrom::Start(0)).await.expect("Failed to seek to vertex buffer");
+						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await.expect("Failed to read vertex buffer");
 					}
 					"Vertex.Normal" => {
 						#[cfg(debug_assertions)]
 						if !mesh.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Normal) { error!("Requested Vertex.Normal stream but mesh does not have normals."); continue; }
 
-						file.seek(std::io::SeekFrom::Start(mesh.vertex_count as u64 * 12)).await; // 12 bytes per vertex
-						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await;
+						file.seek(std::io::SeekFrom::Start(mesh.vertex_count as u64 * 12)).await.expect("Failed to seek to vertex buffer");
+						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await.expect("Failed to read vertex buffer");
 					}
 					"TriangleIndices" => {
 						#[cfg(debug_assertions)]

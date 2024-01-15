@@ -9,7 +9,7 @@ impl UIRenderModel {
 		}
 	}
 
-	pub fn new_as_system() -> EntityReturn<'static, Self> {
+	pub fn new_as_system<'a>() -> EntityReturn<'a, Self> {
 		EntityReturn::new(UIRenderModel::new())
 	}
 	

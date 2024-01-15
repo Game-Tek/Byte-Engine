@@ -353,7 +353,7 @@ impl<'a> BufferSplitter<'a> {
 		}
 	}
 
-	pub fn take<u8>(&mut self, size: usize) -> &'a mut [u8] {
+	pub fn take(&mut self, size: usize) -> &'a mut [u8] {
 		let buffer = &mut self.buffer[self.offset..][..size];
 		self.offset += size;
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
@@ -1135,15 +1135,17 @@ pub(super) mod tests {
 		// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 	}
 
+	use crate::core;
+
 	pub(crate) fn present(renderer: &mut dyn GraphicsHardwareInterface) {
 		let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let window_handle = window_system.create_window("Renderer Test", extent, "test");
+		let window_handle = core::spawn(window_system::Window::new("Renderer Test", extent));
 
-		let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
+		let swapchain = renderer.bind_to_window(&window_system.get_os_handles(&window_handle));
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1267,9 +1269,9 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let window_handle = window_system.create_window("Renderer Test", extent, "test");
+		let window_handle = core::spawn(window_system::Window::new("Renderer Test", extent));
 
-		let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
+		let swapchain = renderer.bind_to_window(&window_system.get_os_handles(&window_handle));
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,

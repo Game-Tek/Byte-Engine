@@ -61,7 +61,7 @@ impl AcesToneMapPass {
     }
 
 	pub fn new_as_system(ghi: &mut dyn ghi::GraphicsHardwareInterface, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> orchestrator::EntityReturn<Self> {
-		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
+		orchestrator::EntityReturn::new_from_function(move || {
 			AcesToneMapPass::new(ghi, source_image, result_image)
 		})
 	}

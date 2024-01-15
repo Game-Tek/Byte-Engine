@@ -5,35 +5,37 @@ downcast_rs::impl_downcast!(Entity);
 pub(super) type EntityWrapper<T> = std::sync::Arc<smol::lock::RwLock<T>>;
 
 #[derive(Debug,)]
-pub struct EntityHandle<T: Entity + ?Sized> {
+pub struct EntityHandle<T: ?Sized> {
 	pub(super) container: EntityWrapper<T>,
 	pub(super) internal_id: u32,
-	external_id: u32,
 }
 
 pub type EntityHash = u32;
 
-impl <T: Entity + ?Sized> From<&EntityHandle<T>> for EntityHash {
+impl <T: ?Sized> From<&EntityHandle<T>> for EntityHash {
 	fn from(handle: &EntityHandle<T>) -> Self {
 		handle.internal_id
 	}
 }
 
-impl <T: Entity> EntityHandle<T> {
-	pub fn new(object: EntityWrapper<T>, internal_id: u32, external_id: u32) -> Self {
+impl <T: ?Sized> EntityHandle<T> {
+	pub fn new(object: EntityWrapper<T>, internal_id: u32,) -> Self {
 		Self {
 			container: object,
-			internal_id: internal_id,
-			external_id: external_id,
+			internal_id,
 		}
 	}
 
-	pub fn get_external_key(&self) -> u32 {
-		self.external_id
+	pub fn downcast<U>(&self) -> Option<EntityHandle<U>> where T: std::any::Any {
+		let down = downcast_inner::<T, U>(&self.container);
+		Some(EntityHandle {
+			container: down?,
+			internal_id: self.internal_id,
+		})
 	}
 }
 
-impl <T: Entity + ?Sized> PartialEq for EntityHandle<T> {
+impl <T: ?Sized> PartialEq for EntityHandle<T> {
 	fn eq(&self, other: &Self) -> bool {
 		self.internal_id == other.internal_id
 	}
@@ -43,9 +45,17 @@ impl <T: Entity + ?Sized> PartialEq for EntityHandle<T> {
 	}
 }
 
-fn downcast_inner<U: Entity>(decoder: &EntityWrapper<dyn Entity>) -> Option<EntityWrapper<U>> {
-	let raw: *const smol::lock::RwLock<dyn Entity> = std::sync::Arc::into_raw(decoder.clone());
-	let raw: *const smol::lock::RwLock<U> = raw.cast();
+impl <T: ?Sized> Eq for EntityHandle<T> {}
+
+impl <T: ?Sized> std::hash::Hash for EntityHandle<T> {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		self.internal_id.hash(state);
+	}
+}
+
+fn downcast_inner<F: ?Sized, T>(decoder: &EntityWrapper<F>) -> Option<EntityWrapper<T>> {
+	let raw: *const smol::lock::RwLock<F> = std::sync::Arc::into_raw(decoder.clone());
+	let raw: *const smol::lock::RwLock<T> = raw.cast();
 	
 	// SAFETY: This is safe because the pointer orignally came from an Arc
 	// with the same size and alignment since we've checked (via Any) that
@@ -53,23 +63,11 @@ fn downcast_inner<U: Entity>(decoder: &EntityWrapper<dyn Entity>) -> Option<Enti
 	Some(unsafe { std::sync::Arc::from_raw(raw) })
 }
 
-impl EntityHandle<dyn Entity> {
-	pub fn downcast<U: Entity>(&self) -> Option<EntityHandle<U>> {
-		let down = downcast_inner::<U>(&self.container);
-		Some(EntityHandle {
-			container: down?,
-			internal_id: self.internal_id,
-			external_id: self.external_id,
-		})
-	}
-}
-
-impl <T: Entity + ?Sized> Clone for EntityHandle<T> {
+impl <T: ?Sized> Clone for EntityHandle<T> {
 	fn clone(&self) -> Self {
 		Self {
 			container: self.container.clone(),
 			internal_id: self.internal_id,
-			external_id: self.external_id,
 		}
 	}
 }
@@ -82,7 +80,7 @@ where
     T: Unsize<U> + ?Sized,
     U: ?Sized {}
 
-impl <T: Entity> EntityHandle<T> {
+impl <T> EntityHandle<T> {
 	// pub fn sync_get<'a, R>(&self, function: impl FnOnce(&'a T) -> R) -> R {
 	// 	let lock = self.container.read_arc_blocking();
 	// 	function(lock.deref())

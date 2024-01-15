@@ -57,10 +57,12 @@ impl Application for BaseApplication {
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
+use std::ops::DerefMut;
+
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
+use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle, listener}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -140,7 +142,7 @@ impl Application for GraphicsApplication {
 
 		let orchestrator_handle = application.get_orchestrator_handle();
 
-		let resource_manager_handle = core::spawn(orchestrator_handle.clone(), resource_management::resource_manager::ResourceManager::new_as_system());
+		let resource_manager_handle: EntityHandle<resource_management::resource_manager::ResourceManager> = core::spawn(resource_management::resource_manager::ResourceManager::new_as_system());
 
 		{
 			let mut resource_manager = resource_manager_handle.write_sync();
@@ -149,9 +151,13 @@ impl Application for GraphicsApplication {
 			resource_manager.add_resource_handler(AudioResourceHandler::new());
 			resource_manager.add_resource_handler(MaterialResourcerHandler::new());
 		}
+
+		let listener_handle = core::spawn(core::listener::BasicListener::new());
+
+		let mut listener = listener_handle.write_sync();
 		
-		let window_system_handle = core::spawn(orchestrator_handle.clone(), window_system::WindowSystem::new_as_system());
-		let mut input_system_handle = core::spawn(orchestrator_handle.clone(), input_manager::InputManager::new_as_system());
+		let window_system_handle = core::spawn(window_system::WindowSystem::new_as_system(listener.deref_mut()));
+		let mut input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(listener.deref_mut()));
 
 		let mouse_device_handle;
 
@@ -173,17 +179,17 @@ impl Application for GraphicsApplication {
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 		}
 
-		let file_tracker_handle = core::spawn(orchestrator_handle.clone(), file_tracker::FileTracker::new());
+		let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = core::spawn(orchestrator_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle.clone()));
+		let renderer_handle = core::spawn(rendering::renderer::Renderer::new_as_system(listener.deref_mut(), window_system_handle.clone(), resource_manager_handle.clone()));
 
-		core::spawn(orchestrator_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new());
+		core::spawn::<rendering::render_orchestrator::RenderOrchestrator>(rendering::render_orchestrator::RenderOrchestrator::new());
 
-		core::spawn(orchestrator_handle.clone(), window_system::Window{ _internal_data: 0, name: "Main Window".to_string(), extent: crate::Extent { width: 1920, height: 1080, depth: 1 }, id_name: "main_window".to_string() });
+		core::spawn(window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
 
-		let audio_system_handle = core::spawn(orchestrator_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
+		let audio_system_handle = core::spawn(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
 
-		let physics_system_handle = core::spawn(orchestrator_handle.clone(), physics::PhysicsWorld::new_as_system());
+		let physics_system_handle = core::spawn(physics::PhysicsWorld::new_as_system(listener.deref_mut()));
 
 		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle }
 	}
@@ -211,9 +217,8 @@ impl Application for GraphicsApplication {
 			{
 				let input_system = self.input_system_handle.get_lock();
 				let mut input_system = input_system.write_arc_blocking();
-
 				
-				while let Some(event) = window_system.update_window(0) {
+				window_system.update_windows(|_, event| {
 					match event {
 						window_system::WindowEvents::Close => { close = true },
 						window_system::WindowEvents::Button { pressed, button } => {
@@ -233,7 +238,7 @@ impl Application for GraphicsApplication {
 						},
 						_ => { }
 					}
-				}
+				});
 			}
 		}
 

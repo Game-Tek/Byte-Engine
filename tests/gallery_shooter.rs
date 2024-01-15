@@ -17,33 +17,31 @@ fn gallery_shooter() {
 
 	let orchestrator_handle = app.get_orchestrator_handle();
 
-	let lookaround_action_handle = core::spawn(orchestrator_handle.clone(), input_manager::Action::new("Lookaround", &[
-			input_manager::ActionBindingDescription::new("Mouse.Position").mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
-			input_manager::ActionBindingDescription::new("Gamepad.RightStick"),
-		],)
-	);
+	let lookaround_action_handle = core::spawn(input_manager::Action::new("Lookaround", &[
+				input_manager::ActionBindingDescription::new("Mouse.Position").mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
+				input_manager::ActionBindingDescription::new("Gamepad.RightStick"),
+			],));
 
-	let trigger_action = core::spawn(orchestrator_handle.clone(), input_manager::Action::new("Trigger", &[
-			input_manager::ActionBindingDescription::new("Mouse.LeftButton"),
-			input_manager::ActionBindingDescription::new("Gamepad.RightTrigger"),
-		],)
-	);
+	let trigger_action = core::spawn(input_manager::Action::new("Trigger", &[
+				input_manager::ActionBindingDescription::new("Mouse.LeftButton"),
+				input_manager::ActionBindingDescription::new("Gamepad.RightTrigger"),
+			],));
 
 	let orchestrator_handle = app.get_orchestrator_handle();
 
 	let scale = maths_rs::Mat4f::from_scale(Vec3f::new(0.1, 0.1, 0.1));
 	
-	let duck_1 = core::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale));
+	let duck_1 = core::spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 2.0)) * scale));
 	
-	let physics_duck_1 = core::spawn(orchestrator_handle.clone(), physics::Sphere::new(Vec3f::new(0.0, 0.0, 2.0), Vec3f::new(0.0, 0.0, 0.0), 0.1));
+	let physics_duck_1 = core::spawn(physics::Sphere::new(Vec3f::new(0.0, 0.0, 2.0), Vec3f::new(0.0, 0.0, 0.0), 0.1));
 	
-	let duck_2 = core::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale));
-	let duck_3 = core::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale));
-	let duck_4 = core::spawn(orchestrator_handle.clone(), mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale));
+	let duck_2 = core::spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(2.0, 0.0, 0.0)) * scale));
+	let duck_3 = core::spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(-2.0, 0.0, 0.0)) * scale));
+	let duck_4 = core::spawn(mesh::Mesh::new("Box", "solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, -2.0)) * scale));
 	
-	let _sun: EntityHandle<PointLight> = core::spawn(orchestrator_handle.clone(), PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
+	let _sun: EntityHandle<PointLight> = core::spawn(PointLight::new(Vec3f::new(0.0, 2.5, -1.5), 4500.0));
 
-	let mut player = core::spawn(orchestrator_handle.clone(), Player::new(lookaround_action_handle, audio_system_handle, physics_world_handle.clone(), physics_duck_1.clone()));
+	let mut player = core::spawn(Player::new(orchestrator_handle, lookaround_action_handle, audio_system_handle, physics_world_handle.clone(), physics_duck_1.clone()));
 
 	{
 		let mut ta = trigger_action.write_sync();
@@ -52,7 +50,7 @@ fn gallery_shooter() {
 
 	{
 		let mut player = player.write_sync();
-		core::spawn(orchestrator_handle.clone(), ui::TextComponent::new(&mut player.magazine_as_string),);
+		core::spawn(ui::TextComponent::new(&mut player.magazine_as_string));
 	}
 
 	{
@@ -91,14 +89,14 @@ struct Player {
 impl Entity for Player {}
 
 impl Player {
-	fn new(lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'static, Self> {
-		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
+	fn new(orchestrator: orchestrator::OrchestratorHandle, lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'static, Self> {
+		orchestrator::EntityReturn::new_from_closure(move || {
 			let mut transform = maths_rs::Mat4f::identity();
 
 			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.4f32));
 			transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.03, 0.2));
 	
-			let camera_handle = core::spawn(orchestrator.get_handle(), byte_engine::camera::Camera::new(Vec3f::new(0.0, 0.0, 0.0)));
+			let camera_handle = core::spawn(byte_engine::camera::Camera::new(Vec3f::new(0.0, 0.0, 0.0)));
 	
 			// orchestrator.tie(&camera_handle, byte_engine::camera::Camera::orientation, &lookaround, input_manager::Action::value);
 
@@ -106,7 +104,7 @@ impl Player {
 			let magazine_as_string = DerivedProperty::new(&mut magazine_size, |magazine_size| { magazine_size.to_string() });
 
 			Self {
-				orchestrator: orchestrator.get_handle(),
+				orchestrator,
 
 				physics_duck,
 
@@ -114,7 +112,7 @@ impl Player {
 				physics_world: physics_world_handle,
 
 				camera: camera_handle,
-				mesh: core::spawn(orchestrator.get_handle(), mesh::Mesh::new("Box", "solid", transform)),
+				mesh: core::spawn(mesh::Mesh::new("Box", "solid", transform)),
 
 				magazine_size,
 				magazine_as_string,
@@ -132,7 +130,7 @@ impl Player {
 				smol::block_on(audio_system.play("gun"));
 			}
 
-			core::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
+			core::spawn::<Bullet>(Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -151,7 +149,7 @@ impl Player {
 				audio_system.play("gun").await;
 			}
 
-			core::spawn(self.orchestrator.clone(), Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
+			core::spawn::<Bullet>(Bullet::new(&mut self.physics_world, Vec3f::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -174,20 +172,20 @@ impl Entity for Bullet {}
 
 impl Bullet {
 	fn new(physics_world_handle: &mut EntityHandle<physics::PhysicsWorld>, position: Vec3f, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'_, Self> {
-		orchestrator::EntityReturn::new_from_closure(move |orchestrator| {
+		orchestrator::EntityReturn::new_from_closure(move || {
 			let mut transform = maths_rs::Mat4f::identity();
 
 			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 0.0));
 			transform *= maths_rs::Mat4f::from_scale(Vec3f::new(0.05, 0.05, 0.05));
 
-			let collision_object = core::spawn(orchestrator.get_handle(), physics::Sphere::new(position, Vec3f::new(0.0, 0.0, 0.1), 0.1));
+			let collision_object = core::spawn(physics::Sphere::new(position, Vec3f::new(0.0, 0.0, 0.1), 0.1));
 
 			Self {
-				mesh: core::spawn(orchestrator.get_handle(), mesh::Mesh::new("Sphere", "solid", transform,)),
+				mesh: core::spawn(mesh::Mesh::new("Sphere", "solid", transform,)),
 				physics_duck,
 				collision_object,
 			}
-		}).add_post_creation_function(|s, orchestrator| {
+		}).add_post_creation_function(|s| {
 			let me = s.clone();
 			
 			{

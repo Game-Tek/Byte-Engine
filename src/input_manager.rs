@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{self, EntitySubscriber,}, Entity, EntityHandle, event::{Event, EventImplementation}}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{self, EntitySubscriber,}, Entity, EntityHandle, event::{Event, EventImplementation}, listener::Listener}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -279,11 +279,11 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<'static, InputManager> {
+	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> orchestrator::EntityReturn<'a, InputManager> {
 		orchestrator::EntityReturn::new(Self::new())
-			.add_listener::<Action<bool>>()
-			.add_listener::<Action<Vector2>>()
-			.add_listener::<Action<Vector3>>()
+			.listen_to::<Action<bool>>(listener)
+			.listen_to::<Action<Vector2>>(listener)
+			.listen_to::<Action<Vector3>>(listener)
 	}
 
 	/// Registers a device class/type.
@@ -832,7 +832,7 @@ impl InputManager {
 }
 
 impl EntitySubscriber<Action<bool>> for InputManager {
-	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
 		let (name, r#type, input_events,) = (action.name, Types::Bool, &action.bindings);
 
 		let input_event = InputAction {
@@ -852,29 +852,31 @@ impl EntitySubscriber<Action<bool>> for InputManager {
 		self.actions.push(input_event);
 	}
 
-	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
+	async fn on_update(&'static mut self, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
 	}
 }
 
 impl EntitySubscriber<Action<Vector2>> for InputManager {
-	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
 		// self.create_action(action.name, Types::Vector2, &action.bindings);
 	}
 
-	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
+	async fn on_update(&'static mut self, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
 	}
 }
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
-	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
 		// let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
 
 		// self.actions_ie_map.insert(internal_handle, handle);
 	}
 
-	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
+	async fn on_update(&'static mut self, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
 	}
 }
+
+impl Entity for InputManager {}
 
 #[cfg(test)]
 mod tests {
@@ -1374,19 +1376,6 @@ impl Extract<Vector3> for Value {
 		}
 	}
 }
-
-impl InputManager {
-	pub fn get_action_value<T: InputValue + Clone + 'static>(&self, action_handle: &EntityHandle<Action<T>>) -> T where Value: Extract<T> {
-		let state = self.get_action_state(ActionHandle(action_handle.get_external_key()), &DeviceHandle(0));
-		state.value.extract()
-	}
-
-	pub fn set_action_value<T: InputValue + Clone + 'static>(&mut self, _action_handle: &EntityHandle<Action<T>>, _value: T) {
-
-	}
-}
-
-impl Entity for InputManager {}
 
 trait ActionLike: Entity {
 	fn get_bindings(&self) -> &[ActionBindingDescription];

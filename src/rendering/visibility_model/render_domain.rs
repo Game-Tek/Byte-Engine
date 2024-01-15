@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
+use crate::core::listener::Listener;
 use crate::core::{Entity, EntityHandle};
 use crate::{ghi, utils};
 use crate::rendering::{mesh, directional_light, point_light};
@@ -141,8 +142,8 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'a, Self> {
-		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
+	pub fn new<'a>(listener: &'a impl Listener, ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'a, Self> {
+		orchestrator::EntityReturn::new_from_function(move || {
 			let occlusion_map;
 			let transfer_synchronizer;
 			let transfer_command_buffer;
@@ -579,10 +580,10 @@ impl VisibilityWorldRenderDomain {
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
-			.add_listener::<camera::Camera>()
-			.add_listener::<mesh::Mesh>()
-			.add_listener::<directional_light::DirectionalLight>()
-			.add_listener::<point_light::PointLight>()
+			.listen_to::<camera::Camera>(listener)
+			.listen_to::<mesh::Mesh>(listener)
+			.listen_to::<directional_light::DirectionalLight>(listener)
+			.listen_to::<point_light::PointLight>(listener)
 	}
 
 	fn load_material(&mut self, (response, buffer): (resource_management::Response, Vec<u8>),) {	
@@ -911,11 +912,11 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
 		self.camera = Some(handle);
 	}
 
-	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<camera::Camera>, params: &camera::Camera) {
+	async fn on_update(&'static mut self, handle: EntityHandle<camera::Camera>, params: &camera::Camera) {
 		
 	}
 }
@@ -955,7 +956,7 @@ struct MaterialData {
 }
 
 impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		
 		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
 			let response_and_data = {
@@ -1083,7 +1084,6 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 							}
 
 							let meshlet_stream = unsafe {
-								// assert_eq!(meshlet_count as usize, meshlet_stream_buffer.len() / std::mem::size_of::<Meshlet>());
 								std::slice::from_raw_parts(meshlet_stream_buffer.as_ptr() as *const Meshlet, meshlet_count as usize)
 							};
 
@@ -1163,13 +1163,13 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 		assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
 	}
 
-	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<mesh::Mesh>, params: &mesh::Mesh) {
+	async fn on_update(&'static mut self, handle: EntityHandle<mesh::Mesh>, params: &mesh::Mesh) {
 		
 	}
 }
 
 impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -1184,13 +1184,13 @@ impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for Vis
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 
-	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<directional_light::DirectionalLight>, params: &directional_light::DirectionalLight) {
+	async fn on_update(&'static mut self, handle: EntityHandle<directional_light::DirectionalLight>, params: &directional_light::DirectionalLight) {
 		
 	}
 }
 
 impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -1205,7 +1205,7 @@ impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorld
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 
-	async fn on_update(&'static mut self, orchestrator: OrchestratorReference, handle: EntityHandle<point_light::PointLight>, params: &point_light::PointLight) {
+	async fn on_update(&'static mut self, handle: EntityHandle<point_light::PointLight>, params: &point_light::PointLight) {
 		
 	}
 }

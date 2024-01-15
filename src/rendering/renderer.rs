@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
+use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle, listener::Listener}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 
@@ -25,8 +25,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new_as_system(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'static, Self> {
-		orchestrator::EntityReturn::new_from_function(move |orchestrator| {
+	pub fn new_as_system<'a>(listener: &'a mut impl Listener, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'a, Self> {
+		orchestrator::EntityReturn::new_from_function(|| {
 			let ghi_instance = Rc::new(RwLock::new(ghi::create()));
 
 			let result = {
@@ -35,10 +35,8 @@ impl Renderer {
 				ghi.create_image(Some("result"), Extent::plane(1920, 1080), ghi::Formats::RGBAu8, None, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
-			let orchestrator_handle = orchestrator.get_handle();
-
-			let visibility_render_model = core::spawn(orchestrator_handle.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle));
-			let ui_render_model = core::spawn(orchestrator_handle.clone(), UIRenderModel::new_as_system());
+			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn(VisibilityWorldRenderDomain::new(listener, ghi_instance.clone(), resource_manager_handle));
+			let ui_render_model = core::spawn(UIRenderModel::new_as_system());
 			
 			let render_command_buffer;
 			let render_finished_synchronizer;
@@ -50,7 +48,7 @@ impl Renderer {
 
 				{
 					let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
-					tonemap_render_model = core::spawn(orchestrator_handle.clone(), AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
+					tonemap_render_model = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
 				}
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
@@ -77,7 +75,7 @@ impl Renderer {
 				ui_render_model,
 				tonemap_render_model,
 			}
-		}).add_listener::<window_system::Window>()
+		}).listen_to::<window_system::Window>(listener)
 	}
 
 	pub fn render(&mut self,) {
@@ -120,7 +118,7 @@ impl Renderer {
 }
 
 impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
-	async fn on_create<'a>(&'a mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<window_system::Window>, window: &window_system::Window) {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<window_system::Window>, window: &window_system::Window) {
 		let os_handles = self.window_system.map(|e| {
 			let e = e.read_sync();
 			e.get_os_handles(&handle)
@@ -133,7 +131,7 @@ impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
 		self.swapchain_handles.push(swapchain_handle);
 	}
 
-	async fn on_update(&'static mut self, orchestrator: orchestrator::OrchestratorReference, handle: EntityHandle<window_system::Window>, params: &window_system::Window) {
+	async fn on_update(&'static mut self, handle: EntityHandle<window_system::Window>, params: &window_system::Window) {
 		
 	}
 }

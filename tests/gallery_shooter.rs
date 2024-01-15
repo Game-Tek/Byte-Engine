@@ -2,7 +2,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{self, orchestrator::{self,}, Entity, EntityHandle, property::{Property, DerivedProperty}, event::{Event, FreeEventImplementation}}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
+use byte_engine::{application::Application, Vec3f, input_manager::{self, Action}, Vector3, core::{self, orchestrator::{self,}, Entity, EntityHandle, property::{Property, DerivedProperty}, event::{Event, FreeEventImplementation}, entity::EntityBuilder}, math, rendering::mesh, rendering::point_light::PointLight, audio::audio_system::{AudioSystem, DefaultAudioSystem}, ui::{self, Text}, physics};
 use maths_rs::{prelude::{MatTranslate, MatScale, MatInverse}, vec::Vec3};
 
 #[ignore]
@@ -89,8 +89,8 @@ struct Player {
 impl Entity for Player {}
 
 impl Player {
-	fn new(orchestrator: orchestrator::OrchestratorHandle, lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'static, Self> {
-		orchestrator::EntityReturn::new_from_closure(move || {
+	fn new(orchestrator: orchestrator::OrchestratorHandle, lookaround: EntityHandle<Action<Vec3f>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_world_handle: EntityHandle<physics::PhysicsWorld>, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new_from_closure(move || {
 			let mut transform = maths_rs::Mat4f::identity();
 
 			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.25, -0.15, 0.4f32));
@@ -171,8 +171,8 @@ struct Bullet {
 impl Entity for Bullet {}
 
 impl Bullet {
-	fn new(physics_world_handle: &mut EntityHandle<physics::PhysicsWorld>, position: Vec3f, physics_duck: EntityHandle<physics::Sphere>) -> orchestrator::EntityReturn<'_, Self> {
-		orchestrator::EntityReturn::new_from_closure(move || {
+	fn new(physics_world_handle: &mut EntityHandle<physics::PhysicsWorld>, position: Vec3f, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'_, Self> {
+		EntityBuilder::new_from_closure(move || {
 			let mut transform = maths_rs::Mat4f::identity();
 
 			transform *= maths_rs::Mat4f::from_translation(Vec3f::new(0.0, 0.0, 0.0));

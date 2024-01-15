@@ -5,7 +5,8 @@ use std::sync::RwLock;
 use log::error;
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
-use crate::core::listener::Listener;
+use crate::core::entity::EntityBuilder;
+use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{Entity, EntityHandle};
 use crate::{ghi, utils};
 use crate::rendering::{mesh, directional_light, point_light};
@@ -142,8 +143,8 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(listener: &'a impl Listener, ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'a, Self> {
-		orchestrator::EntityReturn::new_from_function(move || {
+	pub fn new<'a>(listener: &'a impl Listener, ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
+		EntityBuilder::new_from_function(move || {
 			let occlusion_map;
 			let transfer_synchronizer;
 			let transfer_command_buffer;
@@ -911,7 +912,7 @@ impl VisibilityWorldRenderDomain {
 	}
 }
 
-impl orchestrator::EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
+impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
 		self.camera = Some(handle);
 	}
@@ -955,7 +956,7 @@ struct MaterialData {
 	textures: [u32; 16],
 }
 
-impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
+impl EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
 		
 		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
@@ -1168,7 +1169,7 @@ impl orchestrator::EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain 
 	}
 }
 
-impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
+impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
 		let mut ghi = self.ghi.write().unwrap();
 
@@ -1189,7 +1190,7 @@ impl orchestrator::EntitySubscriber<directional_light::DirectionalLight> for Vis
 	}
 }
 
-impl orchestrator::EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
+impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
 		let mut ghi = self.ghi.write().unwrap();
 

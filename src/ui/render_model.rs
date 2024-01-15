@@ -9,13 +9,13 @@ impl UIRenderModel {
 		}
 	}
 
-	pub fn new_as_system<'a>() -> EntityReturn<'a, Self> {
-		EntityReturn::new(UIRenderModel::new())
+	pub fn new_as_system<'a>() -> EntityBuilder<'a, Self> {
+		EntityBuilder::new(UIRenderModel::new())
 	}
 	
 }
 
-use crate::{rendering::rendering_domain::RenderingDomain, core::{orchestrator::{EntityReturn, EntitySubscriber, OrchestratorReference,}, Entity, entity::EntityHandle}};
+use crate::{rendering::rendering_domain::RenderingDomain, core::{Entity, entity::EntityBuilder}};
 
 use super::Text;
 

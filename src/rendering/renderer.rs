@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle, listener::Listener}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
+use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
 use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
 
@@ -25,8 +25,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new_as_system<'a>(listener: &'a mut impl Listener, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> orchestrator::EntityReturn<'a, Self> {
-		orchestrator::EntityReturn::new_from_function(|| {
+	pub fn new_as_system<'a>(listener: &'a mut impl Listener, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
+		EntityBuilder::new_from_function(|| {
 			let ghi_instance = Rc::new(RwLock::new(ghi::create()));
 
 			let result = {
@@ -117,7 +117,7 @@ impl Renderer {
 	}
 }
 
-impl orchestrator::EntitySubscriber<window_system::Window> for Renderer {
+impl EntitySubscriber<window_system::Window> for Renderer {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<window_system::Window>, window: &window_system::Window) {
 		let os_handles = self.window_system.map(|e| {
 			let e = e.read_sync();

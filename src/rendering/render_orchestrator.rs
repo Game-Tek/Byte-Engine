@@ -1,6 +1,6 @@
 //! The render orchestrator is responsible for managing the render passes and the render domains.
 
-use crate::{insert_return_length, core::{orchestrator::{self,}, Entity}};
+use crate::{insert_return_length, core::{orchestrator::{self,}, Entity, entity::EntityBuilder}};
 
 #[derive(Clone)]
 pub struct RenderPass {
@@ -13,8 +13,8 @@ pub struct RenderOrchestrator {
 }
 
 impl RenderOrchestrator {
-	pub fn new() -> orchestrator::EntityReturn<'static, RenderOrchestrator> {
-		orchestrator::EntityReturn::new(Self { render_passes: Vec::new(), })
+	pub fn new() -> EntityBuilder<'static, RenderOrchestrator> {
+		EntityBuilder::new(Self { render_passes: Vec::new(), })
 	}
 
 	pub fn add_render_pass(&mut self, name: &str, _depends_on: &[&str]) -> usize {

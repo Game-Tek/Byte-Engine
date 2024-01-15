@@ -11,7 +11,10 @@ pub use entity::EntityHandle;
 
 pub use orchestrator::Orchestrator;
 
+use crate::core::listener::EntitySubscriber;
 use crate::core::listener::Listener;
+
+use self::entity::EntityBuilder;
 
 pub fn spawn<E>(entity: impl IntoHandler<E>) -> EntityHandle<E> {
 	static mut COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -22,7 +25,7 @@ pub fn spawn<E>(entity: impl IntoHandler<E>) -> EntityHandle<E> {
 			
 		}
 
-		fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: orchestrator::EntitySubscriber<T> + 'static {
+		fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
 		}
 	}
 
@@ -57,7 +60,7 @@ impl <R: 'static> IntoHandler<R> for R {
     }
 }
 
-impl <R: 'static> IntoHandler<R> for orchestrator::EntityReturn<'_, R> {
+impl <R: 'static> IntoHandler<R> for EntityBuilder<'_, R> {
     fn call(self, domain: Option<&impl Listener>, cid: u32) -> Option<EntityHandle<R>> {
 		let internal_id = cid;
 

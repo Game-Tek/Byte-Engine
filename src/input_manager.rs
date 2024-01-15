@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{self, EntitySubscriber,}, Entity, EntityHandle, event::{Event, EventImplementation}, listener::Listener}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{self, }, Entity, EntityHandle, event::{Event, EventImplementation}, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -279,8 +279,8 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> orchestrator::EntityReturn<'a, InputManager> {
-		orchestrator::EntityReturn::new(Self::new())
+	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> EntityBuilder<'a, InputManager> {
+		EntityBuilder::new(Self::new())
 			.listen_to::<Action<bool>>(listener)
 			.listen_to::<Action<Vector2>>(listener)
 			.listen_to::<Action<Vector3>>(listener)

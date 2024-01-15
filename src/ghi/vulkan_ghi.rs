@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ash::vk;
 
-use crate::{core::{orchestrator, Entity}, window_system, render_debugger::RenderDebugger, ghi::{graphics_hardware_interface, shader_compilation}};
+use crate::{core::{orchestrator, Entity, entity::EntityBuilder}, window_system, render_debugger::RenderDebugger, ghi::{graphics_hardware_interface, shader_compilation}};
 
 #[cfg(not(test))]
 use log::{warn, error, debug};
@@ -2218,12 +2218,12 @@ impl VulkanGHI {
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<'static, VulkanGHI> {
+	pub fn new_as_system() -> EntityBuilder<'static, VulkanGHI> {
 		let settings = Features {
 			validation: true,
 			ray_tracing: true,
 		};
-		orchestrator::EntityReturn::new(VulkanGHI::new(&settings))
+		EntityBuilder::new(VulkanGHI::new(&settings))
 	}
 
 	fn get_log_count(&self) -> u64 { self.debug_data.error_count }

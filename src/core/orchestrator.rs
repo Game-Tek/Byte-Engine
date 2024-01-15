@@ -28,57 +28,6 @@ pub(crate) struct SystemsData {
 	pub(crate) systems_by_name: HashMap<&'static str, u32>,
 }
 
-pub enum PPP<T> {
-	PostCreationFunction(std::boxed::Box<dyn Fn(&mut T,)>),
-}
-
-/// Entity creation functions must return this type.
-pub struct EntityReturn<'c, T> {
-	// entity: T,
-	pub(crate) create: std::boxed::Box<dyn FnOnce() -> T + 'c>,
-	pub(crate) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
-	// listens_to: Vec<(&'static str, Box<dyn Fn(&Orchestrator, u32, EntityHandle<dyn Entity>)>)>,
-	pub(crate) listens_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
-}
-
-impl <'c, T: 'static> EntityReturn<'c, T> {
-	pub fn new(entity: T) -> Self {
-		Self {
-			create: std::boxed::Box::new(move || entity),
-			post_creation_functions: Vec::new(),
-			listens_to: Vec::new(),
-		}
-	}
-
-	pub fn new_from_function(function: impl FnOnce() -> T + 'c) -> Self {
-		Self {
-			create: std::boxed::Box::new(function),
-			post_creation_functions: Vec::new(),
-			listens_to: Vec::new(),
-		}
-	}
-
-	pub fn new_from_closure<'a, F: FnOnce() -> T + 'c>(function: F) -> Self {
-		Self {
-			create: std::boxed::Box::new(function),
-			post_creation_functions: Vec::new(),
-			listens_to: Vec::new(),
-		}
-	}
-
-	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
-		self.post_creation_functions.push(Box::new(function));
-		self
-	}
-
-	pub fn listen_to<C>(mut self, listener: &'c impl Listener) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
-		self.listens_to.push(Box::new(move |listener_handle| {
-			listener.add_listener::<T, C>(listener_handle);
-		}));
-		self
-	}
-}
-
 pub struct EventDescription<E: Entity, V> {
 	phantom_e: std::marker::PhantomData<E>,
 	phantom_v: std::marker::PhantomData<V>,
@@ -184,16 +133,11 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 	}
 }
 
-pub trait EntitySubscriber<T: ?Sized> {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &T);
-	async fn on_update(&'static mut self, handle: EntityHandle<T>, params: &T);
-}
-
 #[cfg(test)]
 mod tests {
 	use std::ops::{DerefMut, Deref};
 
-use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::BasicListener, spawn_in_domain};
+	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::{BasicListener, EntitySubscriber}, spawn_in_domain, entity::EntityBuilder};
 
 	use super::*;
 
@@ -217,8 +161,8 @@ use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, ev
 		impl Entity for System {}
 
 		impl System {
-			fn new<'c>() -> EntityReturn<'c, System> {
-				EntityReturn::new(System {})
+			fn new<'c>() -> EntityBuilder<'c, System> {
+				EntityBuilder::new(System {})
 			}
 		}
 
@@ -254,8 +198,8 @@ use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, ev
 		impl Entity for System {}
 
 		impl System {
-			fn new<'c>(listener: &'c impl Listener) -> EntityReturn<'c, System> {
-				EntityReturn::new(System {}).listen_to::<Component>(listener)
+			fn new<'c>(listener: &'c impl Listener) -> EntityBuilder<'c, System> {
+				EntityBuilder::new(System {}).listen_to::<Component>(listener)
 			}
 		}
 
@@ -322,8 +266,8 @@ use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, ev
 		static mut COUNTER: u32 = 0;
 
 		impl MySystem {
-			fn new<'c>(component_handle: &EntityHandle<MyComponent>) -> EntityReturn<'c, MySystem> {
-				EntityReturn::new(MySystem {})
+			fn new<'c>(component_handle: &EntityHandle<MyComponent>) -> EntityBuilder<'c, MySystem> {
+				EntityBuilder::new(MySystem {})
 			}
 
 			fn on_event(&mut self, value: &bool) {

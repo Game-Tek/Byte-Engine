@@ -2,7 +2,7 @@ use std::{io::{Read, Write}, hash::{Hasher, Hash}, pin::Pin};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use log::{info, warn, error, trace, debug};
 use smol::fs::File;
-use crate::core::{orchestrator, Entity};
+use crate::core::{orchestrator, Entity, entity::EntityBuilder};
 use crate::{utils};
 use super::{resource_handler, texture_resource_handler, mesh_resource_handler, material_resource_handler, Request, Response, Options, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource, audio_resource_handler, Stream, LoadRequest, LoadResourceRequest, Lox};
 
@@ -98,8 +98,8 @@ impl ResourceManager {
 		}
 	}
 
-	pub fn new_as_system() -> orchestrator::EntityReturn<'static, ResourceManager> {
-		orchestrator::EntityReturn::new(Self::new())
+	pub fn new_as_system() -> EntityBuilder<'static, ResourceManager> {
+		EntityBuilder::new(Self::new())
 	}
 
 	pub fn add_resource_handler<T>(&mut self, resource_handler: T) where T: resource_handler::ResourceHandler + Send + 'static {

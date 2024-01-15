@@ -75,6 +75,8 @@ impl <T: ?Sized> Clone for EntityHandle<T> {
 use std::marker::Unsize;
 use std::ops::CoerceUnsized;
 
+use super::listener::{Listener, EntitySubscriber};
+
 impl<T: Entity, U: Entity> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where
     T: Unsize<U> + ?Sized,
@@ -113,5 +115,50 @@ impl <T> EntityHandle<T> {
 
 	pub fn map<'a, R>(&self, function: impl FnOnce(&Self) -> R) -> R {
 		function(self)
+	}
+}
+
+/// Entity creation functions must return this type.
+pub struct EntityBuilder<'c, T> {
+	pub(super) create: std::boxed::Box<dyn FnOnce() -> T + 'c>,
+	pub(super) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
+	pub(super) listens_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
+}
+
+impl <'c, T: 'static> EntityBuilder<'c, T> {
+	pub fn new(entity: T) -> Self {
+		Self {
+			create: std::boxed::Box::new(move || entity),
+			post_creation_functions: Vec::new(),
+			listens_to: Vec::new(),
+		}
+	}
+
+	pub fn new_from_function(function: impl FnOnce() -> T + 'c) -> Self {
+		Self {
+			create: std::boxed::Box::new(function),
+			post_creation_functions: Vec::new(),
+			listens_to: Vec::new(),
+		}
+	}
+
+	pub fn new_from_closure<'a, F: FnOnce() -> T + 'c>(function: F) -> Self {
+		Self {
+			create: std::boxed::Box::new(function),
+			post_creation_functions: Vec::new(),
+			listens_to: Vec::new(),
+		}
+	}
+
+	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
+		self.post_creation_functions.push(Box::new(function));
+		self
+	}
+
+	pub fn listen_to<C>(mut self, listener: &'c impl Listener) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
+		self.listens_to.push(Box::new(move |listener_handle| {
+			listener.add_listener::<T, C>(listener_handle);
+		}));
+		self
 	}
 }

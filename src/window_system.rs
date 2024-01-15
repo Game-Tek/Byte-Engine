@@ -6,7 +6,7 @@ use component_derive::Component;
 use log::{trace};
 use xcb::{Xid, x};
 
-use crate::{Extent, core::{orchestrator::{EntitySubscriber, self}, Entity, EntityHandle, listener::Listener}};
+use crate::{Extent, core::{orchestrator::{ self}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}};
 
 #[derive(Debug, Clone, Copy)]
 /// The keys that can be pressed on a keyboard.
@@ -622,8 +622,8 @@ impl WindowSystem {
 		WindowSystem { windows: gxhash::GxHashMap::default() }
 	}
 
-	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> orchestrator::EntityReturn<'a, WindowSystem> {
-		orchestrator::EntityReturn::new(Self::new()).listen_to::<Window>(listener)
+	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> EntityBuilder<'a, WindowSystem> {
+		EntityBuilder::new(Self::new()).listen_to::<Window>(listener)
 	}
 
 	pub fn update(&mut self) -> bool {

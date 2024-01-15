@@ -7,7 +7,7 @@ use log::{error, warn, trace};
 use notify_debouncer_full::{notify::{*}, new_debouncer, DebounceEventResult, FileIdMap, DebouncedEvent};
 use polodb_core;
 
-use crate::core::{orchestrator, Entity};
+use crate::core::{orchestrator , Entity, entity::EntityBuilder};
 
 pub struct FileTracker {
 	db: polodb_core::Database,
@@ -16,7 +16,7 @@ pub struct FileTracker {
 }
 
 impl FileTracker {
-	pub fn new() -> orchestrator::EntityReturn<'static, FileTracker> {
+	pub fn new() -> EntityBuilder<'static, FileTracker> {
 		std::fs::create_dir_all(".byte-editor").unwrap();
 
 		let db = polodb_core::Database::open_file(".byte-editor/files.db").unwrap();
@@ -81,7 +81,7 @@ impl FileTracker {
 			rx,
 		};
 
-		orchestrator::EntityReturn::new(file_tracker)
+		EntityBuilder::new(file_tracker)
 	}
 
 	pub fn watch(&mut self, path: &Path) -> bool {

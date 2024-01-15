@@ -1,4 +1,4 @@
-use crate::core::{domain::Domain, listener::{Listener, BasicListener}, EntityHandle, orchestrator::EntitySubscriber};
+use crate::core::{domain::Domain, listener::{Listener, BasicListener, EntitySubscriber}, EntityHandle,};
 
 pub struct Space {
 	listener: BasicListener,

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::core::{orchestrator::{self, EntityReturn, EntitySubscriber, EventDescription,}, Entity, EntityHandle, entity::EntityHash, event::{Event, EventImplementation}, listener::Listener};
+use crate::core::{orchestrator::{self, EventDescription,}, Entity, EntityHandle, entity::{EntityHash, EntityBuilder}, event::{Event, EventImplementation}, listener::{Listener, EntitySubscriber}};
 
 
 pub struct Sphere {
@@ -52,8 +52,8 @@ impl PhysicsWorld {
 		}
 	}
 
-	pub fn new_as_system<'c>(listener: &'c mut impl Listener) -> EntityReturn<'c, Self> {
-		EntityReturn::new(Self::new()).listen_to::<Sphere>(listener)
+	pub fn new_as_system<'c>(listener: &'c mut impl Listener) -> EntityBuilder<'c, Self> {
+		EntityBuilder::new(Self::new()).listen_to::<Sphere>(listener)
 	}
 
 	fn add_sphere(&mut self, sphere: InternalSphere) -> usize {

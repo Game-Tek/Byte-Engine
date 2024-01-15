@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, orchestrator::EntityReturn}};
+use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, entity::EntityBuilder,}};
 use crate::resource_management::audio_resource_handler;
 use crate::resource_management::resource_manager::ResourceManager;
 
@@ -34,8 +34,8 @@ impl DefaultAudioSystem {
 		}
 	}
 
-	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> EntityReturn<'static, Self> {
-		EntityReturn::new(Self::new(resource_manager))
+	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(Self::new(resource_manager))
 	}
 }
 

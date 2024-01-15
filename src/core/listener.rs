@@ -1,12 +1,17 @@
 use std::ops::Deref;
 
-use intertrait::cast::CastRef;
+use intertrait::cast::CastRef ;
 
-use super::{EntityHandle, orchestrator::EntitySubscriber};
+use super::EntityHandle;
 
 pub trait Listener {
 	fn invoke_for<T: 'static>(&self, handle: EntityHandle<T>);
 	fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static;
+}
+
+pub trait EntitySubscriber<T: ?Sized> {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &T);
+	async fn on_update(&'static mut self, handle: EntityHandle<T>, params: &T);
 }
 
 pub struct BasicListener {

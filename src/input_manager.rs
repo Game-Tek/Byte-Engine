@@ -279,7 +279,7 @@ impl InputManager {
 		}
 	}
 
-	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> EntityBuilder<'a, InputManager> {
+	pub fn new_as_system<'a>(listener: &'a impl Listener) -> EntityBuilder<'a, InputManager> {
 		EntityBuilder::new(Self::new())
 			.listen_to::<Action<bool>>(listener)
 			.listen_to::<Action<Vector2>>(listener)

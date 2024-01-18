@@ -25,7 +25,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new_as_system<'a>(listener: &'a mut impl Listener, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
+	pub fn new_as_system<'a>(listener: &'a impl Listener, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_function(|| {
 			let ghi_instance = Rc::new(RwLock::new(ghi::create()));
 

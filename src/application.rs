@@ -57,12 +57,12 @@ impl Application for BaseApplication {
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
-use std::ops::DerefMut;
+use std::ops::{DerefMut, Deref};
 
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics};
+use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics, gameplay::space::Space};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -132,11 +132,14 @@ pub struct GraphicsApplication {
 	renderer_handle: EntityHandle<rendering::renderer::Renderer>,
 	audio_system_handle: EntityHandle<audio_system::DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
+	root_space_handle: EntityHandle<Space>,
 }
 
 impl Application for GraphicsApplication {
 	fn new(name: &str) -> Self {
 		let mut application = OrchestratedApplication::new(name);
+
+		let root_space_handle: EntityHandle<Space> = core::spawn(Space::new());
 
 		application.initialize(std::env::args()); // TODO: take arguments
 
@@ -149,13 +152,11 @@ impl Application for GraphicsApplication {
 			resource_manager.add_resource_handler(AudioResourceHandler::new());
 			resource_manager.add_resource_handler(MaterialResourcerHandler::new());
 		}
-
-		let listener_handle = core::spawn(core::listener::BasicListener::new());
-
-		let mut listener = listener_handle.write_sync();
 		
-		let window_system_handle = core::spawn(window_system::WindowSystem::new_as_system(listener.deref_mut()));
-		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(listener.deref_mut()));
+		let mut root_space = root_space_handle.write_sync();
+
+		let window_system_handle = core::spawn_in_domain(root_space.deref(), window_system::WindowSystem::new_as_system(root_space.deref()));
+		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(root_space.deref()));
 
 		let mouse_device_handle;
 
@@ -179,17 +180,17 @@ impl Application for GraphicsApplication {
 
 		let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = core::spawn(rendering::renderer::Renderer::new_as_system(listener.deref_mut(), window_system_handle.clone(), resource_manager_handle.clone()));
+		let renderer_handle = core::spawn_in_domain(root_space.deref(), rendering::renderer::Renderer::new_as_system(root_space.deref(), window_system_handle.clone(), resource_manager_handle.clone()));
 
-		core::spawn::<rendering::render_orchestrator::RenderOrchestrator>(rendering::render_orchestrator::RenderOrchestrator::new());
+		core::spawn_in_domain::<rendering::render_orchestrator::RenderOrchestrator>(root_space.deref_mut(), rendering::render_orchestrator::RenderOrchestrator::new());
 
-		core::spawn(window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
+		core::spawn_in_domain(root_space.deref_mut(), window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
 
 		let audio_system_handle = core::spawn(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
 
-		let physics_system_handle = core::spawn(physics::PhysicsWorld::new_as_system(listener.deref_mut()));
+		let physics_system_handle = core::spawn(physics::PhysicsWorld::new_as_system(root_space.deref_mut()));
 
-		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle }
+		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -291,6 +292,10 @@ impl GraphicsApplication {
 
 	pub fn get_physics_world_handle(&self) -> &EntityHandle<crate::physics::PhysicsWorld> {
 		&self.physics_system_handle
+	}
+
+	pub fn get_root_space_handle(&self) -> &EntityHandle<crate::gameplay::space::Space> {
+		&self.root_space_handle
 	}
 
 	pub fn do_loop(&mut self) {

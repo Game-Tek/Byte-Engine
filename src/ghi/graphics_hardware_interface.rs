@@ -1138,12 +1138,14 @@ pub(super) mod tests {
 	use crate::core;
 
 	pub(crate) fn present(renderer: &mut dyn GraphicsHardwareInterface) {
-		let window_system = window_system::WindowSystem::new();
+		let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let window_handle = core::spawn(window_system::Window::new("Renderer Test", extent));
+
+		window_system.create_window(window_handle.clone(), "Renderer Test", extent, "present");
 
 		let swapchain = renderer.bind_to_window(&window_system.get_os_handles(&window_handle));
 
@@ -1264,12 +1266,14 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn multiframe_present(renderer: &mut dyn GraphicsHardwareInterface) {
-		let window_system = window_system::WindowSystem::new();
+		let mut window_system = window_system::WindowSystem::new();
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
 		let window_handle = core::spawn(window_system::Window::new("Renderer Test", extent));
+
+		window_system.create_window(window_handle.clone(), "Renderer Test", extent, "present");
 
 		let swapchain = renderer.bind_to_window(&window_system.get_os_handles(&window_handle));
 

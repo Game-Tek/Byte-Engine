@@ -622,7 +622,7 @@ impl WindowSystem {
 		WindowSystem { windows: gxhash::GxHashMap::default() }
 	}
 
-	pub fn new_as_system<'a>(listener: &'a mut impl Listener) -> EntityBuilder<'a, WindowSystem> {
+	pub fn new_as_system<'a>(listener: &'a impl Listener) -> EntityBuilder<'a, WindowSystem> {
 		EntityBuilder::new(Self::new()).listen_to::<Window>(listener)
 	}
 

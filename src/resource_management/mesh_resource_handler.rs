@@ -201,18 +201,18 @@ impl ResourceHandler for MeshResourceHandler {
 				match buffer.name.as_str() {
 					"Vertex" => {
 						file.seek(std::io::SeekFrom::Start(0)).await.expect("Failed to seek to vertex buffer");
-						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * mesh.vertex_components.size())]).await.expect("Failed to read vertex buffer");
+						file.read_exact(&mut buffer.buffer[0..(mesh.vertex_count as usize * mesh.vertex_components.size())]).await.expect("Failed to read vertex buffer");
 					}
 					"Vertex.Position" => {
 						file.seek(std::io::SeekFrom::Start(0)).await.expect("Failed to seek to vertex buffer");
-						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await.expect("Failed to read vertex buffer");
+						file.read_exact(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await.expect("Failed to read vertex buffer");
 					}
 					"Vertex.Normal" => {
 						#[cfg(debug_assertions)]
 						if !mesh.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Normal) { error!("Requested Vertex.Normal stream but mesh does not have normals."); continue; }
 
 						file.seek(std::io::SeekFrom::Start(mesh.vertex_count as u64 * 12)).await.expect("Failed to seek to vertex buffer");
-						file.read(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await.expect("Failed to read vertex buffer");
+						file.read_exact(&mut buffer.buffer[0..(mesh.vertex_count as usize * 12)]).await.expect("Failed to read vertex buffer");
 					}
 					"TriangleIndices" => {
 						#[cfg(debug_assertions)]
@@ -221,7 +221,7 @@ impl ResourceHandler for MeshResourceHandler {
 						let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
 						file.seek(std::io::SeekFrom::Start(triangle_index_stream.offset as u64)).await.expect("Failed to seek to index buffer");
-						file.read(&mut buffer.buffer[0..(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())]).await.unwrap();
+						file.read_exact(&mut buffer.buffer[0..(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())]).await.unwrap();
 					}
 					"VertexIndices" => {
 						#[cfg(debug_assertions)]
@@ -230,7 +230,7 @@ impl ResourceHandler for MeshResourceHandler {
 						let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
 
 						file.seek(std::io::SeekFrom::Start(vertex_index_stream.offset as u64)).await.expect("Failed to seek to index buffer");
-						file.read(&mut buffer.buffer[0..(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())]).await.unwrap();
+						file.read_exact(&mut buffer.buffer[0..(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())]).await.unwrap();
 					}
 					"MeshletIndices" => {
 						#[cfg(debug_assertions)]
@@ -239,7 +239,7 @@ impl ResourceHandler for MeshResourceHandler {
 						let meshlet_indices_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
 						file.seek(std::io::SeekFrom::Start(meshlet_indices_stream.offset as u64)).await.expect("Failed to seek to index buffer");
-						file.read(&mut buffer.buffer[0..(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())]).await.unwrap();
+						file.read_exact(&mut buffer.buffer[0..(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())]).await.unwrap();
 					}
 					"Meshlets" => {
 						#[cfg(debug_assertions)]
@@ -248,7 +248,7 @@ impl ResourceHandler for MeshResourceHandler {
 						let meshlet_stream = mesh.meshlet_stream.as_ref().unwrap();
 
 						file.seek(std::io::SeekFrom::Start(meshlet_stream.offset as u64)).await.expect("Failed to seek to index buffer");
-						file.read(&mut buffer.buffer[0..(meshlet_stream.count as usize * 2)]).await.unwrap();
+						file.read_exact(&mut buffer.buffer[0..(meshlet_stream.count as usize * 2)]).await.unwrap();
 					}
 					_ => {
 						error!("Unknown buffer tag: {}", buffer.name);

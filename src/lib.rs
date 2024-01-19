@@ -51,9 +51,9 @@ pub type Quaternion = Quatf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Extent {
-	pub width: u32,
-	pub height: u32,
-	pub depth: u32,
+	width: u32,
+	height: u32,
+	depth: u32,
 }
 
 impl Extent {
@@ -81,7 +81,7 @@ impl Extent {
 		}
 	}
 
-	pub fn plane(width: u32, height: u32) -> Self {
+	pub fn rectangle(width: u32, height: u32) -> Self {
 		Self {
 			width,
 			height,
@@ -89,12 +89,16 @@ impl Extent {
 		}
 	}
 
-	pub fn volume(width: u32, height: u32, depth: u32) -> Self {
+	pub fn cube(width: u32, height: u32, depth: u32) -> Self {
 		Self {
 			width,
 			height,
 			depth,
 		}
+	}
+
+	pub fn as_tuple(&self) -> (u32, u32, u32) {
+		(self.width, self.height, self.depth)
 	}
 }
 

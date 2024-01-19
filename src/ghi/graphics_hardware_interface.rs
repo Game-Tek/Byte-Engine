@@ -188,8 +188,8 @@ pub struct BindingTables {
 }
 
 pub struct DispatchExtent {
-	pub workgroup_extent: Extent,
-	pub dispatch_extent: Extent,
+	workgroup_extent: Extent,
+	dispatch_extent: Extent,
 }
 
 impl DispatchExtent {
@@ -197,6 +197,14 @@ impl DispatchExtent {
 		Self {
 			workgroup_extent,
 			dispatch_extent,
+		}
+	}
+
+	pub fn get_extent(&self) -> Extent {
+		Extent {
+			width: self.dispatch_extent.width.div_ceil(self.workgroup_extent.width),
+			height: self.dispatch_extent.height.div_ceil(self.workgroup_extent.height),
+			depth: self.dispatch_extent.depth.div_ceil(self.workgroup_extent.depth),
 		}
 	}
 }
@@ -226,39 +234,15 @@ pub trait CommandBufferRecording {
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
-	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]);
-
-	/// Ends a render pass on the GPU.
-	fn end_render_pass(&mut self);
+	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]) -> &mut dyn RasterizationRenderPassMode;
 
 	/// Binds a shader to the GPU.
 	fn bind_shader(&self, shader_handle: ShaderHandle);
 
-	/// Binds a pipeline to the GPU.
-	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle);
-	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle);
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle);
-
 	/// Writes to the push constant register.
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: &[u8]);
 
-	/// Draws a render system mesh.
-	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
-
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
-
-	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
-
-	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
-
 	unsafe fn consume_resources(&mut self, handles: &[Consumption]);
-
-	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
-
-	fn dispatch(&mut self, dispatch: DispatchExtent);
-	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
-
-	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 
 	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
@@ -268,11 +252,15 @@ pub trait CommandBufferRecording {
 	/// Copies imaeg data from a CPU accessible buffer to a GPU accessible image.
 	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
 
+	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut dyn BoundComputePipelineMode;
+
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut dyn BoundRayTracingPipelineMode;
+
 	/// Ends recording on the command buffer.
 	fn end(&mut self);
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]);
+	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut dyn CommandBufferRecording;
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
 
@@ -283,6 +271,37 @@ pub trait CommandBufferRecording {
 	fn start_region(&self, name: &str);
 	
 	fn end_region(&self);
+}
+
+pub trait RasterizationRenderPassMode: CommandBufferRecording {
+	/// Binds a pipeline to the GPU.
+	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut dyn BoundRasterizationPipelineMode;
+
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
+
+	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
+
+	/// Ends a render pass on the GPU.
+	fn end_render_pass(&mut self);
+}
+
+pub trait BoundRasterizationPipelineMode: RasterizationRenderPassMode {
+	/// Draws a render system mesh.
+	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
+
+	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
+
+	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
+}
+
+pub trait BoundComputePipelineMode: CommandBufferRecording {
+	fn dispatch(&mut self, dispatch: DispatchExtent);
+
+	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
+}
+
+pub trait BoundRayTracingPipelineMode: CommandBufferRecording {
+	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -1101,13 +1120,13 @@ pub(super) mod tests {
 			}
 		];
 
-		command_buffer_recording.start_render_pass(extent, &attachments);
+		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		command_buffer_recording.bind_raster_pipeline(&pipeline);
+		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
 
-		command_buffer_recording.draw_mesh(&mesh);
+		raster_pipeline_command.draw_mesh(&mesh);
 
-		command_buffer_recording.end_render_pass();
+		render_pass_command.end_render_pass();
 
 		let texture_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
@@ -1242,13 +1261,13 @@ pub(super) mod tests {
 			}
 		];
 
-		command_buffer_recording.start_render_pass(extent, &attachments);
+		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		command_buffer_recording.bind_raster_pipeline(&pipeline);
+		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
 
-		command_buffer_recording.draw_mesh(&mesh);
+		raster_pipeline_command.draw_mesh(&mesh);
 
-		command_buffer_recording.end_render_pass();
+		render_pass_command.end_render_pass();
 
 		command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
 
@@ -1373,13 +1392,13 @@ pub(super) mod tests {
 				}
 			];
 
-			command_buffer_recording.start_render_pass(extent, &attachments);
+			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			command_buffer_recording.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
 
-			command_buffer_recording.draw_mesh(&mesh);
+			raster_pipeline_command.draw_mesh(&mesh);
 
-			command_buffer_recording.end_render_pass();
+			raster_pipeline_command.end_render_pass();
 
 			command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
 
@@ -1500,13 +1519,13 @@ pub(super) mod tests {
 				}
 			];
 
-			command_buffer_recording.start_render_pass(extent, &attachments);
+			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			command_buffer_recording.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
 
-			command_buffer_recording.draw_mesh(&mesh);
+			raster_pipeline_command.draw_mesh(&mesh);
 
-			command_buffer_recording.end_render_pass();
+			raster_pipeline_command.end_render_pass();
 
 			let texture_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
@@ -1643,9 +1662,9 @@ pub(super) mod tests {
 				}
 			];
 
-			command_buffer_recording.start_render_pass(extent, &attachments);
+			let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			command_buffer_recording.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(&pipeline);
 			
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
@@ -1657,11 +1676,11 @@ pub(super) mod tests {
 					0f32, 0f32, 0f32, 1f32,
 				];
 
-			command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(matrix.as_ptr() as *const u8, 16 * 4) });
+			raster_pipeline_command.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(matrix.as_ptr() as *const u8, 16 * 4) });
 
-			command_buffer_recording.draw_mesh(&mesh);
+			raster_pipeline_command.draw_mesh(&mesh);
 
-			command_buffer_recording.end_render_pass();
+			raster_render_pass_command.end_render_pass();
 
 			let copy_texture_handles = command_buffer_recording.sync_textures(&[render_target]);
 
@@ -1833,15 +1852,15 @@ pub(super) mod tests {
 			}
 		];
 
-		command_buffer_recording.bind_raster_pipeline(&pipeline);
+		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+		let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(&pipeline);
 
-		command_buffer_recording.start_render_pass(extent, &attachments);
+		raster_pipeline_command.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
 
-		command_buffer_recording.draw_mesh(&mesh);
+		raster_pipeline_command.draw_mesh(&mesh);
 
-		command_buffer_recording.end_render_pass();
+		raster_render_pass_command.end_render_pass();
 
 		let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
@@ -2123,11 +2142,11 @@ void main() {
 				// command_buffer_recording.execute(&[], &[build_sync], build_sync);
 			}
 
-			command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
+			let ray_tracing_pipeline_command = command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
 
-			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+			ray_tracing_pipeline_command.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
 
-			unsafe { command_buffer_recording.consume_resources(&[
+			unsafe { ray_tracing_pipeline_command.consume_resources(&[
 				Consumption {
 					handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
 					stages: Stages::RAYGEN,
@@ -2160,7 +2179,7 @@ void main() {
 				},
 			]) };
 
-			command_buffer_recording.trace_rays(BindingTables {
+			ray_tracing_pipeline_command.trace_rays(BindingTables {
 				raygen: BufferStridedRange { buffer: raygen_sbt_buffer, offset: 0, stride: 64, size: 64 },
 				hit: BufferStridedRange { buffer: hit_sbt_buffer, offset: 0, stride: 64, size: 64 },
 				miss: BufferStridedRange { buffer: miss_sbt_buffer, offset: 0, stride: 64, size: 64 },

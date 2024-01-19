@@ -123,17 +123,9 @@ impl ScreenSpaceAmbientOcclusionPass {
 	}
 
 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-		command_buffer_recording.bind_compute_pipeline(&self.pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent { width: 32, height: 32, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-
-		command_buffer_recording.bind_compute_pipeline(&self.blur_x_pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
-
-		command_buffer_recording.bind_compute_pipeline(&self.blur_y_pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent { width: 128, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]).bind_compute_pipeline(&self.pipeline).dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::line(128)));
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::line(128)));
 	}
 }
 

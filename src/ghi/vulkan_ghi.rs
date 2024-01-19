@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ash::vk;
 
-use crate::{core::{orchestrator, Entity, entity::EntityBuilder}, window_system, render_debugger::RenderDebugger, ghi::{graphics_hardware_interface, shader_compilation}};
+use crate::{core::{orchestrator, Entity, entity::EntityBuilder}, window_system, render_debugger::RenderDebugger, ghi::{graphics_hardware_interface, shader_compilation}, Extent};
 
 #[cfg(not(test))]
 use log::{warn, error, debug};
@@ -2943,6 +2943,7 @@ pub struct VulkanCommandBufferRecording<'a> {
 	stages: vk::PipelineStageFlags2,
 
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
+	bound_descriptor_set_handles: Vec<graphics_hardware_interface::DescriptorSetHandle>,
 }
 
 impl VulkanCommandBufferRecording<'_> {
@@ -2958,6 +2959,7 @@ impl VulkanCommandBufferRecording<'_> {
 			stages: vk::PipelineStageFlags2::empty(),
 
 			bound_pipeline: None,
+			bound_descriptor_set_handles: Vec::new(),
 		}
 	}
 
@@ -3018,6 +3020,43 @@ impl VulkanCommandBufferRecording<'_> {
 			i += 1;
 		}
 	}
+
+	fn consume_resources_current(&mut self) {
+		let mut consumptions = Vec::with_capacity(32);
+
+		let bound_pipeline_handle = self.bound_pipeline.expect("No bound pipeline");
+
+		let pipeline = &self.ghi.pipelines[bound_pipeline_handle.0 as usize];
+
+		for ((set_index, binding_index), (stages, accesses)) in &pipeline.resource_access {
+			let set_handle = if let Some(h) = self.bound_descriptor_set_handles.get(*set_index as usize) { h } else { continue; }; // TODO: log error
+
+			let (_, descriptor_set) = self.get_descriptor_set(set_handle);
+
+			for (binding_handle, resource_handle) in descriptor_set.resources.iter().filter(|(binding_handle, _)| self.ghi.bindings[binding_handle.0 as usize].index == *binding_index) {
+				let binding = self.ghi.bindings.get(binding_handle.0 as usize).expect("No binding found");
+
+				consumptions.push(
+					graphics_hardware_interface::Consumption {
+						handle: resource_handle.clone(),
+						stages: *stages,
+						access: *accesses,
+						layout: match binding.type_ {
+							graphics_hardware_interface::DescriptorType::UniformBuffer => graphics_hardware_interface::Layouts::General,
+							graphics_hardware_interface::DescriptorType::StorageBuffer => graphics_hardware_interface::Layouts::General,
+							graphics_hardware_interface::DescriptorType::StorageImage => graphics_hardware_interface::Layouts::General,
+							graphics_hardware_interface::DescriptorType::Sampler => graphics_hardware_interface::Layouts::General,
+							graphics_hardware_interface::DescriptorType::CombinedImageSampler => graphics_hardware_interface::Layouts::Read,
+							graphics_hardware_interface::DescriptorType::AccelerationStructure => graphics_hardware_interface::Layouts::General,
+							graphics_hardware_interface::DescriptorType::SampledImage => graphics_hardware_interface::Layouts::Read,
+						},
+					}
+				);
+			}
+		}
+
+		unsafe { self.consume_resources(&consumptions) };
+	}
 }
 
 impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBufferRecording<'_> {
@@ -3036,7 +3075,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
-	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[graphics_hardware_interface::AttachmentInformation]) {
+	fn start_render_pass(&mut self, extent: crate::Extent, attachments: &[graphics_hardware_interface::AttachmentInformation]) -> &mut dyn graphics_hardware_interface::RasterizationRenderPassMode {
 		unsafe {
 			self.consume_resources(&attachments.iter().map(|attachment|
 				graphics_hardware_interface::Consumption{
@@ -3101,13 +3140,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		unsafe { self.ghi.device.cmd_begin_rendering(command_buffer.command_buffer, &rendering_info); }
 
 		self.in_render_pass = true;
-	}
 
-	/// Ends a render pass on the GPU.
-	fn end_render_pass(&mut self) {
-		let command_buffer = self.get_command_buffer();
-		unsafe { self.ghi.device.cmd_end_rendering(command_buffer.command_buffer); }
-		self.in_render_pass = false;
+		self
 	}
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild) {
@@ -3296,32 +3330,26 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		panic!("Not implemented");
 	}
 
-	/// Binds a pipeline to the GPU.
-	fn bind_raster_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) {
-		let command_buffer = self.get_command_buffer();
-		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
-		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline); }
-
-		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
-		self.bound_pipeline = Some(*pipeline_handle);
-	}
-
-	fn bind_compute_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) {
+	fn bind_compute_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut dyn graphics_hardware_interface::BoundComputePipelineMode {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline); }
 
 		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
 		self.bound_pipeline = Some(*pipeline_handle);
+
+		self
 	}
 
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) {
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut dyn graphics_hardware_interface::BoundRayTracingPipelineMode {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline); }
 
 		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
 		self.bound_pipeline = Some(*pipeline_handle);
+
+		self
 	}
 
 	/// Writes to the push constant register.
@@ -3329,48 +3357,6 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		let command_buffer = self.get_command_buffer();
 		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
 		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
-	}
-
-	/// Draws a render system mesh.
-	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
-		let command_buffer = self.get_command_buffer();
-
-		let mesh = &self.ghi.meshes[mesh_handle.0 as usize];
-
-		let buffers = [mesh.buffer];
-		let offsets = [0];
-
-		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
-
-		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets); }
-		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, mesh.buffer, index_data_offset, vk::IndexType::UINT16); }
-
-		unsafe { self.ghi.device.cmd_draw_indexed(command_buffer.command_buffer, mesh.index_count, 1, 0, 0, 0); }
-	}
-
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
-		let command_buffer = self.get_command_buffer();
-
-		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.ghi.buffers[buffer_descriptor.buffer.0 as usize].buffer).collect::<Vec<_>>();
-		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
-
-		// TODO: implent slot splitting
-		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets); }
-	}
-
-	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
-		let command_buffer = self.get_command_buffer();
-
-		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
-
-		let command_buffer = unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); };
-	}
-
-	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
-		let command_buffer = self.get_command_buffer();
-		unsafe {
-			self.ghi.device.cmd_draw_indexed(command_buffer.command_buffer, index_count, instance_count, first_index, vertex_offset, first_instance);
-		}
 	}
 
 	fn clear_images(&mut self, textures: &[(graphics_hardware_interface::ImageHandle, graphics_hardware_interface::ClearValue)]) {
@@ -3553,67 +3539,6 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		}
 	}
 
-	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
-		let command_buffer = self.get_command_buffer();
-
-		unsafe {
-			self.ghi.mesh_shading.cmd_draw_mesh_tasks(command_buffer.command_buffer, x, y, z);
-		}
-	}
-
-	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
-		let command_buffer = self.get_command_buffer();
-
-		let x = dispatch.dispatch_extent.width.div_ceil(dispatch.workgroup_extent.width);
-		let y = dispatch.dispatch_extent.height.div_ceil(dispatch.workgroup_extent.height);
-		let z = dispatch.dispatch_extent.depth.div_ceil(dispatch.workgroup_extent.depth);
-
-		unsafe {
-			self.ghi.device.cmd_dispatch(command_buffer.command_buffer, x, y, z);
-		}
-	}
-
-	fn indirect_dispatch(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
-		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
-
-		unsafe {
-			self.consume_resources(&[
-				graphics_hardware_interface::Consumption{
-					handle: graphics_hardware_interface::Handle::Buffer(buffer_descriptor.buffer),
-					stages: graphics_hardware_interface::Stages::COMPUTE,
-					access: graphics_hardware_interface::AccessPolicies::READ,
-					layout: graphics_hardware_interface::Layouts::Indirect,
-				}
-			])
-		}
-
-		let command_buffer = self.get_command_buffer();
-
-		unsafe {
-			self.ghi.device.cmd_dispatch_indirect(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset);
-		}
-	}
-
-	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
-		let command_buffer = self.get_command_buffer();
-
-		let make_strided_range = |range: graphics_hardware_interface::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
-			vk::StridedDeviceAddressRegionKHR::default()
-				.device_address(self.ghi.get_buffer_address(range.buffer) as vk::DeviceSize + range.offset as vk::DeviceSize)
-				.stride(range.stride as vk::DeviceSize)
-				.size(range.size as vk::DeviceSize)
-		};
-
-		let raygen_shader_binding_tables = make_strided_range(binding_tables.raygen);
-		let miss_shader_binding_tables = make_strided_range(binding_tables.miss);
-		let hit_shader_binding_tables = make_strided_range(binding_tables.hit);
-		let callable_shader_binding_tables = if let Some(binding_table) = binding_tables.callable { make_strided_range(binding_table) } else { vk::StridedDeviceAddressRegionKHR::default() };
-
-		unsafe {
-			self.ghi.ray_tracing_pipeline.cmd_trace_rays(command_buffer.command_buffer, &raygen_shader_binding_tables, &miss_shader_binding_tables, &hit_shader_binding_tables, &callable_shader_binding_tables, x, y, z)
-		}
-	}
-
 	fn transfer_textures(&mut self, texture_handles: &[graphics_hardware_interface::ImageHandle]) {
 		unsafe { self.consume_resources(&texture_handles.iter().map(|texture_handle|
 			graphics_hardware_interface::Consumption{
@@ -3723,6 +3648,15 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		unsafe {
 			self.ghi.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
 		}
+
+		unsafe { self.consume_resources(
+			&[graphics_hardware_interface::Consumption{
+				handle: graphics_hardware_interface::Handle::Image(texture_handle),
+				stages: graphics_hardware_interface::Stages::FRAGMENT,
+				access: graphics_hardware_interface::AccessPolicies::READ,
+				layout: graphics_hardware_interface::Layouts::Read,
+			}]
+		) };
 	}
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: graphics_hardware_interface::ImageHandle, present_image_index: u32, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
@@ -3864,7 +3798,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	}
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, sets: &[graphics_hardware_interface::DescriptorSetHandle]) {
+	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut dyn graphics_hardware_interface::CommandBufferRecording {
 		let command_buffer = self.get_command_buffer();
 		
 		let pipeline_layout = &self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize];
@@ -3883,44 +3817,15 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 			let descriptor_sets = [descriptor_set_handle];
 	
 			unsafe {
-				self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, self.pipeline_bind_point, vulkan_pipeline_layout_handle, i, &descriptor_sets, &[]);
+				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] {
+					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, bp, vulkan_pipeline_layout_handle, i, &descriptor_sets, &[]);
+				}
 			}
 		}
 
-		let mut consumptions = Vec::with_capacity(32);
+		self.bound_descriptor_set_handles = sets.to_vec();
 
-		let bound_pipeline_handle = self.bound_pipeline.expect("No bound pipeline");
-
-		let pipeline = &self.ghi.pipelines[bound_pipeline_handle.0 as usize];
-
-		for ((set_index, binding_index), (stages, accesses)) in &pipeline.resource_access {
-			let set_handle = if let Some(h) = sets.get(*set_index as usize) { h } else { continue; }; // TODO: log error
-
-			let (_, descriptor_set) = self.get_descriptor_set(set_handle);
-
-			for (binding_handle, resource_handle) in descriptor_set.resources.iter().filter(|(binding_handle, _)| self.ghi.bindings[binding_handle.0 as usize].index == *binding_index) {
-				let binding = self.ghi.bindings.get(binding_handle.0 as usize).expect("No binding found");
-
-				consumptions.push(
-					graphics_hardware_interface::Consumption {
-						handle: resource_handle.clone(),
-						stages: *stages,
-						access: *accesses,
-						layout: match binding.type_ {
-							graphics_hardware_interface::DescriptorType::UniformBuffer => graphics_hardware_interface::Layouts::General,
-							graphics_hardware_interface::DescriptorType::StorageBuffer => graphics_hardware_interface::Layouts::General,
-							graphics_hardware_interface::DescriptorType::StorageImage => graphics_hardware_interface::Layouts::General,
-							graphics_hardware_interface::DescriptorType::Sampler => graphics_hardware_interface::Layouts::General,
-							graphics_hardware_interface::DescriptorType::CombinedImageSampler => graphics_hardware_interface::Layouts::Read,
-							graphics_hardware_interface::DescriptorType::AccelerationStructure => graphics_hardware_interface::Layouts::General,
-							graphics_hardware_interface::DescriptorType::SampledImage => graphics_hardware_interface::Layouts::Read,
-						},
-					}
-				);
-			}
-		}
-
-		unsafe { self.consume_resources(&consumptions) };
+		self
 	}
 
 	fn sync_textures(&mut self, texture_handles: &[graphics_hardware_interface::ImageHandle]) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
@@ -4046,6 +3951,153 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 			}
 		}
 	
+	}
+}
+
+impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandBufferRecording<'_> {
+	/// Binds a pipeline to the GPU.
+	fn bind_raster_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut dyn graphics_hardware_interface::BoundRasterizationPipelineMode {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
+		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline); }
+
+		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
+		self.bound_pipeline = Some(*pipeline_handle);
+
+		self
+	}
+
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
+		let command_buffer = self.get_command_buffer();
+
+		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.ghi.buffers[buffer_descriptor.buffer.0 as usize].buffer).collect::<Vec<_>>();
+		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
+
+		// TODO: implent slot splitting
+		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets); }
+	}
+
+	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+		let command_buffer = self.get_command_buffer();
+
+		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
+
+		let command_buffer = unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); };
+	}
+
+	/// Ends a render pass on the GPU.
+	fn end_render_pass(&mut self) {
+		let command_buffer = self.get_command_buffer();
+		unsafe { self.ghi.device.cmd_end_rendering(command_buffer.command_buffer); }
+		self.in_render_pass = false;
+	}
+}
+
+impl graphics_hardware_interface::BoundRasterizationPipelineMode for VulkanCommandBufferRecording<'_> {
+	/// Draws a render system mesh.
+	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
+		let command_buffer = self.get_command_buffer();
+
+		let mesh = &self.ghi.meshes[mesh_handle.0 as usize];
+
+		let buffers = [mesh.buffer];
+		let offsets = [0];
+
+		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
+		let command_buffer_handle = command_buffer.command_buffer;
+
+		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer_handle, 0, &buffers, &offsets); }
+		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer_handle, mesh.buffer, index_data_offset, vk::IndexType::UINT16); }
+
+		// self.consume_resources_current();
+
+		unsafe { self.ghi.device.cmd_draw_indexed(command_buffer_handle, mesh.index_count, 1, 0, 0, 0); }
+	}
+
+	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		let command_buffer = self.get_command_buffer();
+		let command_buffer_handle = command_buffer.command_buffer;
+
+		// self.consume_resources_current();
+
+		unsafe {
+			self.ghi.mesh_shading.cmd_draw_mesh_tasks(command_buffer_handle, x, y, z);
+		}
+	}
+
+	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
+		let command_buffer = self.get_command_buffer();
+		let command_buffer_handle = command_buffer.command_buffer;
+
+		// self.consume_resources_current();
+
+		unsafe {
+			self.ghi.device.cmd_draw_indexed(command_buffer_handle, index_count, instance_count, first_index, vertex_offset, first_instance);
+		}
+	}
+}
+
+impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBufferRecording<'_> {
+	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
+		let command_buffer = self.get_command_buffer();
+		let command_buffer_handle = command_buffer.command_buffer;
+
+		let (x, y, z) = dispatch.get_extent().as_tuple();
+
+		self.consume_resources_current();
+
+		unsafe {
+			self.ghi.device.cmd_dispatch(command_buffer_handle, x, y, z);
+		}
+	}
+
+	fn indirect_dispatch(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
+
+		unsafe {
+			self.consume_resources(&[
+				graphics_hardware_interface::Consumption{
+					handle: graphics_hardware_interface::Handle::Buffer(buffer_descriptor.buffer),
+					stages: graphics_hardware_interface::Stages::COMPUTE,
+					access: graphics_hardware_interface::AccessPolicies::READ,
+					layout: graphics_hardware_interface::Layouts::Indirect,
+				}
+			])
+		}
+
+		let command_buffer = self.get_command_buffer();
+		let command_buffer_handle = command_buffer.command_buffer;
+
+		self.consume_resources_current();
+
+		unsafe {
+			self.ghi.device.cmd_dispatch_indirect(command_buffer_handle, buffer.buffer, buffer_descriptor.offset);
+		}
+	}
+}
+
+impl graphics_hardware_interface::BoundRayTracingPipelineMode for VulkanCommandBufferRecording<'_> {
+	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
+		let command_buffer = self.get_command_buffer();
+		let comamand_buffer_handle = command_buffer.command_buffer;
+
+		let make_strided_range = |range: graphics_hardware_interface::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
+			vk::StridedDeviceAddressRegionKHR::default()
+				.device_address(self.ghi.get_buffer_address(range.buffer) as vk::DeviceSize + range.offset as vk::DeviceSize)
+				.stride(range.stride as vk::DeviceSize)
+				.size(range.size as vk::DeviceSize)
+		};
+
+		let raygen_shader_binding_tables = make_strided_range(binding_tables.raygen);
+		let miss_shader_binding_tables = make_strided_range(binding_tables.miss);
+		let hit_shader_binding_tables = make_strided_range(binding_tables.hit);
+		let callable_shader_binding_tables = if let Some(binding_table) = binding_tables.callable { make_strided_range(binding_table) } else { vk::StridedDeviceAddressRegionKHR::default() };
+
+		self.consume_resources_current();
+
+		unsafe {
+			self.ghi.ray_tracing_pipeline.cmd_trace_rays(comamand_buffer_handle, &raygen_shader_binding_tables, &miss_shader_binding_tables, &hit_shader_binding_tables, &callable_shader_binding_tables, x, y, z)
+		}
 	}
 }
 

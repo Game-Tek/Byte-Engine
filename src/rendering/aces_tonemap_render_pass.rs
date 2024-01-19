@@ -69,24 +69,9 @@ impl AcesToneMapPass {
 
 impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {
 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording,) {
-		// command_buffer_recording.consume_resources(&[
-		// 	ghi::Consumption{
-		// 		handle: ghi::Handle::Image(self.source_image_handle),
-		// 		stages: ghi::Stages::COMPUTE,
-		// 		access: ghi::AccessPolicies::READ,
-		// 		layout: ghi::Layouts::General,
-		// 	},
-		// 	ghi::Consumption{
-		// 		handle: ghi::Handle::Image(self.result_image_handle),
-		// 		stages: ghi::Stages::COMPUTE,
-		// 		access: ghi::AccessPolicies::WRITE,
-		// 		layout: ghi::Layouts::General,
-		// 	},
-		// ]);
-
-		command_buffer_recording.bind_compute_pipeline(&self.pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		let r = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
+		r.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
+		r.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
 	}
 }
 

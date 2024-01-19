@@ -32,7 +32,7 @@ impl Renderer {
 			let result = {
 				let mut ghi = ghi_instance.write().unwrap();
 
-				ghi.create_image(Some("result"), Extent::plane(1920, 1080), ghi::Formats::RGBAu8, None, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
+				ghi.create_image(Some("result"), Extent::rectangle(1920, 1080), ghi::Formats::RGBAu8, None, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
 			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn(VisibilityWorldRenderDomain::new(listener, ghi_instance.clone(), resource_manager_handle));

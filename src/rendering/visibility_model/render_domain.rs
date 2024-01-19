@@ -866,43 +866,42 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.start_region("Visibility Render Model");
 
 		command_buffer_recording.start_region("Visibility Buffer");
-		command_buffer_recording.bind_raster_pipeline(&self.visibility_pass_pipeline);
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
-		command_buffer_recording.start_render_pass(Extent::plane(1920, 1080), &attachments);
-		command_buffer_recording.dispatch_meshes(self.visibility_info.meshlet_count, 1, 1);
-		command_buffer_recording.end_render_pass();
+		let render_pass_command = command_buffer_recording.start_render_pass(Extent::rectangle(1920, 1080), &attachments);
+		render_pass_command.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
+		render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline).dispatch_meshes(self.visibility_info.meshlet_count, 1, 1);
+		render_pass_command.end_render_pass();
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.clear_buffers(&[self.material_count, self.material_offset, self.material_offset_scratch, self.material_evaluation_dispatches, self.material_xy]);
 
 		command_buffer_recording.start_region("Material Count");
-		command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent::plane(1920, 1080) });
+		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.start_region("Material Offset");
-		command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent { width: 1, height: 1, depth: 1 }, dispatch_extent: Extent { width: 1, height: 1, depth: 1 } });
+		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.start_region("Pixel Mapping");
-		command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
 		command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
-		command_buffer_recording.dispatch(ghi::DispatchExtent { workgroup_extent: Extent::square(32), dispatch_extent: Extent { width: 1920, height: 1080, depth: 1 } });
+		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
 		command_buffer_recording.end_region();
 
 		command_buffer_recording.start_region("Material Evaluation");
 		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(crate::RGBA::black())),(self.occlusion_map, ghi::ClearValue::Color(crate::RGBA::white()))]);
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
-			command_buffer_recording.bind_compute_pipeline(pipeline);
-			command_buffer_recording.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
-			command_buffer_recording.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
+			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
+			compute_pipeline_command.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
 				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
-			command_buffer_recording.indirect_dispatch(&ghi::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
+			compute_pipeline_command.indirect_dispatch(&ghi::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
 		}
 		command_buffer_recording.end_region();
 

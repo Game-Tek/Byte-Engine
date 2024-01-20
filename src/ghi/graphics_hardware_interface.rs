@@ -608,6 +608,20 @@ pub struct AttachmentInformation {
 	pub store: bool,
 }
 
+impl AttachmentInformation {
+	pub fn new(image: ImageHandle, format: Formats, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
+		Self {
+			image,
+			format,
+			layout,
+			clear,
+			load,
+			store,
+		}
+	}
+
+}
+
 #[derive(Clone, Copy)]
 /// Stores the information of a image copy.
 pub struct ImageCopy {
@@ -885,11 +899,47 @@ pub enum DescriptorInfo {
 
 /// Stores the information of a descriptor set write.
 pub struct DescriptorWrite {
-	pub binding_handle: DescriptorSetBindingHandle,
+	pub(super) binding_handle: DescriptorSetBindingHandle,
 	/// The index of the array element to write to in the binding(if the binding is an array).
-	pub array_element: u32,
+	pub(super) array_element: u32,
 	/// Information describing the descriptor.
-	pub descriptor: Descriptor,
+	pub(super) descriptor: Descriptor,
+}
+
+impl DescriptorWrite {
+	pub fn buffer(binding_handle: DescriptorSetBindingHandle, buffer_handle: BaseBufferHandle) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor: Descriptor::Buffer {
+				handle: buffer_handle,
+				size: Ranges::Whole,
+			},
+		}
+	}
+
+	pub fn image(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, layout: Layouts) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor: Descriptor::Image {
+				handle: image_handle,
+				layout,
+			},
+		}
+	}
+
+	pub fn combined_image_sampler(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor: Descriptor::CombinedImageSampler {
+				image_handle: image_handle,
+				sampler_handle,
+				layout,
+			},
+		}
+	}
 }
 
 /// Describes the details of the memory layout of a particular image.

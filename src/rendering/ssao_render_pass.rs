@@ -56,42 +56,18 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 
 		ghi.write(&[
-			ghi::DescriptorWrite {
-				binding_handle: depth_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::CombinedImageSampler { image_handle: depth_target, sampler_handle: sampler, layout: ghi::Layouts::Read },
-			},
-			ghi::DescriptorWrite {
-				binding_handle: result_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::Image{ handle: result, layout: ghi::Layouts::General },
-			},
+			ghi::DescriptorWrite::combined_image_sampler(depth_binding, depth_target, sampler, ghi::Layouts::Read),
+			ghi::DescriptorWrite::image(result_binding, result, ghi::Layouts::General),
 		]);
 
 		ghi.write(&[
-			ghi::DescriptorWrite {
-				binding_handle: blur_x_source_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::CombinedImageSampler { image_handle: result, sampler_handle: sampler, layout: ghi::Layouts::Read },
-			},
-			ghi::DescriptorWrite {
-				binding_handle: blur_x_result_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::Image{ handle: x_blur_target, layout: ghi::Layouts::General },
-			},
+			ghi::DescriptorWrite::combined_image_sampler(blur_x_source_binding, result, sampler, ghi::Layouts::Read),
+			ghi::DescriptorWrite::image(blur_x_result_binding, x_blur_target, ghi::Layouts::General),
 		]);
 
 		ghi.write(&[
-			ghi::DescriptorWrite {
-				binding_handle: blur_y_source_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::CombinedImageSampler { image_handle: x_blur_target, sampler_handle: sampler, layout: ghi::Layouts::Read },
-			},
-			ghi::DescriptorWrite {
-				binding_handle: blur_y_result_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::Image{ handle: y_blur_target, layout: ghi::Layouts::General },
-			},
+			ghi::DescriptorWrite::combined_image_sampler(blur_y_source_binding, x_blur_target, sampler, ghi::Layouts::Read),
+			ghi::DescriptorWrite::image(blur_y_result_binding, y_blur_target, ghi::Layouts::General),
 		]);
 
 		let blur_shader = ghi.create_shader(ghi::ShaderSource::GLSL(BLUR_SHADER), ghi::ShaderTypes::Compute, &[

@@ -232,41 +232,13 @@ impl VisibilityWorldRenderDomain {
 				meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 				ghi_instance.write(&[
-					ghi::DescriptorWrite {
-						binding_handle: camera_data_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite {
-						binding_handle: meshes_data_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: meshes_data_buffer, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite {
-						binding_handle: vertex_positions_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: vertex_positions_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite {
-						binding_handle: vertex_normals_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: vertex_normals_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite {
-						binding_handle: vertex_indices_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: vertex_indices_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite {
-						binding_handle: primitive_indices_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: primitive_indices_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite {
-						binding_handle: meshlets_data_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer { handle: meshlets_data_buffer, size: ghi::Ranges::Whole },
-					},
+					ghi::DescriptorWrite::buffer(camera_data_binding, camera_data_buffer_handle),
+					ghi::DescriptorWrite::buffer(meshes_data_binding, meshes_data_buffer),
+					ghi::DescriptorWrite::buffer(vertex_positions_binding, vertex_positions_buffer_handle),
+					ghi::DescriptorWrite::buffer(vertex_normals_binding, vertex_normals_buffer_handle),
+					ghi::DescriptorWrite::buffer(vertex_indices_binding, vertex_indices_buffer_handle),
+					ghi::DescriptorWrite::buffer(primitive_indices_binding, primitive_indices_buffer_handle),
+					ghi::DescriptorWrite::buffer(meshlets_data_binding, meshlets_data_buffer),
 				]);
 
 				let visibility_pass_mesh_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), ghi::ShaderTypes::Mesh,
@@ -288,8 +260,8 @@ impl VisibilityWorldRenderDomain {
 					(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment, vec![]),
 				];
 
-				primitive_index = ghi_instance.create_image(Some("primitive index"), crate::Extent::new(1920, 1080, 1), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-				instance_id = ghi_instance.create_image(Some("instance_id"), crate::Extent::new(1920, 1080, 1), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				primitive_index = ghi_instance.create_image(Some("primitive index"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				instance_id = ghi_instance.create_image(Some("instance_id"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 				let attachments = [
 					ghi::AttachmentInformation {
@@ -361,41 +333,13 @@ impl VisibilityWorldRenderDomain {
 				let instance_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[7]);
 
 				ghi_instance.write(&[
-					ghi::DescriptorWrite { // MaterialCount
-						binding_handle: material_count_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: material_count, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // MaterialOffset
-						binding_handle: material_offset_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: material_offset, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // MaterialOffsetScratch
-						binding_handle: material_offset_scratch_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: material_offset_scratch, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // MaterialEvaluationDispatches
-						binding_handle: material_evaluation_dispatches_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: material_evaluation_dispatches, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // MaterialXY
-						binding_handle: material_xy_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: material_xy, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // Primitive Index
-						binding_handle: vertex_id_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Image{ handle: primitive_index, layout: ghi::Layouts::General },
-					},
-					ghi::DescriptorWrite { // InstanceId
-						binding_handle: instance_id_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Image{ handle: instance_id, layout: ghi::Layouts::General },
-					},
+					ghi::DescriptorWrite::buffer(material_count_binding, material_count),
+					ghi::DescriptorWrite::buffer(material_offset_binding, material_offset),
+					ghi::DescriptorWrite::buffer(material_offset_scratch_binding, material_offset_scratch),
+					ghi::DescriptorWrite::buffer(material_evaluation_dispatches_binding, material_evaluation_dispatches),
+					ghi::DescriptorWrite::buffer(material_xy_binding, material_xy),
+					ghi::DescriptorWrite::image(vertex_id_binding, primitive_index, ghi::Layouts::General),
+					ghi::DescriptorWrite::image(instance_id_binding, instance_id, ghi::Layouts::General),
 				]);
 
 				let material_count_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(MATERIAL_COUNT_SOURCE), ghi::ShaderTypes::Compute,
@@ -461,41 +405,13 @@ impl VisibilityWorldRenderDomain {
 				occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 				ghi_instance.write(&[
-					ghi::DescriptorWrite { // albedo
-						binding_handle: albedo_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Image{ handle: albedo, layout: ghi::Layouts::General },
-					},
-					ghi::DescriptorWrite { // CameraData
-						binding_handle: camera_data_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: camera_data_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // debug_position
-						binding_handle: debug_position_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Image{ handle: debug_position, layout: ghi::Layouts::General }
-					},
-					ghi::DescriptorWrite { // debug_normals
-						binding_handle: debug_normals_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Image{ handle: debug_normals, layout: ghi::Layouts::General }
-					},
-					ghi::DescriptorWrite { // LightData
-						binding_handle: light_data_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: light_data_buffer, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // MaterialsData
-						binding_handle: materials_data_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::Buffer{ handle: materials_data_buffer_handle, size: ghi::Ranges::Whole },
-					},
-					ghi::DescriptorWrite { // OcclussionTexture
-						binding_handle: occlussion_texture_binding,
-						array_element: 0,
-						descriptor: ghi::Descriptor::CombinedImageSampler{ image_handle: occlusion_map, sampler_handle: sampler, layout: ghi::Layouts::Read },
-					},
+					ghi::DescriptorWrite::image(albedo_binding, albedo, ghi::Layouts::General),
+					ghi::DescriptorWrite::buffer(camera_data_binding, camera_data_buffer_handle,),
+					ghi::DescriptorWrite::image(debug_position_binding, debug_position, ghi::Layouts::General),
+					ghi::DescriptorWrite::image(debug_normals_binding, debug_normals, ghi::Layouts::General),
+					ghi::DescriptorWrite::buffer(light_data_binding, light_data_buffer,),
+					ghi::DescriptorWrite::buffer(materials_data_binding, materials_data_buffer_handle,),
+					ghi::DescriptorWrite::combined_image_sampler(occlussion_texture_binding, occlusion_map, sampler, ghi::Layouts::Read),
 				]);
 
 				material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 }]);
@@ -609,13 +525,7 @@ impl VisibilityWorldRenderDomain {
 					
 					let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
-					ghi.write(&[
-						ghi::DescriptorWrite {
-							binding_handle: self.textures_binding,
-							array_element: 0, // TODO: use actual array element
-							descriptor: ghi::Descriptor::CombinedImageSampler { image_handle: new_texture, sampler_handle: sampler, layout: ghi::Layouts::Read },
-						},
-					]);
+					ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(self.textures_binding, new_texture, sampler, ghi::Layouts::Read),]);
 
 					self.pending_texture_loads.push(new_texture);
 				}
@@ -1215,6 +1125,10 @@ impl Entity for VisibilityWorldRenderDomain {}
 impl WorldRenderDomain for VisibilityWorldRenderDomain {
 	fn get_descriptor_set_template(&self) -> ghi::DescriptorSetTemplateHandle {
 		self.descriptor_set_layout
+	}
+
+	fn get_descriptor_set(&self) -> ghi::DescriptorSetHandle {
+		self.descriptor_set
 	}
 
 	fn get_result_image(&self) -> ghi::ImageHandle {

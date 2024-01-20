@@ -29,23 +29,14 @@ impl AcesToneMapPass {
 		let result_binding = ghi.create_descriptor_binding(descriptor_set, &bindings[1]);
 
 		ghi.write(&[
-			ghi::DescriptorWrite {
-				binding_handle: albedo_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::Image{ handle: source_image, layout: ghi::Layouts::General },
-			},
-			ghi::DescriptorWrite {
-				binding_handle: result_binding,
-				array_element: 0,
-				descriptor: ghi::Descriptor::Image{ handle: result_image, layout: ghi::Layouts::General },
-			},
+			ghi::DescriptorWrite::image(albedo_binding, source_image, ghi::Layouts::General),
+			ghi::DescriptorWrite::image(result_binding, result_image, ghi::Layouts::General),
 		]);
 
-		let tone_mapping_shader = ghi.create_shader(ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER), ghi::ShaderTypes::Compute,
-			&[
-				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
-			]);
+		let tone_mapping_shader = ghi.create_shader(ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER), ghi::ShaderTypes::Compute, &[
+			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
+		]);
 			
 		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, ghi::ShaderTypes::Compute, vec![]));
 

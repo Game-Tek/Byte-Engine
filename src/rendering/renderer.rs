@@ -2,7 +2,7 @@ use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
 use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
-use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain};
+use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain, shadow_render_pass::ShadowRenderingPass};
 
 pub struct Renderer {
 	ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>,
@@ -20,6 +20,7 @@ pub struct Renderer {
 	window_system: EntityHandle<window_system::WindowSystem>,
 
 	visibility_render_model: EntityHandle<VisibilityWorldRenderDomain>,
+	shadow_render_pass: EntityHandle<ShadowRenderingPass>,
 	ui_render_model: EntityHandle<UIRenderModel>,
 	tonemap_render_model: EntityHandle<AcesToneMapPass>,
 }
@@ -36,6 +37,12 @@ impl Renderer {
 			};
 
 			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn(VisibilityWorldRenderDomain::new(listener, ghi_instance.clone(), resource_manager_handle));
+
+			let shadow_render_pass = {
+				let mut ghi = ghi_instance.write().unwrap();
+				core::spawn(ShadowRenderingPass::new(ghi.deref_mut(), visibility_render_model.read_sync().deref()))
+			};
+
 			let ui_render_model = core::spawn(UIRenderModel::new_as_system());
 			
 			let render_command_buffer;
@@ -72,6 +79,7 @@ impl Renderer {
 				window_system: window_system_handle,
 
 				visibility_render_model,
+				shadow_render_pass,
 				ui_render_model,
 				tonemap_render_model,
 			}
@@ -93,9 +101,14 @@ impl Renderer {
 
 		let mut command_buffer_recording = ghi.create_command_buffer_recording(self.render_command_buffer, Some(self.rendered_frame_count as u32));
 
-		self.visibility_render_model.map(|e| {
-			let mut e = e.write_sync();
-			e.render(ghi.deref(), command_buffer_recording.as_mut())
+		self.visibility_render_model.map(|vis_rp| {
+			let mut vis_rp = vis_rp.write_sync();
+			vis_rp.render(ghi.deref(), command_buffer_recording.as_mut());
+
+			self.shadow_render_pass.map(|shadow_rp| {
+				let shadow_rp = shadow_rp.write_sync();
+				shadow_rp.render(command_buffer_recording.as_mut(), vis_rp.deref());
+			});
 		});
 
 		self.tonemap_render_model.map(|e| {

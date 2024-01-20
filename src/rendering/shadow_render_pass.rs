@@ -1,76 +1,175 @@
-// use crate::Extent;
+use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
 
-// use super::{ghi, world_render_domain::WorldRenderDomain};
+use crate::{Extent, ghi};
 
-// struct ShadowRenderingPass {
-// 	pipeline: ghi::PipelineHandle,
-// 	pipeline_layout: ghi::PipelineLayoutHandle,
-// 	descriptor_set: ghi::DescriptorSetHandle,
-// 	shadow_map: ghi::ImageHandle,
-// }
+use super::world_render_domain::WorldRenderDomain;
 
-// impl ShadowRenderingPass {
-// 	fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, render_domain: &impl WorldRenderDomain) -> ShadowRenderingPass {
-// 		let shadow_map_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::MESH);
-// 		let depth_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::MESH);
+pub struct ShadowRenderingPass {
+	pipeline: ghi::PipelineHandle,
+	pipeline_layout: ghi::PipelineLayoutHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	shadow_map: ghi::ImageHandle,
+}
 
-// 		let bindings = [shadow_map_binding_template.clone(), depth_binding_template.clone()];
+impl ShadowRenderingPass {
+	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, render_domain: &impl WorldRenderDomain) -> ShadowRenderingPass {
+		let light_matrics_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH);
 
-// 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
+		let bindings = [light_matrics_binding_template.clone(),];
 
-// 		let pipeline_layout = ghi.create_pipeline_layout(&[render_domain.get_descriptor_set_template(), descriptor_set_template], &[]);
+		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
 
-// 		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
+		let pipeline_layout = ghi.create_pipeline_layout(&[render_domain.get_descriptor_set_template(), descriptor_set_template], &[]);
 
-// 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &shadow_map_binding_template);
-// 		let depth_binding = ghi.create_descriptor_binding(descriptor_set, &depth_binding_template);
+		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
 
-// 		let colored_shadow: bool = false;
+		let light_matrices_binding = ghi.create_descriptor_binding(descriptor_set, &light_matrics_binding_template);
 
-// 		let shadow_map_resolution = Extent::square(4096);
+		let colored_shadow: bool = false;
 
-// 		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let shadow_map_resolution = Extent::square(4096);
 
-// 		ghi.write(&[
-// 			ghi::DescriptorWrite {
-// 				binding_handle: shadow_map_binding,
-// 				array_element: 0,
-// 				descriptor: ghi::Descriptor::Image{ handle: shadow_map, layout: ghi::Layouts::General },
-// 			},
-// 		]);
+		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-// 		let ray_gen_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_RAY_GEN_SHADER), ghi::ShaderTypes::Raygen);
-// 		let hit_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_HIT_SHADER), ghi::ShaderTypes::ClosestHit);
-// 		let miss_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_MISS_SHADER), ghi::ShaderTypes::Miss);
+		let light_matrices_buffer = ghi.create_buffer(Some("Light Matrices Buffer"), 256 * 4 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-// 		let pipeline = ghi.create_ray_tracing_pipeline(&pipeline_layout, &[
-// 			(&ray_gen_shader, ghi::ShaderTypes::Raygen, vec![]),
-// 			(&hit_shader, ghi::ShaderTypes::ClosestHit, vec![]),
-// 			(&miss_shader, ghi::ShaderTypes::Miss, vec![]),
-// 		]);
+		ghi.write(&[ghi::DescriptorWrite::buffer(light_matrices_binding, light_matrices_buffer,),]);
 
-// 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map }
-// 	}
+		let x = 4f32;
 
-// 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-// 		command_buffer_recording.start_region("Shadow Rendering");
+		let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 1.0f32, 1000f32);
 
-// 		command_buffer_recording.consume_resources(&[
-// 			ghi::Consumption{
-// 				handle: ghi::Handle::Image(self.shadow_map),
-// 				stages: ghi::Stages::MESH,
-// 				access: ghi::AccessPolicies::WRITE,
-// 				layout: ghi::Layouts::General,
-// 			},
-// 		]);
+		light_projection_matrix[5] *= -1.0f32;
 
-// 		command_buffer_recording.bind_raster_pipeline(&self.pipeline);
-// 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-// 		command_buffer_recording.dispatch_meshes(1, 1, 1);
+		let light_view_matrix = maths_rs::Mat4f::from_x_rotation(-std::f32::consts::FRAC_PI_2); // Looking down from +y axis
 
-// 		command_buffer_recording.end_region();
-// 	}
-// }
+		let matric_buffer = ghi.get_mut_buffer_slice(light_matrices_buffer);
+
+		matric_buffer[..64].copy_from_slice((light_projection_matrix * light_view_matrix).as_u8_slice());
+
+		let mesh_shader = ghi.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), ghi::ShaderTypes::Mesh, &[
+			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
+		]);
+
+		let pipeline = ghi.create_raster_pipeline(&[
+			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
+			ghi::PipelineConfigurationBlocks::Shaders { shaders: &[(&mesh_shader, ghi::ShaderTypes::Mesh, vec![])], },
+			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
+		]);
+
+		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map }
+	}
+
+	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
+		command_buffer_recording.start_region("Shadow Rendering");
+
+		let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &[ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)]);
+		render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
+		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);
+		pipeline.dispatch_meshes(192, 1, 1);
+		render_pass.end_render_pass();
+
+		command_buffer_recording.end_region();
+	}
+}
+
+const VISIBILITY_PASS_MESH_SOURCE: &'static str = "
+#version 450
+#pragma shader_stage(mesh)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_shader_explicit_arithmetic_types: enable
+#extension GL_EXT_mesh_shader: require
+#extension GL_EXT_debug_printf : enable
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+layout(location=0) perprimitiveEXT out uint out_instance_index[126];
+layout(location=1) perprimitiveEXT out uint out_primitive_index[126];
+
+struct Camera {
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+
+struct Mesh {
+	mat4 model;
+	uint material_id;
+	uint32_t base_vertex_index;
+};
+
+struct Meshlet {
+	uint32_t instance_index;
+	uint16_t vertex_offset;
+	uint16_t triangle_offset;
+	uint8_t vertex_count;
+	uint8_t triangle_count;
+};
+
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+	Camera camera;
+};
+
+layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {
+	Mesh meshes[];
+};
+
+layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
+	vec3 vertex_positions[];
+};
+
+layout(set=0,binding=4,scalar) buffer readonly VertexIndices {
+	uint16_t vertex_indices[];
+};
+
+layout(set=0,binding=5,scalar) buffer readonly PrimitiveIndices {
+	uint8_t primitive_indices[];
+};
+
+layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
+	Meshlet meshlets[];
+};
+
+layout(set=1,binding=0,scalar) buffer readonly LightMatrices {
+	mat4 light_matrix;
+};
+
+layout(triangles, max_vertices=64, max_primitives=126) out;
+layout(local_size_x=128) in;
+void main() {
+	uint meshlet_index = gl_WorkGroupID.x;
+
+	Meshlet meshlet = meshlets[meshlet_index];
+	Mesh mesh = meshes[meshlet.instance_index];
+
+	uint instance_index = meshlet.instance_index;
+
+	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+
+	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
+		uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
+		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = light_matrix * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
+	}
+	
+	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
+		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
+		uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
+		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+		out_instance_index[gl_LocalInvocationID.x] = instance_index;
+		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
+	}
+}";
 
 // const SHADOW_RAY_GEN_SHADER: &'static str = "
 // #version 460 core

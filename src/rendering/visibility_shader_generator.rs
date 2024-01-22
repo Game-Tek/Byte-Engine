@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::{jspd::{self, lexer}, shader_generator, rendering::shader_strings::{FRESNEL_SCHLICK, GEOMETRY_SMITH, DISTRIBUTION_GGX, CALCULATE_FULL_BARY}};
+use crate::{jspd::{self, lexer}, shader_generator, rendering::{shader_strings::{FRESNEL_SCHLICK, GEOMETRY_SMITH, DISTRIBUTION_GGX, CALCULATE_FULL_BARY}, visibility_model::render_domain::{LIGHT_STRUCT_GLSL, LIGHTING_DATA_STRUCT_GLSL, MATERIAL_STRUCT_GLSL, CAMERA_STRUCT_GLSL, MESHLET_STRUCT_GLSL, MESH_STRUCT_GLSL}}};
 
 use super::shader_generator::ShaderGenerator;
 
@@ -102,13 +102,9 @@ impl VisibilityShaderGenerator {
 	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &lexer::Node) -> String {
 		let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
 
-		string.push_str("
-struct Mesh {
-	mat4 model;
-	uint material_id;
-	uint32_t base_vertex_index;
-};
+		string.push_str(MESH_STRUCT_GLSL);
 
+		string.push_str("
 layout(set=0, binding=1, scalar) buffer readonly MeshBuffer {
 	Mesh meshes[];
 };
@@ -127,16 +123,11 @@ layout(set=0, binding=4, scalar) buffer readonly VertexIndices {
 
 layout(set=0, binding=5, scalar) buffer readonly PrimitiveIndices {
 	uint8_t primitive_indices[];
-};
+};");
 
-struct Meshlet {
-	uint32_t instance_index;
-	uint16_t vertex_offset;
-	uint16_t triangle_offset;
-	uint8_t vertex_count;
-	uint8_t triangle_count;
-};
+		string.push_str(MESHLET_STRUCT_GLSL);
 
+		string.push_str("
 layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
 	Meshlet meshlets[];
 };
@@ -160,45 +151,28 @@ layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
 layout(set=2, binding=2, rgba16) uniform image2D out_position;
 layout(set=2, binding=3, rgba16) uniform image2D out_normals;
 
-const float PI = 3.14159265359;
-
-struct Camera {
-	mat4 view;
-	mat4 projection_matrix;
-	mat4 view_projection;
-};
-
-layout(set=2,binding=1,scalar) buffer CameraBuffer {
-	Camera camera;
-};
-
-struct Light {
-	vec3 position;
-	vec3 color;
-};
-
-struct LightingData {
-	uint light_count;
-	Light lights[16];
-};
-
-struct Material {
-	uint textures[16];
-};
-
-layout(set=2,binding=4,scalar) buffer readonly LightingBuffer {
-	LightingData lighting_data;
-};
-
-layout(set=2,binding=5,scalar) buffer readonly MaterialsBuffer {
-	Material materials[];
-};
-
 layout(set=2,binding=10) uniform sampler2D ao;
 
 layout(push_constant, scalar) uniform PushConstant {
 	uint material_id;
 } pc;");
+
+		string.push_str(CAMERA_STRUCT_GLSL);
+		string.push_str(LIGHT_STRUCT_GLSL);
+		string.push_str(LIGHTING_DATA_STRUCT_GLSL);
+		string.push_str(MATERIAL_STRUCT_GLSL);
+
+		string.push_str("layout(set=2,binding=1,scalar) buffer CameraBuffer {
+			Camera camera;
+		};
+		
+		layout(set=2,binding=4,scalar) buffer readonly LightingBuffer {
+			LightingData lighting_data;
+		};
+		
+		layout(set=2,binding=5,scalar) buffer readonly MaterialsBuffer {
+			Material materials[];
+		};");
 
 		string.push_str(DISTRIBUTION_GGX);
 		string.push_str(GEOMETRY_SMITH);

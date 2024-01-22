@@ -2,9 +2,13 @@ use colored::Colorize;
 
 pub fn format_glslang_error(shader_name: &str, error_string: &str, source_code: &str) -> Option<String> {
 	let errors = error_string.lines().filter(|error|
-		error.starts_with(shader_name)).map(|error| {
+		error.starts_with(shader_name)).filter_map(|error| {
 			let split = error.split(':').collect::<Vec<_>>();
-			(split[1], [split[3], split[4]].join(""))
+			if split.len() > 5 {
+				Some((split[1], [split[3], split[4]].join("")))
+			} else {
+				None
+			}
 		}).map(|(error_line_number_string, error)|
 			(error_line_number_string.trim().parse::<usize>().unwrap() - 1, error)
 	).collect::<Vec<_>>();

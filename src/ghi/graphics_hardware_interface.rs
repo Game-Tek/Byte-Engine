@@ -7,7 +7,7 @@ use crate::{window_system, Extent};
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
 	/// GLSL code string
-	GLSL(&'a str),
+	GLSL(String),
 	/// SPIR-V binary
 	SPIRV(&'a [u8]),
 }
@@ -1125,8 +1125,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1264,8 +1264,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1392,8 +1392,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1519,8 +1519,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1656,8 +1656,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
@@ -1822,8 +1822,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]);
-		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]);
+		let vertex_shader = renderer.create_shader(ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]);
+		let fragment_shader = renderer.create_shader(ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]);
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
@@ -2045,9 +2045,9 @@ void main() {
 }
 		";
 
-		let raygen_shader = renderer.create_shader(ShaderSource::GLSL(raygen_shader_code), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]);
-		let closest_hit_shader = renderer.create_shader(ShaderSource::GLSL(closest_hit_shader_code), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]);
-		let miss_shader = renderer.create_shader(ShaderSource::GLSL(miss_shader_code), ShaderTypes::Miss, &[]);
+		let raygen_shader = renderer.create_shader(ShaderSource::GLSL(raygen_shader_code.to_string()), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]);
+		let closest_hit_shader = renderer.create_shader(ShaderSource::GLSL(closest_hit_shader_code.to_string()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]);
+		let miss_shader = renderer.create_shader(ShaderSource::GLSL(miss_shader_code.to_string()), ShaderTypes::Miss, &[]);
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"));
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{

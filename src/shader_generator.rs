@@ -795,31 +795,37 @@ pub fn generate_glsl_header_block(compilation_settings: &json::JsonValue) -> Str
 		"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
 		"Fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
 		"Compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+		"Mesh" => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
 		_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
 	}
 
 	// extensions
 
-	glsl_block.push_str("#extension GL_EXT_shader_16bit_storage : enable\n");
-	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types: enable\n");
-	glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier : enable\n");
-	glsl_block.push_str("#extension GL_EXT_scalar_block_layout : enable\n");
-	glsl_block.push_str("#extension GL_EXT_buffer_reference : enable\n");
-	glsl_block.push_str("#extension GL_EXT_buffer_reference2 : enable\n");
-	glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted : enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_16bit_storage:require\n");
+	glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types:require\n");
+	glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier:require\n");
+	glsl_block.push_str("#extension GL_EXT_scalar_block_layout:require\n");
+	glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
+	glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
+	glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
 
 	match shader_stage {
 		"Compute" => {
-			glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic : enable\n");
-			glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic  : enable\n");
-			glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot : enable\n");
-			glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle : enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic:enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:enable\n");
+			glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:enable\n");
+		}
+		"Mesh" => {
+			glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
 		}
 		_ => {}
 	}
 	// memory layout declarations
 
 	glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
+
+	glsl_block.push_str("const float PI = 3.14159265359;");
 
 	glsl_block
 }

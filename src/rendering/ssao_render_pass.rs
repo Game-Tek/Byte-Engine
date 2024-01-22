@@ -41,7 +41,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let blur_y_source_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, &source_binding_template);
 		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, &result_binding_template);
 
-		let shader = ghi.create_shader(ghi::ShaderSource::GLSL(HBAO_SHADER), ghi::ShaderTypes::Compute, &[
+		let shader = ghi.create_shader(ghi::ShaderSource::GLSL(HBAO_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
@@ -70,7 +70,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 			ghi::DescriptorWrite::image(blur_y_result_binding, y_blur_target, ghi::Layouts::General),
 		]);
 
-		let blur_shader = ghi.create_shader(ghi::ShaderSource::GLSL(BLUR_SHADER), ghi::ShaderTypes::Compute, &[
+		let blur_shader = ghi.create_shader(ghi::ShaderSource::GLSL(BLUR_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),

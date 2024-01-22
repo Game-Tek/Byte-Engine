@@ -68,7 +68,7 @@ impl ShadowRenderingPass {
 
 		matric_buffer[..64].copy_from_slice((light_projection_matrix * light_view_matrix).as_u8_slice());
 
-		let mesh_shader = ghi.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), ghi::ShaderTypes::Mesh, &[
+		let mesh_shader = ghi.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE.to_string()), ghi::ShaderTypes::Mesh, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
@@ -85,7 +85,7 @@ impl ShadowRenderingPass {
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
-		let occlusion_map_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_TO_OCLUSSION_MAP_SOURCE), ghi::ShaderTypes::Compute, &[
+		let occlusion_map_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_TO_OCLUSSION_MAP_SOURCE.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),

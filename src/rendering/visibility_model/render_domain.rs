@@ -8,7 +8,7 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{Entity, EntityHandle};
-use crate::{ghi, utils, RGBA};
+use crate::{ghi, utils, RGBA, shader_generator};
 use crate::rendering::{mesh, directional_light, point_light};
 use crate::rendering::world_render_domain::WorldRenderDomain;
 use crate::resource_management::resource_manager::ResourceManager;
@@ -241,7 +241,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::DescriptorWrite::buffer(meshlets_data_binding, meshlets_data_buffer),
 				]);
 
-				let visibility_pass_mesh_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE), ghi::ShaderTypes::Mesh,
+				let visibility_pass_mesh_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
 					&[
 						ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
@@ -253,7 +253,7 @@ impl VisibilityWorldRenderDomain {
 					]
 				);
 
-				let visibility_pass_fragment_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE), ghi::ShaderTypes::Fragment, &[]);
+				let visibility_pass_fragment_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]);
 
 				let visibility_pass_shaders = [
 					(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh, vec![]),
@@ -321,7 +321,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::DescriptorWrite::image(instance_id_binding, instance_id, ghi::Layouts::General),
 				]);
 
-				let material_count_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(MATERIAL_COUNT_SOURCE), ghi::ShaderTypes::Compute,
+				let material_count_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_material_count_source()), ghi::ShaderTypes::Compute,
 					&[
 						ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
@@ -330,7 +330,7 @@ impl VisibilityWorldRenderDomain {
 				);
 				material_count_pipeline = ghi_instance.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_count_shader, ghi::ShaderTypes::Compute, vec![]));
 
-				let material_offset_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE), ghi::ShaderTypes::Compute,
+				let material_offset_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE.to_string()), ghi::ShaderTypes::Compute,
 					&[
 						ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::WRITE),
@@ -340,7 +340,7 @@ impl VisibilityWorldRenderDomain {
 				);
 				material_offset_pipeline = ghi_instance.create_compute_pipeline(&visibility_pass_pipeline_layout, (&material_offset_shader, ghi::ShaderTypes::Compute, vec![]));
 
-				let pixel_mapping_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(PIXEL_MAPPING_SOURCE), ghi::ShaderTypes::Compute,
+				let pixel_mapping_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_pixel_mapping_source()), ghi::ShaderTypes::Compute,
 					&[
 						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
@@ -1115,93 +1115,66 @@ const MAX_TRIANGLES: usize = 65536;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536;
 const MAX_VERTICES: usize = 65536;
 
-const VISIBILITY_PASS_MESH_SOURCE: &'static str = "
-#version 450
-#pragma shader_stage(mesh)
-
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_buffer_reference: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_shader_16bit_storage: require
-#extension GL_EXT_shader_explicit_arithmetic_types: enable
-#extension GL_EXT_mesh_shader: require
-#extension GL_EXT_debug_printf : enable
-
-layout(row_major) uniform; layout(row_major) buffer;
-
-layout(location=0) perprimitiveEXT out uint out_instance_index[126];
-layout(location=1) perprimitiveEXT out uint out_primitive_index[126];
-
-struct Camera {
-	mat4 view_matrix;
-	mat4 projection_matrix;
-	mat4 view_projection;
-};
-
-struct Mesh {
-	mat4 model;
-	uint material_id;
-	uint32_t base_vertex_index;
-};
-
-struct Meshlet {
-	uint32_t instance_index;
-	uint16_t vertex_offset;
-	uint16_t triangle_offset;
-	uint8_t vertex_count;
-	uint8_t triangle_count;
-};
-
-layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
-	Camera camera;
-};
-
-layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {
-	Mesh meshes[];
-};
-
-layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
-	vec3 vertex_positions[];
-};
-
-layout(set=0,binding=4,scalar) buffer readonly VertexIndices {
-	uint16_t vertex_indices[];
-};
-
-layout(set=0,binding=5,scalar) buffer readonly PrimitiveIndices {
-	uint8_t primitive_indices[];
-};
-
-layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
-	Meshlet meshlets[];
-};
-
-layout(triangles, max_vertices=64, max_primitives=126) out;
-layout(local_size_x=128) in;
-void main() {
-	uint meshlet_index = gl_WorkGroupID.x;
-
-	Meshlet meshlet = meshlets[meshlet_index];
-	Mesh mesh = meshes[meshlet.instance_index];
-
-	uint instance_index = meshlet.instance_index;
-
-	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
-
-	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
-		uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
-		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
-		// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions[vertex_index], 1.0);
-	}
+pub fn get_visibility_pass_mesh_source() -> String {
+	let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Mesh" });
+	string.push_str(CAMERA_STRUCT_GLSL);
+	string.push_str(MESH_STRUCT_GLSL);
+	string.push_str(MESHLET_STRUCT_GLSL);
+	string.push_str("layout(location=0) perprimitiveEXT out uint out_instance_index[126];
+	layout(location=1) perprimitiveEXT out uint out_primitive_index[126];
 	
-	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
-		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
-		uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
-		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-		out_instance_index[gl_LocalInvocationID.x] = instance_index;
-		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
-	}
-}";
+	layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+		Camera camera;
+	};
+	
+	layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {
+		Mesh meshes[];
+	};
+	
+	layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
+		vec3 vertex_positions[];
+	};
+	
+	layout(set=0,binding=4,scalar) buffer readonly VertexIndices {
+		uint16_t vertex_indices[];
+	};
+	
+	layout(set=0,binding=5,scalar) buffer readonly PrimitiveIndices {
+		uint8_t primitive_indices[];
+	};
+	
+	layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
+		Meshlet meshlets[];
+	};
+	
+	layout(triangles, max_vertices=64, max_primitives=126) out;
+	layout(local_size_x=128) in;
+	void main() {
+		uint meshlet_index = gl_WorkGroupID.x;
+	
+		Meshlet meshlet = meshlets[meshlet_index];
+		Mesh mesh = meshes[meshlet.instance_index];
+	
+		uint instance_index = meshlet.instance_index;
+	
+		SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+	
+		if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
+			uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
+			gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
+			// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions[vertex_index], 1.0);
+		}
+		
+		if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
+			uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
+			uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
+			gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+			out_instance_index[gl_LocalInvocationID.x] = instance_index;
+			out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
+		}
+	}");
+	string
+}
 
 const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
 #version 450
@@ -1225,44 +1198,35 @@ void main() {
 }
 "#;
 
-const MATERIAL_COUNT_SOURCE: &'static str = r#"
-#version 450
-#pragma shader_stage(compute)
-
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_shader_explicit_arithmetic_types : enable
-
-struct Mesh {
-	mat4 model;
-	uint material_index;
-	uint32_t base_vertex_index;
-};
-
-layout(set=0,binding=1,scalar) buffer MeshesBuffer {
-	Mesh meshes[];
-};
-
-layout(set=1,binding=0,scalar) buffer MaterialCount {
-	uint material_count[];
-};
-
-layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
-
-layout(local_size_x=32, local_size_y=32) in;
-void main() {
-	// If thread is out of bound respect to the material_id texture, return
-	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
-
-	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
-
-	if (pixel_instance_index == 0xFFFFFFFF) { return; }
-
-	uint material_index = meshes[pixel_instance_index].material_index;
-
-	atomicAdd(material_count[material_index], 1);
+pub fn get_material_count_source() -> String {
+	let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
+	string.push_str(MESH_STRUCT_GLSL);
+	string.push_str("	
+	layout(set=0,binding=1,scalar) buffer MeshesBuffer {
+		Mesh meshes[];
+	};
+	
+	layout(set=1,binding=0,scalar) buffer MaterialCount {
+		uint material_count[];
+	};
+	
+	layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
+	
+	layout(local_size_x=32, local_size_y=32) in;
+	void main() {
+		// If thread is out of bound respect to the material_id texture, return
+		if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+	
+		uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+	
+		if (pixel_instance_index == 0xFFFFFFFF) { return; }
+	
+		uint material_index = meshes[pixel_instance_index].material_index;
+	
+		atomicAdd(material_count[material_index], 1);
+	}");
+	string
 }
-"#;
 
 const MATERIAL_OFFSET_SOURCE: &'static str = r#"
 #version 450
@@ -1301,51 +1265,79 @@ void main() {
 }
 "#;
 
-const PIXEL_MAPPING_SOURCE: &'static str = r#"
-#version 450
-#pragma shader_stage(compute)
+pub fn get_pixel_mapping_source() -> String {
+	let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
+	string.push_str(MESH_STRUCT_GLSL);
+	string.push_str(MESHLET_STRUCT_GLSL);
+	string.push_str("	
+	layout(set=0,binding=1,scalar) buffer MeshesBuffer {
+		Mesh meshes[];
+	};
+	
+	layout(set=1,binding=1,scalar) buffer MaterialOffset {
+		uint material_offset[];
+	};
+	
+	layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
+		uint material_offset_scratch[];
+	};
+	
+	layout(set=1,binding=4,scalar) buffer PixelMapping {
+		u16vec2 pixel_mapping[];
+	};
+	
+	layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
+	
+	layout(local_size_x=32, local_size_y=32) in;
+	void main() {
+		// If thread is out of bound respect to the material_id texture, return
+		if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+	
+		uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+	
+		if (pixel_instance_index == 0xFFFFFFFF) { return; }
+	
+		uint material_index = meshes[pixel_instance_index].material_index;
+	
+		uint offset = atomicAdd(material_offset_scratch[material_index], 1);
+	
+		pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
+	}
+	");
+	string
 
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_shader_explicit_arithmetic_types : enable
+}
 
-struct Mesh {
+pub const LIGHT_STRUCT_GLSL: &'static str = "struct Light {
+	vec3 position;
+	vec3 color;
+};";
+
+pub const LIGHTING_DATA_STRUCT_GLSL: &'static str = "struct LightingData {
+	uint light_count;
+	Light lights[16];
+};";
+
+pub const MATERIAL_STRUCT_GLSL: &'static str = "struct Material {
+	uint textures[16];
+};";
+
+pub const CAMERA_STRUCT_GLSL: &'static str = "struct Camera {
+	mat4 view;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};";
+
+pub const MESHLET_STRUCT_GLSL: &'static str = "struct Meshlet {
+	uint32_t instance_index;
+	uint16_t vertex_offset;
+	uint16_t triangle_offset;
+	uint8_t vertex_count;
+	uint8_t triangle_count;
+};";
+
+pub const MESH_STRUCT_GLSL: &'static str = "struct Mesh {
 	mat4 model;
 	uint material_index;
 	uint32_t base_vertex_index;
-};
-
-layout(set=0,binding=1,scalar) buffer MeshesBuffer {
-	Mesh meshes[];
-};
-
-layout(set=1,binding=1,scalar) buffer MaterialOffset {
-	uint material_offset[];
-};
-
-layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
-	uint material_offset_scratch[];
-};
-
-layout(set=1,binding=4,scalar) buffer PixelMapping {
-	u16vec2 pixel_mapping[];
-};
-
-layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
-
-layout(local_size_x=32, local_size_y=32) in;
-void main() {
-	// If thread is out of bound respect to the material_id texture, return
-	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
-
-	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
-
-	if (pixel_instance_index == 0xFFFFFFFF) { return; }
-
-	uint material_index = meshes[pixel_instance_index].material_index;
-
-	uint offset = atomicAdd(material_offset_scratch[material_index], 1);
-
-	pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
-}
-"#;
+};";

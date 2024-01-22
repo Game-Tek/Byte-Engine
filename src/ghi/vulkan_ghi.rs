@@ -126,15 +126,20 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				options.set_target_spirv(shaderc::SpirvVersion::V1_6);
 				options.set_invert_y(true);
 		
-				let binary = compiler.compile_into_spirv(source_code, shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
+				let binary = compiler.compile_into_spirv(source_code.as_str(), shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
 				
 				match binary {
 					Ok(binary) => {		
 						self.create_vulkan_shader(stage, binary.as_binary_u8(), shader_binding_descriptors)
 					},
 					Err(err) => {
-						let error_string = err.to_string();
-						let error_string = shader_compilation::format_glslang_error("shader_name:", &error_string, &source_code).unwrap_or(error_string);
+						let compiler_error_string = err.to_string();
+
+						let error_string = if !compiler_error_string.is_empty() {
+							shader_compilation::format_glslang_error("shader_name:", &compiler_error_string, &source_code).unwrap_or(compiler_error_string)
+						} else {
+							format!("Could not parse shader error. Printing shader string: \n{}", source_code.as_str())
+						};
 
 						panic!("Error compiling shader:\n {}", error_string);
 					}

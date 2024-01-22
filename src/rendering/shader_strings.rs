@@ -1,11 +1,22 @@
 pub const GET_VIEW_SPACE_POSITION_FROM_DEPTH: &str = {
-	"vec3 get_view_space_position_from_depth(sampler2D depth_map, uvec2 coords, mat4 projection_matrix, mat4 view_matrix) {
+	"vec3 get_view_space_position_from_depth(sampler2D depth_map, uvec2 coords, mat4 inverse_projection_matrix) {
 		float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
 		vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
 		vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
-		vec4 view_space = inverse(projection_matrix) * clip_space;
+		vec4 view_space = inverse_projection_matrix * clip_space;
 		view_space /= view_space.w;
-		vec4 world_space = inverse(view_matrix) * view_space;
+		return view_space.xyz;
+	}"
+};
+
+pub const GET_WORLD_SPACE_POSITION_FROM_DEPTH: &str = {
+	"vec3 get_world_space_position_from_depth(sampler2D depth_map, uvec2 coords, mat4 inverse_projection_matrix, mat4 inverse_view_matrix) {
+		float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
+		vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
+		vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+		vec4 view_space = inverse_projection_matrix * clip_space;
+		view_space /= view_space.w;
+		vec4 world_space = inverse_view_matrix * view_space;
 		return world_space.xyz;
 	}"
 };

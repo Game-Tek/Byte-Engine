@@ -9,13 +9,23 @@ pub struct ShadowRenderingPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	shadow_map: ghi::ImageHandle,
+
+	occlusion_map_build_pipeline: ghi::PipelineHandle,
 }
 
 impl ShadowRenderingPass {
 	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, render_domain: &impl WorldRenderDomain) -> ShadowRenderingPass {
-		let light_matrics_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH);
+		let light_matrics_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE);
+		let light_depth_map = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+		let view_depth_map = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+		let occlusion_image = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
-		let bindings = [light_matrics_binding_template.clone(),];
+		let bindings = [
+			light_matrics_binding_template.clone(),
+			light_depth_map.clone(),
+			view_depth_map.clone(),
+			occlusion_image.clone(),
+		];
 
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
 
@@ -33,11 +43,22 @@ impl ShadowRenderingPass {
 
 		let light_matrices_buffer = ghi.create_buffer(Some("Light Matrices Buffer"), 256 * 4 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-		ghi.write(&[ghi::DescriptorWrite::buffer(light_matrices_binding, light_matrices_buffer,),]);
+		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+
+		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &light_depth_map);
+		let view_depth_map_binding = ghi.create_descriptor_binding(descriptor_set, &view_depth_map);
+		let occlusion_image_binding = ghi.create_descriptor_binding(descriptor_set, &occlusion_image);
+
+		ghi.write(&[
+			ghi::DescriptorWrite::buffer(light_matrices_binding, light_matrices_buffer,),
+			ghi::DescriptorWrite::combined_image_sampler(shadow_map_binding, shadow_map, sampler, ghi::Layouts::Read),
+			ghi::DescriptorWrite::combined_image_sampler(view_depth_map_binding, render_domain.get_view_depth_image(), sampler, ghi::Layouts::Read),
+			ghi::DescriptorWrite::image(occlusion_image_binding, render_domain.get_view_occlusion_image(), ghi::Layouts::General),
+		]);
 
 		let x = 4f32;
 
-		let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 1.0f32, 1000f32);
+		let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
 
 		light_projection_matrix[5] *= -1.0f32;
 
@@ -64,7 +85,17 @@ impl ShadowRenderingPass {
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
-		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map }
+		let occlusion_map_shader = ghi.create_shader(ghi::ShaderSource::GLSL(SHADOW_TO_OCLUSSION_MAP_SOURCE), ghi::ShaderTypes::Compute, &[
+			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::READ),
+			ghi::ShaderBindingDescriptor::new(1, 3, ghi::AccessPolicies::WRITE),
+		]);
+
+		let occlusion_map_build_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&occlusion_map_shader, ghi::ShaderTypes::Compute, vec![]));
+
+		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, occlusion_map_build_pipeline }
 	}
 
 	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
@@ -75,6 +106,10 @@ impl ShadowRenderingPass {
 		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);
 		pipeline.dispatch_meshes(192, 1, 1);
 		render_pass.end_render_pass();
+
+		let occlusion_map_build_pipeline = command_buffer_recording.bind_compute_pipeline(&self.occlusion_map_build_pipeline);
+		occlusion_map_build_pipeline.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
+		occlusion_map_build_pipeline.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
 
 		command_buffer_recording.end_region();
 	}
@@ -170,6 +205,71 @@ void main() {
 		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
 	}
 }";
+
+
+const SHADOW_TO_OCLUSSION_MAP_SOURCE: &'static str = r#"
+#version 450
+#pragma shader_stage(compute)
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+struct Mesh {
+	mat4 model;
+	uint material_index;
+	uint32_t base_vertex_index;
+};
+
+struct Camera {
+	mat4 view_matrix;
+	mat4 projection_matrix;
+	mat4 view_projection;
+};
+layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
+	Camera camera;
+};
+
+layout(set=1,binding=0,scalar) buffer readonly LightMatrices {
+	mat4 light_matrix;
+};
+layout(set=1, binding=1) uniform sampler2D depth_shadow_map;
+layout(set=1, binding=2) uniform sampler2D depth_map;
+layout(set=1, binding=3, r8) uniform image2D oclussion_map;
+
+vec3 get_view_position(sampler2D depth_map, uvec2 coords, mat4 projection_matrix) {
+	float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
+	vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
+	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+	vec4 view_space = inverse(projection_matrix) * clip_space;
+	view_space /= view_space.w;
+	vec4 world_space = inverse(camera.view_matrix) * view_space;
+	return world_space.xyz;
+}
+
+layout(local_size_x=32, local_size_y=32) in;
+void main() {
+	if (gl_GlobalInvocationID.x >= imageSize(oclussion_map).x || gl_GlobalInvocationID.y >= imageSize(oclussion_map).y) { return; }
+
+	vec3 surface_world_position = get_view_position(depth_map, uvec2(gl_GlobalInvocationID.xy), camera.projection_matrix);
+
+	vec4 surface_light_clip_position = light_matrix * vec4(surface_world_position, 1.0);
+
+	vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
+
+	vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
+
+	float z = surface_light_ndc_position.z;
+
+	float shadow_sample_depth = texture(depth_shadow_map, shadow_uv).r;
+
+	float occlusion_factor = z + 0.00001 < shadow_sample_depth ? 0.0 : 1.0;
+
+	imageStore(oclussion_map, ivec2(gl_GlobalInvocationID.xy), vec4(occlusion_factor, 0, 0, 0));
+}
+"#;
 
 // const SHADOW_RAY_GEN_SHADER: &'static str = "
 // #version 460 core

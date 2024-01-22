@@ -595,17 +595,17 @@ pub enum ClearValue {
 /// Stores the information of an attachment.
 pub struct AttachmentInformation {
 	/// The image view of the attachment.
-	pub image: ImageHandle,
+	pub(crate) image: ImageHandle,
 	/// The format of the attachment.
-	pub format: Formats,
+	pub(crate) format: Formats,
 	/// The layout of the attachment.
-	pub layout: Layouts,
+	pub(crate) layout: Layouts,
 	/// The clear color of the attachment.
-	pub clear: ClearValue,
+	pub(crate) clear: ClearValue,
 	/// Whether to load the contents of the attchment when starting a render pass.
-	pub load: bool,
+	pub(crate) load: bool,
 	/// Whether to store the contents of the attachment when ending a render pass.
-	pub store: bool,
+	pub(crate) store: bool,
 }
 
 impl AttachmentInformation {
@@ -649,7 +649,7 @@ pub struct BufferCopy {
 use serde::{Serialize, Deserialize};
 
 bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq)]
+	#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 	/// Bit flags for the available access policies.
 	pub struct AccessPolicies : u8 {
 		/// Will perform read access.
@@ -677,7 +677,7 @@ pub enum Barrier {
 }
 
 bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq)]
+	#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 	/// Bit flags for the available pipeline stages.
 	pub struct Stages : u64 {
 		/// No stage.

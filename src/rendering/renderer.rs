@@ -103,12 +103,14 @@ impl Renderer {
 
 		self.visibility_render_model.map(|vis_rp| {
 			let mut vis_rp = vis_rp.write_sync();
-			vis_rp.render(ghi.deref(), command_buffer_recording.as_mut());
+			vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut());
 
 			self.shadow_render_pass.map(|shadow_rp| {
 				let shadow_rp = shadow_rp.write_sync();
 				shadow_rp.render(command_buffer_recording.as_mut(), vis_rp.deref());
 			});
+
+			vis_rp.render_b(ghi.deref(), command_buffer_recording.as_mut());
 		});
 
 		self.tonemap_render_model.map(|e| {

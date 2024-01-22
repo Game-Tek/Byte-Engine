@@ -8,7 +8,7 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{Entity, EntityHandle};
-use crate::{ghi, utils};
+use crate::{ghi, utils, RGBA};
 use crate::rendering::{mesh, directional_light, point_light};
 use crate::rendering::world_render_domain::WorldRenderDomain;
 use crate::resource_management::resource_manager::ResourceManager;
@@ -264,30 +264,9 @@ impl VisibilityWorldRenderDomain {
 				instance_id = ghi_instance.create_image(Some("instance_id"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 				let attachments = [
-					ghi::AttachmentInformation {
-						image: primitive_index,
-						layout: ghi::Layouts::RenderTarget,
-						format: ghi::Formats::U32,
-						clear: ghi::ClearValue::Integer(!0u32, 0, 0, 0),
-						load: false,
-						store: true,
-					},
-					ghi::AttachmentInformation {
-						image: instance_id,
-						layout: ghi::Layouts::RenderTarget,
-						format: ghi::Formats::U32,
-						clear: ghi::ClearValue::Integer(!0u32, 0, 0, 0),
-						load: false,
-						store: true,
-					},
-					ghi::AttachmentInformation {
-						image: depth_target,
-						layout: ghi::Layouts::RenderTarget,
-						format: ghi::Formats::Depth32,
-						clear: ghi::ClearValue::Depth(0f32),
-						load: false,
-						store: true,
-					},
+					ghi::AttachmentInformation::new(primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+					ghi::AttachmentInformation::new(instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+					ghi::AttachmentInformation::new(depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
 				];
 
 				vertex_layout = [
@@ -707,7 +686,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn render(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
+	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 
 		{
@@ -744,34 +723,13 @@ impl VisibilityWorldRenderDomain {
 		camera_data_reference.projection_matrix = projection_matrix;
 		camera_data_reference.view_projection_matrix = view_projection_matrix;
 
-		command_buffer_recording.start_region("Visibility Model");
-
 		let attachments = [
-			ghi::AttachmentInformation {
-				image: self.primitive_index,
-				layout: ghi::Layouts::RenderTarget,
-				format: ghi::Formats::U32,
-				clear: ghi::ClearValue::Integer(!0u32, 0, 0, 0),
-				load: false,
-				store: true,
-			},
-			ghi::AttachmentInformation {
-				image: self.instance_id,
-				layout: ghi::Layouts::RenderTarget,
-				format: ghi::Formats::U32,
-				clear: ghi::ClearValue::Integer(!0u32, 0, 0, 0),
-				load: false,
-				store: true,
-			},
-			ghi::AttachmentInformation {
-				image: self.depth_target,
-				layout: ghi::Layouts::RenderTarget,
-				format: ghi::Formats::Depth32,
-				clear: ghi::ClearValue::Depth(0f32),
-				load: false,
-				store: true,
-			},
+			ghi::AttachmentInformation::new(self.primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+			ghi::AttachmentInformation::new(self.instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+			ghi::AttachmentInformation::new(self.depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
 		];
+
+		command_buffer_recording.clear_images(&[(self.occlusion_map, ghi::ClearValue::Color(RGBA::white())),]);
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
@@ -802,8 +760,12 @@ impl VisibilityWorldRenderDomain {
 		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
 		command_buffer_recording.end_region();
 
+		command_buffer_recording.end_region();
+	}
+
+	pub fn render_b(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
 		command_buffer_recording.start_region("Material Evaluation");
-		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(crate::RGBA::black())),(self.occlusion_map, ghi::ClearValue::Color(crate::RGBA::white()))]);
+		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(crate::RGBA::black())),]);
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
@@ -816,8 +778,6 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.end_region();
 
 		// ghi.wait(self.transfer_synchronizer); // Wait for buffers to be copied over to the GPU, or else we might overwrite them on the CPU before they are copied over
-
-		command_buffer_recording.end_region();
 	}
 }
 
@@ -1133,6 +1093,14 @@ impl WorldRenderDomain for VisibilityWorldRenderDomain {
 
 	fn get_result_image(&self) -> ghi::ImageHandle {
 		self.albedo
+	}
+
+	fn get_view_depth_image(&self) -> ghi::ImageHandle {
+		self.depth_target
+	}
+
+	fn get_view_occlusion_image(&self) -> ghi::ImageHandle {
+		self.occlusion_map
 	}
 }
 

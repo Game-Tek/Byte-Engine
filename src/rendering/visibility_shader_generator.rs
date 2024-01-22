@@ -480,8 +480,6 @@ string.push_str(&format!("
 
 	float ao_factor = texture(ao, uv).r;
 
-	albedo *= ao_factor;
-
 	for (uint i = 0; i < lighting_data.light_count; ++i) {{
 		vec3 light_pos = lighting_data.lights[i].position;
 		vec3 light_color = lighting_data.lights[i].color;
@@ -511,6 +509,8 @@ string.push_str(&format!("
 		float NdotL = max(dot(N, L), 0.0);
 		lo += (kD * albedo / PI + specular) * radiance * NdotL;
 	}}
+
+	lo *= ao_factor;
 "));
 
 		string.push_str(&format!("imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));"));

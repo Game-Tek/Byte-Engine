@@ -3905,14 +3905,14 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		let wait_semaphores = wait_for_synchronizer_handles.iter().map(|wait_for| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.ghi.synchronizers[wait_for.0 as usize].semaphore)
-				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT/* | vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR*/)
 				/* .build() */
 		}).collect::<Vec<_>>();
 
 		let signal_semaphores = signal_synchronizer_handles.iter().map(|signal| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.ghi.synchronizers[signal.0 as usize].semaphore)
-				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT/* | vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR*/)
 				/* .build() */
 		}).collect::<Vec<_>>();
 

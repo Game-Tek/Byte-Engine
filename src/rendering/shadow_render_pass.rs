@@ -81,7 +81,7 @@ impl ShadowRenderingPass {
 
 		let pipeline = ghi.create_raster_pipeline(&[
 			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			ghi::PipelineConfigurationBlocks::Shaders { shaders: &[(&mesh_shader, ghi::ShaderTypes::Mesh, vec![])], },
+			ghi::PipelineConfigurationBlocks::Shaders { shaders: &[(&mesh_shader, ghi::ShaderTypes::Mesh, &[])], },
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
@@ -93,7 +93,7 @@ impl ShadowRenderingPass {
 			ghi::ShaderBindingDescriptor::new(1, 3, ghi::AccessPolicies::WRITE),
 		]);
 
-		let occlusion_map_build_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&occlusion_map_shader, ghi::ShaderTypes::Compute, vec![]));
+		let occlusion_map_build_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&occlusion_map_shader, ghi::ShaderTypes::Compute, &[]));
 
 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, occlusion_map_build_pipeline }
 	}
@@ -106,10 +106,6 @@ impl ShadowRenderingPass {
 		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);
 		pipeline.dispatch_meshes(192, 1, 1);
 		render_pass.end_render_pass();
-
-		let occlusion_map_build_pipeline = command_buffer_recording.bind_compute_pipeline(&self.occlusion_map_build_pipeline);
-		occlusion_map_build_pipeline.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
-		occlusion_map_build_pipeline.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
 
 		command_buffer_recording.end_region();
 	}

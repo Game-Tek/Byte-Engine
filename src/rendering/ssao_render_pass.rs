@@ -47,7 +47,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
 		]);
 
-		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&shader, ghi::ShaderTypes::Compute, vec![]));
+		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&shader, ghi::ShaderTypes::Compute, &[]));
 
 		let result = ghi.create_image(Some("HBAO Result"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::IEEE754), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::IEEE754), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -77,8 +77,8 @@ impl ScreenSpaceAmbientOcclusionPass {
 			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
 		]);
 
-		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, vec![Box::new(ghi::GenericSpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: [1f32, 0f32,] })]));
-		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, vec![Box::new(ghi::GenericSpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: [0f32, 1f32,] })]));
+		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: Box::new([1f32, 0f32,]) }]));
+		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: Box::new([0f32, 1f32,]) }]));
 
 		ScreenSpaceAmbientOcclusionPass {
 			pipeline_layout,

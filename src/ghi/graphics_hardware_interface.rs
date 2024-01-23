@@ -34,9 +34,19 @@ pub enum DataTypes {
 
 #[derive(Hash)]
 pub struct VertexElement {
-	pub name: String,
-	pub format: DataTypes,
-	pub binding: u32,
+	pub(crate) name: String,
+	pub(crate) format: DataTypes,
+	pub(crate) binding: u32,
+}
+
+impl VertexElement {
+	pub fn new(name: &str, format: DataTypes, binding: u32) -> Self {
+		Self {
+			name: name.to_string(),
+			format,
+			binding,
+		}
+	}
 }
 
 bitflags::bitflags! {
@@ -980,38 +990,32 @@ pub struct BufferDescriptor {
 	pub slot: u32,
 }
 
-pub trait SpecializationMapEntry {
-	fn get_constant_id(&self) -> u32;
-	fn get_size(&self) -> usize;
-	fn get_data(&self) -> &[u8];
-	fn get_type(&self) -> String;
-}
-
-pub struct GenericSpecializationMapEntry<T> {
+pub struct SpecializationMapEntry {
 	pub r#type: String,
 	pub constant_id: u32,
-	pub value: T,
+	pub value: Box<dyn std::any::Any>,
 }
 
-impl <T> SpecializationMapEntry for GenericSpecializationMapEntry<T> {
-	fn get_constant_id(&self) -> u32 {
+impl SpecializationMapEntry {
+	pub fn get_constant_id(&self) -> u32 {
 		self.constant_id
 	}
 
-	fn get_type(&self) -> String {
+	pub fn get_type(&self) -> String {
 		self.r#type.clone()
 	}
 
-	fn get_size(&self) -> usize {
-		std::mem::size_of::<T>()
+	pub fn get_size(&self) -> usize {
+		std::mem::size_of_val(&self.value)
 	}
 
-	fn get_data(&self) -> &[u8] {
-		unsafe { std::slice::from_raw_parts(&self.value as *const T as *const u8, std::mem::size_of::<T>()) }
+	pub fn get_data(&self) -> &[u8] {
+		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
+		unsafe { std::slice::from_raw_parts(&self.value as *const _ as *const u8, self.get_size()) }
 	}
 }
 
-pub type ShaderParameter<'a> = (&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>);
+pub type ShaderParameter<'a> = (&'a ShaderHandle, ShaderTypes, &'a [SpecializationMapEntry]);
 
 pub enum PipelineConfigurationBlocks<'a> {
 	VertexInput {
@@ -1024,7 +1028,7 @@ pub enum PipelineConfigurationBlocks<'a> {
 		targets: &'a [AttachmentInformation],
 	},
 	Shaders {
-		shaders: &'a [(&'a ShaderHandle, ShaderTypes, Vec<Box<dyn SpecializationMapEntry>>)],
+		shaders: &'a [ShaderParameter<'a>],
 	},
 	Layout {
 		layout: &'a PipelineLayoutHandle,
@@ -1148,7 +1152,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1284,7 +1288,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1412,7 +1416,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1542,7 +1546,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1679,7 +1683,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1878,7 +1882,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, vec![]), (&fragment_shader, ShaderTypes::Fragment, vec![])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -2091,7 +2095,7 @@ void main() {
 
 		let pipeline = renderer.create_ray_tracing_pipeline(
 			&pipeline_layout,
-			&[(&raygen_shader, ShaderTypes::RayGen, vec![]), (&closest_hit_shader, ShaderTypes::ClosestHit, vec![]), (&miss_shader, ShaderTypes::Miss, vec![])],
+			&[(&raygen_shader, ShaderTypes::RayGen, &[]), (&closest_hit_shader, ShaderTypes::ClosestHit, &[]), (&miss_shader, ShaderTypes::Miss, &[])],
 		);
 
 		let building_command_buffer_handle = renderer.create_command_buffer(None);

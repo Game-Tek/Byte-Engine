@@ -348,8 +348,25 @@ string.push_str(&format!("
 	for (uint i = 0; i < lighting_data.light_count; ++i) {{
 		vec3 light_pos = lighting_data.lights[i].position;
 		vec3 light_color = lighting_data.lights[i].color;
+		mat4 light_matrix = lighting_data.lights[i].matrix;
 
 		vec3 L = normalize(light_pos - vertex_position);
+
+		if (dot(N, L) < 0.0) {{
+			continue;
+		}}
+
+		vec4 surface_light_clip_position = light_matrix * vec4(vertex_position, 1.0);
+		vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
+		vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
+		float z = surface_light_ndc_position.z;
+		float shadow_sample_depth = texture(depth_shadow_map, shadow_uv).r;
+		float occlusion_factor = z + 0.00001 < shadow_sample_depth ? 0.0 : 1.0;
+
+		if (occlusion_factor == 0.0) {{
+			continue;
+		}}
+
 		vec3 H = normalize(V + L);
 
 		float distance = length(light_pos - vertex_position);
@@ -372,7 +389,7 @@ string.push_str(&format!("
 		kD *= 1.0 - metalness;
 
 		float NdotL = max(dot(N, L), 0.0);
-		lo += (kD * albedo / PI + specular) * radiance * NdotL;
+		lo += (kD * albedo / PI + specular) * radiance * NdotL * occlusion_factor;
 	}}
 
 	lo *= ao_factor;

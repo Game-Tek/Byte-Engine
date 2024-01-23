@@ -2363,7 +2363,7 @@ impl VulkanGHI {
 							.map(move |stage| {
 								let entries_offset = entry_count;
 
-								for entry in &stage.2 {
+								for entry in stage.2.iter() {
 									specialization_entries_buffer.extend_from_slice(entry.get_data());
 
 									entries[entry_count] = vk::SpecializationMapEntry::default()

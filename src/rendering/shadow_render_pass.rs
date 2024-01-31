@@ -39,7 +39,7 @@ impl ShadowRenderingPass {
 
 		let shadow_map_resolution = Extent::square(4096);
 
-		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		let light_matrices_buffer = ghi.create_buffer(Some("Light Matrices Buffer"), 256 * 4 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
@@ -109,6 +109,8 @@ impl ShadowRenderingPass {
 
 		command_buffer_recording.end_region();
 	}
+
+	pub fn get_shadow_map_image(&self) -> ghi::ImageHandle { self.shadow_map }
 }
 
 const VISIBILITY_PASS_MESH_SOURCE: &'static str = "

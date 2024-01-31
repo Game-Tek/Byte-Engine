@@ -2,6 +2,8 @@
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 
+use std::any::Any;
+
 use crate::{window_system, Extent};
 
 /// Possible types of a shader source
@@ -141,6 +143,7 @@ pub enum Handle {
 
 // HANDLES
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Consumption {
 	pub handle: Handle,
 	pub stages: Stages,
@@ -183,11 +186,34 @@ pub struct TopLevelAccelerationStructureBuild {
 	pub description: TopLevelAccelerationStructureBuildDescriptions,
 }
 
+pub struct BufferOffset {
+	pub(super) buffer: BaseBufferHandle,
+	pub(super) offset: usize,
+}
+
+impl BufferOffset {
+	pub fn new(buffer: BaseBufferHandle, offset: usize) -> Self {
+		Self {
+			buffer,
+			offset,
+		}
+	}
+}
+
 pub struct BufferStridedRange {
-	pub buffer: BaseBufferHandle,
-	pub offset: usize,
-	pub stride: usize,
-	pub size: usize,
+	pub(super) buffer_offset: BufferOffset,
+	pub(super) stride: usize,
+	pub(super) size: usize,
+}
+
+impl BufferStridedRange {
+	pub fn new(buffer: BaseBufferHandle, offset: usize, stride: usize, size: usize) -> Self {
+		Self {
+			buffer_offset: BufferOffset::new(buffer, offset),
+			stride,
+			size,
+		}
+	}
 }
 
 pub struct BindingTables {
@@ -197,12 +223,17 @@ pub struct BindingTables {
 	pub callable: Option<BufferStridedRange>,
 }
 
+/// Describes the dimesions of a dispatch operation.
 pub struct DispatchExtent {
 	workgroup_extent: Extent,
 	dispatch_extent: Extent,
 }
 
 impl DispatchExtent {
+	/// Creates a new dispatch extent.
+	/// # Arguments
+	/// * `dispatch_extent` - The extent of the dispatch. (How many threads to have in each dimension).
+	/// * `workgroup_extent` - The extent of the workgroup. (The workgroup extent defined in the shader).
 	pub fn new(dispatch_extent: Extent, workgroup_extent: Extent) -> Self {
 		Self {
 			workgroup_extent,
@@ -210,6 +241,9 @@ impl DispatchExtent {
 		}
 	}
 
+	/// Returns the extent for a dispatch operation.
+	/// # Returns
+	/// The extent for a dispatch operation, which is the result of dividing the dispatch extent by the workgroup extent, rounded up.
 	pub fn get_extent(&self) -> Extent {
 		Extent {
 			width: self.dispatch_extent.width.div_ceil(self.workgroup_extent.width),
@@ -307,7 +341,7 @@ pub trait BoundRasterizationPipelineMode: RasterizationRenderPassMode {
 pub trait BoundComputePipelineMode: CommandBufferRecording {
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
-	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferDescriptor);
+	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferOffset);
 }
 
 pub trait BoundRayTracingPipelineMode: CommandBufferRecording {
@@ -783,7 +817,7 @@ bitflags::bitflags! {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Enumerates the available layouts.
 pub enum Layouts {
 	/// The layout is undefined. We don't mind what the layout is.
@@ -984,19 +1018,47 @@ pub enum SwapchainStates {
 }
 
 pub struct BufferDescriptor {
-	pub buffer: BaseBufferHandle,
-	pub offset: u64,
-	pub range: u64,
-	pub slot: u32,
+	pub(super) buffer: BaseBufferHandle,
+	pub(super) offset: u64,
+	pub(super) range: u64,
+	pub(super) slot: u32,
+}
+
+impl BufferDescriptor {
+	pub fn new(buffer: BaseBufferHandle, offset: u64, range: u64, slot: u32) -> Self {
+		Self {
+			buffer,
+			offset,
+			range,
+			slot,
+		}
+	}
 }
 
 pub struct SpecializationMapEntry {
-	pub r#type: String,
-	pub constant_id: u32,
-	pub value: Box<dyn std::any::Any>,
+	pub(super) r#type: String,	
+	pub(super) constant_id: u32,
+	pub(super) value: Box<[u8]>,
 }
 
 impl SpecializationMapEntry {
+	pub fn new<T: Copy + 'static>(constant_id: u32, r#type: String, value: T) -> Self where [(); std::mem::size_of::<T>()]: {
+		if r#type == "vec4f".to_owned() {
+			assert_eq!(value.type_id(), std::any::TypeId::of::<[f32; 4]>());
+		}
+
+		let mut data = [0 as u8; std::mem::size_of::<T>()];
+
+		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
+		unsafe { std::ptr::copy_nonoverlapping((&value) as *const T as *const u8, data.as_mut_ptr(), std::mem::size_of::<T>()) };
+
+		Self {
+			r#type,
+			constant_id,
+			value: Box::new(data),
+		}
+	}
+
 	pub fn get_constant_id(&self) -> u32 {
 		self.constant_id
 	}
@@ -1011,7 +1073,7 @@ impl SpecializationMapEntry {
 
 	pub fn get_data(&self) -> &[u8] {
 		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
-		unsafe { std::slice::from_raw_parts(&self.value as *const _ as *const u8, self.get_size()) }
+		self.value.as_ref()
 	}
 }
 
@@ -1055,6 +1117,15 @@ pub enum AccelerationStructureTypes {
 #[cfg(test)]
 pub(super) mod tests {
 	use super::*;
+
+	#[test]
+	fn dispatch_extent() {
+		let dispatch_extent = DispatchExtent::new(Extent::new(10, 10, 10), Extent::new(5, 5, 5));
+		assert_eq!(dispatch_extent.get_extent(), Extent::new(2, 2, 2));
+
+		let dispatch_extent = DispatchExtent::new(Extent::new(10, 10, 10), Extent::new(3, 3, 3));
+		assert_eq!(dispatch_extent.get_extent(), Extent::new(4, 4, 4));
+	}
 
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
 		assert_eq!(pixels.len(), (extent.width * extent.height) as usize);
@@ -2165,9 +2236,9 @@ void main() {
 				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
 					acceleration_structure: bottom_level_acceleration_structure,
 					description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-						vertex_buffer: BufferStridedRange { buffer: vertex_positions_buffer, offset: 0, stride: 12, size: 12 * 3 },
+						vertex_buffer: BufferStridedRange::new(vertex_positions_buffer, 0, 12, 12 * 3),
 						vertex_count: 3,
-						index_buffer: BufferStridedRange { buffer: index_buffer, offset: 0, stride: 2, size: 2 * 3 },
+						index_buffer: BufferStridedRange::new(index_buffer, 0, 2, 2 * 3),
 						vertex_position_encoding: Encodings::IEEE754,
 						index_format: DataTypes::U16,
 						triangle_count: 1,
@@ -2234,9 +2305,9 @@ void main() {
 			]) };
 
 			ray_tracing_pipeline_command.trace_rays(BindingTables {
-				raygen: BufferStridedRange { buffer: raygen_sbt_buffer, offset: 0, stride: 64, size: 64 },
-				hit: BufferStridedRange { buffer: hit_sbt_buffer, offset: 0, stride: 64, size: 64 },
-				miss: BufferStridedRange { buffer: miss_sbt_buffer, offset: 0, stride: 64, size: 64 },
+				raygen: BufferStridedRange::new(raygen_sbt_buffer, 0, 64, 64),
+				hit: BufferStridedRange::new(hit_sbt_buffer, 0, 64, 64),
+				miss: BufferStridedRange::new(miss_sbt_buffer, 0, 64, 64),
 				callable: None,
 			}, 1920, 1080, 1);
 

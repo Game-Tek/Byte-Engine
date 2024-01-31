@@ -548,6 +548,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 						.size(4));
 					}
 
+					assert_eq!(specialization_map_entry.get_size(), 16);
+
 					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
 				}
 				_ => {
@@ -1497,7 +1499,9 @@ fn texture_format_and_resource_use_to_image_layout(_texture_format: graphics_har
 			}
 		}
 		graphics_hardware_interface::Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
-		graphics_hardware_interface::Layouts::Read => vk::ImageLayout::READ_ONLY_OPTIMAL,
+		graphics_hardware_interface::Layouts::Read => {
+			if _texture_format != graphics_hardware_interface::Formats::Depth32 { vk::ImageLayout::READ_ONLY_OPTIMAL } else { vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL }
+		},
 		graphics_hardware_interface::Layouts::General => vk::ImageLayout::GENERAL,
 		graphics_hardware_interface::Layouts::ShaderBindingTable => vk::ImageLayout::UNDEFINED,
 		graphics_hardware_interface::Layouts::Indirect => vk::ImageLayout::UNDEFINED,
@@ -1727,7 +1731,8 @@ fn to_pipeline_stage_flags_with_format(stages: graphics_hardware_interface::Stag
 				pipeline_stage_flags |= vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
 			}
 		} else {
-			pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+			pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
+			pipeline_stage_flags |= vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
 		}
 	}
 
@@ -1963,6 +1968,7 @@ impl VulkanGHI {
 		
 		if settings.validation {
 			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
+			// layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
 		}
 
 		let mut extension_names = Vec::new();
@@ -3026,7 +3032,7 @@ impl VulkanCommandBufferRecording<'_> {
 		}
 	}
 
-	fn consume_resources_current(&mut self) {
+	fn consume_resources_current(&mut self, additional_transitions: &[graphics_hardware_interface::Consumption]) {
 		let mut consumptions = Vec::with_capacity(32);
 
 		let bound_pipeline_handle = self.bound_pipeline.expect("No bound pipeline");
@@ -3059,6 +3065,8 @@ impl VulkanCommandBufferRecording<'_> {
 				);
 			}
 		}
+
+		consumptions.extend(additional_transitions.iter().cloned());
 
 		unsafe { self.consume_resources(&consumptions) };
 	}
@@ -3232,21 +3240,21 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 					}
 					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::Mesh { vertex_buffer, index_buffer, vertex_position_encoding, index_format, triangle_count, vertex_count } => {
 						let vertex_data_address = unsafe {
-							let (_, buffer) = this.get_buffer(vertex_buffer.buffer);
+							let (_, buffer) = this.get_buffer(vertex_buffer.buffer_offset.buffer);
 							this.ghi.device.get_buffer_device_address(
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
 									/* .build() */
-							) + vertex_buffer.offset as u64
+							) + vertex_buffer.buffer_offset.offset as u64
 						};
 
 						let index_data_address = unsafe {
-							let (_, buffer) = this.get_buffer(index_buffer.buffer);
+							let (_, buffer) = this.get_buffer(index_buffer.buffer_offset.buffer);
 							this.ghi.device.get_buffer_device_address(
 								&vk::BufferDeviceAddressInfo::default()
 									.buffer(buffer.buffer)
 									/* .build() */
-							) + index_buffer.offset as u64
+							) + index_buffer.buffer_offset.offset as u64
 						};
 
 						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -3665,6 +3673,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	}
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: graphics_hardware_interface::ImageHandle, present_image_index: u32, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
+		let source_texture_stage = self.states.get(&graphics_hardware_interface::Handle::Image(source_texture_handle)).unwrap().stage;
+
 		unsafe { self.consume_resources(&[
 			graphics_hardware_interface::Consumption {
 				handle: graphics_hardware_interface::Handle::Image(source_texture_handle),
@@ -3690,7 +3700,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		let image_memory_barriers = [
 			vk::ImageMemoryBarrier2KHR::default()
 				.old_layout(vk::ImageLayout::UNDEFINED)
-				.src_stage_mask(vk::PipelineStageFlags2::empty())
+				.src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE) // This is needed to correctly synchronize presentation when submitting the command buffer.
 				.src_access_mask(vk::AccessFlags2KHR::empty())
 				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
@@ -3720,27 +3730,15 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		// Copy texture to swapchain image
 
 		let image_blits = [vk::ImageBlit2::default()
-			.src_subresource(vk::ImageSubresourceLayers::default()
-				.aspect_mask(vk::ImageAspectFlags::COLOR)
-				.mip_level(0)
-				.base_array_layer(0)
-				.layer_count(1)
-				/* .build() */
-			)
+			.src_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
 			.src_offsets([
-				vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
-				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1)/* .build() */,
+				vk::Offset3D::default().x(0).y(0).z(0),
+				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1),
 			])
-			.dst_subresource(vk::ImageSubresourceLayers::default()
-				.aspect_mask(vk::ImageAspectFlags::COLOR)
-				.mip_level(0)
-				.base_array_layer(0)
-				.layer_count(1)
-				/* .build() */
-			)
+			.dst_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
 			.dst_offsets([
-				vk::Offset3D::default().x(0).y(0).z(0)/* .build() */,
-				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1)/* .build() */,
+				vk::Offset3D::default().x(0).y(0).z(0),
+				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1),
 			])
 		];
 
@@ -3749,8 +3747,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
 			.dst_image(swapchain_image)
 			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-			.regions(&image_blits);
-			/* .build() */
+			.regions(&image_blits)
+		;
 
 		unsafe { self.ghi.device.cmd_blit_image2(command_buffer.command_buffer, &copy_image_info); }
 
@@ -3774,13 +3772,12 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 					base_array_layer: 0,
 					layer_count: vk::REMAINING_ARRAY_LAYERS,
 				})
-				/* .build() */
 		];
 
 		let dependency_info = vk::DependencyInfo::default()
 			.image_memory_barriers(&image_memory_barriers)
 			.dependency_flags(vk::DependencyFlags::BY_REGION)
-			/* .build() */;
+		;
 
 		unsafe {
 			self.ghi.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
@@ -3822,8 +3819,12 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 			let descriptor_sets = [descriptor_set_handle];
 	
 			unsafe {
-				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] {
+				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] { // TODO: do this for all needed bind points
 					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, bp, vulkan_pipeline_layout_handle, i, &descriptor_sets, &[]);
+				}
+
+				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
+					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, vulkan_pipeline_layout_handle, i, &descriptor_sets, &[]);
 				}
 			}
 		}
@@ -3898,11 +3899,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		let command_buffers = [command_buffer.command_buffer];
 
 		let command_buffer_infos = [
-			vk::CommandBufferSubmitInfo::default()
-				.command_buffer(
-					command_buffers[0]
-				)
-				/* .build() */
+			vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])
 		];
 
 		// TODO: Take actual stage masks
@@ -3910,22 +3907,20 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		let wait_semaphores = wait_for_synchronizer_handles.iter().map(|wait_for| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.ghi.synchronizers[wait_for.0 as usize].semaphore)
-				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT/* | vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR*/)
-				/* .build() */
+				.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
 		}).collect::<Vec<_>>();
 
 		let signal_semaphores = signal_synchronizer_handles.iter().map(|signal| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.ghi.synchronizers[signal.0 as usize].semaphore)
-				.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT/* | vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR*/)
-				/* .build() */
+				.stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE/* | vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR*/)
 		}).collect::<Vec<_>>();
 
 		let submit_info = vk::SubmitInfo2::default()
 			.command_buffer_infos(&command_buffer_infos)
 			.wait_semaphore_infos(&wait_semaphores)
 			.signal_semaphore_infos(&signal_semaphores)
-			/* .build() */;
+		;
 
 		let execution_completion_synchronizer = &self.ghi.synchronizers[execution_synchronizer_handle.0 as usize];
 
@@ -4049,34 +4044,30 @@ impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBuff
 
 		let (x, y, z) = dispatch.get_extent().as_tuple();
 
-		self.consume_resources_current();
+		self.consume_resources_current(&[]);
 
 		unsafe {
 			self.ghi.device.cmd_dispatch(command_buffer_handle, x, y, z);
 		}
 	}
 
-	fn indirect_dispatch(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+	fn indirect_dispatch(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferOffset) {
 		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
-
-		unsafe {
-			self.consume_resources(&[
-				graphics_hardware_interface::Consumption{
-					handle: graphics_hardware_interface::Handle::Buffer(buffer_descriptor.buffer),
-					stages: graphics_hardware_interface::Stages::COMPUTE,
-					access: graphics_hardware_interface::AccessPolicies::READ,
-					layout: graphics_hardware_interface::Layouts::Indirect,
-				}
-			])
-		}
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
-		self.consume_resources_current();
+		self.consume_resources_current(&[
+			graphics_hardware_interface::Consumption{
+				handle: graphics_hardware_interface::Handle::Buffer(buffer_descriptor.buffer),
+				stages: graphics_hardware_interface::Stages::COMPUTE,
+				access: graphics_hardware_interface::AccessPolicies::READ,
+				layout: graphics_hardware_interface::Layouts::Indirect,
+			}
+		]);
 
 		unsafe {
-			self.ghi.device.cmd_dispatch_indirect(command_buffer_handle, buffer.buffer, buffer_descriptor.offset);
+			self.ghi.device.cmd_dispatch_indirect(command_buffer_handle, buffer.buffer, buffer_descriptor.offset as u64);
 		}
 	}
 }
@@ -4088,7 +4079,7 @@ impl graphics_hardware_interface::BoundRayTracingPipelineMode for VulkanCommandB
 
 		let make_strided_range = |range: graphics_hardware_interface::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
 			vk::StridedDeviceAddressRegionKHR::default()
-				.device_address(self.ghi.get_buffer_address(range.buffer) as vk::DeviceSize + range.offset as vk::DeviceSize)
+				.device_address(self.ghi.get_buffer_address(range.buffer_offset.buffer) as vk::DeviceSize + range.buffer_offset.offset as vk::DeviceSize)
 				.stride(range.stride as vk::DeviceSize)
 				.size(range.size as vk::DeviceSize)
 		};
@@ -4098,7 +4089,7 @@ impl graphics_hardware_interface::BoundRayTracingPipelineMode for VulkanCommandB
 		let hit_shader_binding_tables = make_strided_range(binding_tables.hit);
 		let callable_shader_binding_tables = if let Some(binding_table) = binding_tables.callable { make_strided_range(binding_table) } else { vk::StridedDeviceAddressRegionKHR::default() };
 
-		self.consume_resources_current();
+		self.consume_resources_current(&[]);
 
 		unsafe {
 			self.ghi.ray_tracing_pipeline.cmd_trace_rays(comamand_buffer_handle, &raygen_shader_binding_tables, &miss_shader_binding_tables, &hit_shader_binding_tables, &callable_shader_binding_tables, x, y, z)

@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::sync::RwLock;
 
 use log::error;
+use maths_rs::mat::{MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
 use crate::core::entity::EntityBuilder;
@@ -119,14 +120,8 @@ pub struct VisibilityWorldRenderDomain {
 	visibility_pass_pipeline_layout: ghi::PipelineLayoutHandle,
 	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 
-	material_offset_pipeline: ghi::PipelineHandle,
-	pixel_mapping_pipeline: ghi::PipelineHandle,
-
 	instance_id: ghi::ImageHandle,
 	primitive_index: ghi::ImageHandle,
-
-	material_evaluation_dispatches: ghi::BaseBufferHandle,
-	material_xy: ghi::BaseBufferHandle,
 
 	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
@@ -140,6 +135,8 @@ pub struct VisibilityWorldRenderDomain {
 	material_count_pass: MaterialCountPass,
 	material_offset_pass: MaterialOffsetPass,
 	pixel_mapping_pass: PixelMappingPass,
+
+	shadow_map_binding: ghi::DescriptorSetBindingHandle,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -165,9 +162,6 @@ impl VisibilityWorldRenderDomain {
 			let visibility_descriptor_set_layout;
 			let visibility_pass_pipeline_layout;
 			let visibility_passes_descriptor_set;
-			let material_count_pipeline;
-			let material_offset_pipeline;
-			let pixel_mapping_pipeline;
 			let material_evaluation_descriptor_set_layout;
 			let material_evaluation_descriptor_set;
 			let material_evaluation_pipeline_layout;
@@ -175,8 +169,6 @@ impl VisibilityWorldRenderDomain {
 			let instance_id;
 			let debug_position;
 			let debug_normals;
-			let material_evaluation_dispatches;
-			let material_xy;
 			let light_data_buffer;
 			let materials_data_buffer_handle;
 
@@ -184,6 +176,8 @@ impl VisibilityWorldRenderDomain {
 			let material_count_pass;
 			let material_offset_pass;
 			let pixel_mapping_pass;
+
+			let shadow_map_binding;
 
 			{
 				let mut ghi_instance = ghi.write().unwrap();
@@ -244,10 +238,6 @@ impl VisibilityWorldRenderDomain {
 				primitive_index = ghi_instance.create_image(Some("primitive index"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 				instance_id = ghi_instance.create_image(Some("instance_id"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-				material_evaluation_dispatches = ghi_instance.create_buffer(Some("Material Evaluation Dipatches"), std::mem::size_of::<[[u32; 3]; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-
-				material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-
 				let bindings = [
 					ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 					ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
@@ -272,17 +262,17 @@ impl VisibilityWorldRenderDomain {
 				let vertex_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[6]);
 				let instance_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, &bindings[7]);
 
-				visibility_pass = VisibilityPass::new(ghi_instance.deref_mut(), &pipeline_layout_handle, primitive_index, instance_id, depth_target);
-				material_count_pass = MaterialCountPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout, &visibility_pass);
-				material_offset_pass = MaterialOffsetPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout,);
-				pixel_mapping_pass = PixelMappingPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout,);
+				visibility_pass = VisibilityPass::new(ghi_instance.deref_mut(), pipeline_layout_handle, descriptor_set, primitive_index, instance_id, depth_target);
+				material_count_pass = MaterialCountPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set, &visibility_pass);
+				material_offset_pass = MaterialOffsetPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set);
+				pixel_mapping_pass = PixelMappingPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set,);
 
 				ghi_instance.write(&[
-					ghi::DescriptorWrite::buffer(material_count_binding, material_count),
-					ghi::DescriptorWrite::buffer(material_offset_binding, material_offset),
-					ghi::DescriptorWrite::buffer(material_offset_scratch_binding, material_offset_scratch),
-					ghi::DescriptorWrite::buffer(material_evaluation_dispatches_binding, material_evaluation_dispatches),
-					ghi::DescriptorWrite::buffer(material_xy_binding, material_xy),
+					ghi::DescriptorWrite::buffer(material_count_binding, material_count_pass.get_material_count_buffer()),
+					ghi::DescriptorWrite::buffer(material_offset_binding, material_offset_pass.get_material_offset_buffer()),
+					ghi::DescriptorWrite::buffer(material_offset_scratch_binding, material_offset_pass.get_material_offset_scratch_buffer()),
+					ghi::DescriptorWrite::buffer(material_evaluation_dispatches_binding, material_offset_pass.material_evaluation_dispatches),
+					ghi::DescriptorWrite::buffer(material_xy_binding, pixel_mapping_pass.material_xy),
 					ghi::DescriptorWrite::image(vertex_id_binding, primitive_index, ghi::Layouts::General),
 					ghi::DescriptorWrite::image(instance_id_binding, instance_id, ghi::Layouts::General),
 				]);
@@ -303,6 +293,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 					ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 					ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
+					ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
 				];
 
 				material_evaluation_descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
@@ -315,6 +306,7 @@ impl VisibilityWorldRenderDomain {
 				let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[4]);
 				let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[5]);
 				let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[6]);
+				shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[7]);
 
 				let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 				occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -390,9 +382,6 @@ impl VisibilityWorldRenderDomain {
 				visibility_pass_pipeline_layout,
 				visibility_passes_descriptor_set,
 
-				material_offset_pipeline,
-				pixel_mapping_pipeline,
-
 				material_evaluation_descriptor_set_layout,
 				material_evaluation_descriptor_set,
 				material_evaluation_pipeline_layout,
@@ -403,11 +392,10 @@ impl VisibilityWorldRenderDomain {
 				debug_position,
 				debug_normal: debug_normals,
 
-				material_evaluation_dispatches,
-				material_xy,
-
 				light_data_buffer,
 				materials_data_buffer_handle,
+
+				shadow_map_binding,
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -415,6 +403,14 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<mesh::Mesh>(listener)
 			.listen_to::<directional_light::DirectionalLight>(listener)
 			.listen_to::<point_light::PointLight>(listener)
+	}
+
+	pub fn write_shadow_descriptor(&self, ghi: &mut dyn ghi::GraphicsHardwareInterface, shadow_map: ghi::ImageHandle,) {
+		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+
+		ghi.write(&[
+			ghi::DescriptorWrite::combined_image_sampler(self.shadow_map_binding, shadow_map, sampler, ghi::Layouts::Read),
+		]);
 	}
 
 	fn load_material(&mut self, (response, buffer): (resource_management::Response, Vec<u8>),) {	
@@ -488,6 +484,7 @@ impl VisibilityWorldRenderDomain {
 						ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
 					]);
 
 					self.shaders.insert(resource_id, (hash, new_shader, stage));
@@ -512,21 +509,21 @@ impl VisibilityWorldRenderDomain {
 							// TODO: use actual variable type
 
 							let value = match variable.value.as_str() {
-								"White" => { Box::new([1f32, 1f32, 1f32, 1f32]) }
-								"Red" => { Box::new([1f32, 0f32, 0f32, 1f32]) }
-								"Green" => { Box::new([0f32, 1f32, 0f32, 1f32]) }
-								"Blue" => { Box::new([0f32, 0f32, 1f32, 1f32]) }
-								"Purple" => { Box::new([1f32, 0f32, 1f32, 1f32]) }
-								"Yellow" => { Box::new([1f32, 1f32, 0f32, 1f32]) }
-								"Black" => { Box::new([0f32, 0f32, 0f32, 1f32]) }
+								"White" => { [1f32, 1f32, 1f32, 1f32] }
+								"Red" => { [1f32, 0f32, 0f32, 1f32] }
+								"Green" => { [0f32, 1f32, 0f32, 1f32] }
+								"Blue" => { [0f32, 0f32, 1f32, 1f32] }
+								"Purple" => { [1f32, 0f32, 1f32, 1f32] }
+								"Yellow" => { [1f32, 1f32, 0f32, 1f32] }
+								"Black" => { [0f32, 0f32, 0f32, 1f32] }
 								_ => {
 									error!("Unknown variant value: {}", variable.value);
 
-									Box::new([0f32, 0f32, 0f32, 1f32])
+									[0f32, 0f32, 0f32, 1f32]
 								}
 							};
 
-							specialization_constants.push(ghi::SpecializationMapEntry{ constant_id: i as u32, r#type: "vec4f".to_string(), value });
+							specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), value));
 						}
 
 						let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, ghi::ShaderTypes::Compute, &specialization_constants));
@@ -558,7 +555,7 @@ impl VisibilityWorldRenderDomain {
 							"Visibility" => {
 								match material.model.pass.as_str() {
 									"MaterialEvaluation" => {
-										let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry{ constant_id: 0, r#type: "vec4f".to_string(), value: Box::new([0f32, 1f32, 0f32, 1f32]) }]));
+										let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry::new(0, "vec4f".to_string(), [0f32, 1f32, 0f32, 1f32])]));
 										
 										self.material_evaluation_materials.insert(resource_document.url.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
 									}
@@ -633,19 +630,11 @@ impl VisibilityWorldRenderDomain {
 		camera_data_reference.projection_matrix = projection_matrix;
 		camera_data_reference.view_projection_matrix = view_projection_matrix;
 
-		let attachments = [
-			ghi::AttachmentInformation::new(self.primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::AttachmentInformation::new(self.instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::AttachmentInformation::new(self.depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
-		];
-
 		command_buffer_recording.clear_images(&[(self.occlusion_map, ghi::ClearValue::Color(RGBA::white())),]);
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
-		// TODO: clear targers
-
-		self.visibility_pass.render(command_buffer_recording);
+		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, self.primitive_index, self.instance_id, self.depth_target);
 		self.material_count_pass.render(command_buffer_recording);
 		self.material_offset_pass.render(command_buffer_recording);
 		self.pixel_mapping_pass.render(command_buffer_recording);
@@ -663,7 +652,7 @@ impl VisibilityWorldRenderDomain {
 			compute_pipeline_command.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
 				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
-			compute_pipeline_command.indirect_dispatch(&ghi::BufferDescriptor { buffer: self.material_evaluation_dispatches, offset: (*i as u64 * 12), range: 12, slot: 0 });
+			compute_pipeline_command.indirect_dispatch(&ghi::BufferOffset::new(self.material_offset_pass.material_evaluation_dispatches, *i as usize * 12));
 		}
 		command_buffer_recording.end_region();
 
@@ -706,8 +695,10 @@ struct LightingData {
 
 #[repr(C)]
 struct LightData {
+	vp_matrix: Mat4f,
 	position: Vector3,
 	color: Vector3,
+	light_type: u8,
 }
 
 #[repr(C)]
@@ -936,7 +927,19 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 		let light_index = lighting_data.count as usize;
 
-		lighting_data.lights[light_index].position = crate::Vec3f::new(0.0, 2.0, 0.0);
+		let x = 4f32;
+
+		let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
+
+		light_projection_matrix[5] *= -1.0f32;
+
+		let light_view_matrix = maths_rs::Mat4f::from_x_rotation(-std::f32::consts::FRAC_PI_2); // Looking down from +y axis
+
+		let vp_matrix = light_projection_matrix * light_view_matrix;
+
+		lighting_data.lights[light_index].light_type = 'D' as u8;
+		lighting_data.lights[light_index].vp_matrix = vp_matrix;
+		lighting_data.lights[light_index].position = crate::Vec3f::new(0.0, 1.0, 0.0);
 		lighting_data.lights[light_index].color = light.color;
 		
 		lighting_data.count += 1;
@@ -957,6 +960,8 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 
 		let light_index = lighting_data.count as usize;
 
+		lighting_data.lights[light_index].light_type = 'P' as u8;
+		lighting_data.lights[light_index].vp_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].position = light.position;
 		lighting_data.lights[light_index].color = light.color;
 		
@@ -995,11 +1000,13 @@ impl WorldRenderDomain for VisibilityWorldRenderDomain {
 }
 
 struct VisibilityPass {
-
+	pipeline_layout: ghi::PipelineLayoutHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	visibility_pass_pipeline: ghi::PipelineHandle,
 }
 
 impl VisibilityPass {
-	pub fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout_handle: &ghi::PipelineLayoutHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
+	pub fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
 		let visibility_pass_mesh_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
 			&[
 				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
@@ -1014,7 +1021,7 @@ impl VisibilityPass {
 
 		let visibility_pass_fragment_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]);
 
-		let visibility_pass_shaders = [
+		let visibility_pass_shaders: &[(&ghi::ShaderHandle, ghi::ShaderTypes, &[ghi::SpecializationMapEntry])] = &[
 			(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh, &[]),
 			(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment, &[]),
 		];
@@ -1031,30 +1038,46 @@ impl VisibilityPass {
 		];
 
 		let visibility_pass_pipeline = ghi_instance.create_raster_pipeline(&[
-			ghi::PipelineConfigurationBlocks::Layout { layout: pipeline_layout_handle },
+			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout_handle },
 			ghi::PipelineConfigurationBlocks::Shaders { shaders: visibility_pass_shaders },
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 		
-		VisibilityPass {}
+		VisibilityPass {
+			pipeline_layout: pipeline_layout_handle,
+			descriptor_set,
+			visibility_pass_pipeline,
+		}
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-		// command_buffer_recording.start_region("Visibility Buffer");
-		// let render_pass_command = command_buffer_recording.start_render_pass(Extent::rectangle(1920, 1080), &attachments);
-		// render_pass_command.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
-		// render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline).dispatch_meshes(self.visibility_info.meshlet_count, 1, 1);
-		// render_pass_command.end_render_pass();
-		// command_buffer_recording.end_region();
+	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, visibility_info: &VisibilityInfo, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) {
+		command_buffer_recording.start_region("Visibility Buffer");
+
+		let attachments = [
+			ghi::AttachmentInformation::new(primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+			ghi::AttachmentInformation::new(instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+			ghi::AttachmentInformation::new(depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
+		];
+
+		let render_pass_command = command_buffer_recording.start_render_pass(Extent::rectangle(1920, 1080), &attachments);
+		render_pass_command.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
+		render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline).dispatch_meshes(visibility_info.meshlet_count, 1, 1);
+		render_pass_command.end_render_pass();
+
+		command_buffer_recording.end_region();
 	}
 }
 
 struct MaterialCountPass {
-
+	pipeline_layout: ghi::PipelineLayoutHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
+	material_count_buffer: ghi::BaseBufferHandle,
+	pipeline: ghi::PipelineHandle,
 }
 
 impl MaterialCountPass {
-	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, visibility_pass: &VisibilityPass) -> Self {
+	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
 		let material_count_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_material_count_source()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
@@ -1065,26 +1088,51 @@ impl MaterialCountPass {
 
 		let material_count_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&material_count_shader, ghi::ShaderTypes::Compute, &[]));
 
-		let material_count = ghi_instance.create_buffer(Some("Material Count"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let material_count_buffer = ghi_instance.create_buffer(Some("Material Count"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-		MaterialCountPass {}
+		MaterialCountPass {
+			pipeline_layout,
+			descriptor_set,
+			material_count_buffer,
+			visibility_pass_descriptor_set,
+			pipeline: material_count_pipeline,
+		}
 	}
 
 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-		// command_buffer_recording.start_region("Material Count");
-		// command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
-		// let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&self.material_count_pipeline);
-		// compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
-		// command_buffer_recording.end_region();
+		let pipeline_layout = self.pipeline_layout;
+		let descriptor_set = self.descriptor_set;
+		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
+		let pipeline = self.pipeline;
+
+		command_buffer_recording.start_region("Material Count");
+
+		command_buffer_recording.clear_buffers(&[self.material_count_buffer]);
+
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_pass_descriptor_set]);
+		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
+
+		command_buffer_recording.end_region();
 	}
+
+	fn get_material_count_buffer(&self) -> ghi::BaseBufferHandle {
+		self.material_count_buffer
+    }
 }
 
 struct MaterialOffsetPass {
-
+	pipeline_layout: ghi::PipelineLayoutHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
+	material_offset_buffer: ghi::BaseBufferHandle,
+	material_offset_scratch_buffer: ghi::BaseBufferHandle,
+	material_evaluation_dispatches: ghi::BaseBufferHandle,
+	material_offset_pipeline: ghi::PipelineHandle,
 }
 
 impl MaterialOffsetPass {
-	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle,) -> Self {
+	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let material_offset_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE.to_string()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
@@ -1096,32 +1144,61 @@ impl MaterialOffsetPass {
 
 		let material_offset_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&material_offset_shader, ghi::ShaderTypes::Compute, &[]));
 
-		let material_offset = ghi_instance.create_buffer(Some("Material Offset"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-		let material_offset_scratch = ghi_instance.create_buffer(Some("Material Offset Scratch"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let material_evaluation_dispatches = ghi_instance.create_buffer(Some("Material Evaluation Dipatches"), std::mem::size_of::<[[u32; 3]; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let material_offset_buffer = ghi_instance.create_buffer(Some("Material Offset"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let material_offset_scratch_buffer = ghi_instance.create_buffer(Some("Material Offset Scratch"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-		MaterialOffsetPass {}
+		MaterialOffsetPass {
+			material_offset_buffer,
+			material_offset_scratch_buffer,
+			material_evaluation_dispatches,
+			pipeline_layout,
+			descriptor_set,
+			visibility_pass_descriptor_set,
+			material_offset_pipeline,
+		}
 	}
 
 	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-		// command_buffer_recording.start_region("Material Offset");
-		// command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
-		// let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&self.material_offset_pipeline);
-		// compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
-		// command_buffer_recording.end_region();
+		let pipeline_layout = self.pipeline_layout;
+		let descriptor_set = self.descriptor_set;
+		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
+		let pipeline = self.material_offset_pipeline;
+
+		command_buffer_recording.start_region("Material Offset");
+
+		command_buffer_recording.clear_buffers(&[self.material_offset_buffer, self.material_offset_scratch_buffer, self.material_evaluation_dispatches]);
+
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
+		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+		command_buffer_recording.end_region();
+	}
+
+	fn get_material_offset_buffer(&self) -> ghi::BaseBufferHandle {
+        self.material_offset_buffer
+    }
+
+	fn get_material_offset_scratch_buffer(&self) -> ghi::BaseBufferHandle {
+		self.material_offset_scratch_buffer
 	}
 }
 
 struct PixelMappingPass {
+	material_xy: ghi::BaseBufferHandle,
 
+	pipeline_layout: ghi::PipelineLayoutHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
+	pixel_mapping_pipeline: ghi::PipelineHandle,
 }
 
 impl PixelMappingPass {
-	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle,) -> Self {
+	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let pixel_mapping_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_pixel_mapping_source()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::READ),
+				ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
 				ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::WRITE),
 				ghi::ShaderBindingDescriptor::new(1, 7, ghi::AccessPolicies::READ),
 			]
@@ -1129,15 +1206,32 @@ impl PixelMappingPass {
 
 		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&pixel_mapping_shader, ghi::ShaderTypes::Compute, &[]));
 
-		PixelMappingPass {}
+		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+
+		PixelMappingPass {
+			material_xy,
+			pipeline_layout,
+			descriptor_set,
+			visibility_passes_descriptor_set,
+			pixel_mapping_pipeline,
+		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-		// command_buffer_recording.start_region("Pixel Mapping");
-		// command_buffer_recording.bind_descriptor_sets(&self.visibility_pass_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set]);
-		// let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&self.pixel_mapping_pipeline);
-		// compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
-		// command_buffer_recording.end_region();
+	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording,) {
+		let pipeline_layout = self.pipeline_layout;
+		let descriptor_set = self.descriptor_set;
+		let pipeline = self.pixel_mapping_pipeline;
+		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
+
+		command_buffer_recording.start_region("Pixel Mapping");
+
+		command_buffer_recording.clear_buffers(&[self.material_xy,]);
+
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
+		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
+
+		command_buffer_recording.end_region();
 	}
 }
 
@@ -1282,19 +1376,19 @@ const MATERIAL_OFFSET_SOURCE: &'static str = r#"
 #extension GL_EXT_buffer_reference2: enable
 #extension GL_EXT_shader_explicit_arithmetic_types : enable
 
-layout(set=1,binding=0,scalar) buffer MaterialCount {
+layout(set=1,binding=0,scalar) buffer readonly MaterialCount {
 	uint material_count[];
 };
 
-layout(set=1,binding=1,scalar) buffer MaterialOffset {
+layout(set=1,binding=1,scalar) buffer writeonly MaterialOffset {
 	uint material_offset[];
 };
 
-layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
+layout(set=1,binding=2,scalar) buffer writeonly MaterialOffsetScratch {
 	uint material_offset_scratch[];
 };
 
-layout(set=1,binding=3,scalar) buffer MaterialEvaluationDispatches {
+layout(set=1,binding=3,scalar) buffer writeonly MaterialEvaluationDispatches {
 	uvec3 material_evaluation_dispatches[];
 };
 
@@ -1320,15 +1414,11 @@ pub fn get_pixel_mapping_source() -> String {
 		Mesh meshes[];
 	};
 	
-	layout(set=1,binding=1,scalar) buffer MaterialOffset {
-		uint material_offset[];
-	};
-	
 	layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
 		uint material_offset_scratch[];
 	};
 	
-	layout(set=1,binding=4,scalar) buffer PixelMapping {
+	layout(set=1,binding=4,scalar) buffer writeonly PixelMapping {
 		u16vec2 pixel_mapping[];
 	};
 	
@@ -1355,8 +1445,10 @@ pub fn get_pixel_mapping_source() -> String {
 }
 
 pub const LIGHT_STRUCT_GLSL: &'static str = "struct Light {
+	mat4 vp_matrix;
 	vec3 position;
 	vec3 color;
+	uint8_t light_type;
 };";
 
 pub const LIGHTING_DATA_STRUCT_GLSL: &'static str = "struct LightingData {

@@ -152,6 +152,7 @@ layout(set=2, binding=2, rgba16) uniform image2D out_position;
 layout(set=2, binding=3, rgba16) uniform image2D out_normals;
 
 layout(set=2,binding=10) uniform sampler2D ao;
+layout(set=2,binding=11) uniform sampler2D depth_shadow_map;
 
 layout(push_constant, scalar) uniform PushConstant {
 	uint material_id;
@@ -348,11 +349,18 @@ string.push_str(&format!("
 	for (uint i = 0; i < lighting_data.light_count; ++i) {{
 		vec3 light_pos = lighting_data.lights[i].position;
 		vec3 light_color = lighting_data.lights[i].color;
-		mat4 light_matrix = lighting_data.lights[i].matrix;
+		mat4 light_matrix = lighting_data.lights[i].vp_matrix;
+		uint8_t light_type = lighting_data.lights[i].light_type;
 
-		vec3 L = normalize(light_pos - vertex_position);
+		vec3 L = vec3(0.0);
 
-		if (dot(N, L) < 0.0) {{
+		if (light_type == 68) {{ // Infinite
+			L = normalize(light_pos);
+		}} else {{
+			L = normalize(light_pos - vertex_position);
+		}}
+
+		if (dot(N, L) <= 0.0) {{
 			continue;
 		}}
 
@@ -369,8 +377,15 @@ string.push_str(&format!("
 
 		vec3 H = normalize(V + L);
 
-		float distance = length(light_pos - vertex_position);
-		float attenuation = 1.0 / (distance * distance);
+		float attenuation = 0.0f;
+		
+		if (light_type == 68) {{ // Infinite
+			attenuation = 1.0;
+		}} else {{
+			float distance = length(light_pos - vertex_position);
+			attenuation = 1.0 / (distance * distance);
+		}}
+
 		vec3 radiance = light_color * attenuation;
 
 		vec3 F0 = vec3(0.04);
@@ -390,9 +405,7 @@ string.push_str(&format!("
 
 		float NdotL = max(dot(N, L), 0.0);
 		lo += (kD * albedo / PI + specular) * radiance * NdotL * occlusion_factor;
-	}}
-
-	lo *= ao_factor;
+	}};
 "));
 
 		string.push_str(&format!("imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));"));

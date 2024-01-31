@@ -43,6 +43,13 @@ impl Renderer {
 				core::spawn(ShadowRenderingPass::new(ghi.deref_mut(), visibility_render_model.read_sync().deref()))
 			};
 
+			{
+				let mut ghi = ghi_instance.write().unwrap();
+				let mut vis_rp = visibility_render_model.write_sync();
+				let srp = shadow_render_pass.read_sync();
+				vis_rp.write_shadow_descriptor(ghi.deref_mut(), srp.get_shadow_map_image());
+			}
+
 			let ui_render_model = core::spawn(UIRenderModel::new_as_system());
 			
 			let render_command_buffer;

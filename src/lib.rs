@@ -12,6 +12,7 @@
 #![feature(trivial_bounds)]
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
+#![feature(generic_const_exprs)]
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

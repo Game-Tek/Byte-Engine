@@ -2,7 +2,7 @@
 
 use std::ops::DerefMut;
 
-use byte_engine::{application::Application, Vec3f, core::{self, EntityHandle}, rendering::mesh, rendering::point_light::PointLight,};
+use byte_engine::{application::Application, Vec3f, core::{self, EntityHandle}, rendering::{directional_light::DirectionalLight, mesh}, rendering::point_light::PointLight,};
 use maths_rs::prelude::{MatTranslate, MatScale,};
 
 #[ignore]
@@ -23,7 +23,7 @@ fn gi() {
 	let _b: EntityHandle<mesh::Mesh> = core::spawn_in_domain(space.deref_mut(), mesh::Mesh::new("Box", "red_solid", maths_rs::Mat4f::from_translation(Vec3f::new(-0.6, 0.17, -0.1)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.34, 0.34, 0.34))));
 	let _c: EntityHandle<mesh::Mesh> = core::spawn_in_domain(space.deref_mut(), mesh::Mesh::new("Box", "green_solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.13, -0.3)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.26, 0.26, 0.26))));
 
-	let _sun: EntityHandle<PointLight> = core::spawn_in_domain(space.deref_mut(), PointLight::new(Vec3f::new(0.0, 2.5, 0.0), 4500.0));
+	let _sun: EntityHandle<DirectionalLight> = core::spawn_in_domain(space.deref_mut(), DirectionalLight::new(Vec3f::new(0.0, 2.5, 0.0), 4500.0));
 
 	app.do_loop();
 

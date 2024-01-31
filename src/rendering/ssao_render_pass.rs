@@ -77,8 +77,8 @@ impl ScreenSpaceAmbientOcclusionPass {
 			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
 		]);
 
-		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: Box::new([1f32, 0f32,]) }]));
-		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry{ constant_id: 0 as u32, r#type: "vec2f".to_string(), value: Box::new([0f32, 1f32,]) }]));
+		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [1f32, 0f32,])]));
+		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [0f32, 1f32,])]));
 
 		ScreenSpaceAmbientOcclusionPass {
 			pipeline_layout,

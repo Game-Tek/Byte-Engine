@@ -127,8 +127,6 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	material_evaluation_pipeline_layout: ghi::PipelineLayoutHandle,
 
-	debug_position: ghi::ImageHandle,
-	debug_normal: ghi::ImageHandle,
 	light_data_buffer: ghi::BaseBufferHandle,
 
 	visibility_pass: VisibilityPass,
@@ -167,8 +165,6 @@ impl VisibilityWorldRenderDomain {
 			let material_evaluation_pipeline_layout;
 			let primitive_index;
 			let instance_id;
-			let debug_position;
-			let debug_normals;
 			let light_data_buffer;
 			let materials_data_buffer_handle;
 
@@ -213,9 +209,6 @@ impl VisibilityWorldRenderDomain {
 				triangle_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Triangle Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				vertex_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-
-				debug_position = ghi_instance.create_image(Some("debug position"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::SignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-				debug_normals = ghi_instance.create_image(Some("debug normal"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::SignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 				albedo = ghi_instance.create_image(Some("albedo"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 				depth_target = ghi_instance.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -301,8 +294,6 @@ impl VisibilityWorldRenderDomain {
 
 				let albedo_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[0]);
 				let camera_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[1]);
-				let debug_position_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[2]);
-				let debug_normals_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[3]);
 				let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[4]);
 				let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[5]);
 				let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[6]);
@@ -314,8 +305,6 @@ impl VisibilityWorldRenderDomain {
 				ghi_instance.write(&[
 					ghi::DescriptorWrite::image(albedo_binding, albedo, ghi::Layouts::General),
 					ghi::DescriptorWrite::buffer(camera_data_binding, camera_data_buffer_handle,),
-					ghi::DescriptorWrite::image(debug_position_binding, debug_position, ghi::Layouts::General),
-					ghi::DescriptorWrite::image(debug_normals_binding, debug_normals, ghi::Layouts::General),
 					ghi::DescriptorWrite::buffer(light_data_binding, light_data_buffer,),
 					ghi::DescriptorWrite::buffer(materials_data_binding, materials_data_buffer_handle,),
 					ghi::DescriptorWrite::combined_image_sampler(occlussion_texture_binding, occlusion_map, sampler, ghi::Layouts::Read),
@@ -388,9 +377,6 @@ impl VisibilityWorldRenderDomain {
 
 				primitive_index,
 				instance_id,
-
-				debug_position,
-				debug_normal: debug_normals,
 
 				light_data_buffer,
 				materials_data_buffer_handle,

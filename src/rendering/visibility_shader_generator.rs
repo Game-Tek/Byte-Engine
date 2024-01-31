@@ -148,8 +148,6 @@ layout(set=1,binding=4,scalar) buffer PixelMapping {
 
 layout(set=1, binding=6, r32ui) uniform readonly uimage2D triangle_index;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
-layout(set=2, binding=2, rgba16) uniform image2D out_position;
-layout(set=2, binding=3, rgba16) uniform image2D out_normals;
 
 layout(set=2,binding=10) uniform sampler2D ao;
 layout(set=2,binding=11) uniform sampler2D depth_shadow_map;
@@ -409,8 +407,6 @@ string.push_str(&format!("
 "));
 
 		string.push_str(&format!("imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));"));
-		string.push_str(&format!("imageStore(out_position, pixel_coordinates, vec4(vertex_position, 1.0));"));
-		string.push_str(&format!("imageStore(out_normals, pixel_coordinates, vec4(vertex_normal, 1.0));"));
 
 		string.push_str(&format!("\n}}")); // Close main()
 

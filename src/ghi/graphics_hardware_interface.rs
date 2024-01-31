@@ -143,7 +143,7 @@ pub enum Handle {
 
 // HANDLES
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Consumption {
 	pub handle: Handle,
 	pub stages: Stages,
@@ -341,7 +341,7 @@ pub trait BoundRasterizationPipelineMode: RasterizationRenderPassMode {
 pub trait BoundComputePipelineMode: CommandBufferRecording {
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
-	fn indirect_dispatch(&mut self, buffer_descriptor: &BufferOffset);
+	fn indirect_dispatch(&mut self, buffer: &BaseBufferHandle, entry_index: usize);
 }
 
 pub trait BoundRayTracingPipelineMode: CommandBufferRecording {
@@ -578,7 +578,7 @@ pub enum ShaderTypes {
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Encodings {
-	IEEE754,
+	FloatingPoint,
 	UnsignedNormalized,
 	SignedNormalized,
 }
@@ -586,16 +586,6 @@ pub enum Encodings {
 #[derive(PartialEq, Eq, Clone, Copy)]
 /// Enumerates the formats that textures can have.
 pub enum Formats {
-	/// 8 bit unsigned per component normalized RGBA.
-	RGBAu8,
-	/// 16 bit unsigned per component normalized RGBA.
-	RGBAu16,
-	/// 32 bit unsigned per component normalized RGBA.
-	RGBAu32,
-	/// 16 bit float per component RGBA.
-	RGBAf16,
-	/// 32 bit float per component RGBA.
-	RGBAf32,
 	/// 10 bit unsigned for R, G and 11 bit unsigned for B normalized RGB.
 	RGBu10u10u11,
 	/// 8 bit unsigned per component normalized BGRA.
@@ -608,6 +598,7 @@ pub enum Formats {
 	R32(Encodings),
 	RG16(Encodings),
 	RGB16(Encodings),
+	RGBA8(Encodings),
 	RGBA16(Encodings),
 }
 
@@ -693,7 +684,7 @@ pub struct BufferCopy {
 use serde::{Serialize, Deserialize};
 
 bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	/// Bit flags for the available access policies.
 	pub struct AccessPolicies : u8 {
 		/// Will perform read access.
@@ -721,7 +712,7 @@ pub enum Barrier {
 }
 
 bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	/// Bit flags for the available pipeline stages.
 	pub struct Stages : u64 {
 		/// No stage.
@@ -817,7 +808,7 @@ bitflags::bitflags! {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 /// Enumerates the available layouts.
 pub enum Layouts {
 	/// The layout is undefined. We don't mind what the layout is.
@@ -1208,13 +1199,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1238,7 +1229,7 @@ pub(super) mod tests {
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1344,13 +1335,13 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::None,
 				load: false,
 				store: true,
@@ -1379,7 +1370,7 @@ pub(super) mod tests {
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1472,13 +1463,13 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::None,
 				load: false,
 				store: true,
@@ -1510,7 +1501,7 @@ pub(super) mod tests {
 				AttachmentInformation {
 					image: render_target,
 					layout: Layouts::RenderTarget,
-					format: Formats::RGBAu8,
+					format: Formats::RGBA8(Encodings::UnsignedNormalized),
 					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
@@ -1602,13 +1593,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1637,7 +1628,7 @@ pub(super) mod tests {
 				AttachmentInformation {
 					image: render_target,
 					layout: Layouts::RenderTarget,
-					format: Formats::RGBAu8,
+					format: Formats::RGBA8(Encodings::UnsignedNormalized),
 					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
@@ -1739,13 +1730,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1780,7 +1771,7 @@ pub(super) mod tests {
 				AttachmentInformation {
 					image: render_target,
 					layout: Layouts::RenderTarget,
-					format: Formats::RGBAu8,
+					format: Formats::RGBA8(Encodings::UnsignedNormalized),
 					clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 					load: false,
 					store: true,
@@ -1902,7 +1893,7 @@ pub(super) mod tests {
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let sampled_texture = renderer.create_image(Some("sampled texture"), crate::Extent { width: 2, height: 2, depth: 1 }, Formats::RGBAu8, None, Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let sampled_texture = renderer.create_image(Some("sampled texture"), crate::Extent { width: 2, height: 2, depth: 1 }, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -1938,13 +1929,13 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = crate::Extent { width: 1920, height: 1080, depth: 1 };
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -1970,7 +1961,7 @@ pub(super) mod tests {
 			AttachmentInformation {
 				image: render_target,
 				layout: Layouts::RenderTarget,
-				format: Formats::RGBAu8,
+				format: Formats::RGBA8(Encodings::UnsignedNormalized),
 				clear: ClearValue::Color(crate::RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
 				load: false,
 				store: true,
@@ -2128,7 +2119,7 @@ void main() {
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{
 			description: BottomLevelAccelerationStructureDescriptions::Mesh {
 				vertex_count: 3,
-				vertex_position_encoding: Encodings::IEEE754,
+				vertex_position_encoding: Encodings::FloatingPoint,
 				triangle_count: 1,
 				index_format: DataTypes::U16,
 			}
@@ -2152,7 +2143,7 @@ void main() {
 		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[3],);
 		let indices_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[4],);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBAu8, None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		renderer.write(&[
 			DescriptorWrite { binding_handle: acceleration_structure_binding, array_element: 0, descriptor: Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure } },
@@ -2239,7 +2230,7 @@ void main() {
 						vertex_buffer: BufferStridedRange::new(vertex_positions_buffer, 0, 12, 12 * 3),
 						vertex_count: 3,
 						index_buffer: BufferStridedRange::new(index_buffer, 0, 2, 2 * 3),
-						vertex_position_encoding: Encodings::IEEE754,
+						vertex_position_encoding: Encodings::FloatingPoint,
 						index_format: DataTypes::U16,
 						triangle_count: 1,
 					},

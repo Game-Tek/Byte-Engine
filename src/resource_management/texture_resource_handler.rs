@@ -121,7 +121,7 @@ mod tests {
 		// 	Timer::after(std::time::Duration::from_secs(60 * 3)).await;
 		// });
 
-		let (response, _) = smol::block_on(resource_manager.get("https://camo.githubusercontent.com/dca6cdb597abc9c7ff4a0e066e6c35eb70b187683fbff2208d0440b4ef6c5a30/68747470733a2f2f692e696d6775722e636f6d2f56525261434f702e706e67")).expect("Failed to load image");
+		let (response, _) = smol::block_on(resource_manager.get("https://camo.githubusercontent.com/a49890a2fa4559f38b13e6427defe7579aee065a9a3f7ee37cf7cb86295bab79/68747470733a2f2f692e696d6775722e636f6d2f56525261434f702e706e67")).expect("Failed to load image");
 
 		assert_eq!(response.resources.len(), 1);
 

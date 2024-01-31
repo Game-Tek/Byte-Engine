@@ -214,10 +214,10 @@ impl VisibilityWorldRenderDomain {
 				vertex_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-				debug_position = ghi_instance.create_image(Some("debug position"), Extent::new(1920, 1080, 1), ghi::Formats::RGBAu16, None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-				debug_normals = ghi_instance.create_image(Some("debug normal"), Extent::new(1920, 1080, 1), ghi::Formats::RGBAu16, None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				debug_position = ghi_instance.create_image(Some("debug position"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::SignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				debug_normals = ghi_instance.create_image(Some("debug normal"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::SignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-				albedo = ghi_instance.create_image(Some("albedo"), Extent::new(1920, 1080, 1), ghi::Formats::RGBAu16, None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				albedo = ghi_instance.create_image(Some("albedo"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 				depth_target = ghi_instance.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 				camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -429,7 +429,7 @@ impl VisibilityWorldRenderDomain {
 						None
 					};
 
-					let new_texture = ghi.create_image(Some(&resource_document.url), texture.extent, ghi::Formats::RGBAu8, compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+					let new_texture = ghi.create_image(Some(&resource_document.url), texture.extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 					ghi.get_texture_slice_mut(new_texture).copy_from_slice(&buffer[resource_document.offset as usize..(resource_document.offset + resource_document.size) as usize]);
 					
@@ -652,7 +652,7 @@ impl VisibilityWorldRenderDomain {
 			compute_pipeline_command.write_to_push_constant(&self.material_evaluation_pipeline_layout, 0, unsafe {
 				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
-			compute_pipeline_command.indirect_dispatch(&ghi::BufferOffset::new(self.material_offset_pass.material_evaluation_dispatches, *i as usize * 12));
+			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, *i as usize);
 		}
 		command_buffer_recording.end_region();
 
@@ -794,7 +794,7 @@ impl EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
 							let bottom_level_acceleration_structure = ghi.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
 								description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
 									vertex_count: mesh_resource.vertex_count,
-									vertex_position_encoding: ghi::Encodings::IEEE754,
+									vertex_position_encoding: ghi::Encodings::FloatingPoint,
 									triangle_count: triangle_index_stream.count / 3,
 									index_format: ghi::DataTypes::U16,
 								}

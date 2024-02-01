@@ -220,7 +220,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			count: binding.descriptor_count,
 			index: binding.binding,
 			stages: binding.stages,
-			pipeline_stages: to_pipeline_stage_flags(binding.stages),
+			pipeline_stages: to_pipeline_stage_flags(binding.stages, None, None),
 		};
 
 		let binding_handle = graphics_hardware_interface::DescriptorSetBindingHandle(self.bindings.len() as u64);
@@ -1573,14 +1573,58 @@ fn to_shader_stage_flags(shader_type: graphics_hardware_interface::ShaderTypes) 
 	}
 }
 
-fn to_pipeline_stage_flags(stages: graphics_hardware_interface::Stages) -> vk::PipelineStageFlags2 {
+fn to_pipeline_stage_flags(stages: graphics_hardware_interface::Stages, layout: Option<graphics_hardware_interface::Layouts>, format: Option<graphics_hardware_interface::Formats>) -> vk::PipelineStageFlags2 {
 	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
 
 	if stages.contains(graphics_hardware_interface::Stages::VERTEX) { pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER }
+
 	if stages.contains(graphics_hardware_interface::Stages::MESH) { pipeline_stage_flags |= vk::PipelineStageFlags2::MESH_SHADER_EXT; }
-	if stages.contains(graphics_hardware_interface::Stages::FRAGMENT) { pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER }
-	if stages.contains(graphics_hardware_interface::Stages::COMPUTE) { pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER }
-	if stages.contains(graphics_hardware_interface::Stages::TRANSFER) { pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER }
+
+	if stages.contains(graphics_hardware_interface::Stages::FRAGMENT) {
+		if let Some(layout) = layout {
+			if layout == graphics_hardware_interface::Layouts::Read {
+				pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
+			}
+
+			if layout == graphics_hardware_interface::Layouts::RenderTarget {
+				pipeline_stage_flags |= vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+			}
+
+			if let Some(format) = format {
+				if format != graphics_hardware_interface::Formats::Depth32 {
+					pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
+				} else {
+					pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
+					pipeline_stage_flags |= vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+				}
+			}
+		} else {
+			if let Some(format) = format {
+				if format != graphics_hardware_interface::Formats::Depth32 {
+					pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
+				} else {
+					pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
+					pipeline_stage_flags |= vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+				}
+			} else {
+				pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
+			}
+		}
+	}
+
+	if stages.contains(graphics_hardware_interface::Stages::COMPUTE) {
+		if let Some(layout) = layout {
+			if layout == graphics_hardware_interface::Layouts::Indirect {
+				pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT
+			} else {
+				pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
+			}
+		} else {
+			pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
+		}
+	}
+
+	if stages.contains(graphics_hardware_interface::Stages::TRANSFER) { pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER 	}
 	if stages.contains(graphics_hardware_interface::Stages::PRESENTATION) { pipeline_stage_flags |= vk::PipelineStageFlags2::TOP_OF_PIPE }
 	if stages.contains(graphics_hardware_interface::Stages::RAYGEN) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
 	if stages.contains(graphics_hardware_interface::Stages::CLOSEST_HIT) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
@@ -1588,95 +1632,12 @@ fn to_pipeline_stage_flags(stages: graphics_hardware_interface::Stages) -> vk::P
 	if stages.contains(graphics_hardware_interface::Stages::INTERSECTION) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
 	if stages.contains(graphics_hardware_interface::Stages::MISS) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
 	if stages.contains(graphics_hardware_interface::Stages::CALLABLE) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
-	if stages.contains(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD) {  pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR; }
+	if stages.contains(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD) { pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR; }
 
 	pipeline_stage_flags
 }
 
-fn to_pipeline_stage_flags_with_layout(stages: graphics_hardware_interface::Stages, layout: graphics_hardware_interface::Layouts) -> vk::PipelineStageFlags2 {
-	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
-
-	if stages.contains(graphics_hardware_interface::Stages::VERTEX) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::MESH) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::MESH_SHADER_EXT;
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::FRAGMENT) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::COMPUTE) {
-		if layout == graphics_hardware_interface::Layouts::Indirect {
-			pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT
-		} else {
-			pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
-		}
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::TRANSFER) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::PRESENTATION) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::RAYGEN) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR;
-	}
-
-	pipeline_stage_flags
-}
-
-fn to_pipeline_stage_flags_with_format(stages: graphics_hardware_interface::Stages, format: graphics_hardware_interface::Formats, access: graphics_hardware_interface::AccessPolicies) -> vk::PipelineStageFlags2 {
-	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
-
-	if stages.contains(graphics_hardware_interface::Stages::VERTEX) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::FRAGMENT) {
-		if format != graphics_hardware_interface::Formats::Depth32 {
-			if access.contains(graphics_hardware_interface::AccessPolicies::READ) {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
-			}
-
-			if access.contains(graphics_hardware_interface::AccessPolicies::WRITE) {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-			}
-		} else {
-			pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
-			pipeline_stage_flags |= vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
-		}
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::COMPUTE) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::TRANSFER) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::PRESENTATION) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE
-	}
-
-	if stages.contains(graphics_hardware_interface::Stages::RAYGEN) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-
-	pipeline_stage_flags
-}
-
-fn to_access_flags(accesses: graphics_hardware_interface::AccessPolicies, stages: graphics_hardware_interface::Stages, layout: graphics_hardware_interface::Layouts) -> vk::AccessFlags2 {
+fn to_access_flags(accesses: graphics_hardware_interface::AccessPolicies, stages: graphics_hardware_interface::Stages, layout: graphics_hardware_interface::Layouts, format: Option<graphics_hardware_interface::Formats>) -> vk::AccessFlags2 {
 	let mut access_flags = vk::AccessFlags2::empty();
 
 	if accesses.contains(graphics_hardware_interface::AccessPolicies::READ) {
@@ -1687,7 +1648,23 @@ fn to_access_flags(accesses: graphics_hardware_interface::AccessPolicies, stages
 			access_flags |= vk::AccessFlags2::NONE
 		}
 		if stages.intersects(graphics_hardware_interface::Stages::FRAGMENT) {
-			access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ;
+			if let Some(format) = format {
+				if format != graphics_hardware_interface::Formats::Depth32 {
+					if layout == graphics_hardware_interface::Layouts::RenderTarget {
+						access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_READ
+					} else {
+						access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
+					}
+				} else {
+					if layout == graphics_hardware_interface::Layouts::RenderTarget {
+						access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+					} else {
+						access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
+					}
+				}
+			} else {
+				access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
+			}
 		}
 		if stages.intersects(graphics_hardware_interface::Stages::COMPUTE) {
 			if layout == graphics_hardware_interface::Layouts::Indirect {
@@ -1716,60 +1693,29 @@ fn to_access_flags(accesses: graphics_hardware_interface::AccessPolicies, stages
 			access_flags |= vk::AccessFlags2::SHADER_WRITE
 		}
 		if stages.intersects(graphics_hardware_interface::Stages::FRAGMENT) {
-			access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+			if let Some(format) = format {
+				if format != graphics_hardware_interface::Formats::Depth32 {
+					if layout == graphics_hardware_interface::Layouts::RenderTarget {
+						access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+					} else {
+						access_flags |= vk::AccessFlags2::SHADER_WRITE
+					}
+				} else {
+					if layout == graphics_hardware_interface::Layouts::RenderTarget {
+						access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+					} else {
+						access_flags |= vk::AccessFlags2::SHADER_WRITE
+					}
+				}
+			} else {
+				access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+			}
 		}
 		if stages.intersects(graphics_hardware_interface::Stages::RAYGEN) {
 			access_flags |= vk::AccessFlags2::SHADER_WRITE
 		}
 		if stages.intersects(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD) {
 			access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR
-		}
-	}
-
-	access_flags
-}
-
-fn to_access_flags_with_format(accesses: graphics_hardware_interface::AccessPolicies, stages: graphics_hardware_interface::Stages, format: graphics_hardware_interface::Formats) -> vk::AccessFlags2 {
-	let mut access_flags = vk::AccessFlags2::empty();
-
-	if accesses.contains(graphics_hardware_interface::AccessPolicies::READ) {
-		if stages.intersects(graphics_hardware_interface::Stages::TRANSFER) {
-			access_flags |= vk::AccessFlags2::TRANSFER_READ
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::PRESENTATION) {
-			access_flags |= vk::AccessFlags2::NONE
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::COMPUTE) {
-			access_flags |= vk::AccessFlags2::SHADER_READ
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::FRAGMENT) {
-			if format != graphics_hardware_interface::Formats::Depth32 {
-				access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
-			} else {
-				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
-			}
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::RAYGEN) {
-			access_flags |= vk::AccessFlags2::SHADER_READ
-		}
-	}
-
-	if accesses.contains(graphics_hardware_interface::AccessPolicies::WRITE) {
-		if stages.intersects(graphics_hardware_interface::Stages::TRANSFER) {
-			access_flags |= vk::AccessFlags2::TRANSFER_WRITE
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::COMPUTE) {
-			access_flags |= vk::AccessFlags2::SHADER_WRITE
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::FRAGMENT) {
-			if format != graphics_hardware_interface::Formats::Depth32 {
-				access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-			} else {
-				access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
-			}
-		}
-		if stages.intersects(graphics_hardware_interface::Stages::RAYGEN) {
-			access_flags |= vk::AccessFlags2::SHADER_WRITE
 		}
 	}
 
@@ -3308,22 +3254,23 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	}
 
 	unsafe fn consume_resources(&mut self, consumptions: &[graphics_hardware_interface::Consumption]) {
+		if consumptions.is_empty() { return; } // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
+
 		let mut image_memory_barriers = Vec::new();
 		let mut buffer_memory_barriers = Vec::new();
 		let mut memory_barriers = Vec::new();
 
 		for consumption in consumptions {
-			let mut new_stage_mask = to_pipeline_stage_flags_with_layout(consumption.stages, consumption.layout);
-			let mut new_access_mask = to_access_flags(consumption.access, consumption.stages, consumption.layout);
-
-			match consumption.handle {
+			let format = match consumption.handle {
 				graphics_hardware_interface::Handle::Image(texture_handle) => {
 					let (_, texture) = self.get_texture(texture_handle);
-					new_stage_mask = to_pipeline_stage_flags_with_format(consumption.stages, texture.format_, consumption.access);
-					new_access_mask = to_access_flags_with_format(consumption.access, consumption.stages, texture.format_);
+					Some(texture.format_)
 				}
-				_ => {}
-			}
+				_ => { None }
+			};
+
+			let new_stage_mask = to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format);
+			let new_access_mask = to_access_flags(consumption.access, consumption.stages, consumption.layout, format);
 
 			let transition_state = TransitionState {
 				stage: new_stage_mask,
@@ -3346,9 +3293,6 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 					let (_, texture) = self.get_texture(texture_handle);
 
 					let new_layout = texture_format_and_resource_use_to_image_layout(texture.format_, consumption.layout, Some(consumption.access));
-
-					new_stage_mask = to_pipeline_stage_flags_with_format(consumption.stages, texture.format_, consumption.access);
-					new_access_mask = to_access_flags_with_format(consumption.access, consumption.stages, texture.format_);
 
 					let image_memory_barrier = if let Some(barrier_source) = self.states.get(&consumption.handle) {
 							vk::ImageMemoryBarrier2KHR::default()
@@ -3435,8 +3379,6 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 			// Update current resource state, AFTER generating the barrier.
 			self.states.insert(consumption.handle, transition_state);
 		}
-
-		if image_memory_barriers.is_empty() && buffer_memory_barriers.is_empty() && memory_barriers.is_empty() { return; } // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
 
 		let dependency_info = vk::DependencyInfo::default()
 			.image_memory_barriers(&image_memory_barriers)
@@ -4309,46 +4251,118 @@ mod tests {
 
 	#[test]
 	fn test_to_pipeline_stage_flags() {
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::NONE);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::NONE, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::NONE);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::VERTEX);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::VERTEX, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::VERTEX_SHADER);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::MESH);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::MESH, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::MESH_SHADER_EXT);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::FRAGMENT);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::FRAGMENT, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::FRAGMENT_SHADER);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::COMPUTE);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::FRAGMENT, Some(graphics_hardware_interface::Layouts::RenderTarget), None);
+		assert_eq!(value, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT);
+
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::FRAGMENT, None, Some(graphics_hardware_interface::Formats::Depth32));
+		assert_eq!(value, vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS);
+
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::COMPUTE, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::COMPUTE_SHADER);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::TRANSFER);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::COMPUTE, Some(graphics_hardware_interface::Layouts::Indirect), None);
+		assert_eq!(value, vk::PipelineStageFlags2::DRAW_INDIRECT);
+
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::TRANSFER, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::TRANSFER);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::PRESENTATION);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::PRESENTATION, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::TOP_OF_PIPE);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::RAYGEN);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::RAYGEN, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::CLOSEST_HIT);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::CLOSEST_HIT, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::ANY_HIT);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::ANY_HIT, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::INTERSECTION);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::INTERSECTION, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::MISS);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::MISS, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::CALLABLE);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::CALLABLE, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
 
-		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD);
+		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR);
+	}
+
+	#[test]
+	fn test_to_access_flags() {
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::VERTEX, graphics_hardware_interface::Layouts::Undefined, None);
+		assert_eq!(value, vk::AccessFlags2::NONE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::TRANSFER, graphics_hardware_interface::Layouts::Undefined, None);
+		assert_eq!(value, vk::AccessFlags2::TRANSFER_READ);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::PRESENTATION, graphics_hardware_interface::Layouts::Undefined, None);
+		assert_eq!(value, vk::AccessFlags2::NONE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		assert_eq!(value, vk::AccessFlags2::COLOR_ATTACHMENT_READ);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::Depth32));
+		assert_eq!(value, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ);
+		
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::Read, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		assert_eq!(value, vk::AccessFlags2::SHADER_SAMPLED_READ);
+		
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::Read, Some(graphics_hardware_interface::Formats::Depth32));
+		assert_eq!(value, vk::AccessFlags2::SHADER_SAMPLED_READ);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::COMPUTE, graphics_hardware_interface::Layouts::Indirect, None);
+		assert_eq!(value, vk::AccessFlags2::INDIRECT_COMMAND_READ);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::COMPUTE, graphics_hardware_interface::Layouts::General, None);
+		assert_eq!(value, vk::AccessFlags2::SHADER_READ);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::RAYGEN, graphics_hardware_interface::Layouts::ShaderBindingTable, None);
+		assert_eq!(value, vk::AccessFlags2::SHADER_BINDING_TABLE_READ_KHR);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::RAYGEN, graphics_hardware_interface::Layouts::General, None);
+		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD, graphics_hardware_interface::Layouts::General, None);
+		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::TRANSFER, graphics_hardware_interface::Layouts::Undefined, None);
+		assert_eq!(value, vk::AccessFlags2::TRANSFER_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::COMPUTE, graphics_hardware_interface::Layouts::General, None);
+		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		assert_eq!(value, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::Depth32));
+		assert_eq!(value, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::General, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::General, Some(graphics_hardware_interface::Formats::Depth32));
+		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::RAYGEN, graphics_hardware_interface::Layouts::General, None);
+		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
+
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD, graphics_hardware_interface::Layouts::General, None);
+		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR);
 	}
 }

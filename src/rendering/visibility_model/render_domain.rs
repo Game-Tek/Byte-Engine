@@ -104,6 +104,7 @@ pub struct VisibilityWorldRenderDomain {
 	primitive_indices_buffer: ghi::BaseBufferHandle,
 
 	albedo: ghi::ImageHandle,
+	diffuse: ghi::ImageHandle,
 	depth_target: ghi::ImageHandle,
 
 	camera_data_buffer_handle: ghi::BaseBufferHandle,
@@ -153,6 +154,7 @@ impl VisibilityWorldRenderDomain {
 			let descriptor_set;
 			let textures_binding;
 			let albedo;
+			let diffuse;
 			let depth_target;
 			let camera_data_buffer_handle;
 			let meshes_data_buffer;
@@ -211,6 +213,7 @@ impl VisibilityWorldRenderDomain {
 				primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 				albedo = ghi_instance.create_image(Some("albedo"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				diffuse = ghi_instance.create_image(Some("diffuse"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 				depth_target = ghi_instance.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 				camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -294,6 +297,7 @@ impl VisibilityWorldRenderDomain {
 
 				let albedo_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[0]);
 				let camera_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[1]);
+				let diffuse_target_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[2]);
 				let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[4]);
 				let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[5]);
 				let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[6]);
@@ -304,6 +308,7 @@ impl VisibilityWorldRenderDomain {
 
 				ghi_instance.write(&[
 					ghi::DescriptorWrite::image(albedo_binding, albedo, ghi::Layouts::General),
+					ghi::DescriptorWrite::image(diffuse_target_binding, diffuse, ghi::Layouts::General),
 					ghi::DescriptorWrite::buffer(camera_data_binding, camera_data_buffer_handle,),
 					ghi::DescriptorWrite::buffer(light_data_binding, light_data_buffer,),
 					ghi::DescriptorWrite::buffer(materials_data_binding, materials_data_buffer_handle,),
@@ -361,6 +366,7 @@ impl VisibilityWorldRenderDomain {
 				textures_binding,
 
 				albedo,
+				diffuse,
 				depth_target,
 
 				camera_data_buffer_handle,

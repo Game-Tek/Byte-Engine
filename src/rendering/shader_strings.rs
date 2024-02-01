@@ -136,3 +136,35 @@ pub const CALCULATE_FULL_BARY: &str = {
 		return ret;
 	}"
 };
+
+pub const GET_COSINE_HEMISPHERE_SAMPLE: &str =  {
+	"// Get a cosine-weighted random vector centered around a specified normal direction.
+	vec3 get_cosine_hemisphere_sample(float rand1, float rand2, vec3 hit_norm) {
+		// Get 2 random numbers to select our sample with
+		vec2 randVal = vec2(rand1, rand2);
+	
+		// Cosine weighted hemisphere sample from RNG
+		vec3 bitangent = get_perpendicular_vector(hit_norm);
+		vec3 tangent = cross(bitangent, hit_norm);
+		float r = sqrt(randVal.x);
+		float phi = 2.0f * PI * randVal.y;
+	
+		// Get our cosine-weighted hemisphere lobe sample direction
+		return tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hit_norm.xyz * sqrt(max(0.0, 1.0f - randVal.x));
+	}"
+};
+
+pub const GET_PERPENDICULAR_VECTOR: &str = {
+	"vec3 get_perpendicular_vector(vec3 v) {
+		return normalize(abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0) : vec3(0.0, -v.z, v.y));
+	}"
+};
+
+pub const ANIMATED_INTERLEAVED_GRADIENT_NOISE: &str = {
+	"float IGN(uint32_t pixel_x, uint32_t pixel_y, uint32_t frame) {
+		frame = frame % 64; // need to periodically reset frame to avoid numerical issues
+		float x = float(pixel_x) + 5.588238f * float(frame);
+		float y = float(pixel_y) + 5.588238f * float(frame);
+		return mod(52.9829189f * mod(0.06711056f * x + 0.00583715f * y, 1.0f), 1.0f);
+	}"
+};

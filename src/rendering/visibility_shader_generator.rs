@@ -148,6 +148,7 @@ layout(set=1,binding=4,scalar) buffer PixelMapping {
 
 layout(set=1, binding=6, r32ui) uniform readonly uimage2D triangle_index;
 layout(set=2, binding=0, rgba16) uniform image2D out_albedo;
+layout(set=2, binding=2, rgba16) uniform image2D out_diffuse;
 
 layout(set=2,binding=10) uniform sampler2D ao;
 layout(set=2,binding=11) uniform sampler2D depth_shadow_map;
@@ -341,6 +342,7 @@ void main() {
 
 string.push_str(&format!("
 	vec3 lo = vec3(0.0);
+	vec3 diffuse = vec3(0.0);
 
 	float ao_factor = texture(ao, uv).r;
 
@@ -392,21 +394,23 @@ string.push_str(&format!("
 
 		float NDF = distribution_ggx(N, H, roughness);
 		float G = geometry_smith(N, V, L, roughness);
-		vec3 numerator = NDF * G * F;
-		float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.000001;
-		vec3 specular = numerator / denominator;
+		vec3 specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.000001);
 
 		vec3 kS = F;
 		vec3 kD = vec3(1.0) - kS;
 
 		kD *= 1.0 - metalness;
 
+		vec3 local_diffuse = kD * albedo / PI;
+
 		float NdotL = max(dot(N, L), 0.0);
-		lo += (kD * albedo / PI + specular) * radiance * NdotL * occlusion_factor;
+		lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
+		diffuse += local_diffuse;
 	}};
 "));
 
 		string.push_str(&format!("imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));"));
+		string.push_str(&format!("imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));"));
 
 		string.push_str(&format!("\n}}")); // Close main()
 

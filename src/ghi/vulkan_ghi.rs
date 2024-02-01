@@ -1825,7 +1825,7 @@ struct DebugCallbackData {
 }
 
 impl VulkanGHI {
-	pub fn new(settings: &Features) -> VulkanGHI {
+	pub fn new(settings: &Features) -> Result<VulkanGHI, ()> {
 		let entry: ash::Entry = Entry::linked();
 
 		let application_info = vk::ApplicationInfo::default()
@@ -1872,7 +1872,7 @@ impl VulkanGHI {
 			instance_create_info
 		};
 
-		let instance = unsafe { entry.create_instance(&instance_create_info, None).expect("No instance") };
+		let instance = unsafe { entry.create_instance(&instance_create_info, None).or(Err(()))? };
 
 		let mut debug_data = Box::new(DebugCallbackData {
 			error_count: 0,
@@ -1887,14 +1887,14 @@ impl VulkanGHI {
 				.pfn_user_callback(Some(vulkan_debug_utils_callback))
 				.user_data(debug_data.as_mut() as *mut DebugCallbackData as *mut std::ffi::c_void);
 	
-			let debug_utils_messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None).expect("Debug Utils Callback") };
+			let debug_utils_messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None).or(Err(()))? };
 
 			(Some(debug_utils), Some(debug_utils_messenger))
 		} else {
 			(None, None)
 		};
 
-		let physical_devices = unsafe { instance.enumerate_physical_devices().expect("No physical devices.") };
+		let physical_devices = unsafe { instance.enumerate_physical_devices().or(Err(()))? };
 
 		let physical_device;
 
@@ -1923,7 +1923,7 @@ impl VulkanGHI {
 				device_score
 			});
 
-			physical_device = *best_physical_device.expect("No physical devices.");
+			physical_device = *best_physical_device.ok_or(())?;
 		}
 
 		let queue_family_properties = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
@@ -2024,15 +2024,15 @@ impl VulkanGHI {
 		device_extension_names.push("VK_EXT_shader_atomic_float\0".as_ptr() as *const i8);
 
   		let device_create_info = vk::DeviceCreateInfo::default()
-			.push_next(&mut physical_device_vulkan_11_features/* .build() */)
-			.push_next(&mut physical_device_vulkan_12_features/* .build() */)
-			.push_next(&mut physical_device_vulkan_13_features/* .build() */)
-			.push_next(&mut physical_device_mesh_shading_features/* .build() */)
-			.push_next(&mut shader_atomic_float_features/* .build() */)
+			.push_next(&mut physical_device_vulkan_11_features)
+			.push_next(&mut physical_device_vulkan_12_features)
+			.push_next(&mut physical_device_vulkan_13_features)
+			.push_next(&mut physical_device_mesh_shading_features)
+			.push_next(&mut shader_atomic_float_features)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
-			.enabled_features(&enabled_physical_device_features/* .build() */)
-			/* .build() */;
+			.enabled_features(&enabled_physical_device_features)
+		;
 
 		let device_create_info = if settings.ray_tracing {
 			device_create_info
@@ -2042,7 +2042,7 @@ impl VulkanGHI {
 			device_create_info
 		};
 
-		let device: ash::Device = unsafe { instance.create_device(physical_device, &device_create_info, None).expect("No device") };
+		let device: ash::Device = unsafe { instance.create_device(physical_device, &device_create_info, None).or(Err(()))? };
 
 		let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
@@ -2054,7 +2054,7 @@ impl VulkanGHI {
 
 		let mesh_shading = ash::extensions::ext::MeshShader::new(&instance, &device);
 
-		VulkanGHI { 
+		Ok(VulkanGHI { 
 			entry,
 			instance,
 
@@ -2090,7 +2090,7 @@ impl VulkanGHI {
 			command_buffers: Vec::with_capacity(32),
 			synchronizers: Vec::with_capacity(32),
 			swapchains: Vec::with_capacity(4),
-		}
+		})
 	}
 
 	pub fn new_as_system() -> EntityBuilder<'static, VulkanGHI> {
@@ -2098,15 +2098,13 @@ impl VulkanGHI {
 			validation: true,
 			ray_tracing: true,
 		};
-		EntityBuilder::new(VulkanGHI::new(&settings))
+		EntityBuilder::new(VulkanGHI::new(&settings).expect("Failed to create GHI"))
 	}
 
 	fn get_log_count(&self) -> u64 { self.debug_data.error_count }
 
 	fn create_vulkan_shader(&mut self, stage: graphics_hardware_interface::ShaderTypes, shader: &[u8], shader_binding_descriptors: &[ShaderBindingDescriptor]) -> graphics_hardware_interface::ShaderHandle {
-		let shader_module_create_info = vk::ShaderModuleCreateInfo::default()
-			.code(unsafe { shader.align_to::<u32>().1 })
-			/* .build() */;
+		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(unsafe { shader.align_to::<u32>().1 });
 
 		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).expect("No shader module") };
 
@@ -2247,18 +2245,15 @@ impl VulkanGHI {
 									entry_count += 1;
 								}
 
-								// specilization_infos[{ let c = specilization_info_count; specilization_info_count += 1; c }] = vk::SpecializationInfo::default()
-								// 	.data(&specialization_entries_buffer)
-								// 	.map_entries(&entries[entries_offset..entry_count]);
-
 								let shader = &ghi.shaders[stage.0.0 as usize];
+
+								assert!(specilization_info_count == 0);
 
 								vk::PipelineShaderStageCreateInfo::default()
 									.stage(to_shader_stage_flags(stage.1))
 									.module(shader.shader)
 									.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
 									// .specialization_info(&specilization_infos[specilization_info_count - 1])
-									/* .build() */
 							})
 							.collect::<Vec<_>>();
 
@@ -2290,20 +2285,20 @@ impl VulkanGHI {
 			.height(9.0)
 			.min_depth(0.0)
 			.max_depth(1.0)
-			/* .build() */];
+		];
 
-		let scissors = [vk::Rect2D::default()
-			.offset(vk::Offset2D { x: 0, y: 0 })
-			.extent(vk::Extent2D { width: 16, height: 9 })
-			/* .build() */];
+		let scissors = [
+			vk::Rect2D::default().offset(vk::Offset2D { x: 0, y: 0 }).extent(vk::Extent2D { width: 16, height: 9 })
+		];
 
 		let viewport_state = vk::PipelineViewportStateCreateInfo::default()
 			.viewports(&viewports)
 			.scissors(&scissors)
-			/* .build() */;
+		;
 
 		let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-			.dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+			.dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+		;
 
 		let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
 			.depth_clamp_enable(false)
@@ -2323,7 +2318,7 @@ impl VulkanGHI {
 			.min_sample_shading(1.0)
 			.alpha_to_coverage_enable(false)
 			.alpha_to_one_enable(false)
-			/* .build() */;
+		;
 
 		let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
 			.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -2385,19 +2380,7 @@ impl VulkanGHI {
 
 		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
 
-		if let Some(name) = name {
-			unsafe {
-				if let Some(debug_utils) = &self.debug_utils {
-					debug_utils.set_debug_utils_object_name(
-						self.device.handle(),
-						&vk::DebugUtilsObjectNameInfoEXT::default()
-							.object_handle(buffer)
-							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-							/* .build() */
-					).expect("No debug utils object name");
-				}
-			}
-		}
+		self.set_name(buffer, name);
 
 		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
 
@@ -2417,7 +2400,7 @@ impl VulkanGHI {
 		let memory_allocate_info = vk::MemoryAllocateInfo::default()
 			.allocation_size(size as u64)
 			.memory_type_index(0)
-			/* .build() */;
+		;
 
 		let memory = unsafe { self.device.allocate_memory(&memory_allocate_info, None).expect("No memory") };
 
@@ -2430,18 +2413,8 @@ impl VulkanGHI {
 	}
 
 	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, _access_policies: graphics_hardware_interface::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
-		let image_type_from_extent = |extent: vk::Extent3D| {
-			if extent.depth > 1 {
-				vk::ImageType::TYPE_3D
-			} else if extent.height > 1 {
-				vk::ImageType::TYPE_2D
-			} else {
-				vk::ImageType::TYPE_1D
-			}
-		};
-
 		let image_create_info = vk::ImageCreateInfo::default()
-			.image_type(image_type_from_extent(extent))
+			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format, compression))
 			.extent(extent)
 			.mip_levels(mip_levels)
@@ -2463,25 +2436,13 @@ impl VulkanGHI {
 			)
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.initial_layout(vk::ImageLayout::UNDEFINED)
-			/* .build() */;
+		;
 
 		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
 
 		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
 
-		unsafe{
-			if let Some(name) = name {
-				if let Some(debug_utils) = &self.debug_utils {
-					debug_utils.set_debug_utils_object_name(
-						self.device.handle(),
-						&vk::DebugUtilsObjectNameInfoEXT::default()
-							.object_handle(image)
-							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-							/* .build() */
-					).expect("No debug utils object name");
-				}
-			}
-		}
+		self.set_name(image, name);
 
 		MemoryBackedResourceCreationResult {
 			resource: image.to_owned(),
@@ -2506,7 +2467,7 @@ impl VulkanGHI {
 			.max_lod(max_lod)
 			.mip_lod_bias(0.0)
 			.unnormalized_coordinates(false)
-			/* .build() */;
+		;
 
 		let sampler = unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") };
 
@@ -2550,30 +2511,32 @@ impl VulkanGHI {
 	}
 
 	fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
-		let fence_create_info = vk::FenceCreateInfo::default()
-			.flags(vk::FenceCreateFlags::empty() | if signaled { vk::FenceCreateFlags::SIGNALED } else { vk::FenceCreateFlags::empty() })
-			/* .build() */;
+		let fence_create_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::empty() | if signaled { vk::FenceCreateFlags::SIGNALED } else { vk::FenceCreateFlags::empty() });
 		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
 	}
 
-	fn create_vulkan_semaphore(&self, name: Option<&str>, signaled: bool) -> vk::Semaphore {
-		let semaphore_create_info = vk::SemaphoreCreateInfo::default()
-			/* .build() */;
-		let handle = unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") };
-
+	fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
 		if let Some(name) = name {
+			let name = std::ffi::CString::new(name).unwrap();
+			let name = name.as_c_str();
 			unsafe {
 				if let Some(debug_utils) = &self.debug_utils {
 					debug_utils.set_debug_utils_object_name(
 						self.device.handle(),
 						&vk::DebugUtilsObjectNameInfoEXT::default()
 							.object_handle(handle)
-							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-							/* .build() */
-					).expect("No debug utils object name");
+							.object_name(name)
+					).ok(); // Ignore errors, if the name can't be set, it's not a big deal.
 				}
 			}
 		}
+	}
+
+	fn create_vulkan_semaphore(&self, name: Option<&str>, signaled: bool) -> vk::Semaphore {
+		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+		let handle = unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") };
+
+		self.set_name(handle, name);
 
 		handle
 	}
@@ -2598,23 +2561,11 @@ impl VulkanGHI {
 				base_array_layer: 0,
 				layer_count: 1,
 			})
-			/* .build() */;
+		;
 
 		let vk_image_view = unsafe { self.device.create_image_view(&image_view_create_info, None).expect("No image view") };
 
-		unsafe{
-			if let Some(name) = name {
-				if let Some(debug_utils) = &self.debug_utils {
-					debug_utils.set_debug_utils_object_name(
-						self.device.handle(),
-						&vk::DebugUtilsObjectNameInfoEXT::default()
-							.object_handle(vk_image_view)
-							.object_name(std::ffi::CString::new(name).unwrap().as_c_str())
-							/* .build() */
-					).expect("No debug utils object name");
-				}
-			}
-		}
+		self.set_name(vk_image_view, name);
 
 		vk_image_view
 	}
@@ -2652,103 +2603,6 @@ impl VulkanGHI {
 
 		surface
 	}
-
-	// fn execute_vulkan_barriers(&self, command_buffer: &graphics_hardware_interface::CommandBufferHandle, barriers: &[graphics_hardware_interface::BarrierDescriptor]) {
-	// 	let mut image_memory_barriers = Vec::new();
-	// 	let mut buffer_memory_barriers = Vec::new();
-	// 	let mut memory_barriers = Vec::new();
-
-	// 	for barrier in barriers {
-	// 		match barrier.barrier {
-	// 			graphics_hardware_interface::Barrier::Buffer(buffer_barrier) => {
-	// 				let buffer_memory_barrier = if let Some(source) = barrier.source {
-	// 						vk::BufferMemoryBarrier2KHR::default()
-	// 						.src_stage_mask(to_pipeline_stage_flags(source.stage))
-	// 						.src_access_mask(to_access_flags(source.access, source.stage))
-	// 						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-	// 					} else {
-	// 						vk::BufferMemoryBarrier2KHR::default()
-	// 						.src_stage_mask(vk::PipelineStageFlags2::empty())
-	// 						.src_access_mask(vk::AccessFlags2KHR::empty())
-	// 						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-	// 					}
-	// 					.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
-	// 					.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
-	// 					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-	// 					.buffer(self.buffers[buffer_barrier.0 as usize].buffer)
-	// 					.offset(0)
-	// 					.size(vk::WHOLE_SIZE)
-	// 					/* .build() */;
-
-	// 				buffer_memory_barriers.push(buffer_memory_barrier);
-	// 			},
-	// 			graphics_hardware_interface::Barrier::Memory() => {
-	// 				let memory_barrier = if let Some(source) = barrier.source {
-	// 					vk::MemoryBarrier2::default()
-	// 						.src_stage_mask(to_pipeline_stage_flags(source.stage))
-	// 						.src_access_mask(to_access_flags(source.access, source.stage))
-
-	// 				} else {
-	// 					vk::MemoryBarrier2::default()
-	// 						.src_stage_mask(vk::PipelineStageFlags2::empty())
-	// 						.src_access_mask(vk::AccessFlags2KHR::empty())
-	// 				}
-	// 				.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
-	// 				.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
-	// 				/* .build() */;
-
-	// 				memory_barriers.push(memory_barrier);
-	// 			}
-	// 			graphics_hardware_interface::Barrier::Texture{ source, destination, texture } => {
-	// 				let image_memory_barrier = if let Some(barrier_source) = barrier.source {
-	// 						if let Some(texture_source) = source {
-	// 							vk::ImageMemoryBarrier2KHR::default()
-	// 							.old_layout(texture_format_and_resource_use_to_image_layout(texture_source.format, texture_source.layout, Some(barrier_source.access)))
-	// 							.src_stage_mask(to_pipeline_stage_flags(barrier_source.stage))
-	// 							.src_access_mask(to_access_flags(barrier_source.access, barrier_source.stage))
-	// 						} else {
-	// 							vk::ImageMemoryBarrier2KHR::default()
-	// 							.old_layout(vk::ImageLayout::UNDEFINED)
-	// 							.src_stage_mask(vk::PipelineStageFlags2::empty())
-	// 							.src_access_mask(vk::AccessFlags2KHR::empty())
-	// 						}
-	// 					} else {
-	// 						vk::ImageMemoryBarrier2KHR::default()
-	// 						.old_layout(vk::ImageLayout::UNDEFINED)
-	// 						.src_stage_mask(vk::PipelineStageFlags2::empty())
-	// 						.src_access_mask(vk::AccessFlags2KHR::empty())
-	// 					}
-	// 					.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-	// 					.new_layout(texture_format_and_resource_use_to_image_layout(destination.format, destination.layout, Some(barrier.destination.access)))
-	// 					.dst_stage_mask(to_pipeline_stage_flags(barrier.destination.stage))
-	// 					.dst_access_mask(to_access_flags(barrier.destination.access, barrier.destination.stage))
-	// 					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-	// 					.image(self.textures[texture.0 as usize].image)
-	// 					.subresource_range(vk::ImageSubresourceRange {
-	// 						aspect_mask: if destination.format != graphics_hardware_interface::TextureFormats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
-	// 						base_mip_level: 0,
-	// 						level_count: vk::REMAINING_MIP_LEVELS,
-	// 						base_array_layer: 0,
-	// 						layer_count: vk::REMAINING_ARRAY_LAYERS,
-	// 					})
-	// 					/* .build() */;
-
-	// 				image_memory_barriers.push(image_memory_barrier);
-	// 			},
-	// 		}
-	// 	}
-
-	// 	let dependency_info = vk::DependencyInfo::default()
-	// 		.image_memory_barriers(&image_memory_barriers)
-	// 		.buffer_memory_barriers(&buffer_memory_barriers)
-	// 		.memory_barriers(&memory_barriers)
-	// 		.dependency_flags(vk::DependencyFlags::BY_REGION)
-	// 		/* .build() */;
-
-	// 	let command_buffer = self.command_buffers.get(command_buffer.0 as usize).expect("No command buffer with that handle.");
-
-	// 	unsafe { self.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info) };
-	// }
 
 	/// Allocates memory from the device.
 	fn create_allocation_internal(&mut self, size: usize, device_accesses: graphics_hardware_interface::DeviceAccesses) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
@@ -3318,7 +3172,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 							base_array_layer: 0,
 							layer_count: vk::REMAINING_ARRAY_LAYERS,
 						})
-						/* .build() */;
+					;
+
 					image_memory_barriers.push(image_memory_barrier);
 				}
 				graphics_hardware_interface::Handle::Buffer(buffer_handle) => {
@@ -3422,7 +3277,6 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 				access: graphics_hardware_interface::AccessPolicies::WRITE,
 				layout: graphics_hardware_interface::Layouts::Transfer,
 			}
-			// r(false, (texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None), if attachment.format == TextureFormats::Depth32 { vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS } else { vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT }, if attachment.format == TextureFormats::Depth32 { vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE } else { vk::AccessFlags2::COLOR_ATTACHMENT_WRITE })))
 		).collect::<Vec<_>>()) };
 
 		let command_buffer = self.get_command_buffer();
@@ -3439,10 +3293,9 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 					.mip_level(0)
 					.base_array_layer(0)
 					.layer_count(1)
-					/* .build() */
 				)
-				.image_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-				.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth)/* .build() */)/* .build() */];
+				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
+				.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth))];
 
 			let (_, buffer) = self.get_buffer(texture.staging_buffer.expect("No staging buffer"));
 
@@ -3506,10 +3359,9 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 				.mip_level(0)
 				.base_array_layer(0)
 				.layer_count(1)
-				/* .build() */
 			)
-			.image_offset(vk::Offset3D::default().x(0).y(0).z(0)/* .build() */)
-			.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth)/* .build() */)/* .build() */];
+			.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
+			.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth))];
 
 		// Copy to images from staging buffer
 		let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
@@ -3988,6 +3840,15 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	alignment: usize,
 }
 
+fn image_type_from_extent(extent: vk::Extent3D) -> Option<vk::ImageType> {
+	match extent {
+		vk::Extent3D { width: 1.., height: 1, depth: 1 } => { Some(vk::ImageType::TYPE_1D) }
+		vk::Extent3D { width: 1.., height: 1.., depth: 1 } => { Some(vk::ImageType::TYPE_2D) }
+		vk::Extent3D { width: 1.., height: 1.., depth: 1.. } => { Some(vk::ImageType::TYPE_3D) }
+		_ => { None }
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::RGBA;
@@ -3995,43 +3856,43 @@ mod tests {
 
 	#[test]
 	fn render_triangle() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::render_triangle(&mut ghi);
 	}
 
 	#[test]
 	fn present() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::present(&mut ghi);
 	}
 
 	#[test]
 	fn multiframe_present() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }); // TODO: investigate graphical corruption, most likely has to do with synchronization
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_present(&mut ghi);
 	}
 
 	#[test]
 	fn multiframe_rendering() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_rendering(&mut ghi);
 	}
 
 	#[test]
 	fn dynamic_data() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::dynamic_data(&mut ghi);
 	}
 
 	#[test]
 	fn descriptor_sets() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::descriptor_sets(&mut ghi);
 	}
 
 	#[test]
 	fn ray_tracing() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: true });
+		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: true }).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::ray_tracing(&mut ghi);
 	}
 
@@ -4364,5 +4225,176 @@ mod tests {
 
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD, graphics_hardware_interface::Layouts::General, None);
 		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR);
+	}
+
+	#[test]
+	fn stages_to_vk_shader_stage_flags() {
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::VERTEX.into();
+		assert_eq!(value, vk::ShaderStageFlags::VERTEX);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::FRAGMENT.into();
+		assert_eq!(value, vk::ShaderStageFlags::FRAGMENT);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::COMPUTE.into();
+		assert_eq!(value, vk::ShaderStageFlags::COMPUTE);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::MESH.into();
+		assert_eq!(value, vk::ShaderStageFlags::MESH_EXT);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::TASK.into();
+		assert_eq!(value, vk::ShaderStageFlags::TASK_EXT);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::RAYGEN.into();
+		assert_eq!(value, vk::ShaderStageFlags::RAYGEN_KHR);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::CLOSEST_HIT.into();
+		assert_eq!(value, vk::ShaderStageFlags::CLOSEST_HIT_KHR);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::ANY_HIT.into();
+		assert_eq!(value, vk::ShaderStageFlags::ANY_HIT_KHR);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::INTERSECTION.into();
+		assert_eq!(value, vk::ShaderStageFlags::INTERSECTION_KHR);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::MISS.into();
+		assert_eq!(value, vk::ShaderStageFlags::MISS_KHR);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::CALLABLE.into();
+		assert_eq!(value, vk::ShaderStageFlags::CALLABLE_KHR);
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD.into();
+		assert_eq!(value, vk::ShaderStageFlags::default());
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::TRANSFER.into();
+		assert_eq!(value, vk::ShaderStageFlags::default());
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::PRESENTATION.into();
+		assert_eq!(value, vk::ShaderStageFlags::default());
+
+		let value: vk::ShaderStageFlags = graphics_hardware_interface::Stages::NONE.into();
+		assert_eq!(value, vk::ShaderStageFlags::default());
+	}
+
+	#[test]
+	fn datatype_to_vk_format() {
+		let value: vk::Format = graphics_hardware_interface::DataTypes::U8.into();
+		assert_eq!(value, vk::Format::R8_UINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::U16.into();
+		assert_eq!(value, vk::Format::R16_UINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::U32.into();
+		assert_eq!(value, vk::Format::R32_UINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Int.into();
+		assert_eq!(value, vk::Format::R32_SINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Int2.into();
+		assert_eq!(value, vk::Format::R32G32_SINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Int3.into();
+		assert_eq!(value, vk::Format::R32G32B32_SINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Int4.into();
+		assert_eq!(value, vk::Format::R32G32B32A32_SINT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Float.into();
+		assert_eq!(value, vk::Format::R32_SFLOAT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Float2.into();
+		assert_eq!(value, vk::Format::R32G32_SFLOAT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Float3.into();
+		assert_eq!(value, vk::Format::R32G32B32_SFLOAT);
+
+		let value: vk::Format = graphics_hardware_interface::DataTypes::Float4.into();
+		assert_eq!(value, vk::Format::R32G32B32A32_SFLOAT);
+	}
+
+	#[test]
+	fn datatype_size() {
+		let value = graphics_hardware_interface::DataTypes::U8.size();
+		assert_eq!(value, 1);
+
+		let value = graphics_hardware_interface::DataTypes::U16.size();
+		assert_eq!(value, 2);
+
+		let value = graphics_hardware_interface::DataTypes::U32.size();
+		assert_eq!(value, 4);
+
+		let value = graphics_hardware_interface::DataTypes::Int.size();
+		assert_eq!(value, 4);
+
+		let value = graphics_hardware_interface::DataTypes::Int2.size();
+		assert_eq!(value, 8);
+
+		let value = graphics_hardware_interface::DataTypes::Int3.size();
+		assert_eq!(value, 12);
+
+		let value = graphics_hardware_interface::DataTypes::Int4.size();
+		assert_eq!(value, 16);
+
+		let value = graphics_hardware_interface::DataTypes::Float.size();
+		assert_eq!(value, 4);
+
+		let value = graphics_hardware_interface::DataTypes::Float2.size();
+		assert_eq!(value, 8);
+
+		let value = graphics_hardware_interface::DataTypes::Float3.size();
+		assert_eq!(value, 12);
+
+		let value = graphics_hardware_interface::DataTypes::Float4.size();
+		assert_eq!(value, 16);
+	}
+
+	#[test]
+	fn shader_types_to_stages() {
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Vertex.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::VERTEX);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Fragment.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::FRAGMENT);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Compute.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::COMPUTE);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Task.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::TASK);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Mesh.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::MESH);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::RayGen.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::RAYGEN);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::ClosestHit.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::CLOSEST_HIT);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::AnyHit.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::ANY_HIT);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Intersection.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::INTERSECTION);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Miss.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::MISS);
+
+		let value: graphics_hardware_interface::Stages = graphics_hardware_interface::ShaderTypes::Callable.into();
+		assert_eq!(value, graphics_hardware_interface::Stages::CALLABLE);
+	}
+
+	#[test]
+	fn test_image_type_from_extent() {
+		let value = image_type_from_extent(vk::Extent3D { width: 1, height: 1, depth: 1 }).expect("Failed to get image type from extent.");
+		assert_eq!(value, vk::ImageType::TYPE_1D);
+
+		let value = image_type_from_extent(vk::Extent3D { width: 2, height: 1, depth: 1 }).expect("Failed to get image type from extent.");
+		assert_eq!(value, vk::ImageType::TYPE_1D);
+
+		let value = image_type_from_extent(vk::Extent3D { width: 2, height: 2, depth: 1 }).expect("Failed to get image type from extent.");
+		assert_eq!(value, vk::ImageType::TYPE_2D);
+
+		let value = image_type_from_extent(vk::Extent3D { width: 2, height: 2, depth: 2 }).expect("Failed to get image type from extent.");
+		assert_eq!(value, vk::ImageType::TYPE_3D);
 	}
 }

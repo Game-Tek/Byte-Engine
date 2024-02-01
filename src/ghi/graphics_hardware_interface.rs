@@ -718,37 +718,37 @@ bitflags::bitflags! {
 		/// No stage.
 		const NONE = 0b0;
 		/// The vertex stage.
-		const VERTEX = 0b1;
-		/// The mesh shader execution stage.
-		const MESH = 0b10;
-		/// The fragment stage.
-		const FRAGMENT = 0b100;
-		/// The compute stage.
-		const COMPUTE = 0b1000;
-		/// The transfer stage.
-		const TRANSFER = 0b10000;
-		/// The presentation stage.
-		const PRESENTATION = 0b1000000;
-		/// The host stage.
-		const HOST = 0b10000000;
-		/// The shader write stage.
-		const SHADER_WRITE = 0b1000000000;
+		const VERTEX = 1 << 1;
 		/// The task stage.
-		const TASK = 0b100000000000;
+		const TASK = 1 << 2;
+		/// The mesh shader execution stage.
+		const MESH = 1 << 3;
+		/// The fragment stage.
+		const FRAGMENT = 1 << 4;
+		/// The compute stage.
+		const COMPUTE = 1 << 5;
+		/// The transfer stage.
+		const TRANSFER = 1 << 6;
+		/// The presentation stage.
+		const PRESENTATION = 1 << 7;
+		/// The host stage.
+		const HOST = 1 << 8;
+		/// The shader write stage.
+		const SHADER_WRITE = 1 << 9;
 		/// The ray generation stage.
-		const RAYGEN = 0b100000000000;
+		const RAYGEN = 1 << 10;
 		/// The closest hit stage.
-		const CLOSEST_HIT = 0b1000000000000;
+		const CLOSEST_HIT = 1 << 11;
 		/// The any hit stage.
-		const ANY_HIT = 0b10000000000000;
+		const ANY_HIT = 1 << 12;
 		/// The intersection stage.
-		const INTERSECTION = 0b100000000000000;
+		const INTERSECTION = 1 << 13;
 		/// The miss stage.
-		const MISS = 0b1000000000000000;
+		const MISS = 1 << 14;
 		/// The callable stage.
-		const CALLABLE = 0b10000000000000000;
+		const CALLABLE = 1 << 15;
 		/// The acceleration structure build stage.
-		const ACCELERATION_STRUCTURE_BUILD = 0b100000000000000000;
+		const ACCELERATION_STRUCTURE_BUILD = 1 << 16;
 	}
 }
 

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::RwLock;
 
 use log::error;
-use maths_rs::mat::{MatProjection, MatRotate3D};
+use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 
 use crate::core::entity::EntityBuilder;
@@ -216,7 +216,7 @@ impl VisibilityWorldRenderDomain {
 				diffuse = ghi_instance.create_image(Some("diffuse"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 				depth_target = ghi_instance.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-				camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), 16 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+				camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 				meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderInstanceData; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -613,17 +613,14 @@ impl VisibilityWorldRenderDomain {
 
 		let view_projection_matrix = projection_matrix * view_matrix;
 
-		struct ShaderCameraData {
-			view_matrix: maths_rs::Mat4f,
-			projection_matrix: maths_rs::Mat4f,
-			view_projection_matrix: maths_rs::Mat4f,
-		}
-
 		let camera_data_reference = unsafe { (camera_data_buffer.as_mut_ptr() as *mut ShaderCameraData).as_mut().unwrap() };
 
 		camera_data_reference.view_matrix = view_matrix;
 		camera_data_reference.projection_matrix = projection_matrix;
 		camera_data_reference.view_projection_matrix = view_projection_matrix;
+		camera_data_reference.inverse_view_matrix = math::inverse(view_matrix);
+		camera_data_reference.inverse_projection_matrix = math::inverse(projection_matrix);
+		camera_data_reference.inverse_view_projection_matrix = math::inverse(view_projection_matrix);
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
@@ -700,6 +697,17 @@ struct ShaderInstanceData {
 struct LightingData {
 	count: u32,
 	lights: [LightData; MAX_LIGHTS],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct ShaderCameraData {
+	view_matrix: maths_rs::Mat4f,
+	projection_matrix: maths_rs::Mat4f,
+	view_projection_matrix: maths_rs::Mat4f,
+	inverse_view_matrix: maths_rs::Mat4f,
+	inverse_projection_matrix: maths_rs::Mat4f,
+	inverse_view_projection_matrix: maths_rs::Mat4f,
 }
 
 #[repr(C)]
@@ -1486,6 +1494,9 @@ pub const CAMERA_STRUCT_GLSL: &'static str = "struct Camera {
 	mat4 view;
 	mat4 projection_matrix;
 	mat4 view_projection;
+	mat4 inverse_view_matrix;
+	mat4 inverse_projection_matrix;
+	mat4 inverse_view_projection_matrix;
 };";
 
 pub const MESHLET_STRUCT_GLSL: &'static str = "struct Meshlet {

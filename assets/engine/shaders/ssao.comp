@@ -68,6 +68,9 @@ struct Camera {
 	mat4 view_matrix;
 	mat4 projection_matrix;
 	mat4 view_projection;
+	mat4 inverse_view_matrix;
+	mat4 inverse_projection_matrix;
+	mat4 inverse_view_projection;
 };
 
 layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
@@ -84,7 +87,7 @@ vec3 get_view_position(vec2 uv) {
 	uv /= textureSize(depth, 0).xy;
 	float depth_value = texture(depth, uv).r;
 	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
-	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	vec4 view_space = camera.inverse_projection_matrix * clip_space;
 	view_space /= view_space.w;
 	return view_space.xyz;
 }
@@ -93,7 +96,7 @@ vec3 get_view_position(ivec2 coords) {
 	float depth_value = texelFetch(depth, coords, 0).r;
 	vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth, 0).xy);
 	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
-	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
+	vec4 view_space = camera.inverse_projection_matrix * clip_space;
 	view_space /= view_space.w;
 	return view_space.xyz;
 }

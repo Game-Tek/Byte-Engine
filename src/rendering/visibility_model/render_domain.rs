@@ -12,17 +12,10 @@ use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{self, Entity, EntityHandle};
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::{ghi, utils, RGBA, shader_generator};
-use crate::rendering::{mesh, directional_light, point_light};
-use crate::rendering::world_render_domain::WorldRenderDomain;
+use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
+use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::resource_management::resource_manager::ResourceManager;
 use crate::{resource_management::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, Extent, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
-
-struct VisibilityInfo {
-	instance_count: u32,
-	triangle_count: u32,
-	meshlet_count: u32,
-	vertex_count: u32,
-}
 
 struct MeshData {
 	meshlets: Vec<ShaderMeshletData>,
@@ -68,7 +61,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	resource_manager: EntityHandle<ResourceManager>,
 
-	visibility_info: VisibilityInfo,
+	visibility_info: world_render_domain::VisibilityInfo,
 
 	camera: Option<EntityHandle<crate::camera::Camera>>,
 
@@ -1019,6 +1012,10 @@ impl WorldRenderDomain for VisibilityWorldRenderDomain {
 
 	fn get_view_occlusion_image(&self) -> ghi::ImageHandle {
 		self.occlusion_map
+	}
+
+	fn get_visibility_info(&self) -> VisibilityInfo {
+		self.visibility_info
 	}
 }
 

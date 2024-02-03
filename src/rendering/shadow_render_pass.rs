@@ -73,10 +73,12 @@ impl ShadowRenderingPass {
 	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
 		command_buffer_recording.start_region("Shadow Rendering");
 
+		let visibility_info = render_domain.get_visibility_info();
+
 		let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &[ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)]);
 		render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
 		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);
-		pipeline.dispatch_meshes(192, 1, 1);
+		pipeline.dispatch_meshes(visibility_info.meshlet_count, 1, 1);
 		render_pass.end_render_pass();
 
 		command_buffer_recording.end_region();

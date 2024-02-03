@@ -183,11 +183,9 @@ impl ResourceManager {
 
 				documents
 			} else {
-				// let r = self.read_asset_from_source(url).unwrap();
-
 				let mut loaded_resource_documents = Vec::new();
 
-				let asset_type = self.get_url_type(url);
+				let asset_type = self.get_url_type(url)?;
 
 				let resource_handlers = self.resource_handlers.iter().filter(|h| h.can_handle_type(&asset_type));
 
@@ -456,7 +454,9 @@ impl ResourceManager {
 		Some(path)
 	}
 
-	fn get_url_type(&self, url:&str) -> String {
+	/// Returns the type of the resource at the given url.
+	/// If the resource is not found it will return None.
+	fn get_url_type(&self, url:&str) -> Option<String> {
 		let origin = if url.starts_with("http://") || url.starts_with("https://") {
 			"network".to_string()
 		} else {
@@ -465,18 +465,18 @@ impl ResourceManager {
 	
 		match origin.as_str() {
 			"network" => {
-				let request = if let Ok(request) = ureq::get(url).call() { request } else { return "unknown".to_string(); };
-				let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return "unknown".to_string(); };
-				content_type
+				let request = if let Ok(request) = ureq::get(url).call() { request } else { return None; };
+				let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return None; };
+				Some(content_type)
 			},
 			"local" => {
-				let path = self.realize_asset_path(url).unwrap();
+				let path = self.realize_asset_path(url)?;
 
-				path.extension().unwrap().to_str().unwrap().to_string()
+				path.extension()?.to_str().map(|e| e.to_string())
 			},
 			_ => {
 				// Could not resolve how to get raw resource, return empty bytes
-				"unknown".to_string()
+				None
 			}
 		}
 	}

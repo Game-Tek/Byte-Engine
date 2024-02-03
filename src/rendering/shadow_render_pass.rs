@@ -59,7 +59,7 @@ impl ShadowRenderingPass {
 			ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
-		]);
+		]).expect("Failed to create mesh shader");
 
 		let pipeline = ghi.create_raster_pipeline(&[
 			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
@@ -82,14 +82,9 @@ impl ShadowRenderingPass {
 		command_buffer_recording.end_region();
 	}
 
-	pub fn prepare(&self,ghi: &dyn ghi::GraphicsHardwareInterface, normal: maths_rs::Mat4f) {
-		
-		let x = 8f32;
-		let mut light_projection_matrix = math::orthographic_matrix(x, x, -10f32, 10f32);
-		// let x = 4f32;
-		// let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
-
-		// light_projection_matrix[5] *= -1.0f32;
+	pub fn prepare(&self,ghi: &dyn ghi::GraphicsHardwareInterface, normal: maths_rs::Mat4f) {		
+		let x = 4f32;
+		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
 		let light_view_matrix = normal;
 
@@ -100,10 +95,6 @@ impl ShadowRenderingPass {
 
 	pub fn get_shadow_map_image(&self) -> ghi::ImageHandle { self.shadow_map }
 }
-
-// fn sort_lights(lights: &mut [PointLight]) {
-// 	lights.sort_by(|a, b| a.position.x.partial_cmp(&b.position.x).unwrap());
-// }
 
 const VISIBILITY_PASS_MESH_SOURCE: &'static str = "
 #version 450

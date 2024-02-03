@@ -168,3 +168,24 @@ pub const ANIMATED_INTERLEAVED_GRADIENT_NOISE: &str = {
 		return mod(52.9829189f * mod(0.06711056f * x + 0.00583715f * y, 1.0f), 1.0f);
 	}"
 };
+
+pub const LENGTH_SQUARED: &str = {
+	"float length_squared(float v) { return v * v; }
+	float length_squared(vec2 v) { return dot(v, v); }
+	float length_squared(vec3 v) { return dot(v, v); }
+	float length_squared(vec4 v) { return dot(v, v); }	"
+};
+
+pub const MIN_DIFF: &str = {
+	"vec3 min_diff(vec3 p, vec3 a, vec3 b) {
+		vec3 ap = a - p;
+		vec3 bp = p - b;
+		return (length_squared(ap) < length_squared(bp)) ? ap : bp;
+	}"
+};
+
+pub const MAKE_NORMAL_FROM_NEIGHBOURING_DEPTH_SAMPLES: &str = {
+	"vec3 make_normal_from_neighbouring_depth_samples(vec3 p, vec3 pr, vec3 pl, vec3 pt, vec3 pb) {
+		return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))
+	}"
+};

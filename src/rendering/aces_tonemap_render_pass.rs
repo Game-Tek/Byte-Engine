@@ -36,7 +36,7 @@ impl AcesToneMapPass {
 		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
-		]);
+		]).expect("Failed to create tone mapping shader");
 			
 		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, ghi::ShaderTypes::Compute, &[]));
 

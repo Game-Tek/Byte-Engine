@@ -2,7 +2,7 @@ use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
 use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
 
-use super::{visibility_model::render_domain::VisibilityWorldRenderDomain, aces_tonemap_render_pass::AcesToneMapPass, tonemap_render_pass::ToneMapRenderPass, world_render_domain::WorldRenderDomain, shadow_render_pass::ShadowRenderingPass};
+use super::{aces_tonemap_render_pass::AcesToneMapPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 
 pub struct Renderer {
 	ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>,
@@ -20,6 +20,7 @@ pub struct Renderer {
 	window_system: EntityHandle<window_system::WindowSystem>,
 
 	visibility_render_model: EntityHandle<VisibilityWorldRenderDomain>,
+	ao_render_pass: EntityHandle<ScreenSpaceAmbientOcclusionPass>,
 	ui_render_model: EntityHandle<UIRenderModel>,
 	tonemap_render_model: EntityHandle<AcesToneMapPass>,
 }
@@ -57,6 +58,12 @@ impl Renderer {
 				image_ready = ghi.create_synchronizer(Some("Swapchain Available"), false);
 			}
 
+			let ao_render_pass = {
+				let mut ghi = ghi_instance.write().unwrap();
+				let vrm = visibility_render_model.read_sync();
+				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()))
+			};
+
 			Renderer {
 				ghi: ghi_instance,
 
@@ -71,6 +78,8 @@ impl Renderer {
 				result,
 
 				window_system: window_system_handle,
+
+				ao_render_pass,
 
 				visibility_render_model,
 				ui_render_model,
@@ -97,6 +106,11 @@ impl Renderer {
 		self.visibility_render_model.map(|vis_rp| {
 			let mut vis_rp = vis_rp.write_sync();
 			vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut());
+
+			self.ao_render_pass.map(|ao_rp| {
+				let ao_rp = ao_rp.write_sync();
+				ao_rp.render(command_buffer_recording.as_mut());
+			});
 
 			vis_rp.render_b(ghi.deref(), command_buffer_recording.as_mut());
 		});

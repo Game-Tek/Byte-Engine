@@ -434,7 +434,17 @@ pub trait GraphicsHardwareInterface {
 	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle;
 
 	/// Creates a shader.
-	fn create_shader(&mut self, name: Option<&str>, shader_source_type: ShaderSource, stage: ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> ShaderHandle;
+	/// # Arguments
+	/// * `name` - The name of the shader.
+	/// * `shader_source_type` - The type of the shader source.
+	/// * `stage` - The stage of the shader.
+	/// * `shader_binding_descriptors` - The binding descriptors of the shader.
+	/// # Returns
+	/// The handle of the shader.
+	/// # Errors
+	/// Returns an error if the shader source was GLSL source code and could not be compiled.
+	/// Returns an error if the shader source was SPIR-V binary and could not aligned to 4 bytes.
+	fn create_shader(&mut self, name: Option<&str>, shader_source_type: ShaderSource, stage: ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> Result<ShaderHandle, ()>;
 
 	fn create_descriptor_set_template(&mut self, name: Option<&str>, binding_templates: &[DescriptorSetBindingTemplate]) -> DescriptorSetTemplateHandle;
 
@@ -1191,8 +1201,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1330,8 +1340,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1458,8 +1468,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1585,8 +1595,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1722,8 +1732,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]);
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]);
+		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
@@ -1888,8 +1898,8 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]);
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]);
+		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
@@ -2111,9 +2121,9 @@ void main() {
 }
 		";
 
-		let raygen_shader = renderer.create_shader(None, ShaderSource::GLSL(raygen_shader_code.to_string()), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]);
-		let closest_hit_shader = renderer.create_shader(None, ShaderSource::GLSL(closest_hit_shader_code.to_string()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]);
-		let miss_shader = renderer.create_shader(None, ShaderSource::GLSL(miss_shader_code.to_string()), ShaderTypes::Miss, &[]);
+		let raygen_shader = renderer.create_shader(None, ShaderSource::GLSL(raygen_shader_code.to_string()), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]).expect("Failed to create raygen shader");
+		let closest_hit_shader = renderer.create_shader(None, ShaderSource::GLSL(closest_hit_shader_code.to_string()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
+		let miss_shader = renderer.create_shader(None, ShaderSource::GLSL(miss_shader_code.to_string()), ShaderTypes::Miss, &[]).expect("Failed to create miss shader");
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"));
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{

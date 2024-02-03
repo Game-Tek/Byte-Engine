@@ -407,6 +407,8 @@ string.push_str(&format!("
 		lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
 		diffuse += local_diffuse;
 	}};
+
+	lo *= ao_factor;
 "));
 
 		string.push_str(&format!("imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));"));

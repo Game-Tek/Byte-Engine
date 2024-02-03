@@ -20,8 +20,6 @@ impl ALSAAudioHardwareInterface {
 			hwp.set_format(alsa::pcm::Format::s16()).unwrap();
 			hwp.set_access(alsa::pcm::Access::RWInterleaved).unwrap();
 
-			dbg!(hwp.get_rate().unwrap());
-
 			pcm.hw_params(&hwp).unwrap();
 		}
 

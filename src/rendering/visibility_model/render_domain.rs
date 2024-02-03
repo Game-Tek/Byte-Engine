@@ -487,7 +487,7 @@ impl VisibilityWorldRenderDomain {
 						ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
-					]);
+					]).expect("Failed to create shader");
 
 					self.shaders.insert(resource_id, (hash, new_shader, stage));
 				}
@@ -631,8 +631,6 @@ impl VisibilityWorldRenderDomain {
 		camera_data_reference.view_matrix = view_matrix;
 		camera_data_reference.projection_matrix = projection_matrix;
 		camera_data_reference.view_projection_matrix = view_projection_matrix;
-
-		command_buffer_recording.clear_images(&[(self.occlusion_map, ghi::ClearValue::Color(RGBA::white())),]);
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
@@ -948,27 +946,11 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 		let light_index = lighting_data.count as usize;
 		
-		let x = 8f32;
-		let mut light_projection_matrix = math::orthographic_matrix(x, x, -10f32, 10f32);
-
-		// let x = 4f32;
-		// let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
-
-		// light_projection_matrix[5] *= -1.0f32;
+		let x = 4f32;
+		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
 		let normal = light.direction;
-
-		let tangent = Vector3::new(1f32, 0f32, 0f32);
-
-		let bitangent = maths_rs::cross(normal, tangent);
-
-		// let light_view_matrix = maths_rs::Mat4f::from((maths_rs::Vec4f::from(tangent), maths_rs::Vec4f::from(bitangent), maths_rs::Vec4f::from(-normal), maths_rs::Vec4f::from((0.0f32, 0.0f32, 0.0f32, 1.0f32))));
-		
-		// let light_view_matrix = maths_rs::Mat4f::from_orthonormal_basis(normal);
 		let light_view_matrix = math::from_normal(-normal);
-
-		// let light_view_matrix = maths_rs::Mat4f::from((maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)), maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)), maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)), maths_rs::Vec4f::from((0.0f32, 0.0f32, 0.0f32, 1.0f32))));
-		// let light_view_matrix = maths_rs::Mat4f::from((maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)), maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)), -maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)), maths_rs::Vec4f::from((0.0f32, 0.0f32, 0.0f32, 1.0f32))));
 
 		let vp_matrix = light_projection_matrix * light_view_matrix;
 
@@ -1058,9 +1040,9 @@ impl VisibilityPass {
 				ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
 			]
-		);
+		).expect("Failed to create shader");
 
-		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]);
+		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]).expect("Failed to create shader");
 
 		let visibility_pass_shaders: &[(&ghi::ShaderHandle, ghi::ShaderTypes, &[ghi::SpecializationMapEntry])] = &[
 			(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh, &[]),
@@ -1125,7 +1107,7 @@ impl MaterialCountPass {
 				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
 				ghi::ShaderBindingDescriptor::new(1, 7, ghi::AccessPolicies::READ),
 			]
-		);
+		).expect("Failed to create shader");
 
 		let material_count_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&material_count_shader, ghi::ShaderTypes::Compute, &[]));
 
@@ -1181,7 +1163,7 @@ impl MaterialOffsetPass {
 				ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
 				ghi::ShaderBindingDescriptor::new(1, 3, ghi::AccessPolicies::WRITE),
 			]
-		);
+		).expect("Failed to create shader");
 
 		let material_offset_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&material_offset_shader, ghi::ShaderTypes::Compute, &[]));
 
@@ -1243,7 +1225,7 @@ impl PixelMappingPass {
 				ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::WRITE),
 				ghi::ShaderBindingDescriptor::new(1, 7, ghi::AccessPolicies::READ),
 			]
-		);
+		).expect("Failed to create shader");
 
 		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&pixel_mapping_shader, ghi::ShaderTypes::Compute, &[]));
 

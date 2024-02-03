@@ -98,7 +98,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	}
 
 	/// Creates a shader.
-	fn create_shader(&mut self, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> graphics_hardware_interface::ShaderHandle {
+	fn create_shader(&mut self, name: Option<&str>, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> graphics_hardware_interface::ShaderHandle {
 		match shader_source_type {
 			graphics_hardware_interface::ShaderSource::GLSL(source_code) => {
 				let compiler = shaderc::Compiler::new().unwrap();
@@ -114,7 +114,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				
 				match binary {
 					Ok(binary) => {		
-						self.create_vulkan_shader(stage, binary.as_binary_u8(), shader_binding_descriptors)
+						self.create_vulkan_shader(name, stage, binary.as_binary_u8(), shader_binding_descriptors)
 					},
 					Err(err) => {
 						let compiler_error_string = err.to_string();
@@ -130,7 +130,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				}
 			}
 			graphics_hardware_interface::ShaderSource::SPIRV(spirv) => {
-				self.create_vulkan_shader(stage, spirv, shader_binding_descriptors)
+				self.create_vulkan_shader(name, stage, spirv, shader_binding_descriptors)
 			}
 		}
 	}
@@ -2103,7 +2103,7 @@ impl VulkanGHI {
 
 	fn get_log_count(&self) -> u64 { self.debug_data.error_count }
 
-	fn create_vulkan_shader(&mut self, stage: graphics_hardware_interface::ShaderTypes, shader: &[u8], shader_binding_descriptors: &[ShaderBindingDescriptor]) -> graphics_hardware_interface::ShaderHandle {
+	fn create_vulkan_shader(&mut self, name: Option<&str>, stage: graphics_hardware_interface::ShaderTypes, shader: &[u8], shader_binding_descriptors: &[ShaderBindingDescriptor]) -> graphics_hardware_interface::ShaderHandle {
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(unsafe { shader.align_to::<u32>().1 });
 
 		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).expect("No shader module") };
@@ -2115,6 +2115,8 @@ impl VulkanGHI {
 			stage: stage.into(),
 			shader_binding_descriptors: shader_binding_descriptors.to_vec(),
 		});
+
+		self.set_name(shader_module, name);
 
 		handle
 	}
@@ -3088,21 +3090,41 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		for (texture_handle, clear_value) in textures {
 			let (_, texture) = self.get_texture(*texture_handle);
 	
-			let clear_value = match clear_value {
-				graphics_hardware_interface::ClearValue::None => vk::ClearColorValue{ float32: [0.0, 0.0, 0.0, 0.0] },
-				graphics_hardware_interface::ClearValue::Color(color) => vk::ClearColorValue{ float32: [color.r, color.g, color.b, color.a] },
-				graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearColorValue{ float32: [*depth, 0.0, 0.0, 0.0] },
-				graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue{ uint32: [*r, *g, *b, *a] },
-			};
-	
-			unsafe {
-				self.ghi.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &clear_value, &[vk::ImageSubresourceRange {
-					aspect_mask: vk::ImageAspectFlags::COLOR,
-					base_mip_level: 0,
-					level_count: vk::REMAINING_MIP_LEVELS,
-					base_array_layer: 0,
-					layer_count: vk::REMAINING_ARRAY_LAYERS,
-				}]);
+			
+			if texture.format_ != graphics_hardware_interface::Formats::Depth32 {
+				let clear_value = match clear_value {
+					graphics_hardware_interface::ClearValue::None => vk::ClearColorValue{ float32: [0.0, 0.0, 0.0, 0.0] },
+					graphics_hardware_interface::ClearValue::Color(color) => vk::ClearColorValue{ float32: [color.r, color.g, color.b, color.a] },
+					graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearColorValue{ float32: [*depth, 0.0, 0.0, 0.0] },
+					graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue{ uint32: [*r, *g, *b, *a] },
+				};
+
+				unsafe {
+					self.ghi.device.cmd_clear_color_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &clear_value, &[vk::ImageSubresourceRange {
+						aspect_mask: vk::ImageAspectFlags::COLOR,
+						base_mip_level: 0,
+						level_count: vk::REMAINING_MIP_LEVELS,
+						base_array_layer: 0,
+						layer_count: vk::REMAINING_ARRAY_LAYERS,
+					}]);
+				}
+			} else {
+				let clear_value = match clear_value {
+					graphics_hardware_interface::ClearValue::None => vk::ClearDepthStencilValue{ depth: 0.0, stencil: 0 },
+					graphics_hardware_interface::ClearValue::Color(_) => panic!("Color clear value for depth texture"),
+					graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearDepthStencilValue{ depth: *depth, stencil: 0 },
+					graphics_hardware_interface::ClearValue::Integer(_, _, _, _) => panic!("Integer clear value for depth texture"),
+				};
+
+				unsafe {
+					self.ghi.device.cmd_clear_depth_stencil_image(self.get_command_buffer().command_buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &clear_value, &[vk::ImageSubresourceRange {
+						aspect_mask: vk::ImageAspectFlags::DEPTH,
+						base_mip_level: 0,
+						level_count: vk::REMAINING_MIP_LEVELS,
+						base_array_layer: 0,
+						layer_count: vk::REMAINING_ARRAY_LAYERS,
+					}]);
+				}
 			}
 		}
 	}

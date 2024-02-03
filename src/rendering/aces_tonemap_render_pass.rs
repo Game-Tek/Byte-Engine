@@ -33,7 +33,7 @@ impl AcesToneMapPass {
 			ghi::DescriptorWrite::image(result_binding, result_image, ghi::Layouts::General),
 		]);
 
-		let tone_mapping_shader = ghi.create_shader(ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
+		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
 		]);

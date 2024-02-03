@@ -1,6 +1,6 @@
 use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
 
-use crate::{Extent, ghi};
+use crate::{ghi, math, Extent, Vector3};
 
 use super::world_render_domain::WorldRenderDomain;
 
@@ -8,65 +8,49 @@ pub struct ShadowRenderingPass {
 	pipeline: ghi::PipelineHandle,
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
+	light_matrices_buffer: ghi::BaseBufferHandle,
 	shadow_map: ghi::ImageHandle,
 }
 
 impl ShadowRenderingPass {
-	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, render_domain: &impl WorldRenderDomain) -> ShadowRenderingPass {
+	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, view_depth_image: &ghi::ImageHandle) -> ShadowRenderingPass {
 		let light_matrics_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE);
 		let light_depth_map = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 		let view_depth_map = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
-		let occlusion_image = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 		let bindings = [
 			light_matrics_binding_template.clone(),
 			light_depth_map.clone(),
 			view_depth_map.clone(),
-			occlusion_image.clone(),
 		];
 
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
 
-		let pipeline_layout = ghi.create_pipeline_layout(&[render_domain.get_descriptor_set_template(), descriptor_set_template], &[]);
+		let pipeline_layout = ghi.create_pipeline_layout(&[visibility_descriptor_set_template.clone(), descriptor_set_template], &[]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
-
-		let light_matrices_binding = ghi.create_descriptor_binding(descriptor_set, &light_matrics_binding_template);
-
+		
 		let colored_shadow: bool = false;
-
+		
 		let shadow_map_resolution = Extent::square(4096);
-
+		
 		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-
+		
 		let light_matrices_buffer = ghi.create_buffer(Some("Light Matrices Buffer"), 256 * 4 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-
+		
 		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-
+		
+		let light_matrices_binding = ghi.create_descriptor_binding(descriptor_set, &light_matrics_binding_template);
 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &light_depth_map);
 		let view_depth_map_binding = ghi.create_descriptor_binding(descriptor_set, &view_depth_map);
-		let occlusion_image_binding = ghi.create_descriptor_binding(descriptor_set, &occlusion_image);
 
 		ghi.write(&[
 			ghi::DescriptorWrite::buffer(light_matrices_binding, light_matrices_buffer,),
 			ghi::DescriptorWrite::combined_image_sampler(shadow_map_binding, shadow_map, sampler, ghi::Layouts::Read),
-			ghi::DescriptorWrite::combined_image_sampler(view_depth_map_binding, render_domain.get_view_depth_image(), sampler, ghi::Layouts::Read),
-			ghi::DescriptorWrite::image(occlusion_image_binding, render_domain.get_view_occlusion_image(), ghi::Layouts::General),
+			ghi::DescriptorWrite::combined_image_sampler(view_depth_map_binding, view_depth_image.clone(), sampler, ghi::Layouts::Read),
 		]);
 
-		let x = 4f32;
-
-		let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
-
-		light_projection_matrix[5] *= -1.0f32;
-
-		let light_view_matrix = maths_rs::Mat4f::from_x_rotation(-std::f32::consts::FRAC_PI_2); // Looking down from +y axis
-
-		let matric_buffer = ghi.get_mut_buffer_slice(light_matrices_buffer);
-
-		matric_buffer[..64].copy_from_slice((light_projection_matrix * light_view_matrix).as_u8_slice());
-
-		let mesh_shader = ghi.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE.to_string()), ghi::ShaderTypes::Mesh, &[
+		let mesh_shader = ghi.create_shader(Some("Shadow Pass Mesh Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE.to_string()), ghi::ShaderTypes::Mesh, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 			ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
@@ -83,7 +67,7 @@ impl ShadowRenderingPass {
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
-		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, }
+		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, light_matrices_buffer }
 	}
 
 	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
@@ -98,8 +82,28 @@ impl ShadowRenderingPass {
 		command_buffer_recording.end_region();
 	}
 
+	pub fn prepare(&self,ghi: &dyn ghi::GraphicsHardwareInterface, normal: maths_rs::Mat4f) {
+		
+		let x = 8f32;
+		let mut light_projection_matrix = math::orthographic_matrix(x, x, -10f32, 10f32);
+		// let x = 4f32;
+		// let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
+
+		// light_projection_matrix[5] *= -1.0f32;
+
+		let light_view_matrix = normal;
+
+		let matric_buffer = ghi.get_mut_buffer_slice(self.light_matrices_buffer);
+
+		matric_buffer[..64].copy_from_slice((light_projection_matrix * light_view_matrix).as_u8_slice());
+	}
+
 	pub fn get_shadow_map_image(&self) -> ghi::ImageHandle { self.shadow_map }
 }
+
+// fn sort_lights(lights: &mut [PointLight]) {
+// 	lights.sort_by(|a, b| a.position.x.partial_cmp(&b.position.x).unwrap());
+// }
 
 const VISIBILITY_PASS_MESH_SOURCE: &'static str = "
 #version 450

@@ -9,7 +9,8 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
-use crate::core::{Entity, EntityHandle};
+use crate::core::{self, Entity, EntityHandle};
+use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::{ghi, utils, RGBA, shader_generator};
 use crate::rendering::{mesh, directional_light, point_light};
 use crate::rendering::world_render_domain::WorldRenderDomain;
@@ -135,7 +136,11 @@ pub struct VisibilityWorldRenderDomain {
 	material_offset_pass: MaterialOffsetPass,
 	pixel_mapping_pass: PixelMappingPass,
 
+	shadow_render_pass: EntityHandle<ShadowRenderingPass>,
+
 	shadow_map_binding: ghi::DescriptorSetBindingHandle,
+
+	lights: Vec<LightData>,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -174,6 +179,8 @@ impl VisibilityWorldRenderDomain {
 			let material_count_pass;
 			let material_offset_pass;
 			let pixel_mapping_pass;
+
+			let shadow_render_pass;
 
 			let shadow_map_binding;
 
@@ -303,8 +310,14 @@ impl VisibilityWorldRenderDomain {
 				let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[6]);
 				shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, &bindings[7]);
 
+				shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
+
 				let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 				occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+
+				let shadow_map_image = {
+					shadow_render_pass.read_sync().get_shadow_map_image()
+				};
 
 				ghi_instance.write(&[
 					ghi::DescriptorWrite::image(albedo_binding, albedo, ghi::Layouts::General),
@@ -313,6 +326,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::DescriptorWrite::buffer(light_data_binding, light_data_buffer,),
 					ghi::DescriptorWrite::buffer(materials_data_binding, materials_data_buffer_handle,),
 					ghi::DescriptorWrite::combined_image_sampler(occlussion_texture_binding, occlusion_map, sampler, ghi::Layouts::Read),
+					ghi::DescriptorWrite::combined_image_sampler(shadow_map_binding, shadow_map_image, sampler, ghi::Layouts::Read),
 				]);
 
 				material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 }]);
@@ -332,6 +346,8 @@ impl VisibilityWorldRenderDomain {
 				material_count_pass,
 				material_offset_pass,
 				pixel_mapping_pass,
+
+				shadow_render_pass,
 
 				shaders: HashMap::new(),
 
@@ -388,6 +404,8 @@ impl VisibilityWorldRenderDomain {
 				materials_data_buffer_handle,
 
 				shadow_map_binding,
+
+				lights: Vec::new(),
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
@@ -395,14 +413,6 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<mesh::Mesh>(listener)
 			.listen_to::<directional_light::DirectionalLight>(listener)
 			.listen_to::<point_light::PointLight>(listener)
-	}
-
-	pub fn write_shadow_descriptor(&self, ghi: &mut dyn ghi::GraphicsHardwareInterface, shadow_map: ghi::ImageHandle,) {
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-
-		ghi.write(&[
-			ghi::DescriptorWrite::combined_image_sampler(self.shadow_map_binding, shadow_map, sampler, ghi::Layouts::Read),
-		]);
 	}
 
 	fn load_material(&mut self, (response, buffer): (resource_management::Response, Vec<u8>),) {	
@@ -457,7 +467,7 @@ impl VisibilityWorldRenderDomain {
 						resource_management::material_resource_handler::ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
 					};
 
-					let new_shader = ghi.create_shader(ghi::ShaderSource::SPIRV(&buffer[offset..(offset + size)]), stage, &[
+					let new_shader = ghi.create_shader(Some(&resource_document.url), ghi::ShaderSource::SPIRV(&buffer[offset..(offset + size)]), stage, &[
 						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
@@ -635,6 +645,22 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	pub fn render_b(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
+		{
+			let shadow_render_pass = self.shadow_render_pass.read_sync();
+			
+			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D').collect();
+			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
+
+			if let Some(most_significant_light) = directional_lights.get(0) {
+				let normal = most_significant_light.view_matrix;
+
+				shadow_render_pass.prepare(ghi, normal);
+				shadow_render_pass.render(command_buffer_recording, self);
+			} else {
+				command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(1f32)),]);
+			}
+		}
+
 		command_buffer_recording.start_region("Material Evaluation");
 		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(crate::RGBA::black())),]);
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
@@ -686,11 +712,14 @@ struct LightingData {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 struct LightData {
+	view_matrix: Mat4f,
+	projection_matrix: Mat4f,
 	vp_matrix: Mat4f,
 	position: Vector3,
 	color: Vector3,
-	light_type: u8,
+	light_type: char,
 }
 
 #[repr(C)]
@@ -918,23 +947,41 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
 		let light_index = lighting_data.count as usize;
+		
+		let x = 8f32;
+		let mut light_projection_matrix = math::orthographic_matrix(x, x, -10f32, 10f32);
 
-		let x = 4f32;
+		// let x = 4f32;
+		// let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
 
-		let mut light_projection_matrix = maths_rs::Mat4f::create_ortho_matrix(-x, x, -x, x, 0.1f32, 100f32);
+		// light_projection_matrix[5] *= -1.0f32;
 
-		light_projection_matrix[5] *= -1.0f32;
+		let normal = light.direction;
 
-		let light_view_matrix = maths_rs::Mat4f::from_x_rotation(-std::f32::consts::FRAC_PI_2); // Looking down from +y axis
+		let tangent = Vector3::new(1f32, 0f32, 0f32);
+
+		let bitangent = maths_rs::cross(normal, tangent);
+
+		// let light_view_matrix = maths_rs::Mat4f::from((maths_rs::Vec4f::from(tangent), maths_rs::Vec4f::from(bitangent), maths_rs::Vec4f::from(-normal), maths_rs::Vec4f::from((0.0f32, 0.0f32, 0.0f32, 1.0f32))));
+		
+		// let light_view_matrix = maths_rs::Mat4f::from_orthonormal_basis(normal);
+		let light_view_matrix = math::from_normal(-normal);
+
+		// let light_view_matrix = maths_rs::Mat4f::from((maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)), maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)), maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)), maths_rs::Vec4f::from((0.0f32, 0.0f32, 0.0f32, 1.0f32))));
+		// let light_view_matrix = maths_rs::Mat4f::from((maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)), maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)), -maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)), maths_rs::Vec4f::from((0.0f32, 0.0f32, 0.0f32, 1.0f32))));
 
 		let vp_matrix = light_projection_matrix * light_view_matrix;
 
-		lighting_data.lights[light_index].light_type = 'D' as u8;
+		lighting_data.lights[light_index].light_type = 'D';
+		lighting_data.lights[light_index].view_matrix = light_view_matrix;
+		lighting_data.lights[light_index].projection_matrix = light_projection_matrix;
 		lighting_data.lights[light_index].vp_matrix = vp_matrix;
-		lighting_data.lights[light_index].position = crate::Vec3f::new(0.0, 1.0, 0.0);
+		lighting_data.lights[light_index].position = light.direction;
 		lighting_data.lights[light_index].color = light.color;
 		
 		lighting_data.count += 1;
+
+		self.lights.push(lighting_data.lights[light_index]);
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
@@ -952,7 +999,9 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 
 		let light_index = lighting_data.count as usize;
 
-		lighting_data.lights[light_index].light_type = 'P' as u8;
+		lighting_data.lights[light_index].light_type = 'P';
+		lighting_data.lights[light_index].view_matrix = maths_rs::Mat4f::identity();
+		lighting_data.lights[light_index].projection_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].vp_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].position = light.position;
 		lighting_data.lights[light_index].color = light.color;
@@ -999,7 +1048,7 @@ struct VisibilityPass {
 
 impl VisibilityPass {
 	pub fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
-		let visibility_pass_mesh_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
+		let visibility_pass_mesh_shader = ghi_instance.create_shader(Some("Visibility Pass Mesh Shader"), ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
 			&[
 				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
@@ -1011,7 +1060,7 @@ impl VisibilityPass {
 			]
 		);
 
-		let visibility_pass_fragment_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]);
+		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]);
 
 		let visibility_pass_shaders: &[(&ghi::ShaderHandle, ghi::ShaderTypes, &[ghi::SpecializationMapEntry])] = &[
 			(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh, &[]),
@@ -1070,7 +1119,7 @@ struct MaterialCountPass {
 
 impl MaterialCountPass {
 	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
-		let material_count_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_material_count_source()), ghi::ShaderTypes::Compute,
+		let material_count_shader = ghi_instance.create_shader(Some("Material Count Pass Compute Shader"), ghi::ShaderSource::GLSL(get_material_count_source()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
@@ -1125,7 +1174,7 @@ struct MaterialOffsetPass {
 
 impl MaterialOffsetPass {
 	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let material_offset_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE.to_string()), ghi::ShaderTypes::Compute,
+		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE.to_string()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::WRITE),
@@ -1187,7 +1236,7 @@ struct PixelMappingPass {
 
 impl PixelMappingPass {
 	fn new(ghi_instance: &mut dyn ghi::GraphicsHardwareInterface, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let pixel_mapping_shader = ghi_instance.create_shader(ghi::ShaderSource::GLSL(get_pixel_mapping_source()), ghi::ShaderTypes::Compute,
+		let pixel_mapping_shader = ghi_instance.create_shader(Some("Pixel Mapping Pass Compute Shader"), ghi::ShaderSource::GLSL(get_pixel_mapping_source()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
@@ -1437,6 +1486,8 @@ pub fn get_pixel_mapping_source() -> String {
 }
 
 pub const LIGHT_STRUCT_GLSL: &'static str = "struct Light {
+	mat4 view_matrix;
+	mat4 projection_matrix;
 	mat4 vp_matrix;
 	vec3 position;
 	vec3 color;

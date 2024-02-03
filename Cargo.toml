@@ -1,3 +1,4 @@
+workspace = { members = ["tests/gi"] }
 [package]
 name = "byte_engine"
 version = "0.1.0"

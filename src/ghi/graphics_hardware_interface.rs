@@ -399,8 +399,35 @@ impl ShaderBindingDescriptor {
 
 /// Configuration for which features to request from the underlying API.
 pub struct Features {
-	pub validation: bool,
-	pub ray_tracing: bool,
+	pub(crate) validation: bool,
+	/// Prints all API calls to the console.
+	pub(crate) api_dump: bool,
+	pub(crate) ray_tracing: bool,
+}
+
+impl Features {
+	pub fn new() -> Self {
+		Self {
+			validation: false,
+			api_dump: false,
+			ray_tracing: false,
+		}
+	}
+
+	pub fn validation(mut self, value: bool) -> Self {
+		self.validation = value;
+		self
+	}	
+
+	pub fn api_dump(mut self, value: bool) -> Self {
+		self.api_dump = value;
+		self
+	}
+
+	pub fn ray_tracing(mut self, value: bool) -> Self {
+		self.ray_tracing = value;
+		self
+	}
 }
 
 pub struct BufferSplitter<'a> {
@@ -1890,7 +1917,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_resources(renderer: &mut dyn GraphicsHardwareInterface,) {
+	pub(crate) fn multiframe_resources(renderer: &mut dyn GraphicsHardwareInterface,) { // TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
 			#pragma shader_stage(compute)

@@ -1,6 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, mem::align_of};
 
 use ash::vk::{self, Handle as _};
+use bitflags::Flags;
 
 use crate::{core::{orchestrator, Entity, entity::EntityBuilder}, ghi::{graphics_hardware_interface, shader_compilation}, render_debugger::RenderDebugger, utils::partition, window_system, Extent};
 
@@ -67,6 +68,9 @@ struct TopLevelAccelerationStructureHandle(u64);
 struct BottomLevelAccelerationStructureHandle(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct DescriptorSetHandle(u64);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Handle {
 	Image(ImageHandle),
 	Buffer(BufferHandle),
@@ -75,11 +79,11 @@ enum Handle {
 }
 
 #[derive(Clone, PartialEq,)]
-pub struct Consumption {
-	pub handle: Handle,
-	pub stages: graphics_hardware_interface::Stages,
-	pub access: graphics_hardware_interface::AccessPolicies,
-	pub layout: graphics_hardware_interface::Layouts,
+struct Consumption {
+	handle: Handle,
+	stages: graphics_hardware_interface::Stages,
+	access: graphics_hardware_interface::AccessPolicies,
+	layout: graphics_hardware_interface::Layouts,
 }
 
 impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
@@ -125,7 +129,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	}
 
 	/// Creates a shader.
-	fn create_shader(&mut self, name: Option<&str>, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
+	fn create_shader(&mut self, name: Option<&str>, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: &[graphics_hardware_interface::ShaderBindingDescriptor],) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let shader = match shader_source_type {
 			graphics_hardware_interface::ShaderSource::GLSL(source_code) => {
 				let compiler = shaderc::Compiler::new().unwrap();
@@ -140,7 +144,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				let binary = compiler.compile_into_spirv(source_code.as_str(), shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
 				
 				match binary {
-					Ok(binary) => {		
+					Ok(binary) => {
 						Cow::Owned(binary.as_binary().to_vec())
 					},
 					Err(err) => {
@@ -265,11 +269,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &graphics_hardware_interface::DescriptorSetTemplateHandle) -> graphics_hardware_interface::DescriptorSetHandle {
 		let pool_sizes = self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize].bindings.iter().map(|(descriptor_type, descriptor_count)| {
-			vk::DescriptorPoolSize::default()
-				.ty(*descriptor_type)
-				.descriptor_count(descriptor_count * self.frames as u32)
-		})
-		.collect::<Vec<_>>();
+			vk::DescriptorPoolSize::default().ty(*descriptor_type).descriptor_count(descriptor_count * self.frames as u32)
+		}).collect::<Vec<_>>();
 
 		let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
 			.max_sets(3/* LEAVE AS 3 AS THAT IS THE MAX AMOUNT OF BUFFERED FRAMES */)
@@ -291,10 +292,10 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let descriptor_sets = unsafe { self.device.allocate_descriptor_sets(&descriptor_set_allocate_info).expect("No descriptor set") };
 
 		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
-		let mut previous_handle: Option<graphics_hardware_interface::DescriptorSetHandle> = None;
+		let mut previous_handle: Option<DescriptorSetHandle> = None;
 
 		for descriptor_set in descriptor_sets {
-			let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
+			let handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
 
 			self.descriptor_sets.push(
 				DescriptorSet {
@@ -320,8 +321,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	fn write(&mut self, descriptor_set_writes: &[graphics_hardware_interface::DescriptorWrite]) {		
 		for descriptor_set_write in descriptor_set_writes {
 			let binding = &self.bindings[descriptor_set_write.binding_handle.0 as usize];
+			
+			let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
 
-			let layout = self.descriptor_sets[binding.descriptor_set_handle.0 as usize].descriptor_set_layout;
+			let descriptor_set = self.get_descriptor_set(descriptor_set_handle);
+
+			let layout = descriptor_set.descriptor_set_layout;
 
 			let descriptor_set_layout = &self.descriptor_sets_layouts[layout.0 as usize];
 
@@ -331,7 +336,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			let descriptor_sets = {
 				let mut descriptor_sets = Vec::with_capacity(3);
 
-				let mut descriptor_set_handle_option = Some(binding.descriptor_set_handle);
+				let mut descriptor_set_handle_option = Some(descriptor_set_handle);
 
 				while let Some(descriptor_set_handle) = descriptor_set_handle_option {
 					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
@@ -358,7 +363,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 							.dst_binding(binding_index)
 							.dst_array_element(descriptor_set_write.array_element)
 							.descriptor_type(descriptor_type)
-							.buffer_info(&buffers);
+							.buffer_info(&buffers)
+						;
 	
 						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 					}
@@ -392,7 +398,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 							.dst_binding(binding_index)
 							.dst_array_element(descriptor_set_write.array_element)
 							.descriptor_type(descriptor_type)
-							.image_info(&images);
+							.image_info(&images)
+						;
 
 						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 					}
@@ -428,7 +435,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 							.dst_binding(binding_index)
 							.dst_array_element(descriptor_set_write.array_element)
 							.descriptor_type(descriptor_type)
-							.image_info(&images);
+							.image_info(&images)
+						;
 
 						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 					}
@@ -443,7 +451,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 							.dst_binding(binding_index)
 							.dst_array_element(descriptor_set_write.array_element)
 							.descriptor_type(descriptor_type)
-							.image_info(&images);
+							.image_info(&images)
+						;
 	
 						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 					}
@@ -466,7 +475,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 							.dst_set(descriptor_set.descriptor_set)
 							.dst_binding(binding_index)
 							.dst_array_element(descriptor_set_write.array_element)
-							.descriptor_type(descriptor_type);
+							.descriptor_type(descriptor_type)
+						;
 
 						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 					}
@@ -477,13 +487,15 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		for dsw in descriptor_set_writes {
 			let binding = &self.bindings[dsw.binding_handle.0 as usize];
 
+			let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
+
 			let descriptor_sets = {
 				let mut descriptor_sets = Vec::with_capacity(3);
 
-				let mut descriptor_set_handle_option = Some(binding.descriptor_set_handle);
+				let mut descriptor_set_handle_option = Some(descriptor_set_handle);
 
 				while let Some(descriptor_set_handle) = descriptor_set_handle_option {
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+					let descriptor_set = self.get_descriptor_set(descriptor_set_handle);
 
 					descriptor_sets.push(descriptor_set_handle);
 
@@ -495,12 +507,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 			for (i, descriptor_set_handle) in descriptor_sets.iter().enumerate() {
 				match dsw.descriptor {
-					Descriptor::Buffer { handle, .. } => {
+					graphics_hardware_interface::Descriptor::Buffer { handle, .. } => {
 						let buffer_handle = BufferHandle(handle.0);
 						let descriptor_set = &mut self.descriptor_sets[descriptor_set_handle.0 as usize];
 						descriptor_set.resources.push((dsw.binding_handle, Handle::Buffer(buffer_handle)));
 					}
-					Descriptor::Image { handle, .. } => {						
+					graphics_hardware_interface::Descriptor::Image { handle, .. } => {						
 						let images = {
 							let mut images = Vec::with_capacity(3);
 							let mut image_handle_option = Some(ImageHandle(handle.0));
@@ -522,9 +534,26 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 						
 						descriptor_set.resources.push((dsw.binding_handle, Handle::Image(*image)));
 					}
-					Descriptor::CombinedImageSampler { image_handle, .. } => {
-						let image_handle = ImageHandle(image_handle.0);
+					graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, .. } => {
+						let image_handles = {
+							let mut images = Vec::with_capacity(3);
+							let mut image_handle_option = Some(ImageHandle(image_handle.0));
+							
+							while let Some(image_handle) = image_handle_option {
+								let image = &self.images[image_handle.0 as usize];
+								images.push(image_handle);
+								image_handle_option = image.next;
+							}
+							
+							images
+						};
+
 						let descriptor_set = &mut self.descriptor_sets[descriptor_set_handle.0 as usize];
+
+						let offset = dsw.frame_offset.unwrap_or(0);
+
+						let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
+
 						descriptor_set.resources.push((dsw.binding_handle, Handle::Image(image_handle)));
 					}
 					_ => {}
@@ -699,7 +728,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
 
-		let mut handles: HashMap<ShaderHandle, [u8; 32]> = HashMap::with_capacity(shaders.len());
+		let mut handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]> = HashMap::with_capacity(shaders.len());
 
 		let pipeline_handle = unsafe {
 			let pipeline = self.ray_tracing_pipeline.create_ray_tracing_pipelines(vk::DeferredOperationKHR::null(), vk::PipelineCache::null(), &[create_info], None).expect("No ray tracing pipeline")[0];
@@ -768,24 +797,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	}
 
 	fn create_command_buffer_recording(&self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frmae_index: Option<u32>) -> Box<dyn graphics_hardware_interface::CommandBufferRecording + '_> {
+		use graphics_hardware_interface::CommandBufferRecording;
 		let recording = VulkanCommandBufferRecording::new(self, command_buffer_handle, frmae_index);
 		recording.begin();
 		Box::new(recording)
 	}
 
-	/// Creates a new buffer.\
-	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\
-	/// Staging buffers MAY be created if there's is not sufficient CPU writable, fast GPU readable memory.\
-	/// 
-	/// # Arguments
-	/// 
-	/// * `size` - The size of the buffer in bytes.
-	/// * `resource_uses` - The uses of the buffer.
-	/// * `device_accesses` - The accesses of the buffer.
-	/// 
-	/// # Returns
-	/// 
-	/// The handle of the buffer.
 	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::BaseBufferHandle {
 		if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead) {
 			match use_case {
@@ -872,7 +889,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> &mut [u8] {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		unsafe {
@@ -880,12 +896,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn get_splitter(&self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter {
+	fn get_splitter(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let slice = unsafe {
 			std::slice::from_raw_parts_mut(buffer.pointer as *mut u8, buffer.size)
 		};
-		BufferSplitter::new(slice, offset)
+		graphics_hardware_interface::BufferSplitter::new(slice, offset)
 	}
 
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
@@ -895,7 +911,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	/// Creates a texture.
 	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
 		let size = (extent.width * extent.height * extent.depth * 4) as usize;
 
@@ -982,25 +997,25 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 	fn create_sampler(&mut self, filtering_mode: graphics_hardware_interface::FilteringModes, reduction_mode: graphics_hardware_interface::SamplingReductionModes, mip_map_filter: graphics_hardware_interface::FilteringModes, address_mode: graphics_hardware_interface::SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> graphics_hardware_interface::SamplerHandle {
 		let filtering_mode = match filtering_mode {
-			FilteringModes::Closest => { vk::Filter::NEAREST }
-			FilteringModes::Linear => { vk::Filter::LINEAR }
+			graphics_hardware_interface::FilteringModes::Closest => { vk::Filter::NEAREST }
+			graphics_hardware_interface::FilteringModes::Linear => { vk::Filter::LINEAR }
 		};
 
 		let mip_map_filter = match mip_map_filter {
-			FilteringModes::Closest => { vk::SamplerMipmapMode::NEAREST }
-			FilteringModes::Linear => { vk::SamplerMipmapMode::LINEAR }
+			graphics_hardware_interface::FilteringModes::Closest => { vk::SamplerMipmapMode::NEAREST }
+			graphics_hardware_interface::FilteringModes::Linear => { vk::SamplerMipmapMode::LINEAR }
 		};
 
 		let address_mode = match address_mode {
-			SamplerAddressingModes::Repeat => { vk::SamplerAddressMode::REPEAT }
-			SamplerAddressingModes::Mirror => { vk::SamplerAddressMode::MIRRORED_REPEAT }
-			SamplerAddressingModes::Clamp => { vk::SamplerAddressMode::CLAMP_TO_EDGE }
+			graphics_hardware_interface::SamplerAddressingModes::Repeat => { vk::SamplerAddressMode::REPEAT }
+			graphics_hardware_interface::SamplerAddressingModes::Mirror => { vk::SamplerAddressMode::MIRRORED_REPEAT }
+			graphics_hardware_interface::SamplerAddressingModes::Clamp => { vk::SamplerAddressMode::CLAMP_TO_EDGE }
 		};
 
 		let reduction_mode = match reduction_mode {
-			SamplingReductionModes::WeightedAverage => { vk::SamplerReductionMode::WEIGHTED_AVERAGE }
-			SamplingReductionModes::Min => { vk::SamplerReductionMode::MIN }
-			SamplingReductionModes::Max => { vk::SamplerReductionMode::MAX }
+			graphics_hardware_interface::SamplingReductionModes::WeightedAverage => { vk::SamplerReductionMode::WEIGHTED_AVERAGE }
+			graphics_hardware_interface::SamplingReductionModes::Min => { vk::SamplerReductionMode::MIN }
+			graphics_hardware_interface::SamplingReductionModes::Max => { vk::SamplerReductionMode::MAX }
 		};
 
 		graphics_hardware_interface::SamplerHandle(self.create_vulkan_sampler(filtering_mode, reduction_mode, mip_map_filter, address_mode, anisotropy, min_lod, max_lod).as_raw())
@@ -1160,7 +1175,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		handle
 	}
 
-	fn write_instance(&mut self, instances_buffer: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle) {
+	fn write_instance(&mut self, instances_buffer: graphics_hardware_interface::BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle) {
 		let buffer = self.acceleration_structures[acceleration_structure.0 as usize].buffer;
 
 		let address = unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) };
@@ -1183,7 +1198,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		instance_buffer_slice[instance_index] = instance;
 	}
 
-	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: graphics_hardware_interface::PipelineHandle, shader_handle: graphics_hardware_interface::ShaderHandle) {
+	fn write_sbt_entry(&mut self, sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: graphics_hardware_interface::PipelineHandle, shader_handle: graphics_hardware_interface::ShaderHandle) {
 		let slice = self.get_mut_buffer_slice(sbt_buffer_handle);
 
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
@@ -1212,7 +1227,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
 			.present_mode(vk::PresentModeKHR::FIFO)
 			.image_array_layers(1)
-			.clipped(true);
+			.clipped(true)
+		;
 
 		// Load extension here and not during device creation because we rarely need it.
 		let swapchain_loader = ash::extensions::khr::Swapchain::new(&self.instance, &self.device);
@@ -1241,8 +1257,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		slice
 	}
 
-	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
-	/// Multiple underlying synchronization primitives are created, one for each frame
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
 		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 
@@ -1257,16 +1271,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		synchronizer_handle
 	}
 
-	/// Acquires an image from the swapchain as to have it ready for presentation.
-	/// 
-	/// # Arguments
-	/// 
-	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
-	/// * `synchronizer_handle` - The synchronizer to wait for before acquiring the image. If `None` is passed, the image will be acquired immediately.
-	///
-	/// # Panics
-	///
-	/// Panics if .
 	fn acquire_swapchain_image(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> u32 {
 		let synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
 		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
@@ -1301,7 +1305,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
   		let present_info = vk::PresentInfoKHR::default()
 			.swapchains(&swapchains)
 			.wait_semaphores(&wait_semaphores)
-			.image_indices(&image_indices);
+			.image_indices(&image_indices)
+		;
 
 		unsafe { self.swapchain.queue_present(self.queue, &present_info).expect("No present"); }
 	}
@@ -1320,10 +1325,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		self.debugger.end_frame_capture();
 	}
 }
-
-use bitflags::Flags;
-
-use super::graphics_hardware_interface::*;
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -1346,7 +1347,7 @@ pub(crate) struct PipelineLayout {
 
 #[derive(Clone)]
 pub(crate) struct DescriptorSet {
-	next: Option<graphics_hardware_interface::DescriptorSetHandle>,
+	next: Option<DescriptorSetHandle>,
 	descriptor_set: vk::DescriptorSet,
 	descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
 
@@ -1357,14 +1358,14 @@ pub(crate) struct DescriptorSet {
 pub(crate) struct Shader {
 	shader: vk::ShaderModule,
 	stage: graphics_hardware_interface::Stages,
-	shader_binding_descriptors: Vec<ShaderBindingDescriptor>,
+	shader_binding_descriptors: Vec<graphics_hardware_interface::ShaderBindingDescriptor>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
-	shader_handles: HashMap<ShaderHandle, [u8; 32]>,
-	shaders: Vec<ShaderHandle>,
+	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
+	shaders: Vec<graphics_hardware_interface::ShaderHandle>,
 	resource_access: Vec<((u32, u32), (graphics_hardware_interface::Stages, graphics_hardware_interface::AccessPolicies))>,
 }
 
@@ -1517,9 +1518,9 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 	match format {
 		graphics_hardware_interface::Formats::R8(encoding) => {
 			match encoding {
-				Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				Encodings::UnsignedNormalized => { vk::Format::R8_UNORM }
-				Encodings::SignedNormalized => { vk::Format::R8_SNORM }
+				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
+				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8_UNORM }
+				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8_SNORM }
 			}
 		}
 		graphics_hardware_interface::Formats::R16(encoding) => {
@@ -1819,17 +1820,17 @@ impl Size for &[graphics_hardware_interface::VertexElement] {
 impl Into<graphics_hardware_interface::Stages> for graphics_hardware_interface::ShaderTypes {
 	fn into(self) -> graphics_hardware_interface::Stages {
 		match self {
-			ShaderTypes::Vertex => graphics_hardware_interface::Stages::VERTEX,
-			ShaderTypes::Fragment => graphics_hardware_interface::Stages::FRAGMENT,
-			ShaderTypes::Compute => graphics_hardware_interface::Stages::COMPUTE,
-			ShaderTypes::Task => graphics_hardware_interface::Stages::TASK,
-			ShaderTypes::Mesh => graphics_hardware_interface::Stages::MESH,
-			ShaderTypes::RayGen => graphics_hardware_interface::Stages::RAYGEN,
-			ShaderTypes::ClosestHit => graphics_hardware_interface::Stages::CLOSEST_HIT,
-			ShaderTypes::AnyHit => graphics_hardware_interface::Stages::ANY_HIT,
-			ShaderTypes::Intersection => graphics_hardware_interface::Stages::INTERSECTION,
-			ShaderTypes::Miss => graphics_hardware_interface::Stages::MISS,
-			ShaderTypes::Callable => graphics_hardware_interface::Stages::CALLABLE,
+			graphics_hardware_interface::ShaderTypes::Vertex => graphics_hardware_interface::Stages::VERTEX,
+			graphics_hardware_interface::ShaderTypes::Fragment => graphics_hardware_interface::Stages::FRAGMENT,
+			graphics_hardware_interface::ShaderTypes::Compute => graphics_hardware_interface::Stages::COMPUTE,
+			graphics_hardware_interface::ShaderTypes::Task => graphics_hardware_interface::Stages::TASK,
+			graphics_hardware_interface::ShaderTypes::Mesh => graphics_hardware_interface::Stages::MESH,
+			graphics_hardware_interface::ShaderTypes::RayGen => graphics_hardware_interface::Stages::RAYGEN,
+			graphics_hardware_interface::ShaderTypes::ClosestHit => graphics_hardware_interface::Stages::CLOSEST_HIT,
+			graphics_hardware_interface::ShaderTypes::AnyHit => graphics_hardware_interface::Stages::ANY_HIT,
+			graphics_hardware_interface::ShaderTypes::Intersection => graphics_hardware_interface::Stages::INTERSECTION,
+			graphics_hardware_interface::ShaderTypes::Miss => graphics_hardware_interface::Stages::MISS,
+			graphics_hardware_interface::ShaderTypes::Callable => graphics_hardware_interface::Stages::CALLABLE,
 		}
 	}
 }
@@ -1839,7 +1840,7 @@ struct DebugCallbackData {
 }
 
 impl VulkanGHI {
-	pub fn new(settings: &Features) -> Result<VulkanGHI, ()> {
+	pub fn new(settings: &graphics_hardware_interface::Features) -> Result<VulkanGHI, ()> {
 		let entry = ash::Entry::linked();
 
 		let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
@@ -1848,7 +1849,10 @@ impl VulkanGHI {
 		
 		if settings.validation {
 			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
-			// layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
+		}
+
+		if settings.api_dump {
+			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
 		}
 
 		let mut extension_names = Vec::new();
@@ -2110,9 +2114,10 @@ impl VulkanGHI {
 	}
 
 	pub fn new_as_system() -> EntityBuilder<'static, VulkanGHI> {
-		let settings = Features {
+		let settings = graphics_hardware_interface::Features {
 			validation: true,
 			ray_tracing: true,
+			api_dump: true,
 		};
 		EntityBuilder::new(VulkanGHI::new(&settings).expect("Failed to create GHI"))
 	}
@@ -2645,6 +2650,10 @@ impl VulkanGHI {
 
 		(allocation_handle, mapped_memory)
 	}
+
+	fn get_descriptor_set(&self, descriptor_set_handle: DescriptorSetHandle) -> &DescriptorSet {
+        self.descriptor_sets.get(descriptor_set_handle.0 as usize).expect("No descriptor set with that handle.")
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -2665,10 +2674,8 @@ pub struct VulkanCommandBufferRecording<'a> {
 	stages: vk::PipelineStageFlags2,
 
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<graphics_hardware_interface::DescriptorSetHandle>,
+	bound_descriptor_set_handles: Vec<DescriptorSetHandle>,
 }
-
-
 
 impl VulkanCommandBufferRecording<'_> {
 	pub fn new(ghi: &'_ VulkanGHI, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_index: Option<u32>) -> VulkanCommandBufferRecording<'_> {
@@ -2728,17 +2735,21 @@ impl VulkanCommandBufferRecording<'_> {
 		&self.ghi.command_buffers[self.command_buffer.0 as usize].frames[self.modulo_frame_index as usize]
 	}
 
-	fn get_descriptor_set(&self, descriptor_set_handle: &graphics_hardware_interface::DescriptorSetHandle) -> (graphics_hardware_interface::DescriptorSetHandle, &DescriptorSet) {
+	fn get_internal_descriptor_set_handle(&self, descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle) -> DescriptorSetHandle {
 		let mut i = 0;
-		let mut handle = descriptor_set_handle.clone();
+		let mut handle = DescriptorSetHandle(descriptor_set_handle.0);
 		loop {
 			let descriptor_set = &self.ghi.descriptor_sets[handle.0 as usize];
 			if i == self.modulo_frame_index {
-				return (handle, descriptor_set);
+				return handle;
 			}
 			handle = descriptor_set.next.unwrap();
 			i += 1;
 		}
+	}
+
+	fn get_descriptor_set(&self, descriptor_set_handle: &DescriptorSetHandle) -> &DescriptorSet {
+		&self.ghi.descriptor_sets[descriptor_set_handle.0 as usize]
 	}
 
 	fn consume_resources_current(&mut self, additional_transitions: &[graphics_hardware_interface::Consumption]) {
@@ -2754,7 +2765,7 @@ impl VulkanCommandBufferRecording<'_> {
 				continue;
 			};
 
-			let (_, descriptor_set) = self.get_descriptor_set(set_handle);
+			let descriptor_set = self.get_descriptor_set(set_handle);
 
 			for (binding_handle, resource_handle) in descriptor_set.resources.iter().filter(|(binding_handle, _)| self.ghi.bindings[binding_handle.0 as usize].index == *binding_index) {
 				let binding = self.ghi.bindings.get(binding_handle.0 as usize).expect("No binding found");
@@ -2996,6 +3007,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	}
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild) {
+		use graphics_hardware_interface::GraphicsHardwareInterface;
+
 		let (acceleration_structure_handle, acceleration_structure) = self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
 		let (as_geometries, offsets) = match acceleration_structure_build.description {
@@ -3518,10 +3531,11 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		
 		let pipeline_layout = &self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
-		let s = sets.iter().map(|set| {
-			let (_, descriptor_set) = self.get_descriptor_set(set);
+		let s = sets.iter().map(|descriptor_set_handle| {
+			let internal_descriptor_set_handle = self.get_internal_descriptor_set_handle(*descriptor_set_handle);
+			let descriptor_set = self.get_descriptor_set(&internal_descriptor_set_handle);
 			let index_in_layout = pipeline_layout.descriptor_set_template_indices.get(&descriptor_set.descriptor_set_layout).unwrap();
-			(*index_in_layout, set, descriptor_set.descriptor_set)
+			(*index_in_layout, internal_descriptor_set_handle, descriptor_set.descriptor_set)
 		}).collect::<Vec<_>>();
 
 		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
@@ -3544,12 +3558,12 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 			}
 		}
 
-		for (descriptor_set_index, descriptor_set, _) in s {
+		for (descriptor_set_index, descriptor_set_handle, _) in s {
 			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
-				self.bound_descriptor_set_handles[descriptor_set_index as usize] = *descriptor_set;
+				self.bound_descriptor_set_handles[descriptor_set_index as usize] = descriptor_set_handle;
 			} else {
 				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
-				self.bound_descriptor_set_handles.push(*descriptor_set);
+				self.bound_descriptor_set_handles.push(descriptor_set_handle);
 			}
 		}
 
@@ -3791,6 +3805,8 @@ impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBuff
 
 impl graphics_hardware_interface::BoundRayTracingPipelineMode for VulkanCommandBufferRecording<'_> {
 	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
+		use graphics_hardware_interface::GraphicsHardwareInterface;
+
 		let command_buffer = self.get_command_buffer();
 		let comamand_buffer_handle = command_buffer.command_buffer;
 
@@ -3859,49 +3875,49 @@ mod tests {
 
 	#[test]
 	fn render_triangle() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::render_triangle(&mut ghi);
 	}
 
 	#[test]
 	fn present() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::present(&mut ghi);
 	}
 
 	#[test]
 	fn multiframe_present() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_present(&mut ghi); // BUG: can see graphical artifacts, most likely synchronization issue
 	}
 
 	#[test]
 	fn multiframe_rendering() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_rendering(&mut ghi);
 	}
 
 	#[test]
 	fn dynamic_data() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::dynamic_data(&mut ghi);
 	}
 
 	#[test]
 	fn descriptor_sets() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::descriptor_sets(&mut ghi);
 	}
 
 	#[test]
 	fn multiframe_resources() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: false }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_resources(&mut ghi);
 	}
 
 	#[test]
 	fn ray_tracing() {
-		let mut ghi = VulkanGHI::new(&Features { validation: true, ray_tracing: true }).expect("Failed to create VulkanGHI.");
+		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true).ray_tracing(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::ray_tracing(&mut ghi);
 	}
 

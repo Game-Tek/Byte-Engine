@@ -360,31 +360,34 @@ string.push_str(&format!("
 			L = normalize(light_pos - vertex_position);
 		}}
 
-		if (dot(N, L) <= 0.0) {{
+		float NdotL = max(dot(N, L), 0.0);
+
+		if (NdotL <= 0.0) {{
 			continue;
 		}}
 
-		vec4 surface_light_clip_position = light_matrix * vec4(vertex_position, 1.0);
-		vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
-		vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
-		float z = surface_light_ndc_position.z;
-		float shadow_sample_depth = texture(depth_shadow_map, shadow_uv).r;
-		float occlusion_factor = z + 0.00001 < shadow_sample_depth ? 0.0 : 1.0;
+		float occlusion_factor = 1.0;
+		float attenuation = 1.0;
 
-		if (occlusion_factor == 0.0) {{
-			continue;
-		}}
-
-		vec3 H = normalize(V + L);
-
-		float attenuation = 0.0f;
-		
 		if (light_type == 68) {{ // Infinite
+			vec4 surface_light_clip_position = light_matrix * vec4(vertex_position + N * 0.001, 1.0);
+			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
+			vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
+			float z = surface_light_ndc_position.z;
+			float shadow_sample_depth = texture(depth_shadow_map, shadow_uv).r;
+			float occlusion_factor = z < shadow_sample_depth ? 0.0 : 1.0;
+
+			if (occlusion_factor == 0.0) {{
+				continue;
+			}}
+
 			attenuation = 1.0;
 		}} else {{
 			float distance = length(light_pos - vertex_position);
 			attenuation = 1.0 / (distance * distance);
 		}}
+
+		vec3 H = normalize(V + L);
 
 		vec3 radiance = light_color * attenuation;
 
@@ -403,7 +406,6 @@ string.push_str(&format!("
 
 		vec3 local_diffuse = kD * albedo / PI;
 
-		float NdotL = max(dot(N, L), 0.0);
 		lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
 		diffuse += local_diffuse;
 	}};

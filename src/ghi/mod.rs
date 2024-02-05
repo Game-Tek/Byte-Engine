@@ -9,5 +9,5 @@ pub mod vulkan_ghi;
 pub use crate::ghi::graphics_hardware_interface::*;
 
 pub fn create() -> impl GraphicsHardwareInterface {
-	vulkan_ghi::VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI")
+	vulkan_ghi::VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(false)).expect("Failed to create VulkanGHI")
 }

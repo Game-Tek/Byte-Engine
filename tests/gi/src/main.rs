@@ -24,6 +24,8 @@ fn main() {
 	let _c: EntityHandle<mesh::Mesh> = core::spawn_in_domain(space.deref_mut(), mesh::Mesh::new("Box", "green_solid", maths_rs::Mat4f::from_translation(Vec3f::new(0.5, 0.13, -0.3)) * maths_rs::Mat4f::from_scale(Vec3f::new(0.26, 0.26, 0.26))));
 
 	let _sun: EntityHandle<DirectionalLight> = core::spawn_in_domain(space.deref_mut(), DirectionalLight::new(maths_rs::normalize(Vec3f::new(1.0, 1.0, -1.0)), 4500.0));
+	let _helper_light: EntityHandle<PointLight> = core::spawn_in_domain(space.deref_mut(), PointLight::new(Vec3f::new(-2.0, 0.5, -1.0f32), 4500.0));
+	let _helper_light: EntityHandle<PointLight> = core::spawn_in_domain(space.deref_mut(), PointLight::new(Vec3f::new(2.0, 0.5, -1.0f32), 4500.0));
 
 	app.do_loop();
 

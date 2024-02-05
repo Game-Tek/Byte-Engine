@@ -493,7 +493,7 @@ pub trait GraphicsHardwareInterface {
 	/// Creates an image.
 	fn create_image(&mut self, name: Option<&str>, extent: crate::Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
 
-	fn create_sampler(&mut self, filtering_mode: FilteringModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
+	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
 
 	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle;
 
@@ -868,6 +868,18 @@ pub enum FilteringModes {
 }
 
 #[derive(Clone, Copy)]
+/// Enumerates the available sampling reduction modes.
+/// The sampling reduction mode is used to determine how to reduce/combine the samples of neighbouring texels when sampling an image.
+pub enum SamplingReductionModes {
+	/// The average of the samples. Weighted by the proximity of the sample to the sample point.
+	WeightedAverage,
+	/// The minimum of the samples is taken.
+	Min,
+	/// The maximum of the samples is taken.
+	Max,
+}
+
+#[derive(Clone, Copy)]
 /// Enumerates the available sampler addressing modes.
 pub enum SamplerAddressingModes {
 	/// Repeat mode addressing.
@@ -949,6 +961,7 @@ pub struct DescriptorWrite {
 	pub(super) array_element: u32,
 	/// Information describing the descriptor.
 	pub(super) descriptor: Descriptor,
+	pub(super) frame_offset: Option<i32>,
 }
 
 impl DescriptorWrite {
@@ -960,6 +973,7 @@ impl DescriptorWrite {
 				handle: buffer_handle,
 				size: Ranges::Whole,
 			},
+			frame_offset: None,
 		}
 	}
 
@@ -971,6 +985,28 @@ impl DescriptorWrite {
 				handle: image_handle,
 				layout,
 			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn image_with_frame(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, layout: Layouts, frame_offset: i32) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor: Descriptor::Image {
+				handle: image_handle,
+				layout,
+			},
+			frame_offset: Some(frame_offset),
+		}
+	}
+
+	pub fn sampler(binding_handle: DescriptorSetBindingHandle, sampler_handle: SamplerHandle) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor: Descriptor::Sampler(sampler_handle),
+			frame_offset: None,
 		}
 	}
 
@@ -983,6 +1019,18 @@ impl DescriptorWrite {
 				sampler_handle,
 				layout,
 			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn acceleration_structure(binding_handle: DescriptorSetBindingHandle, acceleration_structure_handle: TopLevelAccelerationStructureHandle) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor: Descriptor::AccelerationStructure {
+				handle: acceleration_structure_handle,
+			},
+			frame_offset: None,
 		}
 	}
 }
@@ -1842,6 +1890,123 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
+	pub(crate) fn multiframe_resources(renderer: &mut dyn GraphicsHardwareInterface,) {
+		let compute_shader_string = "
+			#version 450
+			#pragma shader_stage(compute)
+
+			layout(set=0,binding=0, rgba8) uniform image2D img;
+			layout(set=0,binding=1, rgba8) uniform readonly image2D last_frame_img;
+
+			layout(push_constant) uniform PushConstants {
+				float value;
+			} push_constants;
+
+			layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+			void main() {
+				imageStore(img, ivec2(0, 0), vec4(vec3(push_constants.value), 1));
+				imageStore(img, ivec2(1, 0), imageLoad(last_frame_img, ivec2(0, 0)));
+			}
+		";
+
+		let compute_shader = renderer.create_shader(None, ShaderSource::GLSL(compute_shader_string.to_string()), ShaderTypes::Compute, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
+
+		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
+		let last_frame_image_binding_template = DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
+
+		let descriptor_set_template = renderer.create_descriptor_set_template(None, &[image_binding_template.clone(),last_frame_image_binding_template.clone()]);
+
+		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange{ offset: 0, size: 4 }]);
+
+		let pipeline = renderer.create_compute_pipeline(&pipeline_layout, (&compute_shader, ShaderTypes::Compute, &[]));
+
+		let image = renderer.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+
+		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_template);
+
+		let image_binding = renderer.create_descriptor_binding(descriptor_set, &image_binding_template);
+		let last_frame_image_binding = renderer.create_descriptor_binding(descriptor_set, &last_frame_image_binding_template);
+
+		renderer.write(&[
+			DescriptorWrite::image(image_binding, image, Layouts::General),
+			DescriptorWrite::image_with_frame(last_frame_image_binding, image, Layouts::General, -1), // TODO: consider making this mutable borrows so that the same handle cannot be used for multiple writes
+		]);
+
+		let command_buffer = renderer.create_command_buffer(None);
+
+		let signal = renderer.create_synchronizer(None, false);
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(0));
+
+		let data = [0.5f32];
+
+		command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+
+		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+
+		command_buffer_recording.execute(&[], &[], signal);
+
+		renderer.wait(signal);
+
+		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
+		assert_eq!(pixels[0], RGBAu8 { r: 127, g: 127, b: 127, a: 255 }); // Current frame image
+		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 }); // Current frame sample from last frame image
+
+		assert!(!renderer.has_errors());
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(1));
+
+		let data = [1.0f32];
+
+		command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
+		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+
+		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+
+		command_buffer_recording.execute(&[], &[], signal);
+
+		renderer.wait(signal);
+
+		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
+		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
+		assert_eq!(pixels[1], RGBAu8 { r: 127, g: 127, b: 127, a: 255 }); // Current frame sample from last frame image
+
+		assert!(!renderer.has_errors());
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(2));
+
+		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+
+		command_buffer_recording.execute(&[], &[], signal);
+
+		renderer.wait(signal);
+
+		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
+		assert_eq!(pixels[0], RGBAu8 { r: 127, g: 127, b: 127, a: 255 });
+		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
+
+		assert!(!renderer.has_errors());
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(3));
+
+		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+
+		command_buffer_recording.execute(&[], &[], signal);
+
+		renderer.wait(signal);
+
+		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
+		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
+		assert_eq!(pixels[1], RGBAu8 { r: 127, g: 127, b: 127, a: 255 });
+
+		assert!(!renderer.has_errors());
+	}
+
 	pub(crate) fn descriptor_sets(renderer: &mut dyn GraphicsHardwareInterface) {
 		let signal = renderer.create_synchronizer(None, false);
 
@@ -1912,7 +2077,7 @@ pub(super) mod tests {
 			RGBAu8 { r: 255, g: 255, b: 0, a: 255 },
 		];
 
-		let sampler =  renderer.create_sampler(FilteringModes::Closest, FilteringModes::Closest, SamplerAddressingModes::Repeat, None, 0.0f32, 0.0f32);
+		let sampler =  renderer.create_sampler(FilteringModes::Closest, SamplingReductionModes::WeightedAverage, FilteringModes::Closest, SamplerAddressingModes::Repeat, None, 0.0f32, 0.0f32);
 
 		let descriptor_set_layout_handle = renderer.create_descriptor_set_template(None, &[
 			DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])),
@@ -1927,9 +2092,9 @@ pub(super) mod tests {
 		let tex_binding = renderer.create_descriptor_binding(descriptor_set, &DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT));
 
 		renderer.write(&[
-			DescriptorWrite { binding_handle: sampler_binding, array_element: 0, descriptor: Descriptor::Sampler(sampler) },
-			DescriptorWrite { binding_handle: ubo_binding, array_element: 0, descriptor: Descriptor::Buffer{ handle: buffer, size: Ranges::Size(64) } },
-			DescriptorWrite { binding_handle: tex_binding, array_element: 0, descriptor: Descriptor::Image{ handle: sampled_texture, layout: Layouts::Read } },
+			DescriptorWrite::sampler(sampler_binding, sampler),
+			DescriptorWrite::buffer(ubo_binding, buffer),
+			DescriptorWrite::image(tex_binding, sampled_texture, Layouts::Read),
 		]);
 
 		assert!(!renderer.has_errors());
@@ -2156,11 +2321,11 @@ void main() {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		renderer.write(&[
-			DescriptorWrite { binding_handle: acceleration_structure_binding, array_element: 0, descriptor: Descriptor::AccelerationStructure{ handle: top_level_acceleration_structure } },
-			DescriptorWrite { binding_handle: render_target_binding, array_element: 0, descriptor: Descriptor::Image { handle: render_target, layout: Layouts::General } },
-			DescriptorWrite { binding_handle: vertex_positions_binding, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_positions_buffer, size: Ranges::Size(12 * 3) } },
-			DescriptorWrite { binding_handle: vertex_colors_binding, array_element: 0, descriptor: Descriptor::Buffer { handle: vertex_colors_buffer, size: Ranges::Size(16 * 3) } },
-			DescriptorWrite { binding_handle: indices_binding, array_element: 0, descriptor: Descriptor::Buffer { handle: index_buffer, size: Ranges::Size(2 * 3) } },
+			DescriptorWrite::acceleration_structure(acceleration_structure_binding, top_level_acceleration_structure),
+			DescriptorWrite::image(render_target_binding, render_target, Layouts::General),
+			DescriptorWrite::buffer(vertex_positions_binding, vertex_positions_buffer,),
+			DescriptorWrite::buffer(vertex_colors_binding, vertex_colors_buffer,),
+			DescriptorWrite::buffer(indices_binding, index_buffer,),
 		]);
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);

@@ -38,7 +38,7 @@ impl ShadowRenderingPass {
 		
 		let light_matrices_buffer = ghi.create_buffer(Some("Light Matrices Buffer"), 256 * 4 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 		
 		let light_matrices_binding = ghi.create_descriptor_binding(descriptor_set, &light_matrics_binding_template);
 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &light_depth_map);

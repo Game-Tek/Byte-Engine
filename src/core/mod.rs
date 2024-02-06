@@ -33,9 +33,9 @@ pub fn spawn<E>(entity: impl IntoHandler<E>) -> EntityHandle<E> {
 	e
 }
 
-pub fn spawn_in_domain<E>(listener: &impl Listener, entity: impl IntoHandler<E>) -> EntityHandle<E> {
+pub fn spawn_as_child<E>(parent: &impl Listener, entity: impl IntoHandler<E>) -> EntityHandle<E> {
 	static mut COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-	let e = entity.call(Some(listener), unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).unwrap();
+	let e = entity.call(Some(parent), unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).unwrap();
 	e
 }
 

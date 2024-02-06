@@ -112,7 +112,7 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 mod tests {
 	use std::ops::{DerefMut, Deref};
 
-	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::{BasicListener, EntitySubscriber, Listener}, spawn_in_domain, entity::EntityBuilder};
+	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event, EventImplementation}, listener::{BasicListener, EntitySubscriber, Listener}, spawn_as_child, entity::EntityBuilder};
 
 	use super::*;
 
@@ -194,11 +194,11 @@ mod tests {
 
 		let mut listener = listener_handle.write_sync();
 
-		let _: EntityHandle<System> = spawn_in_domain(listener.deref(), System::new(listener.deref()));
+		let _: EntityHandle<System> = spawn_as_child(listener.deref(), System::new(listener.deref()));
 		
 		assert_eq!(unsafe { COUNTER }, 0);
 
-		let component: EntityHandle<Component> = spawn_in_domain(listener.deref_mut(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn_as_child(listener.deref_mut(), Component { name: "test".to_string(), value: 1 });
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}

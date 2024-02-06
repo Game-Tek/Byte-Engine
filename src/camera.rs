@@ -35,11 +35,11 @@ impl Camera {
 	fn get_focus_distance(&self) -> f32 { self.focus_distance }
 
 	pub fn get_orientation(&self) -> Vec3f { self.direction }
-	fn set_orientation(&mut self, orientation: Vec3f) { self.direction = orientation; }
+	pub fn set_orientation(&mut self, orientation: Vec3f) { self.direction = orientation; }
 	pub const fn orientation() -> EventDescription<Camera, Vec3f> { EventDescription::new() }
 
 	pub fn get_position(&self) -> Vec3f { self.position }
-	fn set_position(&mut self, position: Vec3f) { self.position = position; }
+	pub fn set_position(&mut self, position: Vec3f) { self.position = position; }
 	pub const fn position() -> EventDescription<Camera, Vec3f> { EventDescription::new() }
 }
 

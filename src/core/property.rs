@@ -15,6 +15,12 @@ pub struct Property<T> {
 	internal_state: std::rc::Rc<std::sync::RwLock<PropertyState<T>>>,
 }
 
+impl <T: Clone + 'static> Default for Property<T> where T: Default {
+	fn default() -> Self {
+		Self::new(T::default())
+	}
+}
+
 impl <T: Clone + 'static> Property<T> {
 	/// Creates a new property with the given value.
 	pub fn new(value: T) -> Self {
@@ -24,10 +30,9 @@ impl <T: Clone + 'static> Property<T> {
 		}
 	}
 
-	pub fn link_to<S: Entity>(&mut self, handle: EntityHandle<S>, destination_property: fn() -> EventDescription<S, T>) {
-		let internal_state = self.internal_state.write().unwrap();
-		
-		// internal_state.receivers.push(Box::new(SinkPropertyReceiver { handle, property: destination_property }));
+	pub fn link_to<E: Entity>(&mut self, handle: EntityHandle<E>, destination_property: fn(&mut E, &T)) {
+		let mut internal_state = self.internal_state.write().unwrap();
+		internal_state.subscribers.push(std::rc::Rc::new(std::sync::RwLock::new((handle, destination_property))));
 	}
 
 	pub fn get(&self) -> T where T: Copy {
@@ -156,5 +161,12 @@ impl <F: Clone + 'static, T: Clone + 'static> PropertyLike<T> for DerivedPropert
 	fn get_value(&self) -> T {
 		let internal_state = self.internal_state.read().unwrap();
 		internal_state.value.clone()
+	}
+}
+
+impl <E, T: Clone + 'static> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
+	fn update(&mut self, value: &T) {
+		let mut entity = self.0.write_sync();
+		(self.1)(&mut entity, value);
 	}
 }

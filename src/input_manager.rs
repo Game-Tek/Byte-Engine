@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{orchestrator::{self, }, Entity, EntityHandle, event::{Event, EventImplementation}, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}};
+use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{entity::EntityBuilder, event::{Event, EventImplementation}, listener::{Listener, EntitySubscriber}, orchestrator::{self, }, property::Property, Entity, EntityHandle}};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -581,19 +581,19 @@ impl InputManager {
 				match value {
 					Value::Bool(v) => {
 						match &action.handle {
-							TypedHandle::Bool(handle) => { handle.map(|a| { let a = a.read_sync(); a.events.iter().for_each(|f| f.fire(&v)) }); }
+							TypedHandle::Bool(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
 					Value::Vector2(v) => {
 						match &action.handle {
-							TypedHandle::Vector2(handle) => { handle.map(|a| { let a = a.read_sync(); a.events.iter().for_each(|f| f.fire(&v)) }); }
+							TypedHandle::Vector2(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
 					Value::Vector3(v) => {
 						match &action.handle {
-							TypedHandle::Vector3(handle) => { handle.map(|a| { let a = a.read_sync(); a.events.iter().for_each(|f| f.fire(&v)) }); }
+							TypedHandle::Vector3(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
@@ -858,7 +858,23 @@ impl EntitySubscriber<Action<bool>> for InputManager {
 
 impl EntitySubscriber<Action<Vector2>> for InputManager {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
-		// self.create_action(action.name, Types::Vector2, &action.bindings);
+		let (name, r#type, input_events,) = (action.name, Types::Vector2, &action.bindings);
+
+		let input_event = InputAction {
+			name: name.to_string(),
+			type_: r#type,
+			input_event_descriptions: input_events.iter().map(|input_event| {
+				Some(InputSourceMapping {
+					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
+					mapping: input_event.mapping,
+					function: input_event.function,
+				})
+			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
+			stack: Vec::new(),
+			handle: TypedHandle::Vector2(handle.clone()),
+		};
+
+		self.actions.push(input_event);
 	}
 
 	async fn on_update(&'static mut self, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
@@ -867,9 +883,23 @@ impl EntitySubscriber<Action<Vector2>> for InputManager {
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
 	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
-		// let internal_handle = self.create_action(action.name, Types::Vector3, &action.bindings);
+		let (name, r#type, input_events,) = (action.name, Types::Vector3, &action.bindings);
 
-		// self.actions_ie_map.insert(internal_handle, handle);
+		let input_event = InputAction {
+			name: name.to_string(),
+			type_: r#type,
+			input_event_descriptions: input_events.iter().map(|input_event| {
+				Some(InputSourceMapping {
+					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
+					mapping: input_event.mapping,
+					function: input_event.function,
+				})
+			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
+			stack: Vec::new(),
+			handle: TypedHandle::Vector3(handle.clone()),
+		};
+
+		self.actions.push(input_event);
 	}
 
 	async fn on_update(&'static mut self, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
@@ -1386,9 +1416,7 @@ pub struct Action<T: InputValue> {
 	pub name: &'static str,
 	pub bindings: Vec<ActionBindingDescription>,
 	inputs: Vec<InputSourceMapping>,
-	pub value: T,
-
-	pub events: Vec<Box<dyn Event<T>>>,
+	pub value: Property<T>,
 }
 
 impl <T: InputValue> Entity for Action<T> {}
@@ -1419,18 +1447,11 @@ impl <T: InputValue + Clone + 'static> Action<T> {
 		Action {
 			name,
 			bindings: bindings.to_vec(),
-			value: T::default(),
+			value: Property::default(),
 			inputs: Vec::new(),
-
-			events: Vec::new(),
 		}
 	}
 
-	pub fn get_value(&self) -> T { self.value }
-	pub fn set_value(&mut self, value: T) { self.value = value; }
-	pub const fn value() -> orchestrator::EventDescription<Action<T>, T> { return orchestrator::EventDescription::new() }
-
-	pub fn subscribe<E: Entity>(&mut self, subscriber: &EntityHandle<E>, endpoint: fn(&mut E, &T)) {
-		self.events.push(Box::new(EventImplementation::new(subscriber.clone(), endpoint)));
-	}
+	pub fn value(&self) -> &Property<T> { &self.value }
+	pub fn value_mut(&mut self) -> &mut Property<T> { &mut self.value }
 }

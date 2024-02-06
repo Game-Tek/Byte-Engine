@@ -155,7 +155,7 @@ impl Application for GraphicsApplication {
 		
 		let mut root_space = root_space_handle.write_sync();
 
-		let window_system_handle = core::spawn_in_domain(root_space.deref(), window_system::WindowSystem::new_as_system(root_space.deref()));
+		let window_system_handle = core::spawn_as_child(root_space.deref(), window_system::WindowSystem::new_as_system(root_space.deref()));
 		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(root_space.deref()));
 
 		let mouse_device_handle;
@@ -180,11 +180,11 @@ impl Application for GraphicsApplication {
 
 		let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = core::spawn_in_domain(root_space.deref(), rendering::renderer::Renderer::new_as_system(root_space.deref(), window_system_handle.clone(), resource_manager_handle.clone()));
+		let renderer_handle = core::spawn_as_child(root_space.deref(), rendering::renderer::Renderer::new_as_system(root_space.deref(), window_system_handle.clone(), resource_manager_handle.clone()));
 
-		core::spawn_in_domain::<rendering::render_orchestrator::RenderOrchestrator>(root_space.deref_mut(), rendering::render_orchestrator::RenderOrchestrator::new());
+		core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space.deref_mut(), rendering::render_orchestrator::RenderOrchestrator::new());
 
-		core::spawn_in_domain(root_space.deref_mut(), window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
+		core::spawn_as_child(root_space.deref_mut(), window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
 
 		let audio_system_handle = core::spawn(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
 

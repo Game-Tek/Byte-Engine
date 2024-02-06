@@ -123,31 +123,29 @@ pub struct EntityBuilder<'c, T> {
 	pub(super) create: std::boxed::Box<dyn FnOnce() -> T + 'c>,
 	pub(super) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
 	pub(super) listens_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
+	pub(super) subscribe_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
 }
 
 impl <'c, T: 'static> EntityBuilder<'c, T> {
-	pub fn new(entity: T) -> Self {
+	fn default(create: std::boxed::Box<dyn FnOnce() -> T + 'c>) -> Self {
 		Self {
-			create: std::boxed::Box::new(move || entity),
+			create,
 			post_creation_functions: Vec::new(),
 			listens_to: Vec::new(),
+			subscribe_to: Vec::new(),
 		}
+	}
+
+	pub fn new(entity: T) -> Self {
+		Self::default(std::boxed::Box::new(move || entity))
 	}
 
 	pub fn new_from_function(function: impl FnOnce() -> T + 'c) -> Self {
-		Self {
-			create: std::boxed::Box::new(function),
-			post_creation_functions: Vec::new(),
-			listens_to: Vec::new(),
-		}
+		Self::default(std::boxed::Box::new(function))
 	}
 
 	pub fn new_from_closure<'a, F: FnOnce() -> T + 'c>(function: F) -> Self {
-		Self {
-			create: std::boxed::Box::new(function),
-			post_creation_functions: Vec::new(),
-			listens_to: Vec::new(),
-		}
+		Self::default(std::boxed::Box::new(function))
 	}
 
 	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {

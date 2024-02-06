@@ -365,6 +365,12 @@ impl Iterator for WindowIterator<'_> {
 						None
 					}
 				},
+				xcb::Event::X(x::Event::MotionNotify(ev)) => {
+					let x = ev.event_x();
+					let y = ev.event_y();
+
+					Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32), time: ev.time() as u64 })
+				},
 				xcb::Event::X(x::Event::ClientMessage(ev)) => {
 					// We have received a message from the server
 					if let x::ClientMessageData::Data32([atom, ..]) = ev.data() {

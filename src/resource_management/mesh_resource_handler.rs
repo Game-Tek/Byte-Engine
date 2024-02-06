@@ -99,7 +99,8 @@ impl ResourceHandler for MeshResourceHandler {
 					let meshlet_stream;
 
 					if MESHLETIZE {
-						let meshlets = meshopt::clusterize::build_meshlets(&optimized_indices, vertex_count, 64, 126);
+						let cone_weight = 0.0f32; // How much to prioritize cone culling over other forms of culling
+						let meshlets = meshopt::clusterize::build_meshlets(&optimized_indices, &meshopt::VertexDataAdapter::new(&buffer[0..12 * vertex_count], 12, 0).unwrap(), 64, 124, cone_weight);
 
 						let offset = buffer.len();
 
@@ -109,10 +110,10 @@ impl ResourceHandler for MeshResourceHandler {
 							match index_type {
 								IntegralTypes::U16 => {
 									let mut index_count = 0usize;
-									for meshlet in &meshlets {
-										index_count += meshlet.vertex_count as usize;
-										for i in 0..meshlet.vertex_count as usize {
-											(meshlet.vertices[i] as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
+									for meshlet in meshlets.iter() {
+										index_count += meshlet.vertices.len();
+										for x in meshlet.vertices {
+											(*x as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
 										}
 									}
 									index_streams.push(IndexStream{ data_type: IntegralTypes::U16, stream_type: IndexStreamTypes::Vertices, offset, count: index_count as u32 });
@@ -125,13 +126,11 @@ impl ResourceHandler for MeshResourceHandler {
 
 						let mut index_count: usize = 0;
 
-						for meshlet in &meshlets {
-							index_count += meshlet.triangle_count as usize * 3;
-							for i in 0..meshlet.triangle_count as usize {
-								for x in meshlet.indices[i] {
-									assert!(x <= 64, "Meshlet index out of bounds"); // Max vertices per meshlet
-									buffer.push(x);
-								}
+						for meshlet in meshlets.iter() {
+							index_count += meshlet.triangles.len();
+							for x in meshlet.triangles {
+								assert!(*x <= 64u8, "Meshlet index out of bounds"); // Max vertices per meshlet
+								buffer.push(*x);
 							}
 						}
 
@@ -143,9 +142,9 @@ impl ResourceHandler for MeshResourceHandler {
 
 						meshlet_stream = Some(MeshletStream{ offset, count: meshlets.len() as u32 });
 
-						for meshlet in &meshlets {
-							buffer.push(meshlet.vertex_count);
-							buffer.push(meshlet.triangle_count);
+						for meshlet in meshlets.iter() {
+							buffer.push(meshlet.vertices.len() as u8);
+							buffer.push((meshlet.triangles.len() / 3usize) as u8); // TODO: add tests for this
 						}
 					} else {
 						meshlet_stream = None;

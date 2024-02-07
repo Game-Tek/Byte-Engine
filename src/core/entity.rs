@@ -1,4 +1,18 @@
-pub trait Entity: intertrait::CastFrom + downcast_rs::Downcast + std::any::Any + 'static {}
+pub trait Entity: intertrait::CastFrom + downcast_rs::Downcast + std::any::Any + 'static {
+	/// Exposes an optional feature of the entity, which is the listener.
+	/// This is used to allow entities to listen to other entities.
+	fn get_listener(&self) -> Option<&BasicListener> {
+		None
+	}
+}
+
+pub trait SpawnerEntity<P: Entity>: Entity {
+	fn get_parent(&self) -> EntityHandle<P>;
+
+	fn spawn<T>(&self, entity: impl SpawnHandler<T>) -> EntityHandle<T> where Self: Sized {
+		crate::core::spawn_as_child(self.get_parent(), entity)
+	}
+}
 
 downcast_rs::impl_downcast!(Entity);
 
@@ -72,17 +86,17 @@ impl <T: ?Sized> Clone for EntityHandle<T> {
 	}
 }
 
-use std::marker::Unsize;
+use std::{marker::Unsize, ops::Deref};
 use std::ops::CoerceUnsized;
 
-use super::listener::{Listener, EntitySubscriber};
+use super::{listener::{BasicListener, EntitySubscriber, Listener}, SpawnHandler};
 
 impl<T: Entity, U: Entity> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where
     T: Unsize<U> + ?Sized,
     U: ?Sized {}
 
-impl <T> EntityHandle<T> {
+impl <T: ?Sized> EntityHandle<T> {
 	// pub fn sync_get<'a, R>(&self, function: impl FnOnce(&'a T) -> R) -> R {
 	// 	let lock = self.container.read_arc_blocking();
 	// 	function(lock.deref())
@@ -97,11 +111,11 @@ impl <T> EntityHandle<T> {
 		self.container.clone()
 	}
 
-	pub fn read(&self) -> smol::lock::futures::ReadArc<'_, T> {
+	pub fn read(&self) -> smol::lock::futures::ReadArc<'_, T> where T: Sized {
 		self.container.read_arc()
 	}
 
-	pub fn read_sync<'a>(&self) -> smol::lock::RwLockReadGuardArc<T> {
+	pub fn read_sync<'a>(&self) -> smol::lock::RwLockReadGuardArc<T> where T: Sized {
 		self.container.read_arc_blocking()
 	}
 
@@ -118,16 +132,22 @@ impl <T> EntityHandle<T> {
 	}
 }
 
+// pub type DomainType<'a> = &'a dyn Entity;
+pub type DomainType<'a> = EntityHandle<dyn Entity>;
+type CreateFunction<'c, T> = dyn FnOnce(Option<DomainType>) -> T + 'c;
+
+type SpawnWrapper<T> = dyn Fn(T) -> EntityHandle<T>;
+
 /// Entity creation functions must return this type.
 pub struct EntityBuilder<'c, T> {
-	pub(super) create: std::boxed::Box<dyn FnOnce() -> T + 'c>,
+	pub(super) create: std::boxed::Box<CreateFunction<'c, T>>,
 	pub(super) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
-	pub(super) listens_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
+	pub(super) listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
 	pub(super) subscribe_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
 }
 
 impl <'c, T: 'static> EntityBuilder<'c, T> {
-	fn default(create: std::boxed::Box<dyn FnOnce() -> T + 'c>) -> Self {
+	fn default(create: std::boxed::Box<CreateFunction<'c, T>>) -> Self {
 		Self {
 			create,
 			post_creation_functions: Vec::new(),
@@ -137,15 +157,25 @@ impl <'c, T: 'static> EntityBuilder<'c, T> {
 	}
 
 	pub fn new(entity: T) -> Self {
-		Self::default(std::boxed::Box::new(move || entity))
+		Self::default(std::boxed::Box::new(move |_| entity))
 	}
 
 	pub fn new_from_function(function: impl FnOnce() -> T + 'c) -> Self {
-		Self::default(std::boxed::Box::new(function))
+		Self::default(std::boxed::Box::new(move |_| {
+			function()
+		}))
 	}
 
-	pub fn new_from_closure<'a, F: FnOnce() -> T + 'c>(function: F) -> Self {
-		Self::default(std::boxed::Box::new(function))
+	pub fn new_from_closure<'a, F>(function: F) -> Self where F: FnOnce() -> T + 'c {
+		Self::default(std::boxed::Box::new(move |_| {
+			function()
+		}))
+	}
+
+	pub fn new_from_closure_with_parent<'a, F>(function: F) -> Self where F: FnOnce(DomainType) -> T + 'c {
+		Self::default(std::boxed::Box::new(move |parent| {
+			function(parent.unwrap())
+		}))
 	}
 
 	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
@@ -153,9 +183,16 @@ impl <'c, T: 'static> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn listen_to<C>(mut self, listener: &'c impl Listener) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
-		self.listens_to.push(Box::new(move |listener_handle| {
-			listener.add_listener::<T, C>(listener_handle);
+	pub fn listen_to<C>(mut self,) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
+		self.listens_to.push(Box::new(move |domain_handle, e| {
+			let l = domain_handle.write_sync();
+			let l = l.deref();
+			
+			if let Some(l) = l.get_listener() {
+				l.add_listener::<T, C>(e);
+			} else {
+				log::error!("Entity listens to but wasn't spawned in a domain.");
+			}
 		}));
 		self
 	}

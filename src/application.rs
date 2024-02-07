@@ -152,11 +152,9 @@ impl Application for GraphicsApplication {
 			resource_manager.add_resource_handler(AudioResourceHandler::new());
 			resource_manager.add_resource_handler(MaterialResourcerHandler::new());
 		}
-		
-		let mut root_space = root_space_handle.write_sync();
 
-		let window_system_handle = core::spawn_as_child(root_space.deref(), window_system::WindowSystem::new_as_system(root_space.deref()));
-		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn(input_manager::InputManager::new_as_system(root_space.deref()));
+		let window_system_handle = core::spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system());
+		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn_as_child(root_space_handle.clone(), input_manager::InputManager::new_as_system());
 
 		let mouse_device_handle;
 
@@ -180,15 +178,15 @@ impl Application for GraphicsApplication {
 
 		let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = core::spawn_as_child(root_space.deref(), rendering::renderer::Renderer::new_as_system(root_space.deref(), window_system_handle.clone(), resource_manager_handle.clone()));
+		let renderer_handle = core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle.clone()));
 
-		core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space.deref_mut(), rendering::render_orchestrator::RenderOrchestrator::new());
+		core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new());
 
-		core::spawn_as_child(root_space.deref_mut(), window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
+		core::spawn_as_child(root_space_handle.clone(), window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
 
-		let audio_system_handle = core::spawn(audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
+		let audio_system_handle = core::spawn_as_child(root_space_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
 
-		let physics_system_handle = core::spawn(physics::PhysicsWorld::new_as_system(root_space.deref_mut()));
+		let physics_system_handle = core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system());
 
 		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle }
 	}

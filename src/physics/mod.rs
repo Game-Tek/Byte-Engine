@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::core::{orchestrator::{self, EventDescription,}, Entity, EntityHandle, entity::{EntityHash, EntityBuilder}, event::{Event, EventImplementation}, listener::{Listener, EntitySubscriber}};
+use crate::core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self, EventDescription,}, property::Property, Entity, EntityHandle};
 
 
 pub struct Sphere {
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
-	events: Vec<Box<dyn Event<EntityHandle<Sphere>>>>,
+	collision_event: Event<EntityHandle<Sphere>>,
 }
 
 struct InternalSphere {
@@ -25,16 +25,11 @@ impl Sphere {
 			position,
 			velocity,
 			radius,
-
-			events: Vec::new(),
+			collision_event: Event::default(),
 		}
 	}
 
-	pub const fn on_collision() -> EventDescription<Self, ()> { EventDescription::new() }
-
-	pub fn subscribe_to_collision<T: Entity>(&mut self, handle: EntityHandle<T>, callback: fn(&mut T, &EntityHandle<Sphere>)) {
-		self.events.push(Box::new(EventImplementation::new(handle, callback)));
-	}
+	pub fn on_collision(&mut self) -> &mut Event<EntityHandle<Sphere>> { &mut self.collision_event }
 }
 
 impl Entity for Sphere {}
@@ -52,8 +47,8 @@ impl PhysicsWorld {
 		}
 	}
 
-	pub fn new_as_system<'c>(listener: &'c mut impl Listener) -> EntityBuilder<'c, Self> {
-		EntityBuilder::new(Self::new()).listen_to::<Sphere>(listener)
+	pub fn new_as_system<'c>() -> EntityBuilder<'c, Self> {
+		EntityBuilder::new(Self::new()).listen_to::<Sphere>()
 	}
 
 	fn add_sphere(&mut self, sphere: InternalSphere) -> usize {
@@ -84,9 +79,7 @@ impl PhysicsWorld {
 		for (i, j) in collisions {
 			self.spheres[j].handle.map(|e| {
 				let e = e.read_sync();
-				for event in &e.events {
-					event.fire(&self.spheres[i].handle)
-				}
+				e.collision_event.ocurred(&self.spheres[i].handle);
 			});
 		}
 	}

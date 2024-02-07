@@ -137,7 +137,7 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(listener: &'a impl Listener, ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
+	pub fn new<'a>(ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_function(move || {
 			let occlusion_map;
 			let transfer_synchronizer;
@@ -402,10 +402,10 @@ impl VisibilityWorldRenderDomain {
 			}
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
-			.listen_to::<camera::Camera>(listener)
-			.listen_to::<mesh::Mesh>(listener)
-			.listen_to::<directional_light::DirectionalLight>(listener)
-			.listen_to::<point_light::PointLight>(listener)
+			.listen_to::<camera::Camera>()
+			.listen_to::<mesh::Mesh>()
+			.listen_to::<directional_light::DirectionalLight>()
+			.listen_to::<point_light::PointLight>()
 	}
 
 	fn load_material(&mut self, (response, buffer): (resource_management::Response, Vec<u8>),) {	

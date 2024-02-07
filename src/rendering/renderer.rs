@@ -26,8 +26,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new_as_system<'a>(listener: &'a impl Listener, window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_function(|| {
+	pub fn new_as_system<'a>(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
+		EntityBuilder::new_from_closure_with_parent(move |parent| {
 			let ghi_instance = Rc::new(RwLock::new(ghi::create()));
 
 			let result = {
@@ -36,7 +36,7 @@ impl Renderer {
 				ghi.create_image(Some("result"), Extent::rectangle(1920, 1080), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
-			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn(VisibilityWorldRenderDomain::new(listener, ghi_instance.clone(), resource_manager_handle));
+			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle));
 
 			let ui_render_model = core::spawn(UIRenderModel::new_as_system());
 			
@@ -85,7 +85,7 @@ impl Renderer {
 				ui_render_model,
 				tonemap_render_model,
 			}
-		}).listen_to::<window_system::Window>(listener)
+		}).listen_to::<window_system::Window>()
 	}
 
 	pub fn render(&mut self,) {
@@ -107,7 +107,7 @@ impl Renderer {
 			let mut vis_rp = vis_rp.write_sync();
 			vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut());
 
-			self.ao_render_pass.map(|ao_rp| {
+			self.ao_render_pass.map(|ao_rp| { // BUG: if visibility_render_model is not used, this will trigger an error, TODO: disable ao_render_pass if visibility_render_model is not used
 				let ao_rp = ao_rp.write_sync();
 				ao_rp.render(command_buffer_recording.as_mut());
 			});

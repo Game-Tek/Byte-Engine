@@ -1,74 +1,44 @@
-use std::ops::DerefMut;
+use super::{property::Subscriber, Entity, EntityHandle};
 
-use super::{Entity, EntityHandle};
+/// Trait for an event-like object.
+/// Allows an event object to be subscribed to and to be triggered.
+pub trait EventLike<T> {
+	/// Subscribes a consumer to the event.
+	///	
+	/// # Arguments
+	/// * `consumer` - The consumer to be subscribed.
+	/// * `endpoint` - The function to be called when the event is triggered.
+	fn subscribe<C: 'static>(&mut self, consumer: EntityHandle<C>, endpoint: fn(&mut C, &T));
 
-pub trait Event<T> {
-	fn fire<'f>(&self, value: &'f T);
+	/// Triggers the event.
+	/// Most implmentations will call the endpoint function for each of the consumers.
+	/// 
+	/// # Arguments
+	/// * `value` - The value to be passed to the consumers.
+	fn ocurred<'a>(&self, value: &'a T);
 }
 
-#[derive(Clone)]
-pub struct EventImplementation<T, V> where T: Entity {
-	entity: EntityHandle<T>,
-	endpoint: fn(&mut T, &V),
+pub struct Event<T> {
+	subscribers: Vec<std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>>,
 }
 
-impl <T: Entity, V: Clone + 'static> EventImplementation<T, V> {
-	pub fn new(entity: EntityHandle<T>, endpoint: fn(&mut T, &V)) -> Self {
-		Self {
-			entity,
-			endpoint,
+impl <T: 'static> EventLike<T> for Event<T> {
+	fn subscribe<C: 'static>(&mut self, consumer: EntityHandle<C>, endpoint: fn(&mut C, &T)) {
+		self.subscribers.push(std::rc::Rc::new(std::sync::RwLock::new((consumer, endpoint))));
+	}
+
+	fn ocurred(&self, value: &T) {
+		for subscriber in &self.subscribers {
+			let mut subscriber = subscriber.write().unwrap();
+			subscriber.update(value);
 		}
 	}
 }
 
-impl <'a, T: Entity, V: Clone + 'static> Event<V> for EventImplementation<T, V> {
-	fn fire<'f>(&self, value: &'f V) {
-		let mut lock = self.entity.container.write_arc_blocking();
-
-		(self.endpoint)(lock.deref_mut(), value);
-	}
-}
-
-#[derive(Clone)]
-pub struct FreeEventImplementation<V> {
-	endpoint: fn(&V),
-}
-
-impl <V: Clone + 'static> FreeEventImplementation<V> {
-	pub fn new(endpoint: fn(&V)) -> Self {
+impl <T> Default for Event<T> {
+	fn default() -> Self {
 		Self {
-			endpoint,
+			subscribers: Vec::new(),
 		}
-	}
-}
-
-impl <'a, V: Clone + 'static> Event<V> for FreeEventImplementation<V> {
-	fn fire<'f>(&self, value: &'f V) {
-		(self.endpoint)(value);
-	}
-}
-
-#[derive(Clone)]
-pub struct AsyncEventImplementation<T, V, R> where T: Entity, R: std::future::Future {
-	entity: EntityHandle<T>,
-	endpoint: fn(&mut T, &V) -> R,
-}
-
-impl <T: Entity, V, R: std::future::Future> AsyncEventImplementation<T, V, R> {
-	pub fn new(entity: EntityHandle<T>, endpoint: fn(&mut T, &V) -> R) -> Self {
-		Self {
-			entity,
-			endpoint,
-		}
-	}
-}
-
-impl <T: Entity, V, R: std::future::Future> Event<V> for AsyncEventImplementation<T, V, R> {
-	fn fire<'f>(&self, value: &'f V) {
-		let mut lock = self.entity.container.write_arc_blocking();
-
-		let endpoint = &self.endpoint;
-
-		smol::block_on(endpoint(lock.deref_mut(), value));
 	}
 }

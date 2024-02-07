@@ -1,12 +1,15 @@
 use super::{Entity, EntityHandle, orchestrator::EventDescription};
 
-struct PropertyState<T> {
-	subscribers: Vec<std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>>,
+/// A property-like object is an object that can be subscribed to and that has a value.
+pub trait PropertyLike<T> {
+	/// Adds a subscriber to the property object.
+	fn add_subscriber(&mut self, subscriber: std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>);
+
+	fn get<'a>(&'a self) -> T where T: Clone;
 }
 
-pub trait PropertyLike<T> {
-	fn add_subscriber(&mut self, subscriber: std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>);
-	fn get_value(&self) -> T;
+struct PropertyState<T> {
+	subscribers: Vec<std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>>,
 }
 
 /// A property is a piece of data that can be read and written, that signals when it is written to.
@@ -52,13 +55,14 @@ impl <T: Clone + 'static> Property<T> {
 	}
 }
 
+/// A derived property is a property that has no value of its own, but is derived from another property.
 pub struct DerivedProperty<F, T> {
 	internal_state: std::rc::Rc<std::sync::RwLock<DerivedPropertyState<F, T>>>,
 }
 
 struct DerivedPropertyState<F, T> {
-	deriver: fn(&F) -> T,
 	value: T,
+	deriver: fn(&F) -> T,
 	subscribers: Vec<std::rc::Rc<std::sync::RwLock<dyn Subscriber<T>>>>,
 }
 
@@ -95,6 +99,7 @@ impl <F: Clone + 'static, T: Clone + 'static> DerivedProperty<F, T> {
 	}
 }
 
+/// A sink property is a property that has no value of its own, but just consumes/copies the value of another property.
 pub struct SinkProperty<T> {
 	internal_state: std::rc::Rc<std::sync::RwLock<SinkPropertyState<T>>>,
 }
@@ -111,7 +116,7 @@ impl <T: Clone + 'static> Subscriber<T> for SinkPropertyState<T> {
 
 impl <T: Clone + 'static> SinkProperty<T> {
 	pub fn new(source_property: &mut impl PropertyLike<T>) -> Self {
-		let internal_state = std::rc::Rc::new(std::sync::RwLock::new(SinkPropertyState { value: source_property.get_value() }));
+		let internal_state = std::rc::Rc::new(std::sync::RwLock::new(SinkPropertyState { value: source_property.get() }));
 
 		source_property.add_subscriber(internal_state.clone());
 
@@ -137,8 +142,9 @@ impl <T: Clone + 'static> SinkProperty<T> {
 	}
 }
 
+/// A subscriber is an object that can be notified of changes.
 pub trait Subscriber<T> {
-	fn update(&mut self, value: &T);
+	fn update<'a>(&mut self, value: &'a T);
 }
 
 impl <T: Clone + 'static> PropertyLike<T> for Property<T> {
@@ -147,9 +153,7 @@ impl <T: Clone + 'static> PropertyLike<T> for Property<T> {
 		internal_state.subscribers.push(subscriber);
 	}
 
-	fn get_value(&self) -> T {
-		self.value.clone()
-	}
+	fn get<'a>(&'a self) -> T where T: Clone { self.value.clone() }
 }
 
 impl <F: Clone + 'static, T: Clone + 'static> PropertyLike<T> for DerivedProperty<F, T> {
@@ -158,13 +162,13 @@ impl <F: Clone + 'static, T: Clone + 'static> PropertyLike<T> for DerivedPropert
 		internal_state.subscribers.push(subscriber);
 	}
 
-	fn get_value(&self) -> T {
+	fn get<'a>(&'a self) -> T where T: Clone {
 		let internal_state = self.internal_state.read().unwrap();
 		internal_state.value.clone()
 	}
 }
 
-impl <E, T: Clone + 'static> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
+impl <E, T> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
 	fn update(&mut self, value: &T) {
 		let mut entity = self.0.write_sync();
 		(self.1)(&mut entity, value);

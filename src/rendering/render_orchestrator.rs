@@ -13,7 +13,7 @@ pub struct RenderOrchestrator {
 }
 
 impl RenderOrchestrator {
-	pub fn new() -> EntityBuilder<'static, RenderOrchestrator> {
+	pub fn new<'a>() -> EntityBuilder<'a, RenderOrchestrator> {
 		EntityBuilder::new(Self { render_passes: Vec::new(), })
 	}
 

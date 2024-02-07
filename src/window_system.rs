@@ -628,8 +628,8 @@ impl WindowSystem {
 		WindowSystem { windows: gxhash::GxHashMap::default() }
 	}
 
-	pub fn new_as_system<'a>(listener: &'a impl Listener) -> EntityBuilder<'a, WindowSystem> {
-		EntityBuilder::new(Self::new()).listen_to::<Window>(listener)
+	pub fn new_as_system<'a>() -> EntityBuilder<'a, WindowSystem> {
+		EntityBuilder::new(Self::new()).listen_to::<Window>()
 	}
 
 	pub fn update(&mut self) -> bool {

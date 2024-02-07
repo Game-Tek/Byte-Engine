@@ -1,4 +1,4 @@
-use crate::core::{domain::Domain, listener::{Listener, BasicListener, EntitySubscriber}, EntityHandle,};
+use crate::core::{domain::Domain, listener::{BasicListener, EntitySubscriber, Listener}, Entity, EntityHandle};
 
 pub struct Space {
 	listener: BasicListener,
@@ -23,5 +23,11 @@ impl Listener for Space {
 
 	fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
 		self.listener.add_listener::<L, T>(listener);
+	}
+}
+
+impl Entity for Space {
+	fn get_listener(&self) -> Option<&BasicListener> {
+		Some(&self.listener)
 	}
 }

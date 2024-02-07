@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
-use super::EntityHandle;
+use super::{Entity, EntityHandle};
 
-pub trait Listener {
+pub trait Listener: Entity {
 	fn invoke_for<T: 'static>(&self, handle: EntityHandle<T>);
 	fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static;
 }
@@ -74,5 +74,11 @@ impl Listener for BasicListener  {
 				}
 			));
 		}
+	}
+}
+
+impl Entity for BasicListener {
+	fn get_listener(&self) -> Option<&BasicListener> {
+		Some(self)
 	}
 }

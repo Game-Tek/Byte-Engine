@@ -728,6 +728,8 @@ bitflags::bitflags! {
 		const READ = 0b00000001;
 		/// Will perform write access.
 		const WRITE = 0b00000010;
+		/// Will perform read and write access.
+		const READ_WRITE = Self::READ.bits() | Self::WRITE.bits();
 	}
 }
 
@@ -1153,7 +1155,26 @@ impl SpecializationMapEntry {
 	}
 }
 
-pub type ShaderParameter<'a> = (&'a ShaderHandle, ShaderTypes, &'a [SpecializationMapEntry]);
+pub struct ShaderParameter<'a> {
+	pub(crate) handle: &'a ShaderHandle,
+	pub(crate) stage: ShaderTypes,
+	pub(crate) specialization_map: &'a [SpecializationMapEntry],
+}
+
+impl <'a> ShaderParameter<'a> {
+	pub fn new(handle: &'a ShaderHandle, stage: ShaderTypes,) -> Self {
+		Self {
+			handle,
+			stage,
+			specialization_map: &[],
+		}
+	}
+
+	pub fn with_specialization_map(mut self, specialization_map: &'a [SpecializationMapEntry]) -> Self {
+		self.specialization_map = specialization_map;
+		self
+	}
+}
 
 pub enum PipelineConfigurationBlocks<'a> {
 	VertexInput {
@@ -1299,7 +1320,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1435,7 +1456,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1563,7 +1584,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1693,7 +1714,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1830,7 +1851,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -1945,7 +1966,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange{ offset: 0, size: 4 }]);
 
-		let pipeline = renderer.create_compute_pipeline(&pipeline_layout, (&compute_shader, ShaderTypes::Compute, &[]));
+		let pipeline = renderer.create_compute_pipeline(&pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
 
 		let image = renderer.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
@@ -2146,7 +2167,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(&[
 			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[(&vertex_shader, ShaderTypes::Vertex, &[]), (&fragment_shader, ShaderTypes::Fragment, &[])], },
+			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
 			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
@@ -2359,7 +2380,7 @@ void main() {
 
 		let pipeline = renderer.create_ray_tracing_pipeline(
 			&pipeline_layout,
-			&[(&raygen_shader, ShaderTypes::RayGen, &[]), (&closest_hit_shader, ShaderTypes::ClosestHit, &[]), (&miss_shader, ShaderTypes::Miss, &[])],
+			&[ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen,), ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit,), ShaderParameter::new(&miss_shader, ShaderTypes::Miss,)],
 		);
 
 		let building_command_buffer_handle = renderer.create_command_buffer(None);

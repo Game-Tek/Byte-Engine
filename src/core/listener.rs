@@ -1,10 +1,16 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
-use super::{Entity, EntityHandle};
+use intertrait::cast::CastMut;
+
+use super::{entity::{get_entity_trait_for_type, EntityTrait, TraitObject}, Entity, EntityHandle};
 
 pub trait Listener: Entity {
-	fn invoke_for<T: 'static>(&self, handle: EntityHandle<T>);
-	fn add_listener<L, T: 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static;
+	/// Notifies all listeners of the given type that the given entity has been created.
+	fn invoke_for<T: Entity + 'static>(&self, handle: EntityHandle<T>);
+	fn invoke_for_trait<T: Entity + 'static>(&self, handle: EntityHandle<T>, r#type: EntityTrait);
+
+	/// Subscribes the given listener `L` to the given entity type `T`.
+	fn add_listener<L, T: Entity + 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static;
 }
 
 pub trait EntitySubscriber<T: ?Sized> {
@@ -13,27 +19,27 @@ pub trait EntitySubscriber<T: ?Sized> {
 }
 
 pub struct BasicListener {
-	listeners: std::sync::RwLock<std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any>>>,
+	listeners: std::sync::RwLock<std::collections::HashMap<EntityTrait, List>>,
 }
 
-struct List<T: ?Sized> {
-	l: Vec<Box<dyn Fn(EntityHandle<T>)>>,
+struct List {
+	l: Vec<Box<dyn Fn(EntityHandle<dyn Entity>)>>,
 }
 
-impl <T: ?Sized> List<T> {
+impl List {
 	fn new() -> Self {
 		List {
 			l: Vec::new(),
 		}
 	}
 
-	fn invoke_for(&self, listenee: EntityHandle<T>) {
+	fn invoke_for<T: Entity>(&self, listenee: EntityHandle<T>) {
 		for f in &self.l {
 			f(listenee.clone());
 		}
 	}
 
-	fn push(&mut self, f: Box<dyn Fn(EntityHandle<T>)>) {
+	fn push(&mut self, f: Box<dyn Fn(EntityHandle<dyn Entity>)>) {
 		self.l.push(f);
 	}
 }
@@ -47,33 +53,36 @@ impl BasicListener {
 }
 
 impl Listener for BasicListener  {
-	fn invoke_for<T: std::any::Any + 'static>(&self, handle: EntityHandle<T>) {
-		let type_id = std::any::TypeId::of::<T>();
-		
+	fn invoke_for<T: Entity + std::any::Any + 'static>(&self, handle: EntityHandle<T>) {		
 		let listeners = self.listeners.read().unwrap();
 
-		if let Some(listeners) = listeners.get(&type_id) {
-			if let Some(listeners) = listeners.downcast_ref::<List<T>>() {
-				listeners.invoke_for(handle);
-			}
+		if let Some(listeners) = listeners.get(&unsafe { get_entity_trait_for_type::<T>() }) {
+			listeners.invoke_for(handle);
 		}
 	}
 
-	fn add_listener<L, T: std::any::Any + 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
-		let type_id = std::any::TypeId::of::<T>();
-		
+	fn invoke_for_trait<T: Entity + 'static>(&self, handle: EntityHandle<T>, r#type: EntityTrait) {
+		let listeners = self.listeners.read().unwrap();
+
+		if let Some(listeners) = listeners.get(&r#type) {
+			listeners.invoke_for(handle);
+		}
+	}
+
+	fn add_listener<L, T: Entity + 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
 		let mut listeners = self.listeners.write().unwrap();
 
-		let listeners = listeners.entry(type_id).or_insert_with(|| Box::new(List::<T>::new()));
+		let listeners = listeners.entry(unsafe { get_entity_trait_for_type::<T>() }).or_insert_with(|| List::new());
 
-		if let Some(listeners) = listeners.downcast_mut::<List<T>>() {
-			listeners.push(Box::new(
-				move |handle| {
-					let handle = handle.downcast().unwrap();
-					smol::block_on(listener.write_sync().on_create(handle.clone(), handle.read_sync().deref()));
+		listeners.push(Box::new(
+			move |handle| {
+				if let Some(cast_handle) = handle.downcast::<T>() {
+					let s = cast_handle.read_sync();
+					let s = s.deref();
+					smol::block_on(listener.write_sync().deref_mut().on_create(cast_handle, s));
 				}
-			));
-		}
+			}
+		));
 	}
 }
 

@@ -1,4 +1,4 @@
-use crate::{ghi, Extent, RGBA};
+use crate::{core::Entity, ghi, Extent, RGBA};
 
 pub struct ScreenSpaceAmbientOcclusionPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
@@ -47,7 +47,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create SSAO shader");
 
-		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&shader, ghi::ShaderTypes::Compute, &[]));
+		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
 
 		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		let y_blur_target = ghi.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -76,8 +76,8 @@ impl ScreenSpaceAmbientOcclusionPass {
 			ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create SSAO blur shader");
 
-		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [1f32, 0f32,])]));
-		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&blur_shader, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [0f32, 1f32,])]));
+		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&blur_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [1f32, 0f32,])]));
+		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&blur_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [0f32, 1f32,])]));
 
 		ScreenSpaceAmbientOcclusionPass {
 			pipeline_layout,
@@ -106,6 +106,8 @@ impl ScreenSpaceAmbientOcclusionPass {
 		command_buffer_recording.end_region();
 	}
 }
+
+impl Entity for ScreenSpaceAmbientOcclusionPass {}
 
 const HBAO_SHADER: &'static str = include_str!("../../assets/engine/shaders/ssao.comp");
 const BLUR_SHADER: &'static str = include_str!("../../assets/engine/shaders/blur.comp");

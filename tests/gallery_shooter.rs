@@ -4,7 +4,7 @@
 
 use std::ops::Deref;
 
-use byte_engine::{application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, core::{self, entity::{EntityBuilder, SpawnerEntity}, event::{Event, EventLike,}, orchestrator::{self, EventDescription}, property::{DerivedProperty, Property, PropertyLike}, Entity, EntityHandle}, gameplay::{self, space::Space}, input_manager::{self, Action}, physics, rendering::{mesh, point_light::PointLight}, ui, Vec3f, Vector3};
+use byte_engine::{application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, core::{self, entity::{EntityBuilder, SpawnerEntity}, event::{Event, EventLike,}, orchestrator::{self, EventDescription}, property::{DerivedProperty, Property, PropertyLike}, Entity, EntityHandle}, gameplay::{self, space::Space}, input_manager::{self, Action}, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, ui, Vec3f, Vector3};
 use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
@@ -170,17 +170,17 @@ impl Bullet {
 			
 			{
 				let se = s.write_sync();
-				let co = se.bullet_object.write_sync();
-				co.collision().write_sync().on_collision().subscribe(me, Self::on_collision);
+				let mut co = se.bullet_object.write_sync();
+				co.on_collision().subscribe(me, Self::on_collision);
 			}
 		})
 	}
 
-	fn on_collision(&mut self, other: &EntityHandle<physics::Sphere>) {
-		if other == &self.physics_duck {
-			log::info!("Bullet collided with duck!");
+	fn on_collision(&mut self, other: &EntityHandle<dyn physics::PhysicsEntity>) {
+		log::info!("Bullet collided with duck!");
+		// if other == &self.physics_duck {
 
-			// TODO: Destroy bullet
-		}
+		// 	// TODO: Destroy bullet
+		// }
 	}
 }

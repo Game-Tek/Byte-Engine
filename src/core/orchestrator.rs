@@ -6,15 +6,7 @@ use std::{collections::HashMap, any::Any, marker::FnPtr};
 use super::{Entity, entity::{EntityHandle, EntityWrapper}};
 use crate::utils;
 
-pub(crate) struct Tie {
-	update_function: std::boxed::Box<dyn Fn(&HashMap<u32, EntityStorage>, &dyn Any)>,
-	destination_system_handle: u32,
-}
-
 pub struct Orchestrator {
-	pub(crate) systems_data: std::sync::RwLock<SystemsData>,
-	pub(crate) listeners_by_class: std::sync::Mutex<HashMap<&'static str, Vec<(u32, fn(&Orchestrator, OrchestratorHandle, u32, EntityHandle<dyn std::any::Any>) -> utils::BoxedFuture<()>)>>>,
-	pub(crate) ties: std::sync::RwLock<HashMap<usize, Vec<Tie>>>,
 }
 
 unsafe impl Send for Orchestrator {}
@@ -45,28 +37,11 @@ impl <E: Entity, V> EventDescription<E, V> {
 impl Orchestrator {
 	pub fn new() -> Orchestrator {
 		Orchestrator {
-			systems_data: std::sync::RwLock::new(SystemsData { systems: HashMap::new(), systems_by_name: HashMap::new(), }),
-			listeners_by_class: std::sync::Mutex::new(HashMap::new()),
-			ties: std::sync::RwLock::new(HashMap::new()),
 		}
 	}
 
 	pub fn new_handle() -> OrchestratorHandle {
 		std::rc::Rc::new(std::cell::RefCell::new(Orchestrator::new()))
-	}
-
-	pub fn set_property<C: Entity + 'static, V: Clone + Copy + 'static>(&self, component_handle: &EntityHandle<C>, function: fn() -> EventDescription<C, V>, value: V) {
-		{
-			let ties = self.ties.read().unwrap();
-
-			if let Some(ties) = ties.get(&(function.addr() as usize)) {
-				let systems_data = self.systems_data.read().unwrap();
-
-				for tie in ties {
-					(tie.update_function)(&systems_data.systems, &value);
-				}
-			}
-		}
 	}
 }
 
@@ -112,7 +87,7 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 mod tests {
 	use std::ops::{DerefMut, Deref};
 
-	use crate::core::{spawn, property::{Property, DerivedProperty, SinkProperty}, event::{Event,}, listener::{BasicListener, EntitySubscriber, Listener}, spawn_as_child, entity::EntityBuilder};
+	use crate::core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::{Event, EventLike,}, listener::{BasicListener, EntitySubscriber, Listener}, property::{DerivedProperty, Property, SinkProperty}, spawn, spawn_as_child};
 
 	use super::*;
 
@@ -202,72 +177,127 @@ mod tests {
 	}
 
 	// #[test]
-	// fn events() {
-	// 	let orchestrator_handle = Orchestrator::new_handle();
+	// fn listen_for_traits() {
+	// 	let orchestrator = Orchestrator::new_handle();
 
-	// 	struct MyComponent {
+	// 	trait Boo: Entity {
+	// 		fn get_name(&self) -> String;
+	// 		fn get_value(&self) -> u32;
+	// 	}
+
+	// 	struct Component {
 	// 		name: String,
 	// 		value: u32,
-	// 		click: bool,
-
-	// 		events: Vec<Box<dyn EventLike<bool>>>,
 	// 	}
 
-	// 	impl MyComponent {
-	// 		pub fn set_click(&mut self, value: bool) {
-	// 			self.click = value;
+	// 	impl Entity for Component {
+	// 		fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
+	// 	}
 
-	// 			for event in &self.events {
-	// 				event.fire(&self.click);
-	// 			}
+	// 	impl Boo for Component {
+	// 		fn get_name(&self) -> String { self.name.clone() }
+	// 		fn get_value(&self) -> u32 { self.value }
+	// 	}
+
+	// 	let handle: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+
+	// 	struct System {
+
+	// 	}
+
+	// 	impl Entity for System {}
+
+	// 	impl System {
+	// 		fn new() -> EntityBuilder<'static, System> {
+	// 			EntityBuilder::new(System {}).listen_to::<dyn Boo>()
 	// 		}
-
-	// 		pub const fn click() -> EventDescription<MyComponent, bool> { EventDescription::new() }
-	// 		pub fn subscribe<E: Entity>(&mut self, subscriber: EntityHandle<E>,  endpoint: fn(&mut E, &bool)) {
-	// 			self.events.push(Box::new(EventImplementation::new(subscriber, endpoint)));
-	// 		}
 	// 	}
-
-	// 	impl Entity for MyComponent {}
-
-	// 	struct MySystem {
-
-	// 	}
-
-	// 	impl Entity for MySystem {}
 
 	// 	static mut COUNTER: u32 = 0;
 
-	// 	impl MySystem {
-	// 		fn new<'c>(component_handle: &EntityHandle<MyComponent>) -> EntityBuilder<'c, MySystem> {
-	// 			EntityBuilder::new(MySystem {})
-	// 		}
-
-	// 		fn on_event(&mut self, value: &bool) {
+	// 	impl EntitySubscriber<dyn Boo> for System {
+	// 		async fn on_create<'a>(&'a mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) {
 	// 			unsafe {
 	// 				COUNTER += 1;
 	// 			}
 	// 		}
+
+	// 		async fn on_update(&'static mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) {}
 	// 	}
+		
+	// 	let listener_handle = spawn(BasicListener::new());
 
-	// 	let component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, events: Vec::new() });
-
-	// 	let system_handle: EntityHandle<MySystem> = spawn(MySystem::new(&component_handle));
-
-	// 	component_handle.map(|c| {
-	// 		let mut c = c.write_sync();
-	// 		c.subscribe(system_handle.clone(), MySystem::on_event);
-	// 	});
-
+	// 	let _: EntityHandle<System> = spawn_as_child(listener_handle.clone(), System::new());
+		
 	// 	assert_eq!(unsafe { COUNTER }, 0);
 
-	// 	component_handle.map(|c| {
-	// 		let mut c = c.write_sync();
-	// 		c.set_click(true);
-	// 	});
+	// 	let component: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), Component { name: "test".to_string(), value: 1 });
 
 	// 	assert_eq!(unsafe { COUNTER }, 1);
 	// }
+
+	#[test]
+	fn events() {
+		let orchestrator_handle = Orchestrator::new_handle();
+
+		struct MyComponent {
+			name: String,
+			value: u32,
+			click: bool,
+
+			event: Event<bool>,
+		}
+
+		impl MyComponent {
+			pub fn set_click(&mut self, value: bool) {
+				self.click = value;
+
+				self.event.ocurred(&self.click);
+			}
+
+			pub fn click(&mut self) -> &mut Event<bool> { &mut self.event }
+		}
+
+		impl Entity for MyComponent {}
+
+		struct MySystem {
+
+		}
+
+		impl Entity for MySystem {}
+
+		static mut COUNTER: u32 = 0;
+
+		impl MySystem {
+			fn new<'c>(component_handle: &EntityHandle<MyComponent>) -> EntityBuilder<'c, MySystem> {
+				EntityBuilder::new(MySystem {})
+			}
+
+			fn on_event(&mut self, value: &bool) {
+				unsafe {
+					COUNTER += 1;
+				}
+			}
+		}
+
+		let component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, event: Default::default() });
+
+		let system_handle: EntityHandle<MySystem> = spawn(MySystem::new(&component_handle));
+
+		component_handle.map(|c| {
+			let mut c = c.write_sync();
+			c.click().subscribe(system_handle.clone(), MySystem::on_event);
+		});
+
+		assert_eq!(unsafe { COUNTER }, 0);
+
+		component_handle.map(|c| {
+			let mut c = c.write_sync();
+			c.set_click(true);
+		});
+
+		assert_eq!(unsafe { COUNTER }, 1);
+	}
 
 	#[test]
 	fn reactivity() {
@@ -313,15 +343,6 @@ pub struct OrchestratorReference {
 }
 
 impl <'a> OrchestratorReference {
-	// pub fn tie<'b, T: Entity + 'static, U: Entity + 'b, V: Any + Copy + 'static>(&self, receiver_component_handle: &EntityHandle<T>, i: fn() -> EventDescription<T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> EventDescription<U, V>) {
-	// 	let orchestrator = self.handle.as_ref().borrow();
-	// 	orchestrator.tie(receiver_component_handle, i, sender_component_handle, j);
-	// }
-
-	pub fn tie_self<T: Entity + 'static, U: Entity, V: Any + Copy + 'static>(&self, consuming_property: fn() -> EventDescription<T, V>, sender_component_handle: &EntityHandle<U>, j: fn() -> EventDescription<U, V>) {
-		let orchestrator = self.handle.as_ref().borrow();
-	}
-
 	pub fn get_handle(&self) -> OrchestratorHandle {
 		self.handle.clone()
 	}

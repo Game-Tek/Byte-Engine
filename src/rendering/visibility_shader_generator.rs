@@ -100,7 +100,7 @@ impl VisibilityShaderGenerator {
 	}
 
 	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &lexer::Node) -> String {
-		let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
+		let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
 
 		string.push_str(MESH_STRUCT_GLSL);
 

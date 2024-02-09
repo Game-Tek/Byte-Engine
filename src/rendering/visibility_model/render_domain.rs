@@ -521,7 +521,7 @@ impl VisibilityWorldRenderDomain {
 							specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), value));
 						}
 
-						let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, ghi::ShaderTypes::Compute, &specialization_constants));
+						let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 						
 						self.material_evaluation_materials.insert(resource_document.url.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
 					}
@@ -550,7 +550,7 @@ impl VisibilityWorldRenderDomain {
 							"Visibility" => {
 								match material.model.pass.as_str() {
 									"MaterialEvaluation" => {
-										let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, (&shaders[0].0, ghi::ShaderTypes::Compute, &[ghi::SpecializationMapEntry::new(0, "vec4f".to_string(), [0f32, 1f32, 0f32, 1f32])]));
+										let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec4f".to_string(), [0f32, 1f32, 0f32, 1f32])]));
 										
 										self.material_evaluation_materials.insert(resource_document.url.clone(), (self.material_evaluation_materials.len() as u32, pipeline));
 									}
@@ -1049,9 +1049,9 @@ impl VisibilityPass {
 
 		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]).expect("Failed to create shader");
 
-		let visibility_pass_shaders: &[(&ghi::ShaderHandle, ghi::ShaderTypes, &[ghi::SpecializationMapEntry])] = &[
-			(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh, &[]),
-			(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment, &[]),
+		let visibility_pass_shaders = &[
+			ghi::ShaderParameter::new(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh),
+			ghi::ShaderParameter::new(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
 
 		let attachments = [
@@ -1114,7 +1114,7 @@ impl MaterialCountPass {
 			]
 		).expect("Failed to create shader");
 
-		let material_count_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&material_count_shader, ghi::ShaderTypes::Compute, &[]));
+		let material_count_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute));
 
 		let material_count_buffer = ghi_instance.create_buffer(Some("Material Count"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
@@ -1170,7 +1170,7 @@ impl MaterialOffsetPass {
 			]
 		).expect("Failed to create shader");
 
-		let material_offset_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&material_offset_shader, ghi::ShaderTypes::Compute, &[]));
+		let material_offset_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute,));
 
 		let material_evaluation_dispatches = ghi_instance.create_buffer(Some("Material Evaluation Dipatches"), std::mem::size_of::<[[u32; 3]; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 		let material_offset_buffer = ghi_instance.create_buffer(Some("Material Offset"), std::mem::size_of::<[u32; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -1232,7 +1232,7 @@ impl PixelMappingPass {
 			]
 		).expect("Failed to create shader");
 
-		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, (&pixel_mapping_shader, ghi::ShaderTypes::Compute, &[]));
+		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
 
 		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
@@ -1284,7 +1284,7 @@ const MAX_PRIMITIVE_TRIANGLES: usize = 65536;
 const MAX_VERTICES: usize = 65536;
 
 pub fn get_visibility_pass_mesh_source() -> String {
-	let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Mesh" });
+	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Mesh"));
 	string.push_str(CAMERA_STRUCT_GLSL);
 	string.push_str(MESH_STRUCT_GLSL);
 	string.push_str(MESHLET_STRUCT_GLSL);
@@ -1367,7 +1367,7 @@ void main() {
 "#;
 
 pub fn get_material_count_source() -> String {
-	let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
+	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
 	string.push_str(MESH_STRUCT_GLSL);
 	string.push_str("	
 	layout(set=0,binding=1,scalar) buffer MeshesBuffer {
@@ -1434,7 +1434,7 @@ void main() {
 "#;
 
 pub fn get_pixel_mapping_source() -> String {
-	let mut string = shader_generator::generate_glsl_header_block(&json::object! { "glsl": { "version": "450" }, "stage": "Compute" });
+	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
 	string.push_str(MESH_STRUCT_GLSL);
 	string.push_str(MESHLET_STRUCT_GLSL);
 	string.push_str("	

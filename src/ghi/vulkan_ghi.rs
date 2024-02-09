@@ -593,7 +593,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		let mut spcialization_map_entries = Vec::with_capacity(48);
 		
-		for specialization_map_entry in shader_parameter.2 {
+		for specialization_map_entry in shader_parameter.specialization_map {
 			// TODO: accumulate offset
 			match specialization_map_entry.get_type().as_str() {
 				"vec2f" => {
@@ -635,7 +635,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
-		let shader = &self.shaders[shader_parameter.0.0 as usize];
+		let shader = &self.shaders[shader_parameter.handle.0 as usize];
 
 		let create_infos = [
 			vk::ComputePipelineCreateInfo::default()
@@ -661,7 +661,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			shader_handles: HashMap::new(),
-			shaders: vec![*shader_parameter.0],
+			shaders: vec![*shader_parameter.handle],
 			resource_access,
 		});
 
@@ -672,16 +672,16 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let mut groups = Vec::with_capacity(1024);
 		
 		let stages = shaders.iter().map(|stage| {
-			let shader = &self.shaders[stage.0.0 as usize];
+			let shader = &self.shaders[stage.handle.0 as usize];
 
 			vk::PipelineShaderStageCreateInfo::default()
-				.stage(to_shader_stage_flags(stage.1))
+				.stage(to_shader_stage_flags(stage.stage))
 				.module(shader.shader)
 				.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
 		}).collect::<Vec<_>>();
 
 		for (i, shader) in shaders.iter().enumerate() {
-			match shader.1 {
+			match shader.stage {
 				graphics_hardware_interface::ShaderTypes::RayGen | graphics_hardware_interface::ShaderTypes::Miss | graphics_hardware_interface::ShaderTypes::Callable => {
 					groups.push(vk::RayTracingShaderGroupCreateInfoKHR::default()
 						.ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
@@ -715,7 +715,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 						.intersection_shader(i as u32));
 				}
 				_ => {
-					warn!("Fed shader of type '{:?}' to ray tracing pipeline", shader.1)
+					warn!("Fed shader of type '{:?}' to ray tracing pipeline", shader.stage)
 				}
 			}
 		}
@@ -738,7 +738,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				let mut h = [0u8; 32];
 				h.copy_from_slice(&handle_buffer[i * 32..(i + 1) * 32]);
 
-				handles.insert(*shader.0, h);
+				handles.insert(*shader.handle, h);
 			}
 
 			pipeline
@@ -747,7 +747,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
 
 		let resource_access = shaders.iter().map(|shader| {
-			let shader = &self.shaders[shader.0.0 as usize];
+			let shader = &self.shaders[shader.handle.0 as usize];
 
 			shader.shader_binding_descriptors.iter().map(|descriptor| {
 				((descriptor.set, descriptor.binding), (shader.stage, descriptor.access))
@@ -757,7 +757,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			shader_handles: handles,
-			shaders: shaders.iter().map(|shader| *shader.0).collect(),
+			shaders: shaders.iter().map(|shader| *shader.handle).collect(),
 			resource_access,
 		});
 
@@ -2239,7 +2239,7 @@ impl VulkanGHI {
 							.map(move |stage| {
 								let entries_offset = entry_count;
 
-								for entry in stage.2.iter() {
+								for entry in stage.specialization_map.iter() {
 									specialization_entries_buffer.extend_from_slice(entry.get_data());
 
 									entries[entry_count] = vk::SpecializationMapEntry::default()
@@ -2250,12 +2250,12 @@ impl VulkanGHI {
 									entry_count += 1;
 								}
 
-								let shader = &ghi.shaders[stage.0.0 as usize];
+								let shader = &ghi.shaders[stage.handle.0 as usize];
 
 								assert!(specilization_info_count == 0);
 
 								vk::PipelineShaderStageCreateInfo::default()
-									.stage(to_shader_stage_flags(stage.1))
+									.stage(to_shader_stage_flags(stage.stage))
 									.module(shader.shader)
 									.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
 									// .specialization_info(&specilization_infos[specilization_info_count - 1])
@@ -2348,9 +2348,9 @@ impl VulkanGHI {
 			match b {
 				graphics_hardware_interface::PipelineConfigurationBlocks::Shaders { shaders } => {
 					Some(shaders.iter().map(|s| {
-						let shader = &self.shaders[s.0.0 as usize];
+						let shader = &self.shaders[s.handle.0 as usize];
 						shader.shader_binding_descriptors.iter().map(|sbd| {
-							((sbd.set, sbd.binding), (Into::<graphics_hardware_interface::Stages>::into(s.1), sbd.access))
+							((sbd.set, sbd.binding), (Into::<graphics_hardware_interface::Stages>::into(s.stage), sbd.access))
 						}).collect::<Vec<_>>()
 					}))
 				},

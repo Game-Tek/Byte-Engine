@@ -38,7 +38,7 @@ impl AcesToneMapPass {
 			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create tone mapping shader");
 			
-		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, (&tone_mapping_shader, ghi::ShaderTypes::Compute, &[]));
+		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
 
 		AcesToneMapPass {
 			descriptor_set_layout,

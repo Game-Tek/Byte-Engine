@@ -13,6 +13,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 #![feature(generic_const_exprs)]
+#![feature(ptr_metadata)]
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

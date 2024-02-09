@@ -5,7 +5,7 @@
 use json;
 use log::warn;
 
-use crate::jspd::lexer::{Node, self};
+use crate::{ghi::AccessPolicies, jspd::lexer::{self, Node}};
 
 pub struct ShaderGenerator {
 
@@ -775,21 +775,35 @@ fn translate_type_str(value: &str) -> String {
 	}.to_string()
 }
 
-pub fn generate_glsl_header_block(compilation_settings: &json::JsonValue) -> String {
-	let mut glsl_block = String::with_capacity(512);
-	let glsl_version = &compilation_settings["glsl"]["version"];
+pub struct GLSLSettings {
+	version: String,
+}
 
-	if let json::JsonValue::String(glsl_version) = glsl_version {
-		glsl_block.push_str(&format!("#version {glsl_version} core\n"));
-	} else {
-		glsl_block.push_str("#version 450 core\n");
+pub struct ShaderGenerationSettings {
+	glsl: GLSLSettings,
+	stage: String,
+}
+
+impl ShaderGenerationSettings {
+	pub fn new(stage: &str) -> ShaderGenerationSettings {
+		ShaderGenerationSettings {
+			glsl: GLSLSettings {
+				version: "450".to_string(),
+			},
+			stage: stage.to_string(),
+		}
 	}
+}
+
+pub fn generate_glsl_header_block(compilation_settings: &ShaderGenerationSettings) -> String {
+	let mut glsl_block = String::with_capacity(512);
+	let glsl_version = &compilation_settings.glsl.version;
+
+	glsl_block.push_str(&format!("#version {glsl_version} core\n"));
 
 	// shader type
 
-	let shader_stage = &compilation_settings["stage"];
-
-	let shader_stage = shader_stage.as_str().unwrap_or("");
+	let shader_stage = compilation_settings.stage.as_str();
 
 	match shader_stage {
 		"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
@@ -828,6 +842,20 @@ pub fn generate_glsl_header_block(compilation_settings: &json::JsonValue) -> Str
 	glsl_block.push_str("const float PI = 3.14159265359;");
 
 	glsl_block
+}
+
+pub fn generate_uniform_block(set: u32, binding: u32, access: AccessPolicies, r#type: &str, name: &str) -> String {
+	let access = if access == AccessPolicies::READ | AccessPolicies::WRITE {
+		""
+	} else if access == AccessPolicies::READ {
+		"readonly"
+	} else if access == AccessPolicies::WRITE {
+		"writeonly"
+	} else {
+		""
+	};
+
+	format!("layout(set={set}, binding={binding}) {access} {type} {name};", set = set, binding = binding, access = access, type = r#type, name = name)
 }
 
 #[cfg(test)]

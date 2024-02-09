@@ -1,10 +1,11 @@
 use maths_rs::mat::{MatScale, MatTranslate};
 
-use crate::{core::{entity::EntityBuilder, event::Event, spawn, spawn_as_child, EntityHandle}, physics, rendering::mesh, Vector3};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh, Vector3};
 
 pub struct Object {
-	render: EntityHandle<mesh::Mesh>,
-	collision: EntityHandle<physics::Sphere>,
+	position: Vector3,
+	velocity: Vector3,
+	collision: Event<EntityHandle<dyn physics::PhysicsEntity>>,
 }
 
 impl Object {
@@ -13,13 +14,21 @@ impl Object {
 
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
 			Object {
-				collision: spawn_as_child(parent.clone(), physics::Sphere::new(position, velocity, 0.1f32)),
-				render: spawn_as_child(parent.clone(), mesh::Mesh::new("Sphere", "solid", transform)),
+				position,
+				velocity,
+				collision: Default::default(),
+				// render: spawn_as_child(parent.clone(), mesh::Mesh::new("Sphere", "solid", transform)),
 			}
 		})
 	}
+}
 
-	pub fn collision(&self) -> &EntityHandle<physics::Sphere> { &self.collision }
+impl Entity for Object {
+	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
+}
 
-	// pub fn on_collision(&mut self) -> &mut Event<EntityHandle<physics::Sphere>> { self.collision.write_sync().on_collision() }
+impl physics::PhysicsEntity for Object {
+	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn physics::PhysicsEntity>> { &mut self.collision }
+	fn get_position(&self) -> maths_rs::Vec3f { self.position }
+	fn get_velocity(&self) -> maths_rs::Vec3f { self.velocity }
 }

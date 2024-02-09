@@ -1,6 +1,6 @@
 use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
 
-use crate::{ghi, math, Extent, Vector3};
+use crate::{core::Entity, ghi, math, Extent, Vector3};
 
 use super::world_render_domain::WorldRenderDomain;
 
@@ -63,7 +63,7 @@ impl ShadowRenderingPass {
 
 		let pipeline = ghi.create_raster_pipeline(&[
 			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			ghi::PipelineConfigurationBlocks::Shaders { shaders: &[(&mesh_shader, ghi::ShaderTypes::Mesh, &[])], },
+			ghi::PipelineConfigurationBlocks::Shaders { shaders: &[ghi::ShaderParameter::new(&mesh_shader, ghi::ShaderTypes::Mesh)], },
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
@@ -97,6 +97,8 @@ impl ShadowRenderingPass {
 
 	pub fn get_shadow_map_image(&self) -> ghi::ImageHandle { self.shadow_map }
 }
+
+impl Entity for ShadowRenderingPass {}
 
 const VISIBILITY_PASS_MESH_SOURCE: &'static str = "
 #version 450

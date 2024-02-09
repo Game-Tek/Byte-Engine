@@ -1,15 +1,44 @@
+/// The Entity trait is the base trait for all entities in the engine.
+/// 
+/// An entity is a type that can be spawned and managed by the engine.
+/// The trait provides some convenience methods to interact with the entity.
 pub trait Entity: intertrait::CastFrom + downcast_rs::Downcast + std::any::Any + 'static {
 	/// Exposes an optional feature of the entity, which is the listener.
 	/// This is used to allow entities to listen to other entities.
 	fn get_listener(&self) -> Option<&BasicListener> {
 		None
 	}
+
+	fn get_entity_trait(&self) -> EntityTrait {
+		EntityTrait {
+			trait_id: std::any::TypeId::of::<Self>(),
+		}
+	}
+
+	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
 }
 
+pub unsafe fn get_entity_trait_for_type<T: Entity + ?Sized>() -> EntityTrait {
+	EntityTrait {
+		trait_id: std::any::TypeId::of::<T>(),
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EntityTrait {
+	trait_id: std::any::TypeId,
+}
+
+pub struct TraitObject {
+	pub data: *mut (),
+	pub vtable: *mut (),
+}
+
+/// The SpawnerEntity trait is a trait that allows an entity to spawn other entities.
 pub trait SpawnerEntity<P: Entity>: Entity {
 	fn get_parent(&self) -> EntityHandle<P>;
 
-	fn spawn<T>(&self, entity: impl SpawnHandler<T>) -> EntityHandle<T> where Self: Sized {
+	fn spawn<T: Entity>(&self, entity: impl SpawnHandler<T>) -> EntityHandle<T> where Self: Sized {
 		crate::core::spawn_as_child(self.get_parent(), entity)
 	}
 }
@@ -32,7 +61,7 @@ impl <T: ?Sized> From<&EntityHandle<T>> for EntityHash {
 	}
 }
 
-impl <T: ?Sized> EntityHandle<T> {
+impl <T: Entity + ?Sized> EntityHandle<T> {
 	pub fn new(object: EntityWrapper<T>, internal_id: u32,) -> Self {
 		Self {
 			container: object,
@@ -88,6 +117,8 @@ impl <T: ?Sized> Clone for EntityHandle<T> {
 
 use std::{marker::Unsize, ops::Deref};
 use std::ops::CoerceUnsized;
+
+use intertrait::cast::CastMut;
 
 use super::{listener::{BasicListener, EntitySubscriber, Listener}, SpawnHandler};
 
@@ -183,7 +214,7 @@ impl <'c, T: 'static> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn listen_to<C>(mut self,) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
+	pub fn listen_to<C: Entity>(mut self,) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
 		self.listens_to.push(Box::new(move |domain_handle, e| {
 			let l = domain_handle.write_sync();
 			let l = l.deref();

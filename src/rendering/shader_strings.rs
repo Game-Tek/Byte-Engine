@@ -161,7 +161,7 @@ pub const GET_PERPENDICULAR_VECTOR: &str = {
 };
 
 pub const ANIMATED_INTERLEAVED_GRADIENT_NOISE: &str = {
-	"float IGN(uint32_t pixel_x, uint32_t pixel_y, uint32_t frame) {
+	"float interleaved_gradient_noise(uint32_t pixel_x, uint32_t pixel_y, uint32_t frame) {
 		frame = frame % 64; // need to periodically reset frame to avoid numerical issues
 		float x = float(pixel_x) + 5.588238f * float(frame);
 		float y = float(pixel_y) + 5.588238f * float(frame);
@@ -187,5 +187,17 @@ pub const MIN_DIFF: &str = {
 pub const MAKE_NORMAL_FROM_NEIGHBOURING_DEPTH_SAMPLES: &str = {
 	"vec3 make_normal_from_neighbouring_depth_samples(vec3 p, vec3 pr, vec3 pl, vec3 pt, vec3 pb) {
 		return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))
+	}"
+};
+
+pub const MAKE_NORMAL_FROM_DEPTH: &str = {
+	"vec3 make_normal_from_neighbouring_depth_samples(vec3 p, vec3 pr, vec3 pl, vec3 pt, vec3 pb) {
+		return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))
+	}"
+};
+
+pub const MAKE_UV: &str = {
+	"vec2 make_uv(ivec2 coordinates, ivec2 extent) {
+		return (vec2(coordinates) + 0.5f) / vec2(extent);
 	}"
 };

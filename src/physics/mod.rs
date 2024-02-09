@@ -4,19 +4,25 @@ use maths_rs::{Vec3f, mag};
 
 use crate::core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self, EventDescription,}, property::Property, Entity, EntityHandle};
 
+pub trait PhysicsEntity: Entity {
+	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>>;
+
+	fn get_position(&self) -> Vec3f;
+	fn get_velocity(&self) -> Vec3f;
+}
 
 pub struct Sphere {
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
-	collision_event: Event<EntityHandle<Sphere>>,
+	collision_event: Event<EntityHandle<dyn PhysicsEntity>>,
 }
 
 struct InternalSphere {
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
-	handle: EntityHandle<Sphere>,
+	handle: EntityHandle<dyn PhysicsEntity>,
 }
 
 impl Sphere {
@@ -28,11 +34,15 @@ impl Sphere {
 			collision_event: Event::default(),
 		}
 	}
-
-	pub fn on_collision(&mut self) -> &mut Event<EntityHandle<Sphere>> { &mut self.collision_event }
 }
 
 impl Entity for Sphere {}
+impl PhysicsEntity for Sphere {
+	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>> { &mut self.collision_event }
+
+	fn get_position(&self) -> Vec3f { self.position }
+	fn get_velocity(&self) -> Vec3f { self.velocity }
+}
 
 pub struct PhysicsWorld {
 	spheres: Vec<InternalSphere>,
@@ -48,7 +58,7 @@ impl PhysicsWorld {
 	}
 
 	pub fn new_as_system<'c>() -> EntityBuilder<'c, Self> {
-		EntityBuilder::new(Self::new()).listen_to::<Sphere>()
+		EntityBuilder::new(Self::new())/*.listen_to::<dyn PhysicsEntity>()*/
 	}
 
 	fn add_sphere(&mut self, sphere: InternalSphere) -> usize {
@@ -78,8 +88,8 @@ impl PhysicsWorld {
 
 		for (i, j) in collisions {
 			self.spheres[j].handle.map(|e| {
-				let e = e.read_sync();
-				e.collision_event.ocurred(&self.spheres[i].handle);
+				let mut e = e.write_sync();
+				e.on_collision().ocurred(&self.spheres[i].handle);
 			});
 		}
 	}
@@ -87,13 +97,13 @@ impl PhysicsWorld {
 
 impl Entity for PhysicsWorld {}
 
-impl EntitySubscriber<Sphere> for PhysicsWorld {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Sphere>, params: &Sphere) {
-		let index = self.add_sphere(InternalSphere{ position: params.position, velocity: params.velocity, radius: params.radius, handle: handle.clone() });
+impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
+	async fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &dyn PhysicsEntity) {
+		let index = self.add_sphere(InternalSphere{ position: params.get_position(), velocity: params.get_velocity(), radius: 1.0f32, handle: handle.clone() });
 		self.spheres_map.insert(EntityHash::from(&handle), index);
 	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<Sphere>, params: &Sphere) {
+	async fn on_update(&'static mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &dyn PhysicsEntity) {
 		
 	}
 }

@@ -22,9 +22,8 @@ use self::entity::EntityTrait;
 
 struct NoneListener {}
 impl Listener for NoneListener {
-	fn invoke_for<T: 'static>(&self, _: EntityHandle<T>) {}
-	fn invoke_for_trait<T: 'static>(&self, _: EntityHandle<T>, _: EntityTrait) {}
-	fn add_listener<L, T: ?Sized + 'static>(&self, _: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {	}
+	fn invoke_for<T: ?Sized + 'static>(&self, _: EntityHandle<T>, _: &T) {}
+	fn add_listener<T: ?Sized + 'static>(&self, _: EntityHandle<dyn EntitySubscriber<T>>) {}
 }
 
 impl Entity for NoneListener {}
@@ -59,11 +58,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 
 		if let Some(listener) = listener {
 			if let Some(listener) = listener.write_sync().deref().get_listener() {
-				for r#trait in traits {
-					listener.invoke_for_trait(handle.clone(), r#trait)
-				}
-
-				listener.invoke_for(handle.clone());
+				handle.read_sync().deref().call_listeners(listener, handle.clone());
 			}
 		}
 

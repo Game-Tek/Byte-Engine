@@ -17,14 +17,12 @@ impl Domain for Space {
 }
 
 impl Listener for Space {
-	fn invoke_for<T: Entity + 'static>(&self, handle: EntityHandle<T>) {
-		self.listener.invoke_for(handle);
+	fn invoke_for<T: Entity  +?Sized + 'static>(&self, handle: EntityHandle<T>, reference: &T) {
+		self.listener.invoke_for(handle, reference);
 	}
 
-	fn invoke_for_trait<T: Entity + 'static>(&self, handle: EntityHandle<T>, r#type: EntityTrait) { self.listener.invoke_for_trait(handle, r#type); }
-
-	fn add_listener<L, T: Entity + 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
-		self.listener.add_listener::<L, T>(listener);
+	fn add_listener<T: Entity + ?Sized + 'static>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {
+		self.listener.add_listener::<T>(listener);
 	}
 }
 

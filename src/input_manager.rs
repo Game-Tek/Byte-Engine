@@ -21,7 +21,7 @@ use std::{f32::consts::PI, collections::HashMap};
 
 use log::warn;
 
-use crate::{RGBA, Vector2, Vector3, insert_return_length, Quaternion, core::{entity::EntityBuilder, listener::{Listener, EntitySubscriber}, orchestrator::{self, }, property::Property, Entity, EntityHandle}};
+use crate::{core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, insert_return_length, utils, Quaternion, Vector2, Vector3, RGBA};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -832,7 +832,7 @@ impl InputManager {
 }
 
 impl EntitySubscriber<Action<bool>> for InputManager {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<bool>>, action: &Action<bool>) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<bool>>, action: &Action<bool>) -> utils::BoxedFuture<()> {
 		let (name, r#type, input_events,) = (action.name, Types::Bool, &action.bindings);
 
 		let input_event = InputAction {
@@ -850,14 +850,13 @@ impl EntitySubscriber<Action<bool>> for InputManager {
 		};
 
 		self.actions.push(input_event);
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<Action<bool>>, params: &Action<bool>) {
+		Box::pin(async {})
 	}
 }
 
 impl EntitySubscriber<Action<Vector2>> for InputManager {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) -> utils::BoxedFuture<()> {
 		let (name, r#type, input_events,) = (action.name, Types::Vector2, &action.bindings);
 
 		let input_event = InputAction {
@@ -875,14 +874,13 @@ impl EntitySubscriber<Action<Vector2>> for InputManager {
 		};
 
 		self.actions.push(input_event);
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<Action<Vector2>>, params: &Action<Vector2>) {
+		Box::pin(async {})
 	}
 }
 
 impl EntitySubscriber<Action<Vector3>> for InputManager {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) -> utils::BoxedFuture<()> {
 		let (name, r#type, input_events,) = (action.name, Types::Vector3, &action.bindings);
 
 		let input_event = InputAction {
@@ -900,9 +898,8 @@ impl EntitySubscriber<Action<Vector3>> for InputManager {
 		};
 
 		self.actions.push(input_event);
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<Action<Vector3>>, params: &Action<Vector3>) {
+		Box::pin(async {})
 	}
 }
 

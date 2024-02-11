@@ -16,6 +16,10 @@ pub trait Entity: intertrait::CastFrom + downcast_rs::Downcast + std::any::Any +
 	}
 
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
+
+	fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>) where Self: Sized {
+		listener.invoke_for(handle, self);
+	}
 }
 
 pub unsafe fn get_entity_trait_for_type<T: Entity + ?Sized>() -> EntityTrait {
@@ -177,7 +181,7 @@ pub struct EntityBuilder<'c, T> {
 	pub(super) subscribe_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
 }
 
-impl <'c, T: 'static> EntityBuilder<'c, T> {
+impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
 	fn default(create: std::boxed::Box<CreateFunction<'c, T>>) -> Self {
 		Self {
 			create,
@@ -214,13 +218,13 @@ impl <'c, T: 'static> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn listen_to<C: Entity>(mut self,) -> Self where T: std::any::Any + EntitySubscriber<C> + 'static, C: 'static {
+	pub fn listen_to<C: Entity + ?Sized + 'static>(mut self,) -> Self where T: EntitySubscriber<C> {
 		self.listens_to.push(Box::new(move |domain_handle, e| {
 			let l = domain_handle.write_sync();
 			let l = l.deref();
 			
 			if let Some(l) = l.get_listener() {
-				l.add_listener::<T, C>(e);
+				l.add_listener(e);
 			} else {
 				log::error!("Entity listens to but wasn't spawned in a domain.");
 			}

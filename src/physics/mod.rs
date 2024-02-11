@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self, EventDescription,}, property::Property, Entity, EntityHandle};
+use crate::{core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self, EventDescription,}, property::Property, Entity, EntityHandle}, utils};
 
 pub trait PhysicsEntity: Entity {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>>;
@@ -58,7 +58,7 @@ impl PhysicsWorld {
 	}
 
 	pub fn new_as_system<'c>() -> EntityBuilder<'c, Self> {
-		EntityBuilder::new(Self::new())/*.listen_to::<dyn PhysicsEntity>()*/
+		EntityBuilder::new(Self::new()).listen_to::<dyn PhysicsEntity>()
 	}
 
 	fn add_sphere(&mut self, sphere: InternalSphere) -> usize {
@@ -98,12 +98,9 @@ impl PhysicsWorld {
 impl Entity for PhysicsWorld {}
 
 impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &dyn PhysicsEntity) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &dyn PhysicsEntity) -> utils::BoxedFuture<()> {
 		let index = self.add_sphere(InternalSphere{ position: params.get_position(), velocity: params.get_velocity(), radius: 1.0f32, handle: handle.clone() });
 		self.spheres_map.insert(EntityHash::from(&handle), index);
-	}
-
-	async fn on_update(&'static mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &dyn PhysicsEntity) {
-		
+		Box::pin(async move {})
 	}
 }

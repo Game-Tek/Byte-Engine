@@ -1,6 +1,6 @@
 use maths_rs::mat::{MatScale, MatTranslate};
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh, Vector3};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, EntitySubscriber, Listener}, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh, Vector3};
 
 pub struct Object {
 	position: Vector3,
@@ -25,6 +25,13 @@ impl Object {
 
 impl Entity for Object {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
+
+	fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>,) where Self: Sized {
+		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
+
+		listener.invoke_for(handle, self);
+		listener.invoke_for(s, self);
+	}
 }
 
 impl physics::PhysicsEntity for Object {

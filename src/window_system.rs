@@ -6,7 +6,7 @@ use component_derive::component;
 use log::trace;
 use xcb::{Xid, x};
 
-use crate::{Extent, core::{orchestrator::{ self}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}};
+use crate::{core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, utils, Extent};
 
 #[derive(Debug, Clone, Copy)]
 /// The keys that can be pressed on a keyboard.
@@ -700,12 +700,10 @@ impl WindowSystem {
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, _window: &Window) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, _window: &Window) -> utils::BoxedFuture<()> {
 		let h = self.create_window(handle, "Main Window", Extent { width: 1920, height: 1080, depth: 1 }, "main_window");
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<Window>, params: &Window) {
-		
+		Box::pin(async move { })
 	}
 }
 

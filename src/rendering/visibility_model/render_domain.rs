@@ -667,12 +667,9 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) -> utils::BoxedFuture<()> {
 		self.camera = Some(handle);
-	}
-
-	async fn on_update(&'static mut self, handle: EntityHandle<camera::Camera>, params: &camera::Camera) {
-		
+		Box::pin(async move {})
 	}
 }
 
@@ -727,8 +724,8 @@ struct MaterialData {
 }
 
 impl EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<mesh::Mesh>, mesh: &mesh::Mesh) {
-		
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<mesh::Mesh>, mesh: &'a mesh::Mesh) -> utils::BoxedFuture<'a, ()> {
+		Box::pin(async move {
 		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
 			let response_and_data = {
 				let resource_manager = self.resource_manager.read().await;
@@ -932,15 +929,12 @@ impl EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
 		assert!((self.visibility_info.vertex_count as usize) < MAX_VERTICES, "Vertex count exceeded");
 		assert!((self.visibility_info.vertex_count as usize) < MAX_PRIMITIVE_TRIANGLES, "Primitive triangle count exceeded");
 		assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
-	}
-
-	async fn on_update(&'static mut self, handle: EntityHandle<mesh::Mesh>, params: &mesh::Mesh) {
-		
+		})
 	}
 }
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> utils::BoxedFuture<()> {
 		let ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -967,15 +961,13 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 		self.lights.push(lighting_data.lights[light_index]);
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<directional_light::DirectionalLight>, params: &directional_light::DirectionalLight) {
-		
+		Box::pin(async move { })
 	}
 }
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> utils::BoxedFuture<()> {
 		let ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -992,10 +984,8 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 		lighting_data.count += 1;
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<point_light::PointLight>, params: &point_light::PointLight) {
-		
+		Box::pin(async move { })
 	}
 }
 

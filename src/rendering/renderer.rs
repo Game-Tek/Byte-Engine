@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
-use crate::{core::{self, orchestrator::{self,}, Entity, EntityHandle, listener::{Listener, EntitySubscriber}, entity::EntityBuilder}, window_system::{self, WindowSystem}, Extent, resource_management::resource_manager::ResourceManager, ghi::{self, GraphicsHardwareInterface}, ui::render_model::UIRenderModel};
+use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ghi::{self, GraphicsHardwareInterface}, resource_management::resource_manager::ResourceManager, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Extent};
 
 use super::{aces_tonemap_render_pass::AcesToneMapPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 
@@ -135,7 +135,7 @@ impl Renderer {
 }
 
 impl EntitySubscriber<window_system::Window> for Renderer {
-	async fn on_create<'a>(&'a mut self, handle: EntityHandle<window_system::Window>, window: &window_system::Window) {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<window_system::Window>, window: &window_system::Window) -> utils::BoxedFuture<()> {
 		let os_handles = self.window_system.map(|e| {
 			let e = e.read_sync();
 			e.get_os_handles(&handle)
@@ -146,10 +146,8 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 		let swapchain_handle = ghi.bind_to_window(&os_handles);
 
 		self.swapchain_handles.push(swapchain_handle);
-	}
 
-	async fn on_update(&'static mut self, handle: EntityHandle<window_system::Window>, params: &window_system::Window) {
-		
+		Box::pin(async move {})
 	}
 }
 

@@ -1,7 +1,7 @@
 //! SSGI Render Pass
 //! This module contains the implementation of the Screen Space Global Illumination (SSGI) render pass.
 
-use crate::{core::entity::EntityBuilder, ghi, shader_generator, Extent};
+use crate::{core::{entity::EntityBuilder, Entity}, ghi, shader_generator, Extent};
 
 use super::shader_strings;
 
@@ -15,6 +15,8 @@ pub struct SSGIRenderPass {
 	stochastic_normals: ghi::PipelineHandle,
 	ray_march: ghi::PipelineHandle,
 }
+
+impl Entity for SSGIRenderPass {}
 
 impl SSGIRenderPass {
 	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface) -> EntityBuilder<'static, Self> {

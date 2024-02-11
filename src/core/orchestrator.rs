@@ -117,10 +117,10 @@ mod tests {
 		}
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create<'a>(&'a mut self, handle: EntityHandle<Component>, component: &Component) {
+			fn on_create<'a>(&'a mut self, handle: EntityHandle<Component>, component: &Component) -> utils::BoxedFuture<'a, ()> {
+				println!("Component created: {} {}", component.name, component.value);
+				Box::pin(async move { })
 			}
-
-			async fn on_update(&'static mut self, handle: EntityHandle<Component>, params: &Component) {}
 		}
 		
 		let _: EntityHandle<System> = spawn(System::new());
@@ -156,13 +156,13 @@ mod tests {
 		static mut COUNTER: u32 = 0;
 
 		impl EntitySubscriber<Component> for System {
-			async fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, _: &Component) {
-				unsafe {
-					COUNTER += 1;
-				}
+			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, _: &Component) -> utils::BoxedFuture<()> {
+				Box::pin(async move {
+					unsafe {
+						COUNTER += 1;
+					}
+				})
 			}
-
-			async fn on_update(&'static mut self, _: EntityHandle<Component>, _: &Component) {}
 		}
 		
 		let listener_handle = spawn(BasicListener::new());
@@ -176,65 +176,68 @@ mod tests {
 		assert_eq!(unsafe { COUNTER }, 1);
 	}
 
-	// #[test]
-	// fn listen_for_traits() {
-	// 	let orchestrator = Orchestrator::new_handle();
+	#[test]
+	fn listen_for_traits() {
+		let orchestrator = Orchestrator::new_handle();
 
-	// 	trait Boo: Entity {
-	// 		fn get_name(&self) -> String;
-	// 		fn get_value(&self) -> u32;
-	// 	}
+		trait Boo: Entity {
+			fn get_name(&self) -> String;
+			fn get_value(&self) -> u32;
+		}
 
-	// 	struct Component {
-	// 		name: String,
-	// 		value: u32,
-	// 	}
+		struct Component {
+			name: String,
+			value: u32,
+		}
 
-	// 	impl Entity for Component {
-	// 		fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
-	// 	}
+		impl Entity for Component {
+			fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
+			fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>) where Self: Sized {
+				// listener.invoke_for(handle);
+				listener.invoke_for(handle as EntityHandle<dyn Boo>, self);
+			}
+		}
 
-	// 	impl Boo for Component {
-	// 		fn get_name(&self) -> String { self.name.clone() }
-	// 		fn get_value(&self) -> u32 { self.value }
-	// 	}
+		impl Boo for Component {
+			fn get_name(&self) -> String { self.name.clone() }
+			fn get_value(&self) -> u32 { self.value }
+		}
 
-	// 	let handle: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+		let handle: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
 
-	// 	struct System {
+		struct System {
 
-	// 	}
+		}
 
-	// 	impl Entity for System {}
+		impl Entity for System {}
 
-	// 	impl System {
-	// 		fn new() -> EntityBuilder<'static, System> {
-	// 			EntityBuilder::new(System {}).listen_to::<dyn Boo>()
-	// 		}
-	// 	}
+		impl System {
+			fn new() -> EntityBuilder<'static, System> {
+				EntityBuilder::new(System {}).listen_to::<dyn Boo>()
+			}
+		}
 
-	// 	static mut COUNTER: u32 = 0;
+		static mut COUNTER: u32 = 0;
 
-	// 	impl EntitySubscriber<dyn Boo> for System {
-	// 		async fn on_create<'a>(&'a mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) {
-	// 			unsafe {
-	// 				COUNTER += 1;
-	// 			}
-	// 		}
-
-	// 		async fn on_update(&'static mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) {}
-	// 	}
+		impl EntitySubscriber<dyn Boo> for System {
+			fn on_create<'a>(&'a mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) -> utils::BoxedFuture<'a, ()> {
+				unsafe {
+					COUNTER += 1;
+				}
+				Box::pin(async move { })
+			}
+		}
 		
-	// 	let listener_handle = spawn(BasicListener::new());
+		let listener_handle = spawn(BasicListener::new());
 
-	// 	let _: EntityHandle<System> = spawn_as_child(listener_handle.clone(), System::new());
+		let _: EntityHandle<System> = spawn_as_child(listener_handle.clone(), System::new());
 		
-	// 	assert_eq!(unsafe { COUNTER }, 0);
+		assert_eq!(unsafe { COUNTER }, 0);
 
-	// 	let component: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), Component { name: "test".to_string(), value: 1 });
 
-	// 	assert_eq!(unsafe { COUNTER }, 1);
-	// }
+		assert_eq!(unsafe { COUNTER }, 1);
+	}
 
 	#[test]
 	fn events() {

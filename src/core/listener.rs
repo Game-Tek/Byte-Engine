@@ -1,46 +1,47 @@
-use std::ops::{Deref, DerefMut};
+use std::{any::Any, borrow::Borrow, ops::{Deref, DerefMut}};
 
 use intertrait::cast::CastMut;
+
+use crate::utils;
 
 use super::{entity::{get_entity_trait_for_type, EntityTrait, TraitObject}, Entity, EntityHandle};
 
 pub trait Listener: Entity {
 	/// Notifies all listeners of the given type that the given entity has been created.
-	fn invoke_for<T: Entity + 'static>(&self, handle: EntityHandle<T>);
-	fn invoke_for_trait<T: Entity + 'static>(&self, handle: EntityHandle<T>, r#type: EntityTrait);
+	fn invoke_for<T: Entity + ?Sized + 'static>(&self, handle: EntityHandle<T>, reference: &T);
 
 	/// Subscribes the given listener `L` to the given entity type `T`.
-	fn add_listener<L, T: Entity + 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static;
+	fn add_listener<T: Entity + ?Sized>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>);
 }
 
-pub trait EntitySubscriber<T: ?Sized> {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &T) -> impl std::future::Future<Output = ()>;
-	fn on_update(&'static mut self, handle: EntityHandle<T>, params: &T) -> impl std::future::Future<Output = ()>;
+pub trait EntitySubscriber<T: ?Sized>: Entity {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &'a T) -> utils::BoxedFuture<'a, ()>;
 }
 
 pub struct BasicListener {
-	listeners: std::sync::RwLock<std::collections::HashMap<EntityTrait, List>>,
+	listeners: std::sync::RwLock<std::collections::HashMap<EntityTrait, Box<dyn std::any::Any>>>,
 }
 
-struct List {
-	l: Vec<Box<dyn Fn(EntityHandle<dyn Entity>)>>,
+struct List<T: ?Sized> {
+	/// List of listeners for a given entity type. (EntityHandle<dyn EntitySubscriber<T>>)
+	listeners: Vec<EntityHandle<dyn EntitySubscriber<T>>>,
 }
 
-impl List {
+impl <T: ?Sized + 'static> List<T> {
 	fn new() -> Self {
 		List {
-			l: Vec::new(),
+			listeners: Vec::new(),
 		}
 	}
 
-	fn invoke_for<T: Entity>(&self, listenee: EntityHandle<T>) {
-		for f in &self.l {
-			f(listenee.clone());
+	fn invoke_for(&self, listenee_handle: EntityHandle<T>, listenee: &T) {
+		for f in &self.listeners {
+			smol::block_on(f.write_sync().deref_mut().on_create(listenee_handle.clone(), listenee));
 		}
 	}
 
-	fn push(&mut self, f: Box<dyn Fn(EntityHandle<dyn Entity>)>) {
-		self.l.push(f);
+	fn push(&mut self, f: EntityHandle<dyn EntitySubscriber<T>>) {
+		self.listeners.push(f);
 	}
 }
 
@@ -53,36 +54,24 @@ impl BasicListener {
 }
 
 impl Listener for BasicListener  {
-	fn invoke_for<T: Entity + std::any::Any + 'static>(&self, handle: EntityHandle<T>) {		
+	fn invoke_for<T: Entity + ?Sized + 'static>(&self, handle: EntityHandle<T>, reference: &T) {
 		let listeners = self.listeners.read().unwrap();
 
 		if let Some(listeners) = listeners.get(&unsafe { get_entity_trait_for_type::<T>() }) {
-			listeners.invoke_for(handle);
+			if let Some(listeners) = listeners.downcast_ref::<List<T>>() {
+				listeners.invoke_for(handle, reference);
+			}
 		}
 	}
 
-	fn invoke_for_trait<T: Entity + 'static>(&self, handle: EntityHandle<T>, r#type: EntityTrait) {
-		let listeners = self.listeners.read().unwrap();
-
-		if let Some(listeners) = listeners.get(&r#type) {
-			listeners.invoke_for(handle);
-		}
-	}
-
-	fn add_listener<L, T: Entity + 'static>(&self, listener: EntityHandle<L>) where L: EntitySubscriber<T> + 'static {
+	fn add_listener<T: Entity + ?Sized>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {
 		let mut listeners = self.listeners.write().unwrap();
 
-		let listeners = listeners.entry(unsafe { get_entity_trait_for_type::<T>() }).or_insert_with(|| List::new());
+		let listeners = listeners.entry(unsafe { get_entity_trait_for_type::<T>() }).or_insert_with(|| Box::new(List::<T>::new()));
 
-		listeners.push(Box::new(
-			move |handle| {
-				if let Some(cast_handle) = handle.downcast::<T>() {
-					let s = cast_handle.read_sync();
-					let s = s.deref();
-					smol::block_on(listener.write_sync().deref_mut().on_create(cast_handle, s));
-				}
-			}
-		));
+		if let Some(listeners) = listeners.downcast_mut::<List<T>>() {
+			listeners.push(listener,);
+		}
 	}
 }
 

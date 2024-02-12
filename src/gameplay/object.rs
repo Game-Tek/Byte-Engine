@@ -17,7 +17,6 @@ impl Object {
 				position,
 				velocity,
 				collision: Default::default(),
-				// render: spawn_as_child(parent.clone(), mesh::Mesh::new("Sphere", "solid", transform)),
 			}
 		})
 	}
@@ -27,9 +26,8 @@ impl Entity for Object {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 
 	fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>,) where Self: Sized {
+		listener.invoke_for(handle.clone(), self);
 		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
-
-		listener.invoke_for(handle, self);
 		listener.invoke_for(s, self);
 	}
 }

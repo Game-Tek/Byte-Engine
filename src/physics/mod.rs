@@ -36,7 +36,13 @@ impl Sphere {
 	}
 }
 
-impl Entity for Sphere {}
+impl Entity for Sphere {
+	fn call_listeners(&self, listener: &crate::core::listener::BasicListener, handle: EntityHandle<Self>) where Self: Sized {
+		listener.invoke_for(handle.clone(), self);
+		listener.invoke_for(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
+	}
+}
+
 impl PhysicsEntity for Sphere {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>> { &mut self.collision_event }
 
@@ -98,9 +104,10 @@ impl PhysicsWorld {
 impl Entity for PhysicsWorld {}
 
 impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &dyn PhysicsEntity) -> utils::BoxedFuture<()> {
-		let index = self.add_sphere(InternalSphere{ position: params.get_position(), velocity: params.get_velocity(), radius: 1.0f32, handle: handle.clone() });
-		self.spheres_map.insert(EntityHash::from(&handle), index);
-		Box::pin(async move {})
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> utils::BoxedFuture<()> {
+		Box::pin(async move {
+			let index = self.add_sphere(InternalSphere{ position: params.get_position(), velocity: params.get_velocity(), radius: 0.1f32, handle: handle.clone() });
+			self.spheres_map.insert(EntityHash::from(&handle), index);
+		})
 	}
 }

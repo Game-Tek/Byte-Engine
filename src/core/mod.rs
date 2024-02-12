@@ -47,7 +47,7 @@ pub trait SpawnHandler<R: Entity> {
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for R {
-    fn call(self, listener: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
+    fn call(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
 		let internal_id = cid;
 
 		let traits = self.get_traits();
@@ -56,8 +56,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 
 		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
-		if let Some(listener) = listener {
-			if let Some(listener) = listener.write_sync().deref().get_listener() {
+		if let Some(domain) = domain {
+			if let Some(listener) = domain.write_sync().deref().get_listener() {
 				handle.read_sync().deref().call_listeners(listener, handle.clone());
 			}
 		}
@@ -83,6 +83,12 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		if let Some(domain) = domain.clone() {
 			for f in self.listens_to {
 				f(domain.clone(), handle.clone())
+			}
+		}
+
+		if let Some(domain) = domain {
+			if let Some(listener) = domain.write_sync().deref().get_listener() {
+				handle.read_sync().deref().call_listeners(listener, handle.clone());
 			}
 		}
 

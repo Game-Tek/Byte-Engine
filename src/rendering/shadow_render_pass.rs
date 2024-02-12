@@ -1,6 +1,7 @@
 use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
+use utils::Extent;
 
-use crate::{core::Entity, ghi, math, Extent, Vector3};
+use crate::{core::Entity, ghi, math, Vector3};
 
 use super::world_render_domain::WorldRenderDomain;
 

@@ -1,4 +1,6 @@
-use crate::{Extent, core::{orchestrator::{self,}, Entity, entity::EntityBuilder}, ghi};
+use utils::Extent;
+
+use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};
 
 use super::tonemap_render_pass;
 

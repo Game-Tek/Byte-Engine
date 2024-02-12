@@ -1,0 +1,9 @@
+[package]
+name = "jspd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.73.0"
+
+[dependencies]
+json = "0.12.4"

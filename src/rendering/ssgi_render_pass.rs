@@ -1,8 +1,11 @@
 //! SSGI Render Pass
 //! This module contains the implementation of the Screen Space Global Illumination (SSGI) render pass.
 
-use crate::{core::{entity::EntityBuilder, Entity}, ghi, shader_generator, Extent};
+use core::{entity::EntityBuilder, Entity};
 
+use utils::Extent;
+
+use crate::shader_generator;
 use super::shader_strings;
 
 /// The SSGI render pass.

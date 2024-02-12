@@ -1,0 +1,9 @@
+[package]
+name = "ahi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.73.0"
+
+[dependencies]
+alsa = "0.8.1"

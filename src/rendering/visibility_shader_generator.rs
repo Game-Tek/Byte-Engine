@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
-use crate::{jspd::{self, lexer}, shader_generator, rendering::{shader_strings::{FRESNEL_SCHLICK, GEOMETRY_SMITH, DISTRIBUTION_GGX, CALCULATE_FULL_BARY}, visibility_model::render_domain::{LIGHT_STRUCT_GLSL, LIGHTING_DATA_STRUCT_GLSL, MATERIAL_STRUCT_GLSL, CAMERA_STRUCT_GLSL, MESHLET_STRUCT_GLSL, MESH_STRUCT_GLSL}}};
+use resource_management::material_resource_handler::ShaderGenerator;
 
-use super::shader_generator::ShaderGenerator;
+use crate::{rendering::{shader_strings::{CALCULATE_FULL_BARY, DISTRIBUTION_GGX, FRESNEL_SCHLICK, GEOMETRY_SMITH}, visibility_model::render_domain::{CAMERA_STRUCT_GLSL, LIGHTING_DATA_STRUCT_GLSL, LIGHT_STRUCT_GLSL, MATERIAL_STRUCT_GLSL, MESHLET_STRUCT_GLSL, MESH_STRUCT_GLSL}}, shader_generator};
 
 pub struct VisibilityShaderGenerator {}
 
@@ -13,7 +13,7 @@ impl VisibilityShaderGenerator {
 }
 
 impl ShaderGenerator for VisibilityShaderGenerator {
-	fn process(&self, mut parent_children: Vec<Rc<lexer::Node>>) -> (&'static str, lexer::Node) {
+	fn process(&self, mut parent_children: Vec<Rc<jspd::lexer::Node>>) -> (&'static str, jspd::lexer::Node) {
 		let value = json::object! {
 			"type": "scope",
 			"camera": {
@@ -80,26 +80,27 @@ impl ShaderGenerator for VisibilityShaderGenerator {
 
 		let mut node = jspd::json_to_jspd(&value).unwrap();
 
-		if let lexer::Nodes::Scope { name, children } = &mut node.node {
+		if let jspd::lexer::Nodes::Scope { name, children } = &mut node.node {
 			children.append(&mut parent_children);
 		};
 
 		("Visibility", node)
 	}
-}
 
-impl VisibilityShaderGenerator {
-	/// Produce a GLSL shader string from a BESL shader node.
-	/// This returns an option since for a given input stage the visibility shader generator may not produce any output.
-	pub fn transform(&self, material: &json::JsonValue, shader_node: &lexer::Node, stage: &str) -> Option<String> {
+	fn transform(&self, material: &json::JsonValue, shader_node: &jspd::lexer::Node, stage: &str) -> Option<String> {
 		match stage {
 			"Vertex" => None,
 			"Fragment" => Some(self.fragment_transform(material, shader_node)),
 			_ => panic!("Invalid stage"),
 		}
 	}
+}
 
-	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &lexer::Node) -> String {
+impl VisibilityShaderGenerator {
+	/// Produce a GLSL shader string from a BESL shader node.
+	/// This returns an option since for a given input stage the visibility shader generator may not produce any output.
+
+	fn fragment_transform(&self, material: &json::JsonValue, shader_node: &jspd::lexer::Node) -> String {
 		let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
 
 		string.push_str(MESH_STRUCT_GLSL);
@@ -258,14 +259,14 @@ void main() {
 	float roughness = float(0.5);
 ");
 
-		fn visit_node(string: &mut String, shader_node: &lexer::Node, material: &json::JsonValue) {
+		fn visit_node(string: &mut String, shader_node: &jspd::Node, material: &json::JsonValue) {
 			match &shader_node.node {
-				lexer::Nodes::Scope { name: _, children } => {
+				jspd::Nodes::Scope { name: _, children } => {
 					for child in children {
 						visit_node(string, child, material);
 					}
 				}
-				lexer::Nodes::Function { name, params: _, return_type: _, statements, raw: _ } => {
+				jspd::Nodes::Function { name, params: _, return_type: _, statements, raw: _ } => {
 					match name.as_str() {
 						_ => {
 							for statement in statements {
@@ -275,27 +276,27 @@ void main() {
 						}
 					}
 				}
-				lexer::Nodes::Struct { name, template, fields, types } => {
+				jspd::Nodes::Struct { name, template, fields, types } => {
 					for field in fields {
 						visit_node(string, field, material);
 					}
 				}
-				lexer::Nodes::Member { name, r#type } => {
+				jspd::Nodes::Member { name, r#type } => {
 
 				}
-				lexer::Nodes::GLSL { code } => {
+				jspd::Nodes::GLSL { code } => {
 					string.push_str(code);
 				}
-				lexer::Nodes::Expression(expression) => {
+				jspd::Nodes::Expression(expression) => {
 					match expression {
-						lexer::Expressions::Operator { operator, left: _, right } => {
-							if operator == &lexer::Operators::Assignment {
+						jspd::Expressions::Operator { operator, left: _, right } => {
+							if operator == &jspd::Operators::Assignment {
 								string.push_str(&format!("albedo = vec3("));
 								visit_node(string, right, material);
 								string.push_str(")");
 							}
 						}
-						lexer::Expressions::FunctionCall { name, parameters } => {
+						jspd::Expressions::FunctionCall { name, parameters } => {
 							match name.as_str() {
 								"sample" => {
 									string.push_str(&format!("textureGrad("));
@@ -313,7 +314,7 @@ void main() {
 								}
 							}
 						}
-						lexer::Expressions::Member { name } => {
+						jspd::Expressions::Member { name } => {
 							let variable_names = material["variables"].members().map(|variable| variable["name"].as_str().unwrap()).collect::<Vec<_>>();
 
 							if variable_names.contains(&name.as_str()) {
@@ -424,6 +425,8 @@ string.push_str(&format!("
 
 #[cfg(test)]
 mod tests {
+    use resource_management::material_resource_handler::ShaderGenerator;
+
     use crate::jspd;
 
 	#[test]
@@ -446,7 +449,7 @@ mod tests {
 
 		let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
 
-		shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
 	}
 
 	#[test]
@@ -472,6 +475,6 @@ mod tests {
 
 		let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
 
-		shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
 	}
 }

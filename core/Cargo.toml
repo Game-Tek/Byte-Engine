@@ -1,0 +1,13 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.73.0"
+
+[dependencies]
+utils = { path = "../utils" }
+
+downcast-rs = "1.2.0"
+intertrait = "0.2.2"
+smol = "2.0.0"

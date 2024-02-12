@@ -1,10 +1,8 @@
-
-
 use std::rc::Rc;
 
-use crate::jspd::lexer;
+use resource_management::material_resource_handler::ShaderGenerator;
 
-use super::shader_generator::ShaderGenerator;
+use crate::jspd::lexer;
 
 pub(crate) struct CommonShaderGenerator {
 }
@@ -41,6 +39,10 @@ impl ShaderGenerator for CommonShaderGenerator {
 		};
 
 		(Self::SCOPE, node)
+	}
+
+	fn transform(&self, material: &json::JsonValue, shader_node: &jspd::lexer::Node, stage: &str) -> Option<String> {
+		None
 	}
 }
 

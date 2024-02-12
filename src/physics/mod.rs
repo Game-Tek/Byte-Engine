@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::{core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self, EventDescription,}, property::Property, Entity, EntityHandle}, utils};
+use crate::{core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self,}, property::Property, Entity, EntityHandle}, utils};
 
 pub trait PhysicsEntity: Entity {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>>;

@@ -62,7 +62,9 @@ use std::ops::{DerefMut, Deref};
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use crate::{core::{self, orchestrator::{self,}, entity::EntityHandle}, window_system, input_manager, Vector2, rendering::{self}, resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler}, file_tracker, audio::audio_system::{self, AudioSystem}, physics, gameplay::space::Space};
+use resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler};
+use utils::Extent;
+use crate::{audio::audio_system::{self, AudioSystem}, core::{self, entity::EntityHandle, orchestrator}, gameplay::space::Space, input_manager, physics, rendering::{self, common_shader_generator}, window_system::{self, Window}, Vector2};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -125,7 +127,7 @@ impl OrchestratedApplication {
 pub struct GraphicsApplication {
 	application: OrchestratedApplication,
 	tick_count: u64,
-	file_tracker_handle: EntityHandle<file_tracker::FileTracker>,
+	// file_tracker_handle: EntityHandle<file_tracker::FileTracker>,
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
 	mouse_device_handle: input_manager::DeviceHandle,
 	input_system_handle: EntityHandle<input_manager::InputManager>,
@@ -143,14 +145,25 @@ impl Application for GraphicsApplication {
 
 		application.initialize(std::env::args()); // TODO: take arguments
 
-		let resource_manager_handle: EntityHandle<resource_management::resource_manager::ResourceManager> = core::spawn(resource_management::resource_manager::ResourceManager::new_as_system());
+		let resource_manager = core::spawn(resource_management::resource_manager::ResourceManager::new());
 
 		{
-			let mut resource_manager = resource_manager_handle.write_sync();
+			let mut resource_manager = resource_manager.write_sync();
+
 			resource_manager.add_resource_handler(MeshResourceHandler::new());
 			resource_manager.add_resource_handler(ImageResourceHandler::new());
 			resource_manager.add_resource_handler(AudioResourceHandler::new());
-			resource_manager.add_resource_handler(MaterialResourcerHandler::new());
+
+			let mut material_resourcer_handler = MaterialResourcerHandler::new();
+
+			let shader_generator = {
+				let common_shader_generator = rendering::common_shader_generator::CommonShaderGenerator::new();
+				common_shader_generator
+			};
+
+			material_resourcer_handler.set_shader_generator(shader_generator);
+
+			resource_manager.add_resource_handler(material_resourcer_handler);
 		}
 
 		let window_system_handle = core::spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system());
@@ -176,19 +189,19 @@ impl Application for GraphicsApplication {
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 		}
 
-		let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
+		// let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager_handle.clone()));
+		let renderer_handle = core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
 
 		core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new());
 
-		core::spawn_as_child(root_space_handle.clone(), window_system::Window::new("Main Window", crate::Extent { width: 1920, height: 1080, depth: 1 }));
+		core::spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,)));
 
-		let audio_system_handle = core::spawn_as_child(root_space_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager_handle.clone()));
+		let audio_system_handle = core::spawn_as_child(root_space_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager.clone()));
 
 		let physics_system_handle = core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system());
 
-		GraphicsApplication { application, file_tracker_handle, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle }
+		GraphicsApplication { application, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -216,19 +229,19 @@ impl Application for GraphicsApplication {
 				
 				window_system.update_windows(|_, event| {
 					match event {
-						window_system::WindowEvents::Close => { close = true },
-						window_system::WindowEvents::Button { pressed, button } => {
+						ghi::WindowEvents::Close => { close = true },
+						ghi::WindowEvents::Button { pressed, button } => {
 							match button {
-								window_system::MouseKeys::Left => {
+								ghi::MouseKeys::Left => {
 									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
 								},
-								window_system::MouseKeys::Right => {
+								ghi::MouseKeys::Right => {
 									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.RightButton"), input_manager::Value::Bool(pressed));
 								},
 								_ => { }
 							}
 						},
-						window_system::WindowEvents::MouseMove { x, y, time: _ } => {
+						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
 							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
 							input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
 						},

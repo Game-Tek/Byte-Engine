@@ -1,0 +1,27 @@
+[package]
+name = "resource_management"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.73.0"
+
+[dependencies]
+utils = { path = "../utils" }
+ghi = { path = "../ghi" }
+jspd = { path = "../jspd" }
+
+shaderc = "0.8.2"
+png = "0.17.10"
+polodb_core = "4.4.0"
+notify-debouncer-full = { version = "0.3.1", default-features = false }
+intel_tex_2 = "0.3.0"
+gltf = "1.3.0"
+ureq = "2.7.1"
+libdeflater = "1.19.0"
+meshopt = "0.2.0"
+json = "0.12.4"
+serde = "1.0.187"
+smol = "2.0.0"
+log = "0.4.20"
+futures = "0.3.30"
+downcast-rs = "1.2.0"

@@ -1,0 +1,16 @@
+[package]
+name = "ghi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.73.0"
+
+[dependencies]
+utils = { path = "../utils" }
+
+ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
+xcb = { version = "1.2.2", features=['xtest'] }
+shaderc = "0.8.2"
+bitflags = "2.4.0"
+colored = "2.0.4"
+renderdoc = "0.11.0"

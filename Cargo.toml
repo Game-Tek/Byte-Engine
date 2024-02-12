@@ -1,4 +1,5 @@
 workspace = { members = ["tests/gi"] }
+
 [package]
 name = "byte_engine"
 version = "0.1.0"
@@ -9,36 +10,24 @@ rust-version = "1.73.0"
 [features]
 
 [dependencies]
+core = { path = "core" }
+utils = { path = "utils" }
+ghi = { path = "ghi" }
+jspd = { path = "jspd" }
+ahi = { path = "ahi" }
+resource_management = { path = "resource_management" }
+
 component_derive = { path = "component_derive" }
 
-xcb = { version = "1.2.2", features=['xtest'] }
-# ash = { version = "0.37.3", features=['linked'] }
-ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
-futures = "0.3.28"
-shaderc = "0.8.2"
-bitflags = "2.4.0"
-renderdoc = "0.11.0"
-png = "0.17.10"
 json = "0.12.4"
-polodb_core = "4.4.0"
-intel_tex_2 = "0.3.0"
-gltf = "1.3.0"
-ureq = "2.7.1"
-libdeflater = "1.19.0"
-notify-debouncer-full = { version = "0.3.1", default-features = false }
 serde_json = "1.0.105"
 dual_quaternion = "0.2.0"
 maths-rs = "0.2.4"
 serde = "1.0.187"
 log = "0.4.20"
 simple_logger = "4.2.0"
-meshopt = "0.2.0"
 colored = "2.0.4"
-downcast-rs = "1.2.0"
-intertrait = "0.2.2"
-alsa = "0.8.1"
 gxhash = "3.0.0"
-smol = "2.0.0"
 
 [profile.dev]
 incremental = true

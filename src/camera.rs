@@ -1,5 +1,5 @@
 use crate::core::Entity;
-use crate::{Vec3f, core::orchestrator::EventDescription};
+use crate::Vec3f;
 
 pub struct Camera {
 	position: Vec3f,
@@ -36,11 +36,9 @@ impl Camera {
 
 	pub fn get_orientation(&self) -> Vec3f { self.direction }
 	pub fn set_orientation(&mut self, orientation: Vec3f) { self.direction = orientation; }
-	pub const fn orientation() -> EventDescription<Camera, Vec3f> { EventDescription::new() }
 
 	pub fn get_position(&self) -> Vec3f { self.position }
 	pub fn set_position(&mut self, position: Vec3f) { self.position = position; }
-	pub const fn position() -> EventDescription<Camera, Vec3f> { EventDescription::new() }
 }
 
 impl Entity for Camera {}

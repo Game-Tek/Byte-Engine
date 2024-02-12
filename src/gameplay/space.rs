@@ -17,7 +17,7 @@ impl Domain for Space {
 }
 
 impl Listener for Space {
-	fn invoke_for<T: Entity  +?Sized + 'static>(&self, handle: EntityHandle<T>, reference: &T) {
+	fn invoke_for<T: ?Sized + 'static>(&self, handle: EntityHandle<T>, reference: &T) {
 		self.listener.invoke_for(handle, reference);
 	}
 

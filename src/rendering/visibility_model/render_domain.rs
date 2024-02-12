@@ -6,16 +6,17 @@ use std::sync::RwLock;
 use log::error;
 use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
+use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{self, Entity, EntityHandle};
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
-use crate::{ghi, utils, RGBA, shader_generator};
 use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::resource_management::resource_manager::ResourceManager;
-use crate::{resource_management::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, Extent, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
+use crate::shader_generator;
+use crate::{resource_management::{self, mesh_resource_handler, material_resource_handler::{Shader, Material, Variant}, texture_resource_handler}, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
 
 struct MeshData {
 	meshlets: Vec<ShaderMeshletData>,
@@ -424,7 +425,7 @@ impl VisibilityWorldRenderDomain {
 						None
 					};
 
-					let new_texture = ghi.create_image(Some(&resource_document.url), texture.extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+					let new_texture = ghi.create_image(Some(&resource_document.url), Extent::from(texture.extent), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 					ghi.get_texture_slice_mut(new_texture).copy_from_slice(&buffer[resource_document.offset as usize..(resource_document.offset + resource_document.size) as usize]);
 					
@@ -650,7 +651,7 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		command_buffer_recording.start_region("Material Evaluation");
-		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(crate::RGBA::black())),]);
+		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(RGBA::black())),]);
 		for (_, (i, pipeline)) in self.material_evaluation_materials.iter() {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);

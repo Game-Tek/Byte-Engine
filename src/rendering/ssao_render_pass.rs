@@ -1,4 +1,6 @@
-use crate::{core::Entity, ghi, Extent, RGBA};
+use core::Entity;
+
+use utils::{Extent, RGBA};
 
 pub struct ScreenSpaceAmbientOcclusionPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,

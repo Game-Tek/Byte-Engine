@@ -8,6 +8,8 @@ pub trait PhysicsEntity: Entity {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>>;
 
 	fn get_position(&self) -> Vec3f;
+	fn set_position(&mut self, position: Vec3f);
+	
 	fn get_velocity(&self) -> Vec3f;
 }
 
@@ -26,13 +28,13 @@ struct InternalSphere {
 }
 
 impl Sphere {
-	pub fn new(position: Vec3f, velocity: Vec3f, radius: f32) -> Self {
+	pub fn new(position: Vec3f, velocity: Vec3f, radius: f32) -> EntityBuilder<'static, Self> {
 		Self {
 			position,
 			velocity,
 			radius,
 			collision_event: Event::default(),
-		}
+		}.into()
 	}
 }
 
@@ -48,6 +50,8 @@ impl PhysicsEntity for Sphere {
 
 	fn get_position(&self) -> Vec3f { self.position }
 	fn get_velocity(&self) -> Vec3f { self.velocity }
+
+	fn set_position(&mut self, position: Vec3f) { self.position = position; }
 }
 
 pub struct PhysicsWorld {
@@ -76,6 +80,7 @@ impl PhysicsWorld {
 	pub fn update(&mut self) {
 		for sphere in self.spheres.iter_mut() {
 			sphere.position += sphere.velocity;
+			sphere.handle.write_sync().set_position(sphere.position);
 		}
 
 		let mut collisions = Vec::new();

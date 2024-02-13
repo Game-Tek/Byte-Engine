@@ -29,11 +29,20 @@ impl Entity for Object {
 		listener.invoke_for(handle.clone(), self);
 		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
 		listener.invoke_for(s, self);
+		let s: EntityHandle<dyn mesh::RenderEntity> = handle.clone();
+		listener.invoke_for(s, self);
 	}
 }
 
 impl physics::PhysicsEntity for Object {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn physics::PhysicsEntity>> { &mut self.collision }
 	fn get_position(&self) -> maths_rs::Vec3f { self.position }
+	fn set_position(&mut self, position: maths_rs::Vec3f) { self.position = position; }
 	fn get_velocity(&self) -> maths_rs::Vec3f { self.velocity }
+}
+
+impl mesh::RenderEntity for Object {
+	fn get_transform(&self) -> maths_rs::Mat4f { maths_rs::Mat4f::from_translation(self.position) * maths_rs::Mat4f::from_scale(Vector3::new(0.05, 0.05, 0.05)) }
+	fn get_material_id(&self) -> &'static str { "solid" }
+	fn get_resource_id(&self) -> &'static str { "Box" }
 }

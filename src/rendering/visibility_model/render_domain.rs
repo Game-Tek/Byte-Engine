@@ -66,6 +66,8 @@ pub struct VisibilityWorldRenderDomain {
 
 	camera: Option<EntityHandle<crate::camera::Camera>>,
 
+	render_entities: Vec<EntityHandle<dyn mesh::RenderEntity>>,
+
 	meshes: HashMap<String, MeshData>,
 
 	mesh_resources: HashMap<&'static str, u32>,
@@ -332,6 +334,8 @@ impl VisibilityWorldRenderDomain {
 			Self {
 				ghi,
 
+				render_entities: Vec::with_capacity(512),
+
 				resource_manager: resource_manager_handle,
 
 				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, },
@@ -404,9 +408,9 @@ impl VisibilityWorldRenderDomain {
 		})
 			// .add_post_creation_function(Box::new(Self::load_needed_assets))
 			.listen_to::<camera::Camera>()
-			.listen_to::<mesh::Mesh>()
 			.listen_to::<directional_light::DirectionalLight>()
 			.listen_to::<point_light::PointLight>()
+			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
 	fn load_material(&mut self, (response, buffer): (resource_management::Response, Vec<u8>),) {	
@@ -623,6 +627,17 @@ impl VisibilityWorldRenderDomain {
 		camera_data_reference.inverse_projection_matrix = math::inverse(projection_matrix);
 		camera_data_reference.inverse_view_projection_matrix = math::inverse(view_projection_matrix);
 
+
+		{
+			let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
+			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderInstanceData, MAX_INSTANCES) };
+
+			for (i, m) in self.render_entities.iter().enumerate() {
+				let mesh = m.write_sync();
+				meshes_data_slice[i as usize].model = mesh.get_transform();
+			}
+		}
+
 		command_buffer_recording.start_region("Visibility Render Model");
 
 		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, self.primitive_index, self.instance_id, self.depth_target);
@@ -724,9 +739,11 @@ struct MaterialData {
 	textures: [u32; 16],
 }
 
-impl EntitySubscriber<mesh::Mesh> for VisibilityWorldRenderDomain {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<mesh::Mesh>, mesh: &'a mesh::Mesh) -> utils::BoxedFuture<'a, ()> {
+impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>, mesh: &'a dyn mesh::RenderEntity) -> utils::BoxedFuture<'a, ()> {
 		Box::pin(async move {
+		self.render_entities.push(handle);
+
 		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
 			let response_and_data = {
 				let resource_manager = self.resource_manager.read().await;

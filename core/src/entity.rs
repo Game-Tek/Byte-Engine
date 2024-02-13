@@ -230,3 +230,9 @@ impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
 		self
 	}
 }
+
+impl <T: Entity> From<T> for EntityBuilder<'static, T> {
+	fn from(entity: T) -> Self {
+		Self::new(entity)
+	}
+}

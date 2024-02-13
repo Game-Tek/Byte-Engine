@@ -158,7 +158,8 @@ impl Application for GraphicsApplication {
 
 			let shader_generator = {
 				let common_shader_generator = rendering::common_shader_generator::CommonShaderGenerator::new();
-				common_shader_generator
+				let visibility_shader_generation = rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
+				visibility_shader_generation
 			};
 
 			material_resourcer_handler.set_shader_generator(shader_generator);

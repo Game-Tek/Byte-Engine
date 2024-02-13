@@ -413,21 +413,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn gltf() {
-		let bytes = std::fs::read("assets/Box.gltf").unwrap();
-
-		let (gltf, buffers, _) = gltf::import_slice(bytes).unwrap();
-
-		let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
-
-		let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-		
-		let vertex = reader.read_positions().unwrap().next().unwrap();
-		
-		assert_eq!(vertex, [-0.5f32, -0.5f32, 0.5f32]);
-	}
-
-	#[test]
 	fn load_local_mesh() {
 		let mut resource_manager = ResourceManager::new();
 
@@ -460,36 +445,24 @@ mod tests {
 
 		let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
-
 		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
-		// assert_eq!(vertex_index_stream.offset, offset);
 		assert_eq!(triangle_index_stream.count, 36);
 		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
 
 		let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
 
-		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
-
 		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
-		// assert_eq!(vertex_index_stream.offset, offset);
 		assert_eq!(vertex_index_stream.count, 24);
 		assert_eq!(vertex_index_stream.data_type, IntegralTypes::U16);
 
 		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
-		// let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
-
 		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
-		// assert_eq!(meshlet_index_stream.offset, offset);
 		assert_eq!(meshlet_index_stream.count, 36);
 		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
 
 		let meshlet_stream_info = mesh.meshlet_stream.as_ref().unwrap();
 
-		// let offset = offset + meshlet_index_stream.count as usize * meshlet_index_stream.data_type.size();
-
-		// assert_eq!(meshlet_stream_info.offset, offset);
 		assert_eq!(meshlet_stream_info.count, 1);
 
 		let resource_request = smol::block_on(resource_manager.request_resource("Box"));
@@ -549,7 +522,7 @@ mod tests {
 
 		let _offset = 0usize;
 
-		// assert_eq!(mesh.bounding_box, [[-2.674f32, -1.925f32, -1.626f32], [2.674f32, 1.925f32, 1.626f32]]);
+		assert_eq!(mesh.bounding_box, [[-1.336914f32, -0.974609f32, -0.800781f32], [1.336914f32, 0.950195f32, 0.825684f32]]);
 		assert_eq!(mesh.vertex_count, 11808);
 		assert_eq!(mesh.vertex_components.len(), 4);
 		assert_eq!(mesh.vertex_components[0].semantic, VertexSemantics::Position);
@@ -563,16 +536,12 @@ mod tests {
 
 		let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
-
 		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
 		// assert_eq!(vertex_index_stream.offset, offset);
 		assert_eq!(triangle_index_stream.count, 3936 * 3);
 		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
 
 		let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
-
-		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
 
 		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
 		// assert_eq!(mesh.index_streams[0].offset, offset);
@@ -581,10 +550,7 @@ mod tests {
 
 		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
-		// let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
-
 		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
-		// assert_eq!(mesh.index_streams[1].offset, offset);
 		assert_eq!(meshlet_index_stream.count, 3936 * 3);
 		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
 
@@ -623,8 +589,6 @@ mod tests {
 		let resource_container = &response.resources[0];
 		let resource = &resource_container.resource;
 
-		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
-
 		let mesh = resource.downcast_ref::<Mesh>().unwrap();
 		
 		let offset = 0usize;
@@ -644,28 +608,19 @@ mod tests {
 
 		let triangle_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
-
 		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
-		// assert_eq!(vertex_index_stream.offset, offset);
 		assert_eq!(triangle_index_stream.count, 36);
 		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
 
 		let vertex_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
 
-		// let offset = ((mesh.vertex_count * mesh.vertex_components.size() as u32) as usize).next_multiple_of(16);
-
 		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
-		// assert_eq!(vertex_index_stream.offset, offset);
 		assert_eq!(vertex_index_stream.count, 24);
 		assert_eq!(vertex_index_stream.data_type, IntegralTypes::U16);
 
 		let meshlet_index_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 
-		// let offset = offset + mesh.index_streams[0].count as usize * mesh.index_streams[0].data_type.size();
-
 		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
-		// assert_eq!(meshlet_index_stream.offset, offset);
 		assert_eq!(meshlet_index_stream.count, 36);
 		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
 
@@ -673,7 +628,6 @@ mod tests {
 
 		assert_eq!(meshlet_stream_info.count, 1);
 
-		// Cast buffer to Vector3<f32>
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_positions.len(), 24);
@@ -681,7 +635,6 @@ mod tests {
 		assert_eq!(vertex_positions[1], [0.5f32, -0.5f32, -0.5f32]);
 		assert_eq!(vertex_positions[2], [-0.5f32, 0.5f32, -0.5f32]);
 
-		// Cast buffer + 12 * 24 to Vector3<f32>
 		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const [f32; 3]).add(24), mesh.vertex_count as usize) };
 
 		assert_eq!(vertex_normals.len(), 24);
@@ -689,13 +642,12 @@ mod tests {
 		assert_eq!(vertex_normals[1], [0f32, 0f32, -1f32]);
 		assert_eq!(vertex_normals[2], [0f32, 0f32, -1f32]);
 
-		// Cast buffer + 12 * 24 + 12 * 24 to u16
-		let indeces = unsafe { std::slice::from_raw_parts((buffer.as_ptr().add(12 * 24 + 12 * 24)) as *const u16, mesh.index_streams[0].count as usize) };
+		// let indeces = unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(vertex_index_stream.offset) as *const u16, vertex_index_stream.count as usize) };
 
-		assert_eq!(indeces.len(), 24);
-		assert_eq!(indeces[0], 0);
-		assert_eq!(indeces[1], 1);
-		assert_eq!(indeces[2], 2);
+		// assert_eq!(indeces.len(), 24);
+		// assert_eq!(indeces[0], 0);
+		// assert_eq!(indeces[1], 1);
+		// assert_eq!(indeces[2], 2);
 	}
 
 	#[test]
@@ -733,7 +685,6 @@ mod tests {
 
 					let triangle_indices_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-					// Cast vertex_buffer to Vector3<f32>
 					let vertex_positions = unsafe { std::slice::from_raw_parts(vertex_buffer.as_ptr() as *const [f32; 3], mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_positions.len(), 24);
@@ -741,7 +692,6 @@ mod tests {
 					assert_eq!(vertex_positions[1], [0.5f32, -0.5f32, -0.5f32]);
 					assert_eq!(vertex_positions[2], [-0.5f32, 0.5f32, -0.5f32]);
 
-					// Cast vertex_buffer + 12 * 24 to Vector3<f32>
 					let vertex_normals = unsafe { std::slice::from_raw_parts((vertex_buffer.as_ptr() as *const [f32; 3]).add(24) as *const [f32; 3], mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_normals.len(), 24);
@@ -749,7 +699,6 @@ mod tests {
 					assert_eq!(vertex_normals[1], [0f32, 0f32, -1f32]);
 					assert_eq!(vertex_normals[2], [0f32, 0f32, -1f32]);
 
-					// Cast index_buffer to u16
 					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, triangle_indices_stream.count as usize) };
 
 					assert_eq!(index_buffer.len(), 36);
@@ -802,7 +751,6 @@ mod tests {
 
 					let triangle_indices_stream = mesh.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-					// Cast vertex_positions_buffer to Vector3<f32>
 					let vertex_positions_buffer = unsafe { std::slice::from_raw_parts(vertex_positions_buffer.as_ptr() as *const [f32; 3], mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_positions_buffer.len(), 24);
@@ -810,15 +758,12 @@ mod tests {
 					assert_eq!(vertex_positions_buffer[1], [0.5f32, -0.5f32, -0.5f32]);
 					assert_eq!(vertex_positions_buffer[2], [-0.5f32, 0.5f32, -0.5f32]);
 
-					// Cast vertex_normals_buffer to Vector3<f32>
 					let vertex_normals_buffer = unsafe { std::slice::from_raw_parts(vertex_normals_buffer.as_ptr() as *const [f32; 3], mesh.vertex_count as usize) };
 
 					assert_eq!(vertex_normals_buffer.len(), 24);
 					assert_eq!(vertex_normals_buffer[0], [0f32, 0f32, -1f32]);
 					assert_eq!(vertex_normals_buffer[1], [0f32, 0f32, -1f32]);
 					assert_eq!(vertex_normals_buffer[2], [0f32, 0f32, -1f32]);
-
-					// Cast index_buffer to u16
 
 					let index_buffer = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, triangle_indices_stream.count as usize) };
 

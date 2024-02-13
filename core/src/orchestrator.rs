@@ -177,7 +177,7 @@ mod tests {
 			fn get_value(&self) -> u32 { self.value }
 		}
 
-		let handle: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+		let handle: EntityHandle<Component> = spawn(EntityBuilder::new(Component { name: "test".to_string(), value: 1 }));
 
 		struct System {
 
@@ -208,7 +208,7 @@ mod tests {
 		
 		assert_eq!(unsafe { COUNTER }, 0);
 
-		let component: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), Component { name: "test".to_string(), value: 1 });
+		let component: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), EntityBuilder::new(Component { name: "test".to_string(), value: 1 }));
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}

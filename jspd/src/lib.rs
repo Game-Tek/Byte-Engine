@@ -123,8 +123,69 @@ mod tests {
 
 	#[test]
 	fn parse_json() {
-		// open assets/visiblity.json
-		let source = std::fs::read_to_string("assets/visibility.json").unwrap();
+		let source = r#"{
+			"type": "scope",
+			"camera": {
+				"type": "push_constant",
+				"data_type": "Camera*"
+			},
+			"meshes": {
+				"type": "push_constant",
+				"data_type": "Mesh*"
+			},
+			"Camera": {
+				"type": "struct",
+				"view": {
+					"type": "member",
+					"data_type": "mat4f"
+				},
+				"projection": {
+					"type": "member",
+					"data_type": "mat4f"
+				},
+				"view_projection": {
+					"type": "member",
+					"data_type": "mat4f"
+				}
+			},
+			"Mesh": {
+				"type": "struct",
+				"model": {
+					"type": "member",
+					"data_type": "mat4f"
+				}
+			},
+			"Vertex": {
+				"type": "scope",
+				"__only_under": "Vertex",
+				"in_position": {
+					"type": "in",
+					"data_type": "vec3f"
+				},
+				"in_normal": {
+					"type": "in",
+					"data_type": "vec3f"
+				},
+				"out_instance_index": {
+					"type": "out",
+					"data_type": "u32",
+					"interpolation": "flat"
+				}
+			},
+			"Fragment": {
+				"type": "scope",
+				"__only_under": "Fragment",
+				"in_instance_index": {
+					"type": "in",
+					"data_type": "u32",
+					"interpolation": "flat"
+				},
+				"out_material_index": {
+					"type": "out",
+					"data_type": "u32"
+				}
+			}
+		}"#;
 
 		let json = json::parse(&source).unwrap();
 

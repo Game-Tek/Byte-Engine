@@ -10,15 +10,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-test-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: rui314/setup-mold@v1
+      - name: Test Core
+        run: cd core && cargo test
+  build-test-utils:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: rui314/setup-mold@v1
+      - name: Test Utils
+        run: cd utils && cargo test
+  build-test-jspd:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v3
+        - uses: rui314/setup-mold@v1
+        - name: Test JSPD
+          run: cd jspd && cargo test
+  build-test-resource-management:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: rui314/setup-mold@v1
+      - name: Test Resource Management
+        run: cd resource_management && cargo test
+  build-test-ghi:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
     - uses: rui314/setup-mold@v1
     - name: Install Vulkan runtime dependencies
       run: sudo add-apt-repository ppa:kisak/kisak-mesa && sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
-    - name: Install ALSA
-      run: sudo apt-get install libasound2-dev
     - name: Install Vulkan SDK
       uses: humbletim/setup-vulkan-sdk@v1.2.0
       with:
@@ -29,4 +55,13 @@ jobs:
     - name: Build
       run: cargo build
     - name: Run unit tests
-      run: RUST_BACKTRACE=1 cargo test -- --skip ghi --skip window --skip graphics
+      run: RUST_BACKTRACE=1 cargo test -- --skip window --skip graphics
+  build-test-ahi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: rui314/setup-mold@v1
+      - name: Install ALSA
+        run: sudo apt-get install libasound2-dev
+      - name: Test AHI
+        run: cd ahi && cargo test

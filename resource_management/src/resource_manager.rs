@@ -340,8 +340,11 @@ impl ResourceManager {
 			match slice {
 				Lox::None => {}
 				Lox::Buffer(buffer) => {
-					if let Err(err) = file.read_exact(buffer).await {
-						return Err(LoadResults::LoadFailed);
+					match file.read_exact(buffer).await {
+						Ok(_) => {},
+						Err(_) => {
+							return Err(LoadResults::LoadFailed);
+						}
 					}
 				}
 				Lox::Streams(mut streams) => {
@@ -370,7 +373,11 @@ impl ResourceManager {
 	}
 
 	fn resolve_asset_path(path: &std::path::Path) -> std::path::PathBuf {
-		std::path::PathBuf::from("assets/").join(path)
+		if cfg!(test) {
+			std::path::PathBuf::from("../assets/").join(path)
+		} else {
+			std::path::PathBuf::from("assets/").join(path)
+		}
 	}
 
 	/// Loads an asset from source.\

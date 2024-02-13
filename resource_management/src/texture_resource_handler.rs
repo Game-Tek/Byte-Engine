@@ -126,8 +126,6 @@ use crate::resource_manager::ResourceManager;
 		let resource_container = &response.resources[0];
 		let resource = &resource_container.resource;
 
-		assert_eq!(resource.type_id(), std::any::TypeId::of::<Texture>());
-
 		let texture_info = resource.downcast_ref::<Texture>().unwrap();
 
 		assert_eq!(texture_info.extent, [4096, 1024, 1]);
@@ -145,8 +143,6 @@ use crate::resource_manager::ResourceManager;
 
 		let resource_container = &response.resources[0];
 		let resource = &resource_container.resource;
-
-		assert_eq!(resource.type_id(), std::any::TypeId::of::<Texture>());
 
 		let texture_info = resource.downcast_ref::<Texture>().unwrap();
 

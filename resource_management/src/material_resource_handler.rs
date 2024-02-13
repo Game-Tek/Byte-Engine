@@ -305,6 +305,7 @@ mod tests {
     use crate::resource_manager::ResourceManager;
 
 	#[test]
+	#[ignore] // We need to implement a shader generator to test this
 	fn load_material() {
 		let mut resource_manager = ResourceManager::new();
 

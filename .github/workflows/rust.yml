@@ -36,6 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: rui314/setup-mold@v1
+      - name: Install Vulkan SDK # Right now resource management needs GHI, and GHI needs Vulkan, so we need to install Vulkan here.
+        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        with:
+          vulkan-query-version: 1.3.204.0
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+          vulkan-use-cache: true
       - name: Test Resource Management
         run: cd resource_management && cargo test
   build-test-ghi:
@@ -51,11 +57,8 @@ jobs:
         vulkan-query-version: 1.3.204.0
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
-    - uses: Swatinem/rust-cache@v2
-    - name: Build
-      run: cargo build
-    - name: Run unit tests
-      run: RUST_BACKTRACE=1 cargo test -- --skip window --skip graphics
+    - name: Test GHI
+      run: cd ghi && cargo test -- --skip window --skip graphics
   build-test-ahi:
     runs-on: ubuntu-latest
     steps:

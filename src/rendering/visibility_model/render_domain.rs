@@ -652,7 +652,7 @@ impl VisibilityWorldRenderDomain {
 		{
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
 			
-			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D').collect();
+			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
 			if let Some(most_significant_light) = directional_lights.get(0) {
@@ -731,7 +731,7 @@ struct LightData {
 	vp_matrix: Mat4f,
 	position: Vector3,
 	color: Vector3,
-	light_type: char,
+	light_type: u8,
 }
 
 #[repr(C)]
@@ -967,7 +967,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 		let vp_matrix = light_projection_matrix * light_view_matrix;
 
-		lighting_data.lights[light_index].light_type = 'D';
+		lighting_data.lights[light_index].light_type = 'D' as u8;
 		lighting_data.lights[light_index].view_matrix = light_view_matrix;
 		lighting_data.lights[light_index].projection_matrix = light_projection_matrix;
 		lighting_data.lights[light_index].vp_matrix = vp_matrix;
@@ -992,7 +992,7 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 
 		let light_index = lighting_data.count as usize;
 
-		lighting_data.lights[light_index].light_type = 'P';
+		lighting_data.lights[light_index].light_type = 'P' as u8;
 		lighting_data.lights[light_index].view_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].projection_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].vp_matrix = maths_rs::Mat4f::identity();

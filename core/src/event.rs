@@ -1,4 +1,4 @@
-use super::{property::Subscriber, Entity, EntityHandle};
+use super::{property::Subscriber, EntityHandle};
 
 /// Trait for an event-like object.
 /// Allows an event object to be subscribed to and to be triggered.

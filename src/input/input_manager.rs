@@ -24,6 +24,8 @@ use utils::{insert_return_length, RGBA};
 
 use crate::{core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, Quaternion, Vector2, Vector3};
 
+use super::{action::InputSourceMapping, Action, Function, Types, Value};
+
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
 struct DeviceClass {
@@ -87,62 +89,6 @@ pub enum InputTypes {
 	Quaternion(InputSourceDescription<Quaternion>),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-/// A simple "typeless" container for several underlying types.
-/// Can be used to store any of these types, but will be usually used to traffic record and input event values.
-pub enum Value {
-	/// A boolean value.
-	Bool(bool),
-	/// A unicode character.
-	Unicode(char),
-	/// A floating point value.
-	Float(f32),
-	/// An integer value.
-	Int(i32),
-	/// An RGBA color value.
-	Rgba(RGBA),
-	/// A 2D point value.
-	Vector2(Vector2),
-	/// A 3D point value.
-	Vector3(Vector3),
-	/// A quaternion.
-	Quaternion(Quaternion),
-}
-
-#[derive(Copy, Clone, Debug)]
-/// Enumerates the different functions that can be applied to an input event.
-pub enum Function {
-	Boolean,
-	Threshold,
-	Linear,
-	/// Maps a 2D point to a 3D point on a sphere.
-	Sphere,
-}
-
-/// An action binding description is a description of how an input source is mapped to a value for an action.
-#[derive(Copy, Clone, Debug)]
-pub struct ActionBindingDescription {
-	pub input_source: InputSourceAction,
-	pub mapping: Value,
-	pub function: Option<Function>
-}
-
-impl ActionBindingDescription {
-	pub fn new(input_source: &'static str) -> Self {
-		ActionBindingDescription {
-			input_source: InputSourceAction::Name(input_source),
-			mapping: Value::Bool(false),
-			function: None,
-		}
-	}
-
-	pub fn mapped(mut self, mapping: Value, function: Function) -> Self {
-		self.mapping = mapping;
-		self.function = Some(function);
-		self
-	}
-}
-
 #[derive(Copy, Clone, PartialEq)]
 pub struct Record {
 	input_source_handle: InputSourceHandle,
@@ -159,33 +105,6 @@ impl PartialOrd for Record {
 struct InputSourceState {
 	value: Value,
 	time: std::time::SystemTime,
-}
-
-struct InputSourceMapping {
-	input_source_handle: InputSourceHandle,
-	mapping: Value,
-	function: Option<Function>,
-}
-
-/// Enumerates the different types of types of values the input manager can handle.
-#[derive(Copy, Clone)]
-pub enum Types {
-	/// A boolean value.
-	Bool,
-	/// A unicode character.
-	Unicode,
-	/// A floating point value.
-	Float,
-	/// An integer value.
-	Int,
-	/// A 2D point value.
-	Vector2,
-	/// A 3D point value.
-	Vector3,
-	/// A quaternion.
-	Quaternion,
-	/// An RGBA color value.
-	Rgba,
 }
 
 enum TypedHandle {
@@ -1372,84 +1291,4 @@ mod tests {
 
 	// 	assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after releasing down while up is still pressed.
 	// }
-}
-
-pub trait Extract<T: InputValue> {
-	fn extract(&self) -> T;
-}
-
-impl Extract<bool> for Value {
-	fn extract(&self) -> bool {
-		match self {
-			Value::Bool(value) => *value,
-			_ => panic!("Wrong type")
-		}
-	}
-}
-
-impl Extract<Vector2> for Value {
-	fn extract(&self) -> Vector2 {
-		match self {
-			Value::Vector2(value) => *value,
-			_ => panic!("Wrong type")
-		}
-	}
-}
-
-impl Extract<Vector3> for Value {
-	fn extract(&self) -> Vector3 {
-		match self {
-			Value::Vector3(value) => *value,
-			_ => panic!("Wrong type")
-		}
-	}
-}
-
-trait ActionLike: Entity {
-	fn get_bindings(&self) -> &[ActionBindingDescription];
-	fn get_inputs(&self) -> &[InputSourceMapping];
-}
-
-pub struct Action<T: InputValue> {
-	pub name: &'static str,
-	pub bindings: Vec<ActionBindingDescription>,
-	inputs: Vec<InputSourceMapping>,
-	pub value: Property<T>,
-}
-
-impl <T: InputValue> Entity for Action<T> {}
-
-impl <T: InputValue> ActionLike for Action<T> {
-	fn get_bindings(&self) -> &[ActionBindingDescription] { &self.bindings }
-	fn get_inputs(&self) -> &[InputSourceMapping] { &self.inputs }
-}
-
-pub trait InputValue: Default + Clone + Copy + 'static {
-	fn get_type() -> Types;
-}
-
-impl InputValue for bool {
-	fn get_type() -> Types { Types::Bool }
-}
-
-impl InputValue for Vector2 {
-	fn get_type() -> Types { Types::Vector2 }
-}
-
-impl InputValue for Vector3 {
-	fn get_type() -> Types { Types::Vector3 }
-}
-
-impl <T: InputValue + Clone + 'static> Action<T> {
-	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action<T> {
-		Action {
-			name,
-			bindings: bindings.to_vec(),
-			value: Property::default(),
-			inputs: Vec::new(),
-		}
-	}
-
-	pub fn value(&self) -> &Property<T> { &self.value }
-	pub fn value_mut(&mut self) -> &mut Property<T> { &mut self.value }
 }

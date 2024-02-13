@@ -58,7 +58,7 @@ jobs:
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
     - name: Test GHI
-      run: cd ghi && cargo test -- --skip window --skip graphics
+      run: cd ghi && cargo test -- --skip window --skip graphics --skip present
   build-test-ahi:
     runs-on: ubuntu-latest
     steps:

@@ -37,3 +37,4 @@ lto="off"
 lto="fat"
 panic="abort"
 codegen-units = 1
+strip = true

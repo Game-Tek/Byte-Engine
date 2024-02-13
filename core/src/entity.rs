@@ -57,6 +57,30 @@ pub struct EntityHandle<T: ?Sized> {
 	pub(super) internal_id: u32,
 }
 
+pub struct WeakEntityHandle<T: ?Sized> {
+	pub(super) container: std::sync::Weak<smol::lock::RwLock<T>>,
+	pub(super) internal_id: u32,
+}
+
+impl <T: ?Sized> WeakEntityHandle<T> {
+	pub fn read_sync(&self) -> Option<smol::lock::RwLockReadGuardArc<T>> where T: Sized {
+		self.container.upgrade().map(|c| c.read_arc_blocking())
+	}
+
+	pub fn write_sync(&self) -> Option<smol::lock::RwLockWriteGuardArc<T>> {
+		self.container.upgrade().map(|c| c.write_arc_blocking())
+	}
+}
+
+impl <T: ?Sized> From<EntityHandle<T>> for WeakEntityHandle<T> {
+	fn from(handle: EntityHandle<T>) -> Self {
+		Self {
+			container: std::sync::Arc::downgrade(&handle.container),
+			internal_id: handle.internal_id,
+		}
+	}
+}
+
 pub type EntityHash = u32;
 
 impl <T: ?Sized> From<&EntityHandle<T>> for EntityHash {
@@ -79,6 +103,13 @@ impl <T: ?Sized> EntityHandle<T> {
 			container: down?,
 			internal_id: self.internal_id,
 		})
+	}
+
+	pub fn weak(&self) -> WeakEntityHandle<T> {
+		WeakEntityHandle {
+			container: std::sync::Arc::downgrade(&self.container),
+			internal_id: self.internal_id,
+		}
 	}
 }
 

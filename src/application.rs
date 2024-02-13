@@ -64,7 +64,7 @@ use maths_rs::prelude::Base;
 
 use resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler};
 use utils::Extent;
-use crate::{audio::audio_system::{self, AudioSystem}, core::{self, entity::EntityHandle, orchestrator}, gameplay::space::Space, input_manager, physics, rendering::{self, common_shader_generator}, window_system::{self, Window}, Vector2};
+use crate::{audio::audio_system::{self, AudioSystem}, core::{self, entity::EntityHandle, orchestrator}, gameplay::space::Space, input, physics, rendering::{self, common_shader_generator}, window_system::{self, Window}, Vector2};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
 /// It is the recommended way to create a simple application.
@@ -129,8 +129,8 @@ pub struct GraphicsApplication {
 	tick_count: u64,
 	// file_tracker_handle: EntityHandle<file_tracker::FileTracker>,
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
-	mouse_device_handle: input_manager::DeviceHandle,
-	input_system_handle: EntityHandle<input_manager::InputManager>,
+	mouse_device_handle: input::DeviceHandle,
+	input_system_handle: EntityHandle<input::InputManager>,
 	renderer_handle: EntityHandle<rendering::renderer::Renderer>,
 	audio_system_handle: EntityHandle<audio_system::DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
@@ -168,7 +168,7 @@ impl Application for GraphicsApplication {
 		}
 
 		let window_system_handle = core::spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system());
-		let input_system_handle: EntityHandle<input_manager::InputManager> = core::spawn_as_child(root_space_handle.clone(), input_manager::InputManager::new_as_system());
+		let input_system_handle: EntityHandle<input::InputManager> = core::spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system());
 
 		let mouse_device_handle;
 
@@ -178,14 +178,14 @@ impl Application for GraphicsApplication {
 
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
 	
-			input_system.register_input_source(&mouse_device_class_handle, "Position", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-			input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input_manager::InputTypes::Bool(input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input_manager::InputTypes::Bool(input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&mouse_device_class_handle, "Position", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+			input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 	
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
 	
-			input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-			input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input_manager::InputTypes::Vector2(input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+			input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+			input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 	
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 		}
@@ -234,17 +234,17 @@ impl Application for GraphicsApplication {
 						ghi::WindowEvents::Button { pressed, button } => {
 							match button {
 								ghi::MouseKeys::Left => {
-									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.LeftButton"), input_manager::Value::Bool(pressed));
+									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.LeftButton"), input::Value::Bool(pressed));
 								},
 								ghi::MouseKeys::Right => {
-									input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.RightButton"), input_manager::Value::Bool(pressed));
+									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.RightButton"), input::Value::Bool(pressed));
 								},
 								_ => { }
 							}
 						},
 						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
 							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
-							input_system.record_input_source_action(&self.mouse_device_handle, input_manager::InputSourceAction::Name("Mouse.Position"), input_manager::Value::Vector2(vec));
+							input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Position"), input::Value::Vector2(vec));
 						},
 						_ => { }
 					}
@@ -294,7 +294,7 @@ impl GraphicsApplication {
 	pub fn get_orchestrator(&self) -> std::cell::Ref<'_, orchestrator::Orchestrator> { self.application.get_orchestrator() }
 	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.application.get_mut_orchestrator() }
 
-	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<crate::input_manager::InputManager> {
+	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<input::InputManager> {
 		&self.input_system_handle
 	}
 

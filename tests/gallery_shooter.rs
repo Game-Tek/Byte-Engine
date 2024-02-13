@@ -3,7 +3,7 @@
 #![feature(closure_lifetime_binder)]
 
 use core::{self, entity::{EntityBuilder, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
-use byte_engine::{application::Application, audio::audio_system::DefaultAudioSystem, gameplay::{self, space::Space}, input_manager, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, Vector3};
+use byte_engine::{application::Application, audio::audio_system::DefaultAudioSystem, gameplay::{self, space::Space}, input, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, Vector3};
 use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
@@ -17,14 +17,14 @@ fn gallery_shooter() {
 
 	let space_handle = app.get_root_space_handle();
 
-	let lookaround_action_handle = core::spawn_as_child(space_handle.clone(), input_manager::Action::new("Lookaround", &[
-		input_manager::ActionBindingDescription::new("Mouse.Position").mapped(input_manager::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input_manager::Function::Sphere),
-		input_manager::ActionBindingDescription::new("Gamepad.RightStick"),
+	let lookaround_action_handle = core::spawn_as_child(space_handle.clone(), input::Action::new("Lookaround", &[
+		input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input::Function::Sphere),
+		input::ActionBindingDescription::new("Gamepad.RightStick"),
 	],));
 
-	let trigger_action = core::spawn_as_child(space_handle.clone(), input_manager::Action::new("Trigger", &[
-		input_manager::ActionBindingDescription::new("Mouse.LeftButton"),
-		input_manager::ActionBindingDescription::new("Gamepad.RightTrigger"),
+	let trigger_action = core::spawn_as_child(space_handle.clone(), input::Action::new("Trigger", &[
+		input::ActionBindingDescription::new("Mouse.LeftButton"),
+		input::ActionBindingDescription::new("Gamepad.RightTrigger"),
 	],));
 
 	let scale = maths_rs::Mat4f::from_scale(Vector3::new(0.1, 0.1, 0.1));
@@ -68,7 +68,7 @@ impl SpawnerEntity<Space> for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<input_manager::Action<Vector3>>, click: EntityHandle<input_manager::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'static, Self> {
+	fn new(lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
 			let mut transform = maths_rs::Mat4f::identity();
 
@@ -149,7 +149,7 @@ impl Player {
 
 struct Bullet {
 	bullet_object: EntityHandle<gameplay::object::Object>,
-	physics_duck: EntityHandle<physics::Sphere>,
+	physics_duck: EntityHandle<dyn physics::PhysicsEntity>,
 }
 
 impl Entity for Bullet {}
@@ -175,10 +175,8 @@ impl Bullet {
 	}
 
 	fn on_collision(&mut self, other: &EntityHandle<dyn physics::PhysicsEntity>) {
-		log::info!("Bullet collided with duck!");
-		// if other == &self.physics_duck {
-
-		// 	// TODO: Destroy bullet
-		// }
+		if other == &self.physics_duck {
+			log::info!("Bullet collided with duck!");
+		}
 	}
 }

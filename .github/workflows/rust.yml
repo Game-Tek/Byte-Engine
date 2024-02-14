@@ -13,28 +13,28 @@ jobs:
   build-test-core:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: rui314/setup-mold@v1
       - name: Test Core
         run: cd core && cargo test
   build-test-utils:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: rui314/setup-mold@v1
       - name: Test Utils
         run: cd utils && cargo test
   build-test-jspd:
       runs-on: ubuntu-latest
       steps:
-        - uses: actions/checkout@v3
+        - uses: actions/checkout@v4
         - uses: rui314/setup-mold@v1
         - name: Test JSPD
           run: cd jspd && cargo test
   build-test-resource-management:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: rui314/setup-mold@v1
       - name: Install Vulkan SDK # Right now resource management needs GHI, and GHI needs Vulkan, so we need to install Vulkan here.
         uses: humbletim/setup-vulkan-sdk@v1.2.0
@@ -47,7 +47,7 @@ jobs:
   build-test-ghi:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: rui314/setup-mold@v1
     - name: Install Vulkan runtime dependencies
       run: sudo add-apt-repository ppa:kisak/kisak-mesa && sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
@@ -58,11 +58,11 @@ jobs:
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
     - name: Test GHI
-      run: cd ghi && cargo test -- --skip window --skip graphics --skip present
+      run: cd ghi && cargo test -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.
   build-test-ahi:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: rui314/setup-mold@v1
       - name: Install ALSA
         run: sudo apt-get install libasound2-dev

@@ -3866,43 +3866,43 @@ mod tests {
 	}
 
 	#[test]
-	fn present() {
+	fn render_present() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::present(&mut ghi);
 	}
 
 	#[test]
-	fn multiframe_present() {
+	fn render_multiframe_present() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_present(&mut ghi); // BUG: can see graphical artifacts, most likely synchronization issue
 	}
 
 	#[test]
-	fn multiframe_rendering() {
+	fn render_multiframe() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_rendering(&mut ghi);
 	}
 
 	#[test]
-	fn dynamic_data() {
+	fn render_dynamic_data() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::dynamic_data(&mut ghi);
 	}
 
 	#[test]
-	fn descriptor_sets() {
+	fn render_with_descriptor_sets() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::descriptor_sets(&mut ghi);
 	}
 
 	#[test]
-	fn multiframe_resources() {
+	fn render_with_multiframe_resources() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_resources(&mut ghi);
 	}
 
 	#[test]
-	fn ray_tracing() {
+	fn render_with_ray_tracing() {
 		let mut ghi = VulkanGHI::new(&graphics_hardware_interface::Features::new().validation(true).ray_tracing(true)).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::ray_tracing(&mut ghi);
 	}

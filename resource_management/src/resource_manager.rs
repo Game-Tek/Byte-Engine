@@ -1,6 +1,8 @@
 use std::{hash::{Hash, Hasher}, io::Read, ops::Deref, pin::Pin};
 use futures::future::join_all;
 use smol::{fs::File, io::{AsyncReadExt, AsyncWriteExt}};
+use crate::{CreateInfo, CreateResource};
+
 use super::{resource_handler, Request, Response, LoadResults, ProcessedResources, ResourceRequest, GenericResourceSerialization, ResourceResponse, Resource, LoadRequest, LoadResourceRequest, Lox};
 
 /// Resource manager.
@@ -191,7 +193,7 @@ impl ResourceManager {
 										ProcessedResources::Generated(g) => {
 											loaded_resource_documents.push(self.write_resource_to_cache(g,).await?);
 										},
-										ProcessedResources::Ref(r) => {
+										ProcessedResources::Reference(r) => {
 											loaded_resource_documents.append(&mut self.gather(db, r).await?);
 										}
 									}
@@ -199,7 +201,7 @@ impl ResourceManager {
 
 								loaded_resource_documents.push(self.write_resource_to_cache(&g,).await?);
 							},
-							ProcessedResources::Ref(r) => {
+							ProcessedResources::Reference(r) => {
 								loaded_resource_documents.append(&mut self.gather(db, &r).await?);
 							}
 						}
@@ -267,7 +269,7 @@ impl ResourceManager {
 				ProcessedResources::Generated(g) => {
 					required_resources_json.push(polodb_core::bson::Bson::String(g.0.url.clone()));
 				},
-				ProcessedResources::Ref(r) => {
+				ProcessedResources::Reference(r) => {
 					required_resources_json.push(polodb_core::bson::Bson::String(r.clone()));
 				}
 			}
@@ -478,6 +480,16 @@ impl ResourceManager {
 			}
 		}
 	}
+
+	pub(crate) async fn create_resource<'a, T: CreateResource>(&self, name: &'a str, r#type: &'a str, create_info: T, data: &'a [u8]) -> Option<ProcessedResources> {
+        let resource_handler = self.resource_handlers.iter().find(|h| h.can_handle_type(r#type))?;
+		
+		let resources = resource_handler.create_resource(&CreateInfo{ name, info: Box::new(create_info), data }, self).await.ok()?;
+
+		assert_eq!(resources.len(), 1);
+
+		Some(resources[0].clone())
+    }
 }
 
 // TODO: test resource caching

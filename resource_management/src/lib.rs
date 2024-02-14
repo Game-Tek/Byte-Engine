@@ -3,6 +3,7 @@
 //! It also handles caching of resources.
 
 #![feature(async_closure)]
+#![feature(closure_lifetime_binder)]
 
 pub mod resource_manager;
 
@@ -48,7 +49,7 @@ impl GenericResourceSerialization {
 #[derive(Debug, Clone)]
 pub enum ProcessedResources {
 	Generated((GenericResourceSerialization, Vec<u8>)),
-	Ref(String),
+	Reference(String),
 }
 
 #[derive(Debug)]
@@ -172,4 +173,15 @@ pub struct OptionResource<'a> {
 /// Represents the options for performing a bundled/batch resource load.
 pub struct Options<'a> {
 	pub resources: Vec<OptionResource<'a>>,
+}
+
+pub trait CreateResource: downcast_rs::Downcast + Send + Sync {
+}
+
+downcast_rs::impl_downcast!(CreateResource);
+
+pub struct CreateInfo<'a> {
+	pub name: &'a str,
+	pub info: Box<dyn CreateResource>,
+	pub data: &'a [u8],
 }

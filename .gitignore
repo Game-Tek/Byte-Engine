@@ -3,6 +3,7 @@
 coverage/
 *.db
 *.db.*
+*.glb
 .byte
 .byte-engine
 .byte-editor

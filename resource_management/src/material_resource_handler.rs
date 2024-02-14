@@ -140,7 +140,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 					if variable["data_type"].as_str().unwrap() == "Texture2D" {
 						let texture_url = variable["value"].as_str().unwrap();
 
-						required_resources.push(ProcessedResources::Ref(texture_url.to_string()));
+						required_resources.push(ProcessedResources::Reference(texture_url.to_string()));
 					}
 				}
 
@@ -163,7 +163,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 							value: v["value"].to_string(),
 						}
 					}).collect::<Vec<_>>()
-				}).required_resources(&[ProcessedResources::Ref(parent_material_url.to_string())]);
+				}).required_resources(&[ProcessedResources::Reference(parent_material_url.to_string())]);
 
 				Ok(vec![ProcessedResources::Generated((material_resource_document.into(), Vec::new()))])
 			}

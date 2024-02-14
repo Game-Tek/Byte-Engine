@@ -1,8 +1,8 @@
 use serde::{Serialize, Deserialize};
-use smol::{fs::File, io::AsyncReadExt};
+use smol::{fs::File, future::FutureExt, io::AsyncReadExt};
 use utils::Extent;
 
-use crate::GenericResourceSerialization;
+use crate::{CreateInfo, CreateResource, GenericResourceSerialization};
 
 use super::{Resource, ProcessedResources, resource_manager::ResourceManager, resource_handler::ResourceHandler, Stream};
 
@@ -21,6 +21,8 @@ impl ResourceHandler for ImageResourceHandler {
 		match resource_type {
 			"image/png" => true,
 			"png" => true,
+			"Image" => true,
+			"Texture" => true,
 			_ => false
 		}
 	}
@@ -33,14 +35,14 @@ impl ResourceHandler for ImageResourceHandler {
 			let mut reader = decoder.read_info().unwrap();
 			let mut buffer = vec![0; reader.output_buffer_size()];
 			let info = reader.next_frame(&mut buffer).unwrap();
-
+	
 			let extent = Extent::rectangle(info.width, info.height,);
-
+	
 			assert_eq!(info.color_type, png::ColorType::Rgb);
 			assert_eq!(info.bit_depth, png::BitDepth::Eight);
-
+	
 			let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
-
+	
 			// convert rgb to rgba
 			for y in 0..extent.height() {
 				for x in 0..extent.width() {
@@ -51,23 +53,24 @@ impl ResourceHandler for ImageResourceHandler {
 					buf.push(255);
 				}
 			}
-
+	
 			assert_eq!(extent.depth(), 1); // TODO: support 3D textures
-
+	
 			let rgba_surface = intel_tex_2::RgbaSurface {
 				data: &buf,
 				width: extent.width(),
 				height: extent.height(),
 				stride: extent.width() * 4,
 			};
-
+	
 			let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
-
+	
 			let resource_document = GenericResourceSerialization::new(asset_url.to_string(), Texture{
+				format: Formats::RGB8,
 				extent: extent.as_array(),
 				compression: Some(CompressionSchemes::BC7),
 			});
-
+	
 			Ok(vec![ProcessedResources::Generated((resource_document, intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)))])
 		})
 	}
@@ -84,16 +87,107 @@ impl ResourceHandler for ImageResourceHandler {
 			Box::new(texture)
 		}))]
 	}
+
+	fn create_resource<'a>(&'a self, resource: &'a CreateInfo, resource_manager: &'a crate::resource_manager::ResourceManager) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
+		async move {
+			let image_info = resource.info.downcast_ref::<CreateImage>().ok_or("Invalid resource info")?;
+
+			let bytes = resource.data;
+			let asset_url = resource.name;
+
+			let extent = Extent::rectangle(image_info.extent[0], image_info.extent[1]);
+
+			assert_eq!(extent.depth(), 1); // TODO: support 3D textures
+			
+			let (data, compression) = match image_info.format {
+				Formats::RGB8 => {
+					let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
+
+					for y in 0..extent.height() {
+						for x in 0..extent.width() {
+							let index = ((x + y * extent.width()) * 3) as usize;
+							buf.push(bytes[index + 0]);
+							buf.push(bytes[index + 1]);
+							buf.push(bytes[index + 2]);
+							buf.push(255);
+						}
+					}
+
+					let rgba_surface = intel_tex_2::RgbaSurface {
+						data: &buf,
+						width: extent.width(),
+						height: extent.height(),
+						stride: extent.width() * 4,
+					};
+		
+					let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
+
+					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Some(CompressionSchemes::BC7))
+				}
+				Formats::RGB16 => {
+					let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
+
+					for y in 0..extent.height() {
+						for x in 0..extent.width() {
+							let index = ((x + y * extent.width()) * 6) as usize;
+							buf.push(bytes[index + 0]); buf.push(bytes[index + 1]);
+							buf.push(bytes[index + 2]); buf.push(bytes[index + 3]);
+							buf.push(bytes[index + 4]); buf.push(bytes[index + 5]);
+							buf.push(255); buf.push(255);
+						}
+					}
+
+					let rgba_surface = intel_tex_2::RgbaSurface {
+						data: &buf,
+						width: extent.width(),
+						height: extent.height(),
+						stride: extent.width() * 8,
+					};
+		
+					let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
+
+					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Some(CompressionSchemes::BC7))
+				}
+				_ => {
+					(bytes.to_vec(), None)
+				}
+			};
+
+			let resource_document = GenericResourceSerialization::new(asset_url.to_string(), Texture{
+				format: image_info.format,
+				extent: extent.as_array(),
+				compression,
+			});
+
+			Ok(vec![ProcessedResources::Generated((resource_document, data))])
+		}.boxed()
+	}
 }
+
+pub struct CreateImage {
+	pub format: Formats,
+	pub extent: [u32; 3],
+}
+
+impl CreateResource for CreateImage {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CompressionSchemes {
 	BC7,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Formats {
+	RGB8,
+	RGBA8,
+	RGB16,
+	RGBA16,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Texture {
 	pub compression: Option<CompressionSchemes>,
+	pub format: Formats,
 	pub extent: [u32; 3],
 }
 
@@ -105,7 +199,7 @@ impl Resource for Texture {
 mod tests {
 	use std::any::Any;
 
-use crate::resource_manager::ResourceManager;
+	use crate::resource_manager::ResourceManager;
 
 	use super::*;
 

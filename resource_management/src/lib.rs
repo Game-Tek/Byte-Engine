@@ -5,13 +5,10 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-pub mod resource_manager;
+pub mod asset;
+pub mod resource;
 
-pub mod resource_handler;
-pub mod texture_resource_handler;
-pub mod mesh_resource_handler;
-pub mod material_resource_handler;
-pub mod audio_resource_handler;
+pub mod types;
 
 pub mod file_tracker;
 

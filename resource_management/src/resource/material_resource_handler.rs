@@ -1,73 +1,12 @@
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
 use smol::{fs::File, io::AsyncReadExt};
 
-use super::{GenericResourceSerialization, Resource, ProcessedResources, resource_handler::ResourceHandler, resource_manager::ResourceManager, Stream};
+use crate::{types::{Material, Shader, ShaderTypes, Variant}, GenericResourceSerialization, ProcessedResources, Resource, Stream};
+
+use super::{resource_handler::ResourceHandler, resource_manager::ResourceManager,};
 
 pub struct MaterialResourcerHandler {
 	generator: Option<Box<dyn ShaderGenerator>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Model {
-	/// The name of the model.
-	pub name: String,
-	/// The render pass of the model.
-	pub pass: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Material {
-	/// The render model this material is for.
-	pub model: Model,
-}
-
-impl Resource for Material {
-	fn get_class(&self) -> &'static str { "Material" }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VariantVariable {
-	pub name: String,
-	pub value: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Variant {
-	/// Parent material asset url.
-	pub parent: String,
-	pub variables: Vec<VariantVariable>,
-}
-
-impl Resource for Variant {
-	fn get_class(&self) -> &'static str { "Variant" }
-}
-
-/// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-pub enum ShaderTypes {
-	/// A vertex shader.
-	Vertex,
-	/// A fragment shader.
-	Fragment,
-	/// A compute shader.
-	Compute,
-	Task,
-	Mesh,
-	RayGen,
-	ClosestHit,
-	AnyHit,
-	Intersection,
-	Miss,
-	Callable,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Shader {
-	pub stage: ShaderTypes,
-}
-
-impl Resource for Shader {
-	fn get_class(&self) -> &'static str { "Shader" }
 }
 
 pub trait ShaderGenerator: Send {
@@ -107,67 +46,6 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 	fn read<'a>(&'a self, _resource: &'a dyn Resource, file: &'a mut File, buffers: &'a mut [Stream<'a>]) -> utils::BoxedFuture<()> {
 		Box::pin(async move { file.read_exact(buffers[0].buffer).await.unwrap(); })
-	}
-
-	fn process<'a>(&'a self, resource_manager: &'a ResourceManager, asset_url: &'a str,) -> utils::BoxedFuture<Result<Vec<ProcessedResources>, String>> {
-		Box::pin(async move {
-			let (bytes, _) = resource_manager.read_asset_from_source(asset_url).await.unwrap();
-
-			let asset_json = json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
-
-			let is_material = asset_json["parent"].is_null();
-
-			if is_material {
-				let material_domain = match &asset_json["domain"] {
-					json::JsonValue::Null => { "Common".to_string() }
-					json::JsonValue::Short(s) => { s.to_string() }
-					json::JsonValue::String(s) => { s.to_string() }
-					_ => { panic!("Invalid domain") }
-				};
-
-				let _material_type = match &asset_json["type"] {
-					json::JsonValue::Null => { "Raw".to_string() }
-					json::JsonValue::Short(s) => { s.to_string() }
-					json::JsonValue::String(s) => { s.to_string() }
-					_ => { panic!("Invalid type") }
-				};
-				
-				let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-					smol::block_on(self.produce_shader(resource_manager, &material_domain, &asset_json, &shader_json, s_type))
-				}).collect::<Vec<_>>();
-
-				for variable in asset_json["variables"].members() {
-					if variable["data_type"].as_str().unwrap() == "Texture2D" {
-						let texture_url = variable["value"].as_str().unwrap();
-
-						required_resources.push(ProcessedResources::Reference(texture_url.to_string()));
-					}
-				}
-
-				Ok(vec![ProcessedResources::Generated((GenericResourceSerialization::new(asset_url.to_string(), Material {
-					model: Model {
-						name: Self::RENDER_MODEL.to_string(),
-						pass: "MaterialEvaluation".to_string(),
-					},
-				}).required_resources(&required_resources), Vec::new()))])
-			} else {
-				let variant_json = asset_json;
-
-				let parent_material_url = variant_json["parent"].as_str().unwrap();
-
-				let material_resource_document = GenericResourceSerialization::new(asset_url.to_string(), Variant{
-					parent: parent_material_url.to_string(),
-					variables: variant_json["variables"].members().map(|v| {
-						VariantVariable {
-							name: v["name"].to_string(),
-							value: v["value"].to_string(),
-						}
-					}).collect::<Vec<_>>()
-				}).required_resources(&[ProcessedResources::Reference(parent_material_url.to_string())]);
-
-				Ok(vec![ProcessedResources::Generated((material_resource_document.into(), Vec::new()))])
-			}
-		})
 	}
 
 	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
@@ -302,7 +180,7 @@ impl MaterialResourcerHandler {
 
 #[cfg(test)]
 mod tests {
-    use crate::resource_manager::ResourceManager;
+    use crate::resource::resource_manager::ResourceManager;
 
 	#[test]
 	#[ignore] // We need to implement a shader generator to test this

@@ -2,7 +2,7 @@ use smol::future::FutureExt;
 
 use crate::types::{Audio, BitDepths};
 
-use super::{asset_handler::AssetHandler, read_asset_from_source};
+use super::{asset_handler::AssetHandler, AssetResolver};
 
 struct AudioAssetHandler {
 
@@ -15,26 +15,32 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load(&self, url: &str, json: &json::JsonValue) -> utils::BoxedFuture<Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
-			let (data, dt) = read_asset_from_source(url, None).await.unwrap();
+			if let Some(dt) = asset_resolver.get_type(url) {
+				if dt != "wav" { return None; }
+			}
+
+			let (data, dt) = asset_resolver.resolve(url).await?;
+
+			if dt != "wav" { return None; }
 
 			let riff = &data[0..4];
 
 			if riff != b"RIFF" {
-				return Err("Invalid RIFF header".to_string());
+				return Some(Err("Invalid RIFF header".to_string()));
 			}
 
 			let format = &data[8..12];
 
 			if format != b"WAVE" {
-				return Err("Invalid WAVE format".to_string());
+				return Some(Err("Invalid WAVE format".to_string()));
 			}
 
 			let audio_format = &data[20..22];
 
 			if audio_format != b"\x01\x00" {
-				return Err("Invalid audio format".to_string());
+				return Some(Err("Invalid audio format".to_string()));
 			}
 
 			let subchunk_1_size = &data[16..20];
@@ -42,7 +48,7 @@ impl AssetHandler for AudioAssetHandler {
 			let subchunk_1_size = u32::from_le_bytes([subchunk_1_size[0], subchunk_1_size[1], subchunk_1_size[2], subchunk_1_size[3]]);
 
 			if subchunk_1_size != 16 {
-				return Err("Invalid subchunk 1 size".to_string());
+				return Some(Err("Invalid subchunk 1 size".to_string()));
 			}
 
 			let num_channels = &data[22..24];
@@ -50,7 +56,7 @@ impl AssetHandler for AudioAssetHandler {
 			let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
 
 			if num_channels != 1 && num_channels != 2 {
-				return Err("Invalid number of channels".to_string());
+				return Some(Err("Invalid number of channels".to_string()));
 			}
 
 			let sample_rate = &data[24..28];
@@ -66,13 +72,13 @@ impl AssetHandler for AudioAssetHandler {
 				16 => BitDepths::Sixteen,
 				24 => BitDepths::TwentyFour,
 				32 => BitDepths::ThirtyTwo,
-				_ => { return Err("Invalid bits per sample".to_string()); }
+				_ => { return Some(Err("Invalid bits per sample".to_string())); }
 			};
 
 			let data_header = &data[36..40];
 
 			if data_header != b"data" {
-				return Err("Invalid data header".to_string());
+				return Some(Err("Invalid data header".to_string()));
 			}
 
 			let data_size = &data[40..44];
@@ -100,25 +106,29 @@ impl AssetHandler for AudioAssetHandler {
 			
 			// )
 
-			Ok(Some(()))
+			Some(Ok(()))
 		}.boxed()
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use crate::asset::tests::TestAssetResolver;
+
 	use super::*;
 
 	#[test]
 	fn test_audio_asset_handler() {
 		let audio_asset_handler = AudioAssetHandler::new();
 
-		let url = "gun";
+		let url = "gun.wav";
 		let doc = json::object! {
 			"url": url,
 		};
 
-		smol::block_on(audio_asset_handler.load(url, &doc)).expect("Audio asset handler did not handle asset");
+		let asset_resolver = TestAssetResolver::new();
+
+		smol::block_on(audio_asset_handler.load(&asset_resolver, url, &doc)).expect("Audio asset handler did not handle asset");
 
 		// assert_eq!(resource.url, "gun");
 		// assert_eq!(resource.class, "Audio");

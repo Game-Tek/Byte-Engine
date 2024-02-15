@@ -1,8 +1,9 @@
+use smol::future::FutureExt;
 use utils::Extent;
 
 use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization};
 
-use super::{asset_handler::AssetHandler, read_asset_from_source};
+use super::{asset_handler::AssetHandler, AssetResolver};
 
 struct ImageAssetHandler {
 }
@@ -14,9 +15,15 @@ impl ImageAssetHandler {
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn load(&self, url: &str, json: &json::JsonValue) -> utils::BoxedFuture<Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver,  url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
-			let (data, dt) = read_asset_from_source(url, None).await.unwrap();
+			if let Some(dt) = asset_resolver.get_type(url) {
+				if dt != "png" { return None; }
+			}
+
+			let (data, dt) = asset_resolver.resolve(url).await?;
+
+			if dt != "png" { return None; }
 
 			let mut decoder = png::Decoder::new(data.as_slice());
 			decoder.set_transformations(png::Transformations::normalize_to_color8());
@@ -108,7 +115,29 @@ impl AssetHandler for ImageAssetHandler {
 
 			// Ok(vec![ProcessedResources::Generated((resource_document, data))])
 
-			Ok(())
+			Some(Ok(()))
 		}.boxed()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ImageAssetHandler};
+	use crate::asset::{asset_handler::AssetHandler, tests::TestAssetResolver};
+
+	#[test]
+	fn load_image() {
+		let asset_resolver = TestAssetResolver::new();
+		let asset_handler = ImageAssetHandler::new();
+
+		let url = "patterned_brick_floor_02_diff_2k.png";
+		let doc = json::object! {
+			"url": url,
+		};
+
+		let result = smol::block_on(asset_handler.load(&asset_resolver, &url, &doc));
+
+		assert!(result.is_some());
+		assert!(result.unwrap().is_ok());
 	}
 }

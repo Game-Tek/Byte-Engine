@@ -1,8 +1,8 @@
 use smol::future::FutureExt;
 
-use crate::{resource::resource_manager::ResourceManager, types::{AlphaMode, CompressionSchemes, CreateImage, Formats, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Primitive, Property, SubMesh, Value, VertexComponent, VertexSemantics}, GenericResourceSerialization, ProcessedResources};
+use crate::{resource::resource_manager::ResourceManager, types::{AlphaMode, CompressionSchemes, CreateImage, Formats, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value, VertexComponent, VertexSemantics}, GenericResourceSerialization, ProcessedResources};
 
-use super::asset_handler::AssetHandler;
+use super::{asset_handler::AssetHandler, AssetResolver};
 
 struct MeshAssetHandler {
 
@@ -15,9 +15,13 @@ impl MeshAssetHandler {
 }
 
 impl AssetHandler for MeshAssetHandler {
-	fn load(&self, url: &str, json: &json::JsonValue) -> utils::BoxedFuture<Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
-			let (gltf, buffers, images) = gltf::import(url).or(Err("Could not process GLTF file."))?;
+			if let Some(dt) = asset_resolver.get_type(url) {
+				if dt != "gltf" && dt != "glb" { return None; }
+			}
+
+			let (gltf, buffers, images) = gltf::import(url).ok()?;
 
 			const MESHLETIZE: bool = true;
 
@@ -35,7 +39,7 @@ impl AssetHandler for MeshAssetHandler {
 						let material = primitive.material();
 
 						// Return the name of the texture
-						async fn manage_image<'x>(resource_manager: &'x ResourceManager, images: &'x [gltf::image::Data], texture: &'x gltf::Texture<'x>) -> Result<(String, ProcessedResources), String> {
+						async fn manage_image<'x>(images: &'x [gltf::image::Data], texture: &'x gltf::Texture<'x>) -> Result<(String, ()), String> {
 							let image = &images[texture.source().index()];
 
 							let format = match image.format {
@@ -53,15 +57,15 @@ impl AssetHandler for MeshAssetHandler {
 								extent: [image.width, image.height, 1],
 							};
 
-							let created_texture_resource = resource_manager.create_resource(&name, "Image", create_image_info, &image.pixels).await.ok_or("Failed to create texture")?;
+							// let created_texture_resource = resource_manager.create_resource(&name, "Image", create_image_info, &image.pixels).await.ok_or("Failed to create texture")?;
 
-							Ok((name, created_texture_resource))
+							Ok((name, ()))
 						}
 
 						let pbr = material.pbr_metallic_roughness();
 
 						let albedo = if let Some(base_color_texture) = pbr.base_color_texture() {
-							let (name, resource) = manage_image(resource_manager, images.as_slice(), &base_color_texture.texture()).await?;
+							let (name, resource) = manage_image(images.as_slice(), &base_color_texture.texture()).await.ok()?;
 							resources.push(resource);
 							Property::Texture(name)
 						} else {
@@ -72,11 +76,11 @@ impl AssetHandler for MeshAssetHandler {
 						let (roughness, metallic) = if let Some(roughness_texture) = pbr.metallic_roughness_texture() {
 
 							({
-								let (name, resource) = manage_image(resource_manager, images.as_slice(), &roughness_texture.texture()).await?;
+								let (name, resource) = manage_image(images.as_slice(), &roughness_texture.texture()).await.ok()?;
 								resources.push(resource);
 								Property::Texture(name)
 							}, {
-								let (name, resource) = manage_image(resource_manager, images.as_slice(), &roughness_texture.texture()).await?;
+								let (name, resource) = manage_image(images.as_slice(), &roughness_texture.texture()).await.ok()?;
 								resources.push(resource);
 								Property::Texture(name)
 							})
@@ -85,7 +89,7 @@ impl AssetHandler for MeshAssetHandler {
 						};
 
 						let normal = if let Some(normal_texture) = material.normal_texture() {
-							let (name, resource) = manage_image(resource_manager, images.as_slice(), &normal_texture.texture()).await?;
+							let (name, resource) = manage_image(images.as_slice(), &normal_texture.texture()).await.ok()?;
 							resources.push(resource);
 							Property::Texture(name)
 						} else {
@@ -93,7 +97,7 @@ impl AssetHandler for MeshAssetHandler {
 						};
 
 						let emissive = if let Some(emissive_texture) = material.emissive_texture() {
-							let (name, resource) = manage_image(resource_manager, images.as_slice(), &emissive_texture.texture()).await?;
+							let (name, resource) = manage_image(images.as_slice(), &emissive_texture.texture()).await.ok()?;
 							resources.push(resource);
 							Property::Texture(name)
 						} else {
@@ -101,7 +105,7 @@ impl AssetHandler for MeshAssetHandler {
 						};
 
 						let occlusion = if let Some(occlusion_texture) = material.occlusion_texture() {
-							let (name, resource) = manage_image(resource_manager, images.as_slice(), &occlusion_texture.texture()).await?;
+							let (name, resource) = manage_image(images.as_slice(), &occlusion_texture.texture()).await.ok()?;
 							resources.push(resource);
 							Property::Texture(name)
 						} else {
@@ -120,13 +124,17 @@ impl AssetHandler for MeshAssetHandler {
 								gltf::material::AlphaMode::Blend => AlphaMode::Blend,
 								gltf::material::AlphaMode::Mask => AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),
 								gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+							},
+							model: Model {
+								name: "".to_string(),
+								pass: "".to_string(),
 							}
 						}
 					};
 
 					let mut vertex_components = Vec::new();
 
-					let bounding_box = Self::make_bounding_box(&primitive);
+					let bounding_box = make_bounding_box(&primitive);
 
 					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
@@ -139,7 +147,7 @@ impl AssetHandler for MeshAssetHandler {
 						vertex_components.push(VertexComponent { semantic: VertexSemantics::Position, format: "vec3f".to_string(), channel: 0 });
 						vertex_count
 					} else {
-						return Err("Mesh does not have positions".to_string());
+						return Some(Err("Mesh does not have positions".to_string()));
 					};
 
 					let indices = reader.read_indices().expect("Cannot create mesh which does not have indices").into_u32().collect::<Vec<u32>>();
@@ -243,7 +251,7 @@ impl AssetHandler for MeshAssetHandler {
 
 					primitives.push(Primitive {
 						material,
-						quantization: CompressionSchemes::None,
+						quantization: None,
 						bounding_box,
 						vertex_components,
 						vertex_count: vertex_count as u32,
@@ -261,10 +269,41 @@ impl AssetHandler for MeshAssetHandler {
 				sub_meshes,
 			};
 
-			let resource_document = GenericResourceSerialization::new(asset_url.to_string(), mesh);
-			resources.push(ProcessedResources::Generated((resource_document, buffer)));
+			let resource_document = GenericResourceSerialization::new(url.to_string(), mesh);
+			// resources.push(ProcessedResources::Generated((resource_document, buffer)));
 
-			Ok(resources)
+			Some(Ok(()))
 		}.boxed()
+	}
+}
+
+fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
+	let bounds = mesh.bounding_box();
+
+	[
+		[bounds.min[0], bounds.min[1], bounds.min[2],],
+		[bounds.max[0], bounds.max[1], bounds.max[2],],
+	]
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{MeshAssetHandler};
+	use crate::asset::{asset_handler::AssetHandler, tests::TestAssetResolver};
+
+	#[test]
+	fn load_glb() {
+		let asset_resolver = TestAssetResolver::new();
+		let asset_handler = MeshAssetHandler::new();
+
+		let url = "Revolver.glb";
+		let doc = json::object! {
+			"url": url,
+		};
+
+		let result = smol::block_on(asset_handler.load(&asset_resolver, &url, &doc));
+
+		assert!(result.is_some());
+		assert!(result.unwrap().is_ok());
 	}
 }

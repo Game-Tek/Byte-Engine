@@ -1,8 +1,8 @@
 use smol::future::FutureExt;
 
-use crate::types::{Audio, BitDepths};
+use crate::{types::{Audio, BitDepths}, GenericResourceSerialization};
 
-use super::{asset_handler::AssetHandler, AssetResolver};
+use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
 struct AudioAssetHandler {
 
@@ -15,7 +15,7 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "wav" { return None; }
@@ -96,15 +96,7 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			// Ok(
-			// 	vec![
-			// 		ProcessedResources::Generated((
-			// 			GenericResourceSerialization::new(asset_url.to_string(), audio_resource),
-			// 			Vec::from(data),
-			// 		))
-			// 	]
-			
-			// )
+			storage_backend.store(GenericResourceSerialization::new(url.to_string(), audio_resource));
 
 			Some(Ok(()))
 		}.boxed()
@@ -113,7 +105,7 @@ impl AssetHandler for AudioAssetHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::tests::TestAssetResolver;
+	use crate::asset::tests::{TestAssetResolver, TestStorageBackend};
 
 	use super::*;
 
@@ -127,19 +119,21 @@ mod tests {
 		};
 
 		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_resolver, url, &doc)).expect("Audio asset handler did not handle asset");
+		smol::block_on(audio_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset");
 
-		// assert_eq!(resource.url, "gun");
-		// assert_eq!(resource.class, "Audio");
+		let generated_resources = storage_backend.get_resources();
 
-		// let audio = resource.resource.downcast_ref::<Audio>().unwrap();
+		assert_eq!(generated_resources.len(), 1);
 
-		// assert_eq!(audio.bit_depth, BitDepths::Sixteen);
-		// assert_eq!(audio.channel_count, 1);
-		// assert_eq!(audio.sample_rate, 48000);
-		// assert_eq!(audio.sample_count, 152456 / 1 / (16 / 8));
+		let resource = &generated_resources[0];
 
-		// assert_eq!(buffer.len(), audio.sample_count as usize * audio.channel_count as usize * (Into::<usize>::into(audio.bit_depth) / 8) as usize);
+		assert_eq!(resource.url, "gun.wav");
+		assert_eq!(resource.class, "Audio");
+		assert_eq!(resource.resource.get_str("bit_depth").unwrap(), "Sixteen");
+		assert_eq!(resource.resource.get_i32("channel_count").unwrap(), 1);
+		assert_eq!(resource.resource.get_i64("sample_rate").unwrap(), 48000);
+		assert_eq!(resource.resource.get_i64("sample_count").unwrap(), 152456 / 1 / (16 / 8));
 	}
 }

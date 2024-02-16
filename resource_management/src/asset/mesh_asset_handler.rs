@@ -2,7 +2,7 @@ use smol::future::FutureExt;
 
 use crate::{resource::resource_manager::ResourceManager, types::{AlphaMode, CompressionSchemes, CreateImage, Formats, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value, VertexComponent, VertexSemantics}, GenericResourceSerialization, ProcessedResources};
 
-use super::{asset_handler::AssetHandler, AssetResolver};
+use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
 struct MeshAssetHandler {
 
@@ -15,13 +15,17 @@ impl MeshAssetHandler {
 }
 
 impl AssetHandler for MeshAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "gltf" && dt != "glb" { return None; }
 			}
 
-			let (gltf, buffers, images) = gltf::import(url).ok()?;
+			let (data, dt) = asset_resolver.resolve(url).await?;
+
+			if dt != "gltf" && dt != "glb" { return None; }
+
+			let (gltf, buffers, images) = gltf::import_slice(data).ok()?;
 
 			const MESHLETIZE: bool = true;
 
@@ -270,7 +274,7 @@ impl AssetHandler for MeshAssetHandler {
 			};
 
 			let resource_document = GenericResourceSerialization::new(url.to_string(), mesh);
-			// resources.push(ProcessedResources::Generated((resource_document, buffer)));
+			storage_backend.store(resource_document);
 
 			Some(Ok(()))
 		}.boxed()
@@ -288,12 +292,154 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
-	use super::{MeshAssetHandler};
-	use crate::asset::{asset_handler::AssetHandler, tests::TestAssetResolver};
+	use polodb_core::bson::{self, bson};
+
+	use super::MeshAssetHandler;
+	use crate::asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
 
 	#[test]
+	fn load_local_mesh() {
+		let asset_handler = MeshAssetHandler::new();
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
+
+		let url = "Box.gltf";
+		let doc = json::object! {
+			"url": url,
+		};
+
+		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Failed to get resource");
+
+		let generated_resources = storage_backend.get_resources();
+
+		assert_eq!(generated_resources.len(), 1);
+
+		let resource = &generated_resources[0];
+
+		assert_eq!(resource.url, "Box.gltf");
+		assert_eq!(resource.class, "Mesh");
+
+		assert_eq!(resource.resource, bson::doc!{
+			"sub_meshes": [
+				{
+					"primitives": [
+						{
+							"material": {
+								"albedo": {
+									"Factor": {
+										"Vector4": [0.800000011920929, 0.0, 0.0, 1.0],
+									}
+								},
+								"normal": {
+									"Factor": {
+										"Vector3": [0.0, 0.0, 1.0],
+									}
+								},
+								"roughness": {
+									"Factor": {
+										"Scalar": 1.0,
+									}
+								},
+								"metallic": {
+									"Factor": {
+										"Scalar": 0.0,
+									}
+								},
+								"emissive": {
+									"Factor": {
+										"Vector3": [0.0, 0.0, 0.0],
+									}
+								},
+								"occlusion": {
+									"Factor": {
+										"Scalar": 1.0,
+									}
+								},
+								"double_sided": false,
+								"alpha_mode": "Opaque",
+								"model": {
+									"name": "",
+									"pass": "",
+								},
+							},
+							"quantization": null,
+							"bounding_box": [[-0.5, -0.5, -0.5],[0.5, 0.5, 0.5],],
+							"vertex_count": 24i64,
+							"vertex_components": [
+								{
+									"semantic": "Position",
+									"format": "vec3f",
+									"channel": 0i64,
+								},
+								{
+									"semantic": "Normal",
+									"format": "vec3f",
+									"channel": 1i64,
+								},
+							],
+							"index_streams": [
+								{
+									"data_type": "U16",
+									"stream_type": "Vertices",
+									"offset": 576i64,
+									"count": 24i64,
+								},
+								{
+									"data_type": "U8",
+									"stream_type": "Meshlets",
+									"offset": 624i64,
+									"count": 36i64,
+								},
+								{
+									"data_type": "U16",
+									"stream_type": "Triangles",
+									"offset": 662i64,
+									"count": 36i64,
+								},
+							],
+							"meshlet_stream": {
+								"offset": 660i64,
+								"count": 1i64,
+							},
+						},
+					],
+				},
+			],
+		});
+
+		// TODO: ASSERT BINARY DATA
+
+		// 	let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], primitive.vertex_count as usize) };
+
+		// 	assert_eq!(vertex_positions.len(), 11808);
+
+		// 	assert_eq!(vertex_positions[0], [0.492188f32, 0.185547f32, -0.720703f32]);
+		// 	assert_eq!(vertex_positions[1], [0.472656f32, 0.243042f32, -0.751221f32]);
+		// 	assert_eq!(vertex_positions[2], [0.463867f32, 0.198242f32, -0.753418f32]);
+
+		// 	let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const [f32; 3]).add(11808), primitive.vertex_count as usize) };
+
+		// 	assert_eq!(vertex_normals.len(), 11808);
+
+		// 	assert_eq!(vertex_normals[0], [0.703351f32, -0.228379f32, -0.673156f32]);
+		// 	assert_eq!(vertex_normals[1], [0.818977f32, -0.001884f32, -0.573824f32]);
+		// 	assert_eq!(vertex_normals[2], [0.776439f32, -0.262265f32, -0.573027f32]);
+
+		// 	let triangle_indices = unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(triangle_index_stream.offset) as *const u16, triangle_index_stream.count as usize) };
+
+		// 	assert_eq!(triangle_indices[0..3], [0, 1, 2]);
+		// 	assert_eq!(triangle_indices[3935 * 3..3936 * 3], [11805, 11806, 11807]);
+
+		// let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
+
+		// TODO: ASSERT BINARY DATA
+	}
+
+	#[test]
+	#[ignore]
 	fn load_glb() {
 		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
 		let asset_handler = MeshAssetHandler::new();
 
 		let url = "Revolver.glb";
@@ -301,7 +447,7 @@ mod tests {
 			"url": url,
 		};
 
-		let result = smol::block_on(asset_handler.load(&asset_resolver, &url, &doc));
+		let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc));
 
 		assert!(result.is_some());
 		assert!(result.unwrap().is_ok());

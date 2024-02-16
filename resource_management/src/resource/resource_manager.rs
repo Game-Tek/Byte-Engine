@@ -37,13 +37,6 @@ impl From<polodb_core::Error> for LoadResults {
 impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new() -> Self {
-		if let Err(error) = std::fs::create_dir_all(Self::resolve_asset_path(std::path::Path::new(""))) {
-			match error.kind() {
-				std::io::ErrorKind::AlreadyExists => {},
-				_ => panic!("Could not create assets directory"),
-			}
-		}
-
 		if let Err(error) = std::fs::create_dir_all(Self::resolve_resource_path(std::path::Path::new(""))) {
 			match error.kind() {
 				std::io::ErrorKind::AlreadyExists => {},
@@ -280,14 +273,6 @@ impl ResourceManager {
 			std::env::temp_dir().join("resources").join(path)
 		} else {
 			std::path::PathBuf::from("resources/").join(path)
-		}
-	}
-
-	fn resolve_asset_path(path: &std::path::Path) -> std::path::PathBuf {
-		if cfg!(test) {
-			std::path::PathBuf::from("../assets/").join(path)
-		} else {
-			std::path::PathBuf::from("assets/").join(path)
 		}
 	}
 }

@@ -1,4 +1,4 @@
-use crate::asset::AssetResolver;
+use crate::{asset::{AssetResolver, StorageBackend}, GenericResourceSerialization};
 
 use super::asset_handler::AssetHandler;
 
@@ -17,6 +17,51 @@ pub enum LoadMessages {
 
 impl AssetManager {
 	pub fn new() -> AssetManager {
+		if let Err(error) = std::fs::create_dir_all(resolve_asset_path(std::path::Path::new(""))) {
+			match error.kind() {
+				std::io::ErrorKind::AlreadyExists => {},
+				_ => panic!("Could not create assets directory"),
+			}
+		}
+
+		let mut args = std::env::args();
+
+		let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
+
+		if cfg!(test) { // If we are running tests we want to use memory database. This way we can run tests in parallel.
+			memory_only = true;
+		}
+
+		let db_res = if !memory_only {
+			polodb_core::Database::open_file(resolve_internal_path(std::path::Path::new("assets.db")))
+		} else {
+			log::info!("Using memory database instead of file database.");
+			polodb_core::Database::open_memory()
+		};
+
+		let db = match db_res {
+			Ok(db) => db,
+			Err(_) => {
+				// Delete file and try again
+				std::fs::remove_file(resolve_internal_path(std::path::Path::new("assets.db"))).unwrap();
+
+				log::warn!("Database file was corrupted, deleting and trying again.");
+
+				let db_res = polodb_core::Database::open_file(resolve_internal_path(std::path::Path::new("assets.db")));
+
+				match db_res {
+					Ok(db) => db,
+					Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
+						Ok(db) => {
+							log::error!("Could not create database file, using memory database instead.");
+							db
+						},
+						Err(_) => panic!("Could not create database"),
+					}
+				}
+			}
+		};
+
 		AssetManager {
 			asset_handlers: Vec::new(),
 		}
@@ -37,7 +82,17 @@ impl AssetManager {
 
 		let asset_resolver = MyAssetResolver {};
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, url, &json));
+		struct MyStorageBackend {}
+
+		impl StorageBackend for MyStorageBackend {
+			fn store(&self, _: GenericResourceSerialization) -> Result<(), ()> {
+				Ok(())
+			}
+		}
+
+		let storage_backend = MyStorageBackend {};
+
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, &storage_backend, url, &json));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -49,109 +104,31 @@ impl AssetManager {
 
 		Ok(())
 	}
+}
 
-	// Recursively loads all the resources needed to load the resource at the given url.
-	// **Will** load from source and cache the resources if they are not already cached.
-	// fn gather<'a>(&'a self, db: &'a polodb_core::Database, url: &'a str) -> Pin<Box<dyn std::future::Future<Output = Option<Vec<polodb_core::bson::Document>>> + 'a>> {
-	// 	Box::pin(async move {
-	// 		let resource_documents = if let Some(resource_document) = db.collection::<polodb_core::bson::Document>("resources").find_one(polodb_core::bson::doc!{ "url": url }).unwrap() {
-	// 			let mut documents = vec![];
-				
-	// 			if let Some(polodb_core::bson::Bson::Array(required_resources)) = resource_document.get("required_resources") {
-	// 				for required_resource in required_resources {
-	// 					if let polodb_core::bson::Bson::Document(required_resource) = required_resource {
-	// 						let resource_path = required_resource.get("url").unwrap().as_str().unwrap();
-	// 						documents.append(&mut self.gather(db, resource_path).await?);
-	// 					}
+fn resolve_internal_path(path: &std::path::Path) -> std::path::PathBuf {
+	if cfg!(test) {
+		std::path::PathBuf::from("../.byte-editor/").join(path)
+	} else {
+		std::path::PathBuf::from(".byte-editor/").join(path)
+	}
+}
 
-	// 					if let polodb_core::bson::Bson::String(required_resource) = required_resource {
-	// 						let resource_path = required_resource.as_str();
-	// 						documents.append(&mut self.gather(db, resource_path).await?);
-	// 					}
-	// 				}
-	// 			}
-
-	// 			documents.push(resource_document);
-
-	// 			documents
-	// 		} else {
-	// 			let mut loaded_resource_documents = Vec::new();
-
-	// 			let asset_type = self.get_url_type(url)?;
-
-	// 			let resource_handlers = self.resource_handlers.iter().filter(|h| h.can_handle_type(&asset_type));
-
-	// 			for resource_handler in resource_handlers {
-	// 				let gg = resource_handler.process(self, url,).await.unwrap();
-
-	// 				for g in gg {
-	// 					match g {
-	// 						ProcessedResources::Generated(g) => {
-	// 							for e in &g.0.required_resources {
-	// 								match e {
-	// 									ProcessedResources::Generated(g) => {
-	// 										loaded_resource_documents.push(self.write_resource_to_cache(g,).await?);
-	// 									},
-	// 									ProcessedResources::Reference(r) => {
-	// 										loaded_resource_documents.append(&mut self.gather(db, r).await?);
-	// 									}
-	// 								}
-	// 							}
-
-	// 							loaded_resource_documents.push(self.write_resource_to_cache(&g,).await?);
-	// 						},
-	// 						ProcessedResources::Reference(r) => {
-	// 							loaded_resource_documents.append(&mut self.gather(db, &r).await?);
-	// 						}
-	// 					}
-	// 				}
-	// 			}
-
-	// 			if loaded_resource_documents.is_empty() {
-	// 				log::warn!("No resource handler could handle resource: {}", url);
-	// 			}
-
-	// 			loaded_resource_documents
-	// 		};
-
-
-	// 		Some(resource_documents)
-	// 	})
-	// }
-
-	// Tries to load a resource from cache.\
-	// It also resolves all dependencies.\
-	// async fn load_from_cache_or_source(&self, url: &str) -> Option<Request> {
-	// 	let resource_descriptions = self.gather(&self.db, url).await.expect("Could not load resource");
-
-	// 	for r in &resource_descriptions {
-	// 		log::trace!("Loaded resource: {:#?}", r);
-	// 	}
-
-	// 	let request = Request {
-	// 		resources: resource_descriptions.iter().map(|r|
-	// 			ResourceRequest { 
-	// 				_id: r.get_object_id("_id").unwrap(),
-	// 				id: r.get_i64("id").unwrap() as u64,
-	// 				url: r.get_str("url").unwrap().to_string(),
-	// 				size: r.get_i64("size").unwrap() as u64,
-	// 				hash: r.get_i64("hash").unwrap() as u64,
-	// 				class: r.get_str("class").unwrap().to_string(),
-	// 				resource: self.deserializers[r.get_str("class").unwrap()](r.get_document("resource").unwrap()), // TODO: handle errors
-	// 				required_resources: if let Ok(rr) = r.get_array("required_resources") { rr.iter().map(|e| e.as_str().unwrap().to_string()).collect() } else { vec![] },
-	// 			}
-	// 		).collect(),
-	// 	};
-
-	// 	Some(request)
-	// }
+fn resolve_asset_path(path: &std::path::Path) -> std::path::PathBuf {
+	if cfg!(test) {
+		std::path::PathBuf::from("../assets/").join(path)
+	} else {
+		std::path::PathBuf::from("assets/").join(path)
+	}
 }
 
 #[cfg(test)]
 mod tests {
 	use smol::future::FutureExt;
 
-	use super::*;
+	use crate::asset::StorageBackend;
+
+use super::*;
 
 	struct TestAssetHandler {
 
@@ -164,7 +141,7 @@ mod tests {
 	}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a dyn AssetResolver, url: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+		fn load<'a>(&'a self, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, url: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 			let res = if url == "http://example.com" {
 				Some(Ok(()))
 			} else {

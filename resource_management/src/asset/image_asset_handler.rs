@@ -3,7 +3,7 @@ use utils::Extent;
 
 use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization};
 
-use super::{asset_handler::AssetHandler, AssetResolver};
+use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
 struct ImageAssetHandler {
 }
@@ -15,7 +15,7 @@ impl ImageAssetHandler {
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver,  url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "png" { return None; }
@@ -113,7 +113,7 @@ impl AssetHandler for ImageAssetHandler {
 				compression,
 			});
 
-			// Ok(vec![ProcessedResources::Generated((resource_document, data))])
+			storage_backend.store(resource_document);
 
 			Some(Ok(()))
 		}.boxed()
@@ -123,11 +123,12 @@ impl AssetHandler for ImageAssetHandler {
 #[cfg(test)]
 mod tests {
 	use super::{ImageAssetHandler};
-	use crate::asset::{asset_handler::AssetHandler, tests::TestAssetResolver};
+	use crate::asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
 
 	#[test]
 	fn load_image() {
 		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = "patterned_brick_floor_02_diff_2k.png";
@@ -135,9 +136,15 @@ mod tests {
 			"url": url,
 		};
 
-		let result = smol::block_on(asset_handler.load(&asset_resolver, &url, &doc));
+		let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset");
 
-		assert!(result.is_some());
-		assert!(result.unwrap().is_ok());
+		let generated_resources = storage_backend.get_resources();
+
+		assert_eq!(generated_resources.len(), 1);
+
+		let resource = &generated_resources[0];
+
+		assert_eq!(resource.url, "patterned_brick_floor_02_diff_2k.png");
+		assert_eq!(resource.class, "Image");
 	}
 }

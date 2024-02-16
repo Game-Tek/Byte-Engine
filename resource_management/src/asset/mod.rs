@@ -3,6 +3,8 @@
 
 use smol::{future::FutureExt, io::AsyncReadExt};
 
+use crate::GenericResourceSerialization;
+
 pub mod asset_manager;
 pub mod asset_handler;
 
@@ -67,19 +69,28 @@ pub trait AssetResolver: Sync + Send {
 	}
 }
 
+pub trait StorageBackend: Sync + Send {
+	fn store(&self, resource: GenericResourceSerialization) -> Result<(), ()>;
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use smol::future::FutureExt;
 
-    use super::{read_asset_from_source, AssetResolver};
+    use crate::GenericResourceSerialization;
+
+    use super::{read_asset_from_source, AssetResolver, StorageBackend};
 
 	pub struct TestAssetResolver {
-
+		
 	}
 
 	impl TestAssetResolver {
 		pub fn new() -> TestAssetResolver {
-			TestAssetResolver {}
+			TestAssetResolver {
+			}
 		}
 	}
 
@@ -88,6 +99,29 @@ mod tests {
 			async move {
 				read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await.ok()
 			}.boxed()
+		}
+	}
+
+	pub struct TestStorageBackend {
+		resources: Arc<Mutex<Vec<GenericResourceSerialization>>>,
+	}
+
+	impl TestStorageBackend {
+		pub fn new() -> TestStorageBackend {
+			TestStorageBackend {
+				resources: Arc::new(Mutex::new(Vec::new())),
+			}
+		}
+
+		pub fn get_resources(&self) -> Vec<GenericResourceSerialization> {
+			self.resources.lock().unwrap().clone()
+		}
+	}
+
+	impl StorageBackend for TestStorageBackend {
+		fn store(&self, resource: GenericResourceSerialization) -> Result<(), ()> {
+			self.resources.lock().unwrap().push(resource);
+			Ok(())
 		}
 	}
 }

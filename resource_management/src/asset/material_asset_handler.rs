@@ -4,7 +4,7 @@ use smol::future::FutureExt;
 
 use crate::{resource::material_resource_handler::ShaderGenerator, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources};
 
-use super::{asset_handler::AssetHandler, AssetResolver};
+use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
 struct MaterialAssetHandler {
 	generator: Option<Box<dyn ShaderGenerator>>,
@@ -23,7 +23,7 @@ impl MaterialAssetHandler {
 }
 
 impl AssetHandler for MaterialAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "json" { return None; }
@@ -148,12 +148,15 @@ fn treat_shader(generator: &dyn ShaderGenerator, path: &str, domain: &str, stage
 
 	// TODO: if shader fails to compile try to generate a failsafe shader
 
-	let compilation_artifact = match binary { Ok(binary) => { binary } Err(err) => {
-		let error_string = err.to_string();
-		let error_string = ghi::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
-		log::error!("Error compiling shader:\n{}", error_string);
-		return Some(Err(err.to_string()));
-	} };
+	let compilation_artifact = match binary {
+		Ok(binary) => { binary }
+		Err(err) => {
+			let error_string = err.to_string();
+			let error_string = ghi::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
+			log::error!("Error compiling shader:\n{}", error_string);
+			return Some(Err(err.to_string()));
+		}
+	};
 
 	if compilation_artifact.get_num_warnings() > 0 {
 		log::warn!("Shader warnings: {}", compilation_artifact.get_warning_messages());

@@ -75,7 +75,7 @@ pub trait StorageBackend: Sync + Send {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{collections::HashMap, sync::{Arc, Mutex}};
 
     use smol::future::FutureExt;
 
@@ -84,20 +84,34 @@ mod tests {
     use super::{read_asset_from_source, AssetResolver, StorageBackend};
 
 	pub struct TestAssetResolver {
-		
+		files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
 	}
 
 	impl TestAssetResolver {
 		pub fn new() -> TestAssetResolver {
 			TestAssetResolver {
+				files: Arc::new(Mutex::new(HashMap::new())),
 			}
+		}
+
+		pub fn add_file(&self, name: &'static str, data: &[u8]) {
+			self.files.lock().unwrap().insert(name, data.into());
 		}
 	}
 
 	impl AssetResolver for TestAssetResolver {
 		fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
 			async move {
-				read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await.ok()
+				if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
+					Some(x)
+				} else {
+					if let Some(f) = self.files.lock().unwrap().get(url) {
+						// Extract extension from url
+						Some((f.to_vec(), url.split('.').last().unwrap().to_string()))
+					} else {
+						None
+					}
+				}
 			}.boxed()
 		}
 	}

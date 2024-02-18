@@ -1,13 +1,13 @@
-use std::ops::Deref;
+use std::{borrow::Borrow, cell::RefCell, ops::Deref};
 
 use smol::future::FutureExt;
 
-use crate::{resource::material_resource_handler::ShaderGenerator, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources};
+use crate::{resource::material_resource_handler::ProgramGenerator, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources};
 
 use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
 struct MaterialAssetHandler {
-	generator: Option<Box<dyn ShaderGenerator>>,
+	generator: Option<Box<dyn ProgramGenerator>>,
 }
 
 impl MaterialAssetHandler {
@@ -17,7 +17,7 @@ impl MaterialAssetHandler {
 		}
 	}
 
-	pub fn set_shader_generator<G: ShaderGenerator + 'static>(&mut self, generator: G) {
+	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
 		self.generator = Some(Box::new(generator));
     }
 }
@@ -54,20 +54,22 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				}
 
-				// Ok(vec![ProcessedResources::Generated((GenericResourceSerialization::new(url.to_string(), Material {
-				// 	albedo: Property::Factor(Value::Vector3([1f32, 0f32, 0f32])),
-				// 	normal: Property::Factor(Value::Vector3([0f32, 0f32, 1f32])),
-				// 	roughness: Property::Factor(Value::Scalar(0.5f32)),
-				// 	metallic: Property::Factor(Value::Scalar(0.0f32)),
-				// 	emissive: Property::Factor(Value::Vector3([0f32, 0f32, 0f32])),
-				// 	occlusion: Property::Factor(Value::Scalar(0f32)),
-				// 	double_sided: false,
-				// 	alpha_mode: AlphaMode::Opaque,
-				// 	model: Model {
-				// 		name: Self::RENDER_MODEL.to_string(),
-				// 		pass: "MaterialEvaluation".to_string(),
-				// 	},
-				// }).required_resources(&required_resources), Vec::new()))])
+				let resource = GenericResourceSerialization::new(url.to_string(), Material {
+					albedo: Property::Factor(Value::Vector3([1f32, 0f32, 0f32])),
+					normal: Property::Factor(Value::Vector3([0f32, 0f32, 1f32])),
+					roughness: Property::Factor(Value::Scalar(0.5f32)),
+					metallic: Property::Factor(Value::Scalar(0.0f32)),
+					emissive: Property::Factor(Value::Vector3([0f32, 0f32, 0f32])),
+					occlusion: Property::Factor(Value::Scalar(0f32)),
+					double_sided: false,
+					alpha_mode: AlphaMode::Opaque,
+					model: Model {
+						name: "Visibility".to_string(),
+						pass: "MaterialEvaluation".to_string(),
+					},
+				}).required_resources(&required_resources);
+
+				storage_backend.store(resource);
 			} else {
 				let variant_json = asset_json;
 
@@ -91,16 +93,14 @@ impl AssetHandler for MaterialAssetHandler {
 	}
 }
 
-async fn produce_shader(generator: &dyn ShaderGenerator, asset_resolver: &dyn AssetResolver, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
+async fn produce_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
 	let path = shader_json.as_str()?;
 	let (arlp, format) = asset_resolver.resolve(&path).await?;
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
 	let shader_option = if format == "glsl" {
-		Some((jspd::lexer::Node {
-			node: jspd::lexer::Nodes::GLSL { code: shader_code },
-		}, path.to_string()))
+		Some((jspd::lexer::Node::glsl(shader_code), path.to_string()))
 	} else if format == "besl" {
 		Some((jspd::compile_to_jspd(&shader_code).unwrap(), path.to_string()))
 	} else {
@@ -108,7 +108,7 @@ async fn produce_shader(generator: &dyn ShaderGenerator, asset_resolver: &dyn As
 	};
 
 	if let Some((shader, path)) = shader_option {
-		Some(treat_shader(generator, &path, domain, stage, material, shader,)?.unwrap())
+		Some(treat_shader(generator, &path, domain, stage, material, &shader,)?.unwrap())
 	} else {
 		let default_shader = match stage {
 			"Vertex" => default_vertex_shader(),
@@ -116,18 +116,112 @@ async fn produce_shader(generator: &dyn ShaderGenerator, asset_resolver: &dyn As
 			_ => { panic!("Invalid shader stage") }
 		};
 
-		let shader_node = jspd::lexer::Node {
-			node: jspd::lexer::Nodes::GLSL { code: default_shader.to_string() },
-		};
+		let shader_node = jspd::lexer::Node::glsl(default_shader.to_string());
 
-		Some(treat_shader(generator, "", domain, stage, material, shader_node,)?.unwrap())
+		Some(treat_shader(generator, "", domain, stage, material, &shader_node,)?.unwrap())
 	}
 }
 
-fn treat_shader(generator: &dyn ShaderGenerator, path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: jspd::lexer::Node,) -> Option<Result<ProcessedResources, String>> {
+fn generate_shader_internal(string: &mut String, main_function_node: &jspd::Node) {
+	let node = main_function_node;
+	if let Some(parent) = node.parent() {
+		if let Some(parent) = parent.upgrade() {
+			generate_shader_internal(string, RefCell::borrow(&parent).deref());
+		}
+	}
+
+	match node.node() {
+		jspd::Nodes::Null => {}
+		jspd::Nodes::Scope { name: _, children } => {
+			for child in children {
+				let child = RefCell::borrow(&child);
+				generate_shader_internal(string, &child,);
+			}
+		}
+		jspd::Nodes::Function { name, params: _, return_type: _, statements, raw: _ } => {
+			match name.as_str() {
+				_ => {
+					for statement in statements {
+						let statement = RefCell::borrow(&statement);
+						generate_shader_internal(string, &statement,);
+						string.push_str(";\n");
+					}
+				}
+			}
+		}
+		jspd::Nodes::Struct { fields, .. } => {
+			for field in fields {
+				let field = RefCell::borrow(&field);
+				generate_shader_internal(string, &field,);
+			}
+		}
+		jspd::Nodes::Member { .. } => {
+
+		}
+		jspd::Nodes::GLSL { code } => {
+			string.push_str(code);
+		}
+		jspd::Nodes::Expression(expression) => {
+			match expression {
+				jspd::Expressions::Operator { operator, left: _, right } => {
+					if operator == &jspd::Operators::Assignment {
+						string.push_str(&format!("albedo = vec3("));
+						let right = RefCell::borrow(&right);
+						generate_shader_internal(string, &right,);
+						string.push_str(")");
+					}
+				}
+				jspd::Expressions::FunctionCall { name, parameters, .. } => {
+					match name.as_str() {
+						"sample" => {
+							string.push_str(&format!("textureGrad("));
+							for parameter in parameters {
+								let parameter = RefCell::borrow(&parameter);
+								generate_shader_internal(string, &parameter,);
+							}
+							string.push_str(&format!(", uv, vec2(0.5), vec2(0.5f))"));
+						}
+						_ => {
+							string.push_str(&format!("{}(", name));
+							for parameter in parameters {
+								let parameter = RefCell::borrow(&parameter);
+								generate_shader_internal(string, &parameter,);
+							}
+							string.push_str(&format!(")"));
+						}
+					}
+				}
+				jspd::Expressions::Member { name } => {
+					string.push_str(name);
+				}
+				_ => panic!("Invalid expression")
+			}
+		}
+	}
+}
+
+fn generate_shader(main_function_node: &jspd::Node) -> String {
+	// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
+	let mut string = String::with_capacity(2048);
+
+	generate_shader_internal(&mut string, main_function_node);
+
+	string
+}
+
+fn treat_shader(generator: &dyn ProgramGenerator, path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: &jspd::NodeReference,) -> Option<Result<ProcessedResources, String>> {
 	let visibility = generator;
 
-	let glsl = visibility.transform(material, &shader_node, stage)?;
+	let main = match RefCell::borrow(&shader_node).node() {
+		jspd::Nodes::Scope { children, .. } => {
+			children[0].clone()
+		}
+		_ => {
+			return Some(Err("Invalid shader".to_string()));
+		}
+	};
+
+	let glsl = generate_shader(RefCell::borrow(&main).deref());
 
 	log::debug!("Generated shader: {}", &glsl);
 
@@ -184,4 +278,78 @@ fn default_vertex_shader() -> &'static str {
 
 fn default_fragment_shader() -> &'static str {
 	"void main() { out_color = get_debug_color(in_instance_index); }"
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{MaterialAssetHandler};
+	use crate::{asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, resource::material_resource_handler::ProgramGenerator};
+
+	#[test]
+	fn load_material() {
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
+		let mut asset_handler = MaterialAssetHandler::new();
+
+		struct TestShaderGenerator {
+
+		}
+
+		impl TestShaderGenerator {
+			fn new() -> TestShaderGenerator {
+				TestShaderGenerator {}
+			}
+		}
+
+		impl ProgramGenerator for TestShaderGenerator {
+			fn transform(&self, children: Vec<std::rc::Rc<jspd::Node>>) -> (&'static str, jspd::Node) {
+				todo!()
+			}
+		}
+
+		let shader_generator = TestShaderGenerator::new();
+
+		asset_handler.set_shader_generator(shader_generator);
+
+		let url = "material.json";
+
+		let material_json = r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Fragment": "shaders/fragment.besl"
+			},
+			"variables": [
+				{
+					"name": "color",
+					"data_type": "vec4f",
+					"type": "Static",
+					"value": "Purple"
+				}
+			]
+		}"#;
+
+		asset_resolver.add_file(url, material_json.as_bytes());
+
+		let shader_file = "main: fn () -> void {
+			out_color = color;
+		}";
+
+		asset_resolver.add_file("shaders/fragment.besl", shader_file.as_bytes());
+
+		let doc = json::object! {
+			"url": url,
+		};
+
+		let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset");
+
+		let generated_resources = storage_backend.get_resources();
+
+		assert_eq!(generated_resources.len(), 2);
+
+		let resource = &generated_resources[0];
+
+		assert_eq!(resource.url, "material.json");
+		assert_eq!(resource.class, "Material");
+	}
 }

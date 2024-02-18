@@ -260,8 +260,12 @@ fn try_execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], iterator
 	None
 }
 
+fn is_identifier(c: char) -> bool { // TODO: validate number at end of identifier
+	c.is_alphanumeric() || c == '_'
+}
+
 fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	let mut r#type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find type while parsing member {}.", name) })?.clone();
 
@@ -295,7 +299,7 @@ fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramStat
 }
 
 fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "struct" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "{" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find {{ after struct {} declaration", name) })?;
@@ -330,9 +334,9 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 }
 
 fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
-	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) })?;
+	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) }).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 
 	expressions.push(Atoms::VariableDeclaration{ name: variable_name.clone(), r#type: variable_type.clone() });
 
@@ -347,6 +351,7 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 
 fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	name.chars().all(char::is_alphanumeric).then(|| ()).ok_or(ParsingFailReasons::NotMine)?;
 
 	expressions.push(Atoms::Member{ name: name.clone() });
 
@@ -401,17 +406,17 @@ fn parse_operator<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 }
 
 fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
-	let function_name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let function_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
 	let mut parameters = vec![];
 
 	loop {
-		let (expressions, new_iterator) = parse_rvalue(iterator.clone(), program, Vec::new())?;
-
-		parameters.push(expressions);
-
-		iterator = new_iterator;
+		if let Some(a) = try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), program, Vec::new()) {
+			let (expressions, new_iterator) = a?;
+			parameters.push(expressions);
+			iterator = new_iterator;
+		}
 
 		// Check if iter is comma
 		if iterator.clone().peekable().peek().ok_or(ParsingFailReasons::StreamEndedPrematurely)?.as_str() == "," { iterator.next(); }
@@ -433,8 +438,8 @@ fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: 
 fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState,) -> FeatureParserResult<'a> {
 	let parsers = vec![
 		parse_var_decl,
-		parse_variable,
 		parse_function_call,
+		parse_variable,
 	];
 
 	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, program, Vec::new())?;
@@ -480,7 +485,8 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &Program
 }
 
 fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
+	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
+
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "fn" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
@@ -494,11 +500,11 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 	let mut statements = vec![];
 
 	loop {
-		let ((expression, _), new_iterator) = parse_statement(iterator.clone(), program)?;
-
-		iterator = new_iterator;
-
-		statements.push(expression);
+		if let Some(Ok(((expression, _), new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone(), program) {
+			iterator = new_iterator;
+	
+			statements.push(expression);
+		}
 
 		// check if iter is close brace
 		if iterator.clone().peekable().peek().unwrap().as_str() == "}" {
@@ -507,7 +513,13 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		}
 	}
 
-	Ok(((Rc::new(make_function(name, vec![], return_type, statements, None)), program.clone()), iterator))
+	let mut program = program.clone();
+
+	let node = Rc::new(make_function(name, vec![], return_type, statements, None));
+
+	program.types.insert(name.clone(), node.clone());
+
+	Ok(((node, program.clone()), iterator))
 }
 
 use std::ops::Index;
@@ -517,7 +529,7 @@ impl Index<&str> for Node {
 
     fn index(&self, index: &str) -> &Self::Output {
 		match &self.node {
-			Nodes::Scope { name, children } => {
+			Nodes::Scope { children, .. } => {
 				for child in children {
 					match &child.node {
 						Nodes::Scope { name: child_name, children: _ } => { if child_name == index { return child; } }
@@ -528,9 +540,9 @@ impl Index<&str> for Node {
 					}
 				}
 			}
-			Nodes::Struct { name, fields } => {
+			Nodes::Struct { fields, .. } => {
 				for field in fields {
-					if let Nodes::Member { name: child_name, r#type } = &field.node {
+					if let Nodes::Member { name: child_name, .. } = &field.node {
 						if child_name == index {
 							return &field;
 						}
@@ -607,7 +619,7 @@ Light: struct {
 
 		program.types.get("Light").expect("Failed to get Light type");
 
-		if let Nodes::Struct { name, fields } = &node.node {
+		if let Nodes::Struct { name, .. } = &node.node {
 			assert_eq!(name, "root");
 			assert_struct(&node["Light"]);
 		}
@@ -655,7 +667,7 @@ main: fn () -> void {
 		let tokens = tokenize(source).unwrap();
 		let (node, _program) = parse(tokens).expect("Failed to parse");
 
-		if let Nodes::Scope{ name, children } = &node.node {
+		if let Nodes::Scope{ name, .. } = &node.node {
 			assert_eq!(name, "root");
 			assert_function(&node["main"]);
 		} else { panic!("Not root node") }
@@ -675,7 +687,7 @@ main: fn () -> void {
 
 		let main_node = &node["main"];
 
-		if let Nodes::Function { name, statements, raw, return_type, params } = &main_node.node {
+		if let Nodes::Function { name, statements, return_type, params, .. } = &main_node.node {
 			assert_eq!(name, "main");
 			assert_eq!(statements.len(), 2);
 			assert_eq!(return_type, "void");
@@ -688,13 +700,13 @@ main: fn () -> void {
 			if let Nodes::Expression(Expressions::Operator { name, left: var_decl, right: multiply }) = &statement0.node {
 				assert_eq!(name, "=");
 
-				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = &var_decl.node {
+				if let Nodes::Expression(Expressions::VariableDeclaration { .. }) = &var_decl.node {
 				} else { panic!("Not a variable declaration"); }
 
 				if let Nodes::Expression(Expressions::Operator { name, left: vec4, right: literal }) = &multiply.node {
 					assert_eq!(name, "*");
 
-					if let Nodes::Expression(Expressions::FunctionCall { name, parameters, }) = &vec4.node {
+					if let Nodes::Expression(Expressions::FunctionCall { name, .. }) = &vec4.node {
 						assert_eq!(name, "vec4");
 					} else { panic!("Not a function call"); }
 
@@ -789,6 +801,24 @@ main: fn () -> void {
 				assert_eq!(name, "color");
 				assert_eq!(r#type, "In<vec4f>");
 			} else { panic!("Not a feature"); }
+		}
+	}
+
+	#[test]
+	fn test_parse_multiple_functions() {
+		let source = "
+used: fn () -> void {}
+not_used: fn () -> void {}
+
+main: fn () -> void {
+	used();
+}";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let (node, _) = parse(tokens).expect("Failed to parse");
+
+		if let Nodes::Scope { children, .. } = &node.node {
+			assert_eq!(children.len(), 3);
 		}
 	}
 }

@@ -1,5 +1,7 @@
 //! This module contains all code related to the parsing of the BESL language and the generation of the JSPD.
 
+#![feature(new_uninit)]
+
 use std::{collections::HashMap, rc::Rc};
 
 mod tokenizer;
@@ -11,7 +13,13 @@ pub use lexer::Operators;
 pub use lexer::Node;
 pub use lexer::Nodes;
 
-pub fn compile_to_jspd(source: &str) -> Result<lexer::Node, CompilationError> {
+pub use crate::lexer::NodeReference;
+
+pub fn compile_to_jspd(source: &str) -> Result<NodeReference, CompilationError> {
+	if source.split_whitespace().next() == None {
+		return Ok(lexer::Node::scope("".to_string(), Vec::new()));
+	}
+
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
 	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
 	let jspd = lexer::lex(&parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?;
@@ -25,7 +33,7 @@ pub enum CompilationError {
 }
 
 // Expects a JSON object, describing the program in a parsed form.
-pub fn json_to_jspd(source: &json::JsonValue) -> Result<lexer::Node, ()> {
+pub fn json_to_jspd(source: &json::JsonValue) -> Result<NodeReference, ()> {
 	fn process_parser_nodes(name: &str, node: &json::JsonValue, parser_program: &mut parser::ProgramState) -> Result<Rc<parser::Node>, ()> {
 		let parser_node = match node {
 			json::JsonValue::Object(obj) => {
@@ -191,7 +199,9 @@ mod tests {
 
 		let jspd = json_to_jspd(&json).unwrap();
 
-		if let lexer::Nodes::Scope { name, children } = jspd.node {
+		let jspd = jspd.borrow();
+
+		if let lexer::Nodes::Scope { name, children } = jspd.node() {
 			assert_eq!(name, "root");
 			assert!(children.len() > 1);
 		} else {

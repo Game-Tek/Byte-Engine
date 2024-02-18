@@ -7,9 +7,9 @@ use super::{resource_handler::ResourceHandler, resource_manager::ResourceManager
 
 pub struct MaterialResourcerHandler {}
 
-pub trait ShaderGenerator: Sync + Send {
-	fn process(&self, children: Vec<std::rc::Rc<jspd::Node>>) -> (&'static str, jspd::Node);
-	fn transform(&self, material: &json::JsonValue, shader_node: &jspd::lexer::Node, stage: &str) -> Option<String>;
+pub trait ProgramGenerator: Sync + Send {
+	/// Transforms a program.
+	fn transform(&self, children: Vec<std::rc::Rc<jspd::Node>>) -> (&'static str, jspd::Node);
 }
 
 impl MaterialResourcerHandler {

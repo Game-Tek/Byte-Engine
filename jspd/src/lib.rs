@@ -15,14 +15,25 @@ pub use lexer::Nodes;
 
 pub use crate::lexer::NodeReference;
 
-pub fn compile_to_jspd(source: &str) -> Result<NodeReference, CompilationError> {
+/// Compiles a BESL source code string into a JSPD.
+/// 
+/// # Arguments
+/// 
+/// * `source` - The source code to compile.
+/// * `parent` - An optional reference to a parent Scope node where the source code will be compiled into.
+pub fn compile_to_jspd(source: &str, parent: Option<NodeReference>) -> Result<NodeReference, CompilationError> {
 	if source.split_whitespace().next() == None {
 		return Ok(lexer::Node::scope("".to_string(), Vec::new()));
 	}
 
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
 	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
-	let jspd = lexer::lex(&parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?;
+
+	let jspd = if let Some(parent)  = parent {
+		lexer::lex_with_root(parent, &parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?
+	} else {
+		lexer::lex(&parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?
+	};
 
 	Ok(jspd)
 }
@@ -201,7 +212,7 @@ mod tests {
 
 		let jspd = jspd.borrow();
 
-		if let lexer::Nodes::Scope { name, children } = jspd.node() {
+		if let lexer::Nodes::Scope { name, children, .. } = jspd.node() {
 			assert_eq!(name, "root");
 			assert!(children.len() > 1);
 		} else {

@@ -24,6 +24,15 @@ impl ShaderGenerator {
 	}
 }
 
+pub struct GLSLSettings {
+	version: String,
+}
+
+pub struct ShaderGenerationSettings {
+	glsl: GLSLSettings,
+	stage: String,
+}
+
 struct ShaderCompilation {
 	minified: bool,
 	present_symbols: HashSet<jspd::NodeReference>,
@@ -39,6 +48,17 @@ impl ShaderCompilation {
 		string
 	}
 
+	pub fn generate_glsl_shader(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &jspd::NodeReference) -> String {
+		// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
+		let mut string = String::with_capacity(2048);
+	
+		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
+
+		self.generate_shader_internal(&mut string, main_function_node);
+	
+		string
+	}
+
 	fn generate_shader_internal(&mut self, string: &mut String, main_function_node: &jspd::NodeReference) {
 		if self.present_symbols.contains(main_function_node) { return; }
 
@@ -46,7 +66,7 @@ impl ShaderCompilation {
 	
 		match node.node() {
 			jspd::Nodes::Null => {}
-			jspd::Nodes::Scope { name: _, children } => {
+			jspd::Nodes::Scope { children, .. } => {
 				for child in children {
 					self.generate_shader_internal(string, &child,);
 				}
@@ -129,7 +149,7 @@ impl ShaderCompilation {
 						}
 						string.push_str(&format!(")"));
 					}
-					jspd::Expressions::Member { name } => {
+					jspd::Expressions::Member { name, .. } => {
 						string.push_str(name);
 					}
 					jspd::Expressions::VariableDeclaration { name, r#type } => {
@@ -141,7 +161,60 @@ impl ShaderCompilation {
 					_ => panic!("Invalid expression")
 				}
 			}
+			jspd::Nodes::Binding { name, set, binding, read, write } => {
+				string.push_str(&format!("layout(set={}, binding={}) uniform ", set, binding));
+				if *read && !*write { string.push_str("readonly "); }
+				if *write && !*read { string.push_str("writeonly "); }
+				string.push_str(&name);
+				if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
+			}
 		}
+	}
+
+	fn generate_glsl_header_block(&self, glsl_block: &mut String, compilation_settings: &ShaderGenerationSettings) {
+		let glsl_version = &compilation_settings.glsl.version;
+	
+		glsl_block.push_str(&format!("#version {glsl_version} core\n"));
+	
+		// shader type
+	
+		let shader_stage = compilation_settings.stage.as_str();
+	
+		match shader_stage {
+			"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
+			"Fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
+			"Compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+			"Mesh" => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
+			_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
+		}
+	
+		// extensions
+	
+		glsl_block.push_str("#extension GL_EXT_shader_16bit_storage:require\n");
+		glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types:require\n");
+		glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier:require\n");
+		glsl_block.push_str("#extension GL_EXT_scalar_block_layout:require\n");
+		glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
+		glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
+		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
+	
+		match shader_stage {
+			"Compute" => {
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:enable\n");
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic:enable\n");
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:enable\n");
+				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:enable\n");
+			}
+			"Mesh" => {
+				glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
+			}
+			_ => {}
+		}
+		// memory layout declarations
+	
+		glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
+	
+		glsl_block.push_str("const float PI = 3.14159265359;");
 	}
 }
 
@@ -156,11 +229,33 @@ mod tests {
 		let script = r#"
 		"#;
 
-		let main_function_node = jspd::compile_to_jspd(&script).unwrap();
+		let script_node = jspd::compile_to_jspd(&script, None).unwrap();
 
 		let shader_generator = ShaderGenerator::new();
 
-		let shader = shader_generator.compilation().generate_shader(&main_function_node);
+		let shader = shader_generator.compilation().generate_shader(&script_node);
+
+		println!("{}", shader);
+	}
+
+	#[test]
+	fn binding() {
+		let script = r#"
+		use_buffer: fn () -> void {}
+		main: fn () -> void {
+			use_buffer(buffer);
+		}
+		"#;
+
+		let root_node = jspd::Node::scope("root".to_string(), vec![jspd::Node::binding("buffer".to_string(), 0, 0, true, false)]);
+
+		let script_node = jspd::compile_to_jspd(&script, Some(root_node)).unwrap();
+
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		let shader_generator = ShaderGenerator::new();
+
+		let shader = shader_generator.compilation().generate_shader(&main);
 
 		println!("{}", shader);
 	}
@@ -173,9 +268,9 @@ mod tests {
 		}
 		"#;
 
-		let main_function_node = jspd::compile_to_jspd(&script).unwrap();
+		let script_node = jspd::compile_to_jspd(&script, None).unwrap();
 
-		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
 		let shader_generator = ShaderGenerator::new();
 
@@ -204,7 +299,7 @@ mod tests {
 		}
 		"#;
 
-		let main_function_node = jspd::compile_to_jspd(&script).unwrap();
+		let main_function_node = jspd::compile_to_jspd(&script, None).unwrap();
 
 		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
 
@@ -230,7 +325,7 @@ mod tests {
 		}
 		"#;
 
-		let main_function_node = jspd::compile_to_jspd(&script).unwrap();
+		let main_function_node = jspd::compile_to_jspd(&script, None).unwrap();
 
 		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
 

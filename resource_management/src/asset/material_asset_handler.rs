@@ -102,7 +102,7 @@ async fn produce_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn A
 	let shader_option = if format == "glsl" {
 		Some((jspd::lexer::Node::glsl(shader_code), path.to_string()))
 	} else if format == "besl" {
-		Some((jspd::compile_to_jspd(&shader_code).unwrap(), path.to_string()))
+		Some((jspd::compile_to_jspd(&shader_code, None).unwrap(), path.to_string()))
 	} else {
 		None
 	};
@@ -122,93 +122,6 @@ async fn produce_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn A
 	}
 }
 
-fn generate_shader_internal(string: &mut String, main_function_node: &jspd::Node) {
-	let node = main_function_node;
-	if let Some(parent) = node.parent() {
-		if let Some(parent) = parent.upgrade() {
-			generate_shader_internal(string, RefCell::borrow(&parent).deref());
-		}
-	}
-
-	match node.node() {
-		jspd::Nodes::Null => {}
-		jspd::Nodes::Scope { name: _, children } => {
-			for child in children {
-				let child = RefCell::borrow(&child);
-				generate_shader_internal(string, &child,);
-			}
-		}
-		jspd::Nodes::Function { name, params: _, return_type: _, statements, raw: _ } => {
-			match name.as_str() {
-				_ => {
-					for statement in statements {
-						let statement = RefCell::borrow(&statement);
-						generate_shader_internal(string, &statement,);
-						string.push_str(";\n");
-					}
-				}
-			}
-		}
-		jspd::Nodes::Struct { fields, .. } => {
-			for field in fields {
-				let field = RefCell::borrow(&field);
-				generate_shader_internal(string, &field,);
-			}
-		}
-		jspd::Nodes::Member { .. } => {
-
-		}
-		jspd::Nodes::GLSL { code } => {
-			string.push_str(code);
-		}
-		jspd::Nodes::Expression(expression) => {
-			match expression {
-				jspd::Expressions::Operator { operator, left: _, right } => {
-					if operator == &jspd::Operators::Assignment {
-						string.push_str(&format!("albedo = vec3("));
-						let right = RefCell::borrow(&right);
-						generate_shader_internal(string, &right,);
-						string.push_str(")");
-					}
-				}
-				jspd::Expressions::FunctionCall { name, parameters, .. } => {
-					match name.as_str() {
-						"sample" => {
-							string.push_str(&format!("textureGrad("));
-							for parameter in parameters {
-								let parameter = RefCell::borrow(&parameter);
-								generate_shader_internal(string, &parameter,);
-							}
-							string.push_str(&format!(", uv, vec2(0.5), vec2(0.5f))"));
-						}
-						_ => {
-							string.push_str(&format!("{}(", name));
-							for parameter in parameters {
-								let parameter = RefCell::borrow(&parameter);
-								generate_shader_internal(string, &parameter,);
-							}
-							string.push_str(&format!(")"));
-						}
-					}
-				}
-				jspd::Expressions::Member { name } => {
-					string.push_str(name);
-				}
-				_ => panic!("Invalid expression")
-			}
-		}
-	}
-}
-
-fn generate_shader(main_function_node: &jspd::Node) -> String {
-	// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
-	let mut string = String::with_capacity(2048);
-
-	generate_shader_internal(&mut string, main_function_node);
-
-	string
-}
-
 fn treat_shader(generator: &dyn ProgramGenerator, path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: &jspd::NodeReference,) -> Option<Result<ProcessedResources, String>> {
 	let visibility = generator;
 
@@ -221,7 +134,7 @@ fn treat_shader(generator: &dyn ProgramGenerator, path: &str, domain: &str, stag
 		}
 	};
 
-	let glsl = generate_shader(RefCell::borrow(&main).deref());
+	let glsl = String::new();
 
 	log::debug!("Generated shader: {}", &glsl);
 

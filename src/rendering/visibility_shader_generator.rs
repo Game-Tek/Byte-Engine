@@ -80,7 +80,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		let mut node = jspd::json_to_jspd(&value).unwrap();
 
-		if let jspd::lexer::Nodes::Scope { name, children } = &mut node.node {
+		if let jspd::lexer::Nodes::Scope { name, children, .. } = &mut node.node {
 			children.append(&mut parent_children);
 		};
 
@@ -375,7 +375,7 @@ mod tests {
 
 		let shader_source = "main: fn () -> void { out_color = albedo; }";
 
-		let shader_node = jspd::compile_to_jspd(shader_source).unwrap();
+		let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
 
 		let shader_generator = super::VisibilityShaderGenerator::new();
 
@@ -401,7 +401,7 @@ mod tests {
 
 		let shader_source = "main: fn () -> void { out_color = sample(albedo); }";
 
-		let shader_node = jspd::compile_to_jspd(shader_source).unwrap();
+		let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
 
 		let shader_generator = super::VisibilityShaderGenerator::new();
 

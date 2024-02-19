@@ -350,8 +350,7 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 }
 
 fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine)?;
-	name.chars().all(char::is_alphanumeric).then(|| ()).ok_or(ParsingFailReasons::NotMine)?;
+	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 
 	expressions.push(Atoms::Member{ name: name.clone() });
 
@@ -504,6 +503,13 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 			iterator = new_iterator;
 	
 			statements.push(expression);
+		} else {
+			if iterator.clone().peekable().peek().unwrap().as_str() == "}" {
+				iterator.next();
+				break;
+			} else {
+				return Err(ParsingFailReasons::BadSyntax{ message: format!("Expected a }} after function {} declaration.", name) });
+			}
 		}
 
 		// check if iter is close brace

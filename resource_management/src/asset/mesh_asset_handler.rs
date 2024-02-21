@@ -274,7 +274,7 @@ impl AssetHandler for MeshAssetHandler {
 			};
 
 			let resource_document = GenericResourceSerialization::new(url.to_string(), mesh);
-			storage_backend.store(resource_document);
+			storage_backend.store(resource_document, &buffer);
 
 			Some(Ok(()))
 		}.boxed()

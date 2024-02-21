@@ -39,7 +39,7 @@ impl AssetManager {
 			polodb_core::Database::open_memory()
 		};
 
-		let db = match db_res {
+		match db_res {
 			Ok(db) => db,
 			Err(_) => {
 				// Delete file and try again
@@ -85,8 +85,12 @@ impl AssetManager {
 		struct MyStorageBackend {}
 
 		impl StorageBackend for MyStorageBackend {
-			fn store(&self, _: GenericResourceSerialization) -> Result<(), ()> {
+			fn store(&self, _: GenericResourceSerialization, _: &[u8]) -> Result<(), ()> {
 				Ok(())
+			}
+
+			fn read(&self, _: &str) -> Result<(GenericResourceSerialization, Box<[u8]>), ()> {
+				todo!()
 			}
 		}
 

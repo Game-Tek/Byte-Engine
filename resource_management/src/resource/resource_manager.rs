@@ -1,4 +1,4 @@
-use std::{hash::{Hash, Hasher}, io::Read, ops::Deref, pin::Pin};
+use std::hash::{Hash, Hasher};
 use futures::future::join_all;
 use polodb_core::bson::oid::ObjectId;
 use smol::{fs::File, io::{AsyncReadExt, AsyncWriteExt}};
@@ -23,7 +23,6 @@ use super::resource_handler::ResourceHandler;
 pub struct ResourceManager {
 	db: polodb_core::Database,
 	resource_handlers: Vec<Box<dyn ResourceHandler + Send>>,
-	deserializers: std::collections::HashMap<&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>>,
 }
 
 impl From<polodb_core::Error> for LoadResults {
@@ -85,15 +84,10 @@ impl ResourceManager {
 		ResourceManager {
 			db,
 			resource_handlers: Vec::with_capacity(8),
-			deserializers: std::collections::HashMap::with_capacity(8),
 		}
 	}
 
 	pub fn add_resource_handler<T>(&mut self, resource_handler: T) where T: ResourceHandler + Send + 'static {
-		for deserializer in resource_handler.get_deserializers() {
-			self.deserializers.insert(deserializer.0, deserializer.1);
-		}
-
 		self.resource_handlers.push(Box::new(resource_handler));
 	}
 

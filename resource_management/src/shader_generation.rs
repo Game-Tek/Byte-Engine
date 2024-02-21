@@ -41,6 +41,7 @@ struct ShaderCompilation {
 impl ShaderCompilation {
 	pub fn generate_shader(&mut self, main_function_node: &jspd::NodeReference) -> String {
 		// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
+
 		let mut string = String::with_capacity(2048);
 	
 		self.generate_shader_internal(&mut string, main_function_node);
@@ -136,8 +137,11 @@ impl ShaderCompilation {
 							self.generate_shader_internal(string, &right,);
 						}
 					}
-					jspd::Expressions::FunctionCall { name, parameters, function, .. } => {
+					jspd::Expressions::FunctionCall { parameters, function, .. } => {
 						self.generate_shader_internal(string, &function);
+
+						let function = RefCell::borrow(&function);
+						let name = function.get_name().unwrap();
 
 						string.push_str(&format!("{}(", name));
 						for (i, parameter) in parameters.iter().enumerate() {
@@ -149,7 +153,11 @@ impl ShaderCompilation {
 						}
 						string.push_str(&format!(")"));
 					}
-					jspd::Expressions::Member { name, .. } => {
+					jspd::Expressions::Member { name, source, .. } => {
+						if let Some(source) = source {
+							self.generate_shader_internal(string, &source);
+						}
+						
 						string.push_str(name);
 					}
 					jspd::Expressions::VariableDeclaration { name, r#type } => {
@@ -158,15 +166,24 @@ impl ShaderCompilation {
 					jspd::Expressions::Literal { value } => {
 						string.push_str(&format!("{}", value));
 					}
-					_ => panic!("Invalid expression")
+					jspd::Expressions::Return => {
+						string.push_str("return");
+					}
+					jspd::Expressions::Accessor { left, right } => {
+						self.generate_shader_internal(string, &left,);
+						string.push('.');
+						self.generate_shader_internal(string, &right,);
+					}
 				}
 			}
-			jspd::Nodes::Binding { name, set, binding, read, write } => {
-				string.push_str(&format!("layout(set={}, binding={}) uniform ", set, binding));
-				if *read && !*write { string.push_str("readonly "); }
-				if *write && !*read { string.push_str("writeonly "); }
-				string.push_str(&name);
-				if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
+			jspd::Nodes::Binding { name, set, binding, read, write, .. } => {
+				let mut l_string = String::with_capacity(128);
+				l_string.push_str(&format!("layout(set={}, binding={}) uniform ", set, binding));
+				if *read && !*write { l_string.push_str("readonly "); }
+				if *write && !*read { l_string.push_str("writeonly "); }
+				l_string.push_str(&name);
+				if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
+				string.insert_str(0, &l_string);
 			}
 		}
 	}
@@ -241,9 +258,8 @@ mod tests {
 	#[test]
 	fn binding() {
 		let script = r#"
-		use_buffer: fn () -> void {}
 		main: fn () -> void {
-			use_buffer(buffer);
+			buffer;
 		}
 		"#;
 
@@ -264,7 +280,7 @@ mod tests {
 	fn fragment_shader() {
 		let script = r#"
 		main: fn () -> void {
-			albedo: vec3 = vec3(1.0, 0.0, 0.0);
+			albedo: vec3f = vec3f(1.0, 0.0, 0.0);
 		}
 		"#;
 
@@ -276,13 +292,13 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "void main() {\n\tvec3 albedo = vec3(1.0, 0.0, 0.0);\n}\n");
+		assert_eq!(shader, "void main() {\n\tvec3f albedo = vec3f(1.0, 0.0, 0.0);\n}\n");
 
 		let shader_generator = ShaderGenerator::new().minified(true);
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);}\n");
+		assert_eq!(shader, "void main(){vec3f albedo=vec3f(1.0,0.0,0.0);}\n");
 	}
 
 	#[test]

@@ -117,14 +117,29 @@ impl <'a> LoadResourceRequest<'a> {
 }
 
 pub struct ResourceResponse {
-	pub id: u64,
-	pub	url: String,
-	pub size: u64,
-	pub offset: u64,
-	pub hash: u64,
-	pub class: String,
-	pub resource: Box<dyn Resource>,
-	pub required_resources: Vec<String>,
+	id: u64,
+	url: String,
+	size: u64,
+	offset: u64,
+	hash: u64,
+	class: String,
+	resource: Box<dyn Resource>,
+	required_resources: Vec<String>,
+}
+
+impl ResourceResponse {
+	pub fn new<T: Resource>(r: &GenericResourceSerialization, resource: T) -> Self {
+		ResourceResponse {
+			id: 0,
+			url: r.url.clone(),
+			size: 0,
+			offset: 0,
+			hash: 0,
+			class: r.class.clone(),
+			resource: Box::new(resource),
+			required_resources: Vec::new(),
+		}
+	}
 }
 
 /// Trait that defines a resource.

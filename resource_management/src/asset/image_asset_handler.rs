@@ -5,11 +5,11 @@ use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerializ
 
 use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
-struct ImageAssetHandler {
+pub struct ImageAssetHandler {
 }
 
 impl ImageAssetHandler {
-	fn new() -> ImageAssetHandler {
+	pub fn new() -> ImageAssetHandler {
 		ImageAssetHandler {}
 	}
 }
@@ -113,7 +113,7 @@ impl AssetHandler for ImageAssetHandler {
 				compression,
 			});
 
-			storage_backend.store(resource_document);
+			storage_backend.store(resource_document, &buffer);
 
 			Some(Ok(()))
 		}.boxed()

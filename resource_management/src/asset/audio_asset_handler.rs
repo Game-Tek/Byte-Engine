@@ -4,12 +4,12 @@ use crate::{types::{Audio, BitDepths}, GenericResourceSerialization};
 
 use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
-struct AudioAssetHandler {
+pub struct AudioAssetHandler {
 
 }
 
 impl AudioAssetHandler {
-	fn new() -> AudioAssetHandler {
+	pub fn new() -> AudioAssetHandler {
 		AudioAssetHandler {}
 	}
 }
@@ -96,7 +96,7 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			storage_backend.store(GenericResourceSerialization::new(url.to_string(), audio_resource));
+			storage_backend.store(GenericResourceSerialization::new(url.to_string(), audio_resource), data.into());
 
 			Some(Ok(()))
 		}.boxed()
@@ -121,7 +121,7 @@ mod tests {
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset");
+		smol::block_on(audio_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
 
 		let generated_resources = storage_backend.get_resources();
 

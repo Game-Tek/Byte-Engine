@@ -1,13 +1,42 @@
-use smol::{fs::File, future::FutureExt};
+use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
 
-use crate::{CreateInfo, CreateResource, ProcessedResources, Resource, Stream};
+use crate::{GenericResourceSerialization, ResourceResponse, Stream};
 
-use super::{resource_manager,};
+pub enum ReadTargets<'a> {
+	Buffer(&'a mut [u8]),
+	Streams(&'a mut [Stream<'a>]),
+}
+
+pub trait ResourceReader {
+	fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>>;
+}
+
+pub struct FileResourceReader {
+	file: File,
+}
+
+impl FileResourceReader {
+	pub fn new(file: File) -> Self {
+		Self {
+			file,
+		}
+	}
+}
+
+impl ResourceReader for FileResourceReader {
+	fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>> {
+		Box::pin(async move {
+			self.file.seek(std::io::SeekFrom::Start(offset as u64)).await.ok()?;
+			self.file.read_exact(buffer).await.ok()?;
+			Some(())
+		})
+	}
+}
 
 pub trait ResourceHandler {
-	fn can_handle_type(&self, resource_type: &str) -> bool;
+	fn get_handled_resource_classes<'a>(&self,) -> &'a [&'a str] {
+		&[]
+	}
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)>;
-
-	fn read<'a>(&'a self, _resource: &'a dyn Resource, file: &'a mut File, streams: &'a mut [Stream<'a>]) -> utils::BoxedFuture<()>;
+	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, reader: &'a mut dyn ResourceReader, read_target: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<Option<ResourceResponse>>;
 }

@@ -70,11 +70,12 @@ pub trait AssetResolver: Sync + Send {
 }
 
 pub trait StorageBackend: Sync + Send {
-	fn store(&self, resource: GenericResourceSerialization) -> Result<(), ()>;
+	fn store(&self, resource: GenericResourceSerialization, data: &[u8]) -> Result<(), ()>;
+	fn read(&self, id: &str) -> Result<(GenericResourceSerialization, Box<[u8]>), ()>;
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
 
     use smol::future::FutureExt;
@@ -117,7 +118,7 @@ mod tests {
 	}
 
 	pub struct TestStorageBackend {
-		resources: Arc<Mutex<Vec<GenericResourceSerialization>>>,
+		resources: Arc<Mutex<Vec<(GenericResourceSerialization, Box<[u8]>)>>>,
 	}
 
 	impl TestStorageBackend {
@@ -128,14 +129,24 @@ mod tests {
 		}
 
 		pub fn get_resources(&self) -> Vec<GenericResourceSerialization> {
-			self.resources.lock().unwrap().clone()
+			self.resources.lock().unwrap().iter().map(|x| x.0.clone()).collect()
 		}
 	}
 
 	impl StorageBackend for TestStorageBackend {
-		fn store(&self, resource: GenericResourceSerialization) -> Result<(), ()> {
-			self.resources.lock().unwrap().push(resource);
+		fn store(&self, resource: GenericResourceSerialization, data: &[u8]) -> Result<(), ()> {
+			self.resources.lock().unwrap().push((resource, data.into()));
 			Ok(())
+		}
+
+		fn read(&self, id: &str) -> Result<(GenericResourceSerialization, Box<[u8]>), ()> {
+			let resources = self.resources.lock().unwrap();
+			for resource in resources.iter() {
+				if resource.0.url == id {
+					return Ok(resource.clone());
+				}
+			}
+			Err(())
 		}
 	}
 }

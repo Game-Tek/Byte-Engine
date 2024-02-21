@@ -1,9 +1,10 @@
+use polodb_core::bson;
 use serde::Deserialize;
 use smol::{fs::File, io::AsyncReadExt};
 
-use crate::{types::{Material, Shader, ShaderTypes, Variant}, GenericResourceSerialization, ProcessedResources, Resource, Stream};
+use crate::{types::{Material, Shader, ShaderTypes, Variant}, GenericResourceSerialization, ProcessedResources, Resource, ResourceResponse, Stream};
 
-use super::{resource_handler::ResourceHandler, resource_manager::ResourceManager,};
+use super::{resource_handler::{ReadTargets, ResourceHandler, ResourceReader}, resource_manager::ResourceManager,};
 
 pub struct MaterialResourcerHandler {}
 
@@ -20,35 +21,31 @@ impl MaterialResourcerHandler {
 }
 
 impl ResourceHandler for MaterialResourcerHandler {
-	fn can_handle_type(&self, resource_type: &str) -> bool {
-		match resource_type {
-			"json" => true,
-			"glsl" => true,
-			"besl" => true,
-			_ => false
-		}
+	fn get_handled_resource_classes<'a>(&self,) -> &'a [&'a str] {
+		&["Material", "Shader", "Variant"]
 	}
 
-	fn read<'a>(&'a self, _resource: &'a dyn Resource, file: &'a mut File, buffers: &'a mut [Stream<'a>]) -> utils::BoxedFuture<()> {
-		Box::pin(async move { file.read_exact(buffers[0].buffer).await.unwrap(); })
-	}
+	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, file: &'a mut dyn ResourceReader, _: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+		// vec![("Material",
+		// 	Box::new(|_document| {
+		// 		Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())
+		// 	})),
+		// 	("Shader",
+		// 	Box::new(|_document| {
+		// 		Box::new(Shader {
+		// 			stage: ShaderTypes::Compute,
+		// 		})
+		// 	})),
+		// 	("Variant",
+		// 	Box::new(|document| {
+		// 		Box::new(Variant::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap())
+		// 	})),
+		// ]
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
-		vec![("Material",
-			Box::new(|_document| {
-				Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())
-			})),
-			("Shader",
-			Box::new(|_document| {
-				Box::new(Shader {
-					stage: ShaderTypes::Compute,
-				})
-			})),
-			("Variant",
-			Box::new(|document| {
-				Box::new(Variant::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap())
-			})),
-		]
+		Box::pin(async move {
+			let material_resource = Material::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
+			Some(ResourceResponse::new(resource, material_resource))
+		})
 	}
 }
 

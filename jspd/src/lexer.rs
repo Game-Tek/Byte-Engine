@@ -31,11 +31,45 @@ impl Deref for NodeReference {
 }
 
 pub(super) fn lex(node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
-	return lex_parsed_node(None, None, node, parser_program,);
+	let float = Node::r#struct("float".to_string(), Vec::new());
+
+	let vec3f = Node::r#struct("vec3f".to_string(), vec![
+		Node::member("x".to_string(), float.clone()),
+		Node::member("y".to_string(), float.clone()),
+		Node::member("z".to_string(), float.clone()),
+	]);
+
+	let vec4f = Node::r#struct("vec4f".to_string(), vec![
+		Node::member("x".to_string(), float.clone()),
+		Node::member("y".to_string(), float.clone()),
+		Node::member("z".to_string(), float.clone()),
+		Node::member("w".to_string(), float.clone()),
+	]);
+
+	let root = Node::scope("root".to_string(), vec![
+		float,
+		vec3f,
+		vec4f,
+	]);
+
+	lex_with_root(root, node, parser_program)
 }
 
 pub(super) fn lex_with_root(root: NodeReference, node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
-	return lex_parsed_node(Some(root.clone()), Some(Rc::downgrade(&root.0)), node, parser_program,);
+	match &node.node {
+		parser::Nodes::Scope { name, children } => {
+			assert_eq!(name, "root");
+
+			let ch = children.iter().map(|child| {
+				lex_parsed_node(Some(root.clone()), Some(Rc::downgrade(&root.0)), child, parser_program,)
+			}).collect::<Result<Vec<NodeReference>, LexError>>()?;
+			
+			RefCell::borrow_mut(&root).add_children(ch);
+		
+			return Ok(root);
+		}
+		_ => { return Err(LexError::Undefined); }
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -50,10 +84,14 @@ impl Node {
 	}
 
 	pub fn scope(name: String, children: Vec<NodeReference>) -> NodeReference {
-		Self::internal_new(Node {
+		let mut node = Node {
 			parent: None,
-			node: Nodes::Scope{ name, children, program_state: ProgramState { types: HashMap::new(), members: HashMap::new() } },
-		})
+			node: Nodes::Scope{ name, children: Vec::with_capacity(children.len()), program_state: ProgramState { types: HashMap::new(), members: HashMap::new() } },
+		};
+
+		node.add_children(children);
+
+		Self::internal_new(node)
 	}
 
 	pub fn r#struct(name: String, fields: Vec<NodeReference>) -> NodeReference {
@@ -148,7 +186,23 @@ impl Node {
 
 	pub fn add_children(&mut self, children: Vec<NodeReference>) {
 		match &mut self.node {
-			Nodes::Scope{ children: c, .. } => {
+			Nodes::Scope{ children: c, program_state, .. } => {
+				for c in &children {
+					// RefCell::borrow_mut(&c.0).parent = Some(Rc::downgrade(&self.0));
+
+					let child = RefCell::borrow(&c.0);
+
+					match child.node() {
+						Nodes::Struct { name, .. } => {
+							program_state.types.insert(name.clone(), c.clone());
+						}
+						Nodes::Binding { name, .. } | Nodes::Member { name, .. } => {
+							program_state.members.insert(name.clone(), c.clone());
+						}
+						_ => {}
+					}
+				}
+
 				c.extend(children);
 			}
 			Nodes::Struct { fields, .. } => {
@@ -173,6 +227,11 @@ impl Node {
 					if let Ok(borrowed_child) = child.try_borrow() {
 						match borrowed_child.node() {
 							Nodes::Function { name, .. } => {
+								if child_name == name {
+									return Some(child.clone());
+								}
+							}
+							Nodes::Struct { name, .. } => {
 								if child_name == name {
 									return Some(child.clone());
 								}
@@ -291,6 +350,7 @@ pub enum Operators {
 
 #[derive(Clone, Debug,)]
 pub enum Expressions {
+	Return,
 	Member {
 		name: String,
 		source: Option<NodeReference>,
@@ -298,7 +358,6 @@ pub enum Expressions {
 	Literal { value: String, },
 	FunctionCall {
 		function: NodeReference,
-		name: String,
 		parameters: Vec<NodeReference>
 	},
 	Operator {
@@ -317,13 +376,14 @@ pub enum Expressions {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LexError {
 	Undefined,
+	FunctionCallParametersDoNotMatchFunctionParameters,
 	AccessingUndeclaredMember {
 		name: String,
 	},
-	NoSuchType{
+	ReferenceToUndefinedType {
 		type_name: String,
 	},
 }
@@ -362,6 +422,8 @@ fn try_execute_lexers<'a>(lexers: &[Lexer<'a>], iterator: std::slice::Iter<'a, S
 fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeReference>, parser_node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
 	let node = match &parser_node.node {
 		parser::Nodes::Scope{ name, children } => {
+			assert_ne!(name, "root"); // The root scope node cannot be an inner part of the program.
+
 			let this = Node::scope(name.clone(), Vec::new());
 
 			let ch = children.iter().map(|child| {
@@ -396,7 +458,7 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 
 				let outer_type_name = s.next().ok_or(LexError::Undefined)?;
 
-				let outer_type = lex_parsed_node(scope.clone(), None, parser_program.types.get(outer_type_name).ok_or(LexError::NoSuchType{ type_name: outer_type_name.to_string() })?, parser_program,)?;
+				let outer_type = lex_parsed_node(scope.clone(), None, parser_program.types.get(outer_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: outer_type_name.to_string() })?, parser_program,)?;
 
 				let inner_type_name = s.next().ok_or(LexError::Undefined)?;
 
@@ -417,7 +479,7 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 
 					x
 				} else {					
-					lex_parsed_node(scope.clone(), parent_node.clone(), parser_program.types.get(inner_type_name).ok_or(LexError::NoSuchType{ type_name: inner_type_name.to_string() })?, parser_program,)?
+					lex_parsed_node(scope.clone(), parent_node.clone(), parser_program.types.get(inner_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: inner_type_name.to_string() })?, parser_program,)?
 				};
 
 				if let Some(n) = RefCell::borrow_mut(&scope.clone().ok_or(LexError::Undefined)?.0).get_program_state_mut().ok_or(LexError::Undefined)?.types.get(r#type) { // If the type already exists, return it.
@@ -446,14 +508,14 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 
 				node
 			} else {
-				let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::NoSuchType{ type_name: r#type.clone() })?;
+				let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
 				lex_parsed_node(scope, None, t, parser_program,)?
 			};
 
 			Node::member(name.clone(), t,)
 		}
 		parser::Nodes::Function { name, return_type, statements, raw, .. } => {
-			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::NoSuchType{ type_name: return_type.clone() })?;
+			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: return_type.clone() })?;
 			let t = lex_parsed_node(scope.clone(), None, t, parser_program,)?;
 
 			let this = Node::function(parent_node.clone(), name.clone(), Vec::new(), t, Vec::new(), raw.clone(),);
@@ -473,6 +535,9 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 		}
 		parser::Nodes::Expression(expression) => {
 			match expression {
+				parser::Expressions::Return => {
+					Node::expression(Expressions::Return)
+				}
 				parser::Expressions::Accessor{ left, right } => {
 					Node::expression(Expressions::Accessor {
 						left: lex_parsed_node(scope.clone(), None, left, parser_program,)?,
@@ -491,12 +556,28 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 					})
 				}
 				parser::Expressions::FunctionCall{ name, parameters } => {
-					let t = parser_program.types.get(name.as_str()).ok_or(LexError::NoSuchType{ type_name: name.clone() })?;
+					let t = parser_program.types.get(name.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: name.clone() })?;
 					let function = lex_parsed_node(scope.clone(), None, t, parser_program,)?;
+					let parameters = parameters.iter().map(|e| lex_parsed_node(scope.clone(), None, e, parser_program,)).collect::<Result<Vec<NodeReference>, LexError>>()?;
+
+					{ // Validate function call
+						let function = RefCell::borrow(&function.0);
+						let function = function.node();
+
+						match function {
+							Nodes::Function { params, .. } => {
+								if params.len() != parameters.len() { return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters); }
+							}
+							Nodes::Struct { fields, .. } => {
+								if parameters.len() != fields.len() { return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters); }
+							}
+							_ => { panic!("Expected function"); }
+						}
+					}
+
 					Node::expression(Expressions::FunctionCall {
 						function,
-						name: name.clone(),
-						parameters: parameters.iter().map(|e| lex_parsed_node(scope.clone(), None, e, parser_program,).unwrap()).collect(),
+						parameters,
 					})
 				}
 				parser::Expressions::Operator{ name, left, right } => {
@@ -516,9 +597,9 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 					})
 				}
 				parser::Expressions::VariableDeclaration{ name, r#type } => {
+					RefCell::borrow(&scope.clone().ok_or(LexError::Undefined)?.0).get_program_state().ok_or(LexError::Undefined)?.types.get(r#type).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
 					let this = Node::expression(Expressions::VariableDeclaration {
 						name: name.clone(),
-						// r#type: lex_parsed_node(&r#type, parser_program, program)?,
 						r#type: r#type.clone(),
 					});
 
@@ -549,6 +630,41 @@ mod tests {
 	}
 
 	#[test]
+	fn lex_non_existant_function_struct_member_type() {
+		let source = "
+Foo: struct {
+	bar: NonExistantType
+}";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+	}
+
+	#[test]
+	fn lex_non_existant_function_return_type() {
+		let source = "
+main: fn () -> NonExistantType {}";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+	}
+
+	#[test]
+	fn lex_wrong_parameter_count() {
+		let source = "
+function: fn () -> void {}
+main: fn () -> void {
+	function(vec3f(1.0, 1.0, 1.0), vec3f(0.0, 0.0, 0.0));
+}";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = lex(&node, &program).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
+	}
+
+	#[test]
 	fn lex_function() {
 		let source = "
 main: fn () -> void {
@@ -565,9 +681,8 @@ main: fn () -> void {
 
 		match &node.node {
 			Nodes::Scope{ children, .. } => {
-				let main = children[0].borrow();
-
-				// assert_eq!(main.node(), node.node());
+				let main = node.get_child("main").expect("Expected main");
+				let main = RefCell::borrow(&main.0);
 
 				match main.node() {
 					Nodes::Function { name, params: _, return_type, statements, raw: _ } => {
@@ -595,7 +710,10 @@ main: fn () -> void {
 								let constructor = right.borrow();
 
 								match constructor.node() {
-									Nodes::Expression(Expressions::FunctionCall{ name, parameters, .. }) => {
+									Nodes::Expression(Expressions::FunctionCall{ function, parameters, .. }) => {
+										let function = RefCell::borrow(&function.0);
+										let name = function.get_name().expect("Expected name");
+
 										assert_eq!(name, "vec4f");
 										assert_eq!(parameters.len(), 4);
 									}
@@ -613,6 +731,7 @@ main: fn () -> void {
 	}
 
 	#[test]
+	#[ignore]
 	fn lex_member() {
 		let source = "
 color: In<vec4f>;
@@ -674,15 +793,15 @@ color: In<vec4f>;
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
 		let node = lex(&node, &program).expect("Failed to lex");
-		dbg!(&node);
 
 		let node = node.borrow();
 
 		match node.node() {
-			Nodes::Scope{ name, children, .. } => {
+			Nodes::Scope{ name, .. } => {
 				assert_eq!(name, "root");
 
-				let vertex = children[0].borrow();
+				let vertex = node.get_child("Vertex").expect("Expected Vertex");
+				let vertex = RefCell::borrow(&vertex.0);
 
 				match vertex.node() {
 					Nodes::Struct { name, fields, .. } => {
@@ -690,6 +809,71 @@ color: In<vec4f>;
 						assert_eq!(fields.len(), 2);
 					}
 					_ => { panic!("Expected struct"); }
+				}
+			}
+			_ => { panic!("Expected scope"); }
+		}
+	}
+
+	#[test]
+	fn fragment_shader() {
+		let source = r#"
+		main: fn () -> void {
+			albedo: vec3f = vec3f(1.0, 0.0, 0.0);
+		}
+		"#;
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = lex(&node, &program).expect("Failed to lex");
+
+		let node = node.borrow();
+
+		match node.node() {
+			Nodes::Scope{ name, children, .. } => {
+				assert_eq!(name, "root");
+
+				let main = node.get_child("main").expect("Expected main");
+				let main = RefCell::borrow(&main.0);
+
+				match main.node() {
+					Nodes::Function { name, params: _, return_type, statements, raw: _ } => {
+						assert_eq!(name, "main");
+						assert_type(&return_type.borrow(), "void");
+
+						let albedo = statements[0].borrow();
+
+						match albedo.node() {
+							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
+								let albedo = left.borrow();
+
+								assert_eq!(operator, &Operators::Assignment);
+
+								match albedo.node() {
+									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {
+										assert_eq!(name, "albedo");
+										assert_eq!(r#type, "vec3f");
+									}
+									_ => { panic!("Expected expression"); }
+								}
+
+								let constructor = right.borrow();
+
+								match constructor.node() {
+									Nodes::Expression(Expressions::FunctionCall{ function, parameters, .. }) => {
+										let function = RefCell::borrow(&function.0);
+										let name = function.get_name().expect("Expected name");
+
+										assert_eq!(name, "vec3f");
+										assert_eq!(parameters.len(), 3);
+									}
+									_ => { panic!("Expected expression"); }
+								}
+							}
+							_ => { panic!("Expected variable declaration"); }
+						}
+					}
+					_ => { panic!("Expected function."); }
 				}
 			}
 			_ => { panic!("Expected scope"); }

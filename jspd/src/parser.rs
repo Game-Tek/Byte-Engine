@@ -111,6 +111,7 @@ pub(super) enum Nodes {
 
 #[derive(Clone, Debug)]
 pub(super) enum Atoms {
+	Keyword,
 	Accessor,
 	Member{ name: String },
 	Literal{ value: String, },
@@ -127,6 +128,7 @@ pub(super) enum Expressions {
 	FunctionCall{ name: String, parameters: Vec<Rc<Node>> },
 	Operator{ name: String, left: Rc<Node>, right: Rc<Node>, },
 	VariableDeclaration{ name: String, r#type: String, },
+Return,
 }
 
 #[derive(Debug)]
@@ -188,6 +190,7 @@ trait Precedence {
 impl Precedence for Atoms {
 	fn precedence(&self) -> u8 {
 		match self {
+			Atoms::Keyword => 0,
 			Atoms::Accessor => 4,
 			Atoms::Member{ .. } => 0,
 			Atoms::Literal{ value } => 0,
@@ -334,9 +337,9 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 }
 
 fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
-	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
+	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) }).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
+	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) }).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 
 	expressions.push(Atoms::VariableDeclaration{ name: variable_name.clone(), r#type: variable_type.clone() });
 
@@ -347,6 +350,21 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, program, expressions)?;
 
 	Ok(expressions)
+}
+
+fn parse_keywords<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v == "return" { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
+
+	expressions.push(Atoms::Keyword);
+
+	// let lexers = vec![
+	// 	parse_operator,
+	// 	parse_accessor,
+	// ];
+
+	// try_execute_expression_parsers(&lexers, iterator.clone(), program, expressions.clone()).unwrap_or(Ok((expressions, iterator)));
+
+	Ok((expressions, iterator))
 }
 
 fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
@@ -436,6 +454,7 @@ fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: 
 
 fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState,) -> FeatureParserResult<'a> {
 	let parsers = vec![
+		parse_keywords,
 		parse_var_decl,
 		parse_function_call,
 		parse_variable,
@@ -450,6 +469,7 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &Program
 
 		if let Some((i, e)) = max_precedence_item {
 			match e {
+				Atoms::Keyword => { Rc::new(Node { node: Nodes::Expression(Expressions::Return) }) }
 				Atoms::Operator { name } => {		
 					let left = dandc(&atoms[..i]);
 					let right = dandc(&atoms[i + 1..]);
@@ -825,6 +845,22 @@ main: fn () -> void {
 
 		if let Nodes::Scope { children, .. } = &node.node {
 			assert_eq!(children.len(), 3);
+		}
+	}
+
+	#[test]
+	fn fragment_shader() {
+		let source = r#"
+		main: fn () -> void {
+			albedo: vec3f = vec3f(1.0, 0.0, 0.0);
+		}
+		"#;
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let (node, _) = parse(tokens).expect("Failed to parse");
+
+		if let Nodes::Scope { children, .. } = &node.node {
+			assert_eq!(children.len(), 1);
 		}
 	}
 }

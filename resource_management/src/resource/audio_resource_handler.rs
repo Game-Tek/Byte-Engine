@@ -1,9 +1,9 @@
+use polodb_core::bson;
 use serde::Deserialize;
-use smol::{fs::File, io::AsyncReadExt};
 
-use crate::{types::Audio, Resource, Stream};
+use crate::{types::Audio, GenericResourceSerialization, ResourceResponse};
 
-use super::resource_handler::ResourceHandler;
+use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
 pub struct AudioResourceHandler {
 }
@@ -16,53 +16,68 @@ impl AudioResourceHandler {
 }
 
 impl ResourceHandler for AudioResourceHandler {
-	fn can_handle_type(&self, resource_type: &str) -> bool {
-		return resource_type == "Audio" || resource_type == "wav";
+	fn get_handled_resource_classes<'a>(&self,) -> &'a [&'a str] {
+		&["Audio"]
 	}
 
-	fn get_deserializers(&self) -> Vec<(&'static str, Box<dyn Fn(&polodb_core::bson::Document) -> Box<dyn Resource> + Send>)> {
-		vec![("Audio", Box::new(|document| {
-			let audio = Audio::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap();
-			Box::new(audio)
-		}))]
-	}
-
-	fn read<'a>(&'a self, _resource: &'a dyn Resource, file: &'a mut File, buffers: &'a mut [Stream<'a>]) -> utils::BoxedFuture<'a, ()> {
+	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, file: &'a mut dyn ResourceReader, buffers: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
 		Box::pin(async move {
-			file.read_exact(buffers[0].buffer).await.unwrap();
+			let audio_resource = Audio::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
+
+			match buffers {
+				ReadTargets::Buffer(buffer) => {
+					file.read_into(0, buffer).await?;
+				},
+				_ => {
+					return None;
+				}
+			}
+
+			Some(ResourceResponse::new(resource, audio_resource))
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use crate::{resource::resource_manager::ResourceManager, types::{Audio, BitDepths}};
+	use crate::{asset::{asset_handler::AssetHandler, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend}, StorageBackend}, resource::tests::TestResourceReader, types::{Audio, BitDepths}};
 
 	use super::*;
 
 	#[test]
 	fn test_audio_resource_handler() {
+		// Create resource from asset
+
+		let audio_asset_handler = AudioAssetHandler::new();
+
+		let url = "gun.wav";
+		let doc = json::object! {
+			"url": url,
+		};
+
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
+
+		smol::block_on(audio_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
+
+		// Load resource from storage
+
 		let audio_resource_handler = AudioResourceHandler::new();
 
-		let mut resource_manager = ResourceManager::new();
+		let (resource, data) = storage_backend.read(url).expect("Failed to read asset from storage");
 
-		resource_manager.add_resource_handler(audio_resource_handler);
+		let mut resource_reader = TestResourceReader::new(data);
 
-		let (response, buffer) = smol::block_on(resource_manager.get("gun")).unwrap();
+		let mut buffer = vec![0; 152456];
 
-		assert_eq!(response.resources.len(), 1);
+		unsafe {
+			buffer.set_len(152456);
+		}
 
-		// let (generic_resource_serialization, data) = match processed_resources[0] {
-		// 	ProcessedResources::Generated((ref generic_resource_serialization, ref data)) => (generic_resource_serialization, data),
-		// 	_ => { panic!("Unexpected processed resource type"); }
-		// };
+		let resource = smol::block_on(audio_resource_handler.read(&resource, &mut resource_reader, &mut ReadTargets::Buffer(&mut buffer))).unwrap();
 
-		let resource = &response.resources[0];
-
-		assert_eq!(resource.url, "gun");
+		assert_eq!(resource.url, "gun.wav");
 		assert_eq!(resource.class, "Audio");
-
-		// let audio_resource = (audio_resource_handler.get_deserializers().iter().find(|(class, _)| *class == "Audio").unwrap().1)(&resource.resource);
 
 		let audio = resource.resource.downcast_ref::<Audio>().unwrap();
 

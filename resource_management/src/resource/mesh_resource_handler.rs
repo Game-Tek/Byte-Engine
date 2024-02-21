@@ -27,7 +27,7 @@ impl ResourceHandler for MeshResourceHandler {
 			let mut buffers = match read_target {
 				ReadTargets::Streams(streams) => {
 					streams.iter_mut().map(|b| {
-						(&b.name, utils::BufferAllocator::new(b.buffer))
+						(b.name, utils::BufferAllocator::new(b.buffer))
 					}).collect::<Vec<_>>()
 				}
 				_ => {
@@ -38,7 +38,7 @@ impl ResourceHandler for MeshResourceHandler {
 			for sub_mesh in &mesh_resource.sub_meshes {
 				for primitive in &sub_mesh.primitives {
 					for (name, buffer) in &mut buffers {
-						match name.as_str() {
+						match *name {
 							"Vertex" => {
 								file.read_into(0, buffer.take(primitive.vertex_count as usize * primitive.vertex_components.size())).await?;
 							}
@@ -134,108 +134,9 @@ impl ResourceHandler for MeshResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{resource::{image_resource_handler::ImageResourceHandler, resource_manager::ResourceManager}, types::{IndexStreamTypes, IntegralTypes, Mesh, VertexSemantics}, LoadRequest, LoadResourceRequest, Stream};
+	use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend}, StorageBackend}, resource::{image_resource_handler::ImageResourceHandler, resource_manager::ResourceManager, tests::TestResourceReader}, types::{IndexStreamTypes, IntegralTypes, Mesh, VertexSemantics}, LoadRequest, LoadResourceRequest, Stream};
 	
 	use super::*;
-	
-	#[test]
-	#[ignore]
-	fn load_local_mesh() {
-		let mut resource_manager = ResourceManager::new();
-
-		resource_manager.add_resource_handler(MeshResourceHandler::new());
-
-		let (response, buffer) = smol::block_on(resource_manager.get("Box")).expect("Failed to get resource");
-
-		assert_eq!(response.resources.len(), 1);
-
-		let resource_container = &response.resources[0];
-		let resource = &resource_container.resource;
-
-		assert_eq!(resource.type_id(), std::any::TypeId::of::<Mesh>());
-
-		let mesh = resource.downcast_ref::<Mesh>().unwrap();
-
-		assert_eq!(mesh.sub_meshes.len(), 1);
-
-		let sub_mesh = &mesh.sub_meshes[0];
-
-		assert_eq!(sub_mesh.primitives.len(), 1);
-
-		let primitive = &sub_mesh.primitives[0];
-
-
-		let _offset = 0usize;
-
-		assert_eq!(primitive.bounding_box, [[-0.5f32, -0.5f32, -0.5f32], [0.5f32, 0.5f32, 0.5f32]]);
-		assert_eq!(primitive.vertex_count, 24);
-		assert_eq!(primitive.vertex_components.len(), 2);
-		assert_eq!(primitive.vertex_components[0].semantic, VertexSemantics::Position);
-		assert_eq!(primitive.vertex_components[0].format, "vec3f");
-		assert_eq!(primitive.vertex_components[0].channel, 0);
-		assert_eq!(primitive.vertex_components[1].semantic, VertexSemantics::Normal);
-		assert_eq!(primitive.vertex_components[1].format, "vec3f");
-		assert_eq!(primitive.vertex_components[1].channel, 1);
-
-		assert_eq!(primitive.index_streams.len(), 3);
-
-		let triangle_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
-
-		assert_eq!(triangle_index_stream.stream_type, IndexStreamTypes::Triangles);
-		assert_eq!(triangle_index_stream.count, 36);
-		assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16);
-
-		let vertex_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
-
-		assert_eq!(vertex_index_stream.stream_type, IndexStreamTypes::Vertices);
-		assert_eq!(vertex_index_stream.count, 24);
-		assert_eq!(vertex_index_stream.data_type, IntegralTypes::U16);
-
-		let meshlet_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
-
-		assert_eq!(meshlet_index_stream.stream_type, IndexStreamTypes::Meshlets);
-		assert_eq!(meshlet_index_stream.count, 36);
-		assert_eq!(meshlet_index_stream.data_type, IntegralTypes::U8);
-
-		let meshlet_stream_info = primitive.meshlet_stream.as_ref().unwrap();
-
-		assert_eq!(meshlet_stream_info.count, 1);
-
-		let resource_request = smol::block_on(resource_manager.request_resource("Box"));
-
-		let resource_request = if let Some(resource_info) = resource_request { resource_info } else { return; };
-
-		let mut vertex_buffer = vec![0u8; 1024];
-		let mut index_buffer = vec![0u8; 1024];
-
-		let resource = resource_request.resources.into_iter().next().unwrap();
-
-		let request = match resource.class.as_str() {
-			"Mesh" => {
-				LoadResourceRequest::new(resource).streams(vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices".to_string() }])
-			}
-			_ => { panic!("Invalid resource type") }
-		};
-
-		let load_request = LoadRequest::new(vec![request]);
-
-		let resource = if let Ok(a) = smol::block_on(resource_manager.load_resource(load_request,)) { a } else { return; };
-
-		let response = resource.0;
-
-		for resource in &response.resources {
-			match resource.class.as_str() {
-				"Mesh" => {
-					let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
-
-					assert_eq!(buffer[0..(primitive.vertex_count * primitive.vertex_components.size() as u32) as usize], vertex_buffer[0..(primitive.vertex_count * primitive.vertex_components.size() as u32) as usize]);
-
-					assert_eq!(buffer[triangle_index_stream.offset..(triangle_index_stream.offset + triangle_index_stream.count as usize * 2) as usize], index_buffer[0..(triangle_index_stream.count * 2) as usize]);
-				}
-				_ => {}
-			}
-		}
-	}
 
 	#[test]
 	#[ignore]
@@ -321,19 +222,46 @@ mod tests {
 
 	#[test]
 	#[ignore]
-	fn load_with_manager_buffer() {
-		let mut resource_manager = ResourceManager::new();
+	fn load_box_streams() {
+		// Create resource from asset
 
-		resource_manager.add_resource_handler(MeshResourceHandler::new());
+		let mesh_asset_handler = MeshAssetHandler::new();
 
-		let (response, buffer) = smol::block_on(resource_manager.get("Box")).expect("Failed to get resource");
+		let url = "Box.gltf";
+		let doc = json::object! {
+			"url": url,
+		};
 
-		assert_eq!(response.resources.len(), 1);
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
 
-		let resource_container = &response.resources[0];
-		let resource = &resource_container.resource;
+		smol::block_on(mesh_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
 
-		let mesh = resource.downcast_ref::<Mesh>().unwrap();
+		// Load resource from storage
+
+		let mesh_resource_handler = MeshResourceHandler::new();
+
+		let (resource, data) = storage_backend.read(url).expect("Failed to read asset from storage");
+
+		let mut resource_reader = TestResourceReader::new(data);
+
+		let mut vertex_positions_buffer = vec![0; 24 * 12];
+		let mut vertex_normals_buffer = vec![0; 24 * 12];
+		let mut index_buffer = vec![0; 36 * 2];
+		let mut meshlet_buffer = vec![0; 36 * 1];
+		let mut meshlet_index_buffer = vec![0; 36 * 3];
+
+		unsafe {
+			vertex_positions_buffer.set_len(24 * 12);
+			vertex_normals_buffer.set_len(24 * 12);
+			index_buffer.set_len(36 * 2);
+			meshlet_buffer.set_len(36 * 1);
+			meshlet_index_buffer.set_len(36 * 3);
+		}
+
+		let resource = smol::block_on(mesh_resource_handler.read(&resource, &mut resource_reader, &mut ReadTargets::Streams(&mut [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)]))).unwrap();
+
+		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 
 		assert_eq!(mesh.sub_meshes.len(), 1);
 
@@ -377,26 +305,26 @@ mod tests {
 
 		assert_eq!(meshlet_stream_info.count, 1);
 
-		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], primitive.vertex_count as usize) };
+		let vertex_positions = unsafe { std::slice::from_raw_parts(vertex_positions_buffer.as_ptr() as *const [f32; 3], primitive.vertex_count as usize) };
 
 		assert_eq!(vertex_positions.len(), 24);
 		assert_eq!(vertex_positions[0], [-0.5f32, -0.5f32, -0.5f32]);
 		assert_eq!(vertex_positions[1], [0.5f32, -0.5f32, -0.5f32]);
 		assert_eq!(vertex_positions[2], [-0.5f32, 0.5f32, -0.5f32]);
 
-		let vertex_normals = unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const [f32; 3]).add(24), primitive.vertex_count as usize) };
+		let vertex_normals = unsafe { std::slice::from_raw_parts(vertex_normals_buffer.as_ptr() as *const [f32; 3], primitive.vertex_count as usize) };
 
 		assert_eq!(vertex_normals.len(), 24);
 		assert_eq!(vertex_normals[0], [0f32, 0f32, -1f32]);
 		assert_eq!(vertex_normals[1], [0f32, 0f32, -1f32]);
 		assert_eq!(vertex_normals[2], [0f32, 0f32, -1f32]);
 
-		// let indeces = unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(vertex_index_stream.offset) as *const u16, vertex_index_stream.count as usize) };
+		let indeces = unsafe { std::slice::from_raw_parts(index_buffer.as_ptr() as *const u16, vertex_index_stream.count as usize) };
 
-		// assert_eq!(indeces.len(), 24);
-		// assert_eq!(indeces[0], 0);
-		// assert_eq!(indeces[1], 1);
-		// assert_eq!(indeces[2], 2);
+		assert_eq!(indeces.len(), 24);
+		assert_eq!(indeces[0], 0);
+		assert_eq!(indeces[1], 1);
+		assert_eq!(indeces[2], 2);
 	}
 
 	#[test]
@@ -415,7 +343,7 @@ mod tests {
 
 		let resource = match resource.class.as_str() {
 			"Mesh" => {
-				LoadResourceRequest::new(resource).streams(vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex".to_string() }, Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices".to_string() }])
+				LoadResourceRequest::new(resource).streams(vec![Stream{ buffer: vertex_buffer.as_mut_slice(), name: "Vertex" }, Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices" }])
 			}
 			_ => { panic!("Invalid resource type") }
 		};
@@ -485,9 +413,9 @@ mod tests {
 		let resource = match resource.class.as_str() {
 			"Mesh" => {
 				LoadResourceRequest::new(resource).streams(vec![
-					Stream{ buffer: vertex_positions_buffer.as_mut_slice(), name: "Vertex.Position".to_string() },
-					Stream{ buffer: vertex_normals_buffer.as_mut_slice(), name: "Vertex.Normal".to_string() },
-					Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices".to_string() }
+					Stream{ buffer: vertex_positions_buffer.as_mut_slice(), name: "Vertex.Position" },
+					Stream{ buffer: vertex_normals_buffer.as_mut_slice(), name: "Vertex.Normal" },
+					Stream{ buffer: index_buffer.as_mut_slice(), name: "TriangleIndices" }
 				])
 			}
 			_ => { panic!("Invalid resource type") }

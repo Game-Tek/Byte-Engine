@@ -4,12 +4,12 @@ use crate::{resource::resource_manager::ResourceManager, types::{AlphaMode, Comp
 
 use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
-struct MeshAssetHandler {
+pub struct MeshAssetHandler {
 
 }
 
 impl MeshAssetHandler {
-	fn new() -> MeshAssetHandler {
+	pub fn new() -> MeshAssetHandler {
 		MeshAssetHandler {}
 	}
 }

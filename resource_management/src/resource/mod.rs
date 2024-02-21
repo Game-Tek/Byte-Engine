@@ -27,7 +27,8 @@ pub mod tests {
 	impl ResourceReader for TestResourceReader {
 		fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>> {
 			Box::pin(async move {
-				buffer[..self.data.len()].copy_from_slice(&self.data[offset..][..self.data.len()]);
+				let l = buffer.len();
+				buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
 				Some(())
 			})
 		}

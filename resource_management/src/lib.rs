@@ -54,9 +54,18 @@ pub enum ProcessedResources {
 #[derive(Debug)]
 pub struct Stream<'a> {
 	/// The slice of the buffer to load the resource binary data into.
-	pub buffer: &'a mut [u8],
+	buffer: &'a mut [u8],
 	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
-	pub name: String,
+	name: &'a str,
+}
+
+impl <'a> Stream<'a> {
+	pub fn new(name: &'a str, buffer: &'a mut [u8]) -> Self {
+		Stream {
+			buffer,
+			name,
+		}
+	}
 }
 
 /// Enumaration for all the possible results of a resource load fails.

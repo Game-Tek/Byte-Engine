@@ -10,7 +10,7 @@ pub struct MaterialResourcerHandler {}
 
 pub trait ProgramGenerator: Sync + Send {
 	/// Transforms a program.
-	fn transform(&self, children: Vec<std::rc::Rc<jspd::Node>>) -> (&'static str, jspd::Node);
+	fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference;
 }
 
 impl MaterialResourcerHandler {

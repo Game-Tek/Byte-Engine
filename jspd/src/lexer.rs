@@ -31,28 +31,7 @@ impl Deref for NodeReference {
 }
 
 pub(super) fn lex(node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
-	let float = Node::r#struct("float".to_string(), Vec::new());
-
-	let vec3f = Node::r#struct("vec3f".to_string(), vec![
-		Node::member("x".to_string(), float.clone()),
-		Node::member("y".to_string(), float.clone()),
-		Node::member("z".to_string(), float.clone()),
-	]);
-
-	let vec4f = Node::r#struct("vec4f".to_string(), vec![
-		Node::member("x".to_string(), float.clone()),
-		Node::member("y".to_string(), float.clone()),
-		Node::member("z".to_string(), float.clone()),
-		Node::member("w".to_string(), float.clone()),
-	]);
-
-	let root = Node::scope("root".to_string(), vec![
-		float,
-		vec3f,
-		vec4f,
-	]);
-
-	lex_with_root(root, node, parser_program)
+	lex_with_root(Node::root(), node, parser_program)
 }
 
 pub(super) fn lex_with_root(root: NodeReference, node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
@@ -81,6 +60,31 @@ pub struct Node {
 impl Node {
 	fn internal_new(node: Node) -> NodeReference {
 		NodeReference(Rc::new(RefCell::new(node)))
+	}
+
+	pub fn root() -> NodeReference {
+		let float = Node::r#struct("float".to_string(), Vec::new());
+
+		let vec3f = Node::r#struct("vec3f".to_string(), vec![
+			Node::member("x".to_string(), float.clone()),
+			Node::member("y".to_string(), float.clone()),
+			Node::member("z".to_string(), float.clone()),
+		]);
+	
+		let vec4f = Node::r#struct("vec4f".to_string(), vec![
+			Node::member("x".to_string(), float.clone()),
+			Node::member("y".to_string(), float.clone()),
+			Node::member("z".to_string(), float.clone()),
+			Node::member("w".to_string(), float.clone()),
+		]);
+	
+		let root = Node::scope("root".to_string(), vec![
+			float,
+			vec3f,
+			vec4f,
+		]);
+
+		root
 	}
 
 	pub fn scope(name: String, children: Vec<NodeReference>) -> NodeReference {
@@ -145,11 +149,11 @@ impl Node {
 		})
 	}
 
-	pub fn binding(name: String, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> NodeReference {
+	pub fn binding(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> NodeReference {
 		Self::internal_new(Node {
 			parent: None,
 			node: Nodes::Binding {
-				name,
+				name: name.to_string(),
 				r#type,
 				set,
 				binding,
@@ -297,9 +301,17 @@ impl Node {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingTypes {
-	Buffer,
+	Buffer {
+		r#type: NodeReference,
+	},
 	CombinedImageSampler,
 	Image,
+}
+
+impl BindingTypes {
+	pub fn buffer(r#type: NodeReference) -> BindingTypes {
+		BindingTypes::Buffer{ r#type }
+	}
 }
 
 #[derive(Clone, Debug,)]

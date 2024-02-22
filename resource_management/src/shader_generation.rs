@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Deref};
 
-struct ShaderGenerator {
+pub struct ShaderGenerator {
 	minified: bool,
 }
 
@@ -28,12 +28,26 @@ pub struct GLSLSettings {
 	version: String,
 }
 
+impl Default for GLSLSettings {
+	fn default() -> Self {
+		Self {
+			version: "450".to_string(),
+		}
+	}
+}
+
 pub struct ShaderGenerationSettings {
 	glsl: GLSLSettings,
 	stage: String,
 }
 
-struct ShaderCompilation {
+impl ShaderGenerationSettings {
+	pub fn new(stage: &str) -> ShaderGenerationSettings {
+		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: stage.to_string() }
+	}
+}
+
+pub struct ShaderCompilation {
 	minified: bool,
 	present_symbols: HashSet<jspd::NodeReference>,
 }
@@ -52,10 +66,14 @@ impl ShaderCompilation {
 	pub fn generate_glsl_shader(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &jspd::NodeReference) -> String {
 		// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
 		let mut string = String::with_capacity(2048);
-	
-		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
-
+		
 		self.generate_shader_internal(&mut string, main_function_node);
+		
+		{
+			let mut glsl_block = String::with_capacity(248);
+			self.generate_glsl_header_block(&mut glsl_block, shader_compilation_settings);
+			string.insert_str(0, &glsl_block);
+		}
 	
 		string
 	}
@@ -111,7 +129,9 @@ impl ShaderCompilation {
 					if self.minified { l_string.push(';') } else { l_string.push_str(";\n"); }
 				}
 
-				l_string.push_str("}\n");
+				l_string.push_str("};");
+
+				if !self.minified { l_string.push('\n'); }
 
 				string.insert_str(0, &l_string);
 
@@ -180,21 +200,44 @@ impl ShaderCompilation {
 				let mut l_string = String::with_capacity(128);
 
 				let binding_type = match r#type {
-					jspd::BindingTypes::Buffer => "buffer",
+					jspd::BindingTypes::Buffer{ .. } => "buffer",
 					jspd::BindingTypes::Image => "image2D",
 					jspd::BindingTypes::CombinedImageSampler => "texture2D",
 				};
 
 				l_string.push_str(&format!("layout(set={},binding={}", set, binding));
 
-				if r#type == &jspd::BindingTypes::Buffer {
+				if matches!(r#type, &jspd::BindingTypes::Buffer{ .. }) {
 					l_string.push_str(",scalar");
 				}
 
 				l_string.push_str(&format!(") {} ", binding_type));
 				if *read && !*write { l_string.push_str("readonly "); }
 				if *write && !*read { l_string.push_str("writeonly "); }
+
+				match r#type {
+					jspd::BindingTypes::Buffer{ r#type } => {						
+						match RefCell::borrow(&r#type).node() {
+							jspd::Nodes::Struct { name, fields, .. } => {
+								l_string.push_str(&name);
+								l_string.push('{');
+
+								for field in fields {
+									if !self.minified { l_string.push('\t'); }
+									self.generate_shader_internal(&mut l_string, &field,);
+									if self.minified { l_string.push(';') } else { l_string.push_str(";\n"); }
+								}
+
+								l_string.push('}');
+							}
+							_ => { panic!("Need struct node type for buffer binding type."); }
+						}
+					}
+					_ => {}
+				}
+
 				l_string.push_str(&name);
+
 				if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
 				string.insert_str(0, &l_string);
 			}
@@ -242,9 +285,11 @@ impl ShaderCompilation {
 		}
 		// memory layout declarations
 	
-		glsl_block.push_str("layout(row_major) uniform; layout(row_major) buffer;\n");
-	
-		glsl_block.push_str("const float PI = 3.14159265359;");
+		glsl_block.push_str("#define vec4f vec4\n");
+
+		glsl_block.push_str("layout(row_major) uniform;layout(row_major) buffer;");
+
+		if !self.minified { glsl_block.push('\n'); }
 	}
 }
 
@@ -272,16 +317,18 @@ mod tests {
 	fn bindings() {
 		let script = r#"
 		main: fn () -> void {
-			Buffer;
+			buff;
 			image;
 			texture;
 		}
 		"#;
 
+		let buffer_type = jspd::Node::r#struct("BufferType".to_string(), vec![]);
+
 		let root_node = jspd::Node::scope("root".to_string(), vec![
-			jspd::Node::binding("Buffer".to_string(), jspd::BindingTypes::Buffer, 0, 0, true, true),
-			jspd::Node::binding("image".to_string(), jspd::BindingTypes::Image, 0, 1, false, true),
-			jspd::Node::binding("texture".to_string(), jspd::BindingTypes::CombinedImageSampler, 1, 0, true, false),
+			jspd::Node::binding("buff", jspd::BindingTypes::buffer(buffer_type), 0, 0, true, true),
+			jspd::Node::binding("image", jspd::BindingTypes::Image, 0, 1, false, true),
+			jspd::Node::binding("texture", jspd::BindingTypes::CombinedImageSampler, 1, 0, true, false),
 		]);
 
 		let script_node = jspd::compile_to_jspd(&script, Some(root_node)).unwrap();
@@ -292,7 +339,7 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "layout(set=1,binding=0) texture2D readonly texture;layout(set=0,binding=1) image2D writeonly image;layout(set=0,binding=0,scalar) buffer Buffer;void main(){Buffer;image;texture;}");
+		assert_eq!(shader, "layout(set=1,binding=0) texture2D readonly texture;layout(set=0,binding=1) image2D writeonly image;layout(set=0,binding=0,scalar) buffer BufferType{}buff;void main(){buff;image;texture;}");
 	}
 
 	#[test]
@@ -368,6 +415,6 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "struct Vertex {\n\tvec3f position;\n\tvec3f normal;\n}\nvoid use_vertex() {\n}\nvoid main() {\n\tuse_vertex();\n}\n");
+		assert_eq!(shader, "struct Vertex {\n\tvec3f position;\n\tvec3f normal;\n};\nvoid use_vertex() {\n}\nvoid main() {\n\tuse_vertex();\n}\n");
 	}
 }

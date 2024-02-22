@@ -2,7 +2,7 @@ use std::{borrow::Borrow, cell::RefCell, ops::Deref};
 
 use smol::future::FutureExt;
 
-use crate::{resource::material_resource_handler::ProgramGenerator, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources};
+use crate::{resource::material_resource_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources};
 
 use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
 
@@ -43,7 +43,7 @@ impl AssetHandler for MaterialAssetHandler {
 				let generator = self.generator.as_ref().unwrap();
 
 				let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-					smol::block_on(produce_shader(generator.deref(), asset_resolver, &material_domain, &asset_json, &shader_json, s_type))
+					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
 				}).collect::<Vec<_>>();
 
 				for variable in asset_json["variables"].members() {
@@ -93,50 +93,26 @@ impl AssetHandler for MaterialAssetHandler {
 	}
 }
 
-async fn produce_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
+async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
 	let path = shader_json.as_str()?;
 	let (arlp, format) = asset_resolver.resolve(&path).await?;
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
+	let root_scope = jspd::Node::root();
+
+	let parent_scope = generator.transform(root_scope);
+
 	let shader_option = if format == "glsl" {
+		todo!();
 		Some((jspd::lexer::Node::glsl(shader_code), path.to_string()))
 	} else if format == "besl" {
-		Some((jspd::compile_to_jspd(&shader_code, None).unwrap(), path.to_string()))
+		Some((jspd::compile_to_jspd(&shader_code, Some(parent_scope.clone())).unwrap(), path.to_string()))
 	} else {
 		None
 	};
 
-	if let Some((shader, path)) = shader_option {
-		Some(treat_shader(generator, &path, domain, stage, material, &shader,)?.unwrap())
-	} else {
-		let default_shader = match stage {
-			"Vertex" => default_vertex_shader(),
-			"Fragment" => default_fragment_shader(),
-			_ => { panic!("Invalid shader stage") }
-		};
-
-		let shader_node = jspd::lexer::Node::glsl(default_shader.to_string());
-
-		Some(treat_shader(generator, "", domain, stage, material, &shader_node,)?.unwrap())
-	}
-}
-
-fn treat_shader(generator: &dyn ProgramGenerator, path: &str, domain: &str, stage: &str, material: &json::JsonValue, shader_node: &jspd::NodeReference,) -> Option<Result<ProcessedResources, String>> {
-	let visibility = generator;
-
-	let main = match RefCell::borrow(&shader_node).node() {
-		jspd::Nodes::Scope { children, .. } => {
-			children[0].clone()
-		}
-		_ => {
-			return Some(Err("Invalid shader".to_string()));
-		}
-	};
-
-	let glsl = String::new();
-
-	log::debug!("Generated shader: {}", &glsl);
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::new(stage), &RefCell::borrow(&parent_scope).get_child("main").unwrap());
 
 	let compiler = shaderc::Compiler::new().unwrap();
 	let mut options = shaderc::CompileOptions::new().unwrap();
@@ -161,7 +137,7 @@ fn treat_shader(generator: &dyn ProgramGenerator, path: &str, domain: &str, stag
 			let error_string = err.to_string();
 			let error_string = ghi::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
 			log::error!("Error compiling shader:\n{}", error_string);
-			return Some(Err(err.to_string()));
+			return None;
 		}
 	};
 
@@ -182,7 +158,9 @@ fn treat_shader(generator: &dyn ProgramGenerator, path: &str, domain: &str, stag
 		stage,
 	});
 
-	Some(Ok(ProcessedResources::Generated((resource, Vec::from(result_shader_bytes)))))
+	storage_backend.store(resource, result_shader_bytes);
+
+	None
 }
 
 fn default_vertex_shader() -> &'static str {
@@ -195,6 +173,8 @@ fn default_fragment_shader() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+	use std::cell::RefCell;
+
 	use super::{MaterialAssetHandler};
 	use crate::{asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, resource::material_resource_handler::ProgramGenerator};
 
@@ -216,8 +196,10 @@ mod tests {
 		}
 
 		impl ProgramGenerator for TestShaderGenerator {
-			fn transform(&self, children: Vec<std::rc::Rc<jspd::Node>>) -> (&'static str, jspd::Node) {
-				todo!()
+			fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
+				let vec4f = RefCell::borrow(&scope).get_child("vec4f").unwrap();
+				RefCell::borrow_mut(&scope).add_children(vec![jspd::Node::binding("material",jspd::BindingTypes::buffer(jspd::Node::r#struct("Material".to_string(), vec![jspd::Node::member("color".to_string(), vec4f)])), 0, 0, true, false)]);
+				scope
 			}
 		}
 
@@ -231,7 +213,7 @@ mod tests {
 			"domain": "World",
 			"type": "Surface",
 			"shaders": {
-				"Fragment": "shaders/fragment.besl"
+				"Fragment": "fragment.besl"
 			},
 			"variables": [
 				{
@@ -246,24 +228,34 @@ mod tests {
 		asset_resolver.add_file(url, material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
-			out_color = color;
+			material;
 		}";
 
-		asset_resolver.add_file("shaders/fragment.besl", shader_file.as_bytes());
+		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
 
 		let doc = json::object! {
 			"url": url,
 		};
 
-		let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset");
+		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
 		assert_eq!(generated_resources.len(), 2);
 
-		let resource = &generated_resources[0];
+		let shader = &generated_resources[0];
 
-		assert_eq!(resource.url, "material.json");
-		assert_eq!(resource.class, "Material");
+		assert_eq!(shader.url, "fragment.besl");
+		assert_eq!(shader.class, "Shader");
+
+		let shader_glsl = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
+		let shader_glsl = String::from_utf8_lossy(&shader_glsl);
+
+		assert!(shader_glsl.contains("material"));
+
+		let material = &generated_resources[1];
+
+		assert_eq!(material.url, "material.json");
+		assert_eq!(material.class, "Material");
 	}
 }

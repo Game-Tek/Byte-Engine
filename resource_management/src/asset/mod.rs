@@ -131,6 +131,10 @@ pub mod tests {
 		pub fn get_resources(&self) -> Vec<GenericResourceSerialization> {
 			self.resources.lock().unwrap().iter().map(|x| x.0.clone()).collect()
 		}
+
+		pub fn get_resource_data_by_name(&self, name: &str) -> Option<Box<[u8]>> {
+			Some(self.resources.lock().unwrap().iter().find(|x| x.0.url == name)?.1.clone())
+		}
 	}
 
 	impl StorageBackend for TestStorageBackend {

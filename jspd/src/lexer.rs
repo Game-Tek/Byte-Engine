@@ -145,11 +145,12 @@ impl Node {
 		})
 	}
 
-	pub fn binding(name: String, set: u32, binding: u32, read: bool, write: bool) -> NodeReference {
+	pub fn binding(name: String, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> NodeReference {
 		Self::internal_new(Node {
 			parent: None,
 			node: Nodes::Binding {
 				name,
+				r#type,
 				set,
 				binding,
 				read,
@@ -294,6 +295,13 @@ impl Node {
 	}
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindingTypes {
+	Buffer,
+	CombinedImageSampler,
+	Image,
+}
+
 #[derive(Clone, Debug,)]
 pub enum Nodes {
 	Null,
@@ -329,6 +337,7 @@ pub enum Nodes {
 		binding: u32,
 		read: bool,
 		write: bool,
+		r#type: BindingTypes,
 	},
 }
 

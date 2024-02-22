@@ -14,6 +14,7 @@ pub use lexer::Node;
 pub use lexer::Nodes;
 
 pub use crate::lexer::NodeReference;
+pub use crate::lexer::BindingTypes;
 
 /// Compiles a BESL source code string into a JSPD.
 /// 

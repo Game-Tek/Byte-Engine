@@ -89,7 +89,7 @@ impl ShaderCompilation {
 					if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
 				}
 				
-				l_string.push_str("}\n");
+				if self.minified { l_string.push('}') } else { l_string.push_str("}\n"); }
 
 				string.insert_str(0, &l_string);
 
@@ -176,9 +176,22 @@ impl ShaderCompilation {
 					}
 				}
 			}
-			jspd::Nodes::Binding { name, set, binding, read, write, .. } => {
+			jspd::Nodes::Binding { name, set, binding, read, write, r#type, .. } => {
 				let mut l_string = String::with_capacity(128);
-				l_string.push_str(&format!("layout(set={}, binding={}) uniform ", set, binding));
+
+				let binding_type = match r#type {
+					jspd::BindingTypes::Buffer => "buffer",
+					jspd::BindingTypes::Image => "image2D",
+					jspd::BindingTypes::CombinedImageSampler => "texture2D",
+				};
+
+				l_string.push_str(&format!("layout(set={},binding={}", set, binding));
+
+				if r#type == &jspd::BindingTypes::Buffer {
+					l_string.push_str(",scalar");
+				}
+
+				l_string.push_str(&format!(") {} ", binding_type));
 				if *read && !*write { l_string.push_str("readonly "); }
 				if *write && !*read { l_string.push_str("writeonly "); }
 				l_string.push_str(&name);
@@ -256,24 +269,30 @@ mod tests {
 	}
 
 	#[test]
-	fn binding() {
+	fn bindings() {
 		let script = r#"
 		main: fn () -> void {
-			buffer;
+			Buffer;
+			image;
+			texture;
 		}
 		"#;
 
-		let root_node = jspd::Node::scope("root".to_string(), vec![jspd::Node::binding("buffer".to_string(), 0, 0, true, false)]);
+		let root_node = jspd::Node::scope("root".to_string(), vec![
+			jspd::Node::binding("Buffer".to_string(), jspd::BindingTypes::Buffer, 0, 0, true, true),
+			jspd::Node::binding("image".to_string(), jspd::BindingTypes::Image, 0, 1, false, true),
+			jspd::Node::binding("texture".to_string(), jspd::BindingTypes::CombinedImageSampler, 1, 0, true, false),
+		]);
 
 		let script_node = jspd::compile_to_jspd(&script, Some(root_node)).unwrap();
 
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new();
+		let shader_generator = ShaderGenerator::new().minified(true);
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		println!("{}", shader);
+		assert_eq!(shader, "layout(set=1,binding=0) texture2D readonly texture;layout(set=0,binding=1) image2D writeonly image;layout(set=0,binding=0,scalar) buffer Buffer;void main(){Buffer;image;texture;}");
 	}
 
 	#[test]
@@ -298,7 +317,7 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "void main(){vec3f albedo=vec3f(1.0,0.0,0.0);}\n");
+		assert_eq!(shader, "void main(){vec3f albedo=vec3f(1.0,0.0,0.0);}");
 	}
 
 	#[test]

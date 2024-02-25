@@ -3,7 +3,7 @@
 
 use smol::{future::FutureExt, io::AsyncReadExt};
 
-use crate::GenericResourceSerialization;
+use crate::{resource::resource_handler::ResourceReader, GenericResourceResponse, GenericResourceSerialization};
 
 pub mod asset_manager;
 pub mod asset_handler;
@@ -69,20 +69,15 @@ pub trait AssetResolver: Sync + Send {
 	}
 }
 
-pub trait StorageBackend: Sync + Send {
-	fn store(&self, resource: GenericResourceSerialization, data: &[u8]) -> Result<(), ()>;
-	fn read(&self, id: &str) -> Result<(GenericResourceSerialization, Box<[u8]>), ()>;
-}
-
 #[cfg(test)]
 pub mod tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
 
     use smol::future::FutureExt;
 
-    use crate::GenericResourceSerialization;
+    use crate::{resource::{resource_handler::ResourceReader, tests::TestResourceReader}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
 
-    use super::{read_asset_from_source, AssetResolver, StorageBackend};
+    use super::{read_asset_from_source, AssetResolver,};
 
 	pub struct TestAssetResolver {
 		files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
@@ -138,19 +133,24 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
-		fn store(&self, resource: GenericResourceSerialization, data: &[u8]) -> Result<(), ()> {
+		fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &[u8]) -> utils::BoxedFuture<'a, Result<(), ()>> {
 			self.resources.lock().unwrap().push((resource, data.into()));
-			Ok(())
+
+			Box::pin(async move {
+				Ok(())
+			})
 		}
 
-		fn read(&self, id: &str) -> Result<(GenericResourceSerialization, Box<[u8]>), ()> {
-			let resources = self.resources.lock().unwrap();
-			for resource in resources.iter() {
-				if resource.0.url == id {
-					return Ok(resource.clone());
+		fn read<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse, Box<dyn ResourceReader>)>> {
+			Box::pin(async move {
+				let resources = self.resources.lock().unwrap();
+				for (resource, data) in resources.iter() {
+					if resource.url == id {
+						return Some((GenericResourceResponse::new(resource.url.clone(), resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
+					}
 				}
-			}
-			Err(())
+				None
+			})
 		}
 	}
 }

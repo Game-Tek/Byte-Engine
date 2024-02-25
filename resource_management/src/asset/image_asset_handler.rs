@@ -1,9 +1,9 @@
 use smol::future::FutureExt;
 use utils::Extent;
 
-use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization};
+use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization, StorageBackend};
 
-use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
+use super::{asset_handler::AssetHandler, AssetResolver,};
 
 pub struct ImageAssetHandler {
 }

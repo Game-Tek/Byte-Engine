@@ -2,7 +2,7 @@ use polodb_core::bson;
 use serde::Deserialize;
 use smol::{fs::File, future::FutureExt, io::AsyncReadExt};
 
-use crate::{types::Image, GenericResourceSerialization, Resource, ResourceResponse, Stream};
+use crate::{types::Image, GenericResourceResponse, GenericResourceSerialization, Resource, ResourceResponse, Stream, TypedResourceDocument};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -21,18 +21,26 @@ impl ResourceHandler for ImageResourceHandler {
 		&["Image"]
 	}
 
-	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, file: &'a mut dyn ResourceReader, read_target: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+	fn read<'a>(&'a self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
 		Box::pin(async move {
 			let image_resource = Image::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
-			match read_target {
-				ReadTargets::Buffer(buffer) => {
-					file.read_into(0, buffer).await?;
-				},
-				_ => {
-					return None;
+			if let Some(read_target) = &mut resource.read_target {
+				match read_target {
+					ReadTargets::Buffer(buffer) => {
+						reader.read_into(0, buffer).await?;
+					},
+					_ => {
+						return None;
+					}
+					
 				}
-				
+			} else {
+				let mut buffer = Vec::with_capacity(resource.size);
+				unsafe {
+					buffer.set_len(resource.size);
+				}
+				reader.read_into(0, &mut buffer).await?;
 			}
 
 			Some(ResourceResponse::new(resource, image_resource))
@@ -42,7 +50,7 @@ impl ResourceHandler for ImageResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, image_asset_handler::{self, ImageAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}, StorageBackend}, resource::{resource_manager::ResourceManager, tests::TestResourceReader}, types::Image};
+	use crate::{asset::{asset_handler::AssetHandler, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, StorageBackend};
 
 	use super::*;
 
@@ -66,17 +74,9 @@ mod tests {
 
 		let image_resource_handler = ImageResourceHandler::new();
 
-		let (resource, data) = storage_backend.read(url).expect("Failed to read asset from storage");
+		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let mut resource_reader = TestResourceReader::new(data);
-
-		let mut buffer = vec![0; 2048 * 2048 * 4];
-
-		unsafe {
-			buffer.set_len(2048 * 2048 * 4);
-		}
-
-		let resource = smol::block_on(image_resource_handler.read(&resource, &mut resource_reader, &mut ReadTargets::Buffer(&mut buffer))).expect("Failed to read image resource");
+		let resource = smol::block_on(image_resource_handler.read(resource, reader,)).expect("Failed to read image resource");
 
 		let image = resource.resource.downcast_ref::<Image>().unwrap();
 

@@ -7,10 +7,10 @@ use crate::{
         IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value,
         VertexComponent, VertexSemantics,
     },
-    GenericResourceSerialization, ProcessedResources,
+    GenericResourceSerialization, ProcessedResources, StorageBackend,
 };
 
-use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
+use super::{asset_handler::AssetHandler, AssetResolver,};
 
 pub struct MeshAssetHandler {}
 
@@ -533,7 +533,7 @@ mod tests {
                         ],
                     },
                 ],
-            }
+            }.into()
         );
 
         // TODO: ASSERT BINARY DATA

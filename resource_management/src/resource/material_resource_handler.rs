@@ -1,10 +1,9 @@
 use polodb_core::bson;
 use serde::Deserialize;
-use smol::{fs::File, io::AsyncReadExt};
 
-use crate::{types::{Material, Shader, ShaderTypes, Variant}, GenericResourceSerialization, ProcessedResources, Resource, ResourceResponse, Stream};
+use crate::{types::Material, GenericResourceResponse, GenericResourceSerialization, ResourceResponse, TypedResourceDocument};
 
-use super::{resource_handler::{ReadTargets, ResourceHandler, ResourceReader}, resource_manager::ResourceManager,};
+use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
 pub struct MaterialResourcerHandler {}
 
@@ -25,7 +24,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		&["Material", "Shader", "Variant"]
 	}
 
-	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, file: &'a mut dyn ResourceReader, _: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+	fn read<'a>(&'a self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
 		// vec![("Material",
 		// 	Box::new(|_document| {
 		// 		Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())
@@ -56,20 +55,5 @@ mod tests {
 	#[test]
 	#[ignore] // We need to implement a shader generator to test this
 	fn load_material() {
-		let mut resource_manager = ResourceManager::new();
-
-		resource_manager.add_resource_handler(super::MaterialResourcerHandler::new());
-
-		let (response, _) = smol::block_on(resource_manager.get("solid")).expect("Failed to load material");
-
-		assert_eq!(response.resources.len(), 2); // 1 material, 1 shader
-
-		let resource_container = &response.resources[0];
-
-		assert_eq!(resource_container.class, "Shader");
-
-		let resource_container = &response.resources[1];
-
-		assert_eq!(resource_container.class, "Material");
 	}
 }

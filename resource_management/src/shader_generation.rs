@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::{HashMap, HashSet}, ops::Deref};
+use std::{cell::RefCell, collections::HashSet};
 
 pub struct ShaderGenerator {
 	minified: bool,
@@ -54,8 +54,6 @@ pub struct ShaderCompilation {
 
 impl ShaderCompilation {
 	pub fn generate_shader(&mut self, main_function_node: &jspd::NodeReference) -> String {
-		// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
-
 		let mut string = String::with_capacity(2048);
 	
 		self.generate_shader_internal(&mut string, main_function_node);
@@ -64,7 +62,6 @@ impl ShaderCompilation {
 	}
 
 	pub fn generate_glsl_shader(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &jspd::NodeReference) -> String {
-		// let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
 		let mut string = String::with_capacity(2048);
 		
 		self.generate_shader_internal(&mut string, main_function_node);

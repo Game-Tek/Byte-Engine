@@ -2,9 +2,9 @@ use std::{borrow::Borrow, cell::RefCell, ops::Deref};
 
 use smol::future::FutureExt;
 
-use crate::{resource::material_resource_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources};
+use crate::{resource::material_resource_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources, StorageBackend};
 
-use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
+use super::{asset_handler::AssetHandler, AssetResolver,};
 
 struct MaterialAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
@@ -179,7 +179,6 @@ mod tests {
 	use crate::{asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, resource::material_resource_handler::ProgramGenerator};
 
 	#[test]
-	#[ignore]
 	fn load_material() {
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();

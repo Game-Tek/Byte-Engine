@@ -1,4 +1,6 @@
-use super::{AssetResolver, StorageBackend};
+use crate::StorageBackend;
+
+use super::AssetResolver;
 
 /// An asset handler is responsible for loading assets of a certain type from a url.
 pub trait AssetHandler {

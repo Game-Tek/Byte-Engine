@@ -1,8 +1,8 @@
 use smol::future::FutureExt;
 
-use crate::{types::{Audio, BitDepths}, GenericResourceSerialization};
+use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
 
-use super::{asset_handler::AssetHandler, AssetResolver, StorageBackend};
+use super::{asset_handler::AssetHandler, AssetResolver,};
 
 pub struct AudioAssetHandler {
 
@@ -131,9 +131,10 @@ mod tests {
 
 		assert_eq!(resource.url, "gun.wav");
 		assert_eq!(resource.class, "Audio");
-		assert_eq!(resource.resource.get_str("bit_depth").unwrap(), "Sixteen");
-		assert_eq!(resource.resource.get_i32("channel_count").unwrap(), 1);
-		assert_eq!(resource.resource.get_i64("sample_rate").unwrap(), 48000);
-		assert_eq!(resource.resource.get_i64("sample_count").unwrap(), 152456 / 1 / (16 / 8));
+		let resource = resource.resource.as_document().expect("Resource is not a document");
+		assert_eq!(resource.get_str("bit_depth").unwrap(), "Sixteen");
+		assert_eq!(resource.get_i32("channel_count").unwrap(), 1);
+		assert_eq!(resource.get_i64("sample_rate").unwrap(), 48000);
+		assert_eq!(resource.get_i64("sample_count").unwrap(), 152456 / 1 / (16 / 8));
 	}
 }

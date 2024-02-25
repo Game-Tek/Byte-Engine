@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::Audio, GenericResourceSerialization, ResourceResponse};
+use crate::{types::Audio, GenericResourceResponse, GenericResourceSerialization, ResourceResponse, TypedResourceDocument};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -20,17 +20,30 @@ impl ResourceHandler for AudioResourceHandler {
 		&["Audio"]
 	}
 
-	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, file: &'a mut dyn ResourceReader, buffers: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+	fn read<'a>(&'a self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
 		Box::pin(async move {
 			let audio_resource = Audio::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
-			match buffers {
-				ReadTargets::Buffer(buffer) => {
-					file.read_into(0, buffer).await?;
-				},
-				_ => {
-					return None;
+			if let Some(read_target) = &mut resource.read_target {
+				match read_target {
+					ReadTargets::Buffer(buffer) => {
+						reader.read_into(0, buffer).await?;
+					},
+					ReadTargets::Box(buffer) => {
+						reader.read_into(0, buffer).await?;
+					},
+					_ => {
+						return None;
+					}
+					
 				}
+			} else {
+				let mut buffer = Vec::with_capacity(resource.size);
+				unsafe {
+					buffer.set_len(resource.size);
+				}
+				reader.read_into(0, &mut buffer).await?;
+				resource.set_read_target(buffer.into_boxed_slice());
 			}
 
 			Some(ResourceResponse::new(resource, audio_resource))
@@ -40,7 +53,9 @@ impl ResourceHandler for AudioResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend}, StorageBackend}, resource::tests::TestResourceReader, types::{Audio, BitDepths}};
+	use std::ops::DerefMut;
+
+	use crate::{asset::{asset_handler::AssetHandler, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, types::{Audio, BitDepths}, StorageBackend};
 
 	use super::*;
 
@@ -64,17 +79,9 @@ mod tests {
 
 		let audio_resource_handler = AudioResourceHandler::new();
 
-		let (resource, data) = storage_backend.read(url).expect("Failed to read asset from storage");
+		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let mut resource_reader = TestResourceReader::new(data);
-
-		let mut buffer = vec![0; 152456];
-
-		unsafe {
-			buffer.set_len(152456);
-		}
-
-		let resource = smol::block_on(audio_resource_handler.read(&resource, &mut resource_reader, &mut ReadTargets::Buffer(&mut buffer))).unwrap();
+		let resource = smol::block_on(audio_resource_handler.read(resource, reader,)).unwrap();
 
 		assert_eq!(resource.url, "gun.wav");
 		assert_eq!(resource.class, "Audio");
@@ -86,6 +93,13 @@ mod tests {
 		assert_eq!(audio.sample_rate, 48000);
 		assert_eq!(audio.sample_count, 152456 / 1 / (16 / 8));
 
-		assert_eq!(buffer.len(), audio.sample_count as usize * audio.channel_count as usize * (Into::<usize>::into(audio.bit_depth) / 8) as usize);
+		match &resource.read_target.expect("Expected read target") {
+			ReadTargets::Box(buffer) => {
+				assert_eq!(buffer.len(), audio.sample_count as usize * audio.channel_count as usize * (Into::<usize>::into(audio.bit_depth) / 8) as usize);
+			},
+			_ => {
+				panic!("Expected read target to be a buffer");
+			},
+		}
 	}
 }

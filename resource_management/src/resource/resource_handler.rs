@@ -1,12 +1,16 @@
+use std::borrow::Cow;
+
 use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
 
-use crate::{GenericResourceSerialization, ResourceResponse, Stream};
+use crate::{GenericResourceResponse, ResourceResponse, Stream,};
 
 pub enum ReadTargets<'a> {
+	Box(Box<[u8]>),
 	Buffer(&'a mut [u8]),
 	Streams(&'a mut [Stream<'a>]),
 }
 
+/// The resource reader trait provides methods to read a single resource.
 pub trait ResourceReader {
 	fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>>;
 }
@@ -33,10 +37,10 @@ impl ResourceReader for FileResourceReader {
 	}
 }
 
-pub trait ResourceHandler {
+pub trait ResourceHandler: Send {
 	fn get_handled_resource_classes<'a>(&self,) -> &'a [&'a str] {
 		&[]
 	}
 
-	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, reader: &'a mut dyn ResourceReader, read_target: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<Option<ResourceResponse>>;
+	fn read<'a>(&'a self, resource: GenericResourceResponse<'a>, reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>>;
 }

@@ -1,4 +1,4 @@
-use crate::{asset::{AssetResolver, StorageBackend}, GenericResourceSerialization};
+use crate::{asset::AssetResolver, resource::resource_handler::ResourceReader, DbStorageBackend, GenericResourceResponse, GenericResourceSerialization};
 
 use super::asset_handler::AssetHandler;
 
@@ -24,43 +24,9 @@ impl AssetManager {
 			}
 		}
 
-		let mut args = std::env::args();
+		// let mut args = std::env::args();
 
-		let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
-
-		if cfg!(test) { // If we are running tests we want to use memory database. This way we can run tests in parallel.
-			memory_only = true;
-		}
-
-		let db_res = if !memory_only {
-			polodb_core::Database::open_file(resolve_internal_path(std::path::Path::new("assets.db")))
-		} else {
-			log::info!("Using memory database instead of file database.");
-			polodb_core::Database::open_memory()
-		};
-
-		match db_res {
-			Ok(db) => db,
-			Err(_) => {
-				// Delete file and try again
-				std::fs::remove_file(resolve_internal_path(std::path::Path::new("assets.db"))).unwrap();
-
-				log::warn!("Database file was corrupted, deleting and trying again.");
-
-				let db_res = polodb_core::Database::open_file(resolve_internal_path(std::path::Path::new("assets.db")));
-
-				match db_res {
-					Ok(db) => db,
-					Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
-						Ok(db) => {
-							log::error!("Could not create database file, using memory database instead.");
-							db
-						},
-						Err(_) => panic!("Could not create database"),
-					}
-				}
-			}
-		};
+		// let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
 		AssetManager {
 			asset_handlers: Vec::new(),
@@ -82,19 +48,7 @@ impl AssetManager {
 
 		let asset_resolver = MyAssetResolver {};
 
-		struct MyStorageBackend {}
-
-		impl StorageBackend for MyStorageBackend {
-			fn store(&self, _: GenericResourceSerialization, _: &[u8]) -> Result<(), ()> {
-				Ok(())
-			}
-
-			fn read(&self, _: &str) -> Result<(GenericResourceSerialization, Box<[u8]>), ()> {
-				todo!()
-			}
-		}
-
-		let storage_backend = MyStorageBackend {};
+		let storage_backend = DbStorageBackend::new(&resolve_asset_path(&std::path::Path::new("assets.db")));
 
 		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, &storage_backend, url, &json));
 
@@ -130,9 +84,9 @@ fn resolve_asset_path(path: &std::path::Path) -> std::path::PathBuf {
 mod tests {
 	use smol::future::FutureExt;
 
-	use crate::asset::StorageBackend;
+	use crate::StorageBackend;
 
-use super::*;
+	use super::*;
 
 	struct TestAssetHandler {
 

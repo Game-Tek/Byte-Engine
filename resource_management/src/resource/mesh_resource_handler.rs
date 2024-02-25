@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::{IndexStreamTypes, Mesh, Size, VertexSemantics}, GenericResourceSerialization, ResourceResponse, Stream};
+use crate::{types::{IndexStreamTypes, Mesh, Size, VertexSemantics}, GenericResourceResponse, GenericResourceSerialization, ResourceResponse, Stream, TypedResourceDocument};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -20,19 +20,30 @@ impl ResourceHandler for MeshResourceHandler {
 		&["Mesh"]
 	}
 
-	fn read<'a>(&'a self, resource: &'a GenericResourceSerialization, file: &'a mut dyn ResourceReader, read_target: &'a mut ReadTargets<'a>) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+	fn read<'a>(&'a self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
 		Box::pin(async move {
 			let mesh_resource = Mesh::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
-			let mut buffers = match read_target {
-				ReadTargets::Streams(streams) => {
-					streams.iter_mut().map(|b| {
-						(b.name, utils::BufferAllocator::new(b.buffer))
-					}).collect::<Vec<_>>()
+			let mut buffers = if let Some(read_target) = &mut resource.read_target {
+				match read_target {
+					ReadTargets::Streams(streams) => {
+						streams.iter_mut().map(|b| {
+							(b.name, utils::BufferAllocator::new(b.buffer))
+						}).collect::<Vec<_>>()
+					}
+					_ => {
+						return None;
+					}
+					
 				}
-				_ => {
-					return None;
+			} else {
+				let mut buffer = Vec::with_capacity(resource.size);
+				unsafe {
+					buffer.set_len(resource.size);
 				}
+				reader.read_into(0, &mut buffer).await?;
+
+				panic!();
 			};
 
 			for sub_mesh in &mesh_resource.sub_meshes {
@@ -40,16 +51,16 @@ impl ResourceHandler for MeshResourceHandler {
 					for (name, buffer) in &mut buffers {
 						match *name {
 							"Vertex" => {
-								file.read_into(0, buffer.take(primitive.vertex_count as usize * primitive.vertex_components.size())).await?;
+								reader.read_into(0, buffer.take(primitive.vertex_count as usize * primitive.vertex_components.size())).await?;
 							}
 							"Vertex.Position" => {
-								file.read_into(0, buffer.take(primitive.vertex_count as usize * 12)).await?;
+								reader.read_into(0, buffer.take(primitive.vertex_count as usize * 12)).await?;
 							}
 							"Vertex.Normal" => {
 								#[cfg(debug_assertions)]
 								if !primitive.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Normal) { log::error!("Requested Vertex.Normal stream but mesh does not have normals."); continue; }
 		
-								file.read_into(primitive.vertex_count as usize * 12, buffer.take(primitive.vertex_count as usize * 12)).await?;
+								reader.read_into(primitive.vertex_count as usize * 12, buffer.take(primitive.vertex_count as usize * 12)).await?;
 							}
 							"TriangleIndices" => {
 								#[cfg(debug_assertions)]
@@ -57,7 +68,7 @@ impl ResourceHandler for MeshResourceHandler {
 		
 								let triangle_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
 		
-								file.read_into(triangle_index_stream.offset as usize, buffer.take(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())).await?;
+								reader.read_into(triangle_index_stream.offset as usize, buffer.take(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())).await?;
 							}
 							"VertexIndices" => {
 								#[cfg(debug_assertions)]
@@ -65,7 +76,7 @@ impl ResourceHandler for MeshResourceHandler {
 		
 								let vertex_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
 		
-								file.read_into(vertex_index_stream.offset as usize, buffer.take(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())).await?;
+								reader.read_into(vertex_index_stream.offset as usize, buffer.take(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())).await?;
 							}
 							"MeshletIndices" => {
 								#[cfg(debug_assertions)]
@@ -73,7 +84,7 @@ impl ResourceHandler for MeshResourceHandler {
 		
 								let meshlet_indices_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
 		
-								file.read_into(meshlet_indices_stream.offset as usize, buffer.take(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())).await?;
+								reader.read_into(meshlet_indices_stream.offset as usize, buffer.take(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())).await?;
 							}
 							"Meshlets" => {
 								#[cfg(debug_assertions)]
@@ -81,7 +92,7 @@ impl ResourceHandler for MeshResourceHandler {
 		
 								let meshlet_stream = primitive.meshlet_stream.as_ref().unwrap();
 		
-								file.read_into(meshlet_stream.offset as usize, buffer.take(meshlet_stream.count as usize * 2)).await?;
+								reader.read_into(meshlet_stream.offset as usize, buffer.take(meshlet_stream.count as usize * 2)).await?;
 							}
 							_ => {
 								log::error!("Unknown buffer tag: {}", name);
@@ -134,7 +145,9 @@ impl ResourceHandler for MeshResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend}, StorageBackend}, resource::{image_resource_handler::ImageResourceHandler, resource_manager::ResourceManager, tests::TestResourceReader}, types::{IndexStreamTypes, IntegralTypes, Mesh, VertexSemantics}, LoadRequest, LoadResourceRequest, Stream};
+	use std::ops::DerefMut;
+
+use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, resource::{image_resource_handler::ImageResourceHandler, resource_manager::ResourceManager, tests::TestResourceReader}, types::{IndexStreamTypes, IntegralTypes, Mesh, VertexSemantics}, LoadRequest, LoadResourceRequest, StorageBackend, Stream};
 	
 	use super::*;
 
@@ -159,9 +172,7 @@ mod tests {
 
 		let mesh_resource_handler = MeshResourceHandler::new();
 
-		let (resource, data) = storage_backend.read(url).expect("Failed to read asset from storage");
-
-		let mut resource_reader = TestResourceReader::new(data);
+		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
 		let mut vertex_positions_buffer = vec![0; 11808 * 12];
 		let mut vertex_normals_buffer = vec![0; 11808 * 12];
@@ -177,7 +188,9 @@ mod tests {
 			meshlet_index_buffer.set_len(11808 * 3);
 		}
 
-		let resource = smol::block_on(mesh_resource_handler.read(&resource, &mut resource_reader, &mut ReadTargets::Streams(&mut [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)]))).unwrap();
+		//&mut ReadTargets::Streams(&mut [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)])
+
+		let resource = smol::block_on(mesh_resource_handler.read(resource, reader,)).unwrap();
 
 		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 
@@ -265,9 +278,7 @@ mod tests {
 
 		let mesh_resource_handler = MeshResourceHandler::new();
 
-		let (resource, data) = storage_backend.read(url).expect("Failed to read asset from storage");
-
-		let mut resource_reader = TestResourceReader::new(data);
+		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
 		let mut vertex_positions_buffer = vec![0; 24 * 12];
 		let mut vertex_normals_buffer = vec![0; 24 * 12];
@@ -283,7 +294,9 @@ mod tests {
 			meshlet_index_buffer.set_len(36 * 3);
 		}
 
-		let resource = smol::block_on(mesh_resource_handler.read(&resource, &mut resource_reader, &mut ReadTargets::Streams(&mut [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)]))).unwrap();
+		// &mut ReadTargets::Streams(&mut [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)])
+
+		let resource = smol::block_on(mesh_resource_handler.read(resource, reader,)).unwrap();
 
 		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 

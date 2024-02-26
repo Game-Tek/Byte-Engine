@@ -42,5 +42,5 @@ pub trait ResourceHandler: Send {
 		&[]
 	}
 
-	fn read<'a>(&'a self, resource: GenericResourceResponse<'a>, reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>>;
+	fn read<'s, 'a>(&'s self, resource: GenericResourceResponse<'a>, reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>>;
 }

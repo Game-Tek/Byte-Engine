@@ -73,6 +73,7 @@ pub trait AssetResolver: Sync + Send {
 pub mod tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
 
+    use polodb_core::bson;
     use smol::future::FutureExt;
 
     use crate::{resource::{resource_handler::ResourceReader, tests::TestResourceReader}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
@@ -141,15 +142,19 @@ pub mod tests {
 			})
 		}
 
-		fn read<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse, Box<dyn ResourceReader>)>> {
-			Box::pin(async move {
-				let resources = self.resources.lock().unwrap();
-				for (resource, data) in resources.iter() {
-					if resource.url == id {
-						return Some((GenericResourceResponse::new(resource.url.clone(), resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
-					}
+		fn read<'s, 'a>(&'s self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
+			let mut x = None;
+
+			let resources = self.resources.lock().unwrap();
+			for (resource, data) in resources.iter() {
+				if resource.url == id {
+					x = Some((GenericResourceResponse::new(resource.url.clone(), resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
+					break;
 				}
-				None
+			}
+
+			Box::pin(async move {
+				x
 			})
 		}
 	}

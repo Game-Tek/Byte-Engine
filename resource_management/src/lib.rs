@@ -185,6 +185,44 @@ impl <'a> ResourceResponse<'a> {
 			read_target: r.read_target,
 		}
 	}
+
+	pub fn resource(&self) -> &dyn Resource {
+		self.resource.as_ref()
+	}
+
+	pub fn get_stream(&self, name: &str) -> Option<&[u8]> {
+		match &self.read_target {
+			Some(ReadTargets::Streams(streams)) => {
+				for stream in streams.iter() {
+					if stream.name == name {
+						return Some(stream.buffer);
+					}
+				}
+
+				None
+			}
+			_ => None,
+		}
+	}
+
+	pub fn get_buffer(&self) -> Option<&[u8]> {
+		match &self.read_target {
+			Some(ReadTargets::Box(buffer)) => Some(buffer),
+			_ => None,
+		}
+	}
+
+	pub fn id(&self) -> u64 {
+		self.id
+	}
+
+	pub fn hash(&self) -> u64 {
+		self.hash
+	}
+
+	pub fn url(&self) -> &str {
+		&self.url
+    }
 }
 
 /// Trait that defines a resource.
@@ -269,7 +307,7 @@ impl From<GenericResourceSerialization> for TypedResourceDocument {
 
 pub trait StorageBackend: Sync + Send {
 	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
-	fn read<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse, Box<dyn ResourceReader>)>>;
+	fn read<'s, 'a>(&'s self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
 }
 
 struct DbStorageBackend {
@@ -329,15 +367,18 @@ impl DbStorageBackend {
 }
 
 impl StorageBackend for DbStorageBackend {
-	fn read<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse, Box<dyn ResourceReader>)>> {
+	fn read<'s, 'a>(&'s self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
+		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "_id": id }).ok();
+
 		Box::pin(async move {
-			let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "_id": id }).ok()??;
-			
-			let resource = {
+			let resource: GenericResourceResponse<'a> = {
+				let resource_document = resource_document??;
+
 				let id = id.to_string();
 				let class = resource_document.get_str("class").ok()?.to_string();
 				let size = resource_document.get_i64("size").ok()? as usize;
 				let resource = resource_document.get("resource")?.clone();
+
 				GenericResourceResponse::new(id, class, size, resource)
 			};
 

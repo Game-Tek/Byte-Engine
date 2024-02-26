@@ -179,41 +179,29 @@ impl Node {
 
 	pub fn add_child(&mut self, child: NodeReference) {
 		match &mut self.node {
-			Nodes::Scope{ children, .. } => {
-				children.push(child);
+			Nodes::Scope{ children: c, program_state, .. } => {
+				match RefCell::borrow(&child).node() {
+					Nodes::Struct { name, .. } => {
+						program_state.types.insert(name.clone(), child.clone());
+					}
+					Nodes::Binding { name, .. } | Nodes::Member { name, .. } => {
+						program_state.members.insert(name.clone(), child.clone());
+					}
+					_ => {}
+				}
+
+				c.push(child);
 			}
-			Nodes::Function { statements, .. } => {
-				statements.push(child);
+			Nodes::Struct { fields, .. } => {
+				fields.push(child);
 			}
 			_ => {}
 		}
 	}
 
 	pub fn add_children(&mut self, children: Vec<NodeReference>) {
-		match &mut self.node {
-			Nodes::Scope{ children: c, program_state, .. } => {
-				for c in &children {
-					// RefCell::borrow_mut(&c.0).parent = Some(Rc::downgrade(&self.0));
-
-					let child = RefCell::borrow(&c.0);
-
-					match child.node() {
-						Nodes::Struct { name, .. } => {
-							program_state.types.insert(name.clone(), c.clone());
-						}
-						Nodes::Binding { name, .. } | Nodes::Member { name, .. } => {
-							program_state.members.insert(name.clone(), c.clone());
-						}
-						_ => {}
-					}
-				}
-
-				c.extend(children);
-			}
-			Nodes::Struct { fields, .. } => {
-				fields.extend(children);
-			}
-			_ => {}
+		for child in children {
+			self.add_child(child);
 		}
 	}
 

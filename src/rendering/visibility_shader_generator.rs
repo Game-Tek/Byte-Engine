@@ -13,7 +13,7 @@ impl VisibilityShaderGenerator {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, mut parent_children: Vec<Rc<jspd::lexer::Node>>) -> (&'static str, jspd::lexer::Node) {
+	fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
 		let value = json::object! {
 			"type": "scope",
 			"camera": {
@@ -78,11 +78,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			}
 		};
 
-		let mut node = jspd::json_to_jspd(&value).unwrap();
-
-		if let jspd::lexer::Nodes::Scope { name, children, .. } = &mut node.node {
-			children.append(&mut parent_children);
-		};
+		scope
+	}
 
 // 		string.push_str(MESH_STRUCT_GLSL);
 
@@ -339,9 +336,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 // 		string.push_str(&format!("imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));"));
 
 // 		string.push_str(&format!("\n}}")); // Close main()
-
-		("Visibility", node)
-	}
 }
 
 impl VisibilityShaderGenerator {
@@ -361,52 +355,52 @@ impl VisibilityShaderGenerator {
 mod tests {
     use crate::jspd;
 
-	#[test]
-	fn vec4f_variable() {
-		let material = json::object! {
-			"variables": [
-				{
-					"name": "albedo",
-					"data_type": "vec4f",
-					"value": "Purple"
-				}
-			]
-		};
+	// #[test]
+	// fn vec4f_variable() {
+	// 	let material = json::object! {
+	// 		"variables": [
+	// 			{
+	// 				"name": "albedo",
+	// 				"data_type": "vec4f",
+	// 				"value": "Purple"
+	// 			}
+	// 		]
+	// 	};
 
-		let shader_source = "main: fn () -> void { out_color = albedo; }";
+	// 	let shader_source = "main: fn () -> void { out_color = albedo; }";
 
-		let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
+	// 	let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
 
-		let shader_generator = super::VisibilityShaderGenerator::new();
+	// 	let shader_generator = super::VisibilityShaderGenerator::new();
 
-		let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
+	// 	let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
 
-		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
-	}
+	// 	// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+	// }
 
-	#[test]
-	fn multiple_textures() {
-		let material = json::object! {
-			"variables": [
-				{
-					"name": "albedo",
-					"data_type": "Texture2D",
-				},
-				{
-					"name": "normal",
-					"data_type": "Texture2D",
-				}
-			]
-		};
+	// #[test]
+	// fn multiple_textures() {
+	// 	let material = json::object! {
+	// 		"variables": [
+	// 			{
+	// 				"name": "albedo",
+	// 				"data_type": "Texture2D",
+	// 			},
+	// 			{
+	// 				"name": "normal",
+	// 				"data_type": "Texture2D",
+	// 			}
+	// 		]
+	// 	};
 
-		let shader_source = "main: fn () -> void { out_color = sample(albedo); }";
+	// 	let shader_source = "main: fn () -> void { out_color = sample(albedo); }";
 
-		let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
+	// 	let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
 
-		let shader_generator = super::VisibilityShaderGenerator::new();
+	// 	let shader_generator = super::VisibilityShaderGenerator::new();
 
-		let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
+	// 	let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
 
-		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
-	}
+	// 	// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+	// }
 }

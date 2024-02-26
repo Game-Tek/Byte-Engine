@@ -21,7 +21,7 @@ impl ResourceHandler for ImageResourceHandler {
 		&["Image"]
 	}
 
-	fn read<'a>(&'a self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 		Box::pin(async move {
 			let image_resource = Image::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 

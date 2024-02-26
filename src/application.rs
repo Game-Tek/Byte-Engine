@@ -62,7 +62,7 @@ use std::ops::{DerefMut, Deref};
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use resource_management::{self, mesh_resource_handler::MeshResourceHandler, texture_resource_handler::ImageResourceHandler, audio_resource_handler::AudioResourceHandler, material_resource_handler::MaterialResourcerHandler};
+use resource_management::resource::{audio_resource_handler::AudioResourceHandler, image_resource_handler::ImageResourceHandler, material_resource_handler::MaterialResourcerHandler, mesh_resource_handler::MeshResourceHandler, resource_manager::ResourceManager};
 use utils::Extent;
 use crate::{audio::audio_system::{self, AudioSystem}, core::{self, entity::EntityHandle, orchestrator}, gameplay::space::Space, input, physics, rendering::{self, common_shader_generator}, window_system::{self, Window}, Vector2};
 
@@ -145,7 +145,7 @@ impl Application for GraphicsApplication {
 
 		application.initialize(std::env::args()); // TODO: take arguments
 
-		let resource_manager = core::spawn(resource_management::resource_manager::ResourceManager::new());
+		let resource_manager = core::spawn(ResourceManager::new());
 
 		{
 			let mut resource_manager = resource_manager.write_sync();
@@ -161,8 +161,6 @@ impl Application for GraphicsApplication {
 				let visibility_shader_generation = rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
 				visibility_shader_generation
 			};
-
-			material_resourcer_handler.set_shader_generator(shader_generator);
 
 			resource_manager.add_resource_handler(material_resourcer_handler);
 		}

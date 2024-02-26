@@ -24,7 +24,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		&["Material", "Shader", "Variant"]
 	}
 
-	fn read<'a>(&'a self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse>> {
+	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 		// vec![("Material",
 		// 	Box::new(|_document| {
 		// 		Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())

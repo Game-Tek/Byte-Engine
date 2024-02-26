@@ -1,7 +1,7 @@
 use std::collections::HashMap;
+use resource_management::{resource::resource_manager::ResourceManager, types::{Audio, BitDepths}};
+
 use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, entity::EntityBuilder,}};
-use crate::resource_management::audio_resource_handler;
-use crate::resource_management::resource_manager::ResourceManager;
 
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
@@ -14,7 +14,7 @@ pub trait AudioSystem: Entity {
 pub struct DefaultAudioSystem {
 	resource_manager: EntityHandle<ResourceManager>,
 	ahi: Box<dyn AudioHardwareInterface>,
-	audio_resources: HashMap<String, (audio_resource_handler::Audio, Vec<i16>)>,
+	audio_resources: HashMap<String, (Audio, Vec<i16>)>,
 	playing_audios: Vec<PlayingSound>,
 	channels: HashMap<String, Channel>,
 }
@@ -51,10 +51,15 @@ impl AudioSystem for DefaultAudioSystem {
 				resource_manager.get(audio_asset_url).await
 			};
 
-			if let Some((response, bytes)) = resources {
-				let audio_resource = response.resources[0].resource.downcast_ref::<audio_resource_handler::Audio>().unwrap();
+			if let Some(response) = resources {
+				let audio_resource = response.resource().downcast_ref::<Audio>().unwrap();
 
-				assert_eq!(audio_resource.bit_depth, audio_resource_handler::BitDepths::Sixteen);
+				assert_eq!(audio_resource.bit_depth, BitDepths::Sixteen);
+
+				let bytes = match response.get_buffer() {
+        			Some(b) => b,
+        			None => return,
+    			};
 
 				let audio_data = bytes.chunks_exact(2).map(|chunk| {
 					let mut bytes = [0; 2];

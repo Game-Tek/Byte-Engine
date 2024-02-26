@@ -1,5 +1,5 @@
-use crate::{DbStorageBackend, LoadRequest, LoadResults, Request, ResourceResponse, Response, StorageBackend};
-use super::resource_handler::ResourceHandler;
+use crate::{DbStorageBackend, GenericResourceResponse, LoadRequest, LoadResults, Request, ResourceResponse, Response, StorageBackend};
+use super::resource_handler::{ResourceHandler, ResourceReader};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -61,9 +61,9 @@ impl ResourceManager {
 	/// If the resource is in cache but it's data cannot be parsed, it will return None.
 	/// Return is a tuple containing the resource description and it's associated binary data.\
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
-	pub async fn get<'a>(&'a self, id: &'a str) -> Option<ResourceResponse<'a>> {
+	pub async fn get<'s, 'a>(&'s self, id: &'a str) -> Option<ResourceResponse<'a>> {
 		let load: ResourceResponse<'a> = {
-			let (resource, reader) = self.storage_backend.read(id).await?;
+			let (resource, reader): (GenericResourceResponse<'a>, Box<dyn ResourceReader>) = self.storage_backend.read(id).await?;
 
 			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, reader).await?
 		};
@@ -85,7 +85,7 @@ impl ResourceManager {
 	/// If no buffer range is provided it will return the data in a vector.
 	/// 
 	/// If a buffer is not provided for a resurce in the options parameters it will be either be loaded into the provided buffer or returned in a vector.
-	pub async fn load<'a>(&self, request: LoadRequest<'a>) -> Result<Response, LoadResults> {
+	pub async fn load<'s, 'a>(&'s self, request: LoadRequest<'a>) -> Result<ResourceResponse<'a>, LoadResults> {
 		Err(LoadResults::LoadFailed)
 	}
 
@@ -126,7 +126,7 @@ mod tests {
 			&["MyResource"]
 		}
 
-		fn read<'a>(&'a self, r: GenericResourceResponse<'a>, _: Box<dyn ResourceReader>,) -> utils::BoxedFuture<Option<ResourceResponse>> {
+		fn read<'s, 'a>(&'s self, r: GenericResourceResponse<'a>, _: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 			Box::pin(async move {
 				Some(ResourceResponse::new(r, ()))
 			})

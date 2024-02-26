@@ -1,9 +1,10 @@
 use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
 
 use ghi::GraphicsHardwareInterface;
+use resource_management::resource::resource_manager::ResourceManager;
 use utils::Extent;
 
-use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, resource_management::resource_manager::ResourceManager, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
+use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
 use super::{aces_tonemap_render_pass::AcesToneMapPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 

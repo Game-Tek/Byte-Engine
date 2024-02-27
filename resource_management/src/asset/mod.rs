@@ -142,7 +142,7 @@ pub mod tests {
 			})
 		}
 
-		fn read<'s, 'a>(&'s self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
+		fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
 			let mut x = None;
 
 			let resources = self.resources.lock().unwrap();

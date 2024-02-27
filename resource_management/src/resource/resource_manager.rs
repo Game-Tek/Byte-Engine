@@ -1,4 +1,4 @@
-use crate::{DbStorageBackend, GenericResourceResponse, LoadRequest, LoadResults, Request, ResourceResponse, Response, StorageBackend};
+use crate::{DbStorageBackend, GenericResourceResponse, LoadRequest, LoadResourceRequest, LoadResults, Request, ResourceRequest, ResourceResponse, Response, StorageBackend};
 use super::resource_handler::{ResourceHandler, ResourceReader};
 
 /// Resource manager.
@@ -74,10 +74,10 @@ impl ResourceManager {
 	/// Tries to load the information/metadata for a resource (and it's dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
-	pub async fn request(&self, id: &str) -> Option<Request> {
-		// let request = self.load_from_cache_or_source(path).await?;
-		// Some(request)
-		todo!()
+	pub async fn request(&self, id: &str) -> Option<ResourceRequest> {
+		let (resource, _) = self.storage_backend.read(id).await?;
+
+		Some(ResourceRequest::new(resource))
 	}
 
 	/// Loads the resource binary data from cache.\
@@ -85,8 +85,14 @@ impl ResourceManager {
 	/// If no buffer range is provided it will return the data in a vector.
 	/// 
 	/// If a buffer is not provided for a resurce in the options parameters it will be either be loaded into the provided buffer or returned in a vector.
-	pub async fn load<'s, 'a>(&'s self, request: LoadRequest<'a>) -> Result<ResourceResponse<'a>, LoadResults> {
-		Err(LoadResults::LoadFailed)
+	pub async fn load<'s, 'a>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
+		let (resource, reader) = self.storage_backend.read(request.id()).await?;
+
+		let resource_handler = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?;
+
+		let load = resource_handler.read(resource, reader).await?;
+
+		Some(load)
 	}
 
 	fn resolve_resource_path(path: &std::path::Path) -> std::path::PathBuf {
@@ -133,35 +139,35 @@ mod tests {
 		}
 	}
 
-	// #[test]
-	// fn get() {
-	// 	let storage_backend = TestStorageBackend::new();
+	#[test]
+	fn get() {
+		let storage_backend = TestStorageBackend::new();
 
-	// 	smol::block_on(storage_backend.store(GenericResourceSerialization::new("test".to_string(), ()), &[])).expect("Failed to store resource");
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test".to_string(), ()), &[])).expect("Failed to store resource");
 
-	// 	let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
+		let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
 
-	// 	resource_manager.add_resource_handler(MyResourceHandler::new());
+		resource_manager.add_resource_handler(MyResourceHandler::new());
 
-	// 	smol::block_on(resource_manager.get("test")).unwrap();
-	// }
+		smol::block_on(resource_manager.get("test")).unwrap();
+	}
 
-	// #[test]
-	// fn request() {
-	// 	let storage_backend = TestStorageBackend::new();
+	#[test]
+	fn request() {
+		let storage_backend = TestStorageBackend::new();
 
-	// 	smol::block_on(storage_backend.store(GenericResourceSerialization::new("test".to_string(), ()), &[])).expect("Failed to store resource");
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test".to_string(), ()), &[])).expect("Failed to store resource");
 
-	// 	let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
+		let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
 
-	// 	resource_manager.add_resource_handler(MyResourceHandler::new());
+		resource_manager.add_resource_handler(MyResourceHandler::new());
 
-	// 	let request = smol::block_on(resource_manager.request("test")).unwrap();
+		let request = smol::block_on(resource_manager.request("test")).unwrap();
 
-	// 	assert_eq!(request.resources.len(), 1);
+		let request = LoadResourceRequest::new(request);
 
-	// 	let request = LoadRequest::new(request.resources.into_iter().map(|r| LoadResourceRequest::new(r)).collect::<Vec<_>>());
+		let load = smol::block_on(resource_manager.load(request)).expect("Failed to load resource");
 
-	// 	smol::block_on(resource_manager.load(request)).expect("Failed to load resource");
-	// }
+		assert_eq!(load.get_buffer(), None);
+	}
 }

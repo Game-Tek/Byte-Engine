@@ -28,7 +28,7 @@ impl AssetHandler for MeshAssetHandler {
         url: &'a str,
         json: &'a json::JsonValue,
     ) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
-        async move {
+    	Box::pin(async move {
             if let Some(dt) = asset_resolver.get_type(url) {
                 if dt != "gltf" && dt != "glb" {
                     return None;
@@ -395,11 +395,10 @@ impl AssetHandler for MeshAssetHandler {
             let mesh = Mesh { sub_meshes };
 
             let resource_document = GenericResourceSerialization::new(url.to_string(), mesh);
-            storage_backend.store(resource_document, &buffer);
+            storage_backend.store(resource_document, &buffer).await;
 
             Some(Ok(()))
-        }
-        .boxed()
+        })
     }
 }
 

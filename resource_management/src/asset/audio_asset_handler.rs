@@ -16,7 +16,7 @@ impl AudioAssetHandler {
 
 impl AssetHandler for AudioAssetHandler {
 	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
-		async move {
+		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "wav" { return None; }
 			}
@@ -96,10 +96,10 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			storage_backend.store(GenericResourceSerialization::new(url.to_string(), audio_resource), data.into());
+			storage_backend.store(GenericResourceSerialization::new(url.to_string(), audio_resource), data.into()).await;
 
 			Some(Ok(()))
-		}.boxed()
+		})
 	}
 }
 

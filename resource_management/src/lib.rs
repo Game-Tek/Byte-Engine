@@ -117,14 +117,27 @@ pub enum LoadResults {
 
 /// Struct that describes a resource request.
 pub struct ResourceRequest {
-	_id: polodb_core::bson::oid::ObjectId,
-	pub id: u64,
-	pub	url: String,
-	pub size: u64,
-	pub hash: u64,
-	pub class: String,
-	pub resource: Box<dyn Resource>,
-	pub required_resources: Vec<String>,
+	id: u64,
+	url: String,
+	size: u64,
+	hash: u64,
+	class: String,
+}
+
+impl ResourceRequest {
+	pub fn new(resource: GenericResourceResponse) -> Self {
+		ResourceRequest {
+			id: 0,
+			url: resource.url,
+			size: resource.size as u64,
+			hash: 0,
+			class: resource.class,
+		}
+	}
+	
+	pub fn resource(&self) -> &dyn Resource {
+		todo!()
+	}
 }
 
 pub enum Lox<'a> {
@@ -143,9 +156,19 @@ pub struct LoadResourceRequest<'a> {
 impl <'a> LoadResourceRequest<'a> {
 	pub fn new(resource_request: ResourceRequest) -> Self {
 		LoadResourceRequest {
-			resource_request,
+			resource_request: ResourceRequest {
+				id: 0,
+				url: resource_request.url,
+				size: resource_request.size as u64,
+				hash: 0,
+				class: resource_request.class,
+			},
 			streams: Lox::None,
 		}
+	}
+
+	pub fn id(&self) -> &str {
+		&self.resource_request.url
 	}
 
 	pub fn streams(mut self, streams: Vec<Stream<'a>>) -> Self {
@@ -208,6 +231,7 @@ impl <'a> ResourceResponse<'a> {
 	pub fn get_buffer(&self) -> Option<&[u8]> {
 		match &self.read_target {
 			Some(ReadTargets::Box(buffer)) => Some(buffer),
+			Some(ReadTargets::Buffer(buffer)) => Some(buffer),
 			_ => None,
 		}
 	}
@@ -307,7 +331,7 @@ impl From<GenericResourceSerialization> for TypedResourceDocument {
 
 pub trait StorageBackend: Sync + Send {
 	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
-	fn read<'s, 'a>(&'s self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
+	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
 }
 
 struct DbStorageBackend {
@@ -367,22 +391,22 @@ impl DbStorageBackend {
 }
 
 impl StorageBackend for DbStorageBackend {
-	fn read<'s, 'a>(&'s self, id: &'a str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
+	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
 		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "_id": id }).ok();
+		let id = id.to_string();
 
 		Box::pin(async move {
 			let resource: GenericResourceResponse<'a> = {
 				let resource_document = resource_document??;
 
-				let id = id.to_string();
 				let class = resource_document.get_str("class").ok()?.to_string();
 				let size = resource_document.get_i64("size").ok()? as usize;
 				let resource = resource_document.get("resource")?.clone();
 
-				GenericResourceResponse::new(id, class, size, resource)
+				GenericResourceResponse::new(id.clone(), class, size, resource)
 			};
 
-			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(id))).await.ok()?);	
+			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&id))).await.ok()?);	
 	
 			Some((resource, Box::new(resource_reader) as Box<dyn ResourceReader>))
 		})

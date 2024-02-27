@@ -771,43 +771,40 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 			let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
-			let resources = resource_request.resources.into_iter().map(|resource| {
-				if let Some(mesh_resource) = resource.resource.downcast_ref::<Mesh>() {
-					let sub_mesh = &mesh_resource.sub_meshes[0]; let primitive = &sub_mesh.primitives[0];
-	
-					let triangle_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap();
-					let vertex_indices_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap();
-					let primitive_indices_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Meshlets).unwrap();
-	
-					let meshlet_stream = primitive.meshlet_stream.as_ref().unwrap();
-					
-					let vertex_positions_buffer = vertex_positions_buffer.take(primitive.vertex_count as usize * std::mem::size_of::<Vector3>());
-					let vertex_normals_buffer = vertex_normals_buffer.take(primitive.vertex_count as usize * std::mem::size_of::<Vector3>());
-					let triangle_indices_buffer = triangle_indices_buffer.take(triangle_stream.count as usize * std::mem::size_of::<u16>());
-					let vertex_indices_buffer = vertex_indices_buffer.take(vertex_indices_stream.count as usize * std::mem::size_of::<u16>());
-					let primitive_indices_buffer = primitive_indices_buffer.take(primitive_indices_stream.count as usize * std::mem::size_of::<u8>());
-					let meshlet_stream_buffer = buffer_allocator.take(meshlet_stream.count as usize * 2usize);
-	
-					let streams = vec![
-						resource_management::Stream::new("Vertex.Position", vertex_positions_buffer),
-						resource_management::Stream::new("Vertex.Normal", vertex_normals_buffer),
-						resource_management::Stream::new("TriangleIndices", triangle_indices_buffer),
-						resource_management::Stream::new("VertexIndices", vertex_indices_buffer),
-						resource_management::Stream::new("MeshletIndices", primitive_indices_buffer),
-						resource_management::Stream::new("Meshlets", meshlet_stream_buffer),
-					];
-	
-					resource_management::LoadResourceRequest::new(resource).streams(streams)	
-				} else {
-					resource_management::LoadResourceRequest::new(resource)
-				}
-			}).collect::<Vec<_>>();
+			let load_request = if let Some(mesh_resource) = resource_request.resource().downcast_ref::<Mesh>() {
+				let sub_mesh = &mesh_resource.sub_meshes[0]; let primitive = &sub_mesh.primitives[0];
 
-			let response = if let Ok(a) = {
+				let triangle_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap();
+				let vertex_indices_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap();
+				let primitive_indices_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Meshlets).unwrap();
+
+				let meshlet_stream = primitive.meshlet_stream.as_ref().unwrap();
+				
+				let vertex_positions_buffer = vertex_positions_buffer.take(primitive.vertex_count as usize * std::mem::size_of::<Vector3>());
+				let vertex_normals_buffer = vertex_normals_buffer.take(primitive.vertex_count as usize * std::mem::size_of::<Vector3>());
+				let triangle_indices_buffer = triangle_indices_buffer.take(triangle_stream.count as usize * std::mem::size_of::<u16>());
+				let vertex_indices_buffer = vertex_indices_buffer.take(vertex_indices_stream.count as usize * std::mem::size_of::<u16>());
+				let primitive_indices_buffer = primitive_indices_buffer.take(primitive_indices_stream.count as usize * std::mem::size_of::<u8>());
+				let meshlet_stream_buffer = buffer_allocator.take(meshlet_stream.count as usize * 2usize);
+
+				let streams = vec![
+					resource_management::Stream::new("Vertex.Position", vertex_positions_buffer),
+					resource_management::Stream::new("Vertex.Normal", vertex_normals_buffer),
+					resource_management::Stream::new("TriangleIndices", triangle_indices_buffer),
+					resource_management::Stream::new("VertexIndices", vertex_indices_buffer),
+					resource_management::Stream::new("MeshletIndices", primitive_indices_buffer),
+					resource_management::Stream::new("Meshlets", meshlet_stream_buffer),
+				];
+
+				resource_management::LoadResourceRequest::new(resource_request).streams(streams)	
+			} else {
+				resource_management::LoadResourceRequest::new(resource_request)
+			};
+
+			let response = {
 				let resource_manager = self.resource_manager.read().await;
-				let resource_load_request = resource_management::LoadRequest::new(resources);
-				resource_manager.load(resource_load_request,).await
-			} { a } else { return; };
+				if let Some(a) = resource_manager.load(load_request,).await { a } else { return; }
+			};
 
 			if let Some(mesh_resource) = response.resource().downcast_ref::<Mesh>() {
 				self.mesh_resources.insert(mesh.get_resource_id(), self.visibility_info.triangle_count);

@@ -24,7 +24,7 @@ impl MaterialAssetHandler {
 
 impl AssetHandler for MaterialAssetHandler {
 	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
-		async move {
+		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "json" { return None; }
 			}
@@ -69,7 +69,7 @@ impl AssetHandler for MaterialAssetHandler {
 					},
 				}).required_resources(&required_resources);
 
-				storage_backend.store(resource, &[]);
+				storage_backend.store(resource, &[]).await;
 			} else {
 				let variant_json = asset_json;
 
@@ -89,7 +89,7 @@ impl AssetHandler for MaterialAssetHandler {
 			}
 
 			Some(Ok(()))
-		}.boxed()
+		})
 	}
 }
 
@@ -158,7 +158,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		stage,
 	});
 
-	storage_backend.store(resource, result_shader_bytes);
+	storage_backend.store(resource, result_shader_bytes).await;
 
 	None
 }

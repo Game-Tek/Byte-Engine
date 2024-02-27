@@ -16,7 +16,7 @@ impl ImageAssetHandler {
 
 impl AssetHandler for ImageAssetHandler {
 	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
-		async move {
+		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "png" { return None; }
 			}
@@ -113,10 +113,10 @@ impl AssetHandler for ImageAssetHandler {
 				compression,
 			});
 
-			storage_backend.store(resource_document, &buffer);
+			storage_backend.store(resource_document, &buffer).await;
 
 			Some(Ok(()))
-		}.boxed()
+		})
 	}
 }
 

@@ -6,12 +6,12 @@ use crate::{resource::material_resource_handler::ProgramGenerator, shader_genera
 
 use super::{asset_handler::AssetHandler, AssetResolver,};
 
-struct MaterialAssetHandler {
+pub struct MaterialAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
 }
 
 impl MaterialAssetHandler {
-	fn new() -> MaterialAssetHandler {
+	pub fn new() -> MaterialAssetHandler {
 		MaterialAssetHandler {
 			generator: None,
 		}
@@ -104,7 +104,6 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 	let parent_scope = generator.transform(root_scope);
 
 	let shader_option = if format == "glsl" {
-		todo!();
 		Some((jspd::lexer::Node::glsl(shader_code), path.to_string()))
 	} else if format == "besl" {
 		Some((jspd::compile_to_jspd(&shader_code, Some(parent_scope.clone())).unwrap(), path.to_string()))
@@ -172,35 +171,35 @@ fn default_fragment_shader() -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
 	use std::cell::RefCell;
 
 	use super::{MaterialAssetHandler};
 	use crate::{asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, resource::material_resource_handler::ProgramGenerator};
+
+	pub struct TestShaderGenerator {
+
+	}
+
+	impl TestShaderGenerator {
+		pub fn new() -> TestShaderGenerator {
+			TestShaderGenerator {}
+		}
+	}
+
+	impl ProgramGenerator for TestShaderGenerator {
+		fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
+			let vec4f = RefCell::borrow(&scope).get_child("vec4f").unwrap();
+			RefCell::borrow_mut(&scope).add_children(vec![jspd::Node::binding("material",jspd::BindingTypes::buffer(jspd::Node::r#struct("Material".to_string(), vec![jspd::Node::member("color".to_string(), vec4f)])), 0, 0, true, false)]);
+			scope
+		}
+	}
 
 	#[test]
 	fn load_material() {
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
-
-		struct TestShaderGenerator {
-
-		}
-
-		impl TestShaderGenerator {
-			fn new() -> TestShaderGenerator {
-				TestShaderGenerator {}
-			}
-		}
-
-		impl ProgramGenerator for TestShaderGenerator {
-			fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
-				let vec4f = RefCell::borrow(&scope).get_child("vec4f").unwrap();
-				RefCell::borrow_mut(&scope).add_children(vec![jspd::Node::binding("material",jspd::BindingTypes::buffer(jspd::Node::r#struct("Material".to_string(), vec![jspd::Node::member("color".to_string(), vec4f)])), 0, 0, true, false)]);
-				scope
-			}
-		}
 
 		let shader_generator = TestShaderGenerator::new();
 
@@ -245,12 +244,13 @@ mod tests {
 		let shader = &generated_resources[0];
 
 		assert_eq!(shader.url, "fragment.besl");
-		assert_eq!(shader.class, "Shader");
+		assert_eq!(shader.class, "Shader");		
 
-		let shader_glsl = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
-		let shader_glsl = String::from_utf8_lossy(&shader_glsl);
+		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
+		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(shader_glsl.contains("material"));
+		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) buffer readonly Material{\tvec4f color;\n}material;"));
+		assert!(shader_spirv.contains("void main() {\n\tmaterial;\n}"));
 
 		let material = &generated_resources[1];
 

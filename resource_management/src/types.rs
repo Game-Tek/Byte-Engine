@@ -58,7 +58,7 @@ pub enum Property {
 	Texture(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),

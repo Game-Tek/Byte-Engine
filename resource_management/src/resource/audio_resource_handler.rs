@@ -79,7 +79,7 @@ mod tests {
 
 		let audio_resource_handler = AudioResourceHandler::new();
 
-		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
+		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
 		let resource = smol::block_on(audio_resource_handler.read(resource, reader,)).unwrap();
 

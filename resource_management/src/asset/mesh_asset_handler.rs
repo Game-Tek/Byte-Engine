@@ -432,8 +432,7 @@ mod tests {
             "url": url,
         };
 
-        smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc))
-            .expect("Failed to get resource");
+        smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Failed to get resource");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -705,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
@@ -716,8 +715,7 @@ mod tests {
             "url": url,
         };
 
-        let result =
-            smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc));
+        let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc));
 
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());

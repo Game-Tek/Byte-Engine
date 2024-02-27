@@ -43,7 +43,7 @@ impl ResourceHandler for AudioResourceHandler {
 					buffer.set_len(resource.size);
 				}
 				reader.read_into(0, &mut buffer).await?;
-				resource.set_read_target(buffer.into_boxed_slice());
+				resource.set_box_buffer(buffer.into_boxed_slice());
 			}
 
 			Some(ResourceResponse::new(resource, audio_resource))

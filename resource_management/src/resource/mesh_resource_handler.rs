@@ -152,7 +152,6 @@ use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHa
 	use super::*;
 
 	#[test]
-	#[ignore]
 	fn load_suzanne() {
 		// Create resource from asset
 
@@ -172,7 +171,7 @@ use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHa
 
 		let mesh_resource_handler = MeshResourceHandler::new();
 
-		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
+		let (mut resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
 		let mut vertex_positions_buffer = vec![0; 11808 * 12];
 		let mut vertex_normals_buffer = vec![0; 11808 * 12];
@@ -188,7 +187,9 @@ use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHa
 			meshlet_index_buffer.set_len(11808 * 3);
 		}
 
-		//&mut ReadTargets::Streams(&mut [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)])
+		let mut streams = [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)];
+
+		resource.set_streams(&mut streams);
 
 		let resource = smol::block_on(mesh_resource_handler.read(resource, reader,)).unwrap();
 

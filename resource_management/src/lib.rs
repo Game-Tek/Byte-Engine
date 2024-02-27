@@ -74,8 +74,12 @@ impl <'a> GenericResourceResponse<'a> {
 		}
 	}
 
-	pub fn set_read_target(&mut self, buffer: Box<[u8]>) {
+	pub fn set_box_buffer(&mut self, buffer: Box<[u8]>) {
 		self.read_target = Some(ReadTargets::Box(buffer));
+	}
+
+	pub fn set_streams(&mut self, streams: &'a mut [Stream<'a>]) {
+		self.read_target = Some(ReadTargets::Streams(streams));
 	}
 }
 

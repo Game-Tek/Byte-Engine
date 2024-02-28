@@ -43,6 +43,6 @@ impl physics::PhysicsEntity for Object {
 
 impl mesh::RenderEntity for Object {
 	fn get_transform(&self) -> maths_rs::Mat4f { maths_rs::Mat4f::from_translation(self.position) * maths_rs::Mat4f::from_scale(Vector3::new(0.05, 0.05, 0.05)) }
-	fn get_material_id(&self) -> &'static str { "solid" }
+	fn get_material_id(&self) -> &'static str { "Solid" }
 	fn get_resource_id(&self) -> &'static str { "Box" }
 }

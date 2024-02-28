@@ -1,5 +1,7 @@
-use crate::{DbStorageBackend, GenericResourceResponse, LoadRequest, LoadResourceRequest, LoadResults, Request, ResourceRequest, ResourceResponse, Response, StorageBackend};
-use super::resource_handler::{ResourceHandler, ResourceReader};
+use smol::{io::AsyncReadExt, stream::StreamExt};
+
+use crate::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
+use super::resource_handler::ResourceHandler;
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -13,6 +15,9 @@ use super::resource_handler::{ResourceHandler, ResourceReader};
 pub struct ResourceManager {
 	storage_backend: Box<dyn StorageBackend>,
 	resource_handlers: Vec<Box<dyn ResourceHandler + Send>>,
+
+	#[cfg(debug_assertions)]
+	asset_manager: AssetManager,
 }
 
 impl From<polodb_core::Error> for LoadResults {
@@ -37,9 +42,25 @@ impl ResourceManager {
 
 		// let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
+		let mut asset_manager = AssetManager::new();
+
+		asset_manager.add_asset_handler(MeshAssetHandler::new());
+
+		{
+			let mut material_asset_handler = MaterialAssetHandler::new();
+			material_asset_handler.set_shader_generator(VisibilityShaderGenerator::new());
+			asset_manager.add_asset_handler(material_asset_handler);
+		}
+
+		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(AudioAssetHandler::new());
+
 		ResourceManager {
 			storage_backend: Box::new(DbStorageBackend::new(&Self::resolve_resource_path(std::path::Path::new("resources.db")))),
 			resource_handlers: Vec::with_capacity(8),
+
+			#[cfg(debug_assertions)]
+			asset_manager,
 		}
 	}
 
@@ -47,6 +68,9 @@ impl ResourceManager {
 		ResourceManager {
 			storage_backend: Box::new(storage_backend),
 			resource_handlers: Vec::with_capacity(8),
+
+			#[cfg(debug_assertions)]
+			asset_manager: AssetManager::new(),
 		}
 	}
 
@@ -62,8 +86,28 @@ impl ResourceManager {
 	/// Return is a tuple containing the resource description and it's associated binary data.\
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
 	pub async fn get<'s, 'a>(&'s self, id: &'a str) -> Option<ResourceResponse<'a>> {
-		let load: ResourceResponse<'a> = {
-			let (resource, reader): (GenericResourceResponse<'a>, Box<dyn ResourceReader>) = self.storage_backend.read(id).await?;
+		let load = {
+			let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
+				x	
+			} else {
+				let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
+
+				let entry = dir.find(|e| 
+					e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
+				).await?.ok()?;
+
+				let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
+
+				let mut json_string = String::with_capacity(1024);
+
+				asset_resolver.read_to_string(&mut json_string).await.ok()?;
+
+				let asset_json = json::parse(&json_string).ok()?;
+
+				self.asset_manager.load(&asset_json).await.ok()?;
+
+				self.storage_backend.read(id).await?
+			};
 
 			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, reader).await?
 		};
@@ -75,7 +119,27 @@ impl ResourceManager {
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
 	pub async fn request(&self, id: &str) -> Option<ResourceRequest> {
-		let (resource, _) = self.storage_backend.read(id).await?;
+		let (resource, _) = if let Some(x) = self.storage_backend.read(id).await {
+			x	
+		} else {
+			let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
+
+			let entry = dir.find(|e| 
+				e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
+			).await?.ok()?;
+
+			let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
+
+			let mut json_string = String::with_capacity(1024);
+
+			asset_resolver.read_to_string(&mut json_string).await.ok()?;
+
+			let asset_json = json::parse(&json_string).ok()?;
+
+			self.asset_manager.load(&asset_json).await.ok()?;
+
+			self.storage_backend.read(id).await?
+		};
 
 		Some(ResourceRequest::new(resource))
 	}
@@ -96,10 +160,22 @@ impl ResourceManager {
 	}
 
 	fn resolve_resource_path(path: &std::path::Path) -> std::path::PathBuf {
+		Self::resource_path().join(path)
+	}
+	
+	fn resource_path() -> std::path::PathBuf {
 		if cfg!(test) {
-			std::env::temp_dir().join("resources").join(path)
+			std::env::temp_dir().join("resources")
 		} else {
-			std::path::PathBuf::from("resources/").join(path)
+			std::path::PathBuf::from("resources/")
+		}
+	}
+
+	fn assets_path() -> std::path::PathBuf {
+		if cfg!(test) {
+			std::env::temp_dir().join("assets")
+		} else {
+			std::path::PathBuf::from("assets/")
 		}
 	}
 }
@@ -108,9 +184,7 @@ impl ResourceManager {
 
 #[cfg(test)]
 mod tests {
-	// TODO: test resource load order
-
-	use crate::{asset::tests::TestStorageBackend, resource::resource_handler::ResourceReader, GenericResourceResponse, GenericResourceSerialization, LoadResourceRequest, Resource};
+	use crate::{asset::tests::TestStorageBackend, resource::resource_handler::ResourceReader, GenericResourceResponse, GenericResourceSerialization, Resource};
 
 	use super::*;
 

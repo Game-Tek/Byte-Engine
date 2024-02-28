@@ -40,7 +40,7 @@ impl AssetHandler for MaterialAssetHandler {
 			if is_material {
 				let material_domain = asset_json["domain"].as_str().ok_or("Domain not found".to_string()).ok()?;
 				
-				let generator = self.generator.as_ref().unwrap();
+				let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None })?;
 
 				let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
@@ -84,8 +84,6 @@ impl AssetHandler for MaterialAssetHandler {
 						}
 					}).collect::<Vec<_>>()
 				}).required_resources(&[ProcessedResources::Reference(parent_material_url.to_string())]);
-
-				// Ok(vec![Proc/essedResources::Generated((material_resource_document.into(), Vec::new()))])
 			}
 
 			Some(Ok(()))

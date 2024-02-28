@@ -1,8 +1,8 @@
-use crate::{asset::AssetResolver, resource::resource_handler::ResourceReader, DbStorageBackend, GenericResourceResponse, GenericResourceSerialization};
+use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend};
 
 use super::asset_handler::AssetHandler;
 
-struct AssetManager {
+pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
 }
 
@@ -44,6 +44,11 @@ impl AssetManager {
 		struct MyAssetResolver {}
 
 		impl AssetResolver for MyAssetResolver {
+			fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
+				Box::pin(async move {
+					read_asset_from_source(url, Some(&assets_path())).await.ok()
+				})
+			}
 		}
 
 		let asset_resolver = MyAssetResolver {};
@@ -54,9 +59,10 @@ impl AssetManager {
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
-		let asset_handler_found = load_results.iter().any(|load_result| { if let Some(Ok(_)) = load_result { true } else { false } });
+		let asset_handler_found = load_results.iter().any(|load_result| { load_result.is_some() });
 
 		if !asset_handler_found {
+			log::warn!("No asset handler found for asset: {}", url);
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
@@ -73,10 +79,14 @@ fn resolve_internal_path(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn resolve_asset_path(path: &std::path::Path) -> std::path::PathBuf {
+	assets_path().join(path)
+}
+
+fn assets_path() -> std::path::PathBuf {
 	if cfg!(test) {
-		std::path::PathBuf::from("../assets/").join(path)
+		std::path::PathBuf::from("../assets/")
 	} else {
-		std::path::PathBuf::from("assets/").join(path)
+		std::path::PathBuf::from("assets/")
 	}
 }
 

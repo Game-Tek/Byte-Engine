@@ -745,14 +745,19 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
 			let response_and_data = {
 				let resource_manager = self.resource_manager.read().await;
-				resource_manager.get(mesh.get_material_id()).await.unwrap()
+				if let Some(x) = resource_manager.get(mesh.get_material_id()).await {
+					x
+				} else {
+					log::error!("Failed to load material {} for mesh {}", mesh.get_material_id(), mesh.get_resource_id());
+					return;
+				}
 			};
 
 			self.load_material(response_and_data,);
 		}
 
 		if !self.mesh_resources.contains_key(mesh.get_resource_id()) { // Load only if not already loaded
-			let mut ghi = self.ghi.write().unwrap();
+			let ghi = self.ghi.write().unwrap();
 
 			let resource_request = {
 				let resource_manager = self.resource_manager.read().await;

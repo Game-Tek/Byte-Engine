@@ -1,6 +1,8 @@
+use std::ops::Deref;
+
 use smol::{io::AsyncReadExt, stream::StreamExt};
 
-use crate::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
+use crate::{asset::asset_manager::AssetManager, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
 use super::resource_handler::ResourceHandler;
 
 /// Resource manager.
@@ -17,7 +19,7 @@ pub struct ResourceManager {
 	resource_handlers: Vec<Box<dyn ResourceHandler + Send>>,
 
 	#[cfg(debug_assertions)]
-	asset_manager: AssetManager,
+	asset_manager: Option<AssetManager>,
 }
 
 impl From<polodb_core::Error> for LoadResults {
@@ -42,25 +44,12 @@ impl ResourceManager {
 
 		// let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
-		let mut asset_manager = AssetManager::new();
-
-		asset_manager.add_asset_handler(MeshAssetHandler::new());
-
-		{
-			let mut material_asset_handler = MaterialAssetHandler::new();
-			material_asset_handler.set_shader_generator(VisibilityShaderGenerator::new());
-			asset_manager.add_asset_handler(material_asset_handler);
-		}
-
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
-		asset_manager.add_asset_handler(AudioAssetHandler::new());
-
 		ResourceManager {
 			storage_backend: Box::new(DbStorageBackend::new(&Self::resolve_resource_path(std::path::Path::new("resources.db")))),
 			resource_handlers: Vec::with_capacity(8),
 
 			#[cfg(debug_assertions)]
-			asset_manager,
+			asset_manager: None,
 		}
 	}
 
@@ -70,8 +59,13 @@ impl ResourceManager {
 			resource_handlers: Vec::with_capacity(8),
 
 			#[cfg(debug_assertions)]
-			asset_manager: AssetManager::new(),
+			asset_manager: None,
 		}
+	}
+
+	pub fn set_asset_manager(&mut self, asset_manager: AssetManager) {
+		#[cfg(debug_assertions)]
+		self.asset_manager = Some(asset_manager);
 	}
 
 	pub fn add_resource_handler<T>(&mut self, resource_handler: T) where T: ResourceHandler + Send + 'static {
@@ -90,23 +84,28 @@ impl ResourceManager {
 			let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
 				x	
 			} else {
-				let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
-
-				let entry = dir.find(|e| 
-					e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
-				).await?.ok()?;
-
-				let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
-
-				let mut json_string = String::with_capacity(1024);
-
-				asset_resolver.read_to_string(&mut json_string).await.ok()?;
-
-				let asset_json = json::parse(&json_string).ok()?;
-
-				self.asset_manager.load(&asset_json).await.ok()?;
-
-				self.storage_backend.read(id).await?
+				if let Some(asset_manager) = &self.asset_manager {
+					let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
+	
+					let entry = dir.find(|e| 
+						e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
+					).await?.ok()?;
+	
+					let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
+	
+					let mut json_string = String::with_capacity(1024);
+	
+					asset_resolver.read_to_string(&mut json_string).await.ok()?;
+	
+					let asset_json = json::parse(&json_string).ok()?;
+	
+					asset_manager.load(&asset_json).await.ok()?;
+					self.storage_backend.sync(asset_manager.get_storage_backend()).await;
+	
+					self.storage_backend.read(id).await?
+				} else {
+					return None;
+				}
 			};
 
 			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, reader).await?
@@ -122,23 +121,28 @@ impl ResourceManager {
 		let (resource, _) = if let Some(x) = self.storage_backend.read(id).await {
 			x	
 		} else {
-			let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
+			if let Some(asset_manager) = &self.asset_manager {
+				let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
 
-			let entry = dir.find(|e| 
-				e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
-			).await?.ok()?;
+				let entry = dir.find(|e| 
+					e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
+				).await?.ok()?;
 
-			let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
+				let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
 
-			let mut json_string = String::with_capacity(1024);
+				let mut json_string = String::with_capacity(1024);
 
-			asset_resolver.read_to_string(&mut json_string).await.ok()?;
+				asset_resolver.read_to_string(&mut json_string).await.ok()?;
 
-			let asset_json = json::parse(&json_string).ok()?;
+				let asset_json = json::parse(&json_string).ok()?;
 
-			self.asset_manager.load(&asset_json).await.ok()?;
+				asset_manager.load(&asset_json).await.ok()?;
+				self.storage_backend.sync(asset_manager.get_storage_backend()).await;
 
-			self.storage_backend.read(id).await?
+				self.storage_backend.read(id).await?
+			} else {
+				return None;
+			}
 		};
 
 		Some(ResourceRequest::new(resource))

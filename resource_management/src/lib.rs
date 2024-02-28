@@ -4,9 +4,11 @@
 
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
+#![feature(stmt_expr_attributes)]
 
 use std::{borrow::Cow, hash::Hasher};
 
+use downcast_rs::Downcast;
 use polodb_core::bson;
 use resource::resource_handler::{FileResourceReader, ReadTargets, ResourceReader};
 use smol::io::AsyncWriteExt;
@@ -333,13 +335,19 @@ impl From<GenericResourceSerialization> for TypedResourceDocument {
 	}
 }
 
-pub trait StorageBackend: Sync + Send {
+pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
+	fn sync<'s, 'a>(&'s self, other: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
+		Box::pin(async move {})
+	}
 }
+
+downcast_rs::impl_downcast!(StorageBackend);
 
 struct DbStorageBackend {
 	db: polodb_core::Database,
+	path: std::path::PathBuf,
 }
 
 impl DbStorageBackend {
@@ -380,8 +388,11 @@ impl DbStorageBackend {
 			}
 		};
 
+		// db.collection::<bson::Document>("resources").create_index(polodb_core::IndexModel{ keys: bson::doc! { "id": 1 }, options: Some(polodb_core::IndexOptions{ name: None, unique: Some(true) }) });
+
 		DbStorageBackend {
 			db,
+			path: path.to_path_buf(),
 		}
 	}
 
@@ -396,13 +407,13 @@ impl DbStorageBackend {
 
 impl StorageBackend for DbStorageBackend {
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
-		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "_id": id }).ok();
+		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }).ok();
 		let id = id.to_string();
 
 		Box::pin(async move {
-			let resource: GenericResourceResponse<'a> = {
-				let resource_document = resource_document??;
+			let resource_document = resource_document??;
 
+			let resource = {
 				let class = resource_document.get_str("class").ok()?.to_string();
 				let size = resource_document.get_i64("size").ok()? as usize;
 				let resource = resource_document.get("resource")?.clone();
@@ -410,34 +421,23 @@ impl StorageBackend for DbStorageBackend {
 				GenericResourceResponse::new(id.clone(), class, size, resource)
 			};
 
-			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&id))).await.ok()?);	
+			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&resource_document.get_object_id("_id").ok()?.to_string()))).await.ok()?);	
 	
 			Some((resource, Box::new(resource_reader) as Box<dyn ResourceReader>))
 		})
 	}
 
-	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>> {
+	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>> { // TODO: define schema
 		Box::pin(async move {
 			let mut resource_document = bson::Document::new();
 	
-			let mut hasher = std::collections::hash_map::DefaultHasher::new();
+			let size = data.len();
+			let url = resource.url;
+			let class = resource.class;
 	
-			let size = 0usize;
-			let url = "";
-			let class = "";
-	
-			resource_document.insert("id", hasher.finish() as i64);
-			resource_document.insert("size", size as i64);
-	
-			resource_document.insert("url", url);
-	
-			// resource_package.0.url.hash(&mut hasher);
-	
+			resource_document.insert("id", url);
+			resource_document.insert("size", size as i64);	
 			resource_document.insert("class", class);
-	
-			let mut required_resources_json = bson::Array::new();
-	
-			resource_document.insert("required_resources", required_resources_json);
 	
 			let json_resource = resource.resource.clone();
 	
@@ -469,6 +469,18 @@ impl StorageBackend for DbStorageBackend {
 	
 			Ok(())
 		})
+	}
 
+	fn sync<'s, 'a>(&'s self, other: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
+		if let Some(other) = other.downcast_ref::<DbStorageBackend>() {
+			self.db.collection::<bson::Document>("resources").drop();
+
+			other.db.collection::<bson::Document>("resources").find(bson::doc! {}).unwrap().for_each(|doc| {
+				dbg!(&doc);
+				self.db.collection::<bson::Document>("resources").insert_one(&doc.unwrap()).unwrap();
+			});
+		}
+
+		Box::pin(async move {})
 	}
 }

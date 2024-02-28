@@ -1,9 +1,10 @@
-use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend};
+use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, StorageBackend};
 
 use super::asset_handler::AssetHandler;
 
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
+	storage_backend: DbStorageBackend,
 }
 
 /// Enumeration of the possible messages that can be returned when loading an asset.
@@ -30,6 +31,7 @@ impl AssetManager {
 
 		AssetManager {
 			asset_handlers: Vec::new(),
+			storage_backend: DbStorageBackend::new(&resolve_internal_path(std::path::Path::new("assets.db"))),
 		}
 	}
 
@@ -53,9 +55,9 @@ impl AssetManager {
 
 		let asset_resolver = MyAssetResolver {};
 
-		let storage_backend = DbStorageBackend::new(&resolve_asset_path(&std::path::Path::new("assets.db")));
+		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, &storage_backend, url, &json));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, storage_backend, url, &json));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -67,6 +69,10 @@ impl AssetManager {
 		}
 
 		Ok(())
+	}
+
+	pub fn get_storage_backend(&self) -> &dyn StorageBackend {
+		&self.storage_backend
 	}
 }
 

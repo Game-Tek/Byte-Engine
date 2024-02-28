@@ -21,26 +21,28 @@ impl ResourceHandler for ImageResourceHandler {
 		&["Image"]
 	}
 
-	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 		Box::pin(async move {
 			let image_resource = Image::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
-			if let Some(read_target) = &mut resource.read_target {
-				match read_target {
-					ReadTargets::Buffer(buffer) => {
-						reader.read_into(0, buffer).await?;
-					},
-					_ => {
-						return None;
+			if let Some(mut reader) = reader {
+				if let Some(read_target) = &mut resource.read_target {
+					match read_target {
+						ReadTargets::Buffer(buffer) => {
+							reader.read_into(0, buffer).await?;
+						},
+						_ => {
+							return None;
+						}
+						
 					}
-					
+				} else {
+					let mut buffer = Vec::with_capacity(resource.size);
+					unsafe {
+						buffer.set_len(resource.size);
+					}
+					reader.read_into(0, &mut buffer).await?;
 				}
-			} else {
-				let mut buffer = Vec::with_capacity(resource.size);
-				unsafe {
-					buffer.set_len(resource.size);
-				}
-				reader.read_into(0, &mut buffer).await?;
 			}
 
 			Some(ResourceResponse::new(resource, image_resource))
@@ -76,7 +78,7 @@ mod tests {
 
 		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(image_resource_handler.read(resource, reader,)).expect("Failed to read image resource");
+		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader),)).expect("Failed to read image resource");
 
 		let image = resource.resource.downcast_ref::<Image>().unwrap();
 

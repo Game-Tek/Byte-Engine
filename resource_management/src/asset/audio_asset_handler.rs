@@ -15,8 +15,10 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		Box::pin(async move {
+			let url = json["url"].as_str().ok_or("No url provided").ok()?;
+
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "wav" { return None; }
 			}
@@ -96,7 +98,7 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			storage_backend.store(GenericResourceSerialization::new(url.to_string(), audio_resource), data.into()).await;
+			storage_backend.store(GenericResourceSerialization::new(id, audio_resource), data.into()).await;
 
 			Some(Ok(()))
 		})
@@ -129,7 +131,7 @@ mod tests {
 
 		let resource = &generated_resources[0];
 
-		assert_eq!(resource.url, "gun.wav");
+		assert_eq!(resource.id, "gun.wav");
 		assert_eq!(resource.class, "Audio");
 		let resource = resource.resource.as_document().expect("Resource is not a document");
 		assert_eq!(resource.get_str("bit_depth").unwrap(), "Sixteen");

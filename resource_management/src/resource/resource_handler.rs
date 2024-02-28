@@ -2,12 +2,12 @@ use std::borrow::Cow;
 
 use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
 
-use crate::{GenericResourceResponse, ResourceResponse, Stream,};
+use crate::{GenericResourceResponse, LoadResourceRequest, ResourceResponse, Stream};
 
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),
 	Buffer(&'a mut [u8]),
-	Streams(&'a mut [Stream<'a>]),
+	Streams(Vec<Stream<'a>>),
 }
 
 /// The resource reader trait provides methods to read a single resource.
@@ -42,5 +42,15 @@ pub trait ResourceHandler: Send {
 		&[]
 	}
 
-	fn read<'s, 'a>(&'s self, resource: GenericResourceResponse<'a>, reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>>;
+	/// Reads a resource from a reader.
+	///
+	/// # Arguments
+	///
+	/// * `resource` - The resource to read.
+	/// * `reader` - The reader to read the resource from. The reader is an optional parameter so binary data load can be skipped and only deserialization can be done.
+	///
+	/// # Returns
+	///
+	/// The resource response.
+	fn read<'s, 'a>(&'s self, resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>>;
 }

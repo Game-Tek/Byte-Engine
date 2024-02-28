@@ -15,8 +15,10 @@ impl ImageAssetHandler {
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		Box::pin(async move {
+			let url = json["url"].as_str().ok_or("No url provided").ok()?;
+
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "png" { return None; }
 			}
@@ -107,13 +109,13 @@ impl AssetHandler for ImageAssetHandler {
 				}
 			};
 
-			let resource_document = GenericResourceSerialization::new(url.to_string(), Image {
+			let resource_document = GenericResourceSerialization::new(id, Image {
 				format,
 				extent: extent.as_array(),
 				compression,
 			});
 
-			storage_backend.store(resource_document, &buffer).await;
+			storage_backend.store(resource_document, &data).await;
 
 			Some(Ok(()))
 		})
@@ -144,7 +146,7 @@ mod tests {
 
 		let resource = &generated_resources[0];
 
-		assert_eq!(resource.url, "patterned_brick_floor_02_diff_2k.png");
+		assert_eq!(resource.id, "patterned_brick_floor_02_diff_2k.png");
 		assert_eq!(resource.class, "Image");
 	}
 }

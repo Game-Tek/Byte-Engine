@@ -20,87 +20,90 @@ impl ResourceHandler for MeshResourceHandler {
 		&["Mesh"]
 	}
 
-	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 		Box::pin(async move {
 			let mesh_resource = Mesh::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
-			let mut buffers = if let Some(read_target) = &mut resource.read_target {
-				match read_target {
-					ReadTargets::Streams(streams) => {
-						streams.iter_mut().map(|b| {
-							(b.name, utils::BufferAllocator::new(b.buffer))
-						}).collect::<Vec<_>>()
+			if let Some(mut reader) = reader {
+				let mut buffers = if let Some(read_target) = &mut resource.read_target {
+					match read_target {
+						ReadTargets::Streams(streams) => {
+							streams.iter_mut().map(|b| {
+								(b.name, utils::BufferAllocator::new(b.buffer))
+							}).collect::<Vec<_>>()
+						}
+						_ => {
+							return None;
+						}
+						
 					}
-					_ => {
-						return None;
+				} else {
+					let mut buffer = Vec::with_capacity(resource.size);
+					unsafe {
+						buffer.set_len(resource.size);
 					}
-					
-				}
-			} else {
-				let mut buffer = Vec::with_capacity(resource.size);
-				unsafe {
-					buffer.set_len(resource.size);
-				}
-				reader.read_into(0, &mut buffer).await?;
+					reader.read_into(0, &mut buffer).await?;
+	
+					panic!();
+				};
 
-				panic!();
-			};
-
-			for sub_mesh in &mesh_resource.sub_meshes {
-				for primitive in &sub_mesh.primitives {
-					for (name, buffer) in &mut buffers {
-						match *name {
-							"Vertex" => {
-								reader.read_into(0, buffer.take(primitive.vertex_count as usize * primitive.vertex_components.size())).await?;
-							}
-							"Vertex.Position" => {
-								reader.read_into(0, buffer.take(primitive.vertex_count as usize * 12)).await?;
-							}
-							"Vertex.Normal" => {
-								#[cfg(debug_assertions)]
-								if !primitive.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Normal) { log::error!("Requested Vertex.Normal stream but mesh does not have normals."); continue; }
-		
-								reader.read_into(primitive.vertex_count as usize * 12, buffer.take(primitive.vertex_count as usize * 12)).await?;
-							}
-							"TriangleIndices" => {
-								#[cfg(debug_assertions)]
-								if !primitive.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Triangles) { log::error!("Requested Index stream but mesh does not have triangle indices."); continue; }
-		
-								let triangle_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
-		
-								reader.read_into(triangle_index_stream.offset as usize, buffer.take(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())).await?;
-							}
-							"VertexIndices" => {
-								#[cfg(debug_assertions)]
-								if !primitive.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Vertices) { log::error!("Requested Index stream but mesh does not have vertex indices."); continue; }
-		
-								let vertex_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
-		
-								reader.read_into(vertex_index_stream.offset as usize, buffer.take(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())).await?;
-							}
-							"MeshletIndices" => {
-								#[cfg(debug_assertions)]
-								if !primitive.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Meshlets) { log::error!("Requested MeshletIndices stream but mesh does not have meshlet indices."); continue; }
-		
-								let meshlet_indices_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
-		
-								reader.read_into(meshlet_indices_stream.offset as usize, buffer.take(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())).await?;
-							}
-							"Meshlets" => {
-								#[cfg(debug_assertions)]
-								if primitive.meshlet_stream.is_none() { log::error!("Requested Meshlets stream but mesh does not have meshlets."); continue; }
-		
-								let meshlet_stream = primitive.meshlet_stream.as_ref().unwrap();
-		
-								reader.read_into(meshlet_stream.offset as usize, buffer.take(meshlet_stream.count as usize * 2)).await?;
-							}
-							_ => {
-								log::error!("Unknown buffer tag: {}", name);
+				for sub_mesh in &mesh_resource.sub_meshes {
+					for primitive in &sub_mesh.primitives {
+						for (name, buffer) in &mut buffers {
+							match *name {
+								"Vertex" => {
+									reader.read_into(0, buffer.take(primitive.vertex_count as usize * primitive.vertex_components.size())).await?;
+								}
+								"Vertex.Position" => {
+									reader.read_into(0, buffer.take(primitive.vertex_count as usize * 12)).await?;
+								}
+								"Vertex.Normal" => {
+									#[cfg(debug_assertions)]
+									if !primitive.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Normal) { log::error!("Requested Vertex.Normal stream but mesh does not have normals."); continue; }
+			
+									reader.read_into(primitive.vertex_count as usize * 12, buffer.take(primitive.vertex_count as usize * 12)).await?;
+								}
+								"TriangleIndices" => {
+									#[cfg(debug_assertions)]
+									if !primitive.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Triangles) { log::error!("Requested Index stream but mesh does not have triangle indices."); continue; }
+			
+									let triangle_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Triangles).unwrap();
+			
+									reader.read_into(triangle_index_stream.offset as usize, buffer.take(triangle_index_stream.count as usize * triangle_index_stream.data_type.size())).await?;
+								}
+								"VertexIndices" => {
+									#[cfg(debug_assertions)]
+									if !primitive.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Vertices) { log::error!("Requested Index stream but mesh does not have vertex indices."); continue; }
+			
+									let vertex_index_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Vertices).unwrap();
+			
+									reader.read_into(vertex_index_stream.offset as usize, buffer.take(vertex_index_stream.count as usize * vertex_index_stream.data_type.size())).await?;
+								}
+								"MeshletIndices" => {
+									#[cfg(debug_assertions)]
+									if !primitive.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Meshlets) { log::error!("Requested MeshletIndices stream but mesh does not have meshlet indices."); continue; }
+			
+									let meshlet_indices_stream = primitive.index_streams.iter().find(|stream| stream.stream_type == IndexStreamTypes::Meshlets).unwrap();
+			
+									reader.read_into(meshlet_indices_stream.offset as usize, buffer.take(meshlet_indices_stream.count as usize * meshlet_indices_stream.data_type.size())).await?;
+								}
+								"Meshlets" => {
+									#[cfg(debug_assertions)]
+									if primitive.meshlet_stream.is_none() { log::error!("Requested Meshlets stream but mesh does not have meshlets."); continue; }
+			
+									let meshlet_stream = primitive.meshlet_stream.as_ref().unwrap();
+			
+									reader.read_into(meshlet_stream.offset as usize, buffer.take(meshlet_stream.count as usize * 2)).await?;
+								}
+								_ => {
+									log::error!("Unknown buffer tag: {}", name);
+								}
 							}
 						}
 					}
 				}
 			}
+
 
 			Some(ResourceResponse::new(resource, mesh_resource))
 		})
@@ -187,11 +190,11 @@ use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHa
 			meshlet_index_buffer.set_len(11808 * 3);
 		}
 
-		let mut streams = [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)];
+		let streams = vec![Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)];
 
-		resource.set_streams(&mut streams);
+		resource.set_streams(streams);
 
-		let resource = smol::block_on(mesh_resource_handler.read(resource, reader,)).unwrap();
+		let resource = smol::block_on(mesh_resource_handler.read(resource, Some(reader),)).unwrap();
 
 		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 
@@ -295,11 +298,11 @@ use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHa
 			meshlet_index_buffer.set_len(36 * 3);
 		}
 
-		let mut streams = [Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)];
+		let streams = vec![Stream::new("Vertex.Position", &mut vertex_positions_buffer), Stream::new("Vertex.Normal", &mut vertex_normals_buffer), Stream::new("TriangleIndices", &mut index_buffer), Stream::new("Meshlets", &mut meshlet_buffer)];
 
-		resource.set_streams(&mut streams);
+		resource.set_streams(streams);
 
-		let resource = smol::block_on(mesh_resource_handler.read(resource, reader,)).unwrap();
+		let resource = smol::block_on(mesh_resource_handler.read(resource, Some(reader),)).unwrap();
 
 		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 

@@ -24,7 +24,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 		&["Material", "Shader", "Variant"]
 	}
 
-	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, mut reader: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a>(&'s self, resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 		// vec![("Material",
 		// 	Box::new(|_document| {
 		// 		Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())
@@ -108,9 +108,9 @@ mod tests {
 
 		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(material_resource_handler.read(resource, reader,)).unwrap();
+		let resource = smol::block_on(material_resource_handler.read(resource, Some(reader),)).unwrap();
 
-		assert_eq!(resource.url, "material.json");
+		assert_eq!(resource.id(), "material.json");
 		assert_eq!(resource.class, "Material");
 
 		let material = resource.resource.downcast_ref::<Material>().unwrap();

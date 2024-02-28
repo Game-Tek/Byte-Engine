@@ -28,7 +28,7 @@ pub mod shader_generation;
 #[derive(Debug, Clone)]
 pub struct GenericResourceSerialization {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-	url: String,
+	id: String,
 	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	class: String,
 	/// List of resources that this resource depends on.
@@ -38,9 +38,9 @@ pub struct GenericResourceSerialization {
 }
 
 impl GenericResourceSerialization {
-	pub fn new<T: Resource + serde::Serialize>(url: String, resource: T) -> Self {
+	pub fn new<T: Resource + serde::Serialize>(id: &str, resource: T) -> Self {
 		GenericResourceSerialization {
-			url,
+			id: id.to_string(),
 			required_resources: Vec::new(),
 			class: resource.get_class().to_string(),
 			resource: polodb_core::bson::to_bson(&resource).unwrap(),
@@ -56,7 +56,7 @@ impl GenericResourceSerialization {
 #[derive()]
 pub struct GenericResourceResponse<'a> {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-	url: String,
+	id: String,
 	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	class: String,
 	size: usize,
@@ -66,9 +66,9 @@ pub struct GenericResourceResponse<'a> {
 }
 
 impl <'a> GenericResourceResponse<'a> {
-	pub fn new(url: String, class: String, size: usize, resource: bson::Bson,) -> Self {
+	pub fn new(id: String, class: String, size: usize, resource: bson::Bson,) -> Self {
 		GenericResourceResponse {
-			url,
+			id,
 			class,
 			size,
 			resource,
@@ -80,7 +80,7 @@ impl <'a> GenericResourceResponse<'a> {
 		self.read_target = Some(ReadTargets::Box(buffer));
 	}
 
-	pub fn set_streams(&mut self, streams: &'a mut [Stream<'a>]) {
+	pub fn set_streams(&mut self, streams: Vec<Stream<'a>>) {
 		self.read_target = Some(ReadTargets::Streams(streams));
 	}
 }
@@ -123,74 +123,67 @@ pub enum LoadResults {
 
 /// Struct that describes a resource request.
 pub struct ResourceRequest {
-	id: u64,
-	url: String,
+	id: String,
 	size: u64,
 	hash: u64,
 	class: String,
+	resource: Box<dyn Resource>,
 }
 
 impl ResourceRequest {
-	pub fn new(resource: GenericResourceResponse) -> Self {
+	pub fn new(metadata: ResourceResponse) -> Self {
 		ResourceRequest {
-			id: 0,
-			url: resource.url,
-			size: resource.size as u64,
+			id: metadata.id,
+			size: metadata.size as u64,
 			hash: 0,
-			class: resource.class,
+			class: metadata.class,
+			resource: metadata.resource,
 		}
 	}
 	
 	pub fn resource(&self) -> &dyn Resource {
-		todo!()
+		self.resource.as_ref()
 	}
-}
-
-pub enum Lox<'a> {
-	None,
-	Streams(Vec<Stream<'a>>),
-	Buffer(&'a mut [u8]),
 }
 
 pub struct LoadResourceRequest<'a> {
 	/// The resource to load.
 	resource_request: ResourceRequest,
 	/// The buffers to load the resource binary data into.
-	pub streams: Lox<'a>,
+	pub streams: Option<ReadTargets<'a>>,
 }
 
 impl <'a> LoadResourceRequest<'a> {
 	pub fn new(resource_request: ResourceRequest) -> Self {
 		LoadResourceRequest {
 			resource_request: ResourceRequest {
-				id: 0,
-				url: resource_request.url,
+				id: resource_request.id,
 				size: resource_request.size as u64,
 				hash: 0,
 				class: resource_request.class,
+				resource: resource_request.resource,
 			},
-			streams: Lox::None,
+			streams: None,
 		}
 	}
 
 	pub fn id(&self) -> &str {
-		&self.resource_request.url
+		&self.resource_request.id
 	}
 
 	pub fn streams(mut self, streams: Vec<Stream<'a>>) -> Self {
-		self.streams = Lox::Streams(streams);
+		self.streams = Some(ReadTargets::Streams(streams));
 		self
 	}
 
 	pub fn buffer(mut self, buffer: &'a mut [u8]) -> Self {
-		self.streams = Lox::Buffer(buffer);
+		self.streams = Some(ReadTargets::Buffer(buffer));
 		self
 	}
 }
 
 pub struct ResourceResponse<'a> {
-	id: u64,
-	url: String,
+	id: String,
 	size: u64,
 	offset: u64,
 	hash: u64,
@@ -203,8 +196,7 @@ pub struct ResourceResponse<'a> {
 impl <'a> ResourceResponse<'a> {
 	pub fn new<T: Resource>(r: GenericResourceResponse<'a>, resource: T) -> Self {
 		ResourceResponse {
-			id: 0,
-			url: r.url,
+			id: r.id,
 			size: 0,
 			offset: 0,
 			hash: 0,
@@ -242,17 +234,13 @@ impl <'a> ResourceResponse<'a> {
 		}
 	}
 
-	pub fn id(&self) -> u64 {
-		self.id
+	pub fn id(&self) -> &str {
+		&self.id
 	}
 
 	pub fn hash(&self) -> u64 {
 		self.hash
 	}
-
-	pub fn url(&self) -> &str {
-		&self.url
-    }
 }
 
 /// Trait that defines a resource.
@@ -331,7 +319,7 @@ impl TypedResourceDocument {
 
 impl From<GenericResourceSerialization> for TypedResourceDocument {
 	fn from(value: GenericResourceSerialization) -> Self {
-		TypedResourceDocument::new(value.url, value.class, value.resource)
+		TypedResourceDocument::new(value.id, value.class, value.resource)
 	}
 }
 
@@ -432,11 +420,11 @@ impl StorageBackend for DbStorageBackend {
 			let mut resource_document = bson::Document::new();
 	
 			let size = data.len();
-			let url = resource.url;
+			let url = resource.id;
 			let class = resource.class;
 	
 			resource_document.insert("id", url);
-			resource_document.insert("size", size as i64);	
+			resource_document.insert("size", size as i64);
 			resource_document.insert("class", class);
 	
 			let json_resource = resource.resource.clone();

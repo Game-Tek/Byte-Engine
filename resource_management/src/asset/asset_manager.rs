@@ -40,7 +40,7 @@ impl AssetManager {
 	}
 
 	/// Load a source asset from a JSON asset description.
-	pub async fn load(&self, json: &json::JsonValue) -> Result<(), LoadMessages> {
+	pub async fn load(&self, id: &str, json: &json::JsonValue) -> Result<(), LoadMessages> {
 		let url = json["url"].as_str().ok_or(LoadMessages::NoURL)?; // Source asset url
 
 		struct MyAssetResolver {}
@@ -57,7 +57,7 @@ impl AssetManager {
 
 		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, storage_backend, url, &json));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(&asset_resolver, storage_backend, id, &json));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -150,7 +150,7 @@ mod tests {
 
 		let json = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
 
-		assert_eq!(smol::block_on(asset_manager.load(&json)), Ok(()));
+		assert_eq!(smol::block_on(asset_manager.load("example", &json)), Ok(()));
 	}
 
 	#[test]
@@ -159,7 +159,7 @@ mod tests {
 
 		let json = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
 
-		assert_eq!(smol::block_on(asset_manager.load(&json)), Err(LoadMessages::NoAssetHandler));
+		assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoAssetHandler));
 	}
 
 	#[test]
@@ -168,6 +168,6 @@ mod tests {
 
 		let json = json::parse(r#"{}"#).unwrap();
 
-		assert_eq!(smol::block_on(asset_manager.load(&json)), Err(LoadMessages::NoURL));
+		assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoURL));
 	}
 }

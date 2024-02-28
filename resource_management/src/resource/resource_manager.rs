@@ -99,7 +99,7 @@ impl ResourceManager {
 	
 					let asset_json = json::parse(&json_string).ok()?;
 	
-					asset_manager.load(&asset_json).await.ok()?;
+					asset_manager.load(id, &asset_json).await.ok()?;
 					self.storage_backend.sync(asset_manager.get_storage_backend()).await;
 	
 					self.storage_backend.read(id).await?
@@ -108,7 +108,7 @@ impl ResourceManager {
 				}
 			};
 
-			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, reader).await?
+			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, Some(reader)).await?
 		};
 
 		Some(load)
@@ -118,7 +118,7 @@ impl ResourceManager {
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
 	pub async fn request(&self, id: &str) -> Option<ResourceRequest> {
-		let (resource, _) = if let Some(x) = self.storage_backend.read(id).await {
+		let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
 			x	
 		} else {
 			if let Some(asset_manager) = &self.asset_manager {
@@ -136,7 +136,7 @@ impl ResourceManager {
 
 				let asset_json = json::parse(&json_string).ok()?;
 
-				asset_manager.load(&asset_json).await.ok()?;
+				asset_manager.load(id, &asset_json).await.ok()?;
 				self.storage_backend.sync(asset_manager.get_storage_backend()).await;
 
 				self.storage_backend.read(id).await?
@@ -145,7 +145,9 @@ impl ResourceManager {
 			}
 		};
 
-		Some(ResourceRequest::new(resource))
+		let p = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, None).await?;
+
+		Some(ResourceRequest::new(p))
 	}
 
 	/// Loads the resource binary data from cache.\
@@ -154,11 +156,13 @@ impl ResourceManager {
 	/// 
 	/// If a buffer is not provided for a resurce in the options parameters it will be either be loaded into the provided buffer or returned in a vector.
 	pub async fn load<'s, 'a>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
-		let (resource, reader) = self.storage_backend.read(request.id()).await?;
+		let (mut resource, reader) = self.storage_backend.read(request.id()).await?;
 
 		let resource_handler = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?;
 
-		let load = resource_handler.read(resource, reader).await?;
+		resource.read_target = request.streams;
+
+		let load = resource_handler.read(resource , Some(reader)).await?;
 
 		Some(load)
 	}
@@ -210,7 +214,7 @@ mod tests {
 			&["MyResource"]
 		}
 
-		fn read<'s, 'a>(&'s self, r: GenericResourceResponse<'a>, _: Box<dyn ResourceReader>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+		fn read<'s, 'a>(&'s self, r: GenericResourceResponse<'a>, _: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 			Box::pin(async move {
 				Some(ResourceResponse::new(r, ()))
 			})
@@ -221,7 +225,7 @@ mod tests {
 	fn get() {
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test".to_string(), ()), &[])).expect("Failed to store resource");
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
 
 		let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
 
@@ -234,7 +238,7 @@ mod tests {
 	fn request() {
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test".to_string(), ()), &[])).expect("Failed to store resource");
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
 
 		let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
 

@@ -76,7 +76,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	/// Maps resource ids to shaders
 	/// The hash and the shader handle are stored to determine if the shader has changed
-	shaders: std::collections::HashMap<u64, (u64, ghi::ShaderHandle, ghi::ShaderTypes)>,
+	shaders: std::collections::HashMap<String, (u64, ghi::ShaderHandle, ghi::ShaderTypes)>,
 
 	material_evaluation_materials: HashMap<String, (u32, ghi::PipelineHandle)>,
 
@@ -427,7 +427,7 @@ impl VisibilityWorldRenderDomain {
 				None
 			};
 
-			let new_texture = ghi.create_image(Some(&resource.url()), Extent::from(texture.extent), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+			let new_texture = ghi.create_image(Some(&resource.id()), Extent::from(texture.extent), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 			let buffer = if let Some(b) = resource.get_buffer() {
 				b
@@ -447,7 +447,7 @@ impl VisibilityWorldRenderDomain {
 		if let Some(shader) = resource.resource().downcast_ref::<Shader>() {
 			let hash = resource.hash(); let resource_id = resource.id();
 
-			if let Some((old_hash, _old_shader, _)) = self.shaders.get(&resource_id) {
+			if let Some((old_hash, _old_shader, _)) = self.shaders.get(resource_id) {
 				if *old_hash == hash { return; }
 			}
 
@@ -471,7 +471,7 @@ impl VisibilityWorldRenderDomain {
 				return;
 			};
 
-			let new_shader = ghi.create_shader(Some(resource.url()), ghi::ShaderSource::SPIRV(buffer), stage, &[
+			let new_shader = ghi.create_shader(Some(resource.id()), ghi::ShaderSource::SPIRV(buffer), stage, &[
 				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
@@ -493,7 +493,7 @@ impl VisibilityWorldRenderDomain {
 				ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
 			]).expect("Failed to create shader");
 
-			self.shaders.insert(resource_id, (hash, new_shader, stage));
+			self.shaders.insert(resource_id.to_string(), (hash, new_shader, stage));
 		}
 
 		if let Some(variant) = resource.resource().downcast_ref::<Variant>() {
@@ -891,7 +891,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						mesh_triangle_count += meshlet_triangle_count as u32;
 					}
 
-					self.meshes.insert(response.url().to_string(), MeshData{ meshlets, vertex_count: mesh_vertex_count, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_count: mesh_vertex_count, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
 				}
 			}
 		}
@@ -902,9 +902,14 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 		let mesh_data = self.meshes.get(mesh.get_resource_id()).expect("Mesh not loaded");
 
+		let material_id = if let Some(x) = self.material_evaluation_materials.get(mesh.get_material_id()) { x.0 } else {
+			log::error!("Mesh {} requested material {} but it was not loaded", mesh.get_resource_id(), mesh.get_material_id());
+			return;
+		};
+
 		let shader_mesh_data = ShaderInstanceData {
 			model: mesh.get_transform(),
-			material_id: self.material_evaluation_materials.get(mesh.get_material_id()).unwrap().0,
+			material_id,
 			base_vertex_index: mesh_data.vertex_offset,
 		};
 

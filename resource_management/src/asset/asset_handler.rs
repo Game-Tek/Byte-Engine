@@ -6,7 +6,7 @@ use super::AssetResolver;
 pub trait AssetHandler {
 	/// Load an asset from a url.
 	/// # Arguments
-	/// * `url` - The absolute url of the source asset.
+	/// * `id` - The id of the asset.
 	/// * `json` - The JSON asset description.
 	/// 	## Example
 	/// 	```json
@@ -17,5 +17,5 @@ pub trait AssetHandler {
 	/// # Returns
 	/// Returns Some(...) if the asset was managed by this handler, None otherwise.
 	/// Returns Some(Ok(...)) if the asset was loaded successfully, Some(Err(...)) otherwise.
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>>;
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>>;
 }

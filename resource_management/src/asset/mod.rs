@@ -129,7 +129,7 @@ pub mod tests {
 		}
 
 		pub fn get_resource_data_by_name(&self, name: &str) -> Option<Box<[u8]>> {
-			Some(self.resources.lock().unwrap().iter().find(|x| x.0.url == name)?.1.clone())
+			Some(self.resources.lock().unwrap().iter().find(|x| x.0.id == name)?.1.clone())
 		}
 	}
 
@@ -147,8 +147,8 @@ pub mod tests {
 
 			let resources = self.resources.lock().unwrap();
 			for (resource, data) in resources.iter() {
-				if resource.url == id {
-					x = Some((GenericResourceResponse::new(resource.url.clone(), resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
+				if resource.id == id {
+					x = Some((GenericResourceResponse::new(resource.id.clone(), resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
 					break;
 				}
 			}

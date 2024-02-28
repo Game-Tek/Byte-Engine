@@ -23,8 +23,10 @@ impl MaterialAssetHandler {
 }
 
 impl AssetHandler for MaterialAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		Box::pin(async move {
+			let url = json["url"].as_str().ok_or("No url provided").ok()?;
+
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "json" { return None; }
 			}
@@ -54,7 +56,7 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				}
 
-				let resource = GenericResourceSerialization::new(url.to_string(), Material {
+				let resource = GenericResourceSerialization::new(id, Material {
 					albedo: Property::Factor(Value::Vector3([1f32, 0f32, 0f32])),
 					normal: Property::Factor(Value::Vector3([0f32, 0f32, 1f32])),
 					roughness: Property::Factor(Value::Scalar(0.5f32)),
@@ -75,7 +77,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-				let material_resource_document = GenericResourceSerialization::new(url.to_string(), Variant{
+				let material_resource_document = GenericResourceSerialization::new(id, Variant{
 					parent: parent_material_url.to_string(),
 					variables: variant_json["variables"].members().map(|v| {
 						VariantVariable {
@@ -151,7 +153,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		_ => { panic!("Invalid shader stage") }
 	};
 
-	let resource = GenericResourceSerialization::new(path.to_string(), Shader {
+	let resource = GenericResourceSerialization::new(path, Shader {
 		stage,
 	});
 
@@ -241,7 +243,7 @@ pub mod tests {
 
 		let shader = &generated_resources[0];
 
-		assert_eq!(shader.url, "fragment.besl");
+		assert_eq!(shader.id, "fragment.besl");
 		assert_eq!(shader.class, "Shader");		
 
 		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
@@ -252,7 +254,7 @@ pub mod tests {
 
 		let material = &generated_resources[1];
 
-		assert_eq!(material.url, "material.json");
+		assert_eq!(material.id, "material.json");
 		assert_eq!(material.class, "Material");
 	}
 }

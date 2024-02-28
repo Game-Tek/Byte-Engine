@@ -25,10 +25,12 @@ impl AssetHandler for MeshAssetHandler {
         &'a self,
         asset_resolver: &'a dyn AssetResolver,
         storage_backend: &'a dyn StorageBackend,
-        url: &'a str,
+        id: &'a str,
         json: &'a json::JsonValue,
     ) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
     	Box::pin(async move {
+			let url = json["url"].as_str().ok_or("No url").ok()?;
+
             if let Some(dt) = asset_resolver.get_type(url) {
                 if dt != "gltf" && dt != "glb" {
                     return None;
@@ -394,7 +396,7 @@ impl AssetHandler for MeshAssetHandler {
 
             let mesh = Mesh { sub_meshes };
 
-            let resource_document = GenericResourceSerialization::new(url.to_string(), mesh);
+            let resource_document = GenericResourceSerialization::new(id, mesh);
             storage_backend.store(resource_document, &buffer).await;
 
             Some(Ok(()))
@@ -440,7 +442,7 @@ mod tests {
 
         let resource = &generated_resources[0];
 
-        assert_eq!(resource.url, "Box.gltf");
+        assert_eq!(resource.id, "Box.gltf");
         assert_eq!(resource.class, "Mesh");
 
         assert_eq!(
@@ -581,7 +583,7 @@ mod tests {
 
         let resource = &generated_resources[0];
 
-        assert_eq!(resource.url, "Suzanne.gltf");
+        assert_eq!(resource.id, "Suzanne.gltf");
         assert_eq!(resource.class, "Mesh");
 
         // assert_eq!(

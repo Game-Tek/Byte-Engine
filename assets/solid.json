@@ -2,7 +2,7 @@
 	"domain": "World",
 	"type": "Surface",
 	"shaders": {
-		"Fragment": "shaders/fragment"
+		"Fragment": "shaders/fragment.besl"
 	},
 	"variables": [
 		{

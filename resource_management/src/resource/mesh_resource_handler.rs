@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::{IndexStreamTypes, Mesh, Size, VertexSemantics}, GenericResourceResponse, GenericResourceSerialization, ResourceResponse, Stream, TypedResourceDocument};
+use crate::{types::{IndexStreamTypes, Mesh, Size, VertexSemantics}, GenericResourceResponse, ResourceResponse};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -148,9 +148,7 @@ impl ResourceHandler for MeshResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use std::ops::DerefMut;
-
-use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, resource::{image_resource_handler::ImageResourceHandler, resource_manager::ResourceManager, tests::TestResourceReader}, types::{IndexStreamTypes, IntegralTypes, Mesh, VertexSemantics}, LoadRequest, LoadResourceRequest, StorageBackend, Stream};
+	use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, types::IntegralTypes, StorageBackend, Stream,};
 	
 	use super::*;
 

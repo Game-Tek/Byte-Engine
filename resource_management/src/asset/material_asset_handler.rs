@@ -1,8 +1,6 @@
-use std::{borrow::Borrow, cell::RefCell, ops::Deref};
+use std::{cell::RefCell, ops::Deref};
 
-use smol::future::FutureExt;
-
-use crate::{resource::material_resource_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources, StorageBackend};
+use crate::{resource::material_resource_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources, StorageBackend, TypedResource};
 
 use super::{asset_handler::AssetHandler, AssetResolver,};
 
@@ -44,15 +42,13 @@ impl AssetHandler for MaterialAssetHandler {
 				
 				let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None })?;
 
-				let mut required_resources = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
+				let shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
 				}).collect::<Vec<_>>();
 
 				for variable in asset_json["variables"].members() {
 					if variable["data_type"].as_str().unwrap() == "Texture2D" {
 						let texture_url = variable["value"].as_str().unwrap();
-
-						required_resources.push(ProcessedResources::Reference(texture_url.to_string()));
 					}
 				}
 
@@ -69,15 +65,20 @@ impl AssetHandler for MaterialAssetHandler {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-				}).required_resources(&required_resources);
+					shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer("name", 0, s.clone(), b.clone())).collect(),
+				});
 
-				storage_backend.store(resource, &[]).await;
+				storage_backend.store(resource, &data).await.ok()?;
 			} else {
 				let variant_json = asset_json;
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-				let material_resource_document = GenericResourceSerialization::new(id, Variant{
+				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await?.0)).ok()?;
+
+				self.load(asset_resolver, storage_backend, parent_material_url, &m_json).await?.ok()?;
+
+				let resource = GenericResourceSerialization::new(id, Variant{
 					parent: parent_material_url.to_string(),
 					variables: variant_json["variables"].members().map(|v| {
 						VariantVariable {
@@ -85,7 +86,9 @@ impl AssetHandler for MaterialAssetHandler {
 							value: v["value"].to_string(),
 						}
 					}).collect::<Vec<_>>()
-				}).required_resources(&[ProcessedResources::Reference(parent_material_url.to_string())]);
+				});
+
+				storage_backend.store(resource, &[]).await.ok()?;
 			}
 
 			Some(Ok(()))
@@ -93,7 +96,7 @@ impl AssetHandler for MaterialAssetHandler {
 	}
 }
 
-async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<ProcessedResources> {
+async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<(Shader, Box<[u8]>)> {
 	let path = shader_json.as_str()?;
 	let (arlp, format) = asset_resolver.resolve(&path).await?;
 
@@ -153,13 +156,14 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		_ => { panic!("Invalid shader stage") }
 	};
 
-	let resource = GenericResourceSerialization::new(path, Shader {
+	let shader = Shader {
+		id: path.to_string(),
 		stage,
-	});
+	};
 
-	storage_backend.store(resource, result_shader_bytes).await;
+	storage_backend.store(GenericResourceSerialization::new(path, shader.clone()), result_shader_bytes).await.ok()?;
 
-	None
+	Some((shader, result_shader_bytes.into()))
 }
 
 fn default_vertex_shader() -> &'static str {
@@ -256,5 +260,91 @@ pub mod tests {
 
 		assert_eq!(material.id, "material.json");
 		assert_eq!(material.class, "Material");
+	}
+
+	#[test]
+	fn load_variant() {
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
+		let mut asset_handler = MaterialAssetHandler::new();
+
+		let shader_generator = TestShaderGenerator::new();
+
+		asset_handler.set_shader_generator(shader_generator);
+
+		let id = "Variant.json";
+
+		let material_asset_json = r#"{
+			"url": "material.json"
+		}"#;
+
+		asset_resolver.add_file("Material.json", material_asset_json.as_bytes());
+
+		let material_json = r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Fragment": "fragment.besl"
+			},
+			"variables": [
+				{
+					"name": "color",
+					"data_type": "vec4f",
+					"type": "Static",
+					"value": "Purple"
+				}
+			]
+		}"#;
+
+		asset_resolver.add_file("material.json", material_json.as_bytes());
+
+		let shader_file = "main: fn () -> void {
+			material;
+		}";
+
+		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
+
+		let variant_json = r#"{
+			"parent": "Material.json",
+			"variables": [
+				{
+					"name": "color",
+					"value": "White"
+				}
+			]
+		}"#;
+
+		asset_resolver.add_file(id, variant_json.as_bytes());
+
+		let doc = json::object! {
+			"url": id,
+		};
+
+		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &id, &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
+
+		let generated_resources = storage_backend.get_resources();
+
+		assert_eq!(generated_resources.len(), 3);
+
+		let shader = &generated_resources[0];
+
+		assert_eq!(shader.id, "fragment.besl");
+		assert_eq!(shader.class, "Shader");		
+
+		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
+		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
+
+		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) buffer readonly Material{\tvec4f color;\n}material;"));
+		assert!(shader_spirv.contains("void main() {\n\tmaterial;\n}"));
+
+		let material = &generated_resources[1];
+		
+		assert_eq!(material.id, "Material.json");
+		assert_eq!(material.class, "Material");
+
+		let variant = &generated_resources[2];
+
+		assert_eq!(variant.id, "Variant.json");
+		assert_eq!(variant.class, "Variant");
 	}
 }

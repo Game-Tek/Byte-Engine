@@ -11,6 +11,7 @@ use std::{borrow::Cow, hash::Hasher};
 use downcast_rs::Downcast;
 use polodb_core::bson;
 use resource::resource_handler::{FileResourceReader, ReadTargets, ResourceReader};
+use serde::{Deserialize, Serialize};
 use smol::io::AsyncWriteExt;
 
 pub mod asset;
@@ -47,6 +48,16 @@ impl GenericResourceSerialization {
 		}
 	}
 
+	pub fn new_with_serialized(id: &str, class: &str, resource: bson::Bson) -> Self {
+		GenericResourceSerialization {
+			id: id.to_string(),
+			required_resources: Vec::new(),
+			class: class.to_string(),
+			resource,
+		}
+	}
+
+
 	pub fn required_resources(mut self, required_resources: &[ProcessedResources]) -> Self {
 		self.required_resources = required_resources.to_vec();
 		self
@@ -82,6 +93,50 @@ impl <'a> GenericResourceResponse<'a> {
 
 	pub fn set_streams(&mut self, streams: Vec<Stream<'a>>) {
 		self.read_target = Some(ReadTargets::Streams(streams));
+	}
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TypedResource<T: Resource> {
+	pub id: String,
+	hash: u64,
+	resource: T,
+	pub buffer: Option<Box<[u8]>>,
+}
+
+impl <T: Resource> TypedResource<T> {
+	pub fn new(id: &str, hash: u64, resource: T) -> Self {
+		TypedResource {
+			id: id.to_string(),
+			hash,
+			resource,
+			buffer: None,
+		}
+	}
+
+	pub fn new_with_buffer(id: &str, hash: u64, resource: T, buffer: Box<[u8]>) -> Self {
+		TypedResource {
+			id: id.to_string(),
+			hash,
+			resource,
+			buffer: Some(buffer),
+		}
+	}
+
+	pub fn id(&self) -> &str {
+		&self.id
+	}
+
+	pub fn hash(&self) -> u64 {
+		self.hash
+	}
+
+	pub fn resource(&self) -> &T {
+		&self.resource
+	}
+
+	pub fn get_buffer(&self) -> Option<&[u8]> {
+		self.buffer.as_ref().map(|b| &**b)
 	}
 }
 

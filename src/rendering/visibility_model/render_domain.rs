@@ -444,58 +444,6 @@ impl VisibilityWorldRenderDomain {
 			self.pending_texture_loads.push(new_texture);
 		}
 
-		if let Some(shader) = resource.resource().downcast_ref::<Shader>() {
-			let hash = resource.hash(); let resource_id = resource.id();
-
-			if let Some((old_hash, _old_shader, _)) = self.shaders.get(resource_id) {
-				if *old_hash == hash { return; }
-			}
-
-			let stage = match shader.stage {
-				ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-				ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-				ShaderTypes::Compute => ghi::ShaderTypes::Compute,
-				ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
-				ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-				ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
-				ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-				ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
-				ShaderTypes::Callable => ghi::ShaderTypes::Callable,
-				ShaderTypes::Task => ghi::ShaderTypes::Task,
-				ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
-			};
-
-			let buffer = if let Some(b) = resource.get_buffer() {
-				b
-			} else {
-				return;
-			};
-
-			let new_shader = ghi.create_shader(Some(resource.id()), ghi::ShaderSource::SPIRV(buffer), stage, &[
-				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 6, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(2, 3, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
-			]).expect("Failed to create shader");
-
-			self.shaders.insert(resource_id.to_string(), (hash, new_shader, stage));
-		}
-
 		if let Some(variant) = resource.resource().downcast_ref::<Variant>() {
 			// if !self.material_evaluation_materials.contains_key(resource_document.url()) {	
 			// 	let material_resource_document = response.resources.iter().find(|r| &r.url() == &variant.parent).unwrap();
@@ -536,41 +484,95 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		if let Some(material) = resource.resource().downcast_ref::<Material>() {
-			// if !self.material_evaluation_materials.contains_key(resource_document.url()) {					
-			// 	let shaders = material.shaders;
+			if !self.material_evaluation_materials.contains_key(resource.id()) {
+				let shaders = material.shaders();
 
-			// 	let shaders = shaders.iter().map(|shader| {
-			// 		let (_hash, shader, shader_type) = self.shaders.get(shader).unwrap();
+				let shaders = shaders.iter().filter_map(|shader| {
+					let resource_id = shader.id();
+					let hash = shader.hash();
 
-			// 		(shader, *shader_type)
-			// 	}).collect::<Vec<_>>();
+					if let Some((old_hash, _old_shader, _)) = self.shaders.get(resource_id) {
+						if *old_hash == hash { return None; }
+					}
+
+					let stage = match shader.resource().stage {
+						ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
+						ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
+						ShaderTypes::Compute => ghi::ShaderTypes::Compute,
+						ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
+						ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
+						ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
+						ShaderTypes::Miss => ghi::ShaderTypes::Miss,
+						ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
+						ShaderTypes::Callable => ghi::ShaderTypes::Callable,
+						ShaderTypes::Task => ghi::ShaderTypes::Task,
+						ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
+					};
+
+					let buffer = if let Some(b) = shader.get_buffer() {
+						b
+					} else {
+						return None;
+					};
+
+					let new_shader = ghi.create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, &[
+						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 6, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
+						ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
+						ghi::ShaderBindingDescriptor::new(2, 3, ghi::AccessPolicies::WRITE),
+						ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
+					]).expect("Failed to create shader");
+
+					self.shaders.insert(resource_id.to_string(), (hash, new_shader, stage));
+
+					Some((self.shaders.get(resource_id).unwrap().clone().1, stage))
+				}).collect::<Vec<_>>();
 				
-			// 	let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+				if shaders.is_empty() {
+					log::warn!("No shaders found for material: {}", resource.id());
+					return;
+				}
 
-			// 	let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
-			// 	let material_data = unsafe { material_data.as_mut().unwrap() };
+				let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
-			// 	material_data.textures[0] = 0; // TODO: make dynamic based on supplied textures
+				let material_data = unsafe { material_data.as_mut().unwrap() };
 
-			// 	match material.model.name.as_str() {
-			// 		"Visibility" => {
-			// 			match material.model.pass.as_str() {
-			// 				"MaterialEvaluation" => {
-			// 					let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec4f".to_string(), [0f32, 1f32, 0f32, 1f32])]));
+				material_data.textures[0] = 0; // TODO: make dynamic based on supplied textures
+
+				match material.model.name.as_str() {
+					"Visibility" => {
+						match material.model.pass.as_str() {
+							"MaterialEvaluation" => {
+								let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec4f".to_string(), [0f32, 1f32, 0f32, 1f32])]));
 								
-			// 					self.material_evaluation_materials.insert(resource_document.url().to_string(), (self.material_evaluation_materials.len() as u32, pipeline));
-			// 				}
-			// 				_ => {
-			// 					error!("Unknown material pass: {}", material.model.pass)
-			// 				}
-			// 			}
-			// 		}
-			// 		_ => {
-			// 			error!("Unknown material model: {}", material.model.name);
-			// 		}
-			// 	}
-			// }
+								self.material_evaluation_materials.insert(resource.id().to_string(), (self.material_evaluation_materials.len() as u32, pipeline));
+							}
+							_ => {
+								error!("Unknown material pass: {}", material.model.pass)
+							}
+						}
+					}
+					_ => {
+						error!("Unknown material model: {}", material.model.name);
+					}
+				}
+			}
 		}
 	}
 

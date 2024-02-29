@@ -1,8 +1,6 @@
-use std::borrow::Cow;
-
 use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
 
-use crate::{GenericResourceResponse, LoadResourceRequest, ResourceResponse, Stream};
+use crate::{GenericResourceResponse, ResourceResponse, Stream};
 
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),

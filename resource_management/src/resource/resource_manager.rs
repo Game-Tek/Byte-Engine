@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use smol::{io::AsyncReadExt, stream::StreamExt};
 
 use crate::{asset::asset_manager::AssetManager, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
@@ -118,7 +116,7 @@ impl ResourceManager {
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
 	pub async fn request(&self, id: &str) -> Option<ResourceRequest> {
-		let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
+		let (resource, _) = if let Some(x) = self.storage_backend.read(id).await {
 			x	
 		} else {
 			if let Some(asset_manager) = &self.asset_manager {
@@ -187,8 +185,6 @@ impl ResourceManager {
 		}
 	}
 }
-
-// TODO: test resource caching
 
 #[cfg(test)]
 mod tests {

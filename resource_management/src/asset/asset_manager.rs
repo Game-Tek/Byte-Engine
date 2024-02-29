@@ -100,8 +100,6 @@ fn assets_path() -> std::path::PathBuf {
 mod tests {
 	use smol::future::FutureExt;
 
-	use crate::StorageBackend;
-
 	use super::*;
 
 	struct TestAssetHandler {
@@ -115,8 +113,8 @@ mod tests {
 	}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, url: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
-			let res = if url == "http://example.com" {
+		fn load<'a>(&'a self, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+			let res = if id == "example" {
 				Some(Ok(()))
 			} else {
 				None

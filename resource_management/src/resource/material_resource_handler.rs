@@ -1,9 +1,9 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::Material, GenericResourceResponse, GenericResourceSerialization, ResourceResponse, TypedResourceDocument};
+use crate::{types::{Material, Variant}, GenericResourceResponse, ResourceResponse};
 
-use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
+use super::resource_handler::{ResourceHandler, ResourceReader};
 
 pub struct MaterialResourcerHandler {}
 
@@ -21,36 +21,31 @@ impl MaterialResourcerHandler {
 
 impl ResourceHandler for MaterialResourcerHandler {
 	fn get_handled_resource_classes<'a>(&self,) -> &'a [&'a str] {
-		&["Material", "Shader", "Variant"]
+		&["Material", "Variant"]
 	}
 
-	fn read<'s, 'a>(&'s self, resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
-		// vec![("Material",
-		// 	Box::new(|_document| {
-		// 		Box::new(Material::deserialize(polodb_core::bson::Deserializer::new(_document.into())).unwrap())
-		// 	})),
-		// 	("Shader",
-		// 	Box::new(|_document| {
-		// 		Box::new(Shader {
-		// 			stage: ShaderTypes::Compute,
-		// 		})
-		// 	})),
-		// 	("Variant",
-		// 	Box::new(|document| {
-		// 		Box::new(Variant::deserialize(polodb_core::bson::Deserializer::new(document.into())).unwrap())
-		// 	})),
-		// ]
-
+	fn read<'s, 'a>(&'s self, meta_resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
 		Box::pin(async move {
-			let material_resource = Material::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
-			Some(ResourceResponse::new(resource, material_resource))
+			match meta_resource.class.as_str() {
+				"Material" => {
+					let resource = Material::deserialize(bson::Deserializer::new(meta_resource.resource.clone().into())).ok()?;
+					Some(ResourceResponse::new(meta_resource, resource))
+				}
+				"Variant" => {
+					let resource = Variant::deserialize(bson::Deserializer::new(meta_resource.resource.clone().into())).ok()?;
+					Some(ResourceResponse::new(meta_resource, resource))
+				}
+				_ => {
+					return None;
+				}
+			}
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::TestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler, resource_manager::ResourceManager}, types::{AlphaMode, Material}, StorageBackend};
+    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::TestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material}, StorageBackend};
 
 	#[test]
 	fn load_material() {

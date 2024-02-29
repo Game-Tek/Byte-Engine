@@ -1,5 +1,3 @@
-use smol::future::FutureExt;
-
 use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, AssetResolver,};
@@ -98,7 +96,7 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			storage_backend.store(GenericResourceSerialization::new(id, audio_resource), data.into()).await;
+			storage_backend.store(GenericResourceSerialization::new(id, audio_resource), data.into()).await.ok()?;
 
 			Some(Ok(()))
 		})

@@ -1,5 +1,3 @@
-use smol::future::FutureExt;
-
 use crate::{
     resource::resource_manager::ResourceManager,
     types::{
@@ -191,6 +189,7 @@ impl AssetHandler for MeshAssetHandler {
                                 name: "".to_string(),
                                 pass: "".to_string(),
                             },
+							shaders: Vec::new(),
                         }
                     };
 
@@ -381,7 +380,7 @@ impl AssetHandler for MeshAssetHandler {
                     }
 
                     primitives.push(Primitive {
-                        material,
+                        // material,
                         quantization: None,
                         bounding_box,
                         vertex_components,

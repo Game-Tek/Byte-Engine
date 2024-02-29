@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{CreateResource, Resource};
+use crate::{CreateResource, Resource, TypedResource};
 
 // Audio
 
@@ -65,7 +65,7 @@ pub enum AlphaMode {
 	Blend,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize,Deserialize)]
 pub struct Material {
 	pub(crate) albedo: Property,
 	pub(crate) normal: Property,
@@ -76,8 +76,16 @@ pub struct Material {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
 
+	pub(crate) shaders: Vec<TypedResource<Shader>>,
+
 	/// The render model this material is for.
 	pub model: Model,
+}
+
+impl Material {
+	pub fn shaders(&self) -> &[TypedResource<Shader>] {
+		&self.shaders
+	}
 }
 
 impl Resource for Material {
@@ -120,9 +128,16 @@ pub enum ShaderTypes {
 	Callable,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shader {
+	pub id: String,
 	pub stage: ShaderTypes,
+}
+
+impl Shader {
+	pub fn id(&self) -> &str {
+		&self.id
+	}
 }
 
 impl Resource for Shader {
@@ -191,7 +206,7 @@ pub struct MeshletStream {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Primitive {
-	pub material: Material,
+	// pub material: Material,
 	pub quantization: Option<QuantizationSchemes>,
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_components: Vec<VertexComponent>,

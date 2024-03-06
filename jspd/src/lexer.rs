@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, cell::RefCell, collections::HashMap, mem::MaybeUninit, ops::Deref, rc::{Rc, Weak}};
+use std::{borrow::BorrowMut, cell::RefCell, collections::HashMap, mem::MaybeUninit, num::NonZeroUsize, ops::Deref, rc::{Rc, Weak}};
 use std::hash::Hash;
 
 use super::parser;
@@ -62,31 +62,56 @@ impl Node {
 		NodeReference(Rc::new(RefCell::new(node)))
 	}
 
+	/// Creates a root node which is the parent of all other nodes in a program.
+	/// Only one root node should exist in a program.
 	pub fn root() -> NodeReference {
-		let float = Node::r#struct("float".to_string(), Vec::new());
+		let void = Node::r#struct("void", Vec::new());
+		let u8_t = Node::r#struct("u8", Vec::new());
+		let u16_t = Node::r#struct("u16", Vec::new());
+		let u32_t = Node::r#struct("u32", Vec::new());
+		let f32_t = Node::r#struct("f32", Vec::new());
 
-		let vec3f = Node::r#struct("vec3f".to_string(), vec![
-			Node::member("x".to_string(), float.clone()),
-			Node::member("y".to_string(), float.clone()),
-			Node::member("z".to_string(), float.clone()),
+		let vec2u16 = Node::r#struct("vec2u16", vec![
+			Node::member("x", u16_t.clone()),
+			Node::member("y", u16_t.clone()),
+		]);
+
+		let vec3f32 = Node::r#struct("vec3f", vec![
+			Node::member("x", f32_t.clone()),
+			Node::member("y", f32_t.clone()),
+			Node::member("z", f32_t.clone()),
 		]);
 	
-		let vec4f = Node::r#struct("vec4f".to_string(), vec![
-			Node::member("x".to_string(), float.clone()),
-			Node::member("y".to_string(), float.clone()),
-			Node::member("z".to_string(), float.clone()),
-			Node::member("w".to_string(), float.clone()),
+		let vec4f32 = Node::r#struct("vec4f", vec![
+			Node::member("x", f32_t.clone()),
+			Node::member("y", f32_t.clone()),
+			Node::member("z", f32_t.clone()),
+			Node::member("w", f32_t.clone()),
+		]);
+
+		let mat4f32 = Node::r#struct("mat4f32", vec![
+			Node::member("x", vec4f32.clone()),
+			Node::member("y", vec4f32.clone()),
+			Node::member("z", vec4f32.clone()),
+			Node::member("w", vec4f32.clone()),
 		]);
 	
 		let root = Node::scope("root".to_string(), vec![
-			float,
-			vec3f,
-			vec4f,
+			void,
+			u8_t,
+			u16_t,
+			u32_t,
+			f32_t,
+			vec2u16,
+			vec3f32,
+			vec4f32,
+			mat4f32
 		]);
 
 		root
 	}
 
+	/// Creates a scope node which is a logical container for other nodes.
 	pub fn scope(name: String, children: Vec<NodeReference>) -> NodeReference {
 		let mut node = Node {
 			parent: None,
@@ -98,11 +123,21 @@ impl Node {
 		Self::internal_new(node)
 	}
 
-	pub fn r#struct(name: String, fields: Vec<NodeReference>) -> NodeReference {
+	/// Creates a struct node which is a type definition.
+	///
+	/// # Arguments
+	///
+	/// * `name` - The name of the struct.
+	/// * `fields` - The fields of the struct.
+	///
+	/// # Returns
+	///
+	/// The struct node.
+	pub fn r#struct(name: &str, fields: Vec<NodeReference>) -> NodeReference {
 		Self::internal_new(Node {
 			parent: None,
 			node: Nodes::Struct {
-				name,
+				name: name.to_string(),
 				template: None,
 				fields,
 				types: Vec::new(),
@@ -110,21 +145,33 @@ impl Node {
 		})
 	}
 
-	pub fn member(name: String, r#type: NodeReference) -> NodeReference {
+	pub fn member(name: &str, r#type: NodeReference) -> NodeReference {
 		Self::internal_new(Node {
 			parent: None,
 			node: Nodes::Member {
-				name,
+				name: name.to_string(),
 				r#type,
+				count: None,
 			},
 		})
 	}
 
-	pub fn function(parent: Option<ParentNodeReference>, name: String, params: Vec<NodeReference>, return_type: NodeReference, statements: Vec<NodeReference>, raw: Option<String>) -> NodeReference {
+	pub fn array(name: &str, r#type: NodeReference, size: usize) -> NodeReference {
 		Self::internal_new(Node {
-			parent,
+			parent: None,
+			node: Nodes::Member {
+				name: name.to_string(),
+				r#type,
+				count: Some(NonZeroUsize::new(size).expect("Invalid size")),
+			},
+		})
+	}
+
+	pub fn function(name: &str, params: Vec<NodeReference>, return_type: NodeReference, statements: Vec<NodeReference>, raw: Option<String>) -> NodeReference {
+		Self::internal_new(Node {
+			parent: None,
 			node: Nodes::Function {
-				name,
+				name: name.to_string(),
 				params,
 				return_type,
 				statements,
@@ -140,11 +187,12 @@ impl Node {
 		})
 	}
 
-	pub fn glsl(code: String) -> NodeReference {
+	pub fn glsl(code: String, references: Vec<NodeReference>) -> NodeReference {
 		Self::internal_new(Node {
 			parent: None,
 			node: Nodes::GLSL {
 				code,
+				references,
 			},
 		})
 	}
@@ -159,6 +207,31 @@ impl Node {
 				binding,
 				read,
 				write,
+				count: None,
+			},
+		})
+	}
+
+	pub fn binding_array(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool, count: usize) -> NodeReference {
+		Self::internal_new(Node {
+			parent: None,
+			node: Nodes::Binding {
+				name: name.to_string(),
+				r#type,
+				set,
+				binding,
+				read,
+				write,
+				count: Some(NonZeroUsize::new(count).expect("Invalid count")),
+			},
+		})
+	}
+
+	pub fn push_constant(members: Vec<NodeReference>) -> NodeReference {
+		Self::internal_new(Node {
+			parent: None,
+			node: Nodes::PushConstant {
+				members,
 			},
 		})
 	}
@@ -186,6 +259,9 @@ impl Node {
 					}
 					Nodes::Binding { name, .. } | Nodes::Member { name, .. } => {
 						program_state.members.insert(name.clone(), child.clone());
+					}
+					Nodes::PushConstant { .. } => {
+						program_state.members.insert("push_constant".to_string(), child.clone());
 					}
 					_ => {}
 				}
@@ -293,7 +369,9 @@ pub enum BindingTypes {
 		r#type: NodeReference,
 	},
 	CombinedImageSampler,
-	Image,
+	Image {
+		format: String,
+	},
 }
 
 impl BindingTypes {
@@ -319,6 +397,7 @@ pub enum Nodes {
 	Member {
 		name: String,
 		r#type: NodeReference,
+		count: Option<NonZeroUsize>,
 	},
 	Function {
 		name: String,
@@ -330,6 +409,7 @@ pub enum Nodes {
 	Expression(Expressions),
 	GLSL {
 		code: String,
+		references: Vec<NodeReference>,
 	},
 	Binding {
 		name: String,
@@ -338,6 +418,10 @@ pub enum Nodes {
 		read: bool,
 		write: bool,
 		r#type: BindingTypes,
+		count: Option<NonZeroUsize>,
+	},
+	PushConstant {
+		members: Vec<NodeReference>,
 	},
 }
 
@@ -448,7 +532,7 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 				return Ok(n.clone());
 			}
 			
-			let this = Node::r#struct(name.clone(), Vec::new());
+			let this = Node::r#struct(&name, Vec::new());
 
 			let ch = fields.iter().map(|field| {
 				lex_parsed_node(scope.clone(), Some(Rc::downgrade(&this.0)), &field, parser_program,)
@@ -521,13 +605,13 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 				lex_parsed_node(scope, None, t, parser_program,)?
 			};
 
-			Node::member(name.clone(), t,)
+			Node::member(&name, t,)
 		}
 		parser::Nodes::Function { name, return_type, statements, raw, .. } => {
 			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: return_type.clone() })?;
 			let t = lex_parsed_node(scope.clone(), None, t, parser_program,)?;
 
-			let this = Node::function(parent_node.clone(), name.clone(), Vec::new(), t, Vec::new(), raw.clone(),);
+			let this = Node::function(name, Vec::new(), t, Vec::new(), raw.clone(),);
 
 			let st = statements.iter().map(|statement| {
 				lex_parsed_node(scope.clone(), Some(Rc::downgrade(&this.0)), statement, parser_program,)
@@ -647,7 +731,7 @@ Foo: struct {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+		lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
 	#[test]
@@ -657,7 +741,7 @@ main: fn () -> NonExistantType {}";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+		lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
 	#[test]
@@ -670,7 +754,7 @@ main: fn () -> void {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
+		lex(&node, &program).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
 	}
 
 	#[test]
@@ -689,7 +773,7 @@ main: fn () -> void {
 		assert!(node.parent().is_none());
 
 		match &node.node {
-			Nodes::Scope{ children, .. } => {
+			Nodes::Scope{ .. } => {
 				let main = node.get_child("main").expect("Expected main");
 				let main = RefCell::borrow(&main.0);
 
@@ -758,7 +842,7 @@ color: In<vec4f>;
 				let color = children[0].borrow();
 
 				match color.node() {
-					Nodes::Member { name, r#type } => {
+					Nodes::Member { name, r#type, .. } => {
 						assert_eq!(name, "color");						
 						assert_type(&r#type.borrow(), "In<vec4f>");
 					}
@@ -787,7 +871,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).expect("Failed to lex");
+		lex(&node, &program).expect("Failed to lex");
 	}
 
 	#[test]
@@ -824,6 +908,10 @@ color: In<vec4f>;
 		}
 	}
 
+	// #[test]
+	// fn push_constant() {
+	// }
+
 	#[test]
 	fn fragment_shader() {
 		let source = r#"
@@ -839,7 +927,7 @@ color: In<vec4f>;
 		let node = node.borrow();
 
 		match node.node() {
-			Nodes::Scope{ name, children, .. } => {
+			Nodes::Scope{ name, .. } => {
 				assert_eq!(name, "root");
 
 				let main = node.get_child("main").expect("Expected main");

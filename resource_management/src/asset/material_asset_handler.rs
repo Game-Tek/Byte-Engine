@@ -104,17 +104,29 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 
 	let root_scope = jspd::Node::root();
 
-	let parent_scope = generator.transform(root_scope);
+	let parent_scope = generator.pre_transform(root_scope);
 
-	let shader_option = if format == "glsl" {
-		Some((jspd::lexer::Node::glsl(shader_code), path.to_string()))
+	let shader_scope = if format == "glsl" {
+		jspd::lexer::Node::glsl(shader_code, Vec::new())
 	} else if format == "besl" {
-		Some((jspd::compile_to_jspd(&shader_code, Some(parent_scope.clone())).unwrap(), path.to_string()))
+		if let Ok(e) = jspd::compile_to_jspd(&shader_code, Some(parent_scope.clone())) {
+			e
+		} else {
+			log::error!("Error compiling shader");
+			return None;
+		}
 	} else {
-		None
+		log::error!("Unknown shader format");
+		return None;
 	};
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::new(stage), &RefCell::borrow(&parent_scope).get_child("main").unwrap());
+	let main_node = RefCell::borrow(&shader_scope).get_child("main")?;
+
+	let main_node = generator.post_transform(main_node);
+
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::new(stage), &main_node);
+
+	dbg!(&glsl);
 
 	let compiler = shaderc::Compiler::new().unwrap();
 	let mut options = shaderc::CompileOptions::new().unwrap();
@@ -178,7 +190,7 @@ fn default_fragment_shader() -> &'static str {
 pub mod tests {
 	use std::cell::RefCell;
 
-	use super::{MaterialAssetHandler};
+	use super::MaterialAssetHandler;
 	use crate::{asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, resource::material_resource_handler::ProgramGenerator};
 
 	pub struct TestShaderGenerator {
@@ -192,9 +204,13 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for TestShaderGenerator {
-		fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
+		fn pre_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
 			let vec4f = RefCell::borrow(&scope).get_child("vec4f").unwrap();
-			RefCell::borrow_mut(&scope).add_children(vec![jspd::Node::binding("material",jspd::BindingTypes::buffer(jspd::Node::r#struct("Material".to_string(), vec![jspd::Node::member("color".to_string(), vec4f)])), 0, 0, true, false)]);
+			RefCell::borrow_mut(&scope).add_children(vec![jspd::Node::binding("material",jspd::BindingTypes::buffer(jspd::Node::r#struct("Material", vec![jspd::Node::member("color", vec4f)])), 0, 0, true, false)]);
+			scope
+		}
+
+		fn post_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
 			scope
 		}
 	}

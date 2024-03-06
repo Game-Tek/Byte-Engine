@@ -12,6 +12,8 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 #![feature(ptr_metadata)]
+#![feature(buf_read_has_data_left)]
+#![feature(generic_const_exprs)]
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -33,6 +35,7 @@ pub mod input;
 pub mod camera;
 pub mod audio;
 pub mod ui;
+pub mod networking;
 
 pub mod math;
 pub mod rendering;

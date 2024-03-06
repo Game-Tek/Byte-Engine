@@ -7,9 +7,11 @@ use super::resource_handler::{ResourceHandler, ResourceReader};
 
 pub struct MaterialResourcerHandler {}
 
-pub trait ProgramGenerator: Sync + Send {
+pub trait ProgramGenerator {
 	/// Transforms a program.
-	fn transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference;
+	fn pre_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference { scope }
+
+	fn post_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference { scope }
 }
 
 impl MaterialResourcerHandler {

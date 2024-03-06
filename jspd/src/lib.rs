@@ -2,6 +2,7 @@
 
 #![feature(new_uninit)]
 
+use std::fmt::Display;
 use std::{collections::HashMap, rc::Rc};
 
 mod tokenizer;
@@ -42,6 +43,12 @@ pub fn compile_to_jspd(source: &str, parent: Option<NodeReference>) -> Result<No
 #[derive(Debug)]
 pub enum CompilationError {
 	Undefined,
+}
+
+impl Display for CompilationError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "An error occurred during compilation.")
+	}
 }
 
 // Expects a JSON object, describing the program in a parsed form.

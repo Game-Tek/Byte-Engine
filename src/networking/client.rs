@@ -53,6 +53,10 @@ impl Client {
 		self.local.acknowledge_packets(ack, ack_bitfield);
 		self.remote.acknowledge_packet(sequence);
 	}
+
+	pub fn address(&self) -> std::net::SocketAddr {
+		self.address
+	}
 }
 #[cfg(test)]
 mod tests {

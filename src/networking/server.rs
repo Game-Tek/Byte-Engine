@@ -14,6 +14,10 @@ impl Server {
 	}
 
 	fn connect(&mut self, address: std::net::SocketAddr) -> Result<usize, ConnectionResults> {
+		if let Some(i) = self.clients.iter().enumerate().find(|(i, client)| if let Some(client) = client { client.address() == address } else { false }).map(|(i, _)| i) {
+			return Ok(i);
+		}
+
 		for (i, client) in self.clients.iter_mut().enumerate() {
 			if client.is_none() {
 				*client = Some(Client::new(address));
@@ -22,6 +26,10 @@ impl Server {
 		}
 
 		Err(ConnectionResults::ServerFull)
+	}
+
+	fn disconnect(&mut self, client_index: usize) {
+		self.clients[client_index] = None;
 	}
 
 	fn send(&mut self, client_index: usize,) {
@@ -49,6 +57,25 @@ mod tests {
 
 		server.send(client_index);
 		server.receive(client_index);
+	}
+
+	#[test]
+	fn test_server_reconnect() {
+		let mut server = Server::new();
+
+		let client_index_0 = server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669)).unwrap();
+		let client_index_1 = server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669)).unwrap();
+
+		assert_eq!(client_index_0, client_index_1);
+	}
+
+	#[test]
+	fn test_server_disconnect() {
+		let mut server = Server::new();
+
+		let client_index = server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669)).unwrap();
+
+		server.disconnect(client_index);
 	}
 
 	#[test]

@@ -39,7 +39,9 @@ impl Local {
 	/// Acknowledges a packet with the given sequence number. This means that the remote has received the packet.
 	pub fn acknowledge_packet(&mut self, sequence: u16) {
 		let index = (sequence % 1024) as usize;
-		self.packet_data.set(index, true);
+		if self.sequence_buffer[index] == sequence {
+			self.packet_data.set(index, true);
+		}
 	}
 
 	pub fn acknowledge_packets(&mut self, ack: u16, ack_bitfield: u32) {
@@ -118,32 +120,96 @@ mod tests {
 
 	#[test]
 	fn test_get_packet_data() {
-		let mut remote = Local::new();
-		let packet_header = remote.get_packet_data(0);
+		let mut local = Local::new();
+		let packet_header = local.get_packet_data(0);
 		assert_eq!(packet_header, None);
-		let packet_header = remote.get_packet_data(1023);
-		assert_eq!(packet_header, None);
-
-		remote.get_sequence_number();
-		let packet_header = remote.get_packet_data(0);
-		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
-		let packet_header = remote.get_packet_data(1023);
+		let packet_header = local.get_packet_data(1023);
 		assert_eq!(packet_header, None);
 
-		remote.get_sequence_number();
-		let packet_header = remote.get_packet_data(0);
+		local.get_sequence_number();
+		let packet_header = local.get_packet_data(0);
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
-		let packet_header = remote.get_packet_data(1023);
+		let packet_header = local.get_packet_data(1023);
 		assert_eq!(packet_header, None);
-		let packet_header = remote.get_packet_data(1);
+
+		local.get_sequence_number();
+		let packet_header = local.get_packet_data(0);
+		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
+		let packet_header = local.get_packet_data(1023);
+		assert_eq!(packet_header, None);
+		let packet_header = local.get_packet_data(1);
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
 
-		remote.acknowledge_packet(0);
-		let packet_header = remote.get_packet_data(0);
+		local.acknowledge_packet(0);
+		let packet_header = local.get_packet_data(0);
 		assert_eq!(packet_header, Some(PacketInfo { acked: true }));
-		let packet_header = remote.get_packet_data(1023);
+		let packet_header = local.get_packet_data(1023);
 		assert_eq!(packet_header, None);
-		let packet_header = remote.get_packet_data(1);
+		let packet_header = local.get_packet_data(1);
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
+	}
+
+	#[test]
+	fn test_packet_acknowledgement() {
+		let mut local = Local::new();
+
+		for i in 0..32 {
+			local.get_sequence_number();
+		}
+
+		assert_eq!(local.unacknowledged_packets(), (0u16..32u16).collect::<Vec<_>>());
+
+		for i in 0..32 {
+			local.acknowledge_packet(i);
+		}
+
+		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
+
+		for i in 0..32 {
+			local.get_sequence_number();
+		}
+
+		assert_eq!(local.unacknowledged_packets(), (32u16..64u16).collect::<Vec<_>>());
+
+		for i in 0..32 {
+			local.acknowledge_packet(i);
+		}
+
+		assert_eq!(local.unacknowledged_packets(), (32u16..64u16).collect::<Vec<_>>());
+
+		for i in 32..64 {
+			local.acknowledge_packet(i);
+		}
+
+		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
+	}
+
+	#[test]
+	fn test_sparse_packet_acknowledgement() {
+		let mut local = Local::new();
+
+		for i in 0..32 {
+			local.get_sequence_number();
+		}
+
+		local.acknowledge_packet(0);
+
+		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).collect::<Vec<_>>());
+
+		local.acknowledge_packet(2);
+
+		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>());
+
+		local.acknowledge_packet(4);
+
+		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>());
+
+		local.acknowledge_packet(1);
+
+		assert_eq!(local.unacknowledged_packets(), (3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>());
+
+		local.acknowledge_packet(3);
+
+		assert_eq!(local.unacknowledged_packets(), (5u16..32u16).collect::<Vec<_>>());
 	}
 }

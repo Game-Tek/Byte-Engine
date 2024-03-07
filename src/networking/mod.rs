@@ -1,26 +1,17 @@
 pub mod remote;
 pub mod local;
 
-pub mod client;
+pub mod packets;
+
 pub mod server;
+pub mod client;
 
 use remote::Remote;
 use local::Local;
-use client::Client;
 
 use std::{hash::{Hash, Hasher}, io::{Read, Write}, ops::Sub};
 
-#[derive(PartialEq, Eq)]
-pub(crate) struct PacketHeader {
-	// The protocol id is a 32-bit number that is used to identify the protocol.
-	protocol_id: [u8; 4],
-	// The sequence is a 16-bit number that is incremented for each packet sent.
-	sequence: u16,
-	// The ack is the most recent sequence number received by the server.
-	ack: u16,
-	// The ack bitfield is a 32-bit number that represents the last 32 sequence numbers received by the server.
-	ack_bitfield: u32,
-}
+use self::packets::DataPacket;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct PacketInfo {
@@ -33,11 +24,6 @@ enum ConnectionStates {
 	Connected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectionResults {
-	ServerFull,
-}
-
 pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
 	((s1 > s2) && (s1 - s2 <= 32768u16)) || (( s1 < s2) && (s2 - s1 > 32768u16))
 }
@@ -46,14 +32,14 @@ fn has_written_anything(s: usize) -> Option<()> {
 	if s > 0 { Some(()) } else { None }
 }
 
-fn write_packet(buffer: &mut [u8], packet_header: PacketHeader) -> Option<()> {
+fn write_packet<const N: usize>(buffer: &mut [u8], packet_header: DataPacket<N>) -> Option<()> {
 	let mut cursor = std::io::Cursor::new(buffer);
 
 	{
-		let protocol = &packet_header.protocol_id;
-		let sequence = packet_header.sequence.to_le_bytes();
-		let ack = packet_header.ack.to_le_bytes();
-		let ack_bifield = packet_header.ack_bitfield.to_le_bytes();
+		let protocol = &packet_header.header.protocol_id;
+		let sequence = packet_header.connection_status.sequence.to_le_bytes();
+		let ack = packet_header.connection_status.ack.to_le_bytes();
+		let ack_bifield = packet_header.connection_status.ack_bitfield.to_le_bytes();
 
 		cursor.write(protocol).ok().and_then(has_written_anything)?;
 		cursor.write(&sequence).ok().and_then(has_written_anything)?;
@@ -68,11 +54,14 @@ fn write_packet(buffer: &mut [u8], packet_header: PacketHeader) -> Option<()> {
 mod tests {
 	use std::io::{BufRead, Read};
 
+	use tests::packets::{ConnectionStatus, PacketHeader, PacketType};
+
 	use super::*;
+
 	#[test]
 	fn test_write_packet() {
 		let mut buffer = [0u8; 12];
-		write_packet(&mut buffer, PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 0, ack: 0, ack_bitfield: 0 }).unwrap();
+		write_packet(&mut buffer, DataPacket { header: PacketHeader{ protocol_id: [b'B', b'E', b'T', b'P'], r#type: PacketType::Data }, connection_id: 0, connection_status: ConnectionStatus::new(0, 0, 0),  data: [] }).unwrap();
 
 		let mut cursor = std::io::Cursor::new(&buffer);
 

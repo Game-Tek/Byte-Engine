@@ -1,4 +1,6 @@
-use super::{sequence_greater_than, PacketHeader, PacketInfo};
+use std::ops::Shl;
+
+use super::{sequence_greater_than, PacketInfo};
 
 /// Remote is a state tracking structure to keep track of the state of the communication with a remote.
 #[derive(Clone, Copy)]
@@ -52,7 +54,7 @@ impl Remote {
 
 		self.packet_data.set(index, true);
 
-		self.ack_bitfield = (self.ack_bitfield << window_shift) | 1 << ((self.ack - sequence) % 32);
+		self.ack_bitfield = self.ack_bitfield.checked_shl(window_shift as u32).unwrap_or(0) | (1 << ((self.ack - sequence) % 32));
 	}
 
 	pub fn get_ack(&self) -> u16 {
@@ -166,7 +168,30 @@ mod tests {
 
 		assert_eq!(remote.get_ack(), 4);
 		assert_eq!(remote.get_ack_bitfield(), 1 << 4 | 1 << 3 | 1 << 2 | 1 << 1 | 1 << 0);
+	}
 
-		// TODO: Test when ack and sequence are more than 32 apart.
+	#[test]
+	fn test_out_of_range_packet_acknowledgement() {
+		let mut remote = Remote::new();
+
+		remote.acknowledge_packet(0);
+
+		assert_eq!(remote.get_ack(), 0);
+		assert_eq!(remote.get_ack_bitfield(), 1 << 0);
+
+		remote.acknowledge_packet(64);
+
+		assert_eq!(remote.get_ack(), 64);
+		assert_eq!(remote.get_ack_bitfield(), 1 << 0);
+
+		remote.acknowledge_packet(0);
+
+		assert_eq!(remote.get_ack(), 64);
+		assert_eq!(remote.get_ack_bitfield(), 1 << 0);
+
+		remote.acknowledge_packet(32);
+
+		assert_eq!(remote.get_ack(), 64);
+		assert_eq!(remote.get_ack_bitfield(), 1 << 0);
 	}
 }

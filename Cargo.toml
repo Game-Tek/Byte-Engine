@@ -28,6 +28,7 @@ log = "0.4.20"
 simple_logger = "4.2.0"
 colored = "2.0.4"
 gxhash = "3.0.0"
+machineid-rs = "1.2.4"
 
 [profile.dev]
 incremental = true

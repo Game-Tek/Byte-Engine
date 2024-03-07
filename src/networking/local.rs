@@ -1,4 +1,4 @@
-use super::{sequence_greater_than, PacketHeader, PacketInfo};
+use super::{sequence_greater_than, PacketInfo};
 
 /// Local is a state tracking structure to keep track of the state of the communication with a remote.
 #[derive(Clone, Copy)]
@@ -46,10 +46,9 @@ impl Local {
 
 	pub fn acknowledge_packets(&mut self, ack: u16, ack_bitfield: u32) {
 		for i in 0..32 {
-			let index = ((ack - i) % 1024) as usize;
 			if (ack_bitfield >> i) & 1 == 1 {
-				self.sequence_buffer[index] = ack - i;
-				self.packet_data.set(index, true);
+				let sequence = ack - i;
+				self.acknowledge_packet(sequence);
 			}
 		}
 	}
@@ -211,5 +210,33 @@ mod tests {
 		local.acknowledge_packet(3);
 
 		assert_eq!(local.unacknowledged_packets(), (5u16..32u16).collect::<Vec<_>>());
+	}
+
+	#[test]
+	fn test_acknowledge_packets() {
+		let mut local = Local::new();
+
+		for i in 0..32 {
+			local.get_sequence_number();
+		}
+
+		local.acknowledge_packets(0, 0b0);
+
+		assert_eq!(local.unacknowledged_packets(), (0u16..32u16).collect::<Vec<_>>());
+
+		local.acknowledge_packets(0, 0b1);
+
+		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).collect::<Vec<_>>());
+
+		local.acknowledge_packets(2, 0b101);
+
+		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>());
+	}
+
+	#[test]
+	fn test_acknowledge_unsent_packets() {
+		let mut local = Local::new();
+
+		local.acknowledge_packet(0);
 	}
 }

@@ -1,12 +1,17 @@
-use super::{client::Client, ConnectionResults, PacketHeader};
+use super::{super::packets::ConnectionStatus, client::Client};
 
-struct Server {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionResults {
+	ServerFull,
+}
+
+pub struct Server {
 	max_clients: usize,
 	clients: [Option<Client>; 32],
 }
 
 impl Server {
-	fn new() -> Self {
+	pub fn new() -> Self {
 		Self {
 			max_clients: 32,
 			clients: [None; 32],
@@ -40,7 +45,7 @@ impl Server {
 
 	fn receive(&mut self, client_index: usize) {
 		if let Some(client) = self.clients[client_index].as_mut() {
-			client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 0, ack: 0, ack_bitfield: 0 });
+			client.receive(ConnectionStatus::new(0, 0, 0));
 		}
 	}
 }

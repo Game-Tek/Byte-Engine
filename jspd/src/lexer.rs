@@ -425,11 +425,6 @@ pub enum Nodes {
 	},
 }
 
-#[derive(Clone, Debug)]
-pub(crate) enum Features {
-
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operators {
 	Plus,
@@ -481,35 +476,10 @@ pub(crate) enum LexError {
 	},
 }
 
-type LexerReturn<'a> = Result<(Rc<Node>, std::slice::Iter<'a, String>), LexError>;
-type Lexer<'a> = fn(std::slice::Iter<'a, String>, &'a parser::ProgramState) -> LexerReturn<'a>;
-
 #[derive(Clone, Debug)]
 pub(crate) struct ProgramState {
 	pub(crate) types: HashMap<String, NodeReference>,
 	pub(crate) members: HashMap<String, NodeReference>,
-}
-
-/// Execute a list of lexers on a stream of tokens.
-fn execute_lexers<'a>(lexers: &[Lexer<'a>], iterator: std::slice::Iter<'a, String>, program: &'a parser::ProgramState) -> LexerReturn<'a> {
-	for lexer in lexers {
-		if let Ok(r) = lexer(iterator.clone(), program) {
-			return Ok(r);
-		}
-	}
-
-	Err(LexError::Undefined) // No lexer could handle this syntax.
-}
-
-/// Tries to execute a list of lexers on a stream of tokens. But it's ok if none of them can handle the syntax.
-fn try_execute_lexers<'a>(lexers: &[Lexer<'a>], iterator: std::slice::Iter<'a, String>, program: &'a parser::ProgramState) -> Option<LexerReturn<'a>> {
-	for lexer in lexers {
-		if let Ok(r) = lexer(iterator.clone(), program) {
-			return Some(Ok(r));
-		}
-	}
-
-	None
 }
 
 fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeReference>, parser_node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {

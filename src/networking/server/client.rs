@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use super::{local::Local, remote::Remote, ConnectionStates, PacketHeader};
+use super::super::{local::Local, packets::ConnectionStatus, remote::Remote, ConnectionStates};
 
 #[derive(Clone, Copy)]
 pub struct Client {
@@ -9,6 +9,7 @@ pub struct Client {
 	connection_state: ConnectionStates,
 	address: std::net::SocketAddr,
 	salt: u64,
+	last_time: std::time::Instant,
 }
 
 impl Client {
@@ -23,39 +24,35 @@ impl Client {
 			connection_state: ConnectionStates::Negotiating,
 			address,
 			salt,
+			last_time: std::time::Instant::now(),
 		}
 	}
 
-	pub(crate) fn send(&mut self,) -> PacketHeader {
+	pub(crate) fn send(&mut self,) -> ConnectionStatus {
 		let sequence_number = self.local.get_sequence_number();
 		let ack = self.remote.get_ack();
 		let ack_bitfield = self.remote.get_ack_bitfield();
 
-		PacketHeader {
-			protocol_id: [b'B', b'E', b'T', b'P'],
-			sequence: sequence_number,
-			ack,
-			ack_bitfield,
-		}
+		ConnectionStatus::new(sequence_number, ack, ack_bitfield,)
 	}
 
-	pub(crate) fn receive(&mut self, packet_header: PacketHeader) {
-		let protocol_id = packet_header.protocol_id;
-
-		if protocol_id != [b'B', b'E', b'T', b'P'] {
-			return;
-		}
-
+	pub(crate) fn receive(&mut self, packet_header: ConnectionStatus) {
 		let sequence = packet_header.sequence;
 		let ack = packet_header.ack;
 		let ack_bitfield = packet_header.ack_bitfield;
 
 		self.local.acknowledge_packets(ack, ack_bitfield);
 		self.remote.acknowledge_packet(sequence);
+
+		self.last_time = std::time::Instant::now();
 	}
 
 	pub fn address(&self) -> std::net::SocketAddr {
 		self.address
+	}
+
+	pub fn last_seen(&self) -> std::time::Instant {
+		self.last_time
 	}
 }
 #[cfg(test)]
@@ -85,9 +82,9 @@ mod tests {
 	fn test_client_receive() {
 		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669));
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 0, ack: 0, ack_bitfield: 0 });
+		client.receive(ConnectionStatus::new(0, 0, 0));
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 1, ack: 0, ack_bitfield: 0 });
+		client.receive(ConnectionStatus::new(1, 0, 0));
 	}
 
 	#[test]
@@ -100,7 +97,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 0);
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 0, ack: 0, ack_bitfield: 1 << 0 });
+		client.receive(ConnectionStatus::new(0, 0, 1 << 0));
 
 		let header = client.send(); // sequence: 1
 
@@ -108,7 +105,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 1 << 0);
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 1, ack: 1, ack_bitfield: 1 << 0 | 1 << 1});	
+		client.receive(ConnectionStatus::new(1, 1, 1 << 0 | 1 << 1));
 	}
 
 	#[test]
@@ -121,7 +118,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 0);
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 0, ack: 0, ack_bitfield: 1 << 0 });
+		client.receive(ConnectionStatus::new(0, 0, 1 << 0));
 
 		let header = client.send(); // sequence: 1
 
@@ -129,7 +126,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 1 << 0);
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 1, ack: 1, ack_bitfield: 1 << 0 | 1 << 1});
+		client.receive(ConnectionStatus::new(1, 1, 1 << 0 | 1 << 1));
 
 		let header = client.send(); // sequence: 2
 
@@ -137,6 +134,6 @@ mod tests {
 		assert_eq!(header.ack, 1);
 		assert_eq!(header.ack_bitfield, 1 << 0 | 1 << 1);
 
-		client.receive(PacketHeader { protocol_id: [b'B', b'E', b'T', b'P'], sequence: 2, ack: 1, ack_bitfield: 1 << 0 | 1 << 1});
+		client.receive(ConnectionStatus::new(2, 1, 1 << 0 | 1 << 1));
 	}
 }

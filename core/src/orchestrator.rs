@@ -59,8 +59,6 @@ impl <'a, F, P0, P1, P2> TaskFunction<'a, (P0, P1, P2)> for F where
 
 #[cfg(test)]
 mod tests {
-	use std::ops::{DerefMut, Deref};
-
 	use crate::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::{Event, EventLike,}, listener::{BasicListener, EntitySubscriber, Listener}, property::{DerivedProperty, Property, SinkProperty}, spawn, spawn_as_child, Entity, EntityHandle};
 
 	use super::*;

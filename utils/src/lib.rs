@@ -1,5 +1,3 @@
-use std::ops::Div;
-
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
 pub struct BufferAllocator<'a> {

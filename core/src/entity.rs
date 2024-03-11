@@ -59,7 +59,7 @@ pub struct EntityHandle<T: ?Sized> {
 
 pub struct WeakEntityHandle<T: ?Sized> {
 	pub(super) container: std::sync::Weak<smol::lock::RwLock<T>>,
-	pub(super) internal_id: u32,
+	// pub(super) internal_id: u32,
 }
 
 impl <T: ?Sized> WeakEntityHandle<T> {
@@ -76,7 +76,7 @@ impl <T: ?Sized> From<EntityHandle<T>> for WeakEntityHandle<T> {
 	fn from(handle: EntityHandle<T>) -> Self {
 		Self {
 			container: std::sync::Arc::downgrade(&handle.container),
-			internal_id: handle.internal_id,
+			// internal_id: handle.internal_id,
 		}
 	}
 }
@@ -108,7 +108,7 @@ impl <T: ?Sized> EntityHandle<T> {
 	pub fn weak(&self) -> WeakEntityHandle<T> {
 		WeakEntityHandle {
 			container: std::sync::Arc::downgrade(&self.container),
-			internal_id: self.internal_id,
+			// internal_id: self.internal_id,
 		}
 	}
 }
@@ -200,14 +200,11 @@ impl <T: ?Sized> EntityHandle<T> {
 pub type DomainType<'a> = EntityHandle<dyn Entity>;
 type CreateFunction<'c, T> = dyn FnOnce(Option<DomainType>) -> T + 'c;
 
-type SpawnWrapper<T> = dyn Fn(T) -> EntityHandle<T>;
-
 /// Entity creation functions must return this type.
 pub struct EntityBuilder<'c, T> {
 	pub(super) create: std::boxed::Box<CreateFunction<'c, T>>,
 	pub(super) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
 	pub(super) listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
-	pub(super) subscribe_to: Vec<Box<dyn Fn(EntityHandle<T>) + 'c>>,
 }
 
 impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
@@ -216,7 +213,6 @@ impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
 			create,
 			post_creation_functions: Vec::new(),
 			listens_to: Vec::new(),
-			subscribe_to: Vec::new(),
 		}
 	}
 

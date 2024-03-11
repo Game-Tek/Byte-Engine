@@ -2,8 +2,8 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use core::{self, entity::{EntityBuilder, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
-use byte_engine::{application::Application, audio::audio_system::DefaultAudioSystem, gameplay::{self, space::Space}, input, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, Vector3};
+use core::EntityHandle;
+use byte_engine::{application::Application, rendering::{mesh, point_light::PointLight}, Vector3};
 use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
@@ -11,7 +11,7 @@ use maths_rs::prelude::{MatTranslate, MatScale};
 fn load() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
 
-	let audio_system_handle = app.get_audio_system_handle().clone();
+	let _ = app.get_audio_system_handle().clone();
 
 	app.initialize(std::env::args());
 
@@ -29,11 +29,11 @@ fn load() {
 
 	let scale = maths_rs::Mat4f::from_scale(Vector3::new(0.1, 0.1, 0.1));
 	
-	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 2.0)) * scale));
+	let _: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 2.0)) * scale));
 	
 	let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 2.5, -1.5), 4500.0));
 
-	let camera_handle = core::spawn_as_child(space_handle.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
+	let _ = core::spawn_as_child(space_handle.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
 
 	app.do_loop();
 

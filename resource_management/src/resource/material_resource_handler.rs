@@ -7,13 +7,6 @@ use super::resource_handler::{ResourceHandler, ResourceReader};
 
 pub struct MaterialResourcerHandler {}
 
-pub trait ProgramGenerator {
-	/// Transforms a program.
-	fn pre_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference { scope }
-
-	fn post_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference { scope }
-}
-
 impl MaterialResourcerHandler {
 	pub fn new() -> Self {
 		Self {
@@ -47,7 +40,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::TestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material}, StorageBackend};
+    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material}, StorageBackend};
 
 	#[test]
 	fn load_material() {
@@ -63,7 +56,7 @@ mod tests {
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		let shader_generator = TestShaderGenerator::new();
+		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
 

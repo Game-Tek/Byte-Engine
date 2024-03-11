@@ -1,8 +1,13 @@
-use std::{cell::RefCell, ops::Deref};
+use std::ops::Deref;
 
-use crate::{resource::material_resource_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, ProcessedResources, StorageBackend, TypedResource};
+use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, StorageBackend, TypedResource};
 
 use super::{asset_handler::AssetHandler, AssetResolver,};
+
+pub trait ProgramGenerator {
+	/// Transforms a program.
+	fn transform(&self, program_state: &mut jspd::parser::ProgramState,) -> jspd::parser::NodeReference;
+}
 
 pub struct MaterialAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
@@ -102,14 +107,11 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
-	let root_scope = jspd::Node::root();
-
-	let parent_scope = generator.pre_transform(root_scope);
-
-	let shader_scope = if format == "glsl" {
-		jspd::lexer::Node::glsl(shader_code, Vec::new())
+	let mut program_state = if format == "glsl" {
+		// jspd::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
+		jspd::parser::ProgramState::new()
 	} else if format == "besl" {
-		if let Ok(e) = jspd::compile_to_jspd(&shader_code, Some(parent_scope.clone())) {
+		if let Ok(e) = jspd::parse(&shader_code,/*Some(parent_scope.clone())*/) {
 			e
 		} else {
 			log::error!("Error compiling shader");
@@ -120,9 +122,9 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		return None;
 	};
 
-	let main_node = RefCell::borrow(&shader_scope).get_child("main")?;
+	generator.transform(&mut program_state);
 
-	let main_node = generator.post_transform(main_node);
+	let main_node = jspd::lex(jspd::parser::NodeReference::root(), &program_state).ok()?;
 
 	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::new(stage), &main_node);
 
@@ -188,31 +190,88 @@ fn default_fragment_shader() -> &'static str {
 
 #[cfg(test)]
 pub mod tests {
-	use std::cell::RefCell;
+	use super::{MaterialAssetHandler, ProgramGenerator};
+	use crate::asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
 
-	use super::MaterialAssetHandler;
-	use crate::{asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, resource::material_resource_handler::ProgramGenerator};
-
-	pub struct TestShaderGenerator {
+	pub struct RootTestShaderGenerator {
 
 	}
 
-	impl TestShaderGenerator {
-		pub fn new() -> TestShaderGenerator {
-			TestShaderGenerator {}
+	impl RootTestShaderGenerator {
+		pub fn new() -> RootTestShaderGenerator {
+			RootTestShaderGenerator {}
 		}
 	}
 
-	impl ProgramGenerator for TestShaderGenerator {
-		fn pre_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
-			let vec4f = RefCell::borrow(&scope).get_child("vec4f").unwrap();
-			RefCell::borrow_mut(&scope).add_children(vec![jspd::Node::binding("material",jspd::BindingTypes::buffer(jspd::Node::r#struct("Material", vec![jspd::Node::member("color", vec4f)])), 0, 0, true, false)]);
-			scope
-		}
+	impl ProgramGenerator for RootTestShaderGenerator {
+		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> jspd::parser::NodeReference {
+			let material = jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("color", "vec4f")]);
+			program_state.insert("Material".to_string(), material.clone());
 
-		fn post_transform(&self, scope: jspd::NodeReference) -> jspd::NodeReference {
-			scope
+			let mid_test_shader_generator = MidTestShaderGenerator::new();
+
+			let child = mid_test_shader_generator.transform(program_state);
+
+			jspd::parser::NodeReference::scope("RootTestShaderGenerator", vec![material, child])
 		}
+	}
+
+	pub struct MidTestShaderGenerator {}
+
+	impl MidTestShaderGenerator {
+		pub fn new() -> MidTestShaderGenerator {
+			MidTestShaderGenerator {}
+		}
+	}
+
+	impl ProgramGenerator for MidTestShaderGenerator {
+		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> jspd::parser::NodeReference {
+			let binding = jspd::parser::NodeReference::binding("material", jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
+			program_state.insert("materials".to_string(), binding.clone());
+
+			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
+
+			let child = leaf_test_shader_generator.transform(program_state);
+
+			jspd::parser::NodeReference::scope("MidTestShaderGenerator", vec![binding, child])
+		}
+	}
+
+	struct LeafTestShaderGenerator {}
+
+	impl LeafTestShaderGenerator {
+		pub fn new() -> LeafTestShaderGenerator {
+			LeafTestShaderGenerator {}
+		}
+	}
+
+	impl ProgramGenerator for LeafTestShaderGenerator {
+		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> jspd::parser::NodeReference {
+			let push_constant = jspd::parser::NodeReference::push_constant(vec![jspd::parser::NodeReference::member("material_index", "u32")]);
+			program_state.insert("push_constant".to_string(), push_constant.clone());
+
+			let main = jspd::parser::NodeReference::function("main", vec![], "void", vec![jspd::parser::NodeReference::glsl("push_constant;\nmaterials;\n", vec!["push_constant".to_string(), "materials".to_string()], Vec::new())]);
+			program_state.insert("main".to_string(), main.clone());
+
+			jspd::parser::NodeReference::scope("LeafTestShaderGenerator", vec![push_constant, main])
+		}
+	}
+
+	#[test]
+	fn generate_program() {
+		let test_shader_generator = RootTestShaderGenerator::new();
+
+		let mut program_state = jspd::parser::ProgramState::new();
+
+		let root = test_shader_generator.transform(&mut program_state);
+
+		let root = jspd::lex(jspd::parser::NodeReference::root_with_children(vec![root]), &program_state).unwrap();
+
+		let main_node = root.borrow().get_main().unwrap();
+
+		let glsl = crate::shader_generation::ShaderGenerator::new().minified(true).compilation().generate_glsl_shader(&crate::shader_generation::ShaderGenerationSettings::new("Fragment"), &main_node);
+
+		dbg!(&glsl);
 	}
 
 	#[test]
@@ -221,7 +280,7 @@ pub mod tests {
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
 
-		let shader_generator = TestShaderGenerator::new();
+		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
 
@@ -284,7 +343,7 @@ pub mod tests {
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
 
-		let shader_generator = TestShaderGenerator::new();
+		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
 

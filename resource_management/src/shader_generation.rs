@@ -64,6 +64,10 @@ impl ShaderCompilation {
 	pub fn generate_glsl_shader(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &jspd::NodeReference) -> String {
 		let mut string = String::with_capacity(2048);
 		
+		if !matches!(main_function_node.borrow().node(), jspd::Nodes::Function { .. }) {
+			panic!("GLSL shader generation requires a function node as the main function.");
+		}
+
 		self.generate_shader_internal(&mut string, main_function_node);
 		
 		{

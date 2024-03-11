@@ -580,10 +580,6 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 
 				let children = Vec::new();
 
-				// for field in fields {
-				// 	children.push(lex_parsed_node(&field, parser_program, program)?);
-				// }
-
 				let struct_node = Node {
 					parent: None,
 					node: Nodes::Struct {
@@ -599,6 +595,16 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 				RefCell::borrow_mut(&scope.clone().ok_or(LexError::Undefined)?.0).get_program_state_mut().ok_or(LexError::Undefined)?.types.insert(r#type.clone(), node.clone());
 
 				node
+			} else if r#type.contains('[') {
+				let mut s = r#type.split(|c| c == '[' || c == ']');
+
+				let type_name = s.next().ok_or(LexError::Undefined)?;
+
+				let member_type = lex_parsed_node(scope.clone(), None, parser_program.types.get(type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: type_name.to_string() })?, parser_program,)?;
+
+				let count = s.next().ok_or(LexError::Undefined)?.parse().map_err(|_| LexError::Undefined)?;
+
+				Node::array(&name, member_type, count)
 			} else {
 				let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
 				lex_parsed_node(scope, None, t, parser_program,)?
@@ -630,7 +636,11 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 				lex_parsed_node(scope.clone(), parent_node.clone(), member, parser_program,)
 			}).collect::<Result<Vec<NodeReference>, LexError>>()?;
 
-			Node::push_constant(members)
+			let this = Node::push_constant(members);
+
+			RefCell::borrow_mut(&scope.clone().ok_or(LexError::Undefined)?.0).get_program_state_mut().ok_or(LexError::Undefined)?.members.insert("push_constant".to_string(), this.clone());
+
+			this
 		}
 		parser::Nodes::Binding { name, r#type, set, descriptor, read, write, count } => {
 			let r#type = match &r#type.node {
@@ -646,11 +656,15 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 				_ => { return Err(LexError::Undefined); }
 			};
 
-			if let Some(count) = count {
+			let this = if let Some(count) = count {
 				Node::binding_array(&name, r#type, *set, *descriptor, *read, *write, count.get())
 			} else {
 				Node::binding(&name, r#type, *set, *descriptor, *read, *write)
-			}
+			};
+
+			RefCell::borrow_mut(&scope.clone().ok_or(LexError::Undefined)?.0).get_program_state_mut().ok_or(LexError::Undefined)?.members.insert(name.clone(), this.clone());
+
+			this
 		}
 		parser::Nodes::Type { name, members } => {
 			let this = Node::r#struct(name, Vec::new());
@@ -669,8 +683,14 @@ fn lex_parsed_node(scope: Option<NodeReference>, parent_node: Option<ParentNodeR
 		parser::Nodes::CombinedImageSampler { .. } => {
 			Node::binding("combined_image_sampler", BindingTypes::CombinedImageSampler, 0, 0, false, false)
 		}
-		parser::Nodes::GLSL { code, .. } => {
-			Node::glsl(code.clone(), Vec::new())
+		parser::Nodes::GLSL { code, input, .. } => {
+			let mut references = Vec::new();
+
+			for i in input {
+				references.push(RefCell::borrow(&scope.clone().ok_or(LexError::Undefined)?.0).get_program_state().ok_or(LexError::Undefined)?.members.get(i).ok_or(LexError::AccessingUndeclaredMember { name: i.clone() })?.clone());
+			}
+
+			Node::glsl(code.clone(), references)
 		}
 		parser::Nodes::Expression(expression) => {
 			match expression {

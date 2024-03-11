@@ -226,7 +226,7 @@ pub mod tests {
 
 	impl ProgramGenerator for MidTestShaderGenerator {
 		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> jspd::parser::NodeReference {
-			let binding = jspd::parser::NodeReference::binding("material", jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
+			let binding = jspd::parser::NodeReference::binding("materials", jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
 			program_state.insert("materials".to_string(), binding.clone());
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
@@ -272,6 +272,10 @@ pub mod tests {
 		let glsl = crate::shader_generation::ShaderGenerator::new().minified(true).compilation().generate_glsl_shader(&crate::shader_generation::ShaderGenerationSettings::new("Fragment"), &main_node);
 
 		dbg!(&glsl);
+
+		assert!(glsl.contains("buffer readonly Material"));
+		assert!(glsl.contains("layout(push_constant"));
+		assert!(glsl.contains("materials[16]"));
 	}
 
 	#[test]

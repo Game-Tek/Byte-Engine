@@ -365,7 +365,7 @@ mod tests {
 		}
 		"#;
 
-		let buffer_type = jspd::Node::r#struct("BufferType", vec![]);
+		let buffer_type = jspd::Node::r#struct("BufferType", vec![]).into();
 
 		let root_node = jspd::Node::scope("root".to_string(), vec![
 			jspd::Node::binding("buff", jspd::BindingTypes::buffer(buffer_type), 0, 0, true, true),
@@ -468,10 +468,10 @@ mod tests {
 		}
 		"#;
 
-		let root_node = jspd::Node::root();
+		let mut root_node = jspd::Node::root();
 
-		let u32_t = RefCell::borrow(&root_node).get_child("u32").unwrap();
-		RefCell::borrow_mut(&root_node).add_child(jspd::Node::push_constant(vec![jspd::Node::member("material_id", u32_t.clone())]));
+		let u32_t = root_node.get_child("u32").unwrap();
+		root_node.add_child(jspd::Node::push_constant(vec![jspd::Node::member("material_id", u32_t.clone())]).into());
 
 		let program_node = jspd::compile_to_jspd(&script, Some(root_node)).unwrap();
 

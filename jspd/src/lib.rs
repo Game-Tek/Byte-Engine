@@ -3,7 +3,6 @@
 #![feature(new_uninit)]
 
 use std::fmt::Display;
-use std::{collections::HashMap, rc::Rc};
 
 mod tokenizer;
 pub mod parser;
@@ -36,9 +35,9 @@ pub fn lex(node: parser::NodeReference, parser_program: &parser::ProgramState) -
 /// 
 /// * `source` - The source code to compile.
 /// * `parent` - An optional reference to a parent Scope node where the source code will be compiled into.
-pub fn compile_to_jspd(source: &str, parent: Option<NodeReference>) -> Result<NodeReference, CompilationError> {
+pub fn compile_to_jspd(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
 	if source.split_whitespace().next() == None {
-		return Ok(lexer::Node::scope("".to_string(), Vec::new()));
+		return Ok(lexer::Node::scope("".to_string()).into());
 	}
 
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;

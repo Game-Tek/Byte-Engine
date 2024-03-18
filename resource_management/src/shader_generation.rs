@@ -367,7 +367,9 @@ mod tests {
 
 		let buffer_type = jspd::Node::r#struct("BufferType", vec![]).into();
 
-		let root_node = jspd::Node::scope("root".to_string(), vec![
+		let mut root_node = jspd::Node::scope("root".to_string());
+		
+		root_node.add_children(vec![
 			jspd::Node::binding("buff", jspd::BindingTypes::buffer(buffer_type), 0, 0, true, true),
 			jspd::Node::binding("image", jspd::BindingTypes::Image{ format: "r8".to_string() }, 0, 1, false, true),
 			jspd::Node::binding("texture", jspd::BindingTypes::CombinedImageSampler, 1, 0, true, false),
@@ -471,7 +473,7 @@ mod tests {
 		let mut root_node = jspd::Node::root();
 
 		let u32_t = root_node.get_child("u32").unwrap();
-		root_node.add_child(jspd::Node::push_constant(vec![jspd::Node::member("material_id", u32_t.clone())]).into());
+		root_node.add_child(jspd::Node::push_constant(vec![jspd::Node::member("material_id", u32_t.clone()).into()]).into());
 
 		let program_node = jspd::compile_to_jspd(&script, Some(root_node)).unwrap();
 

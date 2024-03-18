@@ -199,7 +199,7 @@ impl VisibilityShaderGenerator {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, program_state: &mut jspd::parser::ProgramState,) {
+	fn transform(&self, program_state: &mut jspd::parser::ProgramState,) -> jspd::parser::NodeReference {
 		let mesh_struct = self.mesh_struct.clone();
 		let camera_struct = self.camera_struct.clone();
 		let meshlet_struct = self.meshlet_struct.clone();
@@ -412,6 +412,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		}
 
 		program_state.insert("main".to_string(), m);
+
+		jspd::parser::NodeReference::function("main", vec![], "void", vec![])
 	}
 }
 

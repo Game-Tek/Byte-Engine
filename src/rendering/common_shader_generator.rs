@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use resource_management::resource::material_resource_handler::ProgramGenerator;
+use resource_management::asset::material_asset_handler::ProgramGenerator;
 
 use crate::jspd::lexer;
 
@@ -8,7 +8,7 @@ pub(crate) struct CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform(&self, program: &mut jspd::parser::ProgramState) {
+	fn transform(&self, program_state: &mut jspd::parser::ProgramState,) -> jspd::parser::NodeReference {
 		let code = "vec4 get_debug_color(uint i) {
 vec4 colors[16] = vec4[16](
 	vec4(0.16863, 0.40392, 0.77647, 1),
@@ -33,6 +33,8 @@ return colors[i % 16];
 }";
 
 		// RefCell::borrow_mut(&scope).add_child(jspd::Node::glsl(code.to_string(), Vec::new()));
+
+		jspd::parser::NodeReference::glsl(code, Vec::new(), Vec::new())
 	}
 }
 

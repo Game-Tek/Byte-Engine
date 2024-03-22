@@ -215,12 +215,13 @@ impl Node {
 		}
 	}
 
-	pub fn glsl(code: String, references: Vec<NodeReference>) -> Node {
+	pub fn glsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
 		Node {
 			// parent: None,
 			node: Nodes::GLSL {
 				code,
-				references,
+				input: inputs,
+				output: outputs,
 			},
 		}
 	}
@@ -295,6 +296,9 @@ impl Node {
 			Nodes::Function { statements, .. } => {
 				statements.push(child.clone());
 			}
+			Nodes::PushConstant { members } => {
+				members.push(child.clone());
+			}
 			_ => {}
 		}
 
@@ -345,7 +349,12 @@ impl Node {
 								_ => {}
 							}
 						}
-						Nodes::GLSL { references, .. } => {
+						Nodes::GLSL { output, .. } => {
+							for o in output {
+								if let Some(c) = RefCell::borrow(&o).get_child_a(child_name, o.clone()) {
+									return Some(c);
+								}
+							}
 						}
 						_ => {}
 					}
@@ -362,6 +371,13 @@ impl Node {
 						}
 					}
 					_ => {}
+				}
+			}
+			Nodes::GLSL { output, .. } => {
+				for o in output {
+					if let Some(c) = RefCell::borrow(&o).get_child_a(child_name, o.clone()) {
+						return Some(c);
+					}
 				}
 			}
 			_ => {}
@@ -383,6 +399,16 @@ impl Node {
 				}
 			}
 			Nodes::Function { name, .. } => {
+				if child_name == name {
+					return Some(r);
+				}
+			}
+			Nodes::PushConstant { .. } => {
+				if child_name == "push_constant" {
+					return Some(r);
+				}
+			}
+			Nodes::Binding { name, .. } => {
 				if child_name == name {
 					return Some(r);
 				}
@@ -528,7 +554,8 @@ pub enum Nodes {
 	Expression(Expressions),
 	GLSL {
 		code: String,
-		references: Vec<NodeReference>,
+		input: Vec<NodeReference>,
+		output: Vec<NodeReference>,
 	},
 	Binding {
 		name: String,
@@ -574,8 +601,7 @@ pub enum Expressions {
 	},
 	VariableDeclaration {
 		name: String,
-		// r#type: NodeReference,
-		r#type: String,
+		r#type: NodeReference,
 	},
 	Accessor {
 		left: NodeReference,
@@ -620,13 +646,11 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 			let mut this = Node::scope(name.clone());
 
-			{				
-				for child in children {
-					let mut chain = chain.clone();
-					chain.push(&this);
-					let c = lex_parsed_node(chain, child, parser_program,)?;
-					this.add_child(c);
-				}
+			for child in children {
+				let mut chain = chain.clone();
+				chain.push(&this);
+				let c = lex_parsed_node(chain, child, parser_program,)?;
+				this.add_child(c);
 			}
 
 			this
@@ -637,7 +661,6 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			}
 			
 			let mut this = Node::r#struct(&name, Vec::new());
-
 			
 			for field in fields {
 				let mut chain = chain.clone();
@@ -692,8 +715,6 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 				let this: NodeReference = this.into();
 
-				// parent_node.add_child(parent_node_reference.ok_or(LexError::Undefined { message: None })?, this);
-
 				return Ok(this);
 			} else if r#type.contains('[') {
 				let mut s = r#type.split(|c| c == '[' || c == ']');
@@ -704,7 +725,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 				let count = s.next().ok_or(LexError::Undefined{ message: Some("No count".to_string()) })?.parse().map_err(|_| LexError::Undefined{ message: Some("Invalid count".to_string()) })?;
 
-				Node::array(&name, member_type, count)
+				return Ok(Node::array(&name, member_type, count));
 			} else {
 				lex_parsed_node(chain, parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?, parser_program,)?
 			};
@@ -713,11 +734,23 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 			this
 		}
-		parser::Nodes::Function { name, return_type, statements, .. } => {
+		parser::Nodes::Function { name, return_type, statements, params, .. } => {
 			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: return_type.clone() })?;
 			let t = lex_parsed_node(chain.clone(), t, parser_program,)?;
 
 			let mut this = Node::function(name, Vec::new(), t, Vec::new(),);
+
+			for param in params {
+				let mut chain = chain.clone();
+				chain.push(&this);
+				let c = lex_parsed_node(chain, param, parser_program,)?;
+				match this.node_mut() {
+					Nodes::Function { params, .. } => {
+						params.push(c);
+					}
+					_ => { panic!("Expected function"); }
+				}
+			}
 
 			for statement in statements {
 				let mut chain = chain.clone();
@@ -730,14 +763,14 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 		}
 		parser::Nodes::PushConstant { members } => {
 			let mut this = Node::push_constant(vec![]);
-
 			
 			for member in members {
 				let mut chain = chain.clone();
 				chain.push(&this);
 				if let parser::Nodes::Member { r#type, .. } = &member.node {
 					let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
-					let c = lex_parsed_node(chain, t, parser_program,)?;
+					let _ = lex_parsed_node(chain.clone(), t, parser_program,)?;
+					let c = lex_parsed_node(chain, &member, parser_program,)?;
 					this.add_child(c);
 				}
 			}
@@ -786,14 +819,20 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 			this
 		}
-		parser::Nodes::GLSL { code, input, .. } => {
-			let mut references = Vec::new();
+		parser::Nodes::GLSL { code, input, output, .. } => {
+			let mut inputs = Vec::new();
 
 			for i in input {
-				references.push(get_reference(&chain, i).ok_or(LexError::AccessingUndeclaredMember { name: i.clone() })?.clone());
+				inputs.push(get_reference(&chain, i).ok_or(LexError::AccessingUndeclaredMember { name: i.clone() })?.clone());
 			}
 
-			let this = Node::glsl(code.clone(), references);
+			let mut outputs = Vec::new();
+			
+			for o in output {
+				outputs.push(Node::expression(Expressions::VariableDeclaration { name: o.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name: o.clone() })? }).into());
+			}
+			
+			let this = Node::glsl(code.clone(), inputs, outputs);
 
 			this
 		}
@@ -861,10 +900,9 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					})
 				}
 				parser::Expressions::VariableDeclaration{ name, r#type } => {
-					get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
 					let this = Node::expression(Expressions::VariableDeclaration {
 						name: name.clone(),
-						r#type: r#type.clone(),
+						r#type: get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?,
 					});
 
 					this
@@ -941,6 +979,8 @@ main: fn () -> void {
 		let node = lex(&node, &program).expect("Failed to lex");
 		let node = node.borrow();
 
+		let vec4f = node.get_child("vec4f").expect("Expected vec4f");
+
 		match &node.node {
 			Nodes::Scope{ .. } => {
 				let main = node.get_child("main").expect("Expected main");
@@ -963,8 +1003,7 @@ main: fn () -> void {
 									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {
 										assert_eq!(name, "position");
 										
-										// assert_type(&r#type, "vec4f");
-										assert_eq!(r#type, "vec4f");
+										assert_eq!(r#type, &vec4f);
 									}
 									_ => { panic!("Expected expression"); }
 								}
@@ -1047,6 +1086,7 @@ color: In<vec4f>;
 	fn lex_struct() {
 		let script = r#"
 		Vertex: struct {
+			array: u32[3],
 			position: vec3f,
 			normal: vec3f,
 		}
@@ -1068,7 +1108,18 @@ color: In<vec4f>;
 				match vertex.node() {
 					Nodes::Struct { name, fields, .. } => {
 						assert_eq!(name, "Vertex");
-						assert_eq!(fields.len(), 2);
+						assert_eq!(fields.len(), 3);
+
+						let array = fields[0].borrow();
+
+						match array.node() {
+							Nodes::Member { name, r#type, count } => {
+								assert_eq!(name, "array");
+								assert_type(&r#type.borrow(), "u32");
+								assert_eq!(count, &Some(NonZeroUsize::new(3).expect("Invalid count")));
+							}
+							_ => { panic!("Expected member"); }
+						}
 					}
 					_ => { panic!("Expected struct"); }
 				}
@@ -1095,6 +1146,8 @@ color: In<vec4f>;
 
 		let node = node.borrow();
 
+		let vec3f = node.get_child("vec3f").expect("Expected vec3f");
+
 		match node.node() {
 			Nodes::Scope{ name, .. } => {
 				assert_eq!(name, "root");
@@ -1118,7 +1171,7 @@ color: In<vec4f>;
 								match albedo.node() {
 									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {
 										assert_eq!(name, "albedo");
-										assert_eq!(r#type, "vec3f");
+										assert_eq!(r#type, &vec3f);
 									}
 									_ => { panic!("Expected expression"); }
 								}

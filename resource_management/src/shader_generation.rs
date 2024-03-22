@@ -73,10 +73,30 @@ impl ShaderCompilation {
 		{
 			let mut glsl_block = String::with_capacity(248);
 			self.generate_glsl_header_block(&mut glsl_block, shader_compilation_settings);
+			glsl_block.push_str("layout(local_size_x=32) in;\n");
 			string.insert_str(0, &glsl_block);
 		}
 	
 		string
+	}
+
+	fn translate_type(source: &str) -> &str {
+		match source {
+			"void" => "void",
+			"vec2f" => "vec2",
+			"vec2u16" => "u16vec2",
+			"vec3f" => "vec3",
+			"vec4f" => "vec4",
+			"mat2f" => "mat2",
+			"mat3f" => "mat3",
+			"mat4f" => "mat4",
+			"f32" => "float",
+			"u8" => "uint8_t",
+			"u16" => "uint16_t",
+			"u32" => "uint32_t",
+			"i32" => "int32_t",
+			_ => source,
+		}
 	}
 
 	fn generate_shader_internal(&mut self, string: &mut String, main_function_node: &jspd::NodeReference) {
@@ -91,16 +111,28 @@ impl ShaderCompilation {
 					self.generate_shader_internal(string, &child,);
 				}
 			}
-			jspd::Nodes::Function { name, statements, return_type, .. } => {
+			jspd::Nodes::Function { name, statements, return_type, params, .. } => {
 				let mut l_string = String::with_capacity(128);
 
 				self.generate_shader_internal(&mut l_string, &return_type);
 
-				l_string.push_str("void ");
+				l_string.push_str(Self::translate_type(&return_type.borrow().get_name().unwrap()));
+
+				l_string.push(' ');
 
 				l_string.push_str(name);
 
-				if self.minified { l_string.push_str("(){"); } else { l_string.push_str("() {\n"); }
+				l_string.push('(');
+
+				for (i, param) in params.iter().enumerate() {
+					if i > 0 {
+						if !self.minified { l_string.push_str(", "); } else { l_string.push(','); }
+					}
+
+					self.generate_shader_internal(&mut l_string, &param);
+				}
+
+				if self.minified { l_string.push_str("){"); } else { l_string.push_str(") {\n"); }
 	
 				for statement in statements {
 					if !self.minified { l_string.push('\t'); }
@@ -115,7 +147,7 @@ impl ShaderCompilation {
 				self.present_symbols.insert(main_function_node.clone());
 			}
 			jspd::Nodes::Struct { name, fields, .. } => {
-				if name == "void" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u32" || name == "i32" { return; }
+				if name == "void" || name == "vec2u16" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" { return; }
 
 				let mut l_string = String::with_capacity(128);
 
@@ -160,7 +192,9 @@ impl ShaderCompilation {
 			jspd::Nodes::Member { name, r#type, count } => {
 				self.generate_shader_internal(string, &r#type); // Demand the type to be present in the shader
 				if let Some(type_name) = r#type.borrow().get_name() {
-					string.push_str(type_name.as_str());
+					let type_name = Self::translate_type(type_name.as_str());
+
+					string.push_str(type_name);
 					string.push(' ');
 				}
 				string.push_str(name.as_str());
@@ -170,8 +204,8 @@ impl ShaderCompilation {
 					string.push(']');
 				}
 			}
-			jspd::Nodes::GLSL { code, references } => {
-				for reference in references {
+			jspd::Nodes::GLSL { code, input, .. } => {
+				for reference in input {
 					self.generate_shader_internal(string, reference);
 				}
 
@@ -192,6 +226,8 @@ impl ShaderCompilation {
 						let function = RefCell::borrow(&function);
 						let name = function.get_name().unwrap();
 
+						let name = Self::translate_type(&name);
+
 						string.push_str(&format!("{}(", name));
 						for (i, parameter) in parameters.iter().enumerate() {
 							if i > 0 {
@@ -210,7 +246,9 @@ impl ShaderCompilation {
 						string.push_str(name);
 					}
 					jspd::Expressions::VariableDeclaration { name, r#type } => {
-						string.push_str(&format!("{} {}", r#type, name));
+						self.generate_shader_internal(string, r#type);
+
+						string.push_str(&format!("{} {}", Self::translate_type(&r#type.borrow().get_name().unwrap()), name));
 					}
 					jspd::Expressions::Literal { value } => {
 						string.push_str(&format!("{}", value));
@@ -230,8 +268,13 @@ impl ShaderCompilation {
 
 				let binding_type = match r#type {
 					jspd::BindingTypes::Buffer{ .. } => "buffer",
-					jspd::BindingTypes::Image{ .. } => "image2D",
-					jspd::BindingTypes::CombinedImageSampler => "texture2D",
+					jspd::BindingTypes::Image{ format, .. } => {
+						match format.as_str() {
+							"r8ui" | "r16ui" | "r32ui" => "uniform uimage2D",
+							_ => "uniform image2D"
+						}
+					},
+					jspd::BindingTypes::CombinedImageSampler => "uniform sampler2D",
 				};
 
 				l_string.push_str(&format!("layout(set={},binding={}", set, binding));
@@ -244,12 +287,17 @@ impl ShaderCompilation {
 						l_string.push(',');
 						l_string.push_str(&format);
 					}
-					_ => {}
+					jspd::BindingTypes::CombinedImageSampler => {}
 				}
 
-				l_string.push_str(&format!(") {} ", binding_type));
-				if *read && !*write { l_string.push_str("readonly "); }
-				if *write && !*read { l_string.push_str("writeonly "); }
+				match r#type {
+					jspd::BindingTypes::Buffer{ .. } | jspd::BindingTypes::Image { .. } => {
+						l_string.push_str(&format!(") {} {} ", if *read && !*write { "readonly" } else if *write && !*read { "writeonly" } else { "" }, binding_type));
+					}
+					jspd::BindingTypes::CombinedImageSampler => {
+						l_string.push_str(&format!(") {} ", binding_type));
+					}
+				}
 
 				match r#type {
 					jspd::BindingTypes::Buffer{ r#type } => {						
@@ -257,6 +305,8 @@ impl ShaderCompilation {
 							jspd::Nodes::Struct { name, fields, .. } => {
 								l_string.push_str(&name);
 								l_string.push('{');
+
+								if !self.minified { l_string.push('\n'); }
 
 								for field in fields {
 									if !self.minified { l_string.push('\t'); }
@@ -325,11 +375,11 @@ impl ShaderCompilation {
 			}
 			_ => {}
 		}
-		// memory layout declarations
-	
-		glsl_block.push_str("#define vec4f vec4\n");
 
+		// memory layout declarations
 		glsl_block.push_str("layout(row_major) uniform;layout(row_major) buffer;");
+
+		glsl_block.push_str("const float PI = 3.14159265359;\n");
 
 		if !self.minified { glsl_block.push('\n'); }
 	}
@@ -370,9 +420,9 @@ mod tests {
 		let mut root_node = jspd::Node::scope("root".to_string());
 		
 		root_node.add_children(vec![
-			jspd::Node::binding("buff", jspd::BindingTypes::buffer(buffer_type), 0, 0, true, true),
-			jspd::Node::binding("image", jspd::BindingTypes::Image{ format: "r8".to_string() }, 0, 1, false, true),
-			jspd::Node::binding("texture", jspd::BindingTypes::CombinedImageSampler, 1, 0, true, false),
+			jspd::Node::binding("buff", jspd::BindingTypes::buffer(buffer_type), 0, 0, true, true).into(),
+			jspd::Node::binding("image", jspd::BindingTypes::Image{ format: "r8".to_string() }, 0, 1, false, true).into(),
+			jspd::Node::binding("texture", jspd::BindingTypes::CombinedImageSampler, 1, 0, true, false).into(),
 		]);
 
 		let script_node = jspd::compile_to_jspd(&script, Some(root_node)).unwrap();

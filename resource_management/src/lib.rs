@@ -496,8 +496,6 @@ impl StorageBackend for DbStorageBackend {
 	
 			resource_document.insert("resource", json_resource);
 	
-			log::debug!("Generated resource: {:#?}", &resource_document);
-	
 			let insert_result = self.db.collection::<bson::Document>("resources").insert_one(&resource_document).or(Err(()))?;
 	
 			let resource_id = insert_result.inserted_id.as_object_id().unwrap();
@@ -519,7 +517,6 @@ impl StorageBackend for DbStorageBackend {
 			self.db.collection::<bson::Document>("resources").drop();
 
 			other.db.collection::<bson::Document>("resources").find(bson::doc! {}).unwrap().for_each(|doc| {
-				dbg!(&doc);
 				self.db.collection::<bson::Document>("resources").insert_one(&doc.unwrap()).unwrap();
 			});
 		}

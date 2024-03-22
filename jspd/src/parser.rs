@@ -249,7 +249,7 @@ impl NodeReference {
 
 	pub fn combined_image_sampler() -> NodeReference {
 		NodeReference(Rc::new(Node {
-			node: Nodes::Image {
+			node: Nodes::CombinedImageSampler {
 				format: "".to_string(),
 			},
 		}))
@@ -478,7 +478,17 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 		if !type_name.chars().next().unwrap().is_alphabetic() { return Err(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type name after : for member {} in struct {}", v, name) }); }
 
-		fields.push(make_member(v, type_name).into());
+		// See if is array type
+		let type_name = if iterator.clone().peekable().peek().unwrap().as_str() == "[" {
+			iterator.next();
+			let count = iterator.next().and_then(|v| v.parse::<u32>().ok()).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a number after [ for member {} in struct {}", v, name) })?;
+			iterator.next().unwrap();
+			format!("{}[{}]", type_name, count)
+		} else {
+			type_name.clone()
+		};
+
+		fields.push(make_member(v, &type_name).into());
 	}
 
 	let node = NodeReference::r#struct(name, fields);
@@ -746,23 +756,29 @@ impl ProgramState {
 		let mut types = HashMap::new();
 
 		let void = NodeReference::r#struct("void", Vec::new());
+		let u8 = NodeReference::r#struct("u8", Vec::new());
+		let u16 = NodeReference::r#struct("u16", Vec::new());
 		let u32 = NodeReference::r#struct("u32", Vec::new());
 		let f32 = NodeReference::r#struct("f32", Vec::new());
 		let in_type = NodeReference::r#struct("In", Vec::new()); // Input type
 		let out_type = NodeReference::r#struct("Out", Vec::new()); // Output type
 		let push_constant_type = NodeReference::r#struct("PushConstant", Vec::new()); // Output type
 		let vec2f = NodeReference::r#struct("vec2f", vec![NodeReference::member("x", "f32"), NodeReference::member("y", "f32")]);
+		let vec2u16 = NodeReference::r#struct("vec2u16", vec![NodeReference::member("x", "u16"), NodeReference::member("y", "u16")]);
 		let vec3f = NodeReference::r#struct("vec3f", vec![NodeReference::member("x", "f32"), NodeReference::member("y", "f32"), NodeReference::member("z", "f32")]);
 		let vec4f = NodeReference::r#struct("vec4f", vec![NodeReference::member("x", "f32"), NodeReference::member("y", "f32"), NodeReference::member("z", "f32"), NodeReference::member("w", "f32")]);
 		let mat4f = NodeReference::r#struct("mat4f", vec![NodeReference::member("x", "f32"), NodeReference::member("y", "f32"), NodeReference::member("z", "f32"), NodeReference::member("w", "f32")]);
 	
 		types.insert("void".to_string(), void);
+		types.insert("u8".to_string(), u8);
+		types.insert("u16".to_string(), u16);
 		types.insert("u32".to_string(), u32);
 		types.insert("f32".to_string(), f32);
 		types.insert("In".to_string(), in_type);
 		types.insert("Out".to_string(), out_type);
 		types.insert("PushConstant".to_string(), push_constant_type);
 		types.insert("vec2f".to_string(), vec2f);
+		types.insert("vec2u16".to_string(), vec2u16);
 		types.insert("vec3f".to_string(), vec3f);
 		types.insert("vec4f".to_string(), vec4f);
 		types.insert("mat4f".to_string(), mat4f);
@@ -834,6 +850,7 @@ mod tests {
 	fn test_parse_struct() {
 		let source = "
 Light: struct {
+	array: u32[3],
 	position: vec3f,
 	color: vec3f
 }";

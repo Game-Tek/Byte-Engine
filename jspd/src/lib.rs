@@ -58,12 +58,6 @@ pub enum CompilationError {
 	Lex(lexer::LexError),
 }
 
-impl Display for CompilationError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "An error occurred during compilation.")
-	}
-}
-
 // Expects a JSON object, describing the program in a parsed form.
 // pub fn json_to_jspd(source: &json::JsonValue) -> Result<NodeReference, ()> {
 // 	fn process_parser_nodes(name: &str, node: &json::JsonValue, parser_program: &mut parser::ProgramState) -> Result<parser::NodeReference, ()> {

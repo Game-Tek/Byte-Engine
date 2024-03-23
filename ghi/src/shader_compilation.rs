@@ -3,9 +3,9 @@ use colored::Colorize;
 pub fn format_glslang_error(shader_name: &str, error_string: &str, source_code: &str) -> Option<String> {
 	let errors = error_string.lines().filter(|error|
 		error.starts_with(shader_name)).filter_map(|error| {
-			let split = error.split(':').collect::<Vec<_>>();
-			if split.len() > 5 {
-				Some((split[1], [split[3], split[4]].join("")))
+			let split = error.split(':').map(|e| e.trim()).collect::<Vec<_>>();
+			if split.len() >= 5 {
+				Some((split[1], [split[3], split[4]].join(" ")))
 			} else {
 				None
 			}
@@ -44,4 +44,26 @@ pub fn format_glslang_error(shader_name: &str, error_string: &str, source_code: 
 	}
 
 	Some(error_string)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_format_glslang_error() {
+		let shader_name = "shaders/fragment.besl";
+		let error_string = "shaders/fragment.besl:3: error: 'fresnel_schlick' : no matching overloaded function found
+shaders/fragment.besl:3: error: '=' :  cannot convert from ' const float' to ' temp highp 3-component vector of float'
+shaders/fragment.besl:3: error: 'distribution_ggx' : no matching overloaded function found
+shaders/fragment.besl:3: error: 'geometry_smith' : no matching overloaded function found
+shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
+		let source_code = "#version 450\nlayout(local_size_x = 1) in;\nvoid main() {}\n";
+
+		let error = format_glslang_error(shader_name, error_string, source_code).unwrap();
+
+		println!("{}", &error);
+
+		assert_ne!(error, "");
+	}
 }

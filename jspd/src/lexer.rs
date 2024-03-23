@@ -413,6 +413,11 @@ impl Node {
 					return Some(r);
 				}
 			}
+			Nodes::Specialization { name, .. } => {
+				if child_name == name {
+					return Some(r);
+				}
+			}
 			Nodes::Expression(expression) => {
 				match expression {
 					Expressions::Operator { left, right, .. } => {
@@ -431,7 +436,19 @@ impl Node {
 					_ => {}
 				}
 			}
-			_ => {}
+			Nodes::GLSL { output, .. } => {
+				for o in output {
+					if let Some(c) = RefCell::borrow(&o).get_child(child_name) {
+						return Some(c);
+					}
+				}
+			}
+			Nodes::Member { name, .. } => {
+				if child_name == name {
+					return Some(r);
+				}
+			}
+			Nodes::Null => {}
 		}
 
 		None
@@ -551,6 +568,10 @@ pub enum Nodes {
 		return_type: NodeReference,
 		statements: Vec<NodeReference>,
 	},
+	Specialization {
+		name: String,
+		r#type: NodeReference,
+	},
 	Expression(Expressions),
 	GLSL {
 		code: String,
@@ -668,6 +689,16 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 				let c = lex_parsed_node(chain, &field, parser_program,)?;
 				this.add_child(c);
 			}
+
+			this
+		}
+		parser::Nodes::Specialization { name, r#type } => {
+			let t = lex_parsed_node(chain.clone(), parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?, parser_program,)?;
+
+			let this = Node::new(Nodes::Specialization {
+				name: name.clone(),
+				r#type: t,
+			});
 
 			this
 		}

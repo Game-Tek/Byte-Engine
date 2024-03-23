@@ -174,3 +174,46 @@ impl <E, T> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
 		(self.1)(&mut entity, value);
 	}
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+	use crate::spawn;
+
+use super::*;
+	
+	#[test]
+	fn reactivity() {
+		struct SourceComponent {
+			value: Property<u32>,
+			derived: DerivedProperty<u32, String>,
+		}
+
+		struct ReceiverComponent {
+			value: SinkProperty<u32>,
+			derived: SinkProperty<String>,
+		}
+
+		impl Entity for SourceComponent {}
+
+		impl Entity for ReceiverComponent {}
+
+		let mut value = Property::new(1);
+		let derived = DerivedProperty::new(&mut value, |value| value.to_string());
+
+		let source_component_handle: EntityHandle<SourceComponent> = spawn(SourceComponent { value, derived });
+		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
+
+		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
+		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");
+
+		source_component_handle.map(|c| { let mut c = c.write_sync(); c.value.set(|_| 2) });
+
+		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 2);
+		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "2");
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 2);
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "2");
+	}
+}

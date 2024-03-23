@@ -6,7 +6,7 @@ use super::{asset_handler::AssetHandler, AssetResolver,};
 
 pub trait ProgramGenerator {
 	/// Transforms a program.
-	fn transform(&self, program_state: &mut jspd::parser::ProgramState,) -> Vec<jspd::parser::NodeReference>;
+	fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference>;
 }
 
 pub struct MaterialAssetHandler {
@@ -122,7 +122,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		return None;
 	};
 
-	let generator_elements = generator.transform(&mut program_state);
+	let generator_elements = generator.transform(&mut program_state, material);
 
 	let root_node = match jspd::lex(jspd::parser::NodeReference::root_with_children(generator_elements), &program_state) {
 		Ok(e) => e,
@@ -212,16 +212,16 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> Vec<jspd::parser::NodeReference> {
-			let material = jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("color", "vec4f")]);
-			program_state.insert("Material".to_string(), material.clone());
+		fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
+			let material_struct = jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("color", "vec4f")]);
+			program_state.insert("Material".to_string(), material_struct.clone());
 
 			let mid_test_shader_generator = MidTestShaderGenerator::new();
 
-			let child = mid_test_shader_generator.transform(program_state);
+			let child = mid_test_shader_generator.transform(program_state, material);
 
 			// jspd::parser::NodeReference::scope("RootTestShaderGenerator", vec![material, child])
-			vec![material].into_iter().chain(child.into_iter()).collect()
+			vec![material_struct].into_iter().chain(child.into_iter()).collect()
 		}
 	}
 
@@ -234,13 +234,13 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> Vec<jspd::parser::NodeReference> {
+		fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
 			let binding = jspd::parser::NodeReference::binding("materials", jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
 			program_state.insert("materials".to_string(), binding.clone());
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
 
-			let child = leaf_test_shader_generator.transform(program_state);
+			let child = leaf_test_shader_generator.transform(program_state, material);
 
 			// jspd::parser::NodeReference::scope("MidTestShaderGenerator", vec![binding, child])
 			vec![binding].into_iter().chain(child.into_iter()).collect()
@@ -256,7 +256,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for LeafTestShaderGenerator {
-		fn transform(&self, program_state: &mut jspd::parser::ProgramState) -> Vec<jspd::parser::NodeReference> {
+		fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
 			let push_constant = jspd::parser::NodeReference::push_constant(vec![jspd::parser::NodeReference::member("material_index", "u32")]);
 			program_state.insert("push_constant".to_string(), push_constant.clone());
 
@@ -274,7 +274,7 @@ pub mod tests {
 
 		let mut program_state = jspd::parser::ProgramState::new();
 
-		let root = test_shader_generator.transform(&mut program_state);
+		let root = test_shader_generator.transform(&mut program_state, &json::object! {});
 
 		let root = jspd::lex(jspd::parser::NodeReference::root_with_children(root), &program_state).unwrap();
 

@@ -87,7 +87,7 @@ impl Player {
 				audio_system: audio_system,
 
 				camera: camera_handle,
-				mesh: core::spawn_as_child(parent, mesh::Mesh::new("Box", "solid", transform)),
+				mesh: core::spawn_as_child(parent, mesh::Mesh::new("Box", "Solid", transform)),
 
 				magazine_size,
 				magazine_as_string,

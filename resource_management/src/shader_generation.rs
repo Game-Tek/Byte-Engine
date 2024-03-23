@@ -189,6 +189,34 @@ impl ShaderCompilation {
 
 				string.insert_str(0, &l_string);
 			}
+			jspd::Nodes::Specialization { name, r#type } => {
+				let mut l_string = String::with_capacity(128);
+
+				let mut members = Vec::new();
+
+				let t = &r#type.borrow().get_name().unwrap();
+				let type_name = Self::translate_type(t);
+
+				match r#type.borrow().node() {
+					jspd::Nodes::Struct { fields, .. } => {
+						for (i, field) in fields.iter().enumerate() {
+							match field.borrow().node() {
+								jspd::Nodes::Member { name: member_name, r#type, .. } => {
+									let member_name = format!("{}_{}", name, {member_name});
+									l_string.push_str(&format!("layout(constant_id={}) const {} {} = {};\n", i, Self::translate_type(&r#type.borrow().get_name().unwrap()), &member_name, "1.0"));
+									members.push(member_name);
+								}
+								_ => {}
+							}
+						}
+					}
+					_ => {}
+				}
+
+				l_string.push_str(&format!("const {} {} = {};\n", &type_name, name, format!("{}({})", &type_name, members.join(","))));
+
+				string.insert_str(0, &l_string);
+			}
 			jspd::Nodes::Member { name, r#type, count } => {
 				self.generate_shader_internal(string, &r#type); // Demand the type to be present in the shader
 				if let Some(type_name) = r#type.borrow().get_name() {

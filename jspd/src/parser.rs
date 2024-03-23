@@ -93,6 +93,10 @@ pub enum Nodes {
 		write: bool,
 		count: Option<NonZeroUsize>,
 	},
+	Specialization {
+		name: String,
+		r#type: String,
+	},
 	PushConstant {
 		members: Vec<NodeReference>,
 	},
@@ -215,6 +219,17 @@ impl NodeReference {
 					read,
 					write,
 					count: NonZeroUsize::new(count as usize),
+				},
+			})
+		)
+	}
+
+	pub fn specialization(name: &str, r#type: &str) -> NodeReference {
+		NodeReference(
+			Rc::new(Node {
+				node: Nodes::Specialization {
+					name: name.to_string(),
+					r#type: r#type.to_string(),
 				},
 			})
 		)

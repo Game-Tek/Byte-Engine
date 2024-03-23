@@ -196,7 +196,7 @@ impl VisibilityShaderGenerator {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, program_state: &mut jspd::parser::ProgramState,) -> Vec<jspd::parser::NodeReference> {
+	fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
 		let mesh_struct = self.mesh_struct.clone();
 		let camera_struct = self.camera_struct.clone();
 		let meshlet_struct = self.meshlet_struct.clone();
@@ -288,24 +288,16 @@ vec3 V = normalize(-(camera.view[3].xyz - vertex_position));
 
 vec3 albedo = vec3(1, 0, 0);
 vec3 metalness = vec3(0);
-float roughness = float(0.5);
-		";
+float roughness = float(0.5);";
+
+		let mut extra = Vec::new();
 
 		// "textures[nonuniformEXT(material.textures[{}])]"
-		// for variable in material["variables"].members() {
-		// 	match variable["data_type"].as_str().unwrap() {
-		// 		"vec4f" => { // Since GLSL doesn't support vec4f constants, we have to split it into 4 floats.
-		// 			string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 0, "float", format!("{}_r", variable["name"]), "1.0"));
-		// 			string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 1, "float", format!("{}_g", variable["name"]), "0.0"));
-		// 			string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 2, "float", format!("{}_b", variable["name"]), "0.0"));
-		// 			string.push_str(&format!("layout(constant_id={}) const {} {} = {};", 3, "float", format!("{}_a", variable["name"]), "1.0"));
-		// 			string.push_str(&format!("const {} {} = {};\n", "vec4", variable["name"], format!("vec4({name}_r, {name}_g, {name}_b, {name}_a)", name=variable["name"])));
-		// 		}
-		// 		_ => {}
-		// 	}
-		// }
-
-		// string.push_str(&format!("layout(local_size_x=32) in;\n"));
+		for variable in material["variables"].members() {
+			let x = jspd::parser::NodeReference::specialization(variable["name"].as_str().unwrap(), variable["data_type"].as_str().unwrap());
+			program_state.insert(variable["name"].as_str().unwrap().to_string(), x.clone());
+			extra.push(x);
+		}
 
 		let b = "
 vec3 lo = vec3(0.0);
@@ -435,7 +427,10 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		program_state.insert("depth_shadow_map".to_string(), set2_binding11.clone());
 		program_state.insert("main".to_string(), m.clone());
 
-		vec![push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), m]
+		let mut ret = Vec::with_capacity(32);
+		ret.append(&mut extra);
+		ret.append(&mut vec![push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), m]);
+		ret
 	}
 }
 

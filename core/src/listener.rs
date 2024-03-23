@@ -76,3 +76,118 @@ impl Entity for BasicListener {
 		Some(self)
 	}
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+	use super::*;
+	use crate::entity::EntityBuilder;
+	use crate::{spawn, spawn_as_child};
+	
+	#[test]
+	fn listeners() {
+		struct Component {
+			name: String,
+			value: u32,
+		}
+		
+		impl Entity for Component {}
+		
+		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+
+		struct System {
+
+		}
+
+		impl Entity for System {}
+
+		impl System {
+			fn new<'c>() -> EntityBuilder<'c, System> {
+				EntityBuilder::new(System {}).listen_to::<Component>()
+			}
+		}
+
+		static mut COUNTER: u32 = 0;
+
+		impl EntitySubscriber<Component> for System {
+			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, _: &Component) -> utils::BoxedFuture<()> {
+				Box::pin(async move {
+					unsafe {
+						COUNTER += 1;
+					}
+				})
+			}
+		}
+		
+		let listener_handle = spawn(BasicListener::new());
+
+		let _: EntityHandle<System> = spawn_as_child(listener_handle.clone(), System::new());
+		
+		assert_eq!(unsafe { COUNTER }, 0);
+
+		let _: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), Component { name: "test".to_string(), value: 1 });
+
+		assert_eq!(unsafe { COUNTER }, 1);
+	}
+
+	#[test]
+	fn listen_for_traits() {
+		trait Boo: Entity {
+			fn get_name(&self) -> String;
+			fn get_value(&self) -> u32;
+		}
+
+		struct Component {
+			name: String,
+			value: u32,
+		}
+
+		impl Entity for Component {
+			fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
+			fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>) where Self: Sized {
+				// listener.invoke_for(handle);
+				listener.invoke_for(handle as EntityHandle<dyn Boo>, self);
+			}
+		}
+
+		impl Boo for Component {
+			fn get_name(&self) -> String { self.name.clone() }
+			fn get_value(&self) -> u32 { self.value }
+		}
+
+		let _: EntityHandle<Component> = spawn(EntityBuilder::new(Component { name: "test".to_string(), value: 1 }));
+
+		struct System {
+
+		}
+
+		impl Entity for System {}
+
+		impl System {
+			fn new() -> EntityBuilder<'static, System> {
+				EntityBuilder::new(System {}).listen_to::<dyn Boo>()
+			}
+		}
+
+		static mut COUNTER: u32 = 0;
+
+		impl EntitySubscriber<dyn Boo> for System {
+			fn on_create<'a>(&'a mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) -> utils::BoxedFuture<'a, ()> {
+				unsafe {
+					COUNTER += 1;
+				}
+				Box::pin(async move { })
+			}
+		}
+		
+		let listener_handle = spawn(BasicListener::new());
+
+		let _: EntityHandle<System> = spawn_as_child(listener_handle.clone(), System::new());
+		
+		assert_eq!(unsafe { COUNTER }, 0);
+
+		let _: EntityHandle<Component> = spawn_as_child(listener_handle.clone(), EntityBuilder::new(Component { name: "test".to_string(), value: 1 }));
+
+		assert_eq!(unsafe { COUNTER }, 1);
+	}
+}

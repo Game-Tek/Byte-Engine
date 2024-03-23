@@ -42,3 +42,72 @@ impl <T> Default for Event<T> {
 		}
 	}
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+	use crate::{entity::EntityBuilder, spawn, Entity};
+
+	use super::*;
+
+	#[test]
+	fn events() {
+		struct MyComponent {
+			name: String,
+			value: u32,
+			click: bool,
+
+			event: Event<bool>,
+		}
+
+		impl MyComponent {
+			pub fn set_click(&mut self, value: bool) {
+				self.click = value;
+
+				self.event.ocurred(&self.click);
+			}
+
+			pub fn click(&mut self) -> &mut Event<bool> { &mut self.event }
+		}
+
+		impl Entity for MyComponent {}
+
+		struct MySystem {
+
+		}
+
+		impl Entity for MySystem {}
+
+		static mut COUNTER: u32 = 0;
+
+		impl MySystem {
+			fn new<'c>(_: &EntityHandle<MyComponent>) -> EntityBuilder<'c, MySystem> {
+				EntityBuilder::new(MySystem {})
+			}
+
+			fn on_event(&mut self, _: &bool) {
+				unsafe {
+					COUNTER += 1;
+				}
+			}
+		}
+
+		let component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, event: Default::default() });
+
+		let system_handle: EntityHandle<MySystem> = spawn(MySystem::new(&component_handle));
+
+		component_handle.map(|c| {
+			let mut c = c.write_sync();
+			c.click().subscribe(system_handle.clone(), MySystem::on_event);
+		});
+
+		assert_eq!(unsafe { COUNTER }, 0);
+
+		component_handle.map(|c| {
+			let mut c = c.write_sync();
+			c.set_click(true);
+		});
+
+		assert_eq!(unsafe { COUNTER }, 1);
+	}
+}

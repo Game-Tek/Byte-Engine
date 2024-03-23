@@ -263,3 +263,45 @@ impl <T: Entity> From<T> for EntityBuilder<'static, T> {
 		Self::new(entity)
 	}
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+	use super::*;
+	use crate::spawn;
+
+	#[test]
+	fn spawn_entities() {
+		struct Component {
+			name: String,
+			value: u32,
+		}
+
+		impl Entity for Component {}
+
+		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+
+		struct System {
+
+		}
+
+		impl Entity for System {}
+
+		impl System {
+			fn new<'c>() -> EntityBuilder<'c, System> {
+				EntityBuilder::new(System {})
+			}
+		}
+
+		impl EntitySubscriber<Component> for System {
+			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, component: &Component) -> utils::BoxedFuture<'a, ()> {
+				println!("Component created: {} {}", component.name, component.value);
+				Box::pin(async move {})
+			}
+		}
+		
+		let _: EntityHandle<System> = spawn(System::new());
+
+		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+	}
+}

@@ -7,7 +7,7 @@
 	"variables": [
 		{
 			"name": "color",
-			"data_type": "vec4f",
+			"data_type": "vec3f",
 			"type": "Static",
 			"value": "Purple"
 		}

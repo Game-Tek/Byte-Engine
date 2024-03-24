@@ -1001,7 +1001,7 @@ main: fn () -> void {
 	fn lex_function() {
 		let source = "
 main: fn () -> void {
-	position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+	let position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
 	position = position;
 }";
 
@@ -1167,7 +1167,7 @@ color: In<vec4f>;
 	fn fragment_shader() {
 		let source = r#"
 		main: fn () -> void {
-			albedo: vec3f = vec3f(1.0, 0.0, 0.0);
+			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
 		}
 		"#;
 

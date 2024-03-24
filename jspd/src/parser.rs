@@ -516,6 +516,7 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 }
 
 fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+	let _ = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v == "let" { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) }).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
@@ -916,7 +917,7 @@ Light: struct {
 	fn test_parse_function() {
 		let source = "
 main: fn () -> void {
-	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
+	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
 	gl_Position = position;
 }";
 
@@ -934,7 +935,7 @@ main: fn () -> void {
 	fn parse_operators() {
 		let source = "
 main: fn () -> void {
-	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
+	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
 	gl_Position = position;
 }";
 
@@ -978,7 +979,7 @@ main: fn () -> void {
 	fn parse_accessor() {
 		let source = "
 main: fn () -> void {
-	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
+	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
 	position.y = 2.0;
 	gl_Position = position;
 }";
@@ -1030,7 +1031,7 @@ Light: struct {
 
 #[vertex]
 main: fn () -> void {
-	position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
+	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
 	gl_Position = position;
 }";
 
@@ -1082,7 +1083,7 @@ main: fn () -> void {
 	fn fragment_shader() {
 		let source = r#"
 		main: fn () -> void {
-			albedo: vec3f = vec3f(1.0, 0.0, 0.0);
+			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
 		}
 		"#;
 

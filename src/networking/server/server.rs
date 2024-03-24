@@ -88,9 +88,9 @@ mod tests {
 		let mut server = Server::new();
 
 		for i in 0..32 {
-			server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669)).unwrap();
+			server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), i)).unwrap();
 		}
 
-		assert_eq!(server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669)), Err(ConnectionResults::ServerFull));
+		assert_eq!(server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 32)), Err(ConnectionResults::ServerFull));
 	}
 }

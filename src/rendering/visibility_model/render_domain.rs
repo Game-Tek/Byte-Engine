@@ -559,7 +559,7 @@ impl VisibilityWorldRenderDomain {
 					"Visibility" => {
 						match material.model.pass.as_str() {
 							"MaterialEvaluation" => {
-								let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec3f".to_string(), [0f32, 1f32, 0f32, 1f32])]));
+								let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec3f".to_string(), [1f32, 0f32, 1f32])]));
 								
 								self.material_evaluation_materials.insert(resource.id().to_string(), (self.material_evaluation_materials.len() as u32, pipeline));
 							}

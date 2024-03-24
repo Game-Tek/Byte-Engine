@@ -268,7 +268,12 @@ impl ShaderCompilation {
 					}
 					jspd::Expressions::Member { name, source, .. } => {
 						if let Some(source) = source {
-							self.generate_shader_internal(string, &source);
+							match source.borrow().node() {
+								jspd::Nodes::Expression { .. } => {}
+								_ => {
+									self.generate_shader_internal(string, &source);
+								}
+							}
 						}
 						
 						string.push_str(name);
@@ -320,7 +325,7 @@ impl ShaderCompilation {
 
 				match r#type {
 					jspd::BindingTypes::Buffer{ .. } | jspd::BindingTypes::Image { .. } => {
-						l_string.push_str(&format!(") {} {} ", if *read && !*write { "readonly" } else if *write && !*read { "writeonly" } else { "" }, binding_type));
+						l_string.push_str(&format!(") {}{} ", if *read && !*write { "readonly " } else if *write && !*read { "writeonly " } else { "" }, binding_type));
 					}
 					jspd::BindingTypes::CombinedImageSampler => {
 						l_string.push_str(&format!(") {} ", binding_type));
@@ -461,14 +466,14 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "layout(set=1,binding=0) texture2D readonly texture;layout(set=0,binding=1,r8) image2D writeonly image;layout(set=0,binding=0,scalar) buffer BufferType{}buff;void main(){buff;image;texture;}");
+		assert_eq!(shader, "layout(set=1,binding=0) uniform sampler2D texture;layout(set=0,binding=1,r8) writeonly uniform image2D image;layout(set=0,binding=0,scalar) buffer BufferType{}buff;void main(){buff;image;texture;}");
 	}
 
 	#[test]
 	fn fragment_shader() {
 		let script = r#"
 		main: fn () -> void {
-			albedo: vec3f = vec3f(1.0, 0.0, 0.0);
+			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
 		}
 		"#;
 
@@ -480,13 +485,13 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "void main() {\n\tvec3f albedo = vec3f(1.0, 0.0, 0.0);\n}\n");
+		assert_eq!(shader, "void main() {\n\tvec3 albedo = vec3(1.0, 0.0, 0.0);\n}\n");
 
 		let shader_generator = ShaderGenerator::new().minified(true);
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "void main(){vec3f albedo=vec3f(1.0,0.0,0.0);}");
+		assert_eq!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);}");
 	}
 
 	#[test]
@@ -537,7 +542,7 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main);
 
-		assert_eq!(shader, "struct Vertex {\n\tvec3f position;\n\tvec3f normal;\n};\nvoid use_vertex() {\n}\nvoid main() {\n\tuse_vertex();\n}\n");
+		assert_eq!(shader, "struct Vertex {\n\tvec3 position;\n\tvec3 normal;\n};\nVertex use_vertex() {\n}\nvoid main() {\n\tuse_vertex();\n}\n");
 	}
 
 	#[test]
@@ -561,6 +566,6 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_shader(&main_node);
 
-		assert_eq!(shader, "layout(push_constant) uniform PushConstant {\n\tu32 material_id;\n} push_constant;\nvoid main() {\n\tpush_constant;\n}\n");
+		assert_eq!(shader, "layout(push_constant) uniform PushConstant {\n\tuint32_t material_id;\n} push_constant;\nvoid main() {\n\tpush_constant;\n}\n");
 	}
 }

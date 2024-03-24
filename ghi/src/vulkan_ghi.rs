@@ -586,14 +586,24 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, shader_parameter: graphics_hardware_interface::ShaderParameter) -> graphics_hardware_interface::PipelineHandle {
 		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
 
-		let mut spcialization_map_entries = Vec::with_capacity(48);
+		let mut specialization_map_entries = Vec::with_capacity(48);
 		
 		for specialization_map_entry in shader_parameter.specialization_map {
 			// TODO: accumulate offset
 			match specialization_map_entry.get_type().as_str() {
 				"vec2f" => {
 					for i in 0..2 {
-						spcialization_map_entries.push(vk::SpecializationMapEntry::default()
+						specialization_map_entries.push(vk::SpecializationMapEntry::default()
+						.constant_id(specialization_map_entry.get_constant_id() + i)
+						.offset(specialization_entries_buffer.len() as u32 + i * 4)
+						.size(4));
+					}
+
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
+				}
+				"vec3f" => {
+					for i in 0..3 {
+						specialization_map_entries.push(vk::SpecializationMapEntry::default()
 						.constant_id(specialization_map_entry.get_constant_id() + i)
 						.offset(specialization_entries_buffer.len() as u32 + i * 4)
 						.size(4));
@@ -603,7 +613,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				}
 				"vec4f" => {
 					for i in 0..4 {
-						spcialization_map_entries.push(vk::SpecializationMapEntry::default()
+						specialization_map_entries.push(vk::SpecializationMapEntry::default()
 						.constant_id(specialization_map_entry.get_constant_id() + i)
 						.offset(specialization_entries_buffer.len() as u32 + i * 4)
 						.size(4));
@@ -614,19 +624,14 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
 				}
 				_ => {
-					spcialization_map_entries.push(vk::SpecializationMapEntry::default()
-						.constant_id(specialization_map_entry.get_constant_id())
-						.offset(specialization_entries_buffer.len() as u32)
-						.size(specialization_map_entry.get_size()));
-		
-					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
+					panic!("Unknown specialization map entry type");
 				}
 			}
 		}
 
 		let specialization_info = vk::SpecializationInfo::default()
 			.data(&specialization_entries_buffer)
-			.map_entries(&spcialization_map_entries);
+			.map_entries(&specialization_map_entries);
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 

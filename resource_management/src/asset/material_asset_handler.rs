@@ -235,7 +235,7 @@ pub mod tests {
 
 	impl ProgramGenerator for MidTestShaderGenerator {
 		fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
-			let binding = jspd::parser::NodeReference::binding("materials", jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
+			let binding = jspd::parser::NodeReference::binding("materials", jspd::parser::NodeReference::buffer("Materials", vec![jspd::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
 			program_state.insert("materials".to_string(), binding.clone());
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
@@ -284,9 +284,9 @@ pub mod tests {
 
 		dbg!(&glsl);
 
-		assert!(glsl.contains("buffer readonly Material"));
+		assert!(glsl.contains("readonly buffer Materials"));
 		assert!(glsl.contains("layout(push_constant"));
-		assert!(glsl.contains("u32 material_index"));
+		assert!(glsl.contains("uint32_t material_index"));
 		assert!(glsl.contains("materials[16]"));
 	}
 
@@ -300,82 +300,11 @@ pub mod tests {
 
 		asset_handler.set_shader_generator(shader_generator);
 
-		let url = "material.json";
-
 		let material_json = r#"{
 			"domain": "World",
 			"type": "Surface",
 			"shaders": {
-				"Fragment": "fragment.besl"
-			},
-			"variables": [
-				{
-					"name": "color",
-					"data_type": "vec4f",
-					"type": "Static",
-					"value": "Purple"
-				}
-			]
-		}"#;
-
-		asset_resolver.add_file(url, material_json.as_bytes());
-
-		let shader_file = "main: fn () -> void {
-			material;
-		}";
-
-		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
-
-		let doc = json::object! {
-			"url": url,
-		};
-
-		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
-
-		let generated_resources = storage_backend.get_resources();
-
-		assert_eq!(generated_resources.len(), 2);
-
-		let shader = &generated_resources[0];
-
-		assert_eq!(shader.id, "fragment.besl");
-		assert_eq!(shader.class, "Shader");		
-
-		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
-		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
-
-		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) buffer readonly Material{\tvec4f color;\n}material;"));
-		assert!(shader_spirv.contains("void main() {\n\tmaterial;\n}"));
-
-		let material = &generated_resources[1];
-
-		assert_eq!(material.id, "material.json");
-		assert_eq!(material.class, "Material");
-	}
-
-	#[test]
-	fn load_variant() {
-		let asset_resolver = TestAssetResolver::new();
-		let storage_backend = TestStorageBackend::new();
-		let mut asset_handler = MaterialAssetHandler::new();
-
-		let shader_generator = RootTestShaderGenerator::new();
-
-		asset_handler.set_shader_generator(shader_generator);
-
-		let id = "Variant.json";
-
-		let material_asset_json = r#"{
-			"url": "material.json"
-		}"#;
-
-		asset_resolver.add_file("Material.json", material_asset_json.as_bytes());
-
-		let material_json = r#"{
-			"domain": "World",
-			"type": "Surface",
-			"shaders": {
-				"Fragment": "fragment.besl"
+				"Compute": "fragment.besl"
 			},
 			"variables": [
 				{
@@ -390,7 +319,74 @@ pub mod tests {
 		asset_resolver.add_file("material.json", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
-			material;
+			materials;
+		}";
+
+		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
+
+		let doc = json::object! {
+			"url": "material.json",
+		};
+
+		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, "Material.json", &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
+
+		let generated_resources = storage_backend.get_resources();
+
+		assert_eq!(generated_resources.len(), 2);
+
+		let shader = &generated_resources[0];
+
+		assert_eq!(shader.id, "fragment.besl");
+		assert_eq!(shader.class, "Shader");		
+
+		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
+		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
+
+		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) readonly buffer Materials{\n\tMaterial materials[16];\n}materials;"));
+		assert!(shader_spirv.contains("void main() {\n\tpush_constant;\nmaterials;\n"));
+
+		let material = &generated_resources[1];
+
+		assert_eq!(material.id, "Material.json");
+		assert_eq!(material.class, "Material");
+	}
+
+	#[test]
+	fn load_variant() {
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
+		let mut asset_handler = MaterialAssetHandler::new();
+
+		let shader_generator = RootTestShaderGenerator::new();
+
+		asset_handler.set_shader_generator(shader_generator);
+
+		let material_asset_json = r#"{
+			"url": "material.json"
+		}"#;
+
+		asset_resolver.add_file("Material.json", material_asset_json.as_bytes());
+
+		let material_json = r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Compute": "fragment.besl"
+			},
+			"variables": [
+				{
+					"name": "color",
+					"data_type": "vec4f",
+					"type": "Static",
+					"value": "Purple"
+				}
+			]
+		}"#;
+
+		asset_resolver.add_file("material.json", material_json.as_bytes());
+
+		let shader_file = "main: fn () -> void {
+			materials;
 		}";
 
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
@@ -405,13 +401,13 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file(id, variant_json.as_bytes());
+		asset_resolver.add_file("variant.json", variant_json.as_bytes());
 
 		let doc = json::object! {
-			"url": id,
+			"url": "variant.json",
 		};
 
-		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &id, &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, "Variant.json", &doc)).expect("Material asset handler did not handle asset").expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -425,8 +421,8 @@ pub mod tests {
 		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) buffer readonly Material{\tvec4f color;\n}material;"));
-		assert!(shader_spirv.contains("void main() {\n\tmaterial;\n}"));
+		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) readonly buffer Materials{\n\tMaterial materials[16];\n}materials;"));
+		assert!(shader_spirv.contains("void main() {\n\tpush_constant;\nmaterials;\n"));
 
 		let material = &generated_resources[1];
 		

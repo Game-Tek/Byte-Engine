@@ -6,9 +6,9 @@
 #![feature(closure_lifetime_binder)]
 #![feature(stmt_expr_attributes)]
 
-use std::{borrow::Cow, hash::Hasher};
+use std::hash::Hasher;
 
-use downcast_rs::Downcast;
+
 use polodb_core::bson;
 use resource::resource_handler::{FileResourceReader, ReadTargets, ResourceReader};
 use serde::{Deserialize, Serialize};

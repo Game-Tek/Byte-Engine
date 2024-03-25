@@ -1,8 +1,8 @@
 use polodb_core::bson;
 use serde::Deserialize;
-use smol::{fs::File, future::FutureExt, io::AsyncReadExt};
 
-use crate::{types::Image, GenericResourceResponse, GenericResourceSerialization, Resource, ResourceResponse, Stream, TypedResourceDocument};
+
+use crate::{types::Image, GenericResourceResponse, ResourceResponse};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -76,7 +76,7 @@ mod tests {
 
 		let image_resource_handler = ImageResourceHandler::new();
 
-		let (resource, mut reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
+		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
 		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader),)).expect("Failed to read image resource");
 

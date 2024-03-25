@@ -1,11 +1,10 @@
 use crate::{
-    resource::resource_manager::ResourceManager,
     types::{
-        AlphaMode, CompressionSchemes, CreateImage, Formats, IndexStream, IndexStreamTypes,
+        AlphaMode, CreateImage, Formats, IndexStream, IndexStreamTypes,
         IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value,
         VertexComponent, VertexSemantics,
     },
-    GenericResourceSerialization, ProcessedResources, StorageBackend,
+    GenericResourceSerialization, StorageBackend,
 };
 
 use super::{asset_handler::AssetHandler, AssetResolver,};
@@ -414,7 +413,7 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
-    use polodb_core::bson::{self, bson};
+    
 
     use super::MeshAssetHandler;
     use crate::asset::{

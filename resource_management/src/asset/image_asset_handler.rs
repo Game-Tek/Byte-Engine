@@ -1,4 +1,4 @@
-use smol::future::FutureExt;
+
 use utils::Extent;
 
 use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization, StorageBackend};

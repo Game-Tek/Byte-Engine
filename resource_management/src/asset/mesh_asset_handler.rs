@@ -46,7 +46,10 @@ impl AssetHandler for MeshAssetHandler {
 				"assets/".to_string() + url
 			};
 
-            let (gltf, buffers, images) = gltf::import(path).unwrap();
+            let (gltf, buffers, images) = match gltf::import(path) {
+				Ok((gltf, buffers, images)) => (gltf, buffers, images),
+				Err(e) => return Some(Err(e.to_string())),
+			};
 
             const MESHLETIZE: bool = true;
 

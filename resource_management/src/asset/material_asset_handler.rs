@@ -1,5 +1,7 @@
 use std::ops::Deref;
 
+use log::debug;
+
 use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, StorageBackend, TypedResource};
 
 use super::{asset_handler::AssetHandler, AssetResolver,};
@@ -35,8 +37,6 @@ impl AssetHandler for MaterialAssetHandler {
 			}
 
 			let (data, at) = asset_resolver.resolve(url).await?;
-
-			if at != "json" { return None; }
 
 			let asset_json = json::parse(std::str::from_utf8(&data).ok()?).ok()?;
 
@@ -81,10 +81,43 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await?.0)).ok()?;
 
-				self.load(asset_resolver, storage_backend, parent_material_url, &m_json).await?.ok()?;
+				match self.load(asset_resolver, storage_backend, parent_material_url, &m_json).await? {
+					Ok(()) => {}
+					Err(_) => {
+						log::error!("Failed to load parent material");						
+					}
+				}
 
-				let resource = GenericResourceSerialization::new(id, Variant{
-					parent: parent_material_url.to_string(),
+				let material = {
+					let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(m_json["url"].as_str().unwrap()).await?.0)).ok()?;
+
+					let material_domain = m_json["domain"].as_str().ok_or("Domain not found".to_string()).ok()?;
+				
+					let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None })?;
+
+					let shaders = m_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
+						smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &m_json, &shader_json, s_type))
+					}).collect::<Vec<_>>();
+
+					TypedResource::<Material>::new("Solid", 0, Material {
+						albedo: Property::Factor(Value::Vector3([1f32, 0f32, 0f32])),
+						normal: Property::Factor(Value::Vector3([0f32, 0f32, 1f32])),
+						roughness: Property::Factor(Value::Scalar(0.5f32)),
+						metallic: Property::Factor(Value::Scalar(0.0f32)),
+						emissive: Property::Factor(Value::Vector3([0f32, 0f32, 0f32])),
+						occlusion: Property::Factor(Value::Scalar(0f32)),
+						double_sided: false,
+						alpha_mode: AlphaMode::Opaque,
+						model: Model {
+							name: "Visibility".to_string(),
+							pass: "MaterialEvaluation".to_string(),
+						},
+						shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer("name", 0, s.clone(), b.clone())).collect(),
+					})
+				};
+
+				let resource = GenericResourceSerialization::new(id, Variant {
+					material,
 					variables: variant_json["variables"].members().map(|v| {
 						VariantVariable {
 							name: v["name"].to_string(),
@@ -93,7 +126,12 @@ impl AssetHandler for MaterialAssetHandler {
 					}).collect::<Vec<_>>()
 				});
 
-				storage_backend.store(resource, &[]).await.ok()?;
+				match storage_backend.store(resource, &[]).await {
+					Ok(_) => {}
+					Err(_) => {
+						log::error!("Failed to store resource {}", id);
+					}
+				}
 			}
 
 			Some(Ok(()))
@@ -433,5 +471,6 @@ pub mod tests {
 
 		assert_eq!(variant.id, "Variant.json");
 		assert_eq!(variant.class, "Variant");
+		// assert_eq!(variant.parent, "Material");
 	}
 }

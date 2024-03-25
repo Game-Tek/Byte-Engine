@@ -65,7 +65,7 @@ pub enum AlphaMode {
 	Blend,
 }
 
-#[derive(Serialize,Deserialize)]
+#[derive(Debug,Serialize,Deserialize)]
 pub struct Material {
 	pub(crate) albedo: Property,
 	pub(crate) normal: Property,
@@ -100,8 +100,7 @@ pub struct VariantVariable {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Variant {
-	/// Parent material asset url.
-	pub parent: String,
+	pub material: TypedResource<Material>,
 	pub variables: Vec<VariantVariable>,
 }
 

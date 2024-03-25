@@ -29,13 +29,13 @@ fn gallery_shooter() {
 
 	let scale = maths_rs::Mat4f::from_scale(Vector3::new(0.1, 0.1, 0.1));
 	
-	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 2.0)) * scale));
+	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "WhiteSolid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 2.0)) * scale));
 	
 	let physics_duck_1 = core::spawn_as_child(space_handle.clone(), physics::Sphere::new(Vector3::new(0.0, 0.0, 2.0), Vector3::new(0.0, 0.0, 0.0), 0.1));
 	
-	let duck_2: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(2.0, 0.0, 0.0)) * scale));
-	let duck_3: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(-2.0, 0.0, 0.0)) * scale));
-	let duck_4: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, -2.0)) * scale));
+	let duck_2: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "GreenSolid", maths_rs::Mat4f::from_translation(Vector3::new(2.0, 0.0, 0.0)) * scale));
+	let duck_3: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "GreenSolid", maths_rs::Mat4f::from_translation(Vector3::new(-2.0, 0.0, 0.0)) * scale));
+	let duck_4: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "RedSolid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, -2.0)) * scale));
 	
 	let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 2.5, -1.5), 4500.0));
 

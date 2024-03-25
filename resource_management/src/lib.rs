@@ -5,6 +5,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 #![feature(stmt_expr_attributes)]
+#![feature(path_file_prefix)]
 
 use std::hash::Hasher;
 
@@ -308,6 +309,40 @@ pub trait Resource: downcast_rs::Downcast {
 
 downcast_rs::impl_downcast!(Resource);
 
+pub trait ResourceStore<'a> {
+	fn id(&self) -> &str;
+	fn resource(&self) -> &dyn Resource;
+	fn get_buffer(&self) -> Option<&[u8]>;
+}
+
+impl <'a, T: Resource> ResourceStore<'a> for TypedResource<T> {
+	fn id(&self) -> &str {
+		self.id()
+	}
+
+	fn resource(&self) -> &dyn Resource {
+		self.resource()
+	}
+
+	fn get_buffer(&self) -> Option<&[u8]> {
+		self.get_buffer()
+	}
+}
+
+impl <'a> ResourceStore<'a> for ResourceResponse<'a> {
+	fn id(&self) -> &str {
+		self.id()
+	}
+
+	fn resource(&self) -> &dyn Resource {
+		self.resource()
+	}
+
+	fn get_buffer(&self) -> Option<&[u8]> {
+		self.get_buffer()
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct SerializedResourceDocument(polodb_core::bson::Document);
 
@@ -471,6 +506,7 @@ impl StorageBackend for DbStorageBackend {
 	}
 
 	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>> { // TODO: define schema
+		// TODO: skip storage of items with same hash
 		Box::pin(async move {
 			let mut resource_document = bson::Document::new();
 	

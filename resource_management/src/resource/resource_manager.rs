@@ -86,7 +86,7 @@ impl ResourceManager {
 					let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
 	
 					let entry = dir.find(|e| 
-						e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
+						e.as_ref().unwrap().path().file_prefix().unwrap().to_str().unwrap().eq(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
 					).await?.ok()?;
 	
 					let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;

@@ -314,7 +314,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	vec3 L = vec3(0.0);
 
 	if (light_type == 68) { // Infinite
-		L = normalize(light_pos);
+		L = normalize(-light_pos);
 	} else {
 		L = normalize(light_pos - vertex_position);
 	}

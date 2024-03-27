@@ -1076,8 +1076,8 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 		let x = 4f32;
 		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
-		let normal = light.direction;
-		let light_view_matrix = math::from_normal(-normal);
+		let direction = light.direction;
+		let light_view_matrix = math::from_normal(direction);
 
 		let vp_matrix = light_projection_matrix * light_view_matrix;
 

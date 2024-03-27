@@ -260,19 +260,31 @@ impl AssetHandler for MeshAssetHandler {
 				nodes
 			}
 
-			let flat_tree = gltf.scenes().map(|scene| {
+			let mut flat_tree = gltf.scenes().map(|scene| {
 				scene.nodes().map(|node| {
 					flatten_tree(maths_rs::Mat4f::identity(), node)
 				}).flatten()
 			}).flatten().collect::<Vec<(gltf::Node, maths_rs::Mat4f)>>();
 
-			let flat_mesh_tree = flat_tree.iter().filter_map(|(node, transform)| {
-				if let Some(mesh) = node.mesh() {
-					Some((mesh, transform))
-				} else {
-					None
-				}
-			});
+			for (_, transform) in &mut flat_tree {
+				transform[2 * 4 + 2] *= -1f32;
+			}
+
+			let flat_mesh_tree = {
+				let mut c = flat_tree.iter().filter_map(|(node, transform)| {
+					if let Some(mesh) = node.mesh() {
+						Some((mesh, *transform))
+					} else {
+						None
+					}
+				}).collect::<Vec<_>>();
+				
+				c.sort_by(|a, b| a.0.index().cmp(&b.0.index()));
+
+				c
+			};
+
+			let flat_mesh_tree = flat_mesh_tree.iter();
 
 			let vertex_counts = flat_mesh_tree.clone().map(|(mesh, _)| {
 				mesh.primitives().map(|primitive| {
@@ -284,8 +296,8 @@ impl AssetHandler for MeshAssetHandler {
 					} else {
 						panic!("We should not be here");
 					}
-				})
-			}).flatten().collect::<Vec<usize>>();
+				}).sum()
+			}).collect::<Vec<usize>>();
 
 			let vertex_count = vertex_counts.iter().sum::<usize>();
 
@@ -315,7 +327,7 @@ impl AssetHandler for MeshAssetHandler {
 	
 					if let Some(positions) = reader.read_positions() {
 						positions.for_each(|position| {
-							let position = maths_rs::Vec3f::new(position[0], position[1], -position[2]); // Convert from right-handed(GLTF) to left-handed coordinate system
+							let position = maths_rs::Vec3f::new(position[0], position[1], position[2]); // Convert from right-handed(GLTF) to left-handed coordinate system
 							
 							let transformed_position = transform * position;
 							
@@ -331,9 +343,12 @@ impl AssetHandler for MeshAssetHandler {
 				for primitive in mesh.primitives() {
 					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 					if let Some(normals) = reader.read_normals() {
-						normals.for_each(|mut normal| {
-							normal[2] = -normal[2]; // Convert from right-handed(GLTF) to left-handed coordinate system
-							normal.iter().for_each(|m| {
+						normals.for_each(|normal| {
+							let normal = maths_rs::Vec3f::new(normal[0], normal[1], normal[2]);
+							
+							let transformed_normal = transform * normal;
+
+							transformed_normal.iter().for_each(|m| {
 								m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
 							});
 						});
@@ -346,7 +361,11 @@ impl AssetHandler for MeshAssetHandler {
 					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 					if let Some(tangents) = reader.read_tangents() {
 						tangents.for_each(|tangent| {
-							tangent.iter().for_each(|m| {
+							let tangent = maths_rs::Vec3f::new(tangent[0], tangent[1], tangent[2]);
+
+							let transformed_tangent = transform * tangent;
+
+							transformed_tangent.iter().for_each(|m| {
 								m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
 							})
 						});
@@ -354,7 +373,7 @@ impl AssetHandler for MeshAssetHandler {
 				}
 			}
 
-			for (mesh, transform) in flat_mesh_tree.clone() {
+			for (mesh, _) in flat_mesh_tree.clone() {
 				for primitive in mesh.primitives() {
 					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));					
 
@@ -523,8 +542,6 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
-    
-
     use super::MeshAssetHandler;
     use crate::asset::{
         asset_handler::AssetHandler,

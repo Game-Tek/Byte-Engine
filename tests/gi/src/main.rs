@@ -24,7 +24,7 @@ fn main() {
 	let _b: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box", "RedSolid", maths_rs::Mat4f::from_translation(Vector3::new(-0.6, 0.17, -0.1)) * maths_rs::Mat4f::from_scale(Vector3::new(0.34, 0.34, 0.34))));
 	let _c: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box", "GreenSolid", maths_rs::Mat4f::from_translation(Vector3::new(0.5, 0.13, -0.3)) * maths_rs::Mat4f::from_scale(Vector3::new(0.26, 0.26, 0.26))));
 
-	let _sun: EntityHandle<DirectionalLight> = core::spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(1.0, 1.0, -1.0)), 4500.0));
+	let _sun: EntityHandle<DirectionalLight> = core::spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0));
 	let _helper_light: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-2.0, 0.5, -1.0f32), 4500.0));
 	let _helper_light: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(2.0, 0.5, -1.0f32), 4500.0));
 

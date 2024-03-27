@@ -1760,6 +1760,7 @@ dependencies = [
  "jspd",
  "libdeflater",
  "log",
+ "maths-rs",
  "meshopt",
  "notify-debouncer-full",
  "png",

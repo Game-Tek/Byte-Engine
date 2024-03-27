@@ -145,7 +145,7 @@ impl Resource for Shader {
 
 // Mesh
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum VertexSemantics {
 	Position,
 	Normal,
@@ -155,7 +155,7 @@ pub enum VertexSemantics {
 	Color,
 }
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum IntegralTypes {
 	U8,
 	I8,
@@ -168,7 +168,7 @@ pub enum IntegralTypes {
 	F64,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
@@ -182,14 +182,14 @@ pub enum QuantizationSchemes {
 	OctahedralQuantization,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum IndexStreamTypes {
 	Vertices,
 	Meshlets,
 	Triangles,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IndexStream {
 	pub stream_type: IndexStreamTypes,
 	pub offset: usize,
@@ -208,10 +208,7 @@ pub struct Primitive {
 	// pub material: Material,
 	pub quantization: Option<QuantizationSchemes>,
 	pub bounding_box: [[f32; 3]; 2],
-	pub vertex_components: Vec<VertexComponent>,
 	pub vertex_count: u32,
-	pub index_streams: Vec<IndexStream>,
-	pub meshlet_stream: Option<MeshletStream>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -221,7 +218,11 @@ pub struct SubMesh {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Mesh {
+	pub index_streams: Vec<IndexStream>,
+	pub meshlet_stream: Option<MeshletStream>,
+	pub vertex_components: Vec<VertexComponent>,
 	pub sub_meshes: Vec<SubMesh>,
+	pub vertex_count: u32,
 }
 
 impl Resource for Mesh {

@@ -408,9 +408,7 @@ impl AssetHandler for MeshAssetHandler {
 
 					match index_type {
 						IntegralTypes::U16 => {
-							let mut index_count = 0usize;
 							for meshlet in meshlets.iter() {
-								index_count += meshlet.vertices.len();
 								for x in meshlet.vertices {
 									(*x as u16)
 										.to_le_bytes()
@@ -422,23 +420,30 @@ impl AssetHandler for MeshAssetHandler {
 						_ => panic!("Unsupported index type"),
 					}
 
+					let vertex_index_count = meshlets.iter().map(|e| e.vertices.len()).sum::<usize>();
+
 					index_streams.push(IndexStream {
 						data_type: IntegralTypes::U16,
 						stream_type: IndexStreamTypes::Vertices,
 						offset,
-						count: vertex_count as u32,
+						count: vertex_index_count as u32,
 					});
 				}
 
 				{
 					let offset = buffer.len();
 
+					let mut c = 0;
+
 					for meshlet in meshlets.iter() {
 						for x in meshlet.triangles {
 							assert!(*x <= 64u8, "Meshlet index out of bounds"); // Max vertices per meshlet
 							buffer.push(*x);
+							c += 1;
 						}
 					}
+
+					assert_eq!(c, indices.len());
 
 					index_streams.push(IndexStream {
 						data_type: IntegralTypes::U8,
@@ -489,7 +494,6 @@ impl AssetHandler for MeshAssetHandler {
 				for meshlet in meshlets.iter() {
 					buffer.push(meshlet.vertices.len() as u8);
 					buffer.push((meshlet.triangles.len() / 3usize) as u8);
-					// TODO: add tests for this
 				}
 
 				meshlet_stream = Some(MeshletStream {
@@ -732,5 +736,27 @@ mod tests {
 
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
+
+		let buffer = storage_backend.get_resource_data_by_name("Revolver.glb").unwrap();
+
+		let generated_resources = storage_backend.get_resources();
+
+		let resource = &generated_resources[0];
+
+		let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
+
+		assert_eq!(vertex_count, 27022);
+
+		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], vertex_count) };
+
+		assert_eq!(vertex_positions.len(), 27022);
+
+		// assert_eq!(vertex_positions[0], [-0.00322f32, -0.00197f32, -0.00322f32]);
+		// assert_eq!(vertex_positions[1], [-0.00174f32, -0.00197f32, -0.00420f32]);
+		// assert_eq!(vertex_positions[2], [0.00000f32, -0.00197f32, -0.00455f32]);
+		
+		assert_eq!(vertex_positions[27019], [-0.112022735, -0.0056253895, 0.013142529]);
+		assert_eq!(vertex_positions[27020], [-0.112022735, -0.0056253895, 0.013142529]);
+		assert_eq!(vertex_positions[27021], [-0.112022735, -0.0056253895, 0.013142529]);
     }
 }

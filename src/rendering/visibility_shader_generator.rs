@@ -284,7 +284,7 @@ vec3 vertex_position = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.
 vec3 vertex_normal = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
 
 vec3 N = normalize(vertex_normal);
-vec3 V = normalize(-(camera.view[3].xyz - vertex_position));
+vec3 V = normalize((camera.view[3].xyz - vertex_position));
 
 vec3 albedo = vec3(1, 0, 0);
 vec3 metalness = vec3(0);

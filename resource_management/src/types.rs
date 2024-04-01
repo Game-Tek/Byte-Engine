@@ -175,7 +175,7 @@ impl <'de> Solver<'de> for TypedResourceModel<VariantModel> {
 }
 
 /// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 pub enum ShaderTypes {
 	/// A vertex shader.
 	Vertex,
@@ -212,13 +212,21 @@ impl Resource for Shader {
 impl <'de> Solver<'de> for TypedResourceModel<Shader> {
 	type T = TypedResource<Shader>;
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Shader>, SolveErrors> {
-		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let (gr, mut reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(TypedResource::new(&self.id, self.hash, Shader {
+		let mut buffer = Vec::with_capacity(gr.size);
+
+		unsafe {
+			buffer.set_len(gr.size);
+		}
+
+		smol::block_on(reader.read_into(0, &mut buffer));
+
+		Ok(TypedResource::new_with_buffer(&self.id, self.hash, Shader {
 			id,
 			stage,
-		}))
+		}, buffer.into()))
 	}
 }
 

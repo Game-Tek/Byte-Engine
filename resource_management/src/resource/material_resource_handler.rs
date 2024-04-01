@@ -39,7 +39,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material}, StorageBackend};
+    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material, ShaderTypes}, StorageBackend};
 
 	#[test]
 	fn load_material() {
@@ -106,5 +106,11 @@ mod tests {
 		assert_eq!(material.double_sided, false);
 		assert_eq!(material.alpha_mode, AlphaMode::Opaque);
 		assert_eq!(material.shaders().len(), 1);
+
+		let shader = material.shaders().get(0).unwrap();
+
+		assert_eq!(shader.resource.stage, ShaderTypes::Compute);
+		assert!(shader.get_buffer().is_some());
+		assert!(shader.get_buffer().unwrap().len() > 0);
 	}
 }

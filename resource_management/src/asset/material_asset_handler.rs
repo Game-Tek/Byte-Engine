@@ -81,7 +81,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await?.0)).ok()?;
 
-				match self.load(asset_resolver, storage_backend, parent_material_url, &m_json).await? {
+				match self.load(asset_resolver, storage_backend, "Solid", &m_json).await? {
 					Ok(()) => {}
 					Err(_) => {
 						log::error!("Failed to load parent material");						

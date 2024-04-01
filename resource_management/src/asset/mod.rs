@@ -148,7 +148,8 @@ pub mod tests {
 			let resources = self.resources.lock().unwrap();
 			for (resource, data) in resources.iter() {
 				if resource.id == id {
-					x = Some((GenericResourceResponse::new(resource.id.clone(), resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
+					// TODO: use actual hash
+					x = Some((GenericResourceResponse::new(resource.id.clone(), 0, resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
 					break;
 				}
 			}

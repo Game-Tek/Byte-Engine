@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use smol::{io::AsyncReadExt, stream::StreamExt};
 
 use crate::{asset::asset_manager::AssetManager, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
@@ -77,7 +79,7 @@ impl ResourceManager {
 	/// If the resource is in cache but it's data cannot be parsed, it will return None.
 	/// Return is a tuple containing the resource description and it's associated binary data.\
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
-	pub async fn get<'s, 'a>(&'s self, id: &'a str) -> Option<ResourceResponse<'a>> {
+	pub async fn get<'s, 'a, 'b>(&'s self, id: &'a str) -> Option<ResourceResponse<'a>> where 'b: 'a {
 		let load = {
 			let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
 				x	
@@ -106,7 +108,7 @@ impl ResourceManager {
 				}
 			};
 
-			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, Some(reader)).await?
+			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, Some(reader), self.storage_backend.deref()).await?
 		};
 
 		Some(load)
@@ -143,7 +145,7 @@ impl ResourceManager {
 			}
 		};
 
-		let p = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, None).await?;
+		let p = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, None, self.storage_backend.deref()).await?;
 
 		Some(ResourceRequest::new(p))
 	}
@@ -153,14 +155,14 @@ impl ResourceManager {
 	/// If no buffer range is provided it will return the data in a vector.
 	/// 
 	/// If a buffer is not provided for a resurce in the options parameters it will be either be loaded into the provided buffer or returned in a vector.
-	pub async fn load<'s, 'a>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
+	pub async fn load<'a, 's>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
 		let (mut resource, reader) = self.storage_backend.read(request.id()).await?;
 
 		let resource_handler = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?;
 
 		resource.read_target = request.streams;
 
-		let load = resource_handler.read(resource , Some(reader)).await?;
+		let load = resource_handler.read(resource , Some(reader), self.storage_backend.deref()).await?;
 
 		Some(load)
 	}
@@ -210,7 +212,7 @@ mod tests {
 			&["MyResource"]
 		}
 
-		fn read<'s, 'a>(&'s self, r: GenericResourceResponse<'a>, _: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+		fn read<'s, 'a, 'b>(&'s self, r: GenericResourceResponse<'a>, _: Option<Box<dyn ResourceReader>>, _: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b{
 			Box::pin(async move {
 				Some(ResourceResponse::new(r, ()))
 			})

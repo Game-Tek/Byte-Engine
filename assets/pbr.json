@@ -1,0 +1,7 @@
+{
+	"domain": "World",
+	"type": "Surface",
+	"shaders": {
+		"Compute": "shaders/pbr.besl"
+	}
+}

@@ -1,6 +1,6 @@
 use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
 
-use crate::{GenericResourceResponse, ResourceResponse, Stream};
+use crate::{GenericResourceResponse, ResourceResponse, StorageBackend, Stream};
 
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),
@@ -50,5 +50,5 @@ pub trait ResourceHandler: Send {
 	/// # Returns
 	///
 	/// The resource response.
-	fn read<'s, 'a>(&'s self, resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>>;
+	fn read<'s, 'a, 'b>(&'s self, resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, storage_backend: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b;
 }

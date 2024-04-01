@@ -2,7 +2,7 @@ use polodb_core::bson;
 use serde::Deserialize;
 
 
-use crate::{types::Image, GenericResourceResponse, ResourceResponse};
+use crate::{types::Image, GenericResourceResponse, ResourceResponse, StorageBackend};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -21,7 +21,7 @@ impl ResourceHandler for ImageResourceHandler {
 		&["Image"]
 	}
 
-	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a, 'b>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, _: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b {
 		Box::pin(async move {
 			let image_resource = Image::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
@@ -52,7 +52,7 @@ impl ResourceHandler for ImageResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, StorageBackend};
+	use crate::asset::{asset_handler::AssetHandler, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend},};
 
 	use super::*;
 
@@ -78,7 +78,7 @@ mod tests {
 
 		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader),)).expect("Failed to read image resource");
+		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader), &storage_backend)).expect("Failed to read image resource");
 
 		let image = resource.resource.downcast_ref::<Image>().unwrap();
 

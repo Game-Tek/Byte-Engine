@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::{IndexStreamTypes, Mesh, Size, VertexSemantics}, GenericResourceResponse, ResourceResponse};
+use crate::{types::{IndexStreamTypes, Mesh, Size, VertexSemantics}, GenericResourceResponse, ResourceResponse, StorageBackend};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -20,7 +20,7 @@ impl ResourceHandler for MeshResourceHandler {
 		&["Mesh"]
 	}
 
-	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a, 'b>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, _: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b {
 		Box::pin(async move {
 			let mesh_resource = Mesh::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
@@ -187,7 +187,7 @@ mod tests {
 
 		resource.set_streams(streams);
 
-		let resource = smol::block_on(mesh_resource_handler.read(resource, Some(reader),)).unwrap();
+		let resource = smol::block_on(mesh_resource_handler.read(resource, Some(reader), &storage_backend)).unwrap();
 
 		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 
@@ -296,7 +296,7 @@ mod tests {
 
 		resource.set_streams(streams);
 
-		let resource = smol::block_on(mesh_resource_handler.read(resource, Some(reader),)).unwrap();
+		let resource = smol::block_on(mesh_resource_handler.read(resource, Some(reader), &storage_backend)).unwrap();
 
 		let mesh = resource.resource.downcast_ref::<Mesh>().unwrap();
 

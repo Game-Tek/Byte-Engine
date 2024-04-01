@@ -9,10 +9,9 @@
 
 use std::hash::Hasher;
 
-
 use polodb_core::bson;
 use resource::resource_handler::{FileResourceReader, ReadTargets, ResourceReader};
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Serialize};
 use smol::io::AsyncWriteExt;
 
 pub mod asset;
@@ -69,6 +68,7 @@ impl GenericResourceSerialization {
 pub struct GenericResourceResponse<'a> {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
 	id: String,
+	hash: u64,
 	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	class: String,
 	size: usize,
@@ -78,9 +78,10 @@ pub struct GenericResourceResponse<'a> {
 }
 
 impl <'a> GenericResourceResponse<'a> {
-	pub fn new(id: String, class: String, size: usize, resource: bson::Bson,) -> Self {
+	pub fn new(id: String, hash: u64, class: String, size: usize, resource: bson::Bson,) -> Self {
 		GenericResourceResponse {
 			id,
+			hash,
 			class,
 			size,
 			resource,
@@ -97,12 +98,44 @@ impl <'a> GenericResourceResponse<'a> {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
+pub struct TypedResourceModel<T: Resource> {
+	pub id: String,
+	hash: u64,
+	class: String,
+	#[serde(skip)]
+	phantom: std::marker::PhantomData<T>,
+}
+
+impl <'a, T: Resource> From<GenericResourceResponse<'a>> for TypedResourceModel<T> {
+	fn from(value: GenericResourceResponse) -> Self {
+		TypedResourceModel {
+			id: value.id,
+			hash: value.hash,
+			class: value.class,
+			phantom: std::marker::PhantomData,
+		}
+	}
+}
+
+#[derive(Debug)]
 pub struct TypedResource<T: Resource> {
 	pub id: String,
 	hash: u64,
 	resource: T,
 	pub buffer: Option<Box<[u8]>>,
+}
+
+impl <T: Resource> Serialize for TypedResource<T> {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+		let mut state = serializer.serialize_struct("TypedDocument", 3)?;
+
+		state.serialize_field("id", &self.id)?;
+		state.serialize_field("hash", &self.hash)?;
+		state.serialize_field("class", &self.resource().get_class())?;
+
+		state.end()
+	}
 }
 
 impl <T: Resource> TypedResource<T> {
@@ -299,6 +332,21 @@ impl <'a> ResourceResponse<'a> {
 	}
 }
 
+impl <T: Resource> From<TypedResource<T>> for ResourceResponse<'_> {
+	fn from(value: TypedResource<T>) -> Self {
+		ResourceResponse {
+			id: value.id,
+			size: 0,
+			offset: 0,
+			hash: value.hash,
+			class: value.resource.get_class().to_string(),
+			resource: Box::new(value.resource),
+			required_resources: Vec::new(),
+			read_target: value.buffer.map(|b| ReadTargets::Box(b)),
+		}
+	}
+}
+
 /// Trait that defines a resource.
 pub trait Resource: downcast_rs::Downcast {
 	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
@@ -413,10 +461,20 @@ impl From<GenericResourceSerialization> for TypedResourceDocument {
 	}
 }
 
+enum SolveErrors {
+	DeserializationFailed(String),
+	StorageError,
+}
+
+trait Solver<'de> where Self: serde::Deserialize<'de> {
+	type T;
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<Self::T, SolveErrors>;
+}
+
 pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
-	fn sync<'s, 'a>(&'s self, other: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
+	fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
 		Box::pin(async move {})
 	}
 }
@@ -492,11 +550,12 @@ impl StorageBackend for DbStorageBackend {
 			let resource_document = resource_document??;
 
 			let resource = {
+				let hash = resource_document.get_i64("hash").ok()? as u64;
 				let class = resource_document.get_str("class").ok()?.to_string();
 				let size = resource_document.get_i64("size").ok()? as usize;
 				let resource = resource_document.get("resource")?.clone();
 
-				GenericResourceResponse::new(id.clone(), class, size, resource)
+				GenericResourceResponse::new(id.clone(), hash, class, size, resource)
 			};
 
 			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&resource_document.get_object_id("_id").ok()?.to_string()))).await.ok()?);	
@@ -558,5 +617,89 @@ impl StorageBackend for DbStorageBackend {
 		}
 
 		Box::pin(async move {})
+	}
+}
+
+// pub trait Deserialize<'de> where Self: Sized {
+// 	fn deserialize<D>(deserializer: D, storage_backend: &'de dyn StorageBackend) -> Result<Self, D::Error> where D: serde::Deserializer<'de>;
+// }
+
+#[cfg(test)]
+mod tests {
+    use polodb_core::bson;
+    use serde::Deserialize;
+
+    use crate::{asset::tests::TestStorageBackend, GenericResourceSerialization, Resource, SolveErrors, Solver, StorageBackend, TypedResource, TypedResourceModel};
+
+	#[test]
+	fn solve_resources() {
+		#[derive(serde::Serialize)]
+		struct Base {
+			items: Vec<TypedResource<Item>>,
+		}
+
+		#[derive(serde::Deserialize)]
+		struct BaseModel {
+			items: Vec<TypedResourceModel<Item>>,
+		}
+
+		#[derive(serde::Serialize, serde::Deserialize)]
+		struct Item {
+			property: String,
+		}
+
+		#[derive(serde::Serialize)]
+		struct Variant {
+			parent: TypedResource<Base>
+		}
+
+		impl Resource for Base {
+			fn get_class(&self) -> &'static str { "Base" }
+		}
+
+		impl Resource for BaseModel {
+			fn get_class(&self) -> &'static str { "BaseModel" }
+		}
+
+		impl Resource for Item {
+			fn get_class(&self) -> &'static str { "Item" }
+		}
+
+		impl Resource for Variant {
+			fn get_class(&self) -> &'static str { "Variant" }
+		}
+
+		let storage_backend = TestStorageBackend::new();
+
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("item", Item{ property: "hello".to_string() }), &[])).unwrap();
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("base", Base{ items: vec![TypedResource::new("item", 0, Item{ property: "hello".to_string() })] }), &[])).unwrap();
+		smol::block_on(storage_backend.store(GenericResourceSerialization::new("variant", Variant{ parent: TypedResource::new("base", 0, Base{ items: vec![TypedResource::new("item", 0, Item{ property: "hello".to_string() })] }) }), &[])).unwrap();
+
+		impl <'de> Solver<'de> for TypedResourceModel<BaseModel> {
+			type T = TypedResource<Base>;
+			fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Base>, SolveErrors> {
+				let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+				println!("{:#?}", gr.resource);
+				let resource = BaseModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+				let base = Base{
+					items: resource.items.iter().map(|item| {
+						item.solve(storage_backend)
+					}).collect::<Result<_, _>>().map_err(|_| SolveErrors::StorageError)?
+				};
+				Ok(TypedResource::new(&gr.id, 0, base))
+			}
+		}
+
+		impl <'de> Solver<'de> for TypedResourceModel<Item> {
+			type T = TypedResource<Item>;
+			fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Item>, SolveErrors> {
+				let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+				let item = Item::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+				Ok(TypedResource::new(&gr.id, 0, item))
+			}
+		}
+
+		let base: TypedResourceModel<BaseModel> = smol::block_on(storage_backend.read("base")).unwrap().0.into();
+		let base = base.solve(&storage_backend);
 	}
 }

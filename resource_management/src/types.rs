@@ -1,10 +1,11 @@
-use serde::{Deserialize, Serialize};
+use polodb_core::bson;
+use serde::Deserialize;
 
-use crate::{CreateResource, Resource, TypedResource};
+use crate::{CreateResource, Resource, SolveErrors, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 // Audio
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Clone, Copy)]
 pub enum BitDepths {
 	Eight,
 	Sixteen,
@@ -23,7 +24,7 @@ impl From<BitDepths> for usize {
 	}
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Audio {
 	pub bit_depth: BitDepths,
 	pub channel_count: u16,
@@ -37,7 +38,7 @@ impl Resource for Audio {
 
 // Material
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Model {
 	/// The name of the model.
 	pub name: String,
@@ -45,27 +46,27 @@ pub struct Model {
 	pub pass: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum Value {
 	Scalar(f32),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum Property {
 	Factor(Value),
 	Texture(String),
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),
 	Blend,
 }
 
-#[derive(Debug,Serialize,Deserialize)]
+#[derive(Debug,serde::Serialize,)]
 pub struct Material {
 	pub(crate) albedo: Property,
 	pub(crate) normal: Property,
@@ -82,6 +83,23 @@ pub struct Material {
 	pub model: Model,
 }
 
+#[derive(Debug,serde::Deserialize,)]
+pub struct MaterialModel {
+	pub(crate) albedo: Property,
+	pub(crate) normal: Property,
+	pub(crate) roughness: Property,
+	pub(crate) metallic: Property,
+	pub(crate) emissive: Property,
+	pub(crate) occlusion: Property,
+	pub(crate) double_sided: bool,
+	pub(crate) alpha_mode: AlphaMode,
+
+	pub(crate) shaders: Vec<TypedResourceModel<Shader>>,
+
+	/// The render model this material is for.
+	pub model: Model,
+}
+
 impl Material {
 	pub fn shaders(&self) -> &[TypedResource<Shader>] {
 		&self.shaders
@@ -92,13 +110,38 @@ impl Resource for Material {
 	fn get_class(&self) -> &'static str { "Material" }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Resource for MaterialModel {
+	fn get_class(&self) -> &'static str { "Material" }
+}
+
+impl <'de> Solver<'de> for TypedResourceModel<MaterialModel> {
+	type T = TypedResource<Material>;
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Material>, SolveErrors> {
+		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let MaterialModel { albedo, normal, roughness, metallic, emissive, occlusion, double_sided, alpha_mode, shaders, model } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(TypedResource::new(&self.id, self.hash, Material {
+			albedo,
+			normal,
+			roughness,
+			metallic,
+			emissive,
+			occlusion,
+			double_sided,
+			alpha_mode,
+			shaders: shaders.into_iter().map(|s| s.solve(storage_backend)).collect::<Result<_, _>>()?,
+			model,
+		}))
+	}
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct VariantVariable {
 	pub name: String,
 	pub value: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct Variant {
 	pub material: TypedResource<Material>,
 	pub variables: Vec<VariantVariable>,
@@ -108,8 +151,31 @@ impl Resource for Variant {
 	fn get_class(&self) -> &'static str { "Variant" }
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct VariantModel {
+	pub material: TypedResourceModel<MaterialModel>,
+	pub variables: Vec<VariantVariable>,
+}
+
+impl Resource for VariantModel {
+	fn get_class(&self) -> &'static str { "Variant" }
+}
+
+impl <'de> Solver<'de> for TypedResourceModel<VariantModel> {
+	type T = TypedResource<Variant>;
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Variant>, SolveErrors> {
+		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(TypedResource::new(&self.id, self.hash, Variant {
+			material: material.solve(storage_backend)?,
+			variables,
+		}))
+	}
+}
+
 /// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug)]
 pub enum ShaderTypes {
 	/// A vertex shader.
 	Vertex,
@@ -127,7 +193,7 @@ pub enum ShaderTypes {
 	Callable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Shader {
 	pub id: String,
 	pub stage: ShaderTypes,
@@ -141,6 +207,19 @@ impl Shader {
 
 impl Resource for Shader {
 	fn get_class(&self) -> &'static str { "Shader" }
+}
+
+impl <'de> Solver<'de> for TypedResourceModel<Shader> {
+	type T = TypedResource<Shader>;
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Shader>, SolveErrors> {
+		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(TypedResource::new(&self.id, self.hash, Shader {
+			id,
+			stage,
+		}))
+	}
 }
 
 // Mesh
@@ -175,21 +254,21 @@ pub struct VertexComponent {
 	pub channel: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum QuantizationSchemes {
 	Quantization,
 	Octahedral,
 	OctahedralQuantization,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum IndexStreamTypes {
 	Vertices,
 	Meshlets,
 	Triangles,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IndexStream {
 	pub stream_type: IndexStreamTypes,
 	pub offset: usize,
@@ -197,13 +276,13 @@ pub struct IndexStream {
 	pub data_type: IntegralTypes,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MeshletStream {
 	pub offset: usize,
 	pub count: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Primitive {
 	// pub material: Material,
 	pub quantization: Option<QuantizationSchemes>,
@@ -211,12 +290,12 @@ pub struct Primitive {
 	pub vertex_count: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SubMesh {
 	pub primitives: Vec<Primitive>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Mesh {
 	pub index_streams: Vec<IndexStream>,
 	pub meshlet_stream: Option<MeshletStream>,
@@ -283,12 +362,12 @@ pub struct CreateImage {
 
 impl CreateResource for CreateImage {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CompressionSchemes {
 	BC7,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Formats {
 	RGB8,
 	RGBA8,
@@ -296,7 +375,7 @@ pub enum Formats {
 	RGBA16,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Image {
 	pub compression: Option<CompressionSchemes>,
 	pub format: Formats,

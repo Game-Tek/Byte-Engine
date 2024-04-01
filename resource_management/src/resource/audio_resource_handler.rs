@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::Audio, GenericResourceResponse, ResourceResponse};
+use crate::{types::Audio, GenericResourceResponse, ResourceResponse, StorageBackend};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -20,7 +20,7 @@ impl ResourceHandler for AudioResourceHandler {
 		&["Audio"]
 	}
 
-	fn read<'s, 'a>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a, 'b>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, _: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b {
 		Box::pin(async move {
 			let audio_resource = Audio::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
 
@@ -55,7 +55,7 @@ impl ResourceHandler for AudioResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, types::BitDepths, StorageBackend};
+	use crate::{asset::{asset_handler::AssetHandler, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, types::BitDepths};
 
 	use super::*;
 
@@ -81,7 +81,7 @@ mod tests {
 
 		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(audio_resource_handler.read(resource, Some(reader),)).unwrap();
+		let resource = smol::block_on(audio_resource_handler.read(resource, Some(reader), &storage_backend)).unwrap();
 
 		assert_eq!(resource.id(), "gun.wav");
 		assert_eq!(resource.class, "Audio");

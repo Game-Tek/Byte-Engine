@@ -1,7 +1,4 @@
-use polodb_core::bson;
-use serde::Deserialize;
-
-use crate::{types::{Material, Variant}, GenericResourceResponse, ResourceResponse};
+use crate::{types::{Material, MaterialModel, Variant, VariantModel}, GenericResourceResponse, ResourceResponse, StorageBackend, TypedResourceModel, Solver};
 
 use super::resource_handler::{ResourceHandler, ResourceReader};
 
@@ -19,16 +16,18 @@ impl ResourceHandler for MaterialResourcerHandler {
 		&["Material", "Variant"]
 	}
 
-	fn read<'s, 'a>(&'s self, meta_resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>,) -> utils::BoxedFuture<'a, Option<ResourceResponse<'a>>> {
+	fn read<'s, 'a, 'b>(&'s self, meta_resource: GenericResourceResponse<'a>, _: Option<Box<dyn ResourceReader>>, storage_backend: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b {
 		Box::pin(async move {
 			match meta_resource.class.as_str() {
 				"Material" => {
-					let resource = Material::deserialize(bson::Deserializer::new(meta_resource.resource.clone().into())).ok()?;
-					Some(ResourceResponse::new(meta_resource, resource))
+					let resource: TypedResourceModel<MaterialModel> = meta_resource.into();
+					let material = resource.solve(storage_backend).ok()?;
+					Some(material.into())
 				}
 				"Variant" => {
-					let resource = Variant::deserialize(bson::Deserializer::new(meta_resource.resource.clone().into())).ok()?;
-					Some(ResourceResponse::new(meta_resource, resource))
+					let resource: TypedResourceModel<VariantModel> = meta_resource.into();
+					let variant = resource.solve(storage_backend).ok()?;
+					Some(variant.into())
 				}
 				_ => {
 					return None;
@@ -66,7 +65,7 @@ mod tests {
 			"domain": "World",
 			"type": "Surface",
 			"shaders": {
-				"Fragment": "fragment.besl"
+				"Compute": "fragment.besl"
 			},
 			"variables": [
 				{
@@ -81,7 +80,6 @@ mod tests {
 		asset_resolver.add_file(url, material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
-			material;
 		}";
 
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
@@ -98,7 +96,7 @@ mod tests {
 
 		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(material_resource_handler.read(resource, Some(reader),)).unwrap();
+		let resource = smol::block_on(material_resource_handler.read(resource, Some(reader), &storage_backend)).unwrap();
 
 		assert_eq!(resource.id(), "material.json");
 		assert_eq!(resource.class, "Material");
@@ -107,5 +105,6 @@ mod tests {
 
 		assert_eq!(material.double_sided, false);
 		assert_eq!(material.alpha_mode, AlphaMode::Opaque);
+		assert_eq!(material.shaders().len(), 1);
 	}
 }

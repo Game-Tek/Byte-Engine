@@ -47,7 +47,7 @@ impl AssetHandler for MaterialAssetHandler {
 				
 				let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None })?;
 
-				let shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
+				let shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| { // TODO: desilence
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
 				}).collect::<Vec<_>>();
 
@@ -70,7 +70,7 @@ impl AssetHandler for MaterialAssetHandler {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-					shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer("name", 0, s.clone(), b.clone())).collect(),
+					shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
 				});
 
 				storage_backend.store(resource, &data).await.ok()?;
@@ -112,7 +112,7 @@ impl AssetHandler for MaterialAssetHandler {
 							name: "Visibility".to_string(),
 							pass: "MaterialEvaluation".to_string(),
 						},
-						shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer("name", 0, s.clone(), b.clone())).collect(),
+						shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
 					})
 				};
 

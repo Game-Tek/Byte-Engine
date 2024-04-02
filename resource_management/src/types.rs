@@ -155,6 +155,10 @@ impl Resource for Material {
 	fn get_class(&self) -> &'static str { "Material" }
 }
 
+impl Resource for MaterialModel {
+	fn get_class(&self) -> &'static str { "Material" }
+}
+
 impl super::Model for MaterialModel {
 	// fn get_class(&self) -> &'static str { "Material" }
 }

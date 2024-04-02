@@ -1,4 +1,4 @@
-use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
+use crate::{types::{Audio, BitDepths}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -13,34 +13,34 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url provided").ok()?;
+			let url = json["url"].as_str().ok_or("No url provided".to_string())?;
 
 			if let Some(dt) = asset_resolver.get_type(url) {
-				if dt != "wav" { return None; }
+				if dt != "wav" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, dt) = asset_resolver.resolve(url).await?;
+			let (data, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
-			if dt != "wav" { return None; }
+			if dt != "wav" { return Err("Not my type".to_string()); }
 
 			let riff = &data[0..4];
 
 			if riff != b"RIFF" {
-				return Some(Err("Invalid RIFF header".to_string()));
+				return Err("Invalid RIFF header".to_string());
 			}
 
 			let format = &data[8..12];
 
 			if format != b"WAVE" {
-				return Some(Err("Invalid WAVE format".to_string()));
+				return Err("Invalid WAVE format".to_string());
 			}
 
 			let audio_format = &data[20..22];
 
 			if audio_format != b"\x01\x00" {
-				return Some(Err("Invalid audio format".to_string()));
+				return Err("Invalid audio format".to_string());
 			}
 
 			let subchunk_1_size = &data[16..20];
@@ -48,7 +48,7 @@ impl AssetHandler for AudioAssetHandler {
 			let subchunk_1_size = u32::from_le_bytes([subchunk_1_size[0], subchunk_1_size[1], subchunk_1_size[2], subchunk_1_size[3]]);
 
 			if subchunk_1_size != 16 {
-				return Some(Err("Invalid subchunk 1 size".to_string()));
+				return Err("Invalid subchunk 1 size".to_string());
 			}
 
 			let num_channels = &data[22..24];
@@ -56,7 +56,7 @@ impl AssetHandler for AudioAssetHandler {
 			let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
 
 			if num_channels != 1 && num_channels != 2 {
-				return Some(Err("Invalid number of channels".to_string()));
+				return Err("Invalid number of channels".to_string());
 			}
 
 			let sample_rate = &data[24..28];
@@ -72,13 +72,13 @@ impl AssetHandler for AudioAssetHandler {
 				16 => BitDepths::Sixteen,
 				24 => BitDepths::TwentyFour,
 				32 => BitDepths::ThirtyTwo,
-				_ => { return Some(Err("Invalid bits per sample".to_string())); }
+				_ => { return Err("Invalid bits per sample".to_string()); }
 			};
 
 			let data_header = &data[36..40];
 
 			if data_header != b"data" {
-				return Some(Err("Invalid data header".to_string()));
+				return Err("Invalid data header".to_string());
 			}
 
 			let data_size = &data[40..44];
@@ -96,9 +96,9 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			storage_backend.store(GenericResourceSerialization::new(id, audio_resource), data.into()).await.ok()?;
+			storage_backend.store(GenericResourceSerialization::new(id, audio_resource), data.into()).await.map_err(|_| format!("Failed to store resource"))?;
 
-			Some(Ok(()))
+			Ok(None)
 		})
 	}
 }

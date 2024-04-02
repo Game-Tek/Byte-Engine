@@ -1,7 +1,7 @@
 
 use utils::Extent;
 
-use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization, StorageBackend};
+use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -15,17 +15,17 @@ impl ImageAssetHandler {
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url provided").ok()?;
+			let url = json["url"].as_str().ok_or("No url provided".to_string())?;
 
 			if let Some(dt) = asset_resolver.get_type(url) {
-				if dt != "png" { return None; }
+				if dt != "png" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, dt) = asset_resolver.resolve(url).await?;
+			let (data, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
-			if dt != "png" { return None; }
+			if dt != "png" { return Err("Not my type".to_string()); }
 
 			let mut decoder = png::Decoder::new(data.as_slice());
 			decoder.set_transformations(png::Transformations::normalize_to_color8());
@@ -117,7 +117,7 @@ impl AssetHandler for ImageAssetHandler {
 
 			storage_backend.store(resource_document, &data).await;
 
-			Some(Ok(()))
+			Ok(None)
 		})
 	}
 }

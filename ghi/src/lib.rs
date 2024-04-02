@@ -9,6 +9,10 @@ pub mod shader_compilation;
 pub mod vulkan_ghi;
 pub mod render_debugger;
 
+// Enable if on linux
+#[cfg(target_os = "linux")]
+pub mod wayland_window;
+
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 

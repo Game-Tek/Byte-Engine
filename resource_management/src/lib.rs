@@ -33,7 +33,7 @@ pub struct GenericResourceSerialization {
 	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	class: String,
 	/// List of resources that this resource depends on.
-	required_resources: Vec<ProcessedResources>,
+	// required_resources: Vec<ProcessedResources>,
 	/// The resource data.
 	resource: bson::Bson,
 }
@@ -42,7 +42,7 @@ impl GenericResourceSerialization {
 	pub fn new<T: Resource + serde::Serialize>(id: &str, resource: T) -> Self {
 		GenericResourceSerialization {
 			id: id.to_string(),
-			required_resources: Vec::new(),
+			// required_resources: Vec::new(),
 			class: resource.get_class().to_string(),
 			resource: polodb_core::bson::to_bson(&resource).unwrap(),
 		}
@@ -51,17 +51,17 @@ impl GenericResourceSerialization {
 	pub fn new_with_serialized(id: &str, class: &str, resource: bson::Bson) -> Self {
 		GenericResourceSerialization {
 			id: id.to_string(),
-			required_resources: Vec::new(),
+			// required_resources: Vec::new(),
 			class: class.to_string(),
 			resource,
 		}
 	}
 
 
-	pub fn required_resources(mut self, required_resources: &[ProcessedResources]) -> Self {
-		self.required_resources = required_resources.to_vec();
-		self
-	}
+	// pub fn required_resources(mut self, required_resources: &[ProcessedResources]) -> Self {
+	// 	self.required_resources = required_resources.to_vec();
+	// 	self
+	// }
 }
 
 #[derive()]
@@ -78,9 +78,9 @@ pub struct GenericResourceResponse<'a> {
 }
 
 impl <'a> GenericResourceResponse<'a> {
-	pub fn new(id: String, hash: u64, class: String, size: usize, resource: bson::Bson,) -> Self {
+	pub fn new(id: &str, hash: u64, class: String, size: usize, resource: bson::Bson,) -> Self {
 		GenericResourceResponse {
-			id,
+			id: id.to_string(),
 			hash,
 			class,
 			size,
@@ -107,6 +107,17 @@ pub struct TypedResourceModel<T: Model> {
 	class: String,
 	#[serde(skip)]
 	phantom: std::marker::PhantomData<T>,
+}
+
+impl <T: Model + Resource> TypedResourceModel<T> {
+	pub fn new(id: &str, hash: u64, resource: T) -> Self {
+		TypedResourceModel {
+			id: id.to_string(),
+			hash,
+			class: resource.get_class().to_string(),
+			phantom: std::marker::PhantomData,
+		}
+	}
 }
 
 impl <'a, T: Model> From<GenericResourceResponse<'a>> for TypedResourceModel<T> {
@@ -174,6 +185,17 @@ impl <T: Resource> TypedResource<T> {
 	pub fn get_buffer(&self) -> Option<&[u8]> {
 		self.buffer.as_ref().map(|b| &**b)
 	}
+}
+
+impl <T: Resource + Model + for<'de> serde::Deserialize<'de>> TryInto<TypedResourceModel<T>> for GenericResourceSerialization {
+	type Error = ();
+
+	fn try_into(self) -> Result<TypedResourceModel<T>, Self::Error> {
+		let resource = bson::from_bson(self.resource).map_err(|_| ())?;
+
+		Ok(TypedResourceModel::new(&self.id, 0, resource))
+	}
+
 }
 
 #[derive(Debug, Clone)]
@@ -559,7 +581,7 @@ impl StorageBackend for DbStorageBackend {
 				let size = resource_document.get_i64("size").ok()? as usize;
 				let resource = resource_document.get("resource")?.clone();
 
-				GenericResourceResponse::new(id.clone(), hash, class, size, resource)
+				GenericResourceResponse::new(&id, hash, class, size, resource)
 			};
 
 			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&resource_document.get_object_id("_id").ok()?.to_string()))).await.ok()?);	

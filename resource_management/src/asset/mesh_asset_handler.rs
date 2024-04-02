@@ -7,8 +7,7 @@ use crate::{
         AlphaMode, CreateImage, Formats, IndexStream, IndexStreamTypes,
         IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value,
         VertexComponent, VertexSemantics,
-    },
-    GenericResourceSerialization, StorageBackend,
+    }, GenericResourceResponse, GenericResourceSerialization, StorageBackend
 };
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
@@ -22,13 +21,13 @@ impl MeshAssetHandler {
 }
 
 impl AssetHandler for MeshAssetHandler {
-    fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue,) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+    fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue,) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
     	Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url").ok()?;
+			let url = json["url"].as_str().ok_or("No url".to_string())?;
 
             if let Some(dt) = asset_resolver.get_type(url) {
                 if dt != "gltf" && dt != "glb" {
-                    return None;
+                    return Err("Not my type".to_string());
                 }
             }
 
@@ -40,7 +39,7 @@ impl AssetHandler for MeshAssetHandler {
 
             let (gltf, buffers, images) = match gltf::import(path) {
 				Ok((gltf, buffers, images)) => (gltf, buffers, images),
-				Err(e) => return Some(Err(e.to_string())),
+				Err(e) => return Err(e.to_string()),
 			};
 
             const MESHLETIZE: bool = true;
@@ -86,10 +85,7 @@ impl AssetHandler for MeshAssetHandler {
                         let pbr = material.pbr_metallic_roughness();
 
                         let albedo = if let Some(base_color_texture) = pbr.base_color_texture() {
-                            let (name, resource) =
-                                manage_image(images.as_slice(), &base_color_texture.texture())
-                                    .await
-                                    .ok()?;
+                            let (name, resource) = manage_image(images.as_slice(), &base_color_texture.texture()).await.or_else(|e| Err(e))?;
                             resources.push(resource);
                             Property::Texture(name)
                         } else {
@@ -105,8 +101,7 @@ impl AssetHandler for MeshAssetHandler {
                                             images.as_slice(),
                                             &roughness_texture.texture(),
                                         )
-                                        .await
-                                        .ok()?;
+                                        .await.or_else(|e| Err(e))?;
                                         resources.push(resource);
                                         Property::Texture(name)
                                     },
@@ -115,8 +110,7 @@ impl AssetHandler for MeshAssetHandler {
                                             images.as_slice(),
                                             &roughness_texture.texture(),
                                         )
-                                        .await
-                                        .ok()?;
+                                        .await.or_else(|e| Err(e))?;
                                         resources.push(resource);
                                         Property::Texture(name)
                                     },
@@ -131,8 +125,7 @@ impl AssetHandler for MeshAssetHandler {
                         let normal = if let Some(normal_texture) = material.normal_texture() {
                             let (name, resource) =
                                 manage_image(images.as_slice(), &normal_texture.texture())
-                                    .await
-                                    .ok()?;
+                                    .await.or_else(|e| Err(e))?;
                             resources.push(resource);
                             Property::Texture(name)
                         } else {
@@ -142,8 +135,7 @@ impl AssetHandler for MeshAssetHandler {
                         let emissive = if let Some(emissive_texture) = material.emissive_texture() {
                             let (name, resource) =
                                 manage_image(images.as_slice(), &emissive_texture.texture())
-                                    .await
-                                    .ok()?;
+                                    .await.or_else(|e| Err(e))?;
                             resources.push(resource);
                             Property::Texture(name)
                         } else {
@@ -154,8 +146,7 @@ impl AssetHandler for MeshAssetHandler {
                             if let Some(occlusion_texture) = material.occlusion_texture() {
                                 let (name, resource) =
                                     manage_image(images.as_slice(), &occlusion_texture.texture())
-                                        .await
-                                        .ok()?;
+                                        .await.or_else(|e| Err(e))?;
                                 resources.push(resource);
                                 Property::Texture(name)
                             } else {
@@ -517,9 +508,9 @@ impl AssetHandler for MeshAssetHandler {
 			};
 
             let resource_document = GenericResourceSerialization::new(id, mesh);
-            storage_backend.store(resource_document, &buffer).await;
+            storage_backend.store(resource_document.clone(), &buffer).await;
 
-            Some(Ok(()))
+            Ok(Some(resource_document))
         })
     }
 }
@@ -723,10 +714,7 @@ mod tests {
             "url": url,
         };
 
-        let result = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc));
-
-        assert!(result.is_some());
-        assert!(result.unwrap().is_ok());
+        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc));
 
 		let buffer = storage_backend.get_resource_data_by_name("Revolver.glb").unwrap();
 

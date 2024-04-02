@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use log::debug;
 
-use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Parameter, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, StorageBackend, TypedResource};
+use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceResponse, GenericResourceSerialization, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -28,17 +28,17 @@ impl MaterialAssetHandler {
 }
 
 impl AssetHandler for MaterialAssetHandler {
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url provided").ok()?;
+			let url = json["url"].as_str().ok_or("No url provided".to_string())?;
 
 			if let Some(dt) = asset_resolver.get_type(url) {
-				if dt != "json" { return None; }
+				if dt != "json" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, at) = asset_resolver.resolve(url).await?;
+			let (data, at) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
-			let asset_json = json::parse(std::str::from_utf8(&data).ok()?).ok()?;
+			let asset_json = json::parse(std::str::from_utf8(&data).or_else(|_| { Err("Failed to parse JSON") })?).or_else(|_| { Err("Failed to parse JSON") })?;
 
 			let is_material = asset_json["parent"].is_null();
 
@@ -52,10 +52,10 @@ impl AssetHandler for MaterialAssetHandler {
 				}
 			};
 
-			if is_material {
-				let material_domain = asset_json["domain"].as_str().ok_or("Domain not found".to_string()).ok()?;
+			let resource = if is_material {
+				let material_domain = asset_json["domain"].as_str().ok_or("Domain not found".to_string()).or_else(|e| { debug!("{}", e); Err("Domain not found".to_string()) })?;
 				
-				let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None })?;
+				let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None }).ok_or("No shader generator set".to_string()).or_else(|e| { debug!("{}", e); Err("No shader generator set".to_string()) })?;
 
 				let shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| { // TODO: desilence
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
@@ -84,25 +84,28 @@ impl AssetHandler for MaterialAssetHandler {
 					parameters,
 				});
 
-				storage_backend.store(resource, &data).await.ok()?;
+				storage_backend.store(resource.clone(), &data).await;
+
+				resource
 			} else {
 				let variant_json = asset_json;
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await?.0)).ok()?;
+				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await.ok_or("Failed to resolve parent material".to_string())?.0)).or_else(|_| { Err("Failed to parse JSON") })?;
 
-				match self.load(asset_manager, asset_resolver, storage_backend, "Solid", &m_json).await? {
-					Ok(()) => {}
-					Err(_) => {
+				let material = match self.load(asset_manager, asset_resolver, storage_backend, parent_material_url, &m_json).await {
+					Ok(Some(m)) => { m }
+					Ok(None) | Err(_) => {
 						log::error!("Failed to load parent material");						
+						return Err("Failed to load parent material".to_string());
 					}
-				}
+				};
 
-				let material = asset_manager.load_typed_resource("Solid").await.unwrap();
+				let material: TypedResourceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
 
 				let resource = GenericResourceSerialization::new(id, Variant {
-					material,
+					material: material.solve(storage_backend).map_err(|_| { "Failed to solve material".to_string() })?,
 					variables: variant_json["variables"].members().map(|v| {
 						VariantVariable {
 							name: v["name"].to_string(),
@@ -111,15 +114,17 @@ impl AssetHandler for MaterialAssetHandler {
 					}).collect::<Vec<_>>()
 				});
 
-				match storage_backend.store(resource, &[]).await {
+				match storage_backend.store(resource.clone(), &[]).await {
 					Ok(_) => {}
 					Err(_) => {
 						log::error!("Failed to store resource {}", id);
 					}
 				}
-			}
 
-			Some(Ok(()))
+				resource
+			};
+
+			Ok(Some(resource))
 		})
 	}
 }

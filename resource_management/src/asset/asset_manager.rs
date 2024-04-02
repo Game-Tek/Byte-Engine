@@ -79,7 +79,7 @@ impl AssetManager {
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
-		let asset_handler_found = load_results.iter().any(|load_result| { load_result.is_some() });
+		let asset_handler_found = load_results.iter().any(|load_result| { load_result.is_ok() });
 
 		if !asset_handler_found {
 			log::warn!("No asset handler found for asset: {}", url);
@@ -93,8 +93,51 @@ impl AssetManager {
 		&self.storage_backend
 	}
 	
-	pub async fn load_typed_resource<T: Resource>(&self, v: &str) -> Result<TypedResource<T>, ()> {
-		todo!()
+	pub async fn load_typed_resource<T: Resource>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> {
+		let mut dir = smol::fs::read_dir(assets_path()).await.or_else(|_| Err(LoadMessages::IO))?;
+
+		let entry = dir.find(|e| 
+			e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
+		).await.ok_or(LoadMessages::NoAsset)?.or_else(|_| Err(LoadMessages::NoAsset))?;
+
+		let mut asset_resolver = smol::fs::File::open(entry.path()).await.or_else(|_| Err(LoadMessages::IO))?;
+
+		let mut json_string = String::with_capacity(1024);
+
+		asset_resolver.read_to_string(&mut json_string).await.or_else(|_| Err(LoadMessages::IO))?;
+
+		let json = json::parse(&json_string).or_else(|_| Err(LoadMessages::IO))?;
+
+		let url = json["url"].as_str().ok_or(LoadMessages::NoURL)?; // Source asset url
+
+		struct MyAssetResolver {}
+
+		impl AssetResolver for MyAssetResolver {
+			fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
+				Box::pin(async move {
+					read_asset_from_source(url, Some(&assets_path())).await.ok()
+				})
+			}
+		}
+
+		let asset_resolver = MyAssetResolver {};
+
+		let storage_backend = &self.storage_backend;
+
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, &json));
+
+		let load_results = futures::future::join_all(asset_handler_loads).await;
+
+		let asset_handler_found = load_results.iter().any(|load_result| { load_result.is_ok() });
+
+		if !asset_handler_found {
+			log::warn!("No asset handler found for asset: {}", url);
+			return Err(LoadMessages::NoAssetHandler);
+		}
+
+		todo!("Implement loading typed resources");
+
+		// Ok(())
 	}
 }
 
@@ -120,9 +163,12 @@ fn assets_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-	use smol::future::FutureExt;
+	use polodb_core::bson;
+use smol::future::FutureExt;
 
-	use super::*;
+	use crate::{GenericResourceResponse, GenericResourceSerialization};
+
+use super::*;
 
 	struct TestAssetHandler {
 
@@ -135,11 +181,11 @@ mod tests {
 	}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 			let res = if id == "example" {
-				Some(Ok(()))
+				Ok(Some(GenericResourceSerialization::new_with_serialized("id", "TestAsset", bson::Bson::Null)))
 			} else {
-				None
+				Err("Failed to load".to_string())
 			};
 
 			async move { res }.boxed()

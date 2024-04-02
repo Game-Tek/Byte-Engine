@@ -149,7 +149,7 @@ pub mod tests {
 			for (resource, data) in resources.iter() {
 				if resource.id == id {
 					// TODO: use actual hash
-					x = Some((GenericResourceResponse::new(resource.id.clone(), 0, resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
+					x = Some((GenericResourceResponse::new(&resource.id, 0, resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
 					break;
 				}
 			}

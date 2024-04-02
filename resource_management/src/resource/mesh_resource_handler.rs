@@ -143,7 +143,7 @@ impl ResourceHandler for MeshResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, types::IntegralTypes, StorageBackend, Stream,};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, types::IntegralTypes, StorageBackend, Stream,};
 	
 	use super::*;
 
@@ -158,10 +158,11 @@ mod tests {
 			"url": url,
 		};
 
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(mesh_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
+		smol::block_on(mesh_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
 
 		// Load resource from storage
 
@@ -267,10 +268,11 @@ mod tests {
 			"url": url,
 		};
 
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(mesh_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
+		smol::block_on(mesh_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
 
 		// Load resource from storage
 

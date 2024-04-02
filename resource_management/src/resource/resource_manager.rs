@@ -1,7 +1,5 @@
 use std::ops::Deref;
 
-use smol::{io::AsyncReadExt, stream::StreamExt};
-
 use crate::{asset::asset_manager::AssetManager, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
 use super::resource_handler::ResourceHandler;
 
@@ -84,22 +82,8 @@ impl ResourceManager {
 			let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
 				x	
 			} else {
-				if let Some(asset_manager) = &self.asset_manager {
-					let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
-	
-					let entry = dir.find(|e| 
-						e.as_ref().unwrap().path().file_prefix().unwrap().to_str().unwrap().eq(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
-					).await?.ok()?;
-	
-					let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
-	
-					let mut json_string = String::with_capacity(1024);
-	
-					asset_resolver.read_to_string(&mut json_string).await.ok()?;
-	
-					let asset_json = json::parse(&json_string).ok()?;
-	
-					asset_manager.load(id, &asset_json).await.ok()?;
+				if let Some(asset_manager) = &self.asset_manager {	
+					asset_manager.load(id).await.ok()?;
 					self.storage_backend.sync(asset_manager.get_storage_backend()).await;
 	
 					self.storage_backend.read(id).await?
@@ -122,21 +106,7 @@ impl ResourceManager {
 			x	
 		} else {
 			if let Some(asset_manager) = &self.asset_manager {
-				let mut dir = smol::fs::read_dir(Self::assets_path()).await.ok()?;
-
-				let entry = dir.find(|e| 
-					e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
-				).await?.ok()?;
-
-				let mut asset_resolver = smol::fs::File::open(entry.path()).await.ok()?;
-
-				let mut json_string = String::with_capacity(1024);
-
-				asset_resolver.read_to_string(&mut json_string).await.ok()?;
-
-				let asset_json = json::parse(&json_string).ok()?;
-
-				asset_manager.load(id, &asset_json).await.ok()?;
+				asset_manager.load(id).await.ok()?;
 				self.storage_backend.sync(asset_manager.get_storage_backend()).await;
 
 				self.storage_backend.read(id).await?

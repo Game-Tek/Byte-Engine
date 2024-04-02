@@ -1,6 +1,6 @@
 use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
 
-use super::{asset_handler::AssetHandler, AssetResolver,};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
 pub struct AudioAssetHandler {
 
@@ -13,7 +13,7 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		Box::pin(async move {
 			let url = json["url"].as_str().ok_or("No url provided").ok()?;
 
@@ -111,6 +111,7 @@ mod tests {
 
 	#[test]
 	fn test_audio_asset_handler() {
+		let asset_manager = AssetManager::new();
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let url = "gun.wav";
@@ -121,7 +122,7 @@ mod tests {
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
 
 		let generated_resources = storage_backend.get_resources();
 

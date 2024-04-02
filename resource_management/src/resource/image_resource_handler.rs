@@ -52,7 +52,7 @@ impl ResourceHandler for ImageResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::{asset_handler::AssetHandler, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend},};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
 
 	use super::*;
 
@@ -67,10 +67,11 @@ mod tests {
 			"url": url,
 		};
 
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(image_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Image asset handler did not handle asset").expect("Image asset handler failed to load asset");
+		smol::block_on(image_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Image asset handler did not handle asset").expect("Image asset handler failed to load asset");
 
 		// Load resource from storage
 

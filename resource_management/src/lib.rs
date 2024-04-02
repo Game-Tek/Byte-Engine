@@ -98,8 +98,10 @@ impl <'a> GenericResourceResponse<'a> {
 	}
 }
 
+pub trait Model {}
+
 #[derive(Debug, serde::Deserialize)]
-pub struct TypedResourceModel<T: Resource> {
+pub struct TypedResourceModel<T: Model> {
 	pub id: String,
 	hash: u64,
 	class: String,
@@ -107,7 +109,7 @@ pub struct TypedResourceModel<T: Resource> {
 	phantom: std::marker::PhantomData<T>,
 }
 
-impl <'a, T: Resource> From<GenericResourceResponse<'a>> for TypedResourceModel<T> {
+impl <'a, T: Model> From<GenericResourceResponse<'a>> for TypedResourceModel<T> {
 	fn from(value: GenericResourceResponse) -> Self {
 		TypedResourceModel {
 			id: value.id,
@@ -471,6 +473,8 @@ trait Solver<'de> where Self: serde::Deserialize<'de> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<Self::T, SolveErrors>;
 }
 
+// impl <T: Resource, 'de> Solver<'de> for T where T: Clone 
+
 pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
@@ -629,7 +633,7 @@ mod tests {
     use polodb_core::bson;
     use serde::Deserialize;
 
-    use crate::{asset::tests::TestStorageBackend, GenericResourceSerialization, Resource, SolveErrors, Solver, StorageBackend, TypedResource, TypedResourceModel};
+    use crate::{asset::tests::TestStorageBackend, GenericResourceSerialization, Model, Resource, SolveErrors, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 	#[test]
 	fn solve_resources() {
@@ -657,12 +661,16 @@ mod tests {
 			fn get_class(&self) -> &'static str { "Base" }
 		}
 
-		impl Resource for BaseModel {
-			fn get_class(&self) -> &'static str { "BaseModel" }
+		impl Model for BaseModel {
+			// fn get_class(&self) -> &'static str { "BaseModel" }
 		}
 
 		impl Resource for Item {
 			fn get_class(&self) -> &'static str { "Item" }
+		}
+
+		impl Model for Item {
+			
 		}
 
 		impl Resource for Variant {

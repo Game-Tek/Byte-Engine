@@ -55,7 +55,7 @@ impl ResourceHandler for AudioResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend},}, types::BitDepths};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, types::BitDepths};
 
 	use super::*;
 
@@ -70,10 +70,11 @@ mod tests {
 			"url": url,
 		};
 
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
 
 		// Load resource from storage
 

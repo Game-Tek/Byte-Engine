@@ -2,9 +2,9 @@ use std::ops::Deref;
 
 use log::debug;
 
-use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, StorageBackend, TypedResource};
+use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, Model, Parameter, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, StorageBackend, TypedResource};
 
-use super::{asset_handler::AssetHandler, AssetResolver,};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
 pub trait ProgramGenerator {
 	/// Transforms a program.
@@ -28,7 +28,7 @@ impl MaterialAssetHandler {
 }
 
 impl AssetHandler for MaterialAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		Box::pin(async move {
 			let url = json["url"].as_str().ok_or("No url provided").ok()?;
 
@@ -42,6 +42,16 @@ impl AssetHandler for MaterialAssetHandler {
 
 			let is_material = asset_json["parent"].is_null();
 
+			let to_value = |t: &str, v: &str| {
+				match t {
+					"vec4f" => Value::Vector4([0f32, 0f32, 0f32, 0f32]),
+					"vec3f" => Value::Vector3([0f32, 0f32, 0f32]),
+					"float" => Value::Scalar(0f32),
+					"Texture2D" => Value::Image(smol::block_on(asset_manager.load_typed_resource(v)).unwrap()),
+					_ => panic!("Unknown data type")
+				}
+			};
+
 			if is_material {
 				let material_domain = asset_json["domain"].as_str().ok_or("Domain not found".to_string()).ok()?;
 				
@@ -51,19 +61,19 @@ impl AssetHandler for MaterialAssetHandler {
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
 				}).collect::<Vec<_>>();
 
-				for variable in asset_json["variables"].members() {
-					if variable["data_type"].as_str().unwrap() == "Texture2D" {
-						let texture_url = variable["value"].as_str().unwrap();
+				let parameters = asset_json["variables"].members().map(|v: &json::JsonValue| {
+					let name = v["name"].to_string();
+					let data_type = v["data_type"].to_string();
+					let value = v["value"].to_string();
+
+					Parameter {
+						name,
+						r#type: data_type.clone(),
+						value: to_value(&data_type, &value),
 					}
-				}
+				}).collect::<Vec<_>>();
 
 				let resource = GenericResourceSerialization::new(id, Material {
-					albedo: Property::Factor(Value::Vector3([1f32, 0f32, 0f32])),
-					normal: Property::Factor(Value::Vector3([0f32, 0f32, 1f32])),
-					roughness: Property::Factor(Value::Scalar(0.5f32)),
-					metallic: Property::Factor(Value::Scalar(0.0f32)),
-					emissive: Property::Factor(Value::Vector3([0f32, 0f32, 0f32])),
-					occlusion: Property::Factor(Value::Scalar(0f32)),
 					double_sided: false,
 					alpha_mode: AlphaMode::Opaque,
 					model: Model {
@@ -71,6 +81,7 @@ impl AssetHandler for MaterialAssetHandler {
 						pass: "MaterialEvaluation".to_string(),
 					},
 					shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
+					parameters,
 				});
 
 				storage_backend.store(resource, &data).await.ok()?;
@@ -81,40 +92,14 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await?.0)).ok()?;
 
-				match self.load(asset_resolver, storage_backend, "Solid", &m_json).await? {
+				match self.load(asset_manager, asset_resolver, storage_backend, "Solid", &m_json).await? {
 					Ok(()) => {}
 					Err(_) => {
 						log::error!("Failed to load parent material");						
 					}
 				}
 
-				let material = {
-					let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(m_json["url"].as_str().unwrap()).await?.0)).ok()?;
-
-					let material_domain = m_json["domain"].as_str().ok_or("Domain not found".to_string()).ok()?;
-				
-					let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None })?;
-
-					let shaders = m_json["shaders"].entries().filter_map(|(s_type, shader_json)| {
-						smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &m_json, &shader_json, s_type))
-					}).collect::<Vec<_>>();
-
-					TypedResource::<Material>::new("Solid", 0, Material {
-						albedo: Property::Factor(Value::Vector3([1f32, 0f32, 0f32])),
-						normal: Property::Factor(Value::Vector3([0f32, 0f32, 1f32])),
-						roughness: Property::Factor(Value::Scalar(0.5f32)),
-						metallic: Property::Factor(Value::Scalar(0.0f32)),
-						emissive: Property::Factor(Value::Vector3([0f32, 0f32, 0f32])),
-						occlusion: Property::Factor(Value::Scalar(0f32)),
-						double_sided: false,
-						alpha_mode: AlphaMode::Opaque,
-						model: Model {
-							name: "Visibility".to_string(),
-							pass: "MaterialEvaluation".to_string(),
-						},
-						shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
-					})
-				};
+				let material = asset_manager.load_typed_resource("Solid").await.unwrap();
 
 				let resource = GenericResourceSerialization::new(id, Variant {
 					material,
@@ -199,6 +184,9 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 			log::error!("Error compiling shader:\n{}", error_string);
 			let error_string = ghi::shader_compilation::format_glslang_error(path, &error_string, &glsl).unwrap_or(error_string);
 			log::error!("Error compiling shader:\n{}", error_string);
+			if cfg!(test) {
+				println!("{}", error_string);
+			}
 			return None;
 		}
 	};
@@ -237,7 +225,7 @@ fn default_fragment_shader() -> &'static str {
 #[cfg(test)]
 pub mod tests {
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::{TestAssetResolver, TestStorageBackend}};
 
 	pub struct RootTestShaderGenerator {
 
@@ -254,12 +242,16 @@ pub mod tests {
 			let material_struct = jspd::parser::NodeReference::buffer("Material", vec![jspd::parser::NodeReference::member("color", "vec4f")]);
 			program_state.insert("Material".to_string(), material_struct.clone());
 
+			let sample_function = jspd::parser::NodeReference::function("sample_", vec![jspd::parser::NodeReference::member("t", "u32")], "void", vec![]);
+
+			program_state.insert("sample_".to_string(), sample_function.clone());
+
 			let mid_test_shader_generator = MidTestShaderGenerator::new();
 
 			let child = mid_test_shader_generator.transform(program_state, material);
 
 			// jspd::parser::NodeReference::scope("RootTestShaderGenerator", vec![material, child])
-			vec![material_struct].into_iter().chain(child.into_iter()).collect()
+			vec![material_struct, sample_function].into_iter().chain(child.into_iter()).collect()
 		}
 	}
 
@@ -298,7 +290,7 @@ pub mod tests {
 			let push_constant = jspd::parser::NodeReference::push_constant(vec![jspd::parser::NodeReference::member("material_index", "u32")]);
 			program_state.insert("push_constant".to_string(), push_constant.clone());
 
-			let main = jspd::parser::NodeReference::function("main", vec![], "void", vec![jspd::parser::NodeReference::glsl("push_constant;\nmaterials;\n", vec!["push_constant".to_string(), "materials".to_string()], Vec::new())]);
+			let main = jspd::parser::NodeReference::function("main", vec![], "void", vec![jspd::parser::NodeReference::glsl("push_constant;\nmaterials;\nsample_(0);\n", vec!["push_constant".to_string(), "materials".to_string(), "sample_".to_string()], Vec::new())]);
 			program_state.insert("main".to_string(), main.clone());
 
 			// jspd::parser::NodeReference::scope("LeafTestShaderGenerator", vec![push_constant, main])
@@ -326,10 +318,12 @@ pub mod tests {
 		assert!(glsl.contains("layout(push_constant"));
 		assert!(glsl.contains("uint32_t material_index"));
 		assert!(glsl.contains("materials[16]"));
+		assert!(glsl.contains("void sample_("));
 	}
 
 	#[test]
 	fn load_material() {
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
@@ -366,7 +360,7 @@ pub mod tests {
 			"url": "material.json",
 		};
 
-		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, "Material.json", &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "Material.json", &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -391,6 +385,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
@@ -445,7 +440,7 @@ pub mod tests {
 			"url": "variant.json",
 		};
 
-		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, "Variant.json", &doc)).expect("Material asset handler did not handle asset").expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "Variant.json", &doc)).expect("Material asset handler did not handle asset").expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 

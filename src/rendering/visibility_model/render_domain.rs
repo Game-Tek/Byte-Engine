@@ -3,6 +3,7 @@ use std::ops::DerefMut;
 use std::rc::Rc;
 use std::sync::RwLock;
 
+use ghi::ImageHandle;
 use log::error;
 use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
@@ -422,17 +423,13 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
-	fn load_material<'a>(&'a mut self, resource: impl resource_management::ResourceStore<'a>) {
-		let mut ghi = self.ghi.write().unwrap();
-
+	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut dyn ghi::GraphicsHardwareInterface, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle) {
 		if let Some(texture) = resource.resource().downcast_ref::<Image>() {
-			let compression = if let Some(compression) = &texture.compression {
+			let compression = texture.compression.map(|compression| {
 				match compression {
-					CompressionSchemes::BC7 => Some(ghi::CompressionSchemes::BC7)
+					CompressionSchemes::BC7 => ghi::CompressionSchemes::BC7
 				}
-			} else {
-				None
-			};
+			});
 
 			let new_texture = ghi.create_image(Some(&resource.id()), Extent::from(texture.extent), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
@@ -446,10 +443,14 @@ impl VisibilityWorldRenderDomain {
 			
 			let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
-			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(self.textures_binding, new_texture, sampler, ghi::Layouts::Read),]);
+			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(textures_binding, new_texture, sampler, ghi::Layouts::Read),]);
 
-			self.pending_texture_loads.push(new_texture);
+			pending_texture_loads.push(new_texture);
 		}
+	}
+
+	fn load_material<'a>(&'a mut self, resource: impl resource_management::ResourceStore<'a>) {
+		let mut ghi = self.ghi.write().unwrap();
 
 		if let Some(variant) = resource.resource().downcast_ref::<Variant>() {
 			if !self.material_evaluation_materials.contains_key(resource.id()) {
@@ -657,6 +658,15 @@ impl VisibilityWorldRenderDomain {
 				if shaders.is_empty() {
 					log::warn!("No shaders found for material: {}", resource.id());
 					return;
+				}
+
+				for parameter in &material.parameters {
+					match &parameter.value {
+						resource_management::types::Value::Image(image) => {
+							Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding);
+						}
+						_ => {}
+					}
 				}
 
 				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);

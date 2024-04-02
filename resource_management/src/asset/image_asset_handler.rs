@@ -3,7 +3,7 @@ use utils::Extent;
 
 use crate::{types::{CompressionSchemes, Formats, Image}, GenericResourceSerialization, StorageBackend};
 
-use super::{asset_handler::AssetHandler, AssetResolver,};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
 pub struct ImageAssetHandler {
 }
@@ -15,7 +15,7 @@ impl ImageAssetHandler {
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn load<'a>(&'a self, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
 		Box::pin(async move {
 			let url = json["url"].as_str().ok_or("No url provided").ok()?;
 
@@ -124,11 +124,12 @@ impl AssetHandler for ImageAssetHandler {
 
 #[cfg(test)]
 mod tests {
-	use super::{ImageAssetHandler};
-	use crate::asset::{asset_handler::AssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
+	use super::ImageAssetHandler;
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::{TestAssetResolver, TestStorageBackend}};
 
 	#[test]
 	fn load_image() {
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let asset_handler = ImageAssetHandler::new();
@@ -138,7 +139,7 @@ mod tests {
 			"url": url,
 		};
 
-		let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset");
+		let result = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 

@@ -31,6 +31,16 @@ impl Entity for Window {}
 impl WindowSystem {
 	/// Creates a new window system.
 	pub fn new() -> WindowSystem {
+		if let Some(_) = std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY") {
+			if let Some((_, v)) = std::env::vars().find(|(key, _)| key == "XDG_SESSION_TYPE") {
+				if v == "wayland" {
+					log::debug!("Wayland detected. Using Wayland backend.");
+				} else {
+					log::debug!("Wayland detected, but not using Wayland backend. Using XCB backend.");
+				}
+			}
+		}
+
 		WindowSystem { windows: gxhash::GxHashMap::default() }
 	}
 

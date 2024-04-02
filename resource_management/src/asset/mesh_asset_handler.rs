@@ -11,7 +11,7 @@ use crate::{
     GenericResourceSerialization, StorageBackend,
 };
 
-use super::{asset_handler::AssetHandler, AssetResolver,};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
 pub struct MeshAssetHandler {}
 
@@ -22,13 +22,7 @@ impl MeshAssetHandler {
 }
 
 impl AssetHandler for MeshAssetHandler {
-    fn load<'a>(
-        &'a self,
-        asset_resolver: &'a dyn AssetResolver,
-        storage_backend: &'a dyn StorageBackend,
-        id: &'a str,
-        json: &'a json::JsonValue,
-    ) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
+    fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue,) -> utils::BoxedFuture<'a, Option<Result<(), String>>> {
     	Box::pin(async move {
 			let url = json["url"].as_str().ok_or("No url").ok()?;
 
@@ -169,12 +163,6 @@ impl AssetHandler for MeshAssetHandler {
                             };
 
                         Material {
-                            albedo,
-                            normal,
-                            roughness,
-                            metallic,
-                            emissive,
-                            occlusion,
                             double_sided: material.double_sided(),
                             alpha_mode: match material.alpha_mode() {
                                 gltf::material::AlphaMode::Blend => AlphaMode::Blend,
@@ -188,6 +176,7 @@ impl AssetHandler for MeshAssetHandler {
                                 pass: "".to_string(),
                             },
 							shaders: Vec::new(),
+							parameters: Vec::new(),
                         };
                     }
 				}
@@ -548,12 +537,12 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 mod tests {
     use super::MeshAssetHandler;
     use crate::asset::{
-        asset_handler::AssetHandler,
-        tests::{TestAssetResolver, TestStorageBackend},
+        asset_handler::AssetHandler, asset_manager::AssetManager, tests::{TestAssetResolver, TestStorageBackend}
     };
 
     #[test]
     fn load_gltf() {
+		let asset_manager = AssetManager::new();
         let asset_handler = MeshAssetHandler::new();
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
@@ -563,7 +552,7 @@ mod tests {
             "url": url,
         };
 
-        smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Failed to get resource").expect("Failed to parse asset");
+        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc)).expect("Failed to get resource").expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -670,6 +659,7 @@ mod tests {
 
 	#[test]
     fn load_gltf_with_bin() {
+		let asset_manager = AssetManager::new();
         let asset_handler = MeshAssetHandler::new();
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
@@ -679,7 +669,7 @@ mod tests {
             "url": url,
         };
 
-        smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc)).expect("Mesh asset handler did not handle asset").expect("Failed to parse asset");
+        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc)).expect("Mesh asset handler did not handle asset").expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -723,6 +713,7 @@ mod tests {
     #[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
+		let asset_manager = AssetManager::new();
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
         let asset_handler = MeshAssetHandler::new();
@@ -732,7 +723,7 @@ mod tests {
             "url": url,
         };
 
-        let result = smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, &url, &doc));
+        let result = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc));
 
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());

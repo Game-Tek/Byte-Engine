@@ -39,7 +39,7 @@ impl ResourceHandler for MaterialResourcerHandler {
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset::{asset_handler::AssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material, ShaderTypes}, StorageBackend};
+    use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}}, resource::{material_resource_handler::MaterialResourcerHandler, resource_handler::ResourceHandler}, types::{AlphaMode, Material, ShaderTypes}, StorageBackend};
 
 	#[test]
 	fn load_material() {
@@ -52,6 +52,7 @@ mod tests {
 			"url": url,
 		};
 
+		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
@@ -88,7 +89,7 @@ mod tests {
 			"url": url,
 		};
 
-		smol::block_on(asset_handler.load(&asset_resolver, &storage_backend, url, &doc)).expect("Material asset handler did not handle asset").expect("Material asset handler failed to load asset");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Material asset handler did not handle asset").expect("Material asset handler failed to load asset");
 
 		// Load resource from storage
 

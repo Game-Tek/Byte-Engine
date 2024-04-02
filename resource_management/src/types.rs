@@ -46,14 +46,67 @@ pub struct Model {
 	pub pass: String,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize)]
 pub enum Value {
 	Scalar(f32),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
+	Image(TypedResource<Image>),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
+pub enum ValueModel {
+	Scalar(f32),
+	Vector3([f32; 3]),
+	Vector4([f32; 4]),
+	Image(TypedResourceModel<Image>),
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct Parameter {
+	pub r#type: String,
+	pub name: String,
+	pub value: Value,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ParameterModel {
+	pub r#type: String,
+	pub name: String,
+	pub value: ValueModel,
+}
+
+impl <'de> Solver<'de> for TypedResourceModel<Image> {
+	type T = TypedResource<Image>;
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Image>, SolveErrors> {
+		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let Image { compression, format, extent } = Image::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(TypedResource::new(&self.id, self.hash, Image {
+			compression,
+			format,
+			extent,
+		}))
+	}
+}
+
+impl <'de> Solver<'de> for ParameterModel {
+	type T = Parameter;
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<Parameter, SolveErrors> {
+		Ok(Parameter {
+			r#type: self.r#type.clone(),
+			name: self.name.clone(),
+			value: match &self.value {
+				ValueModel::Scalar(scalar) => Value::Scalar(*scalar),
+				ValueModel::Vector3(vector) => Value::Vector3(*vector),
+				ValueModel::Vector4(vector) => Value::Vector4(*vector),
+				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
+			},
+		})
+	}
+}
+
+#[derive(Debug, serde::Serialize)]
 pub enum Property {
 	Factor(Value),
 	Texture(String),
@@ -68,12 +121,6 @@ pub enum AlphaMode {
 
 #[derive(Debug,serde::Serialize,)]
 pub struct Material {
-	pub(crate) albedo: Property,
-	pub(crate) normal: Property,
-	pub(crate) roughness: Property,
-	pub(crate) metallic: Property,
-	pub(crate) emissive: Property,
-	pub(crate) occlusion: Property,
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
 
@@ -81,16 +128,12 @@ pub struct Material {
 
 	/// The render model this material is for.
 	pub model: Model,
+
+	pub parameters: Vec<Parameter>,
 }
 
 #[derive(Debug,serde::Deserialize,)]
 pub struct MaterialModel {
-	pub(crate) albedo: Property,
-	pub(crate) normal: Property,
-	pub(crate) roughness: Property,
-	pub(crate) metallic: Property,
-	pub(crate) emissive: Property,
-	pub(crate) occlusion: Property,
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
 
@@ -98,6 +141,8 @@ pub struct MaterialModel {
 
 	/// The render model this material is for.
 	pub model: Model,
+
+	pub parameters: Vec<ParameterModel>,
 }
 
 impl Material {
@@ -110,27 +155,22 @@ impl Resource for Material {
 	fn get_class(&self) -> &'static str { "Material" }
 }
 
-impl Resource for MaterialModel {
-	fn get_class(&self) -> &'static str { "Material" }
+impl super::Model for MaterialModel {
+	// fn get_class(&self) -> &'static str { "Material" }
 }
 
 impl <'de> Solver<'de> for TypedResourceModel<MaterialModel> {
 	type T = TypedResource<Material>;
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Material>, SolveErrors> {
 		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-		let MaterialModel { albedo, normal, roughness, metallic, emissive, occlusion, double_sided, alpha_mode, shaders, model } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(TypedResource::new(&self.id, self.hash, Material {
-			albedo,
-			normal,
-			roughness,
-			metallic,
-			emissive,
-			occlusion,
 			double_sided,
 			alpha_mode,
 			shaders: shaders.into_iter().map(|s| s.solve(storage_backend)).collect::<Result<_, _>>()?,
 			model,
+			parameters: parameters.into_iter().map(|p| p.solve(storage_backend)).collect::<Result<_, _>>()?,
 		}))
 	}
 }
@@ -157,8 +197,8 @@ pub struct VariantModel {
 	pub variables: Vec<VariantVariable>,
 }
 
-impl Resource for VariantModel {
-	fn get_class(&self) -> &'static str { "Variant" }
+impl super::Model for VariantModel {
+	// fn get_class(&self) -> &'static str { "Variant" }
 }
 
 impl <'de> Solver<'de> for TypedResourceModel<VariantModel> {
@@ -208,6 +248,8 @@ impl Shader {
 impl Resource for Shader {
 	fn get_class(&self) -> &'static str { "Shader" }
 }
+
+impl super::Model for Shader {}
 
 impl <'de> Solver<'de> for TypedResourceModel<Shader> {
 	type T = TypedResource<Shader>;
@@ -370,7 +412,7 @@ pub struct CreateImage {
 
 impl CreateResource for CreateImage {}
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy)]
 pub enum CompressionSchemes {
 	BC7,
 }
@@ -392,4 +434,7 @@ pub struct Image {
 
 impl Resource for Image {
 	fn get_class(&self) -> &'static str { "Image" }
+}
+
+impl super::Model for Image {
 }

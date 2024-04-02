@@ -68,6 +68,7 @@ pub struct VisibilityShaderGenerator {
 	fresnel_schlick: jspd::parser::NodeReference,
 	barycentric_deriv: jspd::parser::NodeReference,
 	calculate_full_bary: jspd::parser::NodeReference,
+	sample_function: jspd::parser::NodeReference,
 }
 
 impl VisibilityShaderGenerator {
@@ -160,6 +161,8 @@ impl VisibilityShaderGenerator {
 
 		let calculate_full_bary = NodeReference::function("calculate_full_bary", vec![NodeReference::member("pt0", "vec4f"), NodeReference::member("pt1", "vec4f"), NodeReference::member("pt2", "vec4f"), NodeReference::member("pixelNdc", "vec2f"), NodeReference::member("winSize", "vec2f")], "BarycentricDeriv", vec![NodeReference::glsl("BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;", Vec::new(), Vec::new())]);
 		
+		let sample_function = NodeReference::function("sample", vec![NodeReference::member("uv", "vec2f"), NodeReference::member("texture", "u32")], "vec4f", vec![NodeReference::glsl("return texture(texture, uv);", Vec::new(), Vec::new())]);
+
 		Self {
 			mesh_struct,
 			camera_struct,
@@ -190,7 +193,8 @@ impl VisibilityShaderGenerator {
 			geometry_smith,
 			fresnel_schlick,
 			barycentric_deriv,
-			calculate_full_bary,	
+			calculate_full_bary,
+			sample_function,
 		}
 	}
 }
@@ -426,10 +430,11 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		program_state.insert("ao".to_string(), set2_binding10.clone());
 		program_state.insert("depth_shadow_map".to_string(), set2_binding11.clone());
 		program_state.insert("main".to_string(), m.clone());
+		program_state.insert("sample".to_string(), self.sample_function.clone());
 
 		let mut ret = Vec::with_capacity(32);
 		ret.append(&mut extra);
-		ret.append(&mut vec![push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), m]);
+		ret.append(&mut vec![self.sample_function.clone(), push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), m]);
 		ret
 	}
 }

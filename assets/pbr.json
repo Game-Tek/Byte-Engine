@@ -3,5 +3,12 @@
 	"type": "Surface",
 	"shaders": {
 		"Compute": "shaders/pbr.besl"
-	}
+	},
+	"variables": [
+		{
+			"name": "color",
+			"data_type": "Texture2D",
+			"value": "Bricks"
+		}
+	]
 }

@@ -13,10 +13,8 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url provided".to_string())?;
-
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "wav" { return Err("Not my type".to_string()); }
 			}
@@ -96,9 +94,11 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			storage_backend.store(GenericResourceSerialization::new(id, audio_resource), data.into()).await.map_err(|_| format!("Failed to store resource"))?;
+			let resource = GenericResourceSerialization::new(url, audio_resource);
 
-			Ok(None)
+			storage_backend.store(resource.clone(), data.into()).await.map_err(|_| format!("Failed to store resource"))?;
+
+			Ok(Some(resource))
 		})
 	}
 }
@@ -115,14 +115,11 @@ mod tests {
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let url = "gun.wav";
-		let doc = json::object! {
-			"url": url,
-		};
 
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).unwrap().expect("Audio asset handler failed to load asset");
 
 		let generated_resources = storage_backend.get_resources();
 

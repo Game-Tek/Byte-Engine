@@ -154,15 +154,12 @@ mod tests {
 		let mesh_asset_handler = MeshAssetHandler::new();
 
 		let url = "Suzanne.gltf";
-		let doc = json::object! {
-			"url": url,
-		};
 
 		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(mesh_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
+		smol::block_on(mesh_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
 
 		// Load resource from storage
 
@@ -264,15 +261,12 @@ mod tests {
 		let mesh_asset_handler = MeshAssetHandler::new();
 
 		let url = "Box.gltf";
-		let doc = json::object! {
-			"url": url,
-		};
 
 		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(mesh_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
+		smol::block_on(mesh_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Mesh asset handler did not handle asset").expect("Mesh asset handler failed to load asset");
 
 		// Load resource from storage
 

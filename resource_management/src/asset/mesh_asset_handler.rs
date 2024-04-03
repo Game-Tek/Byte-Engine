@@ -21,10 +21,8 @@ impl MeshAssetHandler {
 }
 
 impl AssetHandler for MeshAssetHandler {
-    fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue,) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+    fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>,) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
     	Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url".to_string())?;
-
             if let Some(dt) = asset_resolver.get_type(url) {
                 if dt != "gltf" && dt != "glb" {
                     return Err("Not my type".to_string());
@@ -226,8 +224,6 @@ impl AssetHandler for MeshAssetHandler {
 			let vertex_layout = vertex_layouts.first().unwrap().clone();
 
 			fn flatten_tree(base: maths_rs::Mat4f, node: gltf::Node) -> Vec<(gltf::Node, maths_rs::Mat4f)> {
-				println!("Visiting {}", node.name().unwrap_or("Unnamed"));
-
 				let transform = node.transform().matrix();
 				let transform = base * maths_rs::Mat4f::new(transform[0][0], transform[1][0], transform[2][0], transform[3][0], transform[0][1], transform[1][1], transform[2][1], transform[3][1], transform[0][2], transform[1][2], transform[2][2], transform[3][2], transform[0][3], transform[1][3], transform[2][3], transform[3][3]);
 
@@ -507,7 +503,7 @@ impl AssetHandler for MeshAssetHandler {
 				vertex_count: vertex_count as u32,
 			};
 
-            let resource_document = GenericResourceSerialization::new(id, mesh);
+            let resource_document = GenericResourceSerialization::new(url, mesh);
             storage_backend.store(resource_document.clone(), &buffer).await;
 
             Ok(Some(resource_document))
@@ -539,11 +535,8 @@ mod tests {
         let storage_backend = TestStorageBackend::new();
 
         let url = "Box.gltf";
-        let doc = json::object! {
-            "url": url,
-        };
 
-        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc)).expect("Failed to get resource").expect("Failed to parse asset");
+        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -656,11 +649,8 @@ mod tests {
         let storage_backend = TestStorageBackend::new();
 
         let url = "Suzanne.gltf";
-        let doc = json::object! {
-            "url": url,
-        };
 
-        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc)).expect("Mesh asset handler did not handle asset").expect("Failed to parse asset");
+        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).expect("Mesh asset handler did not handle asset").expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -710,11 +700,8 @@ mod tests {
         let asset_handler = MeshAssetHandler::new();
 
         let url = "Revolver.glb";
-        let doc = json::object! {
-            "url": url,
-        };
 
-        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc));
+        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None));
 
 		let buffer = storage_backend.get_resource_data_by_name("Revolver.glb").unwrap();
 

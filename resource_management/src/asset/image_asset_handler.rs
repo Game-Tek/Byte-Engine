@@ -15,10 +15,8 @@ impl ImageAssetHandler {
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url provided".to_string())?;
-
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "png" { return Err("Not my type".to_string()); }
 			}
@@ -109,15 +107,15 @@ impl AssetHandler for ImageAssetHandler {
 				}
 			};
 
-			let resource_document = GenericResourceSerialization::new(id, Image {
+			let resource_document = GenericResourceSerialization::new(url, Image {
 				format,
 				extent: extent.as_array(),
 				compression,
 			});
 
-			storage_backend.store(resource_document, &data).await;
+			storage_backend.store(resource_document.clone(), &data).await;
 
-			Ok(None)
+			Ok(Some(resource_document))
 		})
 	}
 }
@@ -135,11 +133,8 @@ mod tests {
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = "patterned_brick_floor_02_diff_2k.png";
-		let doc = json::object! {
-			"url": url,
-		};
 
-		let result = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, &doc)).expect("Image asset handler did not handle asset");
+		let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 

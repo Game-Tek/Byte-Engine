@@ -63,15 +63,12 @@ mod tests {
 		let image_asset_handler = ImageAssetHandler::new();
 
 		let url = "patterned_brick_floor_02_diff_2k.png";
-		let doc = json::object! {
-			"url": url,
-		};
 
 		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(image_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Image asset handler did not handle asset").expect("Image asset handler failed to load asset");
+		smol::block_on(image_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Image asset handler did not handle asset").expect("Image asset handler failed to load asset");
 
 		// Load resource from storage
 

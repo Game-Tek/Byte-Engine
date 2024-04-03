@@ -66,15 +66,12 @@ mod tests {
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let url = "gun.wav";
-		let doc = json::object! {
-			"url": url,
-		};
 
 		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
 
 		// Load resource from storage
 

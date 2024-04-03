@@ -17,5 +17,5 @@ pub trait AssetHandler {
 	/// # Returns
 	/// Returns Some(...) if the asset was managed by this handler, None otherwise.
 	/// Returns Some(Ok(...)) if the asset was loaded successfully, Some(Err(...)) otherwise.
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>>;
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>>;
 }

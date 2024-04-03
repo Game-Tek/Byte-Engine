@@ -27,7 +27,7 @@ fn revolver() {
 	
 	let _: EntityHandle<camera::Camera> = core::spawn_as_child(space_handle.clone(), camera::Camera::new(Vector3::new(0.0, 0.0, 0.0),));
 	let _: EntityHandle<directional_light::DirectionalLight> = core::spawn_as_child(space_handle.clone(), directional_light::DirectionalLight::new(Vector3::new(0.0, 0.0, 1.0), 4000f32));
-	let _: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Revolver", "PBR", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 0.4))));
+	let _: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Revolver.glb", "pbr.json", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 0.4))));
 
 	app.do_loop();
 

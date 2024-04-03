@@ -1,5 +1,5 @@
 {
-	"parent": "Solid.json",
+	"parent": "solid.json",
 	"variables": [
 		{
 			"name": "color",

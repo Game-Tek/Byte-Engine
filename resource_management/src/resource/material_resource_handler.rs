@@ -47,11 +47,6 @@ mod tests {
 
 		let mut asset_handler = MaterialAssetHandler::new();
 
-		let url = "material.json";
-		let doc = json::object! {
-			"url": url,
-		};
-
 		let asset_manager = AssetManager::new();
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
@@ -85,11 +80,7 @@ mod tests {
 
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
 
-		let doc = json::object! {
-			"url": url,
-		};
-
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, &doc)).expect("Material asset handler did not handle asset").expect("Material asset handler failed to load asset");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Material asset handler did not handle asset").expect("Material asset handler failed to load asset");
 
 		// Load resource from storage
 

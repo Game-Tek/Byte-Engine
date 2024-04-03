@@ -45,22 +45,6 @@ impl AssetManager {
 
 	/// Load a source asset from a JSON asset description.
 	pub async fn load(&self, id: &str) -> Result<(), LoadMessages> {
-		let mut dir = smol::fs::read_dir(assets_path()).await.or_else(|_| Err(LoadMessages::IO))?;
-
-		let entry = dir.find(|e| 
-			e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
-		).await.ok_or(LoadMessages::NoAsset)?.or_else(|_| Err(LoadMessages::NoAsset))?;
-
-		let mut asset_resolver = smol::fs::File::open(entry.path()).await.or_else(|_| Err(LoadMessages::IO))?;
-
-		let mut json_string = String::with_capacity(1024);
-
-		asset_resolver.read_to_string(&mut json_string).await.or_else(|_| Err(LoadMessages::IO))?;
-
-		let json = json::parse(&json_string).or_else(|_| Err(LoadMessages::IO))?;
-
-		let url = json["url"].as_str().ok_or(LoadMessages::NoURL)?; // Source asset url
-
 		struct MyAssetResolver {}
 
 		impl AssetResolver for MyAssetResolver {
@@ -75,14 +59,14 @@ impl AssetManager {
 
 		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, &json));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
 		let asset_handler_found = load_results.iter().any(|load_result| { load_result.is_ok() });
 
 		if !asset_handler_found {
-			log::warn!("No asset handler found for asset: {}", url);
+			log::warn!("No asset handler found for asset: {}", id);
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
@@ -94,22 +78,6 @@ impl AssetManager {
 	}
 	
 	pub async fn load_typed_resource<T: Resource>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> {
-		let mut dir = smol::fs::read_dir(assets_path()).await.or_else(|_| Err(LoadMessages::IO))?;
-
-		let entry = dir.find(|e| 
-			e.as_ref().unwrap().file_name().to_str().unwrap().contains(id) && e.as_ref().unwrap().path().extension().unwrap() == "json"
-		).await.ok_or(LoadMessages::NoAsset)?.or_else(|_| Err(LoadMessages::NoAsset))?;
-
-		let mut asset_resolver = smol::fs::File::open(entry.path()).await.or_else(|_| Err(LoadMessages::IO))?;
-
-		let mut json_string = String::with_capacity(1024);
-
-		asset_resolver.read_to_string(&mut json_string).await.or_else(|_| Err(LoadMessages::IO))?;
-
-		let json = json::parse(&json_string).or_else(|_| Err(LoadMessages::IO))?;
-
-		let url = json["url"].as_str().ok_or(LoadMessages::NoURL)?; // Source asset url
-
 		struct MyAssetResolver {}
 
 		impl AssetResolver for MyAssetResolver {
@@ -124,14 +92,14 @@ impl AssetManager {
 
 		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, &json));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
 		let asset_handler_found = load_results.iter().any(|load_result| { load_result.is_ok() });
 
 		if !asset_handler_found {
-			log::warn!("No asset handler found for asset: {}", url);
+			log::warn!("No asset handler found for asset: {}", id);
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
@@ -181,7 +149,7 @@ use super::*;
 	}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 			let res = if id == "example" {
 				Ok(Some(GenericResourceSerialization::new_with_serialized("id", "TestAsset", bson::Bson::Null)))
 			} else {

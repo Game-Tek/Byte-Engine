@@ -28,10 +28,8 @@ impl MaterialAssetHandler {
 }
 
 impl AssetHandler for MaterialAssetHandler {
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, id: &'a str, json: &'a json::JsonValue) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			let url = json["url"].as_str().ok_or("No url provided".to_string())?;
-
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "json" { return Err("Not my type".to_string()); }
 			}
@@ -73,7 +71,7 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				}).collect::<Vec<_>>();
 
-				let resource = GenericResourceSerialization::new(id, Material {
+				let resource = GenericResourceSerialization::new(url, Material {
 					double_sided: false,
 					alpha_mode: AlphaMode::Opaque,
 					model: Model {
@@ -94,7 +92,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await.ok_or("Failed to resolve parent material".to_string())?.0)).or_else(|_| { Err("Failed to parse JSON") })?;
 
-				let material = match self.load(asset_manager, asset_resolver, storage_backend, parent_material_url, &m_json).await {
+				let material = match self.load(asset_manager, asset_resolver, storage_backend, parent_material_url, None).await {
 					Ok(Some(m)) => { m }
 					Ok(None) | Err(_) => {
 						log::error!("Failed to load parent material");						
@@ -104,7 +102,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let material: TypedResourceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
 
-				let resource = GenericResourceSerialization::new(id, Variant {
+				let resource = GenericResourceSerialization::new(url, Variant {
 					material: material.solve(storage_backend).map_err(|_| { "Failed to solve material".to_string() })?,
 					variables: variant_json["variables"].members().map(|v| {
 						VariantVariable {
@@ -117,7 +115,7 @@ impl AssetHandler for MaterialAssetHandler {
 				match storage_backend.store(resource.clone(), &[]).await {
 					Ok(_) => {}
 					Err(_) => {
-						log::error!("Failed to store resource {}", id);
+						log::error!("Failed to store resource {}", url);
 					}
 				}
 
@@ -361,11 +359,7 @@ pub mod tests {
 
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
 
-		let doc = json::object! {
-			"url": "material.json",
-		};
-
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "Material.json", &doc)).expect("Image asset handler did not handle asset").expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "material.json", None)).unwrap().expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -384,7 +378,7 @@ pub mod tests {
 
 		let material = &generated_resources[1];
 
-		assert_eq!(material.id, "Material.json");
+		assert_eq!(material.id, "material.json");
 		assert_eq!(material.class, "Material");
 	}
 
@@ -398,12 +392,6 @@ pub mod tests {
 		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
-
-		let material_asset_json = r#"{
-			"url": "material.json"
-		}"#;
-
-		asset_resolver.add_file("Material.json", material_asset_json.as_bytes());
 
 		let material_json = r#"{
 			"domain": "World",
@@ -430,7 +418,7 @@ pub mod tests {
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
 
 		let variant_json = r#"{
-			"parent": "Material.json",
+			"parent": "material.json",
 			"variables": [
 				{
 					"name": "color",
@@ -441,11 +429,7 @@ pub mod tests {
 
 		asset_resolver.add_file("variant.json", variant_json.as_bytes());
 
-		let doc = json::object! {
-			"url": "variant.json",
-		};
-
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "Variant.json", &doc)).expect("Material asset handler did not handle asset").expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "variant.json", None)).unwrap().expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -464,13 +448,12 @@ pub mod tests {
 
 		let material = &generated_resources[1];
 		
-		assert_eq!(material.id, "Material.json");
+		assert_eq!(material.id, "material.json");
 		assert_eq!(material.class, "Material");
 
 		let variant = &generated_resources[2];
 
-		assert_eq!(variant.id, "Variant.json");
+		assert_eq!(variant.id, "variant.json");
 		assert_eq!(variant.class, "Variant");
-		// assert_eq!(variant.parent, "Material");
 	}
 }

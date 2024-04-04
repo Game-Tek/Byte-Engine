@@ -837,6 +837,7 @@ dependencies = [
  "shaderc",
  "utils",
  "wayland-client",
+ "wayland-protocols",
  "xcb",
 ]
 
@@ -2444,6 +2445,17 @@ checksum = "82fb96ee935c2cea6668ccb470fb7771f6215d1691746c2d896b447a00ad3f1f"
 dependencies = [
  "bitflags 2.4.2",
  "rustix",
+ "wayland-backend",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "wayland-protocols"
+version = "0.31.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f81f365b8b4a97f422ac0e8737c438024b5951734506b0e1d775c73030561f4"
+dependencies = [
+ "bitflags 2.4.2",
  "wayland-backend",
  "wayland-scanner",
 ]

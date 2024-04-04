@@ -265,6 +265,16 @@ impl Node {
 		}
 	}
 
+	pub fn intrinsic(name: &str, body: NodeReference) -> Node {
+		Node {
+			// parent: None,
+			node: Nodes::Intrinsic {
+				name: name.to_string(),
+				body,
+			},
+		}
+	}
+
 	pub fn new(node: Nodes) -> Node {
 		Node {
 			// parent: None,
@@ -448,6 +458,11 @@ impl Node {
 					return Some(r);
 				}
 			}
+			Nodes::Intrinsic { name, .. } => {
+				if child_name == name {
+					return Some(r);
+				}
+			}
 			Nodes::Null => {}
 		}
 
@@ -589,6 +604,10 @@ pub enum Nodes {
 	},
 	PushConstant {
 		members: Vec<NodeReference>,
+	},
+	Intrinsic {
+		name: String,
+		body: NodeReference,
 	},
 }
 
@@ -905,7 +924,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 							Nodes::Struct { fields, .. } => {
 								if parameters.len() != fields.len() { return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters); }
 							}
-							_ => { panic!("Expected function"); }
+							Nodes::Intrinsic { .. } => {}
+							_ => { return Err(LexError::Undefined { message: Some("Encountered parsing error while evaluating function call. Expected Function | Struct | Intrinsic, but found other.".to_string()) }); }
 						}
 					}
 
@@ -941,6 +961,16 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			};
 
 			this
+		}
+		parser::Nodes::Intrinsic { name, body } => {
+			let mut this = Node::intrinsic(name, Node::expression(Expressions::Return).into());
+
+			{
+				let c = lex_parsed_node(chain.clone(), body, parser_program,)?;
+				this.add_child(c);
+			}
+
+			this		
 		}
 	};
 
@@ -1224,6 +1254,80 @@ color: In<vec4f>;
 						}
 					}
 					_ => { panic!("Expected function."); }
+				}
+			}
+			_ => { panic!("Expected scope"); }
+		}
+	}
+
+	// TODO: test function with body with missing close brace
+
+	#[test]
+	fn lex_intrinsic() {
+		let source = "
+main: fn () -> void {
+	let n: u32 = intrinsic(0);
+}";
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let (node, mut program) = parser::parse(tokens).expect("Failed to parse");
+
+		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::glsl("0", Vec::new(), Vec::new()));
+
+		program.insert("intrinsic".to_string(), intrinsic.into());
+
+		let node = lex(&node, &program).expect("Failed to lex");
+		let node = node.borrow();
+
+		match node.node() {
+			Nodes::Scope{ name, .. } => {
+				assert_eq!(name, "root");
+
+				let main = node.get_child("main").unwrap();
+				let main = main.borrow();
+
+				match main.node() {
+					Nodes::Function { name, statements, .. } => {
+						assert_eq!(name, "main");
+						
+						let n = statements[0].borrow();
+
+						match n.node() {
+							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
+								assert_eq!(operator, &Operators::Assignment);
+
+								let n = left.borrow();
+
+								match n.node() {
+									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {
+										assert_eq!(name, "n");
+										assert_type(&r#type.borrow(), "u32");
+									}
+									_ => { panic!("Expected variable declaration"); }
+								}
+
+								let intrinsic = right.borrow();
+
+								match intrinsic.node() {
+									Nodes::Expression(Expressions::FunctionCall{ function, parameters }) => {
+										let function = function.borrow();
+
+										match function.node() {
+											Nodes::Intrinsic { name, .. } => {
+												assert_eq!(name, "intrinsic");
+											}
+											_ => { panic!("Expected intrinsic"); }
+										}
+
+										assert_eq!(parameters.len(), 1);
+									}
+									_ => { panic!("Expected function call"); }
+								}
+							}
+							_ => { panic!("Expected assignment"); }
+						}
+					}
+					_ => { panic!("Expected feature"); }
 				}
 			}
 			_ => { panic!("Expected scope"); }

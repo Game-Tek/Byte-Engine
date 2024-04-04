@@ -116,6 +116,10 @@ pub enum Nodes {
 		input: Vec<String>,
 		output: Vec<String>,
 	},
+	Intrinsic {
+		name: String,
+		body: NodeReference,
+	},
 }
 
 #[derive(Clone, Debug)]
@@ -276,6 +280,15 @@ impl NodeReference {
 				code: code.to_string(),
 				input,
 				output,
+			},
+		}))
+	}
+
+	pub fn intrinsic(name: &str, parameters: NodeReference) -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Intrinsic {
+				name: name.to_string(),
+				body: parameters,
 			},
 		}))
 	}
@@ -573,7 +586,7 @@ fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 }
 
 fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, _: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
-	let value = iterator.next().and_then(|v| if v == "2.0" || v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	let value = iterator.next().and_then(|v| if v == "0" || v == "2.0" || v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?; // TODO: do real literal parsing
 
 	expressions.push(Atoms::Literal{ value: value.clone() });
 
@@ -713,7 +726,7 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		}
 
 		// check if iter is close brace
-		if iterator.clone().peekable().peek().unwrap().as_str() == "}" {
+		if iterator.clone().peekable().peek().ok_or(ParsingFailReasons::BadSyntax { message: "Expected a '}' after function body".to_string() })?.as_str() == "}" {
 			iterator.next();
 			break;
 		}

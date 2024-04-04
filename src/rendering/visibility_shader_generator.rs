@@ -161,7 +161,7 @@ impl VisibilityShaderGenerator {
 
 		let calculate_full_bary = NodeReference::function("calculate_full_bary", vec![NodeReference::member("pt0", "vec4f"), NodeReference::member("pt1", "vec4f"), NodeReference::member("pt2", "vec4f"), NodeReference::member("pixelNdc", "vec2f"), NodeReference::member("winSize", "vec2f")], "BarycentricDeriv", vec![NodeReference::glsl("BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;", Vec::new(), Vec::new())]);
 		
-		let sample_function = NodeReference::function("sample", vec![NodeReference::member("uv", "vec2f"), NodeReference::member("texture", "u32")], "vec4f", vec![NodeReference::glsl("return texture(texture, uv);", Vec::new(), Vec::new())]);
+		let sample_function = NodeReference::intrinsic("sample", NodeReference::glsl("texture(textures[nonuniformEXT(material.textures[0])], uv)", vec!["textures".to_string()], Vec::new()));
 
 		Self {
 			mesh_struct,
@@ -296,11 +296,18 @@ float roughness = float(0.5);";
 
 		let mut extra = Vec::new();
 
-		// "textures[nonuniformEXT(material.textures[{}])]"
 		for variable in material["variables"].members() {
-			let x = jspd::parser::NodeReference::specialization(variable["name"].as_str().unwrap(), variable["data_type"].as_str().unwrap());
-			program_state.insert(variable["name"].as_str().unwrap().to_string(), x.clone());
-			extra.push(x);
+			let name = variable["name"].as_str().unwrap();
+			let data_type = variable["data_type"].as_str().unwrap();
+
+			match data_type {
+				"u32" | "f32" | "vec2f" | "vec3f" | "vec4" => {
+					let x = jspd::parser::NodeReference::specialization(name, data_type);
+					program_state.insert(name.to_string(), x.clone());
+					extra.push(x);
+				}
+				_ => {}
+			}
 		}
 
 		let b = "

@@ -436,6 +436,8 @@ impl VisibilityWorldRenderDomain {
 			let buffer = if let Some(b) = resource.get_buffer() {
 				b
 			} else {
+				log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
+				// TODO: maybe fill buffer with a default color
 				return;
 			};
 

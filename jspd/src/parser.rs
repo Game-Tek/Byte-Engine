@@ -66,6 +66,7 @@ impl Node {
 
 #[derive(Clone, Debug)]
 pub enum Nodes {
+	Null,
 	Scope {
 		name: String,
 		children: Vec<NodeReference>,
@@ -290,6 +291,12 @@ impl NodeReference {
 				name: name.to_string(),
 				body: parameters,
 			},
+		}))
+	}
+
+	pub fn null() -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Null,
 		}))
 	}
 }

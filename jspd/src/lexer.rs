@@ -331,10 +331,10 @@ impl Node {
 
 	pub fn get_child(&self, child_name: &str) -> Option<NodeReference> {
 		match &self.node {
-			Nodes::Scope { children, .. } => {
-				for child in children {
-					if let Some(x) = child.borrow().get_child_a(child_name, child.clone()) {
-						return Some(x);
+			Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } => {
+				for member in members {
+					if let Some(c) = RefCell::borrow(&member).get_child_a(child_name, member.clone()) {
+						return Some(c);
 					}
 				}
 			}
@@ -390,7 +390,12 @@ impl Node {
 					}
 				}
 			}
-			_ => {}
+			Nodes::Intrinsic { body, .. } => {
+				if let Some(c) = RefCell::borrow(&body).get_child_a(child_name, body.clone()) {
+					return Some(c);
+				}
+			}
+			Nodes::Member { .. } | Nodes::Binding { .. } | Nodes::Specialization { .. } | Nodes::Null => {}
 		}
 
 		None
@@ -398,33 +403,13 @@ impl Node {
 
 	fn get_child_a(&self, child_name: &str, r: NodeReference) -> Option<NodeReference> {
 		match &self.node {
-			Nodes::Scope { name, .. } => {
-				if child_name == name {
-					return Some(r);
-				}
-			}
-			Nodes::Struct { name, .. } => {
-				if child_name == name {
-					return Some(r);
-				}
-			}
-			Nodes::Function { name, .. } => {
+			Nodes::Scope { name, .. } | Nodes::Struct { name, .. } | Nodes::Function { name, .. } | Nodes::Binding { name, .. } | Nodes::Specialization { name, .. } | Nodes::Member { name, .. } | Nodes::Intrinsic { name, .. } => {
 				if child_name == name {
 					return Some(r);
 				}
 			}
 			Nodes::PushConstant { .. } => {
 				if child_name == "push_constant" {
-					return Some(r);
-				}
-			}
-			Nodes::Binding { name, .. } => {
-				if child_name == name {
-					return Some(r);
-				}
-			}
-			Nodes::Specialization { name, .. } => {
-				if child_name == name {
 					return Some(r);
 				}
 			}
@@ -451,16 +436,6 @@ impl Node {
 					if let Some(c) = RefCell::borrow(&o).get_child(child_name) {
 						return Some(c);
 					}
-				}
-			}
-			Nodes::Member { name, .. } => {
-				if child_name == name {
-					return Some(r);
-				}
-			}
-			Nodes::Intrinsic { name, .. } => {
-				if child_name == name {
-					return Some(r);
 				}
 			}
 			Nodes::Null => {}
@@ -496,16 +471,7 @@ impl Node {
 
 	pub fn get_name(&self) -> Option<String> {
 		match &self.node {
-			Nodes::Scope { name, .. } => {
-				Some(name.clone())
-			}
-			Nodes::Function { name, .. } => {
-				Some(name.clone())
-			}
-			Nodes::Member { name, .. } => {
-				Some(name.clone())
-			}
-			Nodes::Struct { name, .. } => {
+			Nodes::Scope { name, .. } | Nodes::Function { name, .. } | Nodes::Member { name, .. } | Nodes::Struct { name, .. } | Nodes::Intrinsic { name, .. } => {
 				Some(name.clone())
 			}
 			_ => {
@@ -537,6 +503,12 @@ impl Node {
 			_ => {
 				None
 			}
+		}
+	}
+	
+	fn null() -> Node {
+		Self {
+			node: Nodes::Null,
 		}
 	}
 }
@@ -681,6 +653,7 @@ fn get_reference(chain: &[&Node], name: &str) -> Option<NodeReference> {
 
 fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
 	let node = match &parser_node.node {
+		parser::Nodes::Null => { Node::new(Nodes::Null) }
 		parser::Nodes::Scope{ name, children } => {
 			assert_ne!(name, "root"); // The root scope node cannot be an inner part of the program.
 
@@ -913,26 +886,24 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					let function = lex_parsed_node(chain.clone(), t, parser_program,)?;
 					let parameters = parameters.iter().map(|e| lex_parsed_node(chain.clone(), e, parser_program,)).collect::<Result<Vec<NodeReference>, LexError>>()?;
 
-					{ // Validate function call
-						let function = RefCell::borrow(&function.0);
-						let function = function.node();
+					let r = function.clone(); // Clone to be able to borrow it in and return it
 
-						match function {
-							Nodes::Function { params, .. } => {
+					{ // Validate function call
+						let b = RefCell::borrow(&function.0);
+						match b.node() {
+							Nodes::Function { params, .. } | Nodes::Struct { fields: params, .. } => {
 								if params.len() != parameters.len() { return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters); }
+								Node::expression(Expressions::FunctionCall {
+									function: r,
+									parameters,
+								})
 							}
-							Nodes::Struct { fields, .. } => {
-								if parameters.len() != fields.len() { return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters); }
+							Nodes::Intrinsic { body, .. } => {
+								Node::intrinsic(&name, body.clone())
 							}
-							Nodes::Intrinsic { .. } => {}
 							_ => { return Err(LexError::Undefined { message: Some("Encountered parsing error while evaluating function call. Expected Function | Struct | Intrinsic, but found other.".to_string()) }); }
 						}
 					}
-
-					Node::expression(Expressions::FunctionCall {
-						function,
-						parameters,
-					})
 				}
 				parser::Expressions::Operator{ name, left, right } => {
 					Node::expression(Expressions::Operator {
@@ -963,14 +934,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			this
 		}
 		parser::Nodes::Intrinsic { name, body } => {
-			let mut this = Node::intrinsic(name, Node::expression(Expressions::Return).into());
-
-			{
-				let c = lex_parsed_node(chain.clone(), body, parser_program,)?;
-				this.add_child(c);
-			}
-
-			this		
+			Node::intrinsic(name, lex_parsed_node(chain.clone(), body, parser_program,)?)
 		}
 	};
 

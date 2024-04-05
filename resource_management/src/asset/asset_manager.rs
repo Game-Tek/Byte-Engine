@@ -1,6 +1,6 @@
 use smol::{io::AsyncReadExt, stream::StreamExt};
 
-use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Resource, StorageBackend, TypedResource};
+use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Model, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 use super::asset_handler::AssetHandler;
 
@@ -77,7 +77,7 @@ impl AssetManager {
 		&self.storage_backend
 	}
 	
-	pub async fn load_typed_resource<T: Resource>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> {
+	pub async fn load_typed_resource<'a, T: Resource + Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> where TypedResourceModel<T>: Solver<'a, TypedResource<T>> {
 		struct MyAssetResolver {}
 
 		impl AssetResolver for MyAssetResolver {
@@ -103,9 +103,15 @@ impl AssetManager {
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
-		todo!("Implement loading typed resources");
+		let meta_resource = load_results.iter().find(|load_result| { load_result.is_ok() }).ok_or(LoadMessages::NoAsset)?.clone().unwrap().unwrap();
 
-		// Ok(())
+		let resource: TypedResourceModel<T> = meta_resource.try_into().or(Err(LoadMessages::IO))?;
+		let resource = resource.solve(storage_backend).or_else(|error| {
+			log::error!("Failed to solve resource {}", id);
+			Err(LoadMessages::IO)
+		})?;
+
+		Ok(resource.into())
 	}
 }
 

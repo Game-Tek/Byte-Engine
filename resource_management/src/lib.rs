@@ -64,6 +64,12 @@ impl GenericResourceSerialization {
 	// }
 }
 
+impl <T: Model + for <'de> serde::Deserialize<'de>> From<GenericResourceSerialization> for TypedResourceModel<T> {
+	fn from(value: GenericResourceSerialization) -> Self {
+		TypedResourceModel::new(&value.id, 0) // TODO: hash
+	}
+}
+
 #[derive()]
 pub struct GenericResourceResponse<'a> {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
@@ -98,7 +104,9 @@ impl <'a> GenericResourceResponse<'a> {
 	}
 }
 
-pub trait Model {}
+pub trait Model {
+	fn get_class() -> &'static str;
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct TypedResourceModel<T: Model> {
@@ -109,23 +117,23 @@ pub struct TypedResourceModel<T: Model> {
 	phantom: std::marker::PhantomData<T>,
 }
 
-impl <T: Model + Resource> TypedResourceModel<T> {
-	pub fn new(id: &str, hash: u64, resource: T) -> Self {
+impl <T: Model> TypedResourceModel<T> {
+	pub fn new(id: &str, hash: u64) -> Self {
 		TypedResourceModel {
 			id: id.to_string(),
 			hash,
-			class: resource.get_class().to_string(),
+			class: T::get_class().to_string(),
 			phantom: std::marker::PhantomData,
 		}
 	}
 }
 
-impl <'a, T: Model> From<GenericResourceResponse<'a>> for TypedResourceModel<T> {
-	fn from(value: GenericResourceResponse) -> Self {
+impl <'a, T: Model + ResourceStore<'a>> From<T> for TypedResourceModel<T> {
+	fn from(value: T) -> Self {
 		TypedResourceModel {
-			id: value.id,
-			hash: value.hash,
-			class: value.class,
+			id: value.id().to_string(),
+			hash: 0,
+			class: value.class().to_string(),
 			phantom: std::marker::PhantomData,
 		}
 	}
@@ -187,15 +195,10 @@ impl <T: Resource> TypedResource<T> {
 	}
 }
 
-impl <T: Resource + Model + for<'de> serde::Deserialize<'de>> TryInto<TypedResourceModel<T>> for GenericResourceSerialization {
-	type Error = ();
-
-	fn try_into(self) -> Result<TypedResourceModel<T>, Self::Error> {
-		let resource = bson::from_bson(self.resource).map_err(|_| ())?;
-
-		Ok(TypedResourceModel::new(&self.id, 0, resource))
+impl <'a, M: Model + for<'de> serde::Deserialize<'de>> Into<TypedResourceModel<M>> for GenericResourceResponse<'a> {
+	fn into(self) -> TypedResourceModel<M> {
+		TypedResourceModel::new(&self.id, 0) // TODO: hash
 	}
-
 }
 
 #[derive(Debug, Clone)]
@@ -385,13 +388,17 @@ pub trait ResourceStore<'a> {
 	fn id(&self) -> &str;
 	fn resource(&self) -> &dyn Resource;
 	fn get_buffer(&self) -> Option<&[u8]>;
+	fn class(&self) -> &str;
 }
 
 impl <'a, T: Resource> ResourceStore<'a> for TypedResource<T> {
 	fn id(&self) -> &str {
 		self.id()
 	}
-
+	
+	fn class(&self) -> &str {
+		self.resource().get_class()
+	}
 	fn resource(&self) -> &dyn Resource {
 		self.resource()
 	}
@@ -404,6 +411,10 @@ impl <'a, T: Resource> ResourceStore<'a> for TypedResource<T> {
 impl <'a> ResourceStore<'a> for ResourceResponse<'a> {
 	fn id(&self) -> &str {
 		self.id()
+	}
+
+	fn class(&self) -> &str {
+		&self.class
 	}
 
 	fn resource(&self) -> &dyn Resource {
@@ -490,9 +501,8 @@ enum SolveErrors {
 	StorageError,
 }
 
-trait Solver<'de> where Self: serde::Deserialize<'de> {
-	type T;
-	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<Self::T, SolveErrors>;
+trait Solver<'de, T> where Self: serde::Deserialize<'de> {
+	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<T, SolveErrors>;
 }
 
 // impl <T: Resource, 'de> Solver<'de> for T where T: Clone 
@@ -684,7 +694,7 @@ mod tests {
 		}
 
 		impl Model for BaseModel {
-			// fn get_class(&self) -> &'static str { "BaseModel" }
+			fn get_class() -> &'static str { "Base" }
 		}
 
 		impl Resource for Item {
@@ -692,7 +702,7 @@ mod tests {
 		}
 
 		impl Model for Item {
-			
+			fn get_class() -> &'static str { "Item" }
 		}
 
 		impl Resource for Variant {
@@ -705,8 +715,7 @@ mod tests {
 		smol::block_on(storage_backend.store(GenericResourceSerialization::new("base", Base{ items: vec![TypedResource::new("item", 0, Item{ property: "hello".to_string() })] }), &[])).unwrap();
 		smol::block_on(storage_backend.store(GenericResourceSerialization::new("variant", Variant{ parent: TypedResource::new("base", 0, Base{ items: vec![TypedResource::new("item", 0, Item{ property: "hello".to_string() })] }) }), &[])).unwrap();
 
-		impl <'de> Solver<'de> for TypedResourceModel<BaseModel> {
-			type T = TypedResource<Base>;
+		impl <'de> Solver<'de, TypedResource<Base>> for TypedResourceModel<BaseModel> {
 			fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Base>, SolveErrors> {
 				let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 				println!("{:#?}", gr.resource);
@@ -720,8 +729,7 @@ mod tests {
 			}
 		}
 
-		impl <'de> Solver<'de> for TypedResourceModel<Item> {
-			type T = TypedResource<Item>;
+		impl <'de> Solver<'de, TypedResource<Item>> for TypedResourceModel<Item> {
 			fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Item>, SolveErrors> {
 				let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 				let item = Item::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;

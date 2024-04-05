@@ -366,6 +366,9 @@ impl ShaderCompilation {
 				if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
 				string.insert_str(0, &l_string);
 			}
+			jspd::Nodes::Intrinsic { body, .. } => {
+				self.generate_shader_internal(string, &body);
+			}
 		}
 	}
 

@@ -76,8 +76,7 @@ pub struct ParameterModel {
 	pub value: ValueModel,
 }
 
-impl <'de> Solver<'de> for TypedResourceModel<Image> {
-	type T = TypedResource<Image>;
+impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Image>, SolveErrors> {
 		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Image { compression, format, extent } = Image::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
@@ -90,8 +89,7 @@ impl <'de> Solver<'de> for TypedResourceModel<Image> {
 	}
 }
 
-impl <'de> Solver<'de> for ParameterModel {
-	type T = Parameter;
+impl <'de> Solver<'de, Parameter> for ParameterModel {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
 			r#type: self.r#type.clone(),
@@ -160,11 +158,10 @@ impl Resource for MaterialModel {
 }
 
 impl super::Model for MaterialModel {
-	// fn get_class(&self) -> &'static str { "Material" }
+	fn get_class() -> &'static str { "Material" }
 }
 
-impl <'de> Solver<'de> for TypedResourceModel<MaterialModel> {
-	type T = TypedResource<Material>;
+impl <'de> Solver<'de, TypedResource<Material>> for TypedResourceModel<MaterialModel> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Material>, SolveErrors> {
 		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
@@ -202,11 +199,10 @@ pub struct VariantModel {
 }
 
 impl super::Model for VariantModel {
-	// fn get_class(&self) -> &'static str { "Variant" }
+	fn get_class() -> &'static str { "Variant" }
 }
 
-impl <'de> Solver<'de> for TypedResourceModel<VariantModel> {
-	type T = TypedResource<Variant>;
+impl <'de> Solver<'de, TypedResource<Variant>> for TypedResourceModel<VariantModel> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Variant>, SolveErrors> {
 		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
@@ -253,10 +249,11 @@ impl Resource for Shader {
 	fn get_class(&self) -> &'static str { "Shader" }
 }
 
-impl super::Model for Shader {}
+impl super::Model for Shader {
+	fn get_class() -> &'static str { "Shader" }
+}
 
-impl <'de> Solver<'de> for TypedResourceModel<Shader> {
-	type T = TypedResource<Shader>;
+impl <'de> Solver<'de, TypedResource<Shader>> for TypedResourceModel<Shader> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Shader>, SolveErrors> {
 		let (gr, mut reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
@@ -441,4 +438,5 @@ impl Resource for Image {
 }
 
 impl super::Model for Image {
+	fn get_class() -> &'static str { "Image" }
 }

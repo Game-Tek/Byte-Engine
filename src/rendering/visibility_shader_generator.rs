@@ -135,7 +135,7 @@ impl VisibilityShaderGenerator {
 		let set0_binding4 = NodeReference::binding("vertex_indices", NodeReference::buffer("VertexIndices", vec![NodeReference::member("vertex_indices", "u16[8192]")]), 0, 4, true, false);
 		let set0_binding5 = NodeReference::binding("primitive_indices", NodeReference::buffer("PrimitiveIndices", vec![NodeReference::member("primitive_indices", "u8[8192]")]), 0, 5, true, false);
 		let set0_binding6 = NodeReference::binding("meshlets", NodeReference::buffer("MeshletsBuffer", vec![NodeReference::member("meshlets", "Meshlet[8192]")]), 0, 6, true, false);
-		let set0_binding7 = NodeReference::binding_array("textureNodeReferences", NodeReference::combined_image_sampler(), 0, 7, true, false, 16);
+		let set0_binding7 = NodeReference::binding_array("textures", NodeReference::combined_image_sampler(), 0, 7, true, false, 16);
 
 		let set1_binding0 = NodeReference::binding("material_count", NodeReference::buffer("MaterialCount", vec![NodeReference::member("material_count", "u32[2073600]")]), 1, 0, true, false);
 		let set1_binding1 = NodeReference::binding("material_offset", NodeReference::buffer("MaterialOffset", vec![NodeReference::member("material_offset", "u32[2073600")]), 1, 1, true, false);
@@ -441,7 +441,7 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 
 		let mut ret = Vec::with_capacity(32);
 		ret.append(&mut extra);
-		ret.append(&mut vec![self.sample_function.clone(), push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), m]);
+		ret.append(&mut vec![self.sample_function.clone(), push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, set0_binding7, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), m]);
 		ret
 	}
 }

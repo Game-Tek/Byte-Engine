@@ -1,3 +1,3 @@
 main: fn () -> void {
-	albedo = sample(uv, color);
+	albedo = sample(color);
 }

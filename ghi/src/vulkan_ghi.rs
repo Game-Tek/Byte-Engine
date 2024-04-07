@@ -906,13 +906,14 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
 		let texture = &self.images[texture_handle.0 as usize];
+		assert!(texture.pointer != std::ptr::null());
 		unsafe {
 			std::slice::from_raw_parts_mut(texture.pointer as *mut u8, texture.size)
 		}
 	}
 
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
-		let size = (extent.width() * extent.height() * extent.depth() * 4) as usize;
+		let size = (extent.width() * extent.height() * extent.depth() * 4) as usize; // TODO. fix this
 
 		let texture_handle = graphics_hardware_interface::ImageHandle(self.images.len() as u64);
 
@@ -925,9 +926,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 			let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1);
 
-			let (allocation_handle, pointer) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
+			let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
 
-			let (address, pointer) = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
+			let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
 			let texture_handle = ImageHandle(self.images.len() as u64);
 
@@ -936,7 +937,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			let (staging_buffer, pointer) = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
-				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuRead);
+				let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuRead);
 
 				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
 
@@ -953,7 +954,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
 				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
-				let (allocation_handle, pointer) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
+				let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 
 				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
 
@@ -1542,6 +1543,13 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16_SFLOAT }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16_SNORM }
+			}
+		}
+		graphics_hardware_interface::Formats::RGB8(encoding) => {
+			match encoding {
+				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
+				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8B8_UNORM }
+				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8_SNORM }
 			}
 		}
 		graphics_hardware_interface::Formats::RGB16(encoding) => {

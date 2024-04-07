@@ -431,23 +431,49 @@ impl VisibilityWorldRenderDomain {
 				}
 			});
 
-			let new_texture = ghi.create_image(Some(&resource.id()), Extent::from(texture.extent), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-
-			let buffer = if let Some(b) = resource.get_buffer() {
-				b
-			} else {
-				log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
-				// TODO: maybe fill buffer with a default color
-				return;
+			let format = match texture.format {
+				resource_management::types::Formats::RGB8 => ghi::Formats::RGB8(ghi::Encodings::UnsignedNormalized),
+				resource_management::types::Formats::RGB16 => ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized),
+				resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
+				resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
 			};
 
-			ghi.get_texture_slice_mut(new_texture).copy_from_slice(buffer);
+			let extent = Extent::from(texture.extent);
+
+			let image = if let Some(b) = resource.get_buffer() {
+				let new_texture = ghi.create_image(Some(&resource.id()), extent, format, compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
+				new_texture
+			} else {
+				let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
+				let slice = ghi.get_texture_slice_mut(new_texture);
+
+				// Generate checkboard pattern image
+				for y in 0..extent.height() {
+					for x in 0..extent.width() {
+						let color = if (x / 32 + y / 32) % 2 == 0 {
+							RGBA::white()
+						} else {
+							RGBA::black()
+						};
+
+						let index = ((y * extent.width() + x) * 4) as usize;
+						slice[index + 0] = (color.r * 255.0) as u8;
+						slice[index + 1] = (color.g * 255.0) as u8;
+						slice[index + 2] = (color.b * 255.0) as u8;
+						slice[index + 3] = (color.a * 255.0) as u8;
+					}
+				}
+
+				new_texture
+			};
 			
 			let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
-			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(textures_binding, new_texture, sampler, ghi::Layouts::Read),]);
+			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(textures_binding, image, sampler, ghi::Layouts::Read),]);
 
-			pending_texture_loads.push(new_texture);
+			pending_texture_loads.push(image);
 		}
 	}
 

@@ -2,6 +2,7 @@
 
 #![feature(generic_const_exprs)]
 #![feature(pointer_is_aligned)]
+#![feature(pointer_is_aligned_to)]
 
 pub mod window;
 pub mod graphics_hardware_interface;

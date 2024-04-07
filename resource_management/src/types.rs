@@ -78,14 +78,23 @@ pub struct ParameterModel {
 
 impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Image>, SolveErrors> {
-		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let (gr, mut resource_reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Image { compression, format, extent } = Image::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(TypedResource::new(&self.id, self.hash, Image {
+		let bx = {
+			let mut vec = Vec::with_capacity(gr.size);
+			unsafe {
+				vec.set_len(gr.size);
+			}
+			smol::block_on(resource_reader.read_into(0, &mut vec));
+			vec.into_boxed_slice()
+		};
+
+		Ok(TypedResource::new_with_buffer(&self.id, self.hash, Image {
 			compression,
 			format,
 			extent,
-		}))
+		}, bx))
 	}
 }
 
@@ -413,7 +422,7 @@ pub struct CreateImage {
 
 impl CreateResource for CreateImage {}
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionSchemes {
 	BC7,
 }

@@ -26,7 +26,9 @@ impl AssetHandler for ImageAssetHandler {
 			if dt != "png" { return Err("Not my type".to_string()); }
 
 			let mut decoder = png::Decoder::new(data.as_slice());
-			decoder.set_transformations(png::Transformations::normalize_to_color8());
+			if true { // TODO: make this a setting
+				decoder.set_transformations(png::Transformations::normalize_to_color8());
+			}
 			let mut reader = decoder.read_info().unwrap();
 			let mut buffer = vec![0; reader.output_buffer_size()];
 			let info = reader.next_frame(&mut buffer).unwrap();
@@ -53,30 +55,34 @@ impl AssetHandler for ImageAssetHandler {
 				_ => { panic!("Unsupported color type") }
 			};
 			
-			let (data, compression) = match format {
+			let (data, format, compression) = match format {
 				Formats::RGB8 => {
 					let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
 
 					for y in 0..extent.height() {
 						for x in 0..extent.width() {
 							let index = ((x + y * extent.width()) * 3) as usize;
-							buf.push(data[index + 0]);
-							buf.push(data[index + 1]);
-							buf.push(data[index + 2]);
-							buf.push(255);
+							buf.push(buffer[index + 0]);
+							buf.push(buffer[index + 1]);
+							buf.push(buffer[index + 2]);
+							buf.push(0xFF);
 						}
 					}
 
-					let rgba_surface = intel_tex_2::RgbaSurface {
-						data: &buf,
-						width: extent.width(),
-						height: extent.height(),
-						stride: extent.width() * 4,
-					};
-		
-					let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
-
-					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Some(CompressionSchemes::BC7))
+					if true { // TODO: make this a setting
+						let rgba_surface = intel_tex_2::RgbaSurface {
+							data: &buf,
+							width: extent.width(),
+							height: extent.height(),
+							stride: extent.width() * 4,
+						};
+			
+						let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
+	
+						(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Formats::RGBA8, Some(CompressionSchemes::BC7))
+					} else {
+						(buf, Formats::RGBA8, None)
+					}
 				}
 				Formats::RGB16 => {
 					let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
@@ -84,26 +90,30 @@ impl AssetHandler for ImageAssetHandler {
 					for y in 0..extent.height() {
 						for x in 0..extent.width() {
 							let index = ((x + y * extent.width()) * 6) as usize;
-							buf.push(data[index + 0]); buf.push(data[index + 1]);
-							buf.push(data[index + 2]); buf.push(data[index + 3]);
-							buf.push(data[index + 4]); buf.push(data[index + 5]);
-							buf.push(255); buf.push(255);
+							buf.push(buffer[index + 0]); buf.push(buffer[index + 1]);
+							buf.push(buffer[index + 2]); buf.push(buffer[index + 3]);
+							buf.push(buffer[index + 4]); buf.push(buffer[index + 5]);
+							buf.push(0xFF); buf.push(0xFF);
 						}
 					}
 
-					let rgba_surface = intel_tex_2::RgbaSurface {
-						data: &buf,
-						width: extent.width(),
-						height: extent.height(),
-						stride: extent.width() * 8,
-					};
-		
-					let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
-
-					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Some(CompressionSchemes::BC7))
+					if true {
+						let rgba_surface = intel_tex_2::RgbaSurface {
+							data: &buf,
+							width: extent.width(),
+							height: extent.height(),
+							stride: extent.width() * 8,
+						};
+			
+						let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
+	
+						(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Formats::RGBA16, Some(CompressionSchemes::BC7))
+					} else {
+						(buf, Formats::RGBA16, None)
+					}
 				}
-				_ => {
-					(data, None)
+				Formats::RGBA16 | Formats::RGBA8 => {
+					panic!("Unsupported format")
 				}
 			};
 

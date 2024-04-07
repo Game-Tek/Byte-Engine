@@ -42,6 +42,7 @@ impl ResourceHandler for ImageResourceHandler {
 						buffer.set_len(resource.size);
 					}
 					reader.read_into(0, &mut buffer).await?;
+					resource.set_box_buffer(buffer.into());
 				}
 			}
 
@@ -77,6 +78,8 @@ mod tests {
 		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
 
 		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader), &storage_backend)).expect("Failed to read image resource");
+
+		assert!(resource.get_buffer().is_some());
 
 		let image = resource.resource.downcast_ref::<Image>().unwrap();
 

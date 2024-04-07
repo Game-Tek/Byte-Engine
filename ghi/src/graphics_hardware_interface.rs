@@ -609,14 +609,14 @@ pub enum ShaderTypes {
 	Callable,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Encodings {
 	FloatingPoint,
 	UnsignedNormalized,
 	SignedNormalized,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// Enumerates the formats that textures can have.
 pub enum Formats {
 	/// 10 bit unsigned for R, G and 11 bit unsigned for B normalized RGB.
@@ -630,12 +630,13 @@ pub enum Formats {
 	R16(Encodings),
 	R32(Encodings),
 	RG16(Encodings),
+	RGB8(Encodings),
 	RGB16(Encodings),
 	RGBA8(Encodings),
 	RGBA16(Encodings),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CompressionSchemes {
 	BC7,
 }

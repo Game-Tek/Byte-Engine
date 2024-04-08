@@ -61,6 +61,18 @@ impl ResourceHandler for MeshResourceHandler {
 	
 							reader.read_into(mesh_resource.vertex_count as usize * 12, buffer.take(mesh_resource.vertex_count as usize * 12)).await?;
 						}
+						"Vertex.Tangent" => {
+							#[cfg(debug_assertions)]
+							if !mesh_resource.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Tangent) { log::error!("Requested Vertex.Tangent stream but mesh does not have tangents."); continue; }
+	
+							reader.read_into(mesh_resource.vertex_count as usize * 24, buffer.take(mesh_resource.vertex_count as usize * 12)).await?;
+						}
+						"Vertex.UV" => {
+							#[cfg(debug_assertions)]
+							if !mesh_resource.vertex_components.iter().any(|v| v.semantic == VertexSemantics::Uv) { log::error!("Requested Vertex.TexCoord stream but mesh does not have texcoords."); continue; }
+	
+							reader.read_into(mesh_resource.vertex_count as usize * 24, buffer.take(mesh_resource.vertex_count as usize * 8)).await?;
+						}
 						"TriangleIndices" => {
 							#[cfg(debug_assertions)]
 							if !mesh_resource.index_streams.iter().any(|stream| stream.stream_type == IndexStreamTypes::Triangles) { log::error!("Requested Index stream but mesh does not have triangle indices."); continue; }

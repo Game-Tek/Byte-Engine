@@ -150,15 +150,15 @@ layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
 	vec3 vertex_positions[];
 };
 
-layout(set=0,binding=4,scalar) buffer readonly VertexIndices {
+layout(set=0,binding=6,scalar) buffer readonly VertexIndices {
 	uint16_t vertex_indices[];
 };
 
-layout(set=0,binding=5,scalar) buffer readonly PrimitiveIndices {
+layout(set=0,binding=7,scalar) buffer readonly PrimitiveIndices {
 	uint8_t primitive_indices[];
 };
 
-layout(set=0,binding=6,scalar) buffer readonly MeshletsBuffer {
+layout(set=0,binding=8,scalar) buffer readonly MeshletsBuffer {
 	Meshlet meshlets[];
 };
 

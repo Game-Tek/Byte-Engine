@@ -5,7 +5,6 @@
 #![feature(const_mut_refs)]
 #![feature(is_sorted)]
 #![feature(iter_map_windows)]
-#![feature(pointer_is_aligned)]
 #![feature(fn_ptr_trait)]
 #![feature(new_uninit)]
 #![feature(trivial_bounds)]

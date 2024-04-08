@@ -1,7 +1,6 @@
 //! The G.H.I. module (graphics hardware interface) is responsible for abstracting the access to the graphics hardware.
 
 #![feature(generic_const_exprs)]
-#![feature(pointer_is_aligned)]
 #![feature(pointer_is_aligned_to)]
 
 pub mod window;

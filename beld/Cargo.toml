@@ -1,0 +1,10 @@
+[package]
+name = "beld"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+resource_management = { path = "../resource_management" }
+
+clap = { version = "4.5.4", features = ["derive"] }
+smol = "2.0.0"

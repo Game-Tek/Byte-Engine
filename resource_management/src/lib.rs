@@ -519,6 +519,8 @@ trait Solver<'de, T> where Self: serde::Deserialize<'de> {
 // impl <T: Resource, 'de> Solver<'de> for T where T: Clone 
 
 pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
+	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
+	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
 	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
 	fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
@@ -528,7 +530,7 @@ pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 
 downcast_rs::impl_downcast!(StorageBackend);
 
-struct DbStorageBackend {
+pub struct DbStorageBackend {
 	db: polodb_core::Database,
 	path: std::path::PathBuf,
 }
@@ -551,23 +553,24 @@ impl DbStorageBackend {
 		let db = match db_res {
 			Ok(db) => db,
 			Err(_) => {
-				// Delete file and try again
-				std::fs::remove_file(path).unwrap();
+				// // Delete file and try again
+				// std::fs::remove_file(path).unwrap();
 
-				log::warn!("Database file was corrupted, deleting and trying again.");
+				// log::warn!("Database file was corrupted, deleting and trying again.");
 
-				let db_res = polodb_core::Database::open_file(path);
+				// let db_res = polodb_core::Database::open_file(path);
 
-				match db_res {
-					Ok(db) => db,
-					Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
-						Ok(db) => {
-							log::error!("Could not create database file, using memory database instead.");
-							db
-						},
-						Err(_) => panic!("Could not create database"),
-					}
-				}
+				// match db_res {
+				// 	Ok(db) => db,
+				// 	Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
+				// 		Ok(db) => {
+				// 			log::error!("Could not create database file, using memory database instead.");
+				// 			db
+				// 		},
+				// 		Err(_) => panic!("Could not create database"),
+				// 	}
+				// }
+				panic!("Could not create database")
 			}
 		};
 
@@ -589,6 +592,79 @@ impl DbStorageBackend {
 }
 
 impl StorageBackend for DbStorageBackend {
+	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>> {
+		Box::pin(async move {
+			let mut resources = Vec::new();
+
+			let cursor = self.db.collection::<bson::Document>("resources").find(None); // polodb_core can sometimes return deleted records, so don't worry about it
+
+			for doc in cursor.unwrap() {
+				let doc = doc.unwrap();
+				resources.push(doc.get_str("id").unwrap().to_string());
+			}
+
+			Ok(resources)
+		})
+	}
+
+	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>> {
+		Box::pin(async move {
+			match self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }) {
+				Ok(o) => {
+					match o {
+						Some(o) => {
+							let db_id = o.get_object_id("_id").map_err(|_| "Resource entry does not have '_id' key of type 'ObjectId'".to_string())?;
+							let resource_path = Self::resolve_resource_path(std::path::Path::new(db_id.to_string().as_str()));
+
+							let file_deletion_result = smol::fs::remove_file(&resource_path).await;
+
+							let doc_deletion_result = match self.db.collection::<bson::Document>("resources").delete_one(bson::doc!{ "_id": db_id }) {
+								Ok(o) => {
+									if o.deleted_count == 1 { // polodb_core sometimes returns 1 even if the resource was supposed to be deleted
+										Ok(())
+									} else {
+										Err("Resource not found".to_string())
+									}
+								}
+								Err(e) => {
+									Err(e.to_string())
+								}
+							};
+
+							match (file_deletion_result, doc_deletion_result) {
+								(Ok(()), Ok(())) => {
+									Ok(())
+								}
+								(Ok(_), Err(_)) => {
+									Ok(())
+								}
+								(Err(e), Ok(_)) => {
+									match e.kind() {
+										std::io::ErrorKind::NotFound => {
+											Ok(())
+										}
+										_ => {
+											Err(e.to_string())
+										}
+									}
+								}
+								(Err(_) , Err(_)) => {
+									Err("Resource not found".to_string())
+								}
+							}
+						}
+						None => {
+							Err("Resource not found".to_string())
+						}
+					}
+				}
+				Err(e) => {
+					Err(e.to_string())
+				}
+			}
+		})
+	}
+
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
 		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }).ok();
 		let id = id.to_string();

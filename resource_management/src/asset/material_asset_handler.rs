@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use log::debug;
 
-use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceResponse, GenericResourceSerialization, Solver, StorageBackend, TypedResource, TypedResourceModel};
+use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Property, Shader, ShaderTypes, Value, Variant, VariantVariable}, Description, GenericResourceResponse, GenericResourceSerialization, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -28,6 +28,10 @@ impl MaterialAssetHandler {
 }
 
 impl AssetHandler for MaterialAssetHandler {
+	fn can_handle(&self, r#type: &str) -> bool {
+		r#type == "json"
+	}
+
 	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
@@ -35,6 +39,10 @@ impl AssetHandler for MaterialAssetHandler {
 			}
 
 			let (data, at) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+
+			if at != "json" {
+				return Err("Not my type".to_string());
+			}
 
 			let asset_json = json::parse(std::str::from_utf8(&data).or_else(|_| { Err("Failed to parse JSON") })?).or_else(|_| { Err("Failed to parse JSON") })?;
 
@@ -82,15 +90,13 @@ impl AssetHandler for MaterialAssetHandler {
 					parameters,
 				});
 
-				storage_backend.store(resource.clone(), &data).await;
+				storage_backend.store(&resource, &data).await;
 
 				resource
 			} else {
 				let variant_json = asset_json;
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
-
-				let m_json = json::parse(&String::from_utf8_lossy(&asset_resolver.resolve(parent_material_url).await.ok_or("Failed to resolve parent material".to_string())?.0)).or_else(|_| { Err("Failed to parse JSON") })?;
 
 				let material = match self.load(asset_manager, asset_resolver, storage_backend, parent_material_url, None).await {
 					Ok(Some(m)) => { m }
@@ -112,7 +118,7 @@ impl AssetHandler for MaterialAssetHandler {
 					}).collect::<Vec<_>>()
 				});
 
-				match storage_backend.store(resource.clone(), &[]).await {
+				match storage_backend.store(&resource, &[]).await {
 					Ok(_) => {}
 					Err(_) => {
 						log::error!("Failed to store resource {}", url);
@@ -123,6 +129,12 @@ impl AssetHandler for MaterialAssetHandler {
 			};
 
 			Ok(Some(resource))
+		})
+	}
+
+	fn produce<'a>(&'a self, description: &'a dyn Description, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
+		Box::pin(async move {
+			Err("Not implemented".to_string())
 		})
 	}
 }
@@ -212,7 +224,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		stage,
 	};
 
-	storage_backend.store(GenericResourceSerialization::new(path, shader.clone()), result_shader_bytes).await.ok()?;
+	storage_backend.store(&GenericResourceSerialization::new(path, shader.clone()), result_shader_bytes).await.ok()?;
 
 	Some((shader, result_shader_bytes.into()))
 }
@@ -223,6 +235,10 @@ fn default_vertex_shader() -> &'static str {
 
 fn default_fragment_shader() -> &'static str {
 	"void main() { out_color = get_debug_color(in_instance_index); }"
+}
+
+struct MaterialDescription {
+
 }
 
 #[cfg(test)]

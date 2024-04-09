@@ -38,7 +38,7 @@ impl Resource for Audio {
 
 // Material
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Model {
 	/// The name of the model.
 	pub name: String,
@@ -46,7 +46,7 @@ pub struct Model {
 	pub pass: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum Value {
 	Scalar(f32),
 	Vector3([f32; 3]),
@@ -62,7 +62,7 @@ pub enum ValueModel {
 	Image(TypedResourceModel<Image>),
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Parameter {
 	pub r#type: String,
 	pub name: String,
@@ -119,14 +119,14 @@ pub enum Property {
 	Texture(String),
 }
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),
 	Blend,
 }
 
-#[derive(Debug,serde::Serialize,)]
+#[derive(Debug,serde::Serialize, Clone)]
 pub struct Material {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
@@ -185,13 +185,13 @@ impl <'de> Solver<'de, TypedResource<Material>> for TypedResourceModel<MaterialM
 	}
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VariantVariable {
 	pub name: String,
 	pub value: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, Clone)]
 pub struct Variant {
 	pub material: TypedResource<Material>,
 	pub variables: Vec<VariantVariable>,
@@ -435,7 +435,7 @@ pub enum Formats {
 	RGBA16,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Image {
 	pub compression: Option<CompressionSchemes>,
 	pub format: Formats,

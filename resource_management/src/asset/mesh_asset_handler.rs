@@ -1,13 +1,12 @@
 use std::primitive;
 
 use maths_rs::mat::MatNew4;
+use utils::Extent;
 
 use crate::{
     types::{
-        AlphaMode, CreateImage, Formats, IndexStream, IndexStreamTypes,
-        IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value,
-        VertexComponent, VertexSemantics,
-    }, GenericResourceResponse, GenericResourceSerialization, StorageBackend
+        AlphaMode, CreateImage, Formats, Image, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value, VertexComponent, VertexSemantics
+    }, Description, GenericResourceResponse, GenericResourceSerialization, Resource, StorageBackend, TypedResource
 };
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
@@ -21,7 +20,11 @@ impl MeshAssetHandler {
 }
 
 impl AssetHandler for MeshAssetHandler {
-    fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>,) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn can_handle(&self, r#type: &str) -> bool {
+		r#type == "gltf" || r#type == "glb"
+	}
+
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>,) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
     	Box::pin(async move {
             if let Some(dt) = asset_resolver.get_type(url) {
                 if dt != "gltf" && dt != "glb" {
@@ -30,15 +33,37 @@ impl AssetHandler for MeshAssetHandler {
             }
 
 			let path: String = if cfg!(test) {
-				"../assets/".to_string() + url
+				"../assets/".to_string() + asset_resolver.get_base(url).ok_or("Bad URL".to_string())?
 			} else {
-				"assets/".to_string() + url
+				"assets/".to_string() + asset_resolver.get_base(url).ok_or("Bad URL".to_string())?
 			};
 
-            let (gltf, buffers, images) = match gltf::import(path) {
+			let (gltf, buffers, images) = match gltf::import(path) {
 				Ok((gltf, buffers, images)) => (gltf, buffers, images),
 				Err(e) => return Err(e.to_string()),
 			};
+
+			if let Some(fragment) = asset_resolver.get_fragment(url) {
+				let image = gltf.images().find(|i| i.name() == Some(fragment.as_str())).ok_or("Image not found")?;
+				let image = &images[image.index()];
+				let format = match image.format {
+					gltf::image::Format::R8G8B8 => Formats::RGB8,
+					gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
+					gltf::image::Format::R16G16B16 => Formats::RGB16,
+					gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
+					_ => return Err("Unsupported image format".to_string()),
+				};
+				let extent = Extent::rectangle(image.width, image.height);
+
+				let image_description = crate::asset::image_asset_handler::ImageDescription {
+					format,
+					extent,
+				};
+
+				let resource: TypedResource<Image> = asset_manager.produce(&url, "image/png", &image_description, &image.pixels).await;
+
+				return Ok(Some(resource.into()));
+			}
 
             const MESHLETIZE: bool = true;
 
@@ -69,13 +94,6 @@ impl AssetHandler for MeshAssetHandler {
                             };
 
                             let name = texture.source().name().ok_or("No image name")?.to_string();
-
-                            let create_image_info = CreateImage {
-                                format,
-                                extent: [image.width, image.height, 1],
-                            };
-
-                            // let created_texture_resource = resource_manager.create_resource(&name, "Image", create_image_info, &image.pixels).await.ok_or("Failed to create texture")?;
 
                             Ok((name, ()))
                         }
@@ -504,11 +522,26 @@ impl AssetHandler for MeshAssetHandler {
 			};
 
             let resource_document = GenericResourceSerialization::new(url, mesh);
-            storage_backend.store(resource_document.clone(), &buffer).await;
+            storage_backend.store(&resource_document, &buffer).await;
 
             Ok(Some(resource_document))
         })
     }
+
+	fn produce<'a>(&'a self, _: &'a dyn Description, _: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
+		Box::pin(async move {
+			Err("Not implemented".to_string())
+		})
+	}
+}
+
+struct MeshDescription {
+}
+
+impl Description for MeshDescription {
+	fn get_resource_class() -> &'static str where Self: Sized {
+		"Mesh"
+	}
 }
 
 fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
@@ -524,7 +557,7 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 mod tests {
     use super::MeshAssetHandler;
     use crate::asset::{
-        asset_handler::AssetHandler, asset_manager::AssetManager, tests::{TestAssetResolver, TestStorageBackend}
+        asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend}
     };
 
     #[test]
@@ -724,5 +757,33 @@ mod tests {
 		assert_eq!(vertex_positions[27019], [-0.112022735, -0.0056253895, 0.013142529]);
 		assert_eq!(vertex_positions[27020], [-0.112022735, -0.0056253895, 0.013142529]);
 		assert_eq!(vertex_positions[27021], [-0.112022735, -0.0056253895, 0.013142529]);
+    }
+
+	#[test]
+    #[ignore="Test uses data not pushed to the repository"]
+    fn load_glb_image() {
+		let mut asset_manager = AssetManager::new_with_storage_backend(TestStorageBackend::new());
+		
+        let asset_resolver = TestAssetResolver::new();
+		
+        let asset_handler = MeshAssetHandler::new();
+		
+		let image_asset_handler = ImageAssetHandler::new();
+		
+		asset_manager.add_asset_handler(image_asset_handler);
+
+		let storage_backend = asset_manager.get_storage_backend().downcast_ref::<TestStorageBackend>().unwrap();
+
+        let url = "Revolver.glb#Revolver_Base_color";
+
+        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, storage_backend, &url, None));
+
+		let _ = storage_backend.get_resource_data_by_name("Revolver.glb#Revolver_Base_color").unwrap();
+
+		let generated_resources = storage_backend.get_resources();
+
+		let resource = &generated_resources[0];
+
+		assert_eq!(resource.class, "Image");
     }
 }

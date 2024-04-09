@@ -1,12 +1,22 @@
-use smol::{io::AsyncReadExt, stream::StreamExt};
+use std::ops::Deref;
 
-use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Model, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
+use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Description, Model, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 use super::asset_handler::AssetHandler;
 
+struct MyAssetResolver {}
+
+impl AssetResolver for MyAssetResolver {
+	fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
+		Box::pin(async move {
+			read_asset_from_source(url, Some(&assets_path())).await.ok()
+		})
+	}
+}
+
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
-	storage_backend: DbStorageBackend,
+	storage_backend: Box<dyn StorageBackend>,
 }
 
 /// Enumeration of the possible messages that can be returned when loading an asset.
@@ -33,9 +43,13 @@ impl AssetManager {
 
 		// let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
+		Self::new_with_storage_backend(DbStorageBackend::new(&resolve_internal_path(std::path::Path::new("assets.db"))))
+	}
+
+	pub fn new_with_storage_backend<SB: StorageBackend>(storage_backend: SB) -> AssetManager {
 		AssetManager {
 			asset_handlers: Vec::new(),
-			storage_backend: DbStorageBackend::new(&resolve_internal_path(std::path::Path::new("assets.db"))),
+			storage_backend: Box::new(storage_backend),
 		}
 	}
 
@@ -45,21 +59,11 @@ impl AssetManager {
 
 	/// Load a source asset from a JSON asset description.
 	pub async fn load(&self, id: &str) -> Result<(), LoadMessages> {
-		struct MyAssetResolver {}
-
-		impl AssetResolver for MyAssetResolver {
-			fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
-				Box::pin(async move {
-					read_asset_from_source(url, Some(&assets_path())).await.ok()
-				})
-			}
-		}
-
 		let asset_resolver = MyAssetResolver {};
 
 		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, None));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend.deref(), id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -74,25 +78,15 @@ impl AssetManager {
 	}
 
 	pub fn get_storage_backend(&self) -> &dyn StorageBackend {
-		&self.storage_backend
+		self.storage_backend.deref()
 	}
 	
-	pub async fn load_typed_resource<'a, T: Resource + Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> where TypedResourceModel<T>: Solver<'a, TypedResource<T>> {
-		struct MyAssetResolver {}
-
-		impl AssetResolver for MyAssetResolver {
-			fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
-				Box::pin(async move {
-					read_asset_from_source(url, Some(&assets_path())).await.ok()
-				})
-			}
-		}
-
+	pub async fn load_typed_resource<'a, T: Resource + Model + Clone + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> where TypedResourceModel<T>: Solver<'a, TypedResource<T>> {
 		let asset_resolver = MyAssetResolver {};
 
 		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend, id, None));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, &asset_resolver, storage_backend.deref(), id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -106,12 +100,36 @@ impl AssetManager {
 		let meta_resource = load_results.iter().find(|load_result| { load_result.is_ok() }).ok_or(LoadMessages::NoAsset)?.clone().unwrap().unwrap();
 
 		let resource: TypedResourceModel<T> = meta_resource.try_into().or(Err(LoadMessages::IO))?;
-		let resource = resource.solve(storage_backend).or_else(|error| {
+		let resource = resource.solve(storage_backend.deref()).or_else(|_| {
 			log::error!("Failed to solve resource {}", id);
 			Err(LoadMessages::IO)
 		})?;
 
 		Ok(resource.into())
+	}
+
+	pub async fn produce<'a, D: Description, R: Resource + Clone + serde::Serialize>(&self, id: &str, resource_type: &str, description: &D, data: &[u8]) -> TypedResource<R> {
+		let asset_handler = self.asset_handlers.iter().find(|asset_handler| asset_handler.can_handle(resource_type)).expect("No asset handler found for class");
+
+		let (resource, buffer) = match asset_handler.produce(description, data).await {
+			Ok(x) => x,
+			Err(error) => {
+				log::error!("Failed to produce resource: {}", error);
+				panic!("Failed to produce resource");
+			}
+		};
+		
+		let resource = resource.into_any();
+		
+		if let Ok(resource) = resource.downcast::<R>() {
+			let resource = TypedResource::new(id, 0, *resource);
+
+			self.storage_backend.store(&resource.clone().into(), &buffer).await.unwrap();
+
+			resource
+		} else {
+			panic!("Failed to downcast resource");
+		}
 	}
 }
 
@@ -140,9 +158,9 @@ mod tests {
 	use polodb_core::bson;
 use smol::future::FutureExt;
 
-	use crate::{GenericResourceResponse, GenericResourceSerialization};
+	use crate::GenericResourceSerialization;
 
-use super::*;
+	use super::*;
 
 	struct TestAssetHandler {
 
@@ -154,6 +172,8 @@ use super::*;
 		}
 	}
 
+	struct TestDescription {}
+
 	impl AssetHandler for TestAssetHandler {
 		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 			let res = if id == "example" {
@@ -163,6 +183,10 @@ use super::*;
 			};
 
 			async move { res }.boxed()
+		}
+
+		fn produce<'a>(&'a self, _: &'a dyn crate::Description, _: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
+			unimplemented!()
 		}
 	}
 	
@@ -189,7 +213,7 @@ use super::*;
 
 		asset_manager.add_asset_handler(test_asset_handler);
 
-		let json = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
+		let _ = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
 
 		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Ok(()));
 	}
@@ -199,7 +223,7 @@ use super::*;
 	fn test_load_no_asset_handler() {
 		let asset_manager = AssetManager::new();
 
-		let json = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
+		let _ = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
 
 		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoAssetHandler));
 	}
@@ -209,7 +233,7 @@ use super::*;
 	fn test_load_no_asset_url() {
 		let asset_manager = AssetManager::new();
 
-		let json = json::parse(r#"{}"#).unwrap();
+		let _ = json::parse(r#"{}"#).unwrap();
 
 		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoURL));
 	}

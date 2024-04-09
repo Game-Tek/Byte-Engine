@@ -193,7 +193,7 @@ mod tests {
 	fn get() {
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
+		smol::block_on(storage_backend.store(&GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
 
 		let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
 
@@ -206,7 +206,7 @@ mod tests {
 	fn request() {
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(storage_backend.store(GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
+		smol::block_on(storage_backend.store(&GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
 
 		let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
 

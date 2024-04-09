@@ -55,11 +55,30 @@ async fn read_asset_from_source(url: &str, base_path: Option<&std::path::Path>) 
 }
 
 pub trait AssetResolver: Sync + Send {
+	fn get_base<'a>(&'a self, url: &'a str) -> Option<&'a str> {
+		let mut split = url.split('#');
+		let url = split.next()?;
+		let path = std::path::Path::new(url);
+		Some(path.file_name()?.to_str()?)
+	}
+
 	/// Returns the type of the asset, if attainable from the url.
 	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
-	fn get_type(&self, url: &str) -> Option<String> {
+	fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
+		let url = self.get_base(url)?;
 		let path = std::path::Path::new(url);
-		Some(path.extension()?.to_string_lossy().to_string())
+		Some(path.extension()?.to_str()?)
+	}
+
+	fn get_fragment(&self, url: &str) -> Option<String> {
+		let mut split = url.split('#');
+		let _ = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
+		let fragment = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
+		if split.count() == 0 {
+			Some(fragment.to_string())
+		} else {
+			None
+		}
 	}
 
 	fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
@@ -72,7 +91,6 @@ pub trait AssetResolver: Sync + Send {
 #[cfg(test)]
 pub mod tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
-
     
     use smol::future::FutureExt;
 
@@ -134,8 +152,8 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
-		fn store<'a>(&'a self, resource: GenericResourceSerialization, data: &[u8]) -> utils::BoxedFuture<'a, Result<(), ()>> {
-			self.resources.lock().unwrap().push((resource, data.into()));
+		fn store<'a>(&'a self, resource: &GenericResourceSerialization, data: &[u8]) -> utils::BoxedFuture<'a, Result<(), ()>> {
+			self.resources.lock().unwrap().push((resource.clone(), data.into()));
 
 			Box::pin(async move {
 				Ok(())
@@ -158,5 +176,25 @@ pub mod tests {
 				x
 			})
 		}
+	}
+
+	#[test]
+	fn test_base_url_parse() {
+		let asset_resolver = TestAssetResolver::new();
+
+		assert_eq!(asset_resolver.get_base("name.extension").unwrap(), "name.extension");
+		assert_eq!(asset_resolver.get_base("name.extension#").unwrap(), "name.extension");
+		assert_eq!(asset_resolver.get_base("#fragment"), None);
+		assert_eq!(asset_resolver.get_base("name.extension#fragment").unwrap(), "name.extension");
+	}
+
+	#[test]
+	fn test_fragment_parse() {
+		let asset_resolver = TestAssetResolver::new();
+
+		assert_eq!(asset_resolver.get_fragment("name.extension"), None);
+		assert_eq!(asset_resolver.get_fragment("name.extension#"), None);
+		assert_eq!(asset_resolver.get_fragment("#fragment"), None);
+		assert_eq!(asset_resolver.get_fragment("name.extension#fragment").unwrap(), "fragment");
 	}
 }

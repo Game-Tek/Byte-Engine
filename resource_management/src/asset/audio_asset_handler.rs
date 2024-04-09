@@ -1,4 +1,4 @@
-use crate::{types::{Audio, BitDepths}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
+use crate::{types::{Audio, BitDepths}, Description, GenericResourceResponse, GenericResourceSerialization, Resource, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -96,11 +96,21 @@ impl AssetHandler for AudioAssetHandler {
 
 			let resource = GenericResourceSerialization::new(url, audio_resource);
 
-			storage_backend.store(resource.clone(), data.into()).await.map_err(|_| format!("Failed to store resource"))?;
+			storage_backend.store(&resource, data.into()).await.map_err(|_| format!("Failed to store resource"))?;
 
 			Ok(Some(resource))
 		})
 	}
+
+	fn produce<'a>(&'a self, _: &'a dyn Description, _: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
+		Box::pin(async move {
+			Err("Not implemented".to_string())
+		})
+	}
+}
+
+struct AudioDescription {
+
 }
 
 #[cfg(test)]

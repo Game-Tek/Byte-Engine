@@ -2,13 +2,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 
-use crate::jspd::lexer;
+use crate::besl::lexer;
 
 pub(crate) struct CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform(&self, program_state: &mut jspd::parser::ProgramState, _: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
+	fn transform(&self, program_state: &mut besl::parser::ProgramState, _: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 		let code = "vec4 get_debug_color(uint i) {
 vec4 colors[16] = vec4[16](
 	vec4(0.16863, 0.40392, 0.77647, 1),
@@ -32,9 +32,9 @@ vec4 colors[16] = vec4[16](
 return colors[i % 16];
 }";
 
-		// RefCell::borrow_mut(&scope).add_child(jspd::Node::glsl(code.to_string(), Vec::new()));
+		// RefCell::borrow_mut(&scope).add_child(besl::Node::glsl(code.to_string(), Vec::new()));
 
-		vec![jspd::parser::NodeReference::glsl(code, Vec::new(), Vec::new()).into()]
+		vec![besl::parser::NodeReference::glsl(code, Vec::new(), Vec::new()).into()]
 	}
 }
 

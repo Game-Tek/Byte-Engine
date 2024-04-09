@@ -13,7 +13,7 @@ rust-version = "1.73.0"
 core = { path = "core" }
 utils = { path = "utils" }
 ghi = { path = "ghi" }
-jspd = { path = "jspd" }
+besl = { path = "besl" }
 ahi = { path = "ahi" }
 resource_management = { path = "resource_management" }
 

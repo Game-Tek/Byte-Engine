@@ -2,8 +2,6 @@
 
 #![feature(new_uninit)]
 
-use std::fmt::Display;
-
 mod tokenizer;
 pub mod parser;
 pub mod lexer;
@@ -24,9 +22,9 @@ pub fn parse(source: &str) -> Result<parser::ProgramState, CompilationError> {
 }
 
 pub fn lex(node: parser::NodeReference, parser_program: &parser::ProgramState) -> Result<NodeReference, CompilationError> {
-	let jspd = lexer::lex(&node, &parser_program).map_err(|e| CompilationError::Lex(e))?;
+	let besl = lexer::lex(&node, &parser_program).map_err(|e| CompilationError::Lex(e))?;
 
-	Ok(jspd)
+	Ok(besl)
 }
 
 /// Compiles a BESL source code string into a JSPD.
@@ -35,7 +33,7 @@ pub fn lex(node: parser::NodeReference, parser_program: &parser::ProgramState) -
 /// 
 /// * `source` - The source code to compile.
 /// * `parent` - An optional reference to a parent Scope node where the source code will be compiled into.
-pub fn compile_to_jspd(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
+pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
 	if source.split_whitespace().next() == None {
 		return Ok(lexer::Node::scope("".to_string()).into());
 	}
@@ -43,13 +41,13 @@ pub fn compile_to_jspd(source: &str, parent: Option<Node>) -> Result<NodeReferen
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
 	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
 
-	let jspd = if let Some(parent)  = parent {
+	let besl = if let Some(parent)  = parent {
 		lexer::lex_with_root(parent, &parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?
 	} else {
 		lexer::lex(&parser_root_node, &parser_program).map_err(|_e| CompilationError::Undefined)?
 	};
 
-	Ok(jspd)
+	Ok(besl)
 }
 
 #[derive(Debug)]
@@ -59,7 +57,7 @@ pub enum CompilationError {
 }
 
 // Expects a JSON object, describing the program in a parsed form.
-// pub fn json_to_jspd(source: &json::JsonValue) -> Result<NodeReference, ()> {
+// pub fn json_to_besl(source: &json::JsonValue) -> Result<NodeReference, ()> {
 // 	fn process_parser_nodes(name: &str, node: &json::JsonValue, parser_program: &mut parser::ProgramState) -> Result<parser::NodeReference, ()> {
 // 		let parser_node = match node {
 // 			json::JsonValue::Object(obj) => {
@@ -222,11 +220,11 @@ mod tests {
 
 		// let json = json::parse(&source).unwrap();
 
-		// let jspd = json_to_jspd(&json).unwrap();
+		// let besl = json_to_besl(&json).unwrap();
 
-		// let jspd = jspd.borrow();
+		// let besl = besl.borrow();
 
-		// if let lexer::Nodes::Scope { name, children, .. } = jspd.node() {
+		// if let lexer::Nodes::Scope { name, children, .. } = besl.node() {
 		// 	assert_eq!(name, "root");
 		// 	assert!(children.len() > 1);
 		// } else {

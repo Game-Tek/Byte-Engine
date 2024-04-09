@@ -8,7 +8,7 @@ rust-version = "1.73.0"
 [dependencies]
 utils = { path = "../utils" }
 ghi = { path = "../ghi" }
-jspd = { path = "../jspd" }
+besl = { path = "../besl" }
 
 shaderc = "0.8.2"
 png = "0.17.10"

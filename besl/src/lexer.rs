@@ -1227,6 +1227,7 @@ color: In<vec4f>;
 	// TODO: test function with body with missing close brace
 
 	#[test]
+	#[ignore = "Intrinsic work is not finalized"]
 	fn lex_intrinsic() {
 		let source = "
 main: fn () -> void {

@@ -162,7 +162,7 @@ impl Application for GraphicsApplication {
 	
 			{
 				let mut material_asset_handler = MaterialAssetHandler::new();
-				let root_node = jspd::Node::root();
+				let root_node = besl::Node::root();
 				let shader_generator = {
 					let common_shader_generator = rendering::common_shader_generator::CommonShaderGenerator::new();
 					let visibility_shader_generation = rendering::visibility_shader_generator::VisibilityShaderGenerator::new(root_node.into());

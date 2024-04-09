@@ -1,50 +1,50 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
-use jspd::NodeReference;
+use besl::NodeReference;
 use maths_rs::vec;
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 
 use crate::{rendering::{shader_strings::{CALCULATE_FULL_BARY, DISTRIBUTION_GGX, FRESNEL_SCHLICK, GEOMETRY_SMITH}, visibility_model::render_domain::{CAMERA_STRUCT_GLSL, LIGHTING_DATA_STRUCT_GLSL, LIGHT_STRUCT_GLSL, MATERIAL_STRUCT_GLSL, MESHLET_STRUCT_GLSL, MESH_STRUCT_GLSL}}, shader_generator};
 
 pub struct VisibilityShaderGenerator {
-	mesh_struct: jspd::parser::NodeReference,
-	camera_struct: jspd::parser::NodeReference,
-	meshlet_struct: jspd::parser::NodeReference,
-	light_struct: jspd::parser::NodeReference,
-	material_struct: jspd::parser::NodeReference,
-	meshes: jspd::parser::NodeReference,
-	positions: jspd::parser::NodeReference,
-	normals: jspd::parser::NodeReference,
-	tangents: jspd::parser::NodeReference,
-	uvs: jspd::parser::NodeReference,
-	vertex_indices: jspd::parser::NodeReference,
-	primitive_indices: jspd::parser::NodeReference,
-	meshlets: jspd::parser::NodeReference,
-	textures: jspd::parser::NodeReference,
-	material_count: jspd::parser::NodeReference,
-	material_offset: jspd::parser::NodeReference,
-	pixel_mapping: jspd::parser::NodeReference,
-	triangle_index: jspd::parser::NodeReference,
-	out_albedo: jspd::parser::NodeReference,
-	camera: jspd::parser::NodeReference,
-	out_diffuse: jspd::parser::NodeReference,
-	lighting_data: jspd::parser::NodeReference,
-	materials: jspd::parser::NodeReference,
-	ao: jspd::parser::NodeReference,
-	depth_shadow_map: jspd::parser::NodeReference,
-	push_constant: jspd::parser::NodeReference,
-	distribution_ggx: jspd::parser::NodeReference,
-	geometry_schlick_ggx: jspd::parser::NodeReference,
-	geometry_smith: jspd::parser::NodeReference,
-	fresnel_schlick: jspd::parser::NodeReference,
-	barycentric_deriv: jspd::parser::NodeReference,
-	calculate_full_bary: jspd::parser::NodeReference,
-	sample_function: jspd::parser::NodeReference,
+	mesh_struct: besl::parser::NodeReference,
+	camera_struct: besl::parser::NodeReference,
+	meshlet_struct: besl::parser::NodeReference,
+	light_struct: besl::parser::NodeReference,
+	material_struct: besl::parser::NodeReference,
+	meshes: besl::parser::NodeReference,
+	positions: besl::parser::NodeReference,
+	normals: besl::parser::NodeReference,
+	tangents: besl::parser::NodeReference,
+	uvs: besl::parser::NodeReference,
+	vertex_indices: besl::parser::NodeReference,
+	primitive_indices: besl::parser::NodeReference,
+	meshlets: besl::parser::NodeReference,
+	textures: besl::parser::NodeReference,
+	material_count: besl::parser::NodeReference,
+	material_offset: besl::parser::NodeReference,
+	pixel_mapping: besl::parser::NodeReference,
+	triangle_index: besl::parser::NodeReference,
+	out_albedo: besl::parser::NodeReference,
+	camera: besl::parser::NodeReference,
+	out_diffuse: besl::parser::NodeReference,
+	lighting_data: besl::parser::NodeReference,
+	materials: besl::parser::NodeReference,
+	ao: besl::parser::NodeReference,
+	depth_shadow_map: besl::parser::NodeReference,
+	push_constant: besl::parser::NodeReference,
+	distribution_ggx: besl::parser::NodeReference,
+	geometry_schlick_ggx: besl::parser::NodeReference,
+	geometry_smith: besl::parser::NodeReference,
+	fresnel_schlick: besl::parser::NodeReference,
+	barycentric_deriv: besl::parser::NodeReference,
+	calculate_full_bary: besl::parser::NodeReference,
+	sample_function: besl::parser::NodeReference,
 }
 
 impl VisibilityShaderGenerator {
 	pub fn new(scope: NodeReference) -> Self {
-		use jspd::parser::NodeReference;
+		use besl::parser::NodeReference;
 
 		let mesh_struct = NodeReference::r#struct("Mesh", vec![NodeReference::member("model", "mat4f"), NodeReference::member("material_index", "u32"), NodeReference::member("base_vertex_index", "u32")]);
 		let camera_struct = NodeReference::r#struct("Camera", vec![NodeReference::member("view", "mat4f"), NodeReference::member("projection_matrix", "mat4f"), NodeReference::member("view_projection", "mat4f"), NodeReference::member("inverse_view_matrix", "mat4f"), NodeReference::member("inverse_projection_matrix", "mat4f"), NodeReference::member("inverse_view_projection_matrix", "mat4f")]);
@@ -127,7 +127,7 @@ impl VisibilityShaderGenerator {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, program_state: &mut jspd::parser::ProgramState, material: &json::JsonValue) -> Vec<jspd::parser::NodeReference> {
+	fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 		let mesh_struct = self.mesh_struct.clone();
 		let camera_struct = self.camera_struct.clone();
 		let meshlet_struct = self.meshlet_struct.clone();
@@ -236,12 +236,12 @@ float roughness = float(0.5);";
 
 			match data_type {
 				"u32" | "f32" | "vec2f" | "vec3f" | "vec4" => {
-					let x = jspd::parser::NodeReference::specialization(name, data_type);
+					let x = besl::parser::NodeReference::specialization(name, data_type);
 					program_state.insert(name.to_string(), x.clone());
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let x = jspd::parser::NodeReference::intrinsic(name, jspd::parser::NodeReference::glsl("texture(textures[nonuniformEXT(material.textures[0])], vertex_uv).rgb", vec!["textures".to_string()], Vec::new()));
+					let x = besl::parser::NodeReference::intrinsic(name, besl::parser::NodeReference::glsl("texture(textures[nonuniformEXT(material.textures[0])], vertex_uv).rgb", vec!["textures".to_string()], Vec::new()));
 					program_state.insert(name.to_string(), x.clone());
 					extra.push(x);
 				}
@@ -337,9 +337,9 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		let mut m = program_state.get_mut("main").unwrap().clone();
 
 		match m.node_mut() {
-			jspd::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, jspd::parser::NodeReference::glsl(a, vec!["uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "positions".to_string(), "normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string(), "BarycentricDeriv".to_string()], vec!["albedo".to_string()]));
-				statements.push(jspd::parser::NodeReference::glsl(b, vec!["lighting_data".to_string(), "out_albedo".to_string(), "out_diffuse".to_string()], Vec::new()));
+			besl::parser::Nodes::Function { statements, .. } => {
+				statements.insert(0, besl::parser::NodeReference::glsl(a, vec!["uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "positions".to_string(), "normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string(), "BarycentricDeriv".to_string()], vec!["albedo".to_string()]));
+				statements.push(besl::parser::NodeReference::glsl(b, vec!["lighting_data".to_string(), "out_albedo".to_string(), "out_diffuse".to_string()], Vec::new()));
 			}
 			_ => {}
 		}
@@ -390,7 +390,7 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 
 #[cfg(test)]
 mod tests {
-    use crate::jspd;
+    use crate::besl;
 
 	// #[test]
 	// fn vec4f_variable() {
@@ -406,7 +406,7 @@ mod tests {
 
 	// 	let shader_source = "main: fn () -> void { out_color = albedo; }";
 
-	// 	let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
+	// 	let shader_node = besl::compile_to_besl(shader_source, None).unwrap();
 
 	// 	let shader_generator = super::VisibilityShaderGenerator::new();
 
@@ -432,7 +432,7 @@ mod tests {
 
 	// 	let shader_source = "main: fn () -> void { out_color = sample(albedo); }";
 
-	// 	let shader_node = jspd::compile_to_jspd(shader_source, None).unwrap();
+	// 	let shader_node = besl::compile_to_besl(shader_source, None).unwrap();
 
 	// 	let shader_generator = super::VisibilityShaderGenerator::new();
 

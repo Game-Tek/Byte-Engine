@@ -26,7 +26,7 @@ extern crate resource_management;
 extern crate ghi;
 extern crate ahi;
 extern crate utils;
-extern crate jspd;
+extern crate besl;
 
 pub mod application;
 pub mod window_system;

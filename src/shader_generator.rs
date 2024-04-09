@@ -2,7 +2,7 @@
 
 // use log::warn;
 
-// use crate::{ghi::AccessPolicies, jspd::lexer::{self, Node}};
+// use crate::{ghi::AccessPolicies, besl::lexer::{self, Node}};
 
 // pub struct ShaderGenerator {
 
@@ -770,7 +770,7 @@
 
 // #[cfg(test)]
 // mod tests {
-// 	use crate::jspd::compile_to_jspd;
+// 	use crate::besl::compile_to_besl;
 
 // use super::*;
 
@@ -1294,17 +1294,17 @@
 // 	}
 
 // 	#[test]
-// 	fn test_generate_from_jspd() {
+// 	fn test_generate_from_besl() {
 // let source = "
 // main: fn () -> void {
 // 	position: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
 // }
 // ";
-// 		let jspd = compile_to_jspd(source).expect("failed to compile to jspd");
+// 		let besl = compile_to_besl(source).expect("failed to compile to besl");
 		
 // 		let shader_generator = ShaderGenerator::new();
 
-// 		let generated_shader = shader_generator.generate(&jspd, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
+// 		let generated_shader = shader_generator.generate(&besl, &json::object!{ path: "Common.Forward.MyShader", stage: "Fragment" });
 
 // 		dbg!(&generated_shader);
 
@@ -1398,4 +1398,4 @@ pub fn generate_glsl_header_block(compilation_settings: &ShaderGenerationSetting
 
 use std::rc::Rc;
 
-use jspd::lexer;
+use besl::lexer;

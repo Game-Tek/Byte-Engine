@@ -24,13 +24,13 @@ jobs:
       - uses: rui314/setup-mold@v1
       - name: Test Utils
         run: cd utils && cargo test
-  build-test-jspd:
+  build-test-besl:
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v4
         - uses: rui314/setup-mold@v1
-        - name: Test JSPD
-          run: cd jspd && cargo test
+        - name: Test BESL
+          run: cd besl && cargo test
   build-test-resource-management:
     runs-on: ubuntu-latest
     steps:

@@ -152,6 +152,40 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
+		fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>> {
+			let resources = self.resources.lock().unwrap();
+			let mut names = Vec::with_capacity(resources.len());
+			for resource in resources.iter() {
+				names.push(resource.0.id.clone());
+			}
+
+			Box::pin(async move {
+				Ok(names)
+			})
+		}
+
+		fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>> {
+			let mut resources = self.resources.lock().unwrap();
+			let mut index = None;
+			for (i, resource) in resources.iter().enumerate() {
+				if resource.0.id == id {
+					index = Some(i);
+					break;
+				}
+			}
+
+			if let Some(i) = index {
+				resources.remove(i);
+				Box::pin(async move {
+					Ok(())
+				})
+			} else {
+				Box::pin(async move {
+					Err("Resource not found".to_string())
+				})
+			}
+		}
+		
 		fn store<'a>(&'a self, resource: &GenericResourceSerialization, data: &[u8]) -> utils::BoxedFuture<'a, Result<(), ()>> {
 			self.resources.lock().unwrap().push((resource.clone(), data.into()));
 

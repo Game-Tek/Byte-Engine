@@ -38,14 +38,31 @@ impl AssetHandler for MeshAssetHandler {
 				"assets/".to_string() + asset_resolver.get_base(url).ok_or("Bad URL".to_string())?
 			};
 
-			let (gltf, buffers, images) = match gltf::import(path) {
-				Ok((gltf, buffers, images)) => (gltf, buffers, images),
-				Err(e) => return Err(e.to_string()),
+			let (data, dt) = asset_resolver.resolve(asset_resolver.get_base(url).ok_or("Bad URL".to_string())?).await.ok_or("Failed to resolve asset".to_string())?;
+
+			let (gltf, buffers) = if dt == "glb" {
+				let glb = gltf::Glb::from_slice(&data).map_err(|e| e.to_string())?;
+				let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|e| e.to_string())?;
+				let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect())).map_err(|e| e.to_string())?;
+				(gltf, buffers)
+			} else {
+				let gltf = gltf::Gltf::open(path).map_err(|e| e.to_string())?;
+				
+				let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| if let gltf::buffer::Source::Uri(r) = b.source() { if r.ends_with(".bin") { Some(r) } else { None } } else { None }) {
+					let (bin, _) = asset_resolver.resolve(bin_file).await.ok_or("Failed to resolve binary file")?;
+					gltf.buffers().map(|_| {
+						gltf::buffer::Data(bin.clone())
+					}).collect::<Vec<_>>()
+				} else {
+					gltf::import_buffers(&gltf, None, None).map_err(|e| e.to_string())?
+				};
+
+				(gltf, buffers)
 			};
 
 			if let Some(fragment) = asset_resolver.get_fragment(url) {
 				let image = gltf.images().find(|i| i.name() == Some(fragment.as_str())).ok_or("Image not found")?;
-				let image = &images[image.index()];
+				let image = gltf::image::Data::from_source(image.source(), None, &buffers).map_err(|e| e.to_string())?;
 				let format = match image.format {
 					gltf::image::Format::R8G8B8 => Formats::RGB8,
 					gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
@@ -69,125 +86,121 @@ impl AssetHandler for MeshAssetHandler {
 
             let mut buffer = Vec::with_capacity(4096 * 1024 * 3);
 
-            let mut resources = Vec::with_capacity(8);
+            // for mesh in gltf.meshes() {
+            //     for primitive in mesh.primitives() {
+            //         {
+            //             let material = primitive.material();
 
-			let primitives_iterator = gltf.meshes().map(|e| e.primitives()).flatten();
+            //             // Return the name of the texture
+            //             async fn manage_image<'x>(
+            //                 images: &'x [gltf::image::Data],
+            //                 texture: &'x gltf::Texture<'x>,
+            //             ) -> Result<(String, ()), String> {
+            //                 let image = &images[texture.source().index()];
 
-            for mesh in gltf.meshes() {
-                for primitive in mesh.primitives() {
-                    {
-                        let material = primitive.material();
+            //                 let format = match image.format {
+            //                     gltf::image::Format::R8G8B8 => Formats::RGB8,
+            //                     gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
+            //                     gltf::image::Format::R16G16B16 => Formats::RGB16,
+            //                     gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
+            //                     _ => return Err("Unsupported image format".to_string()),
+            //                 };
 
-                        // Return the name of the texture
-                        async fn manage_image<'x>(
-                            images: &'x [gltf::image::Data],
-                            texture: &'x gltf::Texture<'x>,
-                        ) -> Result<(String, ()), String> {
-                            let image = &images[texture.source().index()];
+            //                 let name = texture.source().name().ok_or("No image name")?.to_string();
 
-                            let format = match image.format {
-                                gltf::image::Format::R8G8B8 => Formats::RGB8,
-                                gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
-                                gltf::image::Format::R16G16B16 => Formats::RGB16,
-                                gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
-                                _ => return Err("Unsupported image format".to_string()),
-                            };
+            //                 Ok((name, ()))
+            //             }
 
-                            let name = texture.source().name().ok_or("No image name")?.to_string();
+            //             let pbr = material.pbr_metallic_roughness();
 
-                            Ok((name, ()))
-                        }
+            //             let albedo = if let Some(base_color_texture) = pbr.base_color_texture() {
+            //                 let (name, resource) = manage_image(images.as_slice(), &base_color_texture.texture()).await.or_else(|e| Err(e))?;
+            //                 resources.push(resource);
+            //                 Property::Texture(name)
+            //             } else {
+            //                 let color = pbr.base_color_factor();
+            //                 Property::Factor(Value::Vector4(color))
+            //             };
 
-                        let pbr = material.pbr_metallic_roughness();
+            //             let (roughness, metallic) =
+            //                 if let Some(roughness_texture) = pbr.metallic_roughness_texture() {
+            //                     (
+            //                         {
+            //                             let (name, resource) = manage_image(
+            //                                 images.as_slice(),
+            //                                 &roughness_texture.texture(),
+            //                             )
+            //                             .await.or_else(|e| Err(e))?;
+            //                             resources.push(resource);
+            //                             Property::Texture(name)
+            //                         },
+            //                         {
+            //                             let (name, resource) = manage_image(
+            //                                 images.as_slice(),
+            //                                 &roughness_texture.texture(),
+            //                             )
+            //                             .await.or_else(|e| Err(e))?;
+            //                             resources.push(resource);
+            //                             Property::Texture(name)
+            //                         },
+            //                     )
+            //                 } else {
+            //                     (
+            //                         Property::Factor(Value::Scalar(pbr.roughness_factor())),
+            //                         Property::Factor(Value::Scalar(pbr.metallic_factor())),
+            //                     )
+            //                 };
 
-                        let albedo = if let Some(base_color_texture) = pbr.base_color_texture() {
-                            let (name, resource) = manage_image(images.as_slice(), &base_color_texture.texture()).await.or_else(|e| Err(e))?;
-                            resources.push(resource);
-                            Property::Texture(name)
-                        } else {
-                            let color = pbr.base_color_factor();
-                            Property::Factor(Value::Vector4(color))
-                        };
+            //             let normal = if let Some(normal_texture) = material.normal_texture() {
+            //                 let (name, resource) =
+            //                     manage_image(images.as_slice(), &normal_texture.texture())
+            //                         .await.or_else(|e| Err(e))?;
+            //                 resources.push(resource);
+            //                 Property::Texture(name)
+            //             } else {
+            //                 Property::Factor(Value::Vector3([0.0, 0.0, 1.0]))
+            //             };
 
-                        let (roughness, metallic) =
-                            if let Some(roughness_texture) = pbr.metallic_roughness_texture() {
-                                (
-                                    {
-                                        let (name, resource) = manage_image(
-                                            images.as_slice(),
-                                            &roughness_texture.texture(),
-                                        )
-                                        .await.or_else(|e| Err(e))?;
-                                        resources.push(resource);
-                                        Property::Texture(name)
-                                    },
-                                    {
-                                        let (name, resource) = manage_image(
-                                            images.as_slice(),
-                                            &roughness_texture.texture(),
-                                        )
-                                        .await.or_else(|e| Err(e))?;
-                                        resources.push(resource);
-                                        Property::Texture(name)
-                                    },
-                                )
-                            } else {
-                                (
-                                    Property::Factor(Value::Scalar(pbr.roughness_factor())),
-                                    Property::Factor(Value::Scalar(pbr.metallic_factor())),
-                                )
-                            };
+            //             let emissive = if let Some(emissive_texture) = material.emissive_texture() {
+            //                 let (name, resource) =
+            //                     manage_image(images.as_slice(), &emissive_texture.texture())
+            //                         .await.or_else(|e| Err(e))?;
+            //                 resources.push(resource);
+            //                 Property::Texture(name)
+            //             } else {
+            //                 Property::Factor(Value::Vector3(material.emissive_factor()))
+            //             };
 
-                        let normal = if let Some(normal_texture) = material.normal_texture() {
-                            let (name, resource) =
-                                manage_image(images.as_slice(), &normal_texture.texture())
-                                    .await.or_else(|e| Err(e))?;
-                            resources.push(resource);
-                            Property::Texture(name)
-                        } else {
-                            Property::Factor(Value::Vector3([0.0, 0.0, 1.0]))
-                        };
+            //             let occlusion =
+            //                 if let Some(occlusion_texture) = material.occlusion_texture() {
+            //                     let (name, resource) =
+            //                         manage_image(images.as_slice(), &occlusion_texture.texture())
+            //                             .await.or_else(|e| Err(e))?;
+            //                     resources.push(resource);
+            //                     Property::Texture(name)
+            //                 } else {
+            //                     Property::Factor(Value::Scalar(1.0))
+            //                 };
 
-                        let emissive = if let Some(emissive_texture) = material.emissive_texture() {
-                            let (name, resource) =
-                                manage_image(images.as_slice(), &emissive_texture.texture())
-                                    .await.or_else(|e| Err(e))?;
-                            resources.push(resource);
-                            Property::Texture(name)
-                        } else {
-                            Property::Factor(Value::Vector3(material.emissive_factor()))
-                        };
-
-                        let occlusion =
-                            if let Some(occlusion_texture) = material.occlusion_texture() {
-                                let (name, resource) =
-                                    manage_image(images.as_slice(), &occlusion_texture.texture())
-                                        .await.or_else(|e| Err(e))?;
-                                resources.push(resource);
-                                Property::Texture(name)
-                            } else {
-                                Property::Factor(Value::Scalar(1.0))
-                            };
-
-                        Material {
-                            double_sided: material.double_sided(),
-                            alpha_mode: match material.alpha_mode() {
-                                gltf::material::AlphaMode::Blend => AlphaMode::Blend,
-                                gltf::material::AlphaMode::Mask => {
-                                    AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5))
-                                }
-                                gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
-                            },
-                            model: Model {
-                                name: "".to_string(),
-                                pass: "".to_string(),
-                            },
-							shaders: Vec::new(),
-							parameters: Vec::new(),
-                        };
-                    }
-				}
-			}
+            //             Material {
+            //                 double_sided: material.double_sided(),
+            //                 alpha_mode: match material.alpha_mode() {
+            //                     gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+            //                     gltf::material::AlphaMode::Mask => {
+            //                         AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5))
+            //                     }
+            //                     gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+            //                 },
+            //                 model: Model {
+            //                     name: "".to_string(),
+            //                     pass: "".to_string(),
+            //                 },
+			// 				shaders: Vec::new(),
+			// 				parameters: Vec::new(),
+            //             };
+            //         }
+			// 	}
+			// }
 
 			// Gather vertex components and check that they are all equal
 			let all = gltf.meshes().map(|mesh| {
@@ -734,7 +747,7 @@ mod tests {
 
         let url = "Revolver.glb";
 
-        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None));
+        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().unwrap();
 
 		let buffer = storage_backend.get_resource_data_by_name("Revolver.glb").unwrap();
 

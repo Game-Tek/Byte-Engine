@@ -95,7 +95,7 @@ impl Renderer {
 	pub fn render(&mut self,) {
 		if self.swapchain_handles.is_empty() { return; }
 
-		let ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().unwrap();
 
 		let swapchain_handle = self.swapchain_handles[0];
 

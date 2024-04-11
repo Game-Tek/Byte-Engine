@@ -545,7 +545,7 @@ pub trait GraphicsHardwareInterface {
 	/// # Panics
 	///
 	/// Panics if .
-	fn acquire_swapchain_image(&self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32;
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32;
 
 	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle);
 

@@ -1231,12 +1231,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			.clipped(true)
 		;
 
-		// Load extension here and not during device creation because we rarely need it.
-		let swapchain_loader = ash::extensions::khr::Swapchain::new(&self.instance, &self.device);
-
-		let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None).expect("No swapchain") };
-
-		let images = unsafe { self.swapchain.get_swapchain_images(swapchain).expect("No swapchain images") };
+		let swapchain = unsafe { self.swapchain.create_swapchain(&swapchain_create_info, None).expect("No swapchain") };
 
 		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
@@ -1272,14 +1267,14 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		synchronizer_handle
 	}
 
-	fn acquire_swapchain_image(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> u32 {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> u32 {
 		let synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 
 		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, u64::MAX, synchronizer.semaphore, vk::Fence::null()) };
 
-		let (index, swapchain_state) = if let Ok((index, state)) = acquisition_result {
-			if !state {
+		let (index, swapchain_state) = if let Ok((index, is_suboptimal)) = acquisition_result {
+			if !is_suboptimal {
 				(index, graphics_hardware_interface::SwapchainStates::Ok)
 			} else {
 				(index, graphics_hardware_interface::SwapchainStates::Suboptimal)
@@ -1289,7 +1284,30 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		};
 
 		if swapchain_state == graphics_hardware_interface::SwapchainStates::Suboptimal || swapchain_state == graphics_hardware_interface::SwapchainStates::Invalid {
-			// log::error!("Swapchain state is suboptimal or invalid. Recreation is yet to be implemented.");
+			unsafe { // TODO: consider deadlock https://vulkan-tutorial.com/Drawing_a_triangle/Swap_chain_recreation
+				self.device.device_wait_idle().unwrap();
+
+				self.swapchain.destroy_swapchain(swapchain.swapchain, None);
+
+				let surface_capabilities = self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities");
+
+				let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+					.surface(swapchain.surface)
+					.min_image_count(surface_capabilities.min_image_count)
+					.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+					.image_format(vk::Format::B8G8R8A8_SRGB)
+					.image_extent(surface_capabilities.current_extent)
+					.image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+					.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+					.pre_transform(surface_capabilities.current_transform)
+					.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+					.present_mode(vk::PresentModeKHR::FIFO)
+					.image_array_layers(1)
+					.clipped(true)
+				;
+
+				swapchain.swapchain = self.swapchain.create_swapchain(&swapchain_create_info, None).expect("No swapchain");
+			}
 		}
 
 		index

@@ -235,7 +235,7 @@ impl Application for GraphicsApplication {
 
 		{
 			let window_system = self.window_system_handle.get_lock();
-			let window_system = window_system.write_arc_blocking();
+			let mut window_system = window_system.write_arc_blocking();
 
 			{
 				let input_system = self.input_system_handle.get_lock();
@@ -259,6 +259,9 @@ impl Application for GraphicsApplication {
 							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
 							input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Position"), input::Value::Vector2(vec));
 						},
+						ghi::WindowEvents::Resize { width, height } => {
+							log::debug!("Resizing window to {}x{}", width, height);
+						}
 						_ => { }
 					}
 				});

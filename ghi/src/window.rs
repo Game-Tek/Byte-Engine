@@ -208,7 +208,10 @@ pub enum MouseKeys {
 /// The events that can be received from a window.
 pub enum WindowEvents {
 	/// The window has been resized.
-	Resize,
+	Resize {
+		width: u32,
+		height: u32,
+	},
 	/// The window has been minimized.
 	Minimize,
 	/// The window has been maximized.
@@ -310,9 +313,9 @@ impl Window {
 		})
 	}
 
-	pub fn poll(&self) -> WindowIterator {
+	pub fn poll(&mut self) -> WindowIterator {
 		match self.os_window {
-			OSWindow::X11(ref window) => WindowIterator::X11(window.poll()),
+			OSWindow::X11(ref mut window) => WindowIterator::X11(window.poll()),
 			OSWindow::Wayland(ref window) => WindowIterator::Wayland(window.poll()),
 		}
 	}

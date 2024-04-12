@@ -545,11 +545,13 @@ pub trait GraphicsHardwareInterface {
 	/// # Panics
 	///
 	/// Panics if .
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> u32;
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> (u32, Extent);
 
 	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle);
 
 	fn wait(&self, synchronizer_handle: SynchronizerHandle);
+
+	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
 
 	fn start_frame_capture(&self);
 
@@ -1459,7 +1461,7 @@ use super::*;
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 		let image_ready = renderer.create_synchronizer(None, false);
 
-		let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
+		let (image_index, _) = renderer.acquire_swapchain_image(swapchain, image_ready);
 
 		renderer.start_frame_capture();
 
@@ -1588,7 +1590,7 @@ use super::*;
 		for i in 0..2*64 {
 			renderer.wait(render_finished_synchronizer);
 
-			let image_index = renderer.acquire_swapchain_image(swapchain, image_ready);
+			let (image_index, _) = renderer.acquire_swapchain_image(swapchain, image_ready);
 
 			renderer.start_frame_capture();
 

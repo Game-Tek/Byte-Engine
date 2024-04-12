@@ -1207,6 +1207,34 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		slice[sbt_record_offset..sbt_record_offset + 32].copy_from_slice(pipeline.shader_handles.get(&shader_handle).unwrap())
 	}
 
+	fn resize_image(&mut self, image_handle: crate::ImageHandle, extent: Extent) {
+		let Image { image, image_view, format_, .. } = self.images[image_handle.0 as usize];
+
+		unsafe {
+			self.device.destroy_image(image, None);
+			self.device.destroy_image_view(image_view, None);
+
+			// TODO: release memory/allocation
+		}
+
+		let size = (extent.width() * extent.height() * extent.depth() * 4) as usize;
+
+		let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, None, graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+
+		let (allocation_handle, _) = self.create_allocation_internal(r.size, graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
+
+		let (_, pointer) = self.bind_vulkan_texture_memory(&r, allocation_handle, 0);
+
+		let image_view = self.create_vulkan_texture_view(None, &r.resource, format_, None, 0);
+
+		self.images[image_handle.0 as usize].staging_buffer = Some(BufferHandle(self.buffers.len() as u64));
+		self.images[image_handle.0 as usize].pointer = pointer;
+		self.images[image_handle.0 as usize].size = size;
+		self.images[image_handle.0 as usize].extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
+		self.images[image_handle.0 as usize].image_view = image_view;
+		self.images[image_handle.0 as usize].image = r.resource;
+	}
+
 	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles) -> graphics_hardware_interface::SwapchainHandle {
 		let surface = self.create_vulkan_surface(window_os_handles); 
 
@@ -1265,7 +1293,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		synchronizer_handle
 	}
 
-	fn acquire_swapchain_image(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> u32 {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> (u32, Extent) {
 		let synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
 		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 
@@ -1281,13 +1309,15 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			(0, graphics_hardware_interface::SwapchainStates::Invalid)
 		};
 
+		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities") };
+
 		if swapchain_state == graphics_hardware_interface::SwapchainStates::Suboptimal || swapchain_state == graphics_hardware_interface::SwapchainStates::Invalid {
+			println!("Recreating swapchain");
+
 			unsafe { // TODO: consider deadlock https://vulkan-tutorial.com/Drawing_a_triangle/Swap_chain_recreation
 				self.device.device_wait_idle().unwrap();
 
 				self.swapchain.destroy_swapchain(swapchain.swapchain, None);
-
-				let surface_capabilities = self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities");
 
 				let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
 					.surface(swapchain.surface)
@@ -1308,7 +1338,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			}
 		}
 
-		index
+		(index, Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height))
 	}
 
 	fn present(&self, image_index: u32, swapchains: &[graphics_hardware_interface::SwapchainHandle], synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {

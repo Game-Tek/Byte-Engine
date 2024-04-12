@@ -49,7 +49,7 @@ impl WindowSystem {
 	}
 
 	pub fn update(&mut self) -> bool {
-		for (_, window) in &self.windows {
+		for (_, window) in &mut self.windows {
 			for event in window.poll() {
 				match event {
 					ghi::WindowEvents::Close => {
@@ -63,8 +63,8 @@ impl WindowSystem {
 		true
 	}
 
-	pub fn update_windows(&self, mut function: impl FnMut(&EntityHandle<Window>, ghi::WindowEvents)) {
-		for (handle, window) in &self.windows {
+	pub fn update_windows(&mut self, mut function: impl FnMut(&EntityHandle<Window>, ghi::WindowEvents)) {
+		for (handle, window) in &mut self.windows {
 			for event in window.poll() {
 				function(handle, event);
 			}

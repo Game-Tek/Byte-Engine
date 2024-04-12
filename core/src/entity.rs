@@ -166,10 +166,10 @@ impl <T: ?Sized> EntityHandle<T> {
 	// 	function(lock.deref())
 	// }
 
-	// pub fn sync_get_mut<'a, R>(&self, function: impl FnOnce(&'a mut T) -> R) -> R {
-	// 	let mut lock = self.container.write_arc_blocking();
-	// 	function(lock.deref_mut())
-	// }
+	pub fn sync_get_mut<R>(&self, function: impl FnOnce(&mut T) -> R) -> R {
+		let mut lock = self.container.write_arc_blocking();
+		function(std::ops::DerefMut::deref_mut(&mut lock))
+	}
 
 	pub fn get_lock<'a>(&self) -> EntityWrapper<T> {
 		self.container.clone()

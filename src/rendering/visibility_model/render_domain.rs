@@ -766,8 +766,8 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
-		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
+	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) -> Option<()> {
+		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		{
 			let mut command_buffer_recording = ghi.create_command_buffer_recording(self.transfer_command_buffer, None);
@@ -818,6 +818,8 @@ impl VisibilityWorldRenderDomain {
 		self.pixel_mapping_pass.render(command_buffer_recording);
 
 		command_buffer_recording.end_region();
+
+		Some(())
 	}
 
 	pub fn render_b(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
@@ -851,6 +853,16 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.end_region();
 
 		// ghi.wait(self.transfer_synchronizer); // Wait for buffers to be copied over to the GPU, or else we might overwrite them on the CPU before they are copied over
+	}
+	
+	pub fn resize(&self, extent: Extent) {
+		let mut ghi = self.ghi.write().unwrap();
+		ghi.resize_image(self.albedo, extent);
+		ghi.resize_image(self.diffuse, extent);
+		ghi.resize_image(self.depth_target, extent);
+		ghi.resize_image(self.occlusion_map, extent);
+		ghi.resize_image(self.primitive_index, extent);
+		ghi.resize_image(self.instance_id, extent);
 	}
 }
 
@@ -1278,6 +1290,8 @@ impl VisibilityPass {
 
 		command_buffer_recording.end_region();
 	}
+	
+	fn resize(&self, _: Extent) {}
 }
 
 struct MaterialCountPass {

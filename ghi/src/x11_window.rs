@@ -9,11 +9,11 @@ pub struct X11Window {
 	connection: xcb::Connection,
 	window: xcb::x::Window,
 	wm_del_window: xcb::x::Atom,
+	extent: (u16, u16),
 }
 
 pub struct WindowIterator<'a> {
-	connection: &'a xcb::Connection,
-	wm_del_window: xcb::x::Atom,
+	window: &'a mut X11Window,
 }
 
 impl X11Window {
@@ -127,13 +127,13 @@ impl X11Window {
 			connection,
 			window,
 			wm_del_window,
+			extent: (extent.width() as u16, extent.height() as u16),
 		})
 	}
 
-	pub fn poll(&self) -> WindowIterator {
+	pub fn poll(&mut self) -> WindowIterator {
 		WindowIterator {
-			connection: &self.connection,
-			wm_del_window: self.wm_del_window,
+			window: self,
 		}
 	}
 
@@ -160,7 +160,7 @@ impl Iterator for WindowIterator<'_> {
 	type Item = WindowEvents;
 
 	fn next(&mut self) -> Option<WindowEvents> {
-		let connection = &self.connection;
+		let connection = &self.window.connection;
 
 		loop {
 			let event = connection.poll_for_event();
@@ -171,64 +171,85 @@ impl Iterator for WindowIterator<'_> {
 				return None;
 			};
 
-			let event = event?;
+			let ev = match event? {
+				xcb::Event::X(x) => {
+					match x {
+						x::Event::KeyPress(ev) => {
+							let key: Result<Keys, _> = ev.detail().try_into();
 
-			let ev = match event {
-				xcb::Event::X(x::Event::KeyPress(ev)) => {
-					let key: Result<Keys, _> = ev.detail().try_into();
+							if let Ok(key) = key {
+								Some(WindowEvents::Key { pressed: true, key })
+							} else {
+								None
+							}
+						},
+						x::Event::KeyRelease(ev) => {
+							let key: Result<Keys, _> = ev.detail().try_into();
 
-					if let Ok(key) = key {
-						Some(WindowEvents::Key { pressed: true, key })
-					} else {
-						None
+							if let Ok(key) = key {
+								Some(WindowEvents::Key { pressed: false, key })
+							} else {
+								None
+							}
+						},
+						x::Event::ButtonPress(ev) => {
+							let key: Result<MouseKeys, _> = ev.detail().try_into();
+
+							if let Ok(key) = key {
+								Some(WindowEvents::Button { pressed: true, button: key })
+							} else {
+								None
+							}
+						},
+						x::Event::ButtonRelease(ev) => {
+							let key: Result<MouseKeys, _> = ev.detail().try_into();
+
+							if let Ok(key) = key {
+								Some(WindowEvents::Button { pressed: false, button: key })
+							} else {
+								None
+							}
+						},
+						x::Event::MotionNotify(ev) => {
+							let x = ev.event_x();
+							let y = ev.event_y();
+
+							Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32), time: ev.time() as u64 })
+						},
+						x::Event::ConfigureNotify(ev) => {
+							if ev.width() == 0 || ev.height() == 0 {
+								continue;
+							}
+
+							let extent = (ev.width() as u16, ev.height() as u16);
+
+							if extent == self.window.extent {
+								continue;
+							}
+
+							self.window.extent = extent;
+
+							Some(WindowEvents::Resize{
+								width: extent.0 as u32,
+								height: extent.1 as u32,
+							})
+						},
+						x::Event::ClientMessage(ev) => {
+							// We have received a message from the server
+							if let x::ClientMessageData::Data32([atom, ..]) = ev.data() {
+								if atom == self.window.wm_del_window.resource_id() {
+									let event = WindowEvents::Close;
+									Some(event)
+								} else {
+									None
+								}
+							} else {
+								None
+							}
+						},
+						_ => { None }
 					}
-				},
-				xcb::Event::X(x::Event::KeyRelease(ev)) => {
-					let key: Result<Keys, _> = ev.detail().try_into();
-
-					if let Ok(key) = key {
-						Some(WindowEvents::Key { pressed: false, key })
-					} else {
-						None
-					}
-				},
-				xcb::Event::X(x::Event::ButtonPress(ev)) => {
-					let key: Result<MouseKeys, _> = ev.detail().try_into();
-
-					if let Ok(key) = key {
-						Some(WindowEvents::Button { pressed: true, button: key })
-					} else {
-						None
-					}
-				},
-				xcb::Event::X(x::Event::ButtonRelease(ev)) => {
-					let key: Result<MouseKeys, _> = ev.detail().try_into();
-
-					if let Ok(key) = key {
-						Some(WindowEvents::Button { pressed: false, button: key })
-					} else {
-						None
-					}
-				},
-				xcb::Event::X(x::Event::MotionNotify(ev)) => {
-					let x = ev.event_x();
-					let y = ev.event_y();
-
-					Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32), time: ev.time() as u64 })
-				},
-				xcb::Event::X(x::Event::ClientMessage(ev)) => {
-					// We have received a message from the server
-					if let x::ClientMessageData::Data32([atom, ..]) = ev.data() {
-						if atom == self.wm_del_window.resource_id() {
-							let event = WindowEvents::Close;
-							Some(event)
-						} else {
-							None
-						}
-					} else {
-						None
-					}
-				},
+				}
 				_ => { None }
 			};
 

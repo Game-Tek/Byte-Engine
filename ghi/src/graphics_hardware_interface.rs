@@ -527,7 +527,7 @@ pub trait GraphicsHardwareInterface {
 
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
 
-	fn bind_to_window(&mut self, window_os_handles: &window::WindowOsHandles) -> SwapchainHandle;
+	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles) -> SwapchainHandle;
 
 	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 

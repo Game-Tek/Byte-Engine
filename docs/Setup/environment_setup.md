@@ -8,14 +8,15 @@ icon: tools
 
 Byte depends on a few external tools to work properly. You will need to install them before you can start using Byte.
 
-### Vulkan SDK
-Byte uses Vulkan for rendering. You will need to install the Vulkan SDK to be able to compile and run Byte.
+## Required
+
+### Linux packages
 
 ```bash
-sudo apt install vulkan-sdk
+sudo apt install -y libwayland-dev libasound2-dev libvulkan1 vulkan-tools vulkan-validationlayers vulkan-sdk
 ```
 
-### Rust(up)
+#### Rust(up)
 Byte is written in Rust. You will need to install Rust to be able to compile and run Byte.
 
 ```bash

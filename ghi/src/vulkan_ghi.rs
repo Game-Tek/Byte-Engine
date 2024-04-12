@@ -323,8 +323,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 			let layout = descriptor_set.descriptor_set_layout;
 
-			let descriptor_set_layout = &self.descriptor_sets_layouts[layout.0 as usize];
-
 			let descriptor_type = binding.descriptor_type;
 			let binding_index = binding.index;
 
@@ -437,7 +435,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					}
 				},
 				graphics_hardware_interface::Descriptor::Sampler(handle) => {
-					for (i, descriptor_set) in descriptor_sets.iter().enumerate() {
+					for (_, descriptor_set) in descriptor_sets.iter().enumerate() {
 						let sampler_handle = handle;
 						let images = [vk::DescriptorImageInfo::default().sampler(vk::Sampler::from_raw(sampler_handle.0))];
 	
@@ -452,11 +450,11 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 					}
 				},
-				graphics_hardware_interface::Descriptor::Swapchain(handle) => {
+				graphics_hardware_interface::Descriptor::Swapchain(_) => {
 					unimplemented!()
 				}
 				graphics_hardware_interface::Descriptor::AccelerationStructure { handle } => {
-					for (i, descriptor_set) in descriptor_sets.iter().enumerate() {
+					for (_, descriptor_set) in descriptor_sets.iter().enumerate() {
 						let acceleration_structure_handle = handle;
 						let acceleration_structure = &self.acceleration_structures[acceleration_structure_handle.0 as usize];
 
@@ -768,7 +766,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
 		let command_buffers = (0..self.frames).map(|_| {
-			let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
+			let _ = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
 			let command_pool_create_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family_index);
 
@@ -809,7 +807,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				graphics_hardware_interface::UseCases::STATIC => {
 					let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
-					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
+					let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
 					let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -827,7 +825,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				graphics_hardware_interface::UseCases::DYNAMIC => {	
 					let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 	
-					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
+					let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 	
 					let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 	
@@ -842,7 +840,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 					let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
-					let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
+					let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
 					let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -859,7 +857,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuWrite) {
 			let buffer_creation_result = self.create_vulkan_buffer(name, size, uses_to_vk_usage_flags(resource_uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
-			let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
+			let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, device_accesses);
 
 			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -1027,7 +1025,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
-		let (allocation_handle, pointer) = self.create_allocation_internal(buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
+		let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 
 		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -1209,7 +1207,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		slice[sbt_record_offset..sbt_record_offset + 32].copy_from_slice(pipeline.shader_handles.get(&shader_handle).unwrap())
 	}
 
-	fn bind_to_window(&mut self, window_os_handles: &window::WindowOsHandles) -> graphics_hardware_interface::SwapchainHandle {
+	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles) -> graphics_hardware_interface::SwapchainHandle {
 		let surface = self.create_vulkan_surface(window_os_handles); 
 
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, surface).expect("No surface capabilities") };
@@ -1256,7 +1254,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
 		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 
-		for i in 0..self.frames {
+		for _ in 0..self.frames {
 			let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 			self.synchronizers.push(Synchronizer {
 				fence: self.create_vulkan_fence(signaled),
@@ -2548,7 +2546,7 @@ impl VulkanGHI {
 		}
 	}
 
-	fn create_vulkan_semaphore(&self, name: Option<&str>, signaled: bool) -> vk::Semaphore {
+	fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
 		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 		let handle = unsafe { self.device.create_semaphore(&semaphore_create_info, None).expect("No semaphore") };
 
@@ -2584,27 +2582,40 @@ impl VulkanGHI {
 		vk_image_view
 	}
 
-	fn create_vulkan_surface(&self, window_os_handles: &window::WindowOsHandles) -> vk::SurfaceKHR {
-		let xcb_surface_create_info = vk::XcbSurfaceCreateInfoKHR::default()
-			.connection(window_os_handles.xcb_connection)
-			.window(window_os_handles.xcb_window);
+	fn create_vulkan_surface(&self, window_os_handles: &window::OSHandles) -> vk::SurfaceKHR {
+		let surface = match window_os_handles {
+			window::OSHandles::Wayland(os_handles) => {
+				let wayland_surface = ash::extensions::khr::WaylandSurface::new(&self.entry, &self.instance);
 
-		let xcb_surface = ash::extensions::khr::XcbSurface::new(&self.entry, &self.instance);
+				let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
+					.display(os_handles.display)
+					.surface(os_handles.surface);
 
-		let surface = unsafe { xcb_surface.create_xcb_surface(&xcb_surface_create_info, None).expect("No surface") };
+				unsafe { wayland_surface.create_wayland_surface(&wayland_surface_create_info, None).expect("No surface") }
+			}
+			window::OSHandles::X11(os_handles) => {
+				let xcb_surface = ash::extensions::khr::XcbSurface::new(&self.entry, &self.instance);
+
+				let xcb_surface_create_info = vk::XcbSurfaceCreateInfoKHR::default()
+					.connection(os_handles.xcb_connection)
+					.window(os_handles.xcb_window);
+		
+				unsafe { xcb_surface.create_xcb_surface(&xcb_surface_create_info, None).expect("No surface") }
+			}
+		};
 
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, surface).expect("No surface capabilities") };
 
 		let surface_format = unsafe { self.surface.get_physical_device_surface_formats(self.physical_device, surface).expect("No surface formats") };
 
-		let surface_format: vk::SurfaceFormatKHR = surface_format
+		let _: vk::SurfaceFormatKHR = surface_format
 			.iter()
 			.find(|format| format.format == vk::Format::B8G8R8A8_SRGB && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
 			.expect("No surface format").to_owned();
 
 		let surface_present_modes = unsafe { self.surface.get_physical_device_surface_present_modes(self.physical_device, surface).expect("No surface present modes") };
 
-		let surface_present_mode: vk::PresentModeKHR = surface_present_modes
+		let _: vk::PresentModeKHR = surface_present_modes
 			.iter()
 			.find(|present_mode| {
 				**present_mode == vk::PresentModeKHR::FIFO
@@ -2919,7 +2930,6 @@ impl VulkanCommandBufferRecording<'_> {
 
 					memory_barriers.push(memory_barrier);
 				}
-				_ => unimplemented!(),
 			};
 
 			// Update current resource state, AFTER generating the barrier.
@@ -3175,7 +3185,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new(),);
 	}
 
-	fn bind_shader(&self, shader_handle: graphics_hardware_interface::ShaderHandle) {
+	fn bind_shader(&self, _: graphics_hardware_interface::ShaderHandle) {
 		panic!("Not implemented");
 	}
 
@@ -3417,7 +3427,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	fn copy_to_swapchain(&mut self, source_image_handle: graphics_hardware_interface::ImageHandle, present_image_index: u32, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
 		let source_image_internal_handle = self.get_internal_image_handle(source_image_handle);
 
-		let source_texture_stage = self.states.get(&Handle::Image(source_image_internal_handle)).unwrap().stage;
+		let _ = self.states.get(&Handle::Image(source_image_internal_handle)).unwrap().stage;
 
 		unsafe { self.consume_resources(&[
 			Consumption {
@@ -3730,7 +3740,7 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 
 		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
 
-		let command_buffer = unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); };
+		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); }
 	}
 
 	/// Ends a render pass on the GPU.

@@ -63,10 +63,6 @@ impl WindowSystem {
 		true
 	}
 
-	pub fn update_window(&self, window_handle: &EntityHandle<Window>) -> Option<ghi::WindowEvents> {
-		self.windows[window_handle].update()
-	}
-
 	pub fn update_windows(&self, mut function: impl FnMut(&EntityHandle<Window>, ghi::WindowEvents)) {
 		for (handle, window) in &self.windows {
 			for event in window.poll() {
@@ -93,10 +89,6 @@ impl WindowSystem {
 		}
 	}
 
-	pub fn close_window(&mut self, window_handle: &EntityHandle<Window>) {
-		self.windows[window_handle].close();
-	}
-
 	/// Gets the OS handles for a window.
 	/// 
 	/// # Arguments
@@ -104,7 +96,7 @@ impl WindowSystem {
 	/// 
 	/// # Returns
 	/// The operationg system handles for the window.
-	pub fn get_os_handles(&self, window_handle: &EntityHandle<Window>,) -> ghi::WindowOsHandles {
+	pub fn get_os_handles(&self, window_handle: &EntityHandle<Window>,) -> ghi::OSHandles {
 		let window = &self.windows[window_handle];
 		window.get_os_handles()
 	}

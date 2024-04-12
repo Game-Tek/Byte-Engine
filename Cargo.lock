@@ -946,6 +946,7 @@ dependencies = [
  "renderdoc",
  "shaderc",
  "utils",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols",
  "xcb",

@@ -1,7 +1,11 @@
-use wayland_client::protocol::{wl_callback, wl_compositor, wl_display, wl_registry, wl_surface};
+use std::ffi::c_void;
+
+use wayland_client::{protocol::{wl_callback, wl_compositor, wl_display, wl_registry, wl_surface}, Proxy};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-struct WaylandWindow {
+use crate::WindowEvents;
+
+pub struct WaylandWindow {
 	connection: wayland_client::Connection,
 	display: wl_display::WlDisplay,
 	registry: wl_registry::WlRegistry,
@@ -62,6 +66,35 @@ impl WaylandWindow {
 	pub fn surface(&self) -> &wl_surface::WlSurface {
 		&self.surface
 	}
+
+	pub fn get_os_handles(&self) -> OSHandles {
+		OSHandles {
+			display: self.display.id().as_ptr() as *mut c_void,
+			surface: self.surface.id().as_ptr() as *mut c_void,
+		}
+	}
+	
+	pub fn poll(&self) -> WindowIterator {
+		WindowIterator {
+			connection: &self.connection,
+		}
+	}
+}
+
+pub struct WindowIterator<'a> {
+	connection: &'a wayland_client::Connection,
+}
+
+impl Iterator for WindowIterator<'_> {
+	type Item = WindowEvents;
+
+	fn next(&mut self) -> Option<WindowEvents> {	
+		let connection = self.connection;
+
+		loop {
+			return None;
+		}
+	}
 }
 
 impl Drop for WaylandWindow {
@@ -74,6 +107,11 @@ impl Drop for WaylandWindow {
 		// self.registry.destroy();
 		// self.display.disconnect();
 	}
+}
+
+pub struct OSHandles {
+	pub display: *mut c_void,
+	pub surface: *mut c_void,
 }
 
 struct AppData;
@@ -114,16 +152,16 @@ impl wayland_client::Dispatch<wl_compositor::WlCompositor, ()> for AppData {
 impl wayland_client::Dispatch<wayland_client::protocol::wl_surface::WlSurface, ()> for AppData {
     fn event(_: &mut Self, _: &wl_surface::WlSurface, event: wl_surface::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
         match event {
-			wayland_client::protocol::wl_surface::Event::Enter { output } => {
+			wayland_client::protocol::wl_surface::Event::Enter { .. } => {
 				println!("Enter");
 			}
-			wayland_client::protocol::wl_surface::Event::Leave { output } => {
+			wayland_client::protocol::wl_surface::Event::Leave { .. } => {
 				println!("Leave");
 			}
 			wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } => {
 				println!("Preferred buffer scale: {}", factor);
 			}
-			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { transform } => {
+			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {
 				println!("Preferred buffer transform");
 			}
 			_ => {}

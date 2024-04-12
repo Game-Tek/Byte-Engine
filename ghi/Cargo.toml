@@ -16,3 +16,4 @@ colored = "2.0.4"
 renderdoc = "0.12.1"
 wayland-client = "0.31.2"
 wayland-protocols = { version = "0.31.2", features = ['client'] }
+wayland-backend = { version = "0.3.3", features = ["client_system"] }

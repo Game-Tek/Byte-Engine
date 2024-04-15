@@ -572,7 +572,9 @@ impl VisibilityWorldRenderDomain {
 		
 						let material_data = unsafe { material_data.as_mut().unwrap() };
 		
-						material_data.textures[0] = 0; // TODO: make dynamic based on supplied textures
+						for (i, e) in variant.material.resource().parameters.iter().enumerate() {
+							material_data.textures[i] = i as u32; // TODO: make dynamic based on supplied textures
+						}
 		
 						match material.model.name.as_str() {
 							"Visibility" => {

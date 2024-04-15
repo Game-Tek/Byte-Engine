@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, cell::RefCell, collections::HashMap, num::NonZeroUsize, ops::Deref, rc::{Rc, Weak}};
+use std::{cell::RefCell, collections::HashMap, num::NonZeroUsize, ops::Deref, rc::{Rc, Weak}};
 use std::hash::Hash;
 
 use super::parser;
@@ -226,6 +226,16 @@ impl Node {
 		}
 	}
 
+	pub fn r#macro(name: &str, body: NodeReference) -> Node {
+		Node {
+			// parent: None,
+			node: Nodes::Expression(Expressions::Macro {
+				name: name.to_string(),
+				body,
+			}),
+		}
+	}
+
 	pub fn binding(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> Node {
 		Node {
 			// parent: None,
@@ -265,12 +275,12 @@ impl Node {
 		}
 	}
 
-	pub fn intrinsic(name: &str, body: NodeReference) -> Node {
+	pub fn intrinsic(name: &str, elements: Vec<NodeReference>) -> Node {
 		Node {
 			// parent: None,
 			node: Nodes::Intrinsic {
 				name: name.to_string(),
-				body,
+				elements,
 			},
 		}
 	}
@@ -309,6 +319,9 @@ impl Node {
 			Nodes::PushConstant { members } => {
 				members.push(child.clone());
 			}
+			Nodes::Intrinsic { elements, .. } => {
+				elements.push(child.clone());
+			}
 			_ => {}
 		}
 
@@ -331,7 +344,7 @@ impl Node {
 
 	pub fn get_child(&self, child_name: &str) -> Option<NodeReference> {
 		match &self.node {
-			Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } => {
+			Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } | Nodes::Intrinsic { elements: members, .. } => {
 				for member in members {
 					if let Some(c) = RefCell::borrow(&member).get_child_a(child_name, member.clone()) {
 						return Some(c);
@@ -380,7 +393,14 @@ impl Node {
 							return Some(c);
 						}
 					}
-					_ => {}
+					Expressions::Expression { elements } => {
+						for e in elements {
+							if let Some(c) = RefCell::borrow(&e).get_child_a(child_name, e.clone()) {
+								return Some(c);
+							}
+						}
+					}
+					Expressions::Macro { .. } | Expressions::Accessor { .. } | Expressions::FunctionCall { .. } | Expressions::IntrinsicCall { .. } | Expressions::Member { .. } | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } | Expressions::Return => {}
 				}
 			}
 			Nodes::GLSL { output, .. } => {
@@ -390,12 +410,7 @@ impl Node {
 					}
 				}
 			}
-			Nodes::Intrinsic { body, .. } => {
-				if let Some(c) = RefCell::borrow(&body).get_child_a(child_name, body.clone()) {
-					return Some(c);
-				}
-			}
-			Nodes::Member { .. } | Nodes::Binding { .. } | Nodes::Specialization { .. } | Nodes::Null => {}
+			Nodes::Member { .. } | Nodes::Parameter { .. } | Nodes::Binding { .. } | Nodes::Specialization { .. } | Nodes::Literal { .. } | Nodes::Null => {}
 		}
 
 		None
@@ -403,7 +418,7 @@ impl Node {
 
 	fn get_child_a(&self, child_name: &str, r: NodeReference) -> Option<NodeReference> {
 		match &self.node {
-			Nodes::Scope { name, .. } | Nodes::Struct { name, .. } | Nodes::Function { name, .. } | Nodes::Binding { name, .. } | Nodes::Specialization { name, .. } | Nodes::Member { name, .. } | Nodes::Intrinsic { name, .. } => {
+			Nodes::Scope { name, .. } | Nodes::Struct { name, .. } | Nodes::Function { name, .. } | Nodes::Binding { name, .. } | Nodes::Parameter { name, .. } | Nodes::Specialization { name, .. } | Nodes::Member { name, .. } | Nodes::Intrinsic { name, .. } | Nodes::Literal { name, .. } => {
 				if child_name == name {
 					return Some(r);
 				}
@@ -424,6 +439,11 @@ impl Node {
 						}
 					}
 					Expressions::VariableDeclaration { name, .. } => {
+						if child_name == name {
+							return Some(r);
+						}
+					}
+					Expressions::Macro { name, .. } => {
 						if child_name == name {
 							return Some(r);
 						}
@@ -511,6 +531,14 @@ impl Node {
 			node: Nodes::Null,
 		}
 	}
+	
+	fn sentence(elements: Vec<NodeReference>) -> Node {
+		Self {
+			node: Nodes::Expression(Expressions::Expression {
+				elements,
+			}),
+		}
+	}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -579,7 +607,15 @@ pub enum Nodes {
 	},
 	Intrinsic {
 		name: String,
-		body: NodeReference,
+		elements: Vec<NodeReference>,
+	},
+	Parameter {
+		name: String,
+		r#type: NodeReference,
+	},
+	Literal {
+		name: String,
+		value: NodeReference,
 	},
 }
 
@@ -599,12 +635,19 @@ pub enum Expressions {
 	Return,
 	Member {
 		name: String,
-		source: Option<NodeReference>,
+		source: NodeReference,
+	},
+	Expression {
+		elements: Vec<NodeReference>,
 	},
 	Literal { value: String, },
 	FunctionCall {
 		function: NodeReference,
 		parameters: Vec<NodeReference>
+	},
+	IntrinsicCall {
+		intrinsic: NodeReference,
+		elements: Vec<NodeReference>,
 	},
 	Operator {
 		operator: Operators,
@@ -618,7 +661,11 @@ pub enum Expressions {
 	Accessor {
 		left: NodeReference,
 		right: NodeReference,
-	}
+	},
+	Macro {
+		name: String,
+		body: NodeReference,
+	},
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -757,6 +804,17 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 			this
 		}
+		parser::Nodes::Parameter { name, r#type } => {
+			let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
+			let t = lex_parsed_node(chain.clone(), t, parser_program,)?;
+
+			let this = Node::new(Nodes::Parameter {
+				name: name.clone(),
+				r#type: t,
+			});
+
+			this
+		}
 		parser::Nodes::Function { name, return_type, statements, params, .. } => {
 			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: return_type.clone() })?;
 			let t = lex_parsed_node(chain.clone(), t, parser_program,)?;
@@ -859,6 +917,12 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 			this
 		}
+		parser::Nodes::Literal { name, body } => {
+			Node::new(Nodes::Literal {
+				name: name.clone(),
+				value: lex_parsed_node(chain, body, parser_program,)?,
+			})
+		}
 		parser::Nodes::Expression(expression) => {
 			let this = match expression {
 				parser::Expressions::Return => {
@@ -872,7 +936,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 				}
 				parser::Expressions::Member{ name } => {
 					Node::expression(Expressions::Member {
-						source: Some(get_reference(&chain, name).ok_or(LexError::AccessingUndeclaredMember{ name: name.clone() })?.clone()),
+						source: get_reference(&chain, name).ok_or(LexError::AccessingUndeclaredMember{ name: name.clone() })?.clone(),
 						name: name.clone(),
 					})
 				}
@@ -881,7 +945,10 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 						value: value.clone(),
 					})
 				}
-				parser::Expressions::FunctionCall{ name, parameters } => {
+				parser::Expressions::Expression(elements) => {
+					Node::sentence(elements.iter().map(|e| lex_parsed_node(chain.clone(), e, parser_program,)).collect::<Result<Vec<NodeReference>, LexError>>()?)
+				}
+				parser::Expressions::Call{ name, parameters } => {
 					let t = parser_program.types.get(name.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: name.clone() })?;
 					let function = lex_parsed_node(chain.clone(), t, parser_program,)?;
 					let parameters = parameters.iter().map(|e| lex_parsed_node(chain.clone(), e, parser_program,)).collect::<Result<Vec<NodeReference>, LexError>>()?;
@@ -898,8 +965,11 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 									parameters,
 								})
 							}
-							Nodes::Intrinsic { body, .. } => {
-								Node::intrinsic(&name, body.clone())
+							Nodes::Intrinsic { elements, .. } => {
+								Node::expression(Expressions::IntrinsicCall {
+									intrinsic: r,
+									elements: build_intrinsic(elements, &mut parameters.iter())?,
+								})
 							}
 							_ => { return Err(LexError::Undefined { message: Some("Encountered parsing error while evaluating function call. Expected Function | Struct | Intrinsic, but found other.".to_string()) }); }
 						}
@@ -929,16 +999,76 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 					this
 				}
+				parser::Expressions::GLSL { code, input, output } => {
+					let mut inputs = Vec::new();
+					
+					for i in input {
+						inputs.push(get_reference(&chain, i).ok_or(LexError::AccessingUndeclaredMember { name: i.clone() })?.clone());
+					}
+
+					let mut outputs = Vec::new();
+
+					for o in output {
+						outputs.push(Node::expression(Expressions::VariableDeclaration { name: o.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name: o.clone() })? }).into());
+					}
+
+					Node::glsl(code.clone(), inputs, outputs)
+				}
+				parser::Expressions::Macro { name, body } => {
+					Node::r#macro(&name, lex_parsed_node(chain, body, parser_program,)?)
+				}
 			};
 
 			this
 		}
-		parser::Nodes::Intrinsic { name, body } => {
-			Node::intrinsic(name, lex_parsed_node(chain.clone(), body, parser_program,)?)
+		parser::Nodes::Intrinsic { name, elements } => {
+			let mut this = Node::intrinsic(name, Vec::new());
+
+			for e in elements {
+				let mut chain = chain.clone();
+				chain.push(&this);
+				let c = lex_parsed_node(chain, e, parser_program,)?;
+				this.add_child(c);
+			}
+
+			this
 		}
 	};
 
 	Ok(node.into())
+}
+
+fn build_intrinsic<'a>(elements: &[NodeReference], parameters: &mut impl Iterator<Item = &'a NodeReference>) -> Result<Vec<NodeReference>, LexError> {
+	let mut ret = Vec::new();
+
+	for e in elements.iter().filter(|e| !matches!(e.borrow().node(), Nodes::Parameter { .. })) {
+		let f = e.borrow();
+		let e = match f.node() {
+			Nodes::Expression(expression) => {
+				match expression {
+					Expressions::Member { name, source } => {
+						match source.deref().borrow().node() {
+							Nodes::Parameter { name, r#type } => {
+								parameters.next().ok_or(LexError::Undefined{ message: Some("Expected parameter".to_string()) })?.clone()
+							}
+							_ => { e.clone() }
+						}
+					}
+					Expressions::Expression { elements } => {
+						NodeReference::from(Node::expression(Expressions::Expression {
+							elements: build_intrinsic(elements, parameters)?,
+						}))
+					}
+					_ => { e.clone() }
+				}
+			}
+			_ => { e.clone() }
+		};
+
+		ret.push(e);
+	}
+
+	Ok(ret)
 }
 
 #[cfg(test)]
@@ -1237,7 +1367,7 @@ main: fn () -> void {
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, mut program) = parser::parse(tokens).expect("Failed to parse");
 
-		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::glsl("0", Vec::new(), Vec::new()));
+		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::parameter("num", "u32"), parser::NodeReference::glsl("0", Vec::new(), Vec::new()));
 
 		program.insert("intrinsic".to_string(), intrinsic.into());
 

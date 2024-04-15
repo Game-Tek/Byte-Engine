@@ -99,10 +99,10 @@ impl ShaderCompilation {
 		}
 	}
 
-	fn generate_shader_internal(&mut self, string: &mut String, main_function_node: &besl::NodeReference) {
-		if self.present_symbols.contains(main_function_node) { return; }
+	fn generate_shader_internal(&mut self, string: &mut String, this_node: &besl::NodeReference) {
+		if self.present_symbols.contains(this_node) { return; }
 
-		let node = RefCell::borrow(&main_function_node);
+		let node = RefCell::borrow(&this_node);
 	
 		match node.node() {
 			besl::Nodes::Null => {}
@@ -144,7 +144,7 @@ impl ShaderCompilation {
 
 				string.insert_str(0, &l_string);
 
-				self.present_symbols.insert(main_function_node.clone());
+				self.present_symbols.insert(this_node.clone());
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
 				if name == "void" || name == "vec2u16" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" { return; }
@@ -168,7 +168,7 @@ impl ShaderCompilation {
 
 				string.insert_str(0, &l_string);
 
-				self.present_symbols.insert(main_function_node.clone());
+				self.present_symbols.insert(this_node.clone());
 			}
 			besl::Nodes::PushConstant { members } => {
 				let mut l_string = String::with_capacity(128);
@@ -239,6 +239,10 @@ impl ShaderCompilation {
 
 				string.push_str(code);
 			}
+			besl::Nodes::Parameter { name, r#type } => {
+				self.generate_shader_internal(string, &r#type);
+				string.push_str(&format!("{} {}", Self::translate_type(&r#type.borrow().get_name().unwrap()), name));
+			}
 			besl::Nodes::Expression(expression) => {
 				match expression {
 					besl::Expressions::Operator { operator, left, right } => {
@@ -266,17 +270,32 @@ impl ShaderCompilation {
 						}
 						string.push_str(&format!(")"));
 					}
-					besl::Expressions::Member { name, source, .. } => {
-						if let Some(source) = source {
-							match source.borrow().node() {
-								besl::Nodes::Expression { .. } => {}
-								_ => {
-									self.generate_shader_internal(string, &source);
-								}
-							}
+					besl::Expressions::IntrinsicCall { elements: parameters, .. } => {
+						for e in parameters {
+							self.generate_shader_internal(string, e);
 						}
-						
-						string.push_str(name);
+					}
+					besl::Expressions::Expression { elements } => {
+						for element in elements {
+							self.generate_shader_internal(string, &element,);
+						}
+					}
+					besl::Expressions::Macro { body, .. } => {
+						self.generate_shader_internal(string, body);
+					}
+					besl::Expressions::Member { name, source, .. } => {
+						match source.borrow().node() {
+							besl::Nodes::Expression { .. } => {
+								string.push_str(name);
+							}
+							besl::Nodes::Literal { .. } => {
+								self.generate_shader_internal(string, &source);
+							}
+							_ => {
+								self.generate_shader_internal(string, &source);
+								string.push_str(name);
+							}
+						}						
 					}
 					besl::Expressions::VariableDeclaration { name, r#type } => {
 						self.generate_shader_internal(string, r#type);
@@ -365,9 +384,16 @@ impl ShaderCompilation {
 
 				if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
 				string.insert_str(0, &l_string);
+
+				self.present_symbols.insert(this_node.clone());
 			}
-			besl::Nodes::Intrinsic { body, .. } => {
-				self.generate_shader_internal(string, &body);
+			besl::Nodes::Intrinsic { elements, .. } => {
+				for element in elements {
+					self.generate_shader_internal(string, &element,);
+				}
+			}
+			besl::Nodes::Literal { value, .. } => {
+				self.generate_shader_internal(string, &value);
 			}
 		}
 	}
@@ -424,6 +450,8 @@ impl ShaderCompilation {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+
+    use besl::parser::NodeReference;
 
     use crate::shader_generation::ShaderGenerator;
 
@@ -570,5 +598,34 @@ mod tests {
 		let shader = shader_generator.compilation().generate_shader(&main_node);
 
 		assert_eq!(shader, "layout(push_constant) uniform PushConstant {\n\tuint32_t material_id;\n} push_constant;\nvoid main() {\n\tpush_constant;\n}\n");
+	}
+
+	#[test]
+	fn test_instrinsic() {
+		let script = r#"
+		main: fn () -> void {
+			sample(number);
+		}
+		"#;
+
+		let number_literal = besl::parser::NodeReference::literal("number", besl::parser::NodeReference::glsl("1.0", Vec::new(), Vec::new()));
+		let sample_function = besl::parser::NodeReference::intrinsic("sample", NodeReference::parameter("num", "f32"), NodeReference::sentence(vec![NodeReference::glsl("0 + ", Vec::new(), Vec::new()), NodeReference::member_expression("num"), NodeReference::glsl(" * 2", Vec::new(), Vec::new())]));
+
+		let mut program_state = besl::parse(&script).unwrap();
+
+		program_state.insert("sample".to_string(), sample_function.clone());
+		program_state.insert("number".to_string(), number_literal.clone());
+
+		let main = program_state.get("main").unwrap();
+
+		let root = besl::lex(besl::parser::NodeReference::root_with_children(vec![sample_function.clone(), number_literal.clone(), main.clone()]), &program_state).unwrap();
+
+		let main = root.borrow().get_main().unwrap();
+
+		let shader_generator = ShaderGenerator::new();
+
+		let shader = shader_generator.compilation().generate_shader(&main);
+
+		assert_eq!(shader, "void main() {\n\t0 + 1.0 * 2;\n}\n");
 	}
 }

@@ -40,6 +40,7 @@ pub struct VisibilityShaderGenerator {
 	barycentric_deriv: besl::parser::NodeReference,
 	calculate_full_bary: besl::parser::NodeReference,
 	sample_function: besl::parser::NodeReference,
+	sample_normal_function: besl::parser::NodeReference,
 }
 
 impl VisibilityShaderGenerator {
@@ -86,7 +87,8 @@ impl VisibilityShaderGenerator {
 
 		let calculate_full_bary = NodeReference::function("calculate_full_bary", vec![NodeReference::member("pt0", "vec4f"), NodeReference::member("pt1", "vec4f"), NodeReference::member("pt2", "vec4f"), NodeReference::member("pixelNdc", "vec2f"), NodeReference::member("winSize", "vec2f")], "BarycentricDeriv", vec![NodeReference::glsl("BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;", Vec::new(), Vec::new())]);
 		
-		let sample_function = NodeReference::intrinsic("sample", NodeReference::glsl("texture(textures[nonuniformEXT(material.textures[0])], vertex_uv).rgb", vec!["textures".to_string()], Vec::new()));
+		let sample_function = NodeReference::intrinsic("sample", NodeReference::parameter("smplr", "u32"), NodeReference::sentence(vec![NodeReference::glsl("texture(", Vec::new(), Vec::new()), NodeReference::member_expression("smplr"), NodeReference::glsl(", vertex_uv).rgb", Vec::new(), Vec::new())]));
+		let sample_normal_function = NodeReference::intrinsic("sample_normal", NodeReference::parameter("smplr", "u32"), NodeReference::sentence(vec![NodeReference::glsl("normalize(texture(", Vec::new(), Vec::new()), NodeReference::member_expression("smplr"), NodeReference::glsl(", vertex_uv).xyz * 2.0 - 1.0)", Vec::new(), Vec::new())]));
 
 		Self {
 			mesh_struct,
@@ -122,6 +124,7 @@ impl VisibilityShaderGenerator {
 			barycentric_deriv,
 			calculate_full_bary,
 			sample_function,
+			sample_normal_function,
 		}
 	}
 }
@@ -221,7 +224,7 @@ vec3 vertex_position = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.
 vec3 vertex_normal = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
 vec2 vertex_uv = vec2((vertex_uvs[0]).xy * barycenter.x + (vertex_uvs[1]).xy * barycenter.y + (vertex_uvs[2]).xy * barycenter.z);
 
-vec3 N = normalize(vertex_normal);
+vec3 normal = normalize(vertex_normal);
 vec3 V = normalize((camera.view[3].xyz - vertex_position));
 
 vec3 albedo = vec3(1, 0, 0);
@@ -229,6 +232,8 @@ vec3 metalness = vec3(0);
 float roughness = float(0.5);";
 
 		let mut extra = Vec::new();
+
+		let mut texture_count = 0;
 
 		for variable in material["variables"].members() {
 			let name = variable["name"].as_str().unwrap();
@@ -241,9 +246,10 @@ float roughness = float(0.5);";
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let x = besl::parser::NodeReference::intrinsic(name, besl::parser::NodeReference::glsl("texture(textures[nonuniformEXT(material.textures[0])], vertex_uv).rgb", vec!["textures".to_string()], Vec::new()));
+					let x = besl::parser::NodeReference::literal(name, besl::parser::NodeReference::glsl(&format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), vec!["textures".to_string()], Vec::new()));
 					program_state.insert(name.to_string(), x.clone());
 					extra.push(x);
+					texture_count += 1;
 				}
 				_ => {}
 			}
@@ -269,7 +275,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 		L = normalize(light_pos - vertex_position);
 	}
 
-	float NdotL = max(dot(N, L), 0.0);
+	float NdotL = max(dot(normal, L), 0.0);
 
 	if (NdotL <= 0.0) { continue; }
 
@@ -277,7 +283,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	float attenuation = 1.0;
 
 	if (light_type == 68) { // Infinite
-		vec4 surface_light_clip_position = light_matrix * vec4(vertex_position + N * 0.001, 1.0);
+		vec4 surface_light_clip_position = light_matrix * vec4(vertex_position + normal * 0.001, 1.0);
 		vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
 		vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
 		float z = surface_light_ndc_position.z;
@@ -300,9 +306,9 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	F0 = mix(F0, albedo, metalness);
 	vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
-	float NDF = distribution_ggx(N, H, roughness);
-	float G = geometry_smith(N, V, L, roughness);
-	vec3 specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.000001);
+	float NDF = distribution_ggx(normal, H, roughness);
+	float G = geometry_smith(normal, V, L, roughness);
+	vec3 specular = (NDF * G * F) / (4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.000001);
 
 	vec3 kS = F;
 	vec3 kD = vec3(1.0) - kS;
@@ -338,7 +344,7 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, besl::parser::NodeReference::glsl(a, vec!["uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "positions".to_string(), "normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string(), "BarycentricDeriv".to_string()], vec!["albedo".to_string()]));
+				statements.insert(0, besl::parser::NodeReference::glsl(a, vec!["uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "positions".to_string(), "normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string(), "BarycentricDeriv".to_string()], vec!["albedo".to_string(), "normal".to_string()]));
 				statements.push(besl::parser::NodeReference::glsl(b, vec!["lighting_data".to_string(), "out_albedo".to_string(), "out_diffuse".to_string()], Vec::new()));
 			}
 			_ => {}
@@ -379,9 +385,10 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		program_state.insert("depth_shadow_map".to_string(), set2_binding11.clone());
 		program_state.insert("main".to_string(), m.clone());
 		program_state.insert("sample".to_string(), self.sample_function.clone());
+		program_state.insert("sample_normal".to_string(), self.sample_normal_function.clone());
 
 		let mut ret = Vec::with_capacity(32);
-		ret.append(&mut vec![push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, self.uvs.clone(), set0_binding7, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), self.sample_function.clone()]);
+		ret.append(&mut vec![push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, self.uvs.clone(), set0_binding7, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), self.sample_function.clone(), self.sample_normal_function.clone()]);
 		ret.append(&mut extra);
 		ret.push(m);
 		ret

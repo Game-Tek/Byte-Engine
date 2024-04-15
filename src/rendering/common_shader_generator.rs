@@ -4,7 +4,7 @@ use resource_management::asset::material_asset_handler::ProgramGenerator;
 
 use crate::besl::lexer;
 
-pub(crate) struct CommonShaderGenerator {
+pub struct CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {

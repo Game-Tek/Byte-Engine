@@ -1,3 +1,4 @@
 main: fn () -> void {
 	albedo = sample(color);
+	normal = sample_normal(normalll);
 }

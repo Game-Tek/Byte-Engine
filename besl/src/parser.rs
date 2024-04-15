@@ -119,7 +119,15 @@ pub enum Nodes {
 	},
 	Intrinsic {
 		name: String,
+		elements: Vec<NodeReference>,
+	},
+	Literal {
+		name: String,
 		body: NodeReference,
+	},
+	Parameter {
+		name: String,
+		r#type: String,
 	},
 }
 
@@ -149,13 +157,16 @@ pub(super) enum Atoms {
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum Expressions {
+pub enum Expressions {
+	Expression(Vec<NodeReference>),
 	Accessor{ left: NodeReference, right: NodeReference, },
 	Member{ name: String },
 	Literal{ value: String, },
-	FunctionCall{ name: String, parameters: Vec<NodeReference> },
+	Call{ name: String, parameters: Vec<NodeReference> },
 	Operator{ name: String, left: NodeReference, right: NodeReference, },
 	VariableDeclaration{ name: String, r#type: String, },
+	GLSL{ code: String, input: Vec<String>, output: Vec<String>, },
+	Macro{ name: String, body: NodeReference },
 	Return,
 }
 
@@ -191,6 +202,12 @@ impl NodeReference {
 
 	pub fn member(name: &str, r#type: &str) -> NodeReference {
 		NodeReference(Rc::new(make_member(name, r#type)))
+	}
+
+	pub fn member_expression(name: &str) -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Expression(Expressions::Member { name: name.to_string() }),
+		}))
 	}
 
 	pub fn function(name: &str, params: Vec<NodeReference>, return_type: &str, statements: Vec<NodeReference>) -> NodeReference {
@@ -275,6 +292,21 @@ impl NodeReference {
 		}))
 	}
 
+	pub fn r#macro(name: &str, body: NodeReference) -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Expression(Expressions::Macro {
+				name: name.to_string(),
+				body,
+			}),
+		}))
+	}
+
+	pub fn sentence(expressions: Vec<NodeReference>) -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Expression(Expressions::Expression(expressions)),
+		}))
+	}
+
 	pub fn glsl(code: &str, input: Vec<String>, output: Vec<String>) -> NodeReference {
 		NodeReference(Rc::new(Node {
 			node: Nodes::GLSL {
@@ -285,11 +317,20 @@ impl NodeReference {
 		}))
 	}
 
-	pub fn intrinsic(name: &str, parameters: NodeReference) -> NodeReference {
+	pub fn literal(name: &str, body: NodeReference) -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Literal {
+				name: name.to_string(),
+				body,
+			},
+		}))
+	}
+
+	pub fn intrinsic(name: &str, parameters: NodeReference, body: NodeReference) -> NodeReference {
 		NodeReference(Rc::new(Node {
 			node: Nodes::Intrinsic {
 				name: name.to_string(),
-				body: parameters,
+				elements: vec![parameters, body],
 			},
 		}))
 	}
@@ -297,6 +338,15 @@ impl NodeReference {
 	pub fn null() -> NodeReference {
 		NodeReference(Rc::new(Node {
 			node: Nodes::Null,
+		}))
+	}
+
+	pub fn parameter(name: &str, r#type: &str) -> NodeReference {
+		NodeReference(Rc::new(Node {
+			node: Nodes::Parameter {
+				name: name.to_string(),
+				r#type: r#type.to_string(),
+			},
 		}))
 	}
 }
@@ -689,7 +739,7 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &Program
 				Atoms::FunctionCall { name, parameters } => {
 					let parameters = parameters.iter().map(|v| dandc(v)).collect::<Vec<_>>();
 
-					Node { node: Nodes::Expression(Expressions::FunctionCall { name: name.clone(), parameters },), }
+					Node { node: Nodes::Expression(Expressions::Call { name: name.clone(), parameters },), }
 				}
 				Atoms::Literal { value } => { Node { node: Nodes::Expression(Expressions::Literal { value: value.clone() },) } }
 				Atoms::Member { name } => { Node { node: Nodes::Expression(Expressions::Member { name: name.clone() },) } }
@@ -919,7 +969,7 @@ Light: struct {
 					assert_eq!(r#type, "vec4f");
 				} else { panic!("Not an variable declaration"); }
 
-				if let Nodes::Expression(Expressions::FunctionCall { name, parameters, }) = &function_call.node {
+				if let Nodes::Expression(Expressions::Call { name, parameters, }) = &function_call.node {
 					assert_eq!(name, "vec4");
 					assert_eq!(parameters.len(), 4);
 
@@ -983,7 +1033,7 @@ main: fn () -> void {
 				if let Nodes::Expression(Expressions::Operator { name, left: vec4, right: literal }) = &multiply.node {
 					assert_eq!(name, "*");
 
-					if let Nodes::Expression(Expressions::FunctionCall { name, .. }) = &vec4.node {
+					if let Nodes::Expression(Expressions::Call { name, .. }) = &vec4.node {
 						assert_eq!(name, "vec4");
 					} else { panic!("Not a function call"); }
 

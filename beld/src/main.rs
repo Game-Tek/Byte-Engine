@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use resource_management::StorageBackend;
+use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -18,6 +18,10 @@ enum Commands {
 	Wipe {},
 	/// Lists all resources
 	List {},
+	Bake {
+		/// The ID of the resource to bake
+		id: String,
+	},
     /// Deletes a resource
     Delete {
         /// The ID of the resource to delete
@@ -55,6 +59,38 @@ fn main() -> Result<(), i32> {
 				}
 				Err(e) => {
 					println!("Failed to list resources. Error: {}", e);
+					Err(1)
+				}
+			}
+		}
+		Commands::Bake { id } => {
+			let mut asset_manager = asset_manager::AssetManager::new();
+
+			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
+			asset_manager.add_asset_handler(audio_asset_handler::AudioAssetHandler::new());
+			asset_manager.add_asset_handler(mesh_asset_handler::MeshAssetHandler::new());
+
+			{
+				let mut material_asset_handler = material_asset_handler::MaterialAssetHandler::new();
+				let root_node = besl::Node::root();
+				let shader_generator = {
+					// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
+					let visibility_shader_generation = byte_engine::rendering::visibility_shader_generator::VisibilityShaderGenerator::new(root_node.into());
+					visibility_shader_generation
+				};
+				material_asset_handler.set_shader_generator(shader_generator);
+				asset_manager.add_asset_handler(material_asset_handler);
+			}
+
+			println!("Baking resource '{}'", id);
+
+			match smol::block_on(asset_manager.load(&id)) {
+				Ok(_) => {
+					println!("Baked resource '{}'", id);
+					Ok(())
+				}
+				Err(e) => {
+					println!("Failed to bake '{}'. Error: {:#?}", id, e);
 					Err(1)
 				}
 			}

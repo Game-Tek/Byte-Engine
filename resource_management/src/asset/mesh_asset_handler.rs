@@ -75,6 +75,7 @@ impl AssetHandler for MeshAssetHandler {
 				let image_description = crate::asset::image_asset_handler::ImageDescription {
 					format,
 					extent,
+					semantic: if url.contains("Normal") { crate::asset::image_asset_handler::Semantic::Normal } else { crate::asset::image_asset_handler::Semantic::Other },
 				};
 
 				let resource: TypedResource<Image> = asset_manager.produce(&url, "image/png", &image_description, &image.pixels).await;

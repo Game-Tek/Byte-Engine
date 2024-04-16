@@ -219,15 +219,27 @@ vec4 clip_space_vertex_positions[3] = vec4[3](camera.view_projection * mesh.mode
 
 BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, image_extent);
 vec3 barycenter = barycentric_deriv.lambda;
+vec3 ddx = barycentric_deriv.ddx;
+vec3 ddy = barycentric_deriv.ddy;
 
 vec3 vertex_position = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
 vec3 vertex_normal = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
 vec2 vertex_uv = vec2((vertex_uvs[0]).xy * barycenter.x + (vertex_uvs[1]).xy * barycenter.y + (vertex_uvs[2]).xy * barycenter.z);
 
-vec3 normal = normalize(vertex_normal);
+vec3 N = normalize(vec3(mesh.model * vec4(vertex_normal, 0)));
 vec3 V = normalize((camera.view[3].xyz - vertex_position));
 
+vec3 edge1 = ddx.x * vec3(vertex_positions[0]) + ddx.y * vec3(vertex_positions[1]) + ddx.z * vec3(vertex_positions[2]);
+vec3 edge2 = ddy.x * vec3(vertex_positions[0]) + ddy.y * vec3(vertex_positions[1]) + ddy.z * vec3(vertex_positions[2]);
+vec2 duv1 = barycentric_deriv.ddx.x * vec2(vertex_uvs[0]) + barycentric_deriv.ddx.y * vec2(vertex_uvs[1]) + barycentric_deriv.ddx.z * vec2(vertex_uvs[2]);
+vec2 duv2 = barycentric_deriv.ddy.x * vec2(vertex_uvs[0]) + barycentric_deriv.ddy.y * vec2(vertex_uvs[1]) + barycentric_deriv.ddy.z * vec2(vertex_uvs[2]);
+float f = 1.0 / (duv1.x * duv2.y - duv2.x * duv1.y);
+vec3 T = normalize(f * (duv2.y * edge1 - duv1.y * edge2));
+vec3 B = normalize(f * (-duv2.x * edge1 + duv1.x * edge2));
+mat3 TBN = mat3(T, B, N);
+
 vec3 albedo = vec3(1, 0, 0);
+vec3 normal = normalize(vertex_normal);
 vec3 metalness = vec3(0);
 float roughness = float(0.5);";
 
@@ -260,6 +272,8 @@ vec3 lo = vec3(0.0);
 vec3 diffuse = vec3(0.0);
 
 float ao_factor = texture(ao, normalized_xy).r;
+
+normal = normalize(TBN * normal);
 
 for (uint i = 0; i < lighting_data.light_count; ++i) {
 	vec3 light_pos = lighting_data.lights[i].position;

@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::HashMap, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, shader_compilation, window};
+use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, shader_compilation, window, CompressionSchemes, Size};
 
 #[cfg(test)]
 use std::{println as error, println as warn, println as debug};
@@ -911,7 +911,21 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	}
 
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
-		let size = (extent.width() * extent.height() * extent.depth() * 4) as usize; // TODO. fix this
+		let size = if let Some(compression) = compression {
+			let block_size = match compression {
+				CompressionSchemes::BC7 => {
+					match format {
+						graphics_hardware_interface::Formats::RGBA8(_) => { 16usize }
+						graphics_hardware_interface::Formats::RGBA16(_) => { 16usize }
+						_ => { panic!("Invalid format for BC7 compression"); }
+					}
+				}
+			};
+
+			(((extent.width() + 3) / 4) * ((extent.height() + 3) / 4)) as usize * block_size
+		} else {
+			(extent.width() * extent.height() * extent.depth()) as usize * format.size()
+		};
 
 		let texture_handle = graphics_hardware_interface::ImageHandle(self.images.len() as u64);
 
@@ -922,7 +936,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		for _ in 0..(match use_case { graphics_hardware_interface::UseCases::DYNAMIC => { self.frames } graphics_hardware_interface::UseCases::STATIC => { 1 }}) {
 			let resource_uses = resource_uses | if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) { graphics_hardware_interface::Uses::TransferDestination } else { graphics_hardware_interface::Uses::empty() };
 
-			let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+			let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1); // TODO: check if image is being created as linear layout
 
 			let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
 
@@ -1831,10 +1845,6 @@ impl Into<vk::Format> for graphics_hardware_interface::DataTypes {
 			graphics_hardware_interface::DataTypes::UInt4 => vk::Format::R32G32B32A32_UINT,
 		}
 	}
-}
-
-trait Size {
-	fn size(&self) -> usize;
 }
 
 impl Size for graphics_hardware_interface::DataTypes {

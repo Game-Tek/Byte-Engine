@@ -101,7 +101,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	vertex_positions_buffer: ghi::BaseBufferHandle,
 	vertex_normals_buffer: ghi::BaseBufferHandle,
-	vertex_tangents_buffer: ghi::BaseBufferHandle,
+	// vertex_tangents_buffer: ghi::BaseBufferHandle,
 	vertex_uvs_buffer: ghi::BaseBufferHandle,
 
 	/// Indices laid out as a triangle list
@@ -149,6 +149,8 @@ pub struct VisibilityWorldRenderDomain {
 	shadow_map_binding: ghi::DescriptorSetBindingHandle,
 
 	lights: Vec<LightData>,
+
+	texture_count: u32,
 }
 
 impl VisibilityWorldRenderDomain {
@@ -160,7 +162,7 @@ impl VisibilityWorldRenderDomain {
 			let pipeline_layout_handle;
 			let vertex_positions_buffer_handle;
 			let vertex_normals_buffer_handle;
-			let vertex_tangents_buffer_handle;
+			// let vertex_tangents_buffer_handle;
 			let vertex_uv_buffer_handle;
 			let triangle_indices_buffer_handle;
 			let vertex_indices_buffer_handle;
@@ -207,7 +209,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
 					ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
 					ghi::DescriptorSetBindingTemplate::new(8, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-					ghi::DescriptorSetBindingTemplate::new(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
+					ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16),
 				];
 
 				descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
@@ -218,7 +220,7 @@ impl VisibilityWorldRenderDomain {
 				let meshes_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[1]);
 				let vertex_positions_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[2]);
 				let vertex_normals_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[3]);
-				let vertex_tangents_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[4]);
+				// let vertex_tangents_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[4]);
 				let vertex_uv_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[5]);
 				let vertex_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[6]);
 				let primitive_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, &bindings[7]);
@@ -229,7 +231,7 @@ impl VisibilityWorldRenderDomain {
 				
 				vertex_positions_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-				vertex_tangents_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Tangents Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				// vertex_tangents_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Tangents Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				vertex_uv_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex UV Buffer"), std::mem::size_of::<[[f32; 2]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 				triangle_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Triangle Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -250,7 +252,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::DescriptorWrite::buffer(meshes_data_binding, meshes_data_buffer),
 					ghi::DescriptorWrite::buffer(vertex_positions_binding, vertex_positions_buffer_handle),
 					ghi::DescriptorWrite::buffer(vertex_normals_binding, vertex_normals_buffer_handle),
-					ghi::DescriptorWrite::buffer(vertex_tangents_binding, vertex_tangents_buffer_handle),
+					// ghi::DescriptorWrite::buffer(vertex_tangents_binding, vertex_tangents_buffer_handle),
 					ghi::DescriptorWrite::buffer(vertex_uv_binding, vertex_uv_buffer_handle),
 					ghi::DescriptorWrite::buffer(vertex_indices_binding, vertex_indices_buffer_handle),
 					ghi::DescriptorWrite::buffer(primitive_indices_binding, primitive_indices_buffer_handle),
@@ -393,7 +395,7 @@ impl VisibilityWorldRenderDomain {
 
 				vertex_positions_buffer: vertex_positions_buffer_handle,
 				vertex_normals_buffer: vertex_normals_buffer_handle,
-				vertex_tangents_buffer: vertex_tangents_buffer_handle,
+				// vertex_tangents_buffer: vertex_tangents_buffer_handle,
 				vertex_uvs_buffer: vertex_uv_buffer_handle,
 
 				triangle_indices_buffer: triangle_indices_buffer_handle,
@@ -430,6 +432,8 @@ impl VisibilityWorldRenderDomain {
 				shadow_map_binding,
 
 				lights: Vec::new(),
+
+				texture_count: 0,
 			}
 		})
 			.listen_to::<camera::Camera>()
@@ -438,7 +442,7 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
-	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut dyn ghi::GraphicsHardwareInterface, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle) {
+	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut dyn ghi::GraphicsHardwareInterface, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle, texture_count: &mut u32) {
 		if let Some(texture) = resource.resource().downcast_ref::<Image>() {
 			let compression = texture.compression.map(|compression| {
 				match compression {
@@ -486,7 +490,9 @@ impl VisibilityWorldRenderDomain {
 			
 			let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
-			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(textures_binding, image, sampler, ghi::Layouts::Read),]);
+			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(textures_binding, image, sampler, ghi::Layouts::Read, *texture_count),]);
+
+			*texture_count += 1;
 
 			pending_texture_loads.push(image);
 		}
@@ -712,7 +718,7 @@ impl VisibilityWorldRenderDomain {
 				for parameter in &material.parameters {
 					match &parameter.value {
 						resource_management::types::Value::Image(image) => {
-							Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding);
+							Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding, &mut self.texture_count);
 						}
 						_ => {}
 					}
@@ -724,7 +730,9 @@ impl VisibilityWorldRenderDomain {
 
 				let material_data = unsafe { material_data.as_mut().unwrap() };
 
-				material_data.textures[0] = 0; // TODO: make dynamic based on supplied textures
+				for (i, e) in material.parameters.iter().enumerate() {
+					material_data.textures[i] = i as u32; // TODO: make dynamic based on supplied textures
+				}
 
 				match material.model.name.as_str() {
 					"Visibility" => {
@@ -958,6 +966,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 			let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 			let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
+			// let mut vertex_tangents_buffer = ghi.get_splitter(self.vertex_tangents_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 			let mut vertex_uv_buffer = ghi.get_splitter(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector2>());
 			let mut triangle_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>());
 			let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<u16>());
@@ -969,6 +978,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 			let total_vertex_positions_count;
 			let total_vertex_normals_count;
+			// let total_vertex_tangent_count;
 			let total_vertex_uv_count;
 			let total_triangle_indices_count;
 			let total_vertex_indices_count;
@@ -980,6 +990,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 				total_vertex_positions_count = mesh_resource.sub_meshes.iter().map(|sm| sm.primitives.iter().map(|p| p.vertex_count).sum::<u32>()).sum::<u32>();
 				total_vertex_normals_count = mesh_resource.sub_meshes.iter().map(|sm| sm.primitives.iter().map(|p| p.vertex_count).sum::<u32>()).sum::<u32>();
+				// total_vertex_tangent_count = mesh_resource.sub_meshes.iter().map(|sm| sm.primitives.iter().map(|p| p.vertex_count).sum::<u32>()).sum::<u32>();
 				total_vertex_uv_count = mesh_resource.sub_meshes.iter().map(|sm| sm.primitives.iter().map(|p| p.vertex_count).sum::<u32>()).sum::<u32>();
 				total_triangle_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap().count;
 				total_vertex_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().count;
@@ -988,6 +999,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 				let vertex_positions_buffer = vertex_positions_buffer.take(total_vertex_positions_count as usize * std::mem::size_of::<Vector3>());
 				let vertex_normals_buffer = vertex_normals_buffer.take(total_vertex_normals_count as usize * std::mem::size_of::<Vector3>());
+				// let vertex_tangents_buffer = vertex_tangents_buffer.take(total_vertex_tangent_count as usize * std::mem::size_of::<Vector3>());
 				let vertex_uv_buffer = vertex_uv_buffer.take(total_vertex_uv_count as usize * std::mem::size_of::<Vector2>());
 				let triangle_indices_buffer = triangle_indices_buffer.take(total_triangle_indices_count as usize * std::mem::size_of::<u16>());
 				let vertex_indices_buffer = vertex_indices_buffer.take(total_vertex_indices_count as usize * std::mem::size_of::<u16>());
@@ -997,6 +1009,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				let streams = vec![
 					resource_management::Stream::new("Vertex.Position", vertex_positions_buffer),
 					resource_management::Stream::new("Vertex.Normal", vertex_normals_buffer),
+					// resource_management::Stream::new("Vertex.Tangent", vertex_tangents_buffer),
 					resource_management::Stream::new("Vertex.UV", vertex_uv_buffer),
 					resource_management::Stream::new("TriangleIndices", triangle_indices_buffer),
 					resource_management::Stream::new("VertexIndices", vertex_indices_buffer),

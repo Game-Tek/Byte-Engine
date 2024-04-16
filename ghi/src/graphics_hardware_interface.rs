@@ -638,6 +638,29 @@ pub enum Formats {
 	RGBA16(Encodings),
 }
 
+pub trait Size {
+	fn size(&self) -> usize;
+}
+
+impl Size for Formats {
+	fn size(&self) -> usize {
+		match self {
+			Formats::RGBu10u10u11 => 4,
+			Formats::BGRAu8 => 4,
+			Formats::Depth32 => 4,
+			Formats::U32 => 4,
+			Formats::R8(_) => 1,
+			Formats::R16(_) => 2,
+			Formats::R32(_) => 4,
+			Formats::RG16(_) => 4,
+			Formats::RGB8(_) => 3,
+			Formats::RGB16(_) => 6,
+			Formats::RGBA8(_) => 4,
+			Formats::RGBA16(_) => 8,
+		}
+	}
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CompressionSchemes {
 	BC7,
@@ -942,6 +965,16 @@ impl DescriptorSetBindingTemplate {
 		}
 	}
 
+	pub fn new_array(binding: u32, descriptor_type: DescriptorType, stages: Stages, count: u32) -> Self {
+		Self {
+			binding,
+			descriptor_type,
+			descriptor_count: count,
+			stages,
+			immutable_samplers: None,
+		}
+	}
+
 	pub fn new_with_immutable_samplers(binding: u32, stages: Stages, samplers: Option<Vec<SamplerHandle>>) -> Self {
 		Self {
 			binding,
@@ -1040,6 +1073,19 @@ impl DescriptorWrite {
 		DescriptorWrite {
 			binding_handle,
 			array_element: 0,
+			descriptor: Descriptor::CombinedImageSampler {
+				image_handle: image_handle,
+				sampler_handle,
+				layout,
+			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn combined_image_sampler_array(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts, index: u32) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: index,
 			descriptor: Descriptor::CombinedImageSampler {
 				image_handle: image_handle,
 				sampler_handle,

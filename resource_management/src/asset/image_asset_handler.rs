@@ -72,6 +72,7 @@ impl AssetHandler for ImageAssetHandler {
 			let (image, data) = self.produce(&ImageDescription {
 				format,
 				extent,
+				semantic: if url.contains("Normal") { Semantic::Normal } else { Semantic::Other }
 			}, &buffer);
 
 			let resource_document = GenericResourceSerialization::new(url, image);
@@ -96,7 +97,9 @@ impl AssetHandler for ImageAssetHandler {
 
 impl ImageAssetHandler {
 	fn produce(&self, description: &ImageDescription, buffer: &[u8]) -> (Image, Box<[u8]>) {
-		let ImageDescription { format, extent } = description;
+		let ImageDescription { format, extent, semantic } = description;
+
+		let compress = *semantic != Semantic::Normal;
 
 		let (data, format, compression) = match format {
 			Formats::RGB8 => {
@@ -112,7 +115,7 @@ impl ImageAssetHandler {
 					}
 				}
 
-				if true { // TODO: make this a setting
+				if compress { // TODO: make this a setting
 					let rgba_surface = intel_tex_2::RgbaSurface {
 						data: &buf,
 						width: extent.width(),
@@ -140,7 +143,7 @@ impl ImageAssetHandler {
 					}
 				}
 
-				if true {
+				if compress {
 					let rgba_surface = intel_tex_2::RgbaSurface {
 						data: &buf,
 						width: extent.width(),
@@ -150,7 +153,7 @@ impl ImageAssetHandler {
 		
 					let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
-					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Formats::RGBA16, Some(CompressionSchemes::BC7))
+					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Formats::RGBA8, Some(CompressionSchemes::BC7))
 				} else {
 					(buf, Formats::RGBA16, None)
 				}
@@ -169,9 +172,24 @@ impl ImageAssetHandler {
 	}
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Semantic {
+	Albedo,
+	Normal,
+	Metallic,
+	Roughness,
+	Emissive,
+	Height,
+	Opacity,
+	Displacement,
+	AO,
+	Other,
+}
+
 pub struct ImageDescription {
 	pub format: Formats,
 	pub extent: Extent,
+	pub semantic: Semantic,
 }
 
 impl Description for ImageDescription {

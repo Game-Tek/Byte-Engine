@@ -6,7 +6,7 @@
 		{
 			"label": "Clear engine caches",
 			"type": "shell",
-			"command": "rm -rf resources/* && rm -rf .byte-editor/*",
+			"command": "rm -rf resources/*",
 			"problemMatcher": []
 		}
 	]

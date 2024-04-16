@@ -532,11 +532,11 @@ downcast_rs::impl_downcast!(StorageBackend);
 
 pub struct DbStorageBackend {
 	db: polodb_core::Database,
-	path: std::path::PathBuf,
+	base_path: std::path::PathBuf,
 }
 
 impl DbStorageBackend {
-	pub fn new(path: &std::path::Path) -> Self {
+	pub fn new(base_path: &std::path::Path) -> Self {
 		let mut memory_only = false;
 
 		if cfg!(test) { // If we are running tests we want to use memory database. This way we can run tests in parallel.
@@ -544,7 +544,7 @@ impl DbStorageBackend {
 		}
 
 		let db_res = if !memory_only {
-			polodb_core::Database::open_file(path)
+			polodb_core::Database::open_file(base_path.join("resources.db"))
 		} else {
 			log::info!("Using memory database instead of file database.");
 			polodb_core::Database::open_memory()
@@ -578,15 +578,7 @@ impl DbStorageBackend {
 
 		DbStorageBackend {
 			db,
-			path: path.to_path_buf(),
-		}
-	}
-
-	fn resolve_resource_path(path: &std::path::Path) -> std::path::PathBuf {
-		if cfg!(test) {
-			std::env::temp_dir().join("resources").join(path)
-		} else {
-			std::path::PathBuf::from("resources/").join(path)
+			base_path: base_path.to_path_buf(),
 		}
 	}
 }
@@ -614,7 +606,7 @@ impl StorageBackend for DbStorageBackend {
 					match o {
 						Some(o) => {
 							let db_id = o.get_object_id("_id").map_err(|_| "Resource entry does not have '_id' key of type 'ObjectId'".to_string())?;
-							let resource_path = Self::resolve_resource_path(std::path::Path::new(db_id.to_string().as_str()));
+							let resource_path = self.base_path.join(std::path::Path::new(db_id.to_string().as_str()));
 
 							let file_deletion_result = smol::fs::remove_file(&resource_path).await;
 
@@ -668,6 +660,7 @@ impl StorageBackend for DbStorageBackend {
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
 		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }).ok();
 		let id = id.to_string();
+		let base_path = self.base_path.clone();
 
 		Box::pin(async move {
 			let resource_document = resource_document??;
@@ -681,7 +674,7 @@ impl StorageBackend for DbStorageBackend {
 				GenericResourceResponse::new(&id, hash, class, size, resource)
 			};
 
-			let resource_reader = FileResourceReader::new(smol::fs::File::open(Self::resolve_resource_path(std::path::Path::new(&resource_document.get_object_id("_id").ok()?.to_string()))).await.ok()?);	
+			let resource_reader = FileResourceReader::new(smol::fs::File::open(base_path.join(std::path::Path::new(&resource_document.get_object_id("_id").ok()?.to_string()))).await.ok()?);	
 	
 			Some((resource, Box::new(resource_reader) as Box<dyn ResourceReader>))
 		})
@@ -718,7 +711,7 @@ impl StorageBackend for DbStorageBackend {
 	
 			let resource_id = insert_result.inserted_id.as_object_id().unwrap();
 	
-			let resource_path = Self::resolve_resource_path(std::path::Path::new(&resource_id.to_string()));
+			let resource_path = self.base_path.join(std::path::Path::new(&resource_id.to_string()));
 
 			let mut file = smol::fs::File::create(resource_path).await.or(Err(()))?;
 	

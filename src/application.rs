@@ -156,7 +156,7 @@ impl Application for GraphicsApplication {
 
 			let material_resourcer_handler = MaterialResourcerHandler::new();
 
-			let mut asset_manager = AssetManager::new();
+			let mut asset_manager = AssetManager::new("resources".into());
 
 			asset_manager.add_asset_handler(MeshAssetHandler::new());
 	

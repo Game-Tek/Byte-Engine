@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn load_gltf() {
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
         let asset_handler = MeshAssetHandler::new();
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
@@ -690,7 +690,7 @@ mod tests {
 
 	#[test]
     fn load_gltf_with_bin() {
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
         let asset_handler = MeshAssetHandler::new();
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
         let asset_resolver = TestAssetResolver::new();
         let storage_backend = TestStorageBackend::new();
         let asset_handler = MeshAssetHandler::new();
@@ -776,7 +776,7 @@ mod tests {
 	#[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb_image() {
-		let mut asset_manager = AssetManager::new_with_storage_backend(TestStorageBackend::new());
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		
         let asset_resolver = TestAssetResolver::new();
 		

@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use crate::{asset::asset_manager::AssetManager, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
+use crate::{asset::asset_manager::{self, AssetManager}, DbStorageBackend, LoadResourceRequest, LoadResults, ResourceRequest, ResourceResponse, StorageBackend};
 use super::resource_handler::ResourceHandler;
 
 /// Resource manager.
@@ -13,7 +13,7 @@ use super::resource_handler::ResourceHandler;
 /// 
 /// If accessing the filesystem paths will be relative to the assets directory, and assets should omit the extension.
 pub struct ResourceManager {
-	storage_backend: Box<dyn StorageBackend>,
+	// storage_backend: Box<dyn StorageBackend>,
 	resource_handlers: Vec<Box<dyn ResourceHandler + Send>>,
 
 	#[cfg(debug_assertions)]
@@ -31,7 +31,7 @@ impl From<polodb_core::Error> for LoadResults {
 impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new() -> Self {
-		if let Err(error) = std::fs::create_dir_all(Self::resolve_resource_path(std::path::Path::new(""))) {
+		if let Err(error) = std::fs::create_dir_all(std::path::Path::new("resources")) {
 			match error.kind() {
 				std::io::ErrorKind::AlreadyExists => {},
 				_ => panic!("Could not create resources directory"),
@@ -43,7 +43,7 @@ impl ResourceManager {
 		// let mut memory_only = args.find(|arg| arg == "--ResourceManager.memory_only").is_some();
 
 		ResourceManager {
-			storage_backend: Box::new(DbStorageBackend::new(&Self::resolve_resource_path(std::path::Path::new("resources.db")))),
+			// storage_backend: Box::new(DbStorageBackend::new(std::path::Path::new("resources"))),
 			resource_handlers: Vec::with_capacity(8),
 
 			#[cfg(debug_assertions)]
@@ -53,7 +53,7 @@ impl ResourceManager {
 
 	pub fn new_with_storage_backend<T: StorageBackend + 'static>(storage_backend: T) -> Self {
 		ResourceManager {
-			storage_backend: Box::new(storage_backend),
+			// storage_backend: Box::new(storage_backend),
 			resource_handlers: Vec::with_capacity(8),
 
 			#[cfg(debug_assertions)]
@@ -70,6 +70,15 @@ impl ResourceManager {
 		self.resource_handlers.push(Box::new(resource_handler));
 	}
 
+	fn get_storage_backend(&self) -> &dyn StorageBackend {
+		if let Some(asset_manager) = &self.asset_manager {
+			asset_manager.get_storage_backend()
+		} else {
+			panic!("No asset manager set");
+			// self.storage_backend.deref()
+		}
+	}
+
 	/// Tries to load a resource from cache or source.\
 	/// This is a more advanced version of get() as it allows to load resources that depend on other resources.\
 	/// 
@@ -79,20 +88,18 @@ impl ResourceManager {
 	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
 	pub async fn get<'s, 'a, 'b>(&'s self, id: &'a str) -> Option<ResourceResponse<'a>> where 'b: 'a {
 		let load = {
-			let (resource, reader) = if let Some(x) = self.storage_backend.read(id).await {
+			let (resource, reader) = if let Some(x) = self.get_storage_backend().read(id).await {
 				x	
 			} else {
 				if let Some(asset_manager) = &self.asset_manager {	
-					asset_manager.load(id).await.ok()?;
-					self.storage_backend.sync(asset_manager.get_storage_backend()).await;
-	
-					self.storage_backend.read(id).await?
+					asset_manager.load(id).await.ok()?;	
+					self.get_storage_backend().read(id).await?
 				} else {
 					return None;
 				}
 			};
 
-			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, Some(reader), self.storage_backend.deref()).await?
+			self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, Some(reader), self.get_storage_backend()).await?
 		};
 
 		Some(load)
@@ -102,20 +109,18 @@ impl ResourceManager {
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
 	pub async fn request(&self, id: &str) -> Option<ResourceRequest> {
-		let (resource, _) = if let Some(x) = self.storage_backend.read(id).await {
+		let (resource, _) = if let Some(x) = self.get_storage_backend().read(id).await {
 			x	
 		} else {
 			if let Some(asset_manager) = &self.asset_manager {
 				asset_manager.load(id).await.ok()?;
-				self.storage_backend.sync(asset_manager.get_storage_backend()).await;
-
-				self.storage_backend.read(id).await?
+				self.get_storage_backend().read(id).await?
 			} else {
 				return None;
 			}
 		};
 
-		let p = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, None, self.storage_backend.deref()).await?;
+		let p = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?.read(resource, None, self.get_storage_backend()).await?;
 
 		Some(ResourceRequest::new(p))
 	}
@@ -126,35 +131,15 @@ impl ResourceManager {
 	/// 
 	/// If a buffer is not provided for a resurce in the options parameters it will be either be loaded into the provided buffer or returned in a vector.
 	pub async fn load<'a, 's>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
-		let (mut resource, reader) = self.storage_backend.read(request.id()).await?;
+		let (mut resource, reader) = self.get_storage_backend().read(request.id()).await?;
 
 		let resource_handler = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?;
 
 		resource.read_target = request.streams;
 
-		let load = resource_handler.read(resource , Some(reader), self.storage_backend.deref()).await?;
+		let load = resource_handler.read(resource, Some(reader), self.get_storage_backend()).await?;
 
 		Some(load)
-	}
-
-	fn resolve_resource_path(path: &std::path::Path) -> std::path::PathBuf {
-		Self::resource_path().join(path)
-	}
-	
-	fn resource_path() -> std::path::PathBuf {
-		if cfg!(test) {
-			std::env::temp_dir().join("resources")
-		} else {
-			std::path::PathBuf::from("resources/")
-		}
-	}
-
-	fn assets_path() -> std::path::PathBuf {
-		if cfg!(test) {
-			std::env::temp_dir().join("assets")
-		} else {
-			std::path::PathBuf::from("assets/")
-		}
 	}
 }
 

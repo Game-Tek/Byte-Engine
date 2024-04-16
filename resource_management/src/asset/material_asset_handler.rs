@@ -342,7 +342,7 @@ pub mod tests {
 
 	#[test]
 	fn load_material() {
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
@@ -400,7 +400,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();

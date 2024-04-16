@@ -121,7 +121,7 @@ mod tests {
 
 	#[test]
 	fn test_audio_asset_handler() {
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let url = "gun.wav";

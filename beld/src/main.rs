@@ -34,10 +34,8 @@ fn main() -> Result<(), i32> {
 
 	let command = cli.command;
 
-	let path = cli.path.unwrap_or("resources/resources.db".to_string());
-
-	let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
-
+	let path = cli.path.unwrap_or("resources".to_string());
+	
 	match command {
 		Commands::Wipe {  } => {
 			std::process::Command::new("rm").arg("-rf").arg("resources/*").spawn().unwrap();
@@ -45,6 +43,8 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::List {  } => {
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
+
 			match smol::block_on(storage_backend.list()) {
 				Ok(resources) => {
 					if resources.is_empty() {
@@ -64,7 +64,7 @@ fn main() -> Result<(), i32> {
 			}
 		}
 		Commands::Bake { id } => {
-			let mut asset_manager = asset_manager::AssetManager::new();
+			let mut asset_manager = asset_manager::AssetManager::new(path.into());
 
 			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
 			asset_manager.add_asset_handler(audio_asset_handler::AudioAssetHandler::new());
@@ -96,6 +96,8 @@ fn main() -> Result<(), i32> {
 			}
 		}
 		Commands::Delete { id } => {
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
+
 			match smol::block_on(storage_backend.delete(&id)) {
 				Ok(()) => {
 					println!("Deleted resource '{}'", id);

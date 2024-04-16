@@ -155,7 +155,7 @@ impl ResourceHandler for MeshResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, types::IntegralTypes, StorageBackend, Stream,};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, mesh_asset_handler::MeshAssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, types::IntegralTypes, Stream,};
 	
 	use super::*;
 
@@ -167,7 +167,7 @@ mod tests {
 
 		let url = "Suzanne.gltf";
 
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
@@ -274,7 +274,7 @@ mod tests {
 
 		let url = "Box.gltf";
 
-		let asset_manager = AssetManager::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 

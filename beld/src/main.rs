@@ -1,12 +1,14 @@
 use clap::{Parser, Subcommand};
 use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
+use smol::Executor;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// The full path to the resources database. Example: ./resource/resources.db
-    #[arg(short, long)]
-    path: Option<String>,
+    /// The full path to the resources directory.
+	/// Example: `beld --path resources`
+    #[arg(short, long, default_value = "resources")]
+    path: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -18,9 +20,12 @@ enum Commands {
 	Wipe {},
 	/// Lists all resources
 	List {},
+	/// Bakes assets into resources
 	Bake {
 		/// The ID of the resource to bake
-		id: String,
+		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
+		#[clap(value_delimiter = ' ', num_args = 1..)]
+		ids: Vec<String>,
 	},
     /// Deletes a resource
     Delete {
@@ -34,12 +39,20 @@ fn main() -> Result<(), i32> {
 
 	let command = cli.command;
 
-	let path = cli.path.unwrap_or("resources".to_string());
+	let path = cli.path;
 	
 	match command {
 		Commands::Wipe {  } => {
-			std::process::Command::new("rm").arg("-rf").arg("resources/*").spawn().unwrap();
-			std::process::Command::new("rm").arg("-rf").arg(".byte-editor/*").spawn().unwrap();
+			std::fs::remove_dir_all(&path).map_err(|e| {
+				println!("Failed to wipe resources. Error: {}", e);
+				1
+			})?;
+
+			std::fs::create_dir(&path).map_err(|e| {
+				println!("Failed to create resources directory. Error: {}", e);
+				1
+			})?;
+			
 			Ok(())
 		}
 		Commands::List {  } => {
@@ -63,7 +76,7 @@ fn main() -> Result<(), i32> {
 				}
 			}
 		}
-		Commands::Bake { id } => {
+		Commands::Bake { ids } => {
 			let mut asset_manager = asset_manager::AssetManager::new(path.into());
 
 			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
@@ -82,17 +95,31 @@ fn main() -> Result<(), i32> {
 				asset_manager.add_asset_handler(material_asset_handler);
 			}
 
-			println!("Baking resource '{}'", id);
+			let mut ok = true;
 
-			match smol::block_on(asset_manager.load(&id)) {
-				Ok(_) => {
-					println!("Baked resource '{}'", id);
-					Ok(())
+			if ids.is_empty() {
+				println!("No resources to bake.");
+				return Ok(());
+			}
+
+			for id in ids {
+				println!("Baking resource '{}'", id);
+
+				match smol::block_on(asset_manager.load(&id)) {
+					Ok(_) => {
+						println!("Baked resource '{}'", id);
+					}
+					Err(e) => {
+						println!("Failed to bake '{}'. Error: {:#?}", id, e);
+						ok = false;
+					}
 				}
-				Err(e) => {
-					println!("Failed to bake '{}'. Error: {:#?}", id, e);
-					Err(1)
-				}
+			}
+
+			if ok {
+				Ok(())
+			} else {
+				Err(1)
 			}
 		}
 		Commands::Delete { id } => {

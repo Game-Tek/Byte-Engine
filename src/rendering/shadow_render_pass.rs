@@ -41,15 +41,9 @@ impl ShadowRenderingPass {
 		
 		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 		
-		let light_matrices_binding = ghi.create_descriptor_binding(descriptor_set, &light_matrics_binding_template);
-		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, &light_depth_map);
-		let view_depth_map_binding = ghi.create_descriptor_binding(descriptor_set, &view_depth_map);
-
-		ghi.write(&[
-			ghi::DescriptorWrite::buffer(light_matrices_binding, light_matrices_buffer,),
-			ghi::DescriptorWrite::combined_image_sampler(shadow_map_binding, shadow_map, sampler, ghi::Layouts::Read),
-			ghi::DescriptorWrite::combined_image_sampler(view_depth_map_binding, view_depth_image.clone(), sampler, ghi::Layouts::Read),
-		]);
+		let light_matrices_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&light_matrics_binding_template, light_matrices_buffer));
+		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&light_depth_map, shadow_map, sampler, ghi::Layouts::Read));
+		let view_depth_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&view_depth_map, view_depth_image.clone(), sampler, ghi::Layouts::Read));
 
 		let mesh_shader = ghi.create_shader(Some("Shadow Pass Mesh Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_MESH_SOURCE.to_string()), ghi::ShaderTypes::Mesh, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),

@@ -27,13 +27,8 @@ impl AcesToneMapPass {
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
 
-		let albedo_binding = ghi.create_descriptor_binding(descriptor_set, &bindings[0]);
-		let result_binding = ghi.create_descriptor_binding(descriptor_set, &bindings[1]);
-
-		ghi.write(&[
-			ghi::DescriptorWrite::image(albedo_binding, source_image, ghi::Layouts::General),
-			ghi::DescriptorWrite::image(result_binding, result_image, ghi::Layouts::General),
-		]);
+		let albedo_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[0], source_image, ghi::Layouts::General));
+		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[1], result_image, ghi::Layouts::General));
 
 		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),

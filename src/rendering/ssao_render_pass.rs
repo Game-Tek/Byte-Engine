@@ -34,14 +34,19 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let blur_x_descriptor_set = ghi.create_descriptor_set(Some("HBAO Blur X Descriptor Set"), &descriptor_set_layout);
 		let blur_y_descriptor_set = ghi.create_descriptor_set(Some("HBAO Blur Y Descriptor Set"), &descriptor_set_layout);
 
-		let depth_binding = ghi.create_descriptor_binding(descriptor_set, &depth_binding_template);
-		let result_binding = ghi.create_descriptor_binding(descriptor_set, &result_binding_template);
+		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 
-		let blur_x_source_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, &source_binding_template);
-		let blur_x_result_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, &result_binding_template);
+		let depth_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&depth_binding_template, depth_target, sampler, ghi::Layouts::Read));
+		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&result_binding_template, occlusion_target, ghi::Layouts::General));
 
-		let blur_y_source_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, &source_binding_template);
-		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, &result_binding_template);
+		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let y_blur_target = ghi.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+
+		let blur_x_source_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&source_binding_template, occlusion_target, sampler, ghi::Layouts::Read));
+		let blur_x_result_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::image(&result_binding_template, x_blur_target, ghi::Layouts::General));
+
+		let blur_y_source_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&source_binding_template, x_blur_target, sampler, ghi::Layouts::Read));
+		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::image(&result_binding_template, y_blur_target, ghi::Layouts::General));
 
 		let shader = ghi.create_shader(Some("SSAO Shader"), ghi::ShaderSource::GLSL(HBAO_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
@@ -50,26 +55,6 @@ impl ScreenSpaceAmbientOcclusionPass {
 		]).expect("Failed to create SSAO shader");
 
 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
-
-		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-		let y_blur_target = ghi.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-
-		ghi.write(&[
-			ghi::DescriptorWrite::combined_image_sampler(depth_binding, depth_target, sampler, ghi::Layouts::Read),
-			ghi::DescriptorWrite::image(result_binding, occlusion_target, ghi::Layouts::General),
-		]);
-
-		ghi.write(&[
-			ghi::DescriptorWrite::combined_image_sampler(blur_x_source_binding, occlusion_target, sampler, ghi::Layouts::Read),
-			ghi::DescriptorWrite::image(blur_x_result_binding, x_blur_target, ghi::Layouts::General),
-		]);
-
-		ghi.write(&[
-			ghi::DescriptorWrite::combined_image_sampler(blur_y_source_binding, x_blur_target, sampler, ghi::Layouts::Read),
-			ghi::DescriptorWrite::image(blur_y_result_binding, y_blur_target, ghi::Layouts::General),
-		]);
 
 		let blur_shader = ghi.create_shader(Some("SSAO Blur Shader"), ghi::ShaderSource::GLSL(BLUR_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),

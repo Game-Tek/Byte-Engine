@@ -473,7 +473,8 @@ pub trait GraphicsHardwareInterface {
 
 	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_template_handle: &DescriptorSetTemplateHandle) -> DescriptorSetHandle;
 
-	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding_template: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle;
+	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding_constructor: BindingConstructor) -> DescriptorSetBindingHandle;
+	fn create_descriptor_binding_array(&mut self, descriptor_set: DescriptorSetHandle, binding_template: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle;
 
 	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
 
@@ -982,6 +983,96 @@ impl DescriptorSetBindingTemplate {
 			descriptor_count: 1,
 			stages,
 			immutable_samplers: samplers,
+		}
+	}
+}
+
+pub struct BindingConstructor<'a> {
+	pub(super) descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
+	/// The index of the array element to write to in the binding(if the binding is an array).
+	pub(super) array_element: u32,
+	/// Information describing the descriptor.
+	pub(super) descriptor: Descriptor,
+	pub(super) frame_offset: Option<i32>,
+}
+
+impl <'a> BindingConstructor<'a> {
+	pub fn buffer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, buffer_handle: BaseBufferHandle) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::Buffer {
+				handle: buffer_handle,
+				size: Ranges::Whole,
+			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn image(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, layout: Layouts) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::Image {
+				handle: image_handle,
+				layout,
+			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn image_with_frame(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, layout: Layouts, frame_offset: i32) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::Image {
+				handle: image_handle,
+				layout,
+			},
+			frame_offset: Some(frame_offset),
+		}
+	}
+
+	pub fn sampler(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, sampler_handle: SamplerHandle) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::Sampler(sampler_handle),
+			frame_offset: None,
+		}
+	}
+
+	pub fn combined_image_sampler(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn sampler_with_immutable_samplers(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, samplers: Option<Vec<SamplerHandle>>) -> Self {
+		todo!();
+		// Self {
+		// 	descriptor_set_binding_template,
+		// 	array_element: 0,
+		// 	descriptor: Descriptor::Sampler,
+		// 	frame_offset: None,
+		// }
+	}
+	
+	fn acceleration_structure(bindings: &'a DescriptorSetBindingTemplate, top_level_acceleration_structure: TopLevelAccelerationStructureHandle) -> Self {
+		BindingConstructor {
+			descriptor_set_binding_template: bindings,
+			array_element: 0,
+			descriptor: Descriptor::AccelerationStructure {
+				handle: top_level_acceleration_structure,
+			},
+			frame_offset: None,
 		}
 	}
 }
@@ -2011,13 +2102,8 @@ use super::*;
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_template);
 
-		let image_binding = renderer.create_descriptor_binding(descriptor_set, &image_binding_template);
-		let last_frame_image_binding = renderer.create_descriptor_binding(descriptor_set, &last_frame_image_binding_template);
-
-		renderer.write(&[
-			DescriptorWrite::image(image_binding, image, Layouts::General),
-			DescriptorWrite::image_with_frame(last_frame_image_binding, image, Layouts::General, -1), // TODO: consider making this mutable borrows so that the same handle cannot be used for multiple writes
-		]);
+		let image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
+		let last_frame_image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image_with_frame(&last_frame_image_binding_template, image, Layouts::General, -1));
 
 		let command_buffer = renderer.create_command_buffer(None);
 
@@ -2174,15 +2260,9 @@ use super::*;
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle,);
 
-		let sampler_binding = renderer.create_descriptor_binding(descriptor_set, &DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])));
-		let ubo_binding = renderer.create_descriptor_binding(descriptor_set, &DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX));
-		let tex_binding = renderer.create_descriptor_binding(descriptor_set, &DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT));
-
-		renderer.write(&[
-			DescriptorWrite::sampler(sampler_binding, sampler),
-			DescriptorWrite::buffer(ubo_binding, buffer),
-			DescriptorWrite::image(tex_binding, sampled_texture, Layouts::Read),
-		]);
+		let sampler_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler_with_immutable_samplers(&DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])), None)); // TODO: fix this
+		let ubo_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer));
+		let tex_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
 
 		assert!(!renderer.has_errors());
 
@@ -2399,21 +2479,13 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let acceleration_structure_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[0],);
-		let render_target_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[1],);
-		let vertex_positions_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[2],);
-		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[3],);
-		let indices_binding = renderer.create_descriptor_binding(descriptor_set, &bindings[4],);
-
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
-		renderer.write(&[
-			DescriptorWrite::acceleration_structure(acceleration_structure_binding, top_level_acceleration_structure),
-			DescriptorWrite::image(render_target_binding, render_target, Layouts::General),
-			DescriptorWrite::buffer(vertex_positions_binding, vertex_positions_buffer,),
-			DescriptorWrite::buffer(vertex_colors_binding, vertex_colors_buffer,),
-			DescriptorWrite::buffer(indices_binding, index_buffer,),
-		]);
+		let acceleration_structure_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
+		let render_target_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));
+		let vertex_positions_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[2], vertex_positions_buffer));
+		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[3], vertex_colors_buffer));
+		let indices_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer));
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 

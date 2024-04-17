@@ -36,7 +36,7 @@ impl Renderer {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
 			let ghi_instance = Rc::new(RwLock::new(ghi::create()));
 
-			let extent = Extent::rectangle(1920, 1080);
+			let extent = Extent::square(0);
 
 			let result = {
 				let mut ghi = ghi_instance.write().unwrap();
@@ -111,6 +111,8 @@ impl Renderer {
 
 		let (image_index, extent) = ghi.acquire_swapchain_image(swapchain_handle, self.image_ready);
 
+		drop(ghi);
+
 		if extent != self.extent {
 			log::debug!("Resing to {:#?}", extent);
 
@@ -118,15 +120,21 @@ impl Renderer {
 				e.resize(extent);
 			});
 
+			self.tonemap_render_model.sync_get_mut(|e| {
+				e.resize(extent);
+			});
+
 			self.extent = extent;
 		}
+
+		let mut ghi = self.ghi.write().unwrap();
 
 		let mut command_buffer_recording = ghi.create_command_buffer_recording(self.render_command_buffer, Some(self.rendered_frame_count as u32));
 
 		self.visibility_render_model.map(|vis_rp| {
 			let mut vis_rp = vis_rp.write_sync();
 
-			if let Some(_) = vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut()) {
+			if let Some(_) = vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut(), extent) {
 				self.ao_render_pass.map(|ao_rp| {
 					let ao_rp = ao_rp.write_sync();
 					ao_rp.render(command_buffer_recording.as_mut());
@@ -138,7 +146,7 @@ impl Renderer {
 
 		self.tonemap_render_model.map(|e| {
 			let e = e.read_sync();
-			e.render(command_buffer_recording.as_mut());
+			e.render(command_buffer_recording.as_mut(), extent);
 		});			
 
 		// Copy to swapchain

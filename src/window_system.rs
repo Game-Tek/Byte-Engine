@@ -20,12 +20,18 @@ pub struct WindowHandle(u64);
 // #[cfg(target_os = "linux")]
 // unsafe impl Send for WindowOsHandles {}
 
-pub struct Window {}
+pub struct Window {
+	extent: Extent,
+}
+
 impl Window {
 	pub fn new(name: &str, extent: Extent) -> EntityBuilder<'static, Window> {
-		EntityBuilder::new(Window {})
+		EntityBuilder::new(Window {
+			extent
+		})
 	}
 }
+
 impl Entity for Window {}
 
 impl WindowSystem {
@@ -103,9 +109,8 @@ impl WindowSystem {
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, _window: &Window) -> utils::BoxedFuture<()> {
-		let h = self.create_window(handle, "Main Window", Extent::rectangle(1920, 1080), "main_window");
-
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, window: &Window) -> utils::BoxedFuture<()> {
+		let h = self.create_window(handle, "Main Window", window.extent, "main_window");
 		Box::pin(async move { })
 	}
 }

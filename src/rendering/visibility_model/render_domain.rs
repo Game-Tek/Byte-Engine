@@ -156,6 +156,8 @@ impl VisibilityWorldRenderDomain {
 	pub fn new<'a>(ghi: Rc<RwLock<dyn ghi::GraphicsHardwareInterface>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_function(move || {
 			let mut ghi_instance = ghi.write().unwrap();
+
+			let extent = Extent::square(0);
 			
 			let vertex_positions_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -165,9 +167,9 @@ impl VisibilityWorldRenderDomain {
 			let vertex_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-			let albedo = ghi_instance.create_image(Some("albedo"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let diffuse = ghi_instance.create_image(Some("diffuse"), Extent::new(1920, 1080, 1), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let depth_target = ghi_instance.create_image(Some("depth_target"), Extent::new(1920, 1080, 1), ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
@@ -202,8 +204,8 @@ impl VisibilityWorldRenderDomain {
 			let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[7], meshlets_data_buffer));
 			let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &bindings[8]);
 
-			let primitive_index = ghi_instance.create_image(Some("primitive index"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let instance_id = ghi_instance.create_image(Some("instance_id"), Extent::rectangle(1920, 1080), ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
 				ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
@@ -255,7 +257,7 @@ impl VisibilityWorldRenderDomain {
 			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 			let shadow_map_image = {
 				shadow_render_pass.read_sync().get_shadow_map_image()
@@ -699,7 +701,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) -> Option<()> {
+	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		{
@@ -745,10 +747,10 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
-		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, self.primitive_index, self.instance_id, self.depth_target);
-		self.material_count_pass.render(command_buffer_recording);
+		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, self.primitive_index, self.instance_id, self.depth_target, extent);
+		self.material_count_pass.render(command_buffer_recording, extent);
 		self.material_offset_pass.render(command_buffer_recording);
-		self.pixel_mapping_pass.render(command_buffer_recording);
+		self.pixel_mapping_pass.render(command_buffer_recording, extent);
 
 		command_buffer_recording.end_region();
 
@@ -796,6 +798,8 @@ impl VisibilityWorldRenderDomain {
 		ghi.resize_image(self.occlusion_map, extent);
 		ghi.resize_image(self.primitive_index, extent);
 		ghi.resize_image(self.instance_id, extent);
+		
+		self.pixel_mapping_pass.resize(extent);
 	}
 }
 
@@ -1198,7 +1202,7 @@ impl VisibilityPass {
 		}
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, visibility_info: &VisibilityInfo, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) {
+	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, visibility_info: &VisibilityInfo, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) {
 		command_buffer_recording.start_region("Visibility Buffer");
 
 		let attachments = [
@@ -1207,7 +1211,7 @@ impl VisibilityPass {
 			ghi::AttachmentInformation::new(depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
 		];
 
-		let render_pass_command = command_buffer_recording.start_render_pass(Extent::rectangle(1920, 1080), &attachments);
+		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 		render_pass_command.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
 		render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline).dispatch_meshes(visibility_info.meshlet_count, 1, 1);
 		render_pass_command.end_render_pass();
@@ -1249,7 +1253,7 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording) {
+	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent) {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
@@ -1261,7 +1265,7 @@ impl MaterialCountPass {
 
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_pass_descriptor_set]);
 		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 		command_buffer_recording.end_region();
 	}
@@ -1356,7 +1360,7 @@ impl PixelMappingPass {
 
 		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
 
-		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 2 * 2, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 0, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 		PixelMappingPass {
 			material_xy,
@@ -1367,7 +1371,7 @@ impl PixelMappingPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording,) {
+	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent) {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
@@ -1379,9 +1383,13 @@ impl PixelMappingPass {
 
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
 		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 		command_buffer_recording.end_region();
+	}
+
+	fn resize(&self, extent: Extent) {
+		println!("TODO: resize!!!");
 	}
 }
 

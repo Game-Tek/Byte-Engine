@@ -53,13 +53,17 @@ impl AcesToneMapPass {
 			AcesToneMapPass::new(ghi, source_image, result_image)
 		})
 	}
+	
+	pub fn resize(&self, extent: Extent) {
+		todo!()
+	}
 }
 
 impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {
-	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording,) {
+	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent) {
 		let r = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		r.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		r.dispatch(ghi::DispatchExtent::new(Extent::rectangle(1920, 1080), Extent::square(32)));
+		r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 	}
 }
 

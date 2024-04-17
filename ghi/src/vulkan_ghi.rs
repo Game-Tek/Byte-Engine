@@ -3,9 +3,8 @@ use std::{borrow::Cow, collections::HashMap, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, shader_compilation, window, CompressionSchemes, Size};
+use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, shader_compilation, window, CompressionSchemes, DescriptorSetBindingHandle, Size};
 
-#[cfg(test)]
 use std::{println as error, println as warn, println as debug};
 
 pub struct VulkanGHI {
@@ -49,6 +48,20 @@ pub struct VulkanGHI {
 	command_buffers: Vec<CommandBuffer>,
 	synchronizers: Vec<Synchronizer>,
 	swapchains: Vec<Swapchain>,
+
+	resource_to_binding: HashMap<graphics_hardware_interface::Handle, Vec<DescriptorSetBindingHandle>>,
+
+	descriptors: HashMap<(graphics_hardware_interface::DescriptorSetBindingHandle, u32), IDK>,
+}
+
+enum IDK {
+	Image {
+		layout: graphics_hardware_interface::Layouts,
+	},
+	CombinedImageSampler {
+		sampler: vk::Sampler,
+		layout: graphics_hardware_interface::Layouts,
+	},
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -600,6 +613,17 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	}
 
 	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::BaseBufferHandle {
+		if size == 0 {
+			let buffer_handle = graphics_hardware_interface::BaseBufferHandle(self.buffers.len() as u64);
+			self.buffers.push(Buffer {
+				buffer: vk::Buffer::null(),
+				size: 0,
+				device_address: 0,
+				pointer: std::ptr::null_mut(),
+			});
+			return buffer_handle;
+		}
+
 		if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead) {
 			match use_case {
 				graphics_hardware_interface::UseCases::STATIC => {
@@ -734,67 +758,85 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		for _ in 0..(match use_case { graphics_hardware_interface::UseCases::DYNAMIC => { self.frames } graphics_hardware_interface::UseCases::STATIC => { 1 }}) {
 			let resource_uses = resource_uses | if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) { graphics_hardware_interface::Uses::TransferDestination } else { graphics_hardware_interface::Uses::empty() };
 
-			let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1); // TODO: check if image is being created as linear layout
-
-			let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
-
-			let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
-
 			let texture_handle = ImageHandle(self.images.len() as u64);
 
-			let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, compression, 0);
+			if extent.width != 0 && extent.height != 0 && extent.depth != 0 {
+				let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1); // TODO: check if image is being created as linear layout
+	
+				let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
+	
+				let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
+	
+				let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, compression, 0);
+	
+				let (staging_buffer, pointer) = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+					let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+	
+					let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuRead);
+	
+					let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
+	
+					let staging_buffer_handle = BufferHandle(self.buffers.len() as u64);
+	
+					self.buffers.push(Buffer {
+						buffer: staging_buffer_creation_result.resource,
+						size: staging_buffer_creation_result.size,
+						device_address: address,
+						pointer,
+					});
+	
+					(Some(staging_buffer_handle), pointer)
+				} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+					let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+	
+					let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
+	
+					let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
+	
+					let staging_buffer_handle = BufferHandle(self.buffers.len() as u64);
+	
+					self.buffers.push(Buffer {
+						buffer: staging_buffer_creation_result.resource,
+						size: staging_buffer_creation_result.size,
+						device_address: address,
+						pointer,
+					});
+	
+					(Some(staging_buffer_handle), pointer)
+				} else {
+					(None, std::ptr::null_mut())
+				};
 
-			let (staging_buffer, pointer) = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
-
-				let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuRead);
-
-				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
-
-				let staging_buffer_handle = BufferHandle(self.buffers.len() as u64);
-
-				self.buffers.push(Buffer {
-					buffer: staging_buffer_creation_result.resource,
-					size: staging_buffer_creation_result.size,
-					device_address: address,
+				self.images.push(Image {
+					next: None,
+					size: texture_creation_result.size,
+					staging_buffer,
+					allocation_handle,
+					image: texture_creation_result.resource,
+					image_view,
 					pointer,
+					extent,
+					format: to_format(format, compression),
+					format_: format,
+					layout: vk::ImageLayout::UNDEFINED,
+					uses: resource_uses,
 				});
-
-				(Some(staging_buffer_handle), pointer)
-			} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-				let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
-
-				let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
-
-				let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
-
-				let staging_buffer_handle = BufferHandle(self.buffers.len() as u64);
-
-				self.buffers.push(Buffer {
-					buffer: staging_buffer_creation_result.resource,
-					size: staging_buffer_creation_result.size,
-					device_address: address,
-					pointer,
-				});
-
-				(Some(staging_buffer_handle), pointer)
 			} else {
-				(None, std::ptr::null_mut())
-			};
-
-			self.images.push(Image {
-				next: None,
-				size: texture_creation_result.size,
-				staging_buffer,
-				allocation_handle,
-				image: texture_creation_result.resource,
-				image_view,
-				pointer,
-				extent,
-				format: to_format(format, compression),
-				format_: format,
-				layout: vk::ImageLayout::UNDEFINED,
-			});
+				self.images.push(Image {
+					next: None,
+					size: 0,
+					staging_buffer: None,
+					allocation_handle: crate::AllocationHandle(!0u64),
+					image: vk::Image::null(),
+					image_view: vk::ImageView::null(),
+					pointer: std::ptr::null_mut(),
+					extent,
+					format: to_format(format, compression),
+					format_: format,
+					layout: vk::ImageLayout::UNDEFINED,
+					uses: resource_uses,
+				});
+			}
 
 			if let Some(previous_texture_handle) = previous_texture_handle {
 				self.images[previous_texture_handle.0 as usize].next = Some(texture_handle);
@@ -1020,7 +1062,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	}
 
 	fn resize_image(&mut self, image_handle: crate::ImageHandle, extent: Extent) {
-		let Image { image, image_view, format_, .. } = self.images[image_handle.0 as usize];
+		let Image { image, image_view, format_, uses, .. } = self.images[image_handle.0 as usize];
+
+		// TODO: resize other image
 
 		unsafe {
 			self.device.destroy_image(image, None);
@@ -1029,9 +1073,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			// TODO: release memory/allocation
 		}
 
-		let size = (extent.width() * extent.height() * extent.depth() * 4) as usize;
+		let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
 
-		let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, None, graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+		let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, None, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
 
 		let (allocation_handle, _) = self.create_allocation_internal(r.size, graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 
@@ -1039,20 +1083,146 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		let image_view = self.create_vulkan_texture_view(None, &r.resource, format_, None, 0);
 
-		self.images[image_handle.0 as usize].staging_buffer = Some(BufferHandle(self.buffers.len() as u64));
 		self.images[image_handle.0 as usize].pointer = pointer;
 		self.images[image_handle.0 as usize].size = size;
 		self.images[image_handle.0 as usize].extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
 		self.images[image_handle.0 as usize].image_view = image_view;
 		self.images[image_handle.0 as usize].image = r.resource;
+
+		let mut entries = Vec::new();
+
+		if let Some(bindings) = self.resource_to_binding.get(&graphics_hardware_interface::Handle::Image(image_handle)) {
+			for &binding_handle in bindings {
+				let binding = &self.bindings[binding_handle.0 as usize];
+		
+				let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
+
+				let descriptor_type = binding.descriptor_type;
+				let binding_index = binding.index;
+
+				let descriptor_sets = {
+					let mut descriptor_sets = Vec::with_capacity(3);
+
+					let mut descriptor_set_handle_option = Some(descriptor_set_handle);
+
+					while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+
+						descriptor_sets.push(descriptor_set);
+
+						descriptor_set_handle_option = descriptor_set.next;
+					}
+
+					descriptor_sets
+				};
+
+				let resource_handle;
+
+				let images = {
+					let mut images = Vec::with_capacity(3);
+					let mut image_handle_option = Some(ImageHandle(image_handle.0));
+
+					while let Some(image_handle) = image_handle_option {
+						let image = &self.images[image_handle.0 as usize];
+						images.push(image);
+						image_handle_option = image.next;
+					}
+
+					images
+				};
+
+				for (i, descriptor_set) in descriptor_sets.iter().enumerate() {
+					let offset = None.unwrap_or(0);
+
+					let idk = self.descriptors.get(&(binding_handle, 0)).unwrap();
+
+					let image = &images[((i as i32 - offset) % images.len() as i32) as usize];
+
+					let images = match idk {
+						IDK::Image { layout } => {
+							[
+								vk::DescriptorImageInfo::default()
+								.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, *layout, None))
+								.image_view(image.image_view)
+							]
+						}
+						IDK::CombinedImageSampler { sampler, layout } => {
+							[
+								vk::DescriptorImageInfo::default()
+								.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, *layout, None))
+								.image_view(image.image_view)
+								.sampler(*sampler)
+							]
+						}
+					};
+
+					let write_info = vk::WriteDescriptorSet::default()
+						.dst_set(descriptor_set.descriptor_set)
+						.dst_binding(binding_index)
+						.dst_array_element(0) // TODO: fix
+						.descriptor_type(descriptor_type)
+						.image_info(&images)
+					;
+
+					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+				}
+
+				resource_handle = graphics_hardware_interface::Handle::Image(image_handle);
+
+				let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
+
+				let descriptor_sets = {
+					let mut descriptor_sets = Vec::with_capacity(3);
+
+					let mut descriptor_set_handle_option = Some(descriptor_set_handle);
+
+					while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+						let descriptor_set = self.get_descriptor_set(descriptor_set_handle);
+
+						descriptor_sets.push(descriptor_set_handle);
+
+						descriptor_set_handle_option = descriptor_set.next;
+					}
+
+					descriptor_sets
+				};
+
+				for (i, descriptor_set_handle) in descriptor_sets.iter().enumerate() {
+					let images = {
+						let mut images = Vec::with_capacity(3);
+						let mut image_handle_option = Some(ImageHandle(image_handle.0));
+						
+						while let Some(image_handle) = image_handle_option {
+							let image = &self.images[image_handle.0 as usize];
+							images.push(image_handle);
+							image_handle_option = image.next;
+						}
+						
+						images
+					};
+	
+					let descriptor_set = &mut self.descriptor_sets[descriptor_set_handle.0 as usize];
+	
+					let offset = None.unwrap_or(0);
+	
+					let image = &images[((i as i32 - offset) % images.len() as i32) as usize];
+					
+					descriptor_set.resources.push((binding_handle, Handle::Image(*image)));
+				}
+
+				entries.push((resource_handle, binding_handle)); // Write into entries instead of straight into map because of borrow rules
+			}
+		}
+
+		for (k, v) in entries {
+			self.resource_to_binding.entry(k).or_insert_with(Vec::new).push(v);
+		}
 	}
 
 	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles) -> graphics_hardware_interface::SwapchainHandle {
 		let surface = self.create_vulkan_surface(window_os_handles); 
 
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, surface).expect("No surface capabilities") };
-
-		let extent = surface_capabilities.current_extent;
 
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
 			.surface(surface)
@@ -1287,6 +1457,7 @@ pub(crate) struct Image {
 	format_: graphics_hardware_interface::Formats,
 	layout: vk::ImageLayout,
 	size: usize,
+	uses: graphics_hardware_interface::Uses,
 }
 
 unsafe impl Send for Image {}
@@ -1307,7 +1478,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 			// warn!("{}", message.to_str().unwrap());
 		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
-			// error!("{}", message.to_str().unwrap());
+			error!("{}", message.to_str().unwrap());
 			(*(p_user_data as *mut DebugCallbackData)).error_count += 1;
 		}
 		_ => {}
@@ -1972,6 +2143,10 @@ impl VulkanGHI {
 			command_buffers: Vec::with_capacity(32),
 			synchronizers: Vec::with_capacity(32),
 			swapchains: Vec::with_capacity(4),
+
+			resource_to_binding: HashMap::with_capacity(4096),
+
+			descriptors: HashMap::with_capacity(4096),
 		})
 	}
 
@@ -2526,10 +2701,6 @@ impl VulkanGHI {
 		
 		let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
 
-		let descriptor_set = self.get_descriptor_set(descriptor_set_handle);
-
-		let layout = descriptor_set.descriptor_set_layout;
-
 		let descriptor_type = binding.descriptor_type;
 		let binding_index = binding.index;
 
@@ -2549,6 +2720,8 @@ impl VulkanGHI {
 			descriptor_sets
 		};
 
+		let resource_handle;
+
 		match descriptor_set_write.descriptor {
 			graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
 				let mut _buffer_handle_option = Some(handle);
@@ -2556,18 +2729,22 @@ impl VulkanGHI {
 				for descriptor_set in &descriptor_sets {
 					let buffer = &self.buffers[handle.0 as usize];
 
-					let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0u64).range(match size { graphics_hardware_interface::Ranges::Size(size) => { size as u64 } graphics_hardware_interface::Ranges::Whole => { vk::WHOLE_SIZE } })];
-
-					let write_info = vk::WriteDescriptorSet::default()
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(descriptor_set_write.array_element)
-						.descriptor_type(descriptor_type)
-						.buffer_info(&buffers)
-					;
-
-					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+					if !buffer.buffer.is_null() {
+						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0u64).range(match size { graphics_hardware_interface::Ranges::Size(size) => { size as u64 } graphics_hardware_interface::Ranges::Whole => { vk::WHOLE_SIZE } })];
+	
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(binding_index)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.buffer_info(&buffers)
+						;
+	
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+					}
 				}
+
+				resource_handle = graphics_hardware_interface::Handle::Buffer(handle);
 			},
 			graphics_hardware_interface::Descriptor::Image{ handle, layout } => {
 				let images = {
@@ -2587,22 +2764,29 @@ impl VulkanGHI {
 					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
 
 					let image = &images[((i as i32 - offset) % images.len() as i32) as usize];
-					let images = [
-						vk::DescriptorImageInfo::default()
-						.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
-						.image_view(image.image_view)
-					];
 
-					let write_info = vk::WriteDescriptorSet::default()
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(descriptor_set_write.array_element)
-						.descriptor_type(descriptor_type)
-						.image_info(&images)
-					;
+					if !image.image.is_null() && !image.image_view.is_null() {
+						let images = [
+							vk::DescriptorImageInfo::default()
+							.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
+							.image_view(image.image_view)
+						];
 
-					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(binding_index)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.image_info(&images)
+						;
+
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+					}
 				}
+
+				self.descriptors.insert((descriptor_set_write.binding_handle, descriptor_set_write.array_element), IDK::Image { layout: layout });
+
+				resource_handle = graphics_hardware_interface::Handle::Image(handle);
 			},
 			graphics_hardware_interface::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout } => {
 				let images = {
@@ -2623,23 +2807,29 @@ impl VulkanGHI {
 
 					let image = &images[((i as i32 - offset) % images.len() as i32) as usize];
 
-					let images = [
-						vk::DescriptorImageInfo::default()
-						.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
-						.image_view(image.image_view)
-						.sampler(vk::Sampler::from_raw(sampler_handle.0))
-					];
+					if !image.image.is_null() && !image.image_view.is_null() {
+						let images = [
+							vk::DescriptorImageInfo::default()
+							.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
+							.image_view(image.image_view)
+							.sampler(vk::Sampler::from_raw(sampler_handle.0))
+						];
 
-					let write_info = vk::WriteDescriptorSet::default()
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(descriptor_set_write.array_element)
-						.descriptor_type(descriptor_type)
-						.image_info(&images)
-					;
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(binding_index)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.image_info(&images)
+						;
 
-					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+					}
 				}
+
+				self.descriptors.insert((descriptor_set_write.binding_handle, descriptor_set_write.array_element), IDK::CombinedImageSampler { sampler: vk::Sampler::from_raw(sampler_handle.0), layout: layout });
+
+				resource_handle = graphics_hardware_interface::Handle::Image(image_handle);
 			},
 			graphics_hardware_interface::Descriptor::Sampler(handle) => {
 				for (_, descriptor_set) in descriptor_sets.iter().enumerate() {
@@ -2656,6 +2846,8 @@ impl VulkanGHI {
 
 					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 				}
+
+				resource_handle = graphics_hardware_interface::Handle::Sampler(handle);
 			},
 			graphics_hardware_interface::Descriptor::Swapchain(_) => {
 				unimplemented!()
@@ -2680,6 +2872,8 @@ impl VulkanGHI {
 
 					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 				}
+
+				resource_handle = graphics_hardware_interface::Handle::TopLevelAccelerationStructure(handle);
 			}
 		}
 		
@@ -2757,6 +2951,8 @@ impl VulkanGHI {
 				_ => {}
 			}
 		}
+
+		self.resource_to_binding.entry(resource_handle).or_insert_with(Vec::new).push(descriptor_set_write.binding_handle);
 	}
 }
 

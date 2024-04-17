@@ -214,7 +214,7 @@ impl Iterator for WindowIterator<'_> {
 							let x = ev.event_x();
 							let y = ev.event_y();
 
-							Some(WindowEvents::MouseMove { x: x as u32, y: 1080 - (y as u32), time: ev.time() as u64 })
+							Some(WindowEvents::MouseMove { x: x as u32, y: self.window.extent.1 as u32 - (y as u32), time: ev.time() as u64 })
 						},
 						x::Event::ConfigureNotify(ev) => {
 							if ev.width() == 0 || ev.height() == 0 {

@@ -1,4 +1,4 @@
-use std::{ops::{DerefMut, Deref}, rc::Rc, sync::RwLock};
+use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::RwLock};
 
 use ghi::GraphicsHardwareInterface;
 use resource_management::resource::resource_manager::ResourceManager;
@@ -34,7 +34,7 @@ pub struct Renderer {
 impl Renderer {
 	pub fn new_as_system<'a>(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
-			let ghi_instance = Rc::new(RwLock::new(ghi::create()));
+			let ghi_instance = Rc::new(RwLock::new(ghi::create(ghi::Features::new().validation(true))));
 
 			let extent = Extent::square(0);
 
@@ -101,20 +101,27 @@ impl Renderer {
 	pub fn render(&mut self,) {
 		if self.swapchain_handles.is_empty() { return; }
 
+		let modulo_frame_index = (self.rendered_frame_count % 2) as u32; // TODO: use actual frame count
+
 		let mut ghi = self.ghi.write().unwrap();
 
 		let swapchain_handle = self.swapchain_handles[0];
 
-		ghi.wait(self.render_finished_synchronizer);
+		ghi.wait(modulo_frame_index, self.render_finished_synchronizer);
 
 		ghi.start_frame_capture();
 
-		let (image_index, extent) = ghi.acquire_swapchain_image(swapchain_handle, self.image_ready);
+		let (present_key, extent) = ghi.acquire_swapchain_image(modulo_frame_index, swapchain_handle, self.image_ready);
 
 		drop(ghi);
 
 		if extent != self.extent {
 			log::debug!("Resing to {:#?}", extent);
+
+			{
+				let mut ghi = self.ghi.write().unwrap();
+				ghi.resize_image(self.result, extent);
+			}
 
 			self.visibility_render_model.sync_get_mut(|e| {
 				e.resize(extent);
@@ -127,18 +134,18 @@ impl Renderer {
 			self.extent = extent;
 		}
 
-		let mut ghi = self.ghi.write().unwrap();
+		let ghi = self.ghi.read().unwrap();
 
 		let mut command_buffer_recording = ghi.create_command_buffer_recording(self.render_command_buffer, Some(self.rendered_frame_count as u32));
 
 		self.visibility_render_model.map(|vis_rp| {
 			let mut vis_rp = vis_rp.write_sync();
 
-			if let Some(_) = vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut(), extent) {
-				self.ao_render_pass.map(|ao_rp| {
-					let ao_rp = ao_rp.write_sync();
-					ao_rp.render(command_buffer_recording.as_mut());
-				});
+			if let Some(_) = vis_rp.render_a(ghi.deref(), command_buffer_recording.as_mut(), extent, modulo_frame_index) {
+				// self.ao_render_pass.map(|ao_rp| {
+				// 	let ao_rp = ao_rp.write_sync();
+				// 	ao_rp.render(command_buffer_recording.as_mut());
+				// });
 	
 				vis_rp.render_b(ghi.deref(), command_buffer_recording.as_mut());
 			}
@@ -151,15 +158,27 @@ impl Renderer {
 
 		// Copy to swapchain
 
-		command_buffer_recording.copy_to_swapchain(self.result, image_index, swapchain_handle);
+		command_buffer_recording.copy_to_swapchain(self.result, present_key, swapchain_handle);
 
 		command_buffer_recording.execute(&[self.image_ready], &[self.render_finished_synchronizer], self.render_finished_synchronizer);
 
 		ghi.end_frame_capture();
 
-		ghi.present(image_index, &[swapchain_handle], self.render_finished_synchronizer);
+		ghi.present(modulo_frame_index, present_key, &[swapchain_handle], self.render_finished_synchronizer);
 
 		self.rendered_frame_count += 1;
+	}
+
+	pub fn resize(&mut self, extent: Extent) {
+		self.extent = extent;
+
+		self.visibility_render_model.sync_get_mut(|e| {
+			e.resize(extent);
+		});
+
+		self.tonemap_render_model.sync_get_mut(|e| {
+			e.resize(extent);
+		});
 	}
 }
 

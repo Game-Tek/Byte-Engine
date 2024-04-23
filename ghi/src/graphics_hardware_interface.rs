@@ -302,7 +302,7 @@ pub trait CommandBufferRecording {
 	/// Binds a decriptor set on the GPU.
 	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut dyn CommandBufferRecording;
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: u32 ,swapchain_handle: SwapchainHandle);
+	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
 
 	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
@@ -447,6 +447,9 @@ impl<'a> BufferSplitter<'a> {
 	}
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PresentKey(pub u32);
+
 pub trait GraphicsHardwareInterface {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	fn has_errors(&self) -> bool;
@@ -546,13 +549,14 @@ pub trait GraphicsHardwareInterface {
 	/// # Panics
 	///
 	/// Panics if .
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> (u32, Extent);
+	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> (PresentKey, Extent);
 
-	fn present(&self, image_index: u32, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle);
+	fn present(&self, frame_index: u32, present_key: PresentKey, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle);
 
-	fn wait(&self, synchronizer_handle: SynchronizerHandle);
+	fn wait(&self, frame_index: u32, synchronizer_handle: SynchronizerHandle);
 
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
+	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
 
 	fn start_frame_capture(&self);
 
@@ -1492,7 +1496,7 @@ use super::*;
 
 		renderer.end_frame_capture();
 
-		renderer.wait(signal); // Wait for the render to finish before accessing the image data
+		renderer.wait(0, signal); // Wait for the render to finish before accessing the image data
 
 		assert!(!renderer.has_errors());
 
@@ -1598,7 +1602,7 @@ use super::*;
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 		let image_ready = renderer.create_synchronizer(None, false);
 
-		let (image_index, _) = renderer.acquire_swapchain_image(swapchain, image_ready);
+		let (image_index, _) = renderer.acquire_swapchain_image(0, swapchain, image_ready);
 
 		renderer.start_frame_capture();
 
@@ -1627,11 +1631,11 @@ use super::*;
 
 		command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
 
-		renderer.present(image_index, &[swapchain], render_finished_synchronizer);
+		renderer.present(0, image_index, &[swapchain], render_finished_synchronizer);
 
 		renderer.end_frame_capture();
 
-		renderer.wait(render_finished_synchronizer);
+		renderer.wait(0, render_finished_synchronizer);
 
 		// TODO: assert rendering results
 
@@ -1725,9 +1729,10 @@ use super::*;
 		let image_ready = renderer.create_synchronizer(None, true);
 
 		for i in 0..2*64 {
-			renderer.wait(render_finished_synchronizer);
+			let modulo_frame_index = i % 2;
+			renderer.wait(modulo_frame_index, render_finished_synchronizer);
 
-			let (image_index, _) = renderer.acquire_swapchain_image(swapchain, image_ready);
+			let (image_index, _) = renderer.acquire_swapchain_image(modulo_frame_index, swapchain, image_ready);
 
 			renderer.start_frame_capture();
 
@@ -1758,7 +1763,7 @@ use super::*;
 
 			command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
 
-			renderer.present(image_index, &[swapchain], render_finished_synchronizer);
+			renderer.present(modulo_frame_index, image_index, &[swapchain], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
@@ -1854,6 +1859,7 @@ use super::*;
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
+			let modulo_frame_index = i as u32 % FRAMES_IN_FLIGHT as u32;
 			// renderer.wait(render_finished_synchronizer);
 
 			renderer.start_frame_capture();
@@ -1885,7 +1891,7 @@ use super::*;
 
 			renderer.end_frame_capture();
 
-			renderer.wait(render_finished_synchronizer);
+			renderer.wait(modulo_frame_index, render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
@@ -1993,6 +1999,7 @@ use super::*;
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
+			let modulo_frame_index = i as u32 % FRAMES_IN_FLIGHT as u32;
 			// renderer.wait(render_finished_synchronizer);
 
 			//let pointer = renderer.get_buffer_pointer(Some(frames[i % FRAMES_IN_FLIGHT]), buffer);
@@ -2040,7 +2047,7 @@ use super::*;
 
 			renderer.end_frame_capture();
 
-			renderer.wait(render_finished_synchronizer);
+			renderer.wait(modulo_frame_index, render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
@@ -2120,7 +2127,7 @@ use super::*;
 
 		command_buffer_recording.execute(&[], &[], signal);
 
-		renderer.wait(signal);
+		renderer.wait(0, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2140,7 +2147,7 @@ use super::*;
 
 		command_buffer_recording.execute(&[], &[], signal);
 
-		renderer.wait(signal);
+		renderer.wait(1, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2155,7 +2162,7 @@ use super::*;
 
 		command_buffer_recording.execute(&[], &[], signal);
 
-		renderer.wait(signal);
+		renderer.wait(0, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2170,7 +2177,7 @@ use super::*;
 
 		command_buffer_recording.execute(&[], &[], signal);
 
-		renderer.wait(signal);
+		renderer.wait(1, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2326,7 +2333,7 @@ use super::*;
 
 		renderer.end_frame_capture();
 
-		renderer.wait(signal); // Wait for the render to finish before accessing the texture data
+		renderer.wait(0, signal); // Wait for the render to finish before accessing the texture data
 
 		// assert colored triangle was drawn to texture
 		let _pixels = renderer.get_image_data(texure_copy_handles[0]);
@@ -2517,6 +2524,7 @@ void main() {
 		renderer.write_sbt_entry(hit_sbt_buffer, 0, pipeline, closest_hit_shader);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
+			let modulo_frame_index = (i % FRAMES_IN_FLIGHT) as u32;
 			// {
 			// 	renderer.wait(build_sync);
 
@@ -2644,7 +2652,7 @@ void main() {
 
 			assert!(!renderer.has_errors());
 
-			renderer.wait(render_finished_synchronizer);
+			renderer.wait(modulo_frame_index, render_finished_synchronizer);
 
 			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 			

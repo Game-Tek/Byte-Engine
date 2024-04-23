@@ -8,7 +8,7 @@ rust-version = "1.73.0"
 [dependencies]
 utils = { path = "../utils" }
 
-ash = { git = "https://github.com/ash-rs/ash", branch = "master", features=['linked'] }
+ash = { version = "0.38.0", features=['linked'] }
 xcb = { version = "1.2.2", features=['xtest'] }
 shaderc = "0.8.2"
 bitflags = "2.4.0"

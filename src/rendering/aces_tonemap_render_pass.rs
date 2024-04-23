@@ -54,9 +54,7 @@ impl AcesToneMapPass {
 		})
 	}
 	
-	pub fn resize(&self, extent: Extent) {
-		todo!()
-	}
+	pub fn resize(&self, extent: Extent) {}
 }
 
 impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {

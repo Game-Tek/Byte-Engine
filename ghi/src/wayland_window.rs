@@ -27,11 +27,13 @@ impl WaylandWindow {
 
 		let registry = display.get_registry(&qh, ());
 
-		let compositor: wl_compositor::WlCompositor = registry.bind(1, 5, &qh, ());
+		event_queue.roundtrip(&mut AppData).unwrap();
+
+		let compositor: wl_compositor::WlCompositor = registry.bind(1, 5, &qh, ()); // TODO: make dynamic from advertized globals
 
 		let surface = compositor.create_surface(&qh, ());
 
-		let wm_base: xdg_wm_base::XdgWmBase = registry.bind(10, 4, &qh, ());
+		let wm_base: xdg_wm_base::XdgWmBase = registry.bind(13, 4, &qh, ()); // TODO: make dynamic from advertized globals
 
 		let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
 
@@ -75,6 +77,9 @@ impl WaylandWindow {
 	}
 	
 	pub fn poll(&self) -> WindowIterator {
+		let mut event_queue = self.connection.new_event_queue();
+		// let qh = event_queue.handle();
+		let n = event_queue.dispatch_pending(&mut  AppData).unwrap();
 		WindowIterator {
 			connection: &self.connection,
 		}

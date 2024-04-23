@@ -467,7 +467,6 @@ impl VisibilityWorldRenderDomain {
 								ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-								ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
@@ -480,7 +479,6 @@ impl VisibilityWorldRenderDomain {
 								ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
 								ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
-								ghi::ShaderBindingDescriptor::new(2, 3, ghi::AccessPolicies::WRITE),
 								ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
 								ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
@@ -610,7 +608,6 @@ impl VisibilityWorldRenderDomain {
 						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
@@ -623,7 +620,6 @@ impl VisibilityWorldRenderDomain {
 						ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
 						ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
-						ghi::ShaderBindingDescriptor::new(2, 3, ghi::AccessPolicies::WRITE),
 						ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
 						ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
@@ -701,7 +697,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent) -> Option<()> {
+	pub fn render_a(&mut self, ghi: &dyn ghi::GraphicsHardwareInterface, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent, modulo_frame_index: u32) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		{
@@ -712,9 +708,9 @@ impl VisibilityWorldRenderDomain {
 			self.pending_texture_loads.clear();
 
 			command_buffer_recording.execute(&[], &[], self.transfer_synchronizer);
-		}
 
-		ghi.wait(self.transfer_synchronizer); // Bad
+			ghi.wait(0/* No multiframe sync */, self.transfer_synchronizer); // Bad
+		}
 
 		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
@@ -799,7 +795,7 @@ impl VisibilityWorldRenderDomain {
 		ghi.resize_image(self.primitive_index, extent);
 		ghi.resize_image(self.instance_id, extent);
 		
-		self.pixel_mapping_pass.resize(extent);
+		self.pixel_mapping_pass.resize(extent, ghi.deref_mut());
 	}
 }
 
@@ -1388,8 +1384,8 @@ impl PixelMappingPass {
 		command_buffer_recording.end_region();
 	}
 
-	fn resize(&self, extent: Extent) {
-		println!("TODO: resize!!!");
+	fn resize(&self, extent: Extent, ghi: &mut dyn ghi::GraphicsHardwareInterface) {
+		ghi.resize_buffer(self.material_xy, (extent.width() * extent.height() * 2) as usize);
 	}
 }
 

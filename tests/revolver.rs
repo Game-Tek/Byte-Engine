@@ -3,6 +3,7 @@
 #![feature(closure_lifetime_binder)]
 
 use core::{self, EntityHandle};
+use std::io::Write;
 use byte_engine::{application::Application, camera, rendering::{directional_light, mesh, point_light}, Vector3};
 use maths_rs::prelude::MatTranslate;
 

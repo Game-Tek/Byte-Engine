@@ -293,6 +293,10 @@ impl Application for GraphicsApplication {
 		}
 
 		self.tick_count += 1;
+
+		// if self.tick_count == 2 {
+		// 	self.application.close();
+		// }
 	}
 }
 

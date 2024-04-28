@@ -3,6 +3,8 @@
 
 use core::{entity::EntityBuilder, Entity};
 
+use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
+
 use utils::Extent;
 
 use crate::shader_generator;
@@ -22,7 +24,7 @@ pub struct SSGIRenderPass {
 impl Entity for SSGIRenderPass {}
 
 impl SSGIRenderPass {
-	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface) -> EntityBuilder<'static, Self> {
+	pub fn new(ghi: &mut ghi::GHI) -> EntityBuilder<'static, Self> {
 		let normals = ghi.create_image(Some("Normals"), Extent::rectangle(1920, 1080), ghi::Formats::RGBA8(ghi::Encodings::SignedNormalized), None, ghi::Uses::Image, ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite, ghi::UseCases::DYNAMIC);
 		let trace = ghi.create_image(Some("Trace"), Extent::rectangle(1920, 1080), ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Image, ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite, ghi::UseCases::DYNAMIC);
 

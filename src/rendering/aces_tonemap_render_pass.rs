@@ -1,3 +1,4 @@
+use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
 use utils::Extent;
 
 use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};
@@ -15,7 +16,7 @@ pub struct AcesToneMapPass {
 }
 
 impl AcesToneMapPass {
-    fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
+    fn new(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
         let bindings = [
 			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
@@ -48,7 +49,7 @@ impl AcesToneMapPass {
 		}
     }
 
-	pub fn new_as_system(ghi: &mut dyn ghi::GraphicsHardwareInterface, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> EntityBuilder<Self> {
+	pub fn new_as_system(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> EntityBuilder<Self> {
 		EntityBuilder::new_from_function(move || {
 			AcesToneMapPass::new(ghi, source_image, result_image)
 		})
@@ -58,7 +59,7 @@ impl AcesToneMapPass {
 }
 
 impl tonemap_render_pass::ToneMapRenderPass for AcesToneMapPass {
-	fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, extent: Extent) {
+	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
 		let r = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		r.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
 		r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));

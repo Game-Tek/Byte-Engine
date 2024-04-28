@@ -265,16 +265,16 @@ pub struct BottomLevelAccelerationStructure {
 	pub description: BottomLevelAccelerationStructureDescriptions,
 }
 
-pub trait CommandBufferRecording {
+pub trait CommandBufferRecording where Self: Sized {
 	/// Enables recording on the command buffer.
-	fn begin(&self);
+	fn begin(&mut self);
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
-	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]) -> &mut dyn RasterizationRenderPassMode;
+	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]) -> &mut impl RasterizationRenderPassMode;
 
 	/// Binds a shader to the GPU.
 	fn bind_shader(&self, shader_handle: ShaderHandle);
@@ -292,30 +292,30 @@ pub trait CommandBufferRecording {
 	/// Copies imaeg data from a CPU accessible buffer to a GPU accessible image.
 	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
 
-	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut dyn BoundComputePipelineMode;
+	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundComputePipelineMode;
 
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut dyn BoundRayTracingPipelineMode;
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
 	/// Ends recording on the command buffer.
 	fn end(&mut self);
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut dyn CommandBufferRecording;
+	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut impl CommandBufferRecording;
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
 
 	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
-
-	fn execute(&mut self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
-
+	
 	fn start_region(&self, name: &str);
 	
 	fn end_region(&self);
+
+	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
 }
 
 pub trait RasterizationRenderPassMode: CommandBufferRecording {
 	/// Binds a pipeline to the GPU.
-	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut dyn BoundRasterizationPipelineMode;
+	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
 
@@ -399,6 +399,7 @@ pub struct Features {
 	/// Prints all API calls to the console.
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
+	pub(crate) debug_log_function: Option<fn(&str)>,
 }
 
 impl Features {
@@ -407,6 +408,7 @@ impl Features {
 			validation: false,
 			api_dump: false,
 			ray_tracing: false,
+			debug_log_function: None,
 		}
 	}
 
@@ -422,6 +424,11 @@ impl Features {
 
 	pub fn ray_tracing(mut self, value: bool) -> Self {
 		self.ray_tracing = value;
+		self
+	}
+
+	pub fn debug_log_function(mut self, value: fn(&str)) -> Self {
+		self.debug_log_function = Some(value);
 		self
 	}
 }
@@ -450,7 +457,7 @@ impl<'a> BufferSplitter<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PresentKey(pub u32);
 
-pub trait GraphicsHardwareInterface {
+pub trait GraphicsHardwareInterface where Self: Sized {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	fn has_errors(&self) -> bool;
 
@@ -491,7 +498,7 @@ pub trait GraphicsHardwareInterface {
 
 	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
 
-	fn create_command_buffer_recording(&self, command_buffer_handle: CommandBufferHandle, frame_index: Option<u32>) -> Box<dyn CommandBufferRecording + '_>;
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_index: Option<u32>) -> impl CommandBufferRecording + '_;
 
 	/// Creates a new buffer.\
 	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\
@@ -869,6 +876,8 @@ bitflags::bitflags! {
 		const AccelerationStructureBuildScratch = 1 << 12;
 		
 		const AccelerationStructureBuild = 1 << 13;
+
+		const Clear = 1 << 14;
 	}
 }
 
@@ -1351,7 +1360,7 @@ pub enum AccelerationStructureTypes {
 
 #[cfg(test)]
 pub(super) mod tests {
-	use crate::window::Window;
+	use crate::{window::Window, GHI};
 
 use super::*;
 
@@ -1388,7 +1397,7 @@ use super::*;
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
 	}
 
-	pub(crate) fn render_triangle(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn render_triangle(renderer: &mut impl GraphicsHardwareInterface) {
 		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -1516,7 +1525,7 @@ use super::*;
 		// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 	}
 
-	pub(crate) fn present(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn present(renderer: &mut impl GraphicsHardwareInterface) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1642,7 +1651,7 @@ use super::*;
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_present(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn multiframe_present(renderer: &mut impl GraphicsHardwareInterface) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1771,7 +1780,7 @@ use super::*;
 		}
 	}
 
-	pub(crate) fn multiframe_rendering(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn multiframe_rendering(renderer: &mut impl GraphicsHardwareInterface) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1903,7 +1912,7 @@ use super::*;
 
 	// TODO: Test changing frames in flight count during rendering
 
-	pub(crate) fn dynamic_data(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn dynamic_data(renderer: &mut impl GraphicsHardwareInterface) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -2075,7 +2084,7 @@ use super::*;
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_resources(renderer: &mut dyn GraphicsHardwareInterface,) { // TODO: test multiframe resources for combined image samplers
+	pub(crate) fn multiframe_resources(renderer: &mut impl GraphicsHardwareInterface) { // TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
 			#pragma shader_stage(compute)
@@ -2187,7 +2196,7 @@ use super::*;
 		assert!(!renderer.has_errors());
 	}
 
-	pub(crate) fn descriptor_sets(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn descriptor_sets(renderer: &mut impl GraphicsHardwareInterface) {
 		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -2343,7 +2352,7 @@ use super::*;
 		assert!(!renderer.has_errors());
 	}
 
-	pub(crate) fn ray_tracing(renderer: &mut dyn GraphicsHardwareInterface) {
+	pub(crate) fn ray_tracing(renderer: &mut impl GraphicsHardwareInterface) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 

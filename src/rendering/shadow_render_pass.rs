@@ -1,6 +1,8 @@
 use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
 use utils::Extent;
 
+use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationPipelineMode, RasterizationRenderPassMode};
+
 use crate::{core::Entity, ghi, math, Vector3};
 
 use super::world_render_domain::WorldRenderDomain;
@@ -14,7 +16,7 @@ pub struct ShadowRenderingPass {
 }
 
 impl ShadowRenderingPass {
-	pub fn new(ghi: &mut dyn ghi::GraphicsHardwareInterface, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, view_depth_image: &ghi::ImageHandle) -> ShadowRenderingPass {
+	pub fn new(ghi: &mut ghi::GHI, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, view_depth_image: &ghi::ImageHandle) -> ShadowRenderingPass {
 		let light_matrics_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE);
 		let light_depth_map = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 		let view_depth_map = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
@@ -35,7 +37,7 @@ impl ShadowRenderingPass {
 		
 		let shadow_map_resolution = Extent::square(4096);
 		
-		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, None, ghi::Uses::Image | ghi::Uses::Clear, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		
 		let light_matrices_buffer = ghi.create_buffer(Some("Light Matrices Buffer"), 256 * 4 * 4 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		
@@ -65,12 +67,13 @@ impl ShadowRenderingPass {
 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, light_matrices_buffer }
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut dyn ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
+	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
 		command_buffer_recording.start_region("Shadow Rendering");
 
 		let visibility_info = render_domain.get_visibility_info();
 
-		let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &[ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)]);
+		let binding = [ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)];
+  		let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &binding);
 		render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
 		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);
 		pipeline.dispatch_meshes(visibility_info.meshlet_count, 1, 1);
@@ -79,7 +82,7 @@ impl ShadowRenderingPass {
 		command_buffer_recording.end_region();
 	}
 
-	pub fn prepare(&self,ghi: &dyn ghi::GraphicsHardwareInterface, normal: maths_rs::Mat4f) {		
+	pub fn prepare(&self,ghi: &ghi::GHI, normal: maths_rs::Mat4f) {		
 		let x = 4f32;
 		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 

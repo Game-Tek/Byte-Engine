@@ -2047,13 +2047,13 @@ impl VulkanGHI {
 			extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
 		}
 
-		let enabled_validation_features = [
-			vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
-			vk::ValidationFeatureEnableEXT::BEST_PRACTICES,
-			// vk::ValidationFeatureEnableEXT::GPU_ASSISTED,
-			// vk::ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT,
-			// ValidationFeatureEnableEXT::DEBUG_PRINTF,
-		];
+		let enabled_validation_features = {
+			let mut enabled_features = Vec::with_capacity(6);
+			enabled_features.push(vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION);
+			enabled_features.push(vk::ValidationFeatureEnableEXT::BEST_PRACTICES);
+			if settings.gpu_validation { enabled_features.push(vk::ValidationFeatureEnableEXT::GPU_ASSISTED); }
+			enabled_features
+		};
 
 		let mut validation_features = vk::ValidationFeaturesEXT::default()
 			.enabled_validation_features(&enabled_validation_features);

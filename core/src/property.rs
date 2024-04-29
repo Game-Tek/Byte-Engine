@@ -53,6 +53,10 @@ impl <T: Clone + 'static> Property<T> {
 			subscriber.update(&self.value);
 		}
 	}
+	
+	pub fn add<F>(&self, get: F) where F: FnMut(&T) + Subscriber<T> + 'static {
+		self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(get)));
+	}
 }
 
 /// A derived property is a property that has no value of its own, but is derived from another property.
@@ -172,6 +176,12 @@ impl <E, T> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
 	fn update(&mut self, value: &T) {
 		let mut entity = self.0.write_sync();
 		(self.1)(&mut entity, value);
+	}
+}
+
+impl <T, F> Subscriber<T> for F where F: FnMut(&T) {
+	fn update(&mut self, value: &T) {
+		(self)(value);
 	}
 }
 

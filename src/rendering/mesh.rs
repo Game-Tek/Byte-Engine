@@ -2,7 +2,9 @@
 
 use core::{entity::EntityBuilder, listener::Listener};
 
-use crate::core::{orchestrator, Entity};
+use maths_rs::mat::MatRotate3D;
+
+use crate::{core::{orchestrator, Entity}, math};
 
 pub trait RenderEntity: Entity {
 	fn get_transform(&self) -> maths_rs::Mat4f;
@@ -43,4 +45,9 @@ impl Mesh {
 
 	pub fn get_resource_id(&self) -> &'static str { self.resource_id }
 	pub fn get_material_id(&self) -> &'static str { self.material_id }
+
+	pub fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
+		self.transform = math::look_at(orientation);
+		// self.transform = maths_rs::Mat4f::from_rotation(orientation, 0.0f32);
+	}
 }

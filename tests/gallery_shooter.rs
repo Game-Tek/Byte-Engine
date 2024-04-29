@@ -42,8 +42,6 @@ fn gallery_shooter() {
 	let mut player: EntityHandle<Player> = core::spawn_as_child(space_handle.clone(), Player::new(lookaround_action_handle, trigger_action, audio_system_handle, physics_duck_1.clone()));
 
 	app.do_loop();
-
-	app.deinitialize();
 }
 
 struct Player {

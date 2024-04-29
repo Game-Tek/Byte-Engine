@@ -21,9 +21,6 @@ pub trait Application {
 
 	/// Performs a tick of the application.
 	fn tick(&mut self);
-
-	/// Deinitializes the application.
-	fn deinitialize(&mut self);
 }
 
 /// The most basic implementation of the application trait.
@@ -47,17 +44,13 @@ impl Application for BaseApplication {
 		trace!("Initialized base Byte-Engine application!");
 	}
 
-	fn deinitialize(&mut self) {
-		trace!("Deinitializing base Byte-Engine application...");
-		info!("Deinitialized base Byte-Engine application.");
-	}
-
 	fn tick(&mut self) {}
 
 	fn get_name(&self) -> String { self.name.clone() }
 }
 
-use std::ops::{DerefMut, Deref};
+use core::{property::Property, Entity};
+use std::{ops::{Deref, DerefMut}, time::Duration};
 
 use log::{info, trace};
 use maths_rs::prelude::Base;
@@ -85,10 +78,6 @@ impl Application for OrchestratedApplication {
 
 	fn initialize(&mut self, arguments: std::env::Args) {
 		self.application.initialize(arguments);
-	}
-
-	fn deinitialize(&mut self) {
-		self.application.deinitialize();
 	}
 
 	fn tick(&mut self) {
@@ -122,6 +111,24 @@ impl OrchestratedApplication {
 	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.orchestrator.as_ref().borrow_mut() }
 }
 
+pub struct Tick {
+	event: Property<(Duration)>,
+}
+
+impl Tick {
+	pub fn new() -> Self {
+		Tick {
+			event: Property::new((Duration::new(0, 0))),
+		}
+	}
+
+	pub fn event(&mut self) -> &mut Property<(Duration)> {
+		&mut self.event
+	}
+}
+
+impl Entity for Tick {}
+
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
 pub struct GraphicsApplication {
@@ -134,6 +141,7 @@ pub struct GraphicsApplication {
 	renderer_handle: EntityHandle<rendering::renderer::Renderer>,
 	audio_system_handle: EntityHandle<audio_system::DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
+	tick_handle: EntityHandle<Tick>,
 	root_space_handle: EntityHandle<Space>,
 }
 
@@ -194,6 +202,7 @@ impl Application for GraphicsApplication {
 			input_system.register_input_source(&mouse_device_class_handle, "Position", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 			input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&mouse_device_class_handle, "Scroll", input::input_manager::InputTypes::Float(input::input_manager::InputSourceDescription::new(0f32, 0f32, -1f32, 1f32)));
 	
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
 	
@@ -215,7 +224,9 @@ impl Application for GraphicsApplication {
 
 		let physics_system_handle = core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system());
 
-		GraphicsApplication { application, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle }
+		let tick_handle = core::spawn_as_child(root_space_handle.clone(), Tick::new());
+
+		GraphicsApplication { application, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle, tick_handle }
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -223,12 +234,10 @@ impl Application for GraphicsApplication {
 
 	fn get_name(&self) -> String { self.application.get_name() }
 
-	fn deinitialize(&mut self) {
-		self.application.deinitialize();
-	}
-
 	fn tick(&mut self) {
-		self.application.tick();
+		let now = std::time::Instant::now();
+		let dt = now - self.application.last_tick_time;
+		self.application.last_tick_time = std::time::Instant::now();
 		// let changed_files = self.file_tracker_handle.poll();
 
 		let mut close = false;
@@ -252,6 +261,12 @@ impl Application for GraphicsApplication {
 								ghi::MouseKeys::Right => {
 									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.RightButton"), input::Value::Bool(pressed));
 								},
+								ghi::MouseKeys::ScrollUp => {
+									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Scroll"), input::Value::Float(1f32));
+								},
+								ghi::MouseKeys::ScrollDown => {
+									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Scroll"), input::Value::Float(-1f32));
+								},
 								_ => { }
 							}
 						},
@@ -267,6 +282,10 @@ impl Application for GraphicsApplication {
 				});
 			}
 		}
+
+		self.tick_handle.sync_get_mut(|tick| {
+			tick.event().set(|_| dt);
+		});
 
 		self.input_system_handle.map(|handle| {
 			let mut e = handle.write_sync();
@@ -330,6 +349,10 @@ impl GraphicsApplication {
 		&self.root_space_handle
 	}
 
+	pub fn get_tick_handle(&self) -> &EntityHandle<Tick> {
+		&self.tick_handle
+	}
+
 	pub fn do_loop(&mut self) {
 		while !self.application.close {
 			self.tick();
@@ -347,8 +370,6 @@ mod tests {
 		app.initialize(std::env::args());
 
 		assert!(app.get_name() == "Test");
-
-		app.deinitialize();
 	}
 
 	#[test]
@@ -357,8 +378,6 @@ mod tests {
 		app.initialize(std::env::args());
 
 		assert!(app.get_name() == "Test");
-
-		app.deinitialize();
 	}
 
 	#[test]
@@ -378,7 +397,5 @@ mod tests {
 				app.close();
 			}
 		}
-
-		app.deinitialize();
 	}
 }

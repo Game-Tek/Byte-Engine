@@ -396,6 +396,7 @@ impl ShaderBindingDescriptor {
 /// Configuration for which features to request from the underlying API.
 pub struct Features {
 	pub(crate) validation: bool,
+	pub(crate) gpu_validation: bool,
 	/// Prints all API calls to the console.
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
@@ -406,6 +407,7 @@ impl Features {
 	pub fn new() -> Self {
 		Self {
 			validation: false,
+			gpu_validation: false,
 			api_dump: false,
 			ray_tracing: false,
 			debug_log_function: None,
@@ -415,7 +417,12 @@ impl Features {
 	pub fn validation(mut self, value: bool) -> Self {
 		self.validation = value;
 		self
-	}	
+	}
+
+	pub fn gpu_validation(mut self, value: bool) -> Self {
+		self.gpu_validation = value;
+		self
+	}
 
 	pub fn api_dump(mut self, value: bool) -> Self {
 		self.api_dump = value;

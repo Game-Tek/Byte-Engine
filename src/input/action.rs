@@ -1,4 +1,4 @@
-use core::{property::Property, Entity};
+use core::{property::Property, Entity, EntityHandle};
 
 use crate::{Vector2, Vector3};
 
@@ -29,6 +29,10 @@ pub trait InputValue: Default + Clone + Copy + 'static {
 
 impl InputValue for bool {
 	fn get_type() -> Types { Types::Bool }
+}
+
+impl InputValue for f32 {
+	fn get_type() -> Types { Types::Float }
 }
 
 impl InputValue for Vector2 {

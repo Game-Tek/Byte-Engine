@@ -36,6 +36,4 @@ fn load() {
 	let _ = core::spawn_as_child(space_handle.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
 
 	app.do_loop();
-
-	app.deinitialize();
 }

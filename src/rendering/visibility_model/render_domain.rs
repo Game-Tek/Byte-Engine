@@ -175,8 +175,8 @@ impl VisibilityWorldRenderDomain {
 
 			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-			let meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderInstanceData; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+			let meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderInstanceData; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
 				ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::FRAGMENT | ghi::Stages::RAYGEN | ghi::Stages::COMPUTE),
@@ -704,11 +704,11 @@ impl VisibilityWorldRenderDomain {
 
 		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
-		let (camera_position, camera_orientation) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation()) });
+		let (camera_position, camera_orientation, camera_fov) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
 
 		let view_matrix = maths_rs::Mat4f::from_translation(-camera_position) * math::look_at(camera_orientation);
 
-		let projection_matrix = math::projection_matrix(45f32, 16f32 / 9f32, 0.1f32, 100f32);
+		let projection_matrix = math::projection_matrix(camera_fov, 16f32 / 9f32, 0.1f32, 100f32);
 
 		let view_projection_matrix = projection_matrix * view_matrix;
 
@@ -1368,7 +1368,7 @@ impl PixelMappingPass {
 
 		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
 
-		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 2, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 4, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		PixelMappingPass {
 			material_xy,

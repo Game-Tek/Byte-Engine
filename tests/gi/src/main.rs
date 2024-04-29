@@ -29,6 +29,4 @@ fn main() {
 	let _helper_light: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(2.0, 0.5, -1.0f32), 4500.0));
 
 	app.do_loop();
-
-	app.deinitialize();
 }

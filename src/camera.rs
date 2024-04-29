@@ -23,7 +23,7 @@ impl Camera {
 	}
 
 	/// Returns the field of view of the camera
-	fn get_fov(&self) -> f32 { self.fov }
+	pub fn get_fov(&self) -> f32 { self.fov }
 
 	/// Returns the aspect ratio of the camera
 	fn get_aspect_ratio(&self) -> f32 { self.aspect_ratio }
@@ -39,6 +39,10 @@ impl Camera {
 
 	pub fn get_position(&self) -> Vec3f { self.position }
 	pub fn set_position(&mut self, position: Vec3f) { self.position = position; }
+	
+	pub fn set_fov(&mut self, fov: f32) {
+		self.fov = fov;
+	}
 }
 
 impl Entity for Camera {}

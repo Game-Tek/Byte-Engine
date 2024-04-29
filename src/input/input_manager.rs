@@ -24,7 +24,7 @@ use utils::{insert_return_length, RGBA};
 
 use crate::{core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, Quaternion, Vector2, Vector3};
 
-use super::{action::InputSourceMapping, Action, Function, Types, Value};
+use super::{action::{InputSourceMapping, InputValue}, Action, Function, Types, Value};
 
 /// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
 /// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
@@ -109,6 +109,7 @@ struct InputSourceState {
 
 enum TypedHandle {
 	Bool(EntityHandle<Action<bool>>),
+	Float(EntityHandle<Action<f32>>),
 	Vector2(EntityHandle<Action<Vector2>>),
 	Vector3(EntityHandle<Action<Vector3>>),
 }
@@ -202,6 +203,7 @@ impl InputManager {
 	pub fn new_as_system<'a>() -> EntityBuilder<'a, InputManager> {
 		EntityBuilder::new(Self::new())
 			.listen_to::<Action<bool>>()
+			.listen_to::<Action<f32>>()
 			.listen_to::<Action<Vector2>>()
 			.listen_to::<Action<Vector3>>()
 	}
@@ -505,6 +507,12 @@ impl InputManager {
 							_ => {}
 						}
 					}
+					Value::Float(v) => {
+						match &action.handle {
+							TypedHandle::Float(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
+							_ => {}
+						}
+					}
 					Value::Vector2(v) => {
 						match &action.handle {
 							TypedHandle::Vector2(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
@@ -611,8 +619,11 @@ impl InputManager {
 					Value::Bool(record_value) => {
 						Value::Bool(record_value)
 					}
+					Value::Float(record_value) => {
+						Value::Float(record_value)
+					}
 					_ => {
-						log::error!("Not implemented!");
+						log::error!("resolve_action_value_from_record not implemented for type!");
 						return None;
 					},
 				}
@@ -649,6 +660,9 @@ impl InputManager {
 								Value::Quaternion(value) => value[0],
 							}
 						}
+					}
+					Value::Float(record_value) => {
+						record_value
 					}
 					_ => {
 						log::error!("Not implemented!");
@@ -751,57 +765,33 @@ impl InputManager {
 	}
 }
 
-impl EntitySubscriber<Action<bool>> for InputManager {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<bool>>, action: &Action<bool>) -> utils::BoxedFuture<()> {
-		let (name, r#type, input_events,) = (action.name, Types::Bool, &action.bindings);
-
-		let input_event = InputAction {
-			name: name.to_string(),
-			type_: r#type,
-			input_event_descriptions: input_events.iter().map(|input_event| {
-				Some(InputSourceMapping {
-					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
-					mapping: input_event.mapping,
-					function: input_event.function,
-				})
-			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-			stack: Vec::new(),
-			handle: TypedHandle::Bool(handle.clone()),
-		};
-
-		self.actions.push(input_event);
-
-		Box::pin(async {})
+impl Into<TypedHandle> for EntityHandle<Action<bool>> {
+	fn into(self) -> TypedHandle {
+		TypedHandle::Bool(self)
 	}
 }
 
-impl EntitySubscriber<Action<Vector2>> for InputManager {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector2>>, action: &Action<maths_rs::vec::Vec2<f32>>) -> utils::BoxedFuture<()> {
-		let (name, r#type, input_events,) = (action.name, Types::Vector2, &action.bindings);
-
-		let input_event = InputAction {
-			name: name.to_string(),
-			type_: r#type,
-			input_event_descriptions: input_events.iter().map(|input_event| {
-				Some(InputSourceMapping {
-					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
-					mapping: input_event.mapping,
-					function: input_event.function,
-				})
-			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-			stack: Vec::new(),
-			handle: TypedHandle::Vector2(handle.clone()),
-		};
-
-		self.actions.push(input_event);
-
-		Box::pin(async {})
+impl Into<TypedHandle> for EntityHandle<Action<f32>> {
+	fn into(self) -> TypedHandle {
+		TypedHandle::Float(self)
 	}
 }
 
-impl EntitySubscriber<Action<Vector3>> for InputManager {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<Vector3>>, action: &Action<maths_rs::vec::Vec3<f32>>) -> utils::BoxedFuture<()> {
-		let (name, r#type, input_events,) = (action.name, Types::Vector3, &action.bindings);
+impl Into<TypedHandle> for EntityHandle<Action<Vector2>> {
+	fn into(self) -> TypedHandle {
+		TypedHandle::Vector2(self)
+	}
+}
+
+impl Into<TypedHandle> for EntityHandle<Action<Vector3>> {
+	fn into(self) -> TypedHandle {
+		TypedHandle::Vector3(self)
+	}
+}
+
+impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHandle<Action<T>>: Into<TypedHandle> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<T>>, action: &Action<T>) -> utils::BoxedFuture<()> {
+		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
 
 		let input_event = InputAction {
 			name: name.to_string(),
@@ -814,7 +804,7 @@ impl EntitySubscriber<Action<Vector3>> for InputManager {
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 			stack: Vec::new(),
-			handle: TypedHandle::Vector3(handle.clone()),
+			handle: handle.clone().into(),
 		};
 
 		self.actions.push(input_event);

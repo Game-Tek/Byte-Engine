@@ -41,6 +41,8 @@ pub fn spawn_as_child<E>(parent: DomainType, entity: impl SpawnHandler<E>) -> En
 	e
 }
 
+// TODO: alert when no one is listening to an specific entity
+
 /// Handles extractor pattern for most functions passed to the orchestrator.
 pub trait SpawnHandler<R> {
 	fn call(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>>;

@@ -14,6 +14,7 @@
 #![feature(buf_read_has_data_left)]
 #![feature(generic_const_exprs)]
 #![feature(unchecked_shifts)]
+#![feature(duration_millis_float)]
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

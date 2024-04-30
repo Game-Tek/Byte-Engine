@@ -227,13 +227,13 @@ vec3 vertex_normal = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_norma
 vec2 vertex_uv = vec2((vertex_uvs[0]).xy * barycenter.x + (vertex_uvs[1]).xy * barycenter.y + (vertex_uvs[2]).xy * barycenter.z);
 
 vec3 N = normalize(vec3(mesh.model * vec4(vertex_normal, 0)));
-vec3 V = normalize((camera.view[3].xyz - vertex_position));
+vec3 V = normalize(-(camera.view[3].xyz - vertex_position));
 
 vec3 edge1 = ddx.x * vec3(vertex_positions[0]) + ddx.y * vec3(vertex_positions[1]) + ddx.z * vec3(vertex_positions[2]);
 vec3 edge2 = ddy.x * vec3(vertex_positions[0]) + ddy.y * vec3(vertex_positions[1]) + ddy.z * vec3(vertex_positions[2]);
 vec2 duv1 = barycentric_deriv.ddx.x * vec2(vertex_uvs[0]) + barycentric_deriv.ddx.y * vec2(vertex_uvs[1]) + barycentric_deriv.ddx.z * vec2(vertex_uvs[2]);
 vec2 duv2 = barycentric_deriv.ddy.x * vec2(vertex_uvs[0]) + barycentric_deriv.ddy.y * vec2(vertex_uvs[1]) + barycentric_deriv.ddy.z * vec2(vertex_uvs[2]);
-float f = -1.0 / (duv1.x * duv2.y - duv2.x * duv1.y);
+float f = 1.0 / (duv1.x * duv2.y - duv2.x * duv1.y);
 vec3 T = normalize(f * (duv2.y * edge1 - duv1.y * edge2));
 vec3 B = normalize(f * (-duv2.x * edge1 + duv1.x * edge2));
 mat3 TBN = mat3(T, B, N);

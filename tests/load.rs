@@ -3,7 +3,7 @@
 #![feature(closure_lifetime_binder)]
 
 use core::EntityHandle;
-use byte_engine::{application::Application, rendering::{mesh, point_light::PointLight}, Vector3};
+use byte_engine::{application::Application, rendering::{mesh::{self, Transform}, point_light::PointLight}, Vector3};
 use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
@@ -27,9 +27,9 @@ fn load() {
 	// 	input::ActionBindingDescription::new("Gamepad.RightTrigger"),
 	// ],));
 
-	let scale = maths_rs::Mat4f::from_scale(Vector3::new(0.1, 0.1, 0.1));
+	let scale = Vector3::new(0.1, 0.1, 0.1);
 	
-	let _: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 2.0)) * scale));
+	let _: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box", "Solid", Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale)));
 	
 	let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 2.5, -1.5), 4500.0));
 

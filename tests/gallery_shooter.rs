@@ -27,15 +27,15 @@ fn gallery_shooter() {
 		input::ActionBindingDescription::new("Gamepad.RightTrigger"),
 	],));
 
-	let scale = maths_rs::Mat4f::from_scale(Vector3::new(0.1, 0.1, 0.1));
+	let scale = Vector3::new(0.1, 0.1, 0.1);
 	
-	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "white_solid.json", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, 2.0)) * scale));
+	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "white_solid.json", mesh::Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale)));
 	
 	let physics_duck_1 = core::spawn_as_child(space_handle.clone(), physics::Sphere::new(Vector3::new(0.0, 0.0, 2.0), Vector3::new(0.0, 0.0, 0.0), 0.1));
 	
-	let duck_2: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "green_solid.json", maths_rs::Mat4f::from_translation(Vector3::new(2.0, 0.0, 0.0)) * scale));
-	let duck_3: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "green_solid.json", maths_rs::Mat4f::from_translation(Vector3::new(-2.0, 0.0, 0.0)) * scale));
-	let duck_4: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "red_solid.json", maths_rs::Mat4f::from_translation(Vector3::new(0.0, 0.0, -2.0)) * scale));
+	let duck_2: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "green_solid.json", mesh::Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale)));
+	let duck_3: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "green_solid.json", mesh::Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale)));
+	let duck_4: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.gltf", "red_solid.json",   mesh::Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale)));
 	
 	let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 2.5, -1.5), 4500.0));
 
@@ -68,11 +68,7 @@ impl SpawnerEntity<Space> for Player {
 impl Player {
 	fn new(lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
-			let mut transform = maths_rs::Mat4f::identity();
-
-			transform *= maths_rs::Mat4f::from_translation(Vector3::new(0.25, -0.15, 0.4f32));
-			transform *= maths_rs::Mat4f::from_scale(Vector3::new(0.05, 0.03, 0.2));
-
+			let transform = mesh::Transform::default().position(Vector3::new(0.25, -0.15, 0.4f32)).scale(Vector3::new(0.05, 0.03, 0.2));
 			let camera_handle = core::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
 
 			let mut magazine_size = Property::new(5);

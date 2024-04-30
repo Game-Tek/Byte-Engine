@@ -290,7 +290,7 @@ impl VisibilityWorldRenderDomain {
 
 				resource_manager: resource_manager_handle,
 
-				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, },
+				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, vertex_indices_count: 0 },
 
 				visibility_pass,
 				material_count_pass,
@@ -773,10 +773,14 @@ impl VisibilityWorldRenderDomain {
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
-			if let Some(most_significant_light) = directional_lights.get(0) {
-				shadow_render_pass.render(command_buffer_recording, self);
+			if false {
+				if let Some(most_significant_light) = directional_lights.get(0) {
+					shadow_render_pass.render(command_buffer_recording, self);
+				} else {
+					command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(1f32)),]);
+				}
 			} else {
-				command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(1f32)),]);
+				command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(0f32)),]);
 			}
 		}
 
@@ -903,7 +907,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 			let mut vertex_uv_buffer = ghi.get_splitter(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector2>());
 			let mut triangle_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>());
-			let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<u16>());
+			let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.vertex_indices_count as usize * std::mem::size_of::<u16>());
 			let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
 
 			let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
@@ -979,8 +983,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 					let vertex_triangles_offset = self.visibility_info.vertex_count;
 					let primitive_triangle_offset = self.visibility_info.triangle_count;
 
-					let mut mesh_vertex_count = 0;
-					let mut mesh_triangle_count = 0;
+					let mut mesh_triangle_count = 0; // TODO: this might be wrongs
 
 					let mut meshlets = Vec::with_capacity(total_meshlet_count as usize);
 
@@ -995,26 +998,34 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						std::slice::from_raw_parts(meshlet_stream.as_ptr() as *const Meshlet, meshlet_stream.len() / std::mem::size_of::<Meshlet>())
 					};
 
-					for i in 0..total_meshlet_count as usize {
-						let meshlet = &meshlet_stream[i];
-						let meshlet_vertex_count = meshlet.vertex_count;
-						let meshlet_triangle_count = meshlet.triangle_count;
-
-						let meshlet_data = ShaderMeshletData {
-							instance_index: self.visibility_info.instance_count,
-							vertex_triangles_offset: vertex_triangles_offset as u16 + mesh_vertex_count as u16,
-							triangle_offset:primitive_triangle_offset as u16 + mesh_triangle_count as u16,
-							vertex_count: meshlet_vertex_count,
-							triangle_count: meshlet_triangle_count,
-						};
+					{
+						let mut mesh_vertex_count = 0;
 						
-						meshlets.push(meshlet_data);
-
-						mesh_vertex_count += meshlet_vertex_count as u32;
-						mesh_triangle_count += meshlet_triangle_count as u32;
+						for i in 0..total_meshlet_count as usize {
+							let meshlet = &meshlet_stream[i];
+							let meshlet_vertex_count = meshlet.vertex_count;
+							let meshlet_triangle_count = meshlet.triangle_count;
+	
+							let meshlet_data = ShaderMeshletData {
+								instance_index: self.visibility_info.instance_count,
+								vertex_triangles_offset: vertex_triangles_offset as u16 + mesh_vertex_count as u16,
+								triangle_offset: primitive_triangle_offset as u16 + mesh_triangle_count as u16,
+								vertex_count: meshlet_vertex_count,
+								triangle_count: meshlet_triangle_count,
+							};
+							
+							meshlets.push(meshlet_data);
+	
+							mesh_triangle_count += meshlet_triangle_count as u32;
+							mesh_vertex_count += meshlet_vertex_count as u32;
+						}
 					}
 
-					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_count: mesh_vertex_count, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_count: mesh_resource.vertex_count, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+
+					self.visibility_info.vertex_count += mesh_resource.vertex_count;
+					self.visibility_info.triangle_count += mesh_triangle_count;
+					self.visibility_info.vertex_indices_count += mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().count;
 				}
 			}
 		}
@@ -1062,8 +1073,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		}
 
 		self.visibility_info.meshlet_count += mesh_data.meshlets.len() as u32;
-		self.visibility_info.vertex_count += mesh_data.vertex_count;
-		self.visibility_info.triangle_count += mesh_data.triangle_count;
 		self.visibility_info.instance_count += 1;
 
 		assert!((self.visibility_info.meshlet_count as usize) < MAX_MESHLETS, "Meshlet count exceeded");

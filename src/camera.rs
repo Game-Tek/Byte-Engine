@@ -15,7 +15,7 @@ impl Camera {
 		Self {
 			position,
 			direction: Vec3f::new(0.0, 0.0, 1.0),
-			fov: 90.0,
+			fov: 45.0,
 			aspect_ratio: 1.0,
 			aperture: 0.0,
 			focus_distance: 0.0,

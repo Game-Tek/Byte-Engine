@@ -1,6 +1,6 @@
 use std::primitive;
 
-use maths_rs::mat::MatNew4;
+use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
 use utils::Extent;
 
 use crate::{
@@ -275,36 +275,45 @@ impl AssetHandler for MeshAssetHandler {
 			}).flatten().collect::<Vec<(gltf::Node, maths_rs::Mat4f)>>();
 
 			for (_, transform) in &mut flat_tree {
-				transform[2 * 4 + 2] *= -1f32;
+				*transform = maths_rs::Mat4f::from_scale(Vec3::new(1f32, 1f32, -1f32)) * *transform;
 			}
 
-			let flat_mesh_tree = {
-				let mut c = flat_tree.iter().filter_map(|(node, transform)| {
-					if let Some(mesh) = node.mesh() {
-						Some((mesh, *transform))
-					} else {
-						None
-					}
-				}).collect::<Vec<_>>();
-				
-				c.sort_by(|a, b| a.0.index().cmp(&b.0.index()));
+			// println!("MESHES:");
 
-				c
+			// for mesh in gltf.meshes() {
+			// 	println!("	Mesh: {}", mesh.name().unwrap());
+			// }
+
+			// println!("NODES:");
+
+			// for (node, _) in flat_tree.clone() {
+			// 	if let Some(mesh) = node.mesh() {
+			// 		println!("	Node: {}, mesh: {} -> {}", node.name().unwrap(), mesh.name().unwrap(), mesh.primitives().len());
+			// 	} else {
+			// 		println!("	Node: {:?}", node.name());
+			// 	}
+			// }
+
+			let primitives = flat_tree.iter().filter_map(|(node, transform)| {
+				if let Some(mesh) = node.mesh() {
+					Some(mesh.primitives().map(|primitive| (primitive, *transform)))
+				} else {
+					None
+				}
+			}).flatten().collect::<Vec<_>>();
+
+			let flat_mesh_tree = {
+				primitives.iter().map(|(primitive, transform)| {
+					(primitive.reader(|buffer| Some(&buffers[buffer.index()])), *transform)
+				})
 			};
 
-			let flat_mesh_tree = flat_mesh_tree.iter();
-
-			let vertex_counts = flat_mesh_tree.clone().map(|(mesh, _)| {
-				mesh.primitives().map(|primitive| {
-					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-
-					if let Some(positions) = reader.read_positions() {
-						let vertex_count = positions.clone().count();
-						vertex_count
-					} else {
-						panic!("We should not be here");
-					}
-				}).sum()
+			let vertex_counts = flat_mesh_tree.clone().map(|(reader, _)| {
+				if let Some(positions) = reader.read_positions() {
+					positions.clone().count()
+				} else {
+					panic!("We should not be here");
+				}
 			}).collect::<Vec<usize>>();
 
 			let vertex_count = vertex_counts.iter().sum::<usize>();
@@ -316,84 +325,64 @@ impl AssetHandler for MeshAssetHandler {
 				Some(old)
 			}).collect::<Vec<usize>>();
 
-			let indices = vertex_prefix_sum.iter().zip(flat_mesh_tree.clone()).map(|(accumulated_vertex_count, (mesh, _))| {
-				mesh.primitives().filter_map(|primitive| {
-					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-					if let Some(indices) = reader.read_indices() {
-						Some(indices.into_u32().map(|i| i + *accumulated_vertex_count as u32).collect::<Vec<u32>>())
-					} else {
-						None
-					}
-				}).flatten()
+			let indices = vertex_prefix_sum.iter().zip(flat_mesh_tree.clone()).map(|(accumulated_vertex_count, (reader, _))| {
+				let indices = reader.read_indices().unwrap();
+				indices.into_u32().map(|i| i + *accumulated_vertex_count as u32).collect::<Vec<u32>>()
 			}).flatten().collect::<Vec<u32>>();
 
 			let indices = meshopt::optimize::optimize_vertex_cache(&indices, vertex_count);
 
-			for (mesh, transform) in flat_mesh_tree.clone() {
-				for primitive in mesh.primitives() {
-					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-	
-					if let Some(positions) = reader.read_positions() {
-						positions.for_each(|position| {
-							let position = maths_rs::Vec3f::new(position[0], position[1], position[2]); // Convert from right-handed(GLTF) to left-handed coordinate system
-							
-							let transformed_position = transform * position;
-							
-							transformed_position.iter().for_each(|m| {
-								m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
-							});
+			for (reader, transform) in flat_mesh_tree.clone() {
+				if let Some(positions) = reader.read_positions() {
+					positions.for_each(|position| {
+						let position = maths_rs::Vec3f::new(position[0], position[1], position[2]);
+						
+						let transformed_position = transform * position;
+						
+						transformed_position.iter().for_each(|m| {
+							m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
 						});
-					}
+					});
 				}
 			}
 
-			for (mesh, transform) in flat_mesh_tree.clone() {
-				for primitive in mesh.primitives() {
-					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-					if let Some(normals) = reader.read_normals() {
-						normals.for_each(|normal| {
-							let normal = maths_rs::Vec3f::new(normal[0], normal[1], normal[2]);
-							
-							let transformed_normal = transform * normal;
+			for (reader, transform) in flat_mesh_tree.clone() {
+				if let Some(normals) = reader.read_normals() {
+					normals.for_each(|normal| {
+						let normal = maths_rs::Vec3f::new(normal[0], normal[1], normal[2]);
+						
+						let transformed_normal = transform * normal;
 
-							transformed_normal.iter().for_each(|m| {
-								m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
-							});
+						transformed_normal.iter().for_each(|m| {
+							m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
 						});
-					}
+					});
 				}
 			}
 
-			for (mesh, transform) in flat_mesh_tree.clone() {
-				for primitive in mesh.primitives() {
-					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-					if let Some(tangents) = reader.read_tangents() {
-						tangents.for_each(|tangent| {
-							let tangent = maths_rs::Vec3f::new(tangent[0], tangent[1], tangent[2]);
+			for (reader, transform) in flat_mesh_tree.clone() {
+				if let Some(tangents) = reader.read_tangents() {
+					tangents.for_each(|tangent| {
+						let tangent = maths_rs::Vec3f::new(tangent[0], tangent[1], tangent[2]);
 
-							let transformed_tangent = transform * tangent;
+						let transformed_tangent = transform * tangent;
 
-							transformed_tangent.iter().for_each(|m| {
+						transformed_tangent.iter().for_each(|m| {
+							m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
+						})
+					});
+				}
+			}
+
+			for (reader, _) in flat_mesh_tree.clone() {
+				for i in 0..8 {
+					if let Some(uv) = reader.read_tex_coords(i) {
+						assert_eq!(i, 0);
+						uv.into_f32().for_each(|uv| {
+							uv.iter().for_each(|m| {
 								m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
 							})
 						});
-					}
-				}
-			}
-
-			for (mesh, _) in flat_mesh_tree.clone() {
-				for primitive in mesh.primitives() {
-					let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));					
-
-					for i in 0..8 {
-						if let Some(uv) = reader.read_tex_coords(i) {
-							assert_eq!(i, 0);
-							uv.into_f32().for_each(|uv| {
-								uv.iter().for_each(|m| {
-									m.to_le_bytes().iter().for_each(|byte| buffer.push(*byte))
-								})
-							});
-						}
 					}
 				}
 			}
@@ -500,6 +489,8 @@ impl AssetHandler for MeshAssetHandler {
 				let offset = buffer.len();
 
 				for meshlet in meshlets.iter() {
+					assert!(meshlet.triangles.len() % 3 == 0, "Invalid meshlet triangle count");
+
 					buffer.push(meshlet.vertices.len() as u8);
 					buffer.push((meshlet.triangles.len() / 3usize) as u8);
 				}

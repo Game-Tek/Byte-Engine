@@ -4,9 +4,8 @@
 
 use core::{self, EntityHandle};
 use std::sync::{Arc, Mutex};
-use byte_engine::{application::Application, camera, input, rendering::{directional_light, mesh, point_light}, Vector3};
+use byte_engine::{application::Application, camera, input, rendering::{directional_light, mesh::{self, Transform}, point_light}, Vector3};
 use maths_rs::{exp, prelude::MatTranslate};
-use serde::de;
 
 #[ignore]
 #[test]
@@ -35,7 +34,7 @@ fn  revolver() {
 	let _: EntityHandle<directional_light::DirectionalLight> = core::spawn_as_child(space_handle.clone(), directional_light::DirectionalLight::new(Vector3::new(0.0, 0.0, 1.0), 4000f32));
 	let _: EntityHandle<point_light::PointLight> = core::spawn_as_child(space_handle.clone(), point_light::PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32));
 	let _: EntityHandle<point_light::PointLight> = core::spawn_as_child(space_handle.clone(), point_light::PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32));
-	let mesh: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Revolver.glb", "pbr.json", maths_rs::Mat4f::from_translation(Vector3::new(0.018, 0.0275, 0.0))));
+	let mesh: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Revolver.glb", "pbr.json", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
 
 	struct Animation {
 		value: Vector3,

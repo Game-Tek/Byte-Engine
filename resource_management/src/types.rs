@@ -356,6 +356,12 @@ pub struct SubMesh {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+/// Mesh represent a piece of geometry.
+/// It is composed of multiple sub meshes that can be rendered with different materials.
+/// Indices:
+/// 	- `Vertices`: Each entry is a "pointer" to a vertex in the vertex buffer.
+/// 	- `Meshlets`: Each entry is a "pointer" to an index in the `Vertices` index stream.
+/// 	- `Triangles`: Each entry is a "pointer" to a vertex in the vertex buffer.
 pub struct Mesh {
 	pub index_streams: Vec<IndexStream>,
 	pub meshlet_stream: Option<MeshletStream>,

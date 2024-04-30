@@ -1,5 +1,4 @@
 {
-	"lldb.displayFormat": "auto",
 	"lldb.showDisassembly": "never",
 	"lldb.dereferencePointers": false,
 	"lldb.consoleMode": "commands"

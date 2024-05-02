@@ -291,6 +291,9 @@ impl ShaderCompilation {
 							besl::Nodes::Literal { .. } => {
 								self.generate_shader_internal(string, &source);
 							}
+							besl::Nodes::Member { .. } => { // If member being accessed belongs to a struct don't generate the "member definifition" it already existing inside the member's struct
+								string.push_str(name);
+							}
 							_ => {
 								self.generate_shader_internal(string, &source);
 								string.push_str(name);
@@ -609,7 +612,7 @@ mod tests {
 		"#;
 
 		let number_literal = besl::parser::NodeReference::literal("number", besl::parser::NodeReference::glsl("1.0", Vec::new(), Vec::new()));
-		let sample_function = besl::parser::NodeReference::intrinsic("sample", NodeReference::parameter("num", "f32"), NodeReference::sentence(vec![NodeReference::glsl("0 + ", Vec::new(), Vec::new()), NodeReference::member_expression("num"), NodeReference::glsl(" * 2", Vec::new(), Vec::new())]));
+		let sample_function = besl::parser::NodeReference::intrinsic("sample", NodeReference::parameter("num", "f32"), NodeReference::sentence(vec![NodeReference::glsl("0 + ", Vec::new(), Vec::new()), NodeReference::member_expression("num"), NodeReference::glsl(" * 2", Vec::new(), Vec::new())]), "f32");
 
 		let mut program_state = besl::parse(&script).unwrap();
 

@@ -779,11 +779,11 @@ mod tests {
 
 		let storage_backend = asset_manager.get_storage_backend().downcast_ref::<TestStorageBackend>().unwrap();
 
-        let url = "Revolver.glb#Revolver_Base_color";
+        let url = "Revolver.glb#Revolver_Metallic-Revolver_Roughness";
 
         let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, storage_backend, &url, None));
 
-		let _ = storage_backend.get_resource_data_by_name("Revolver.glb#Revolver_Base_color").unwrap();
+		let _ = storage_backend.get_resource_data_by_name(&url).unwrap();
 
 		let generated_resources = storage_backend.get_resources();
 

@@ -120,6 +120,7 @@ pub enum Nodes {
 	Intrinsic {
 		name: String,
 		elements: Vec<NodeReference>,
+		r#return: String,
 	},
 	Literal {
 		name: String,
@@ -326,11 +327,12 @@ impl NodeReference {
 		}))
 	}
 
-	pub fn intrinsic(name: &str, parameters: NodeReference, body: NodeReference) -> NodeReference {
+	pub fn intrinsic(name: &str, parameters: NodeReference, body: NodeReference, r#return: &str) -> NodeReference {
 		NodeReference(Rc::new(Node {
 			node: Nodes::Intrinsic {
 				name: name.to_string(),
 				elements: vec![parameters, body],
+				r#return: r#return.to_string(),
 			},
 		}))
 	}
@@ -436,7 +438,7 @@ impl Precedence for Atoms {
 			Atoms::FunctionCall{ .. } => 0,
 			Atoms::Operator{ name } => {
 				match name.as_str() {
-					"=" => 4,
+					"=" => 5,
 					"+" => 3,
 					"-" => 3,
 					"*" => 2,
@@ -1163,5 +1165,53 @@ main: fn () -> void {
 		if let Nodes::Scope { children, .. } = &node.node {
 			assert_eq!(children.len(), 1);
 		}
+	}
+
+	#[test]
+	fn test_parse_accessor_and_assignment() {
+		let source = "
+main: fn () -> void {
+	let n: f32 = intrinsic(0).y;
+}";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let (node, _) = parse(tokens).expect("Failed to parse");
+
+		if let Nodes::Scope { children, .. } = &node.node {
+			assert_eq!(children.len(), 1);
+
+			let main_node = &node["main"];
+
+			if let Nodes::Function { name, statements, .. } = &main_node.node {
+				assert_eq!(name, "main");
+				assert_eq!(statements.len(), 1);
+
+				let statement = &statements[0];
+
+				if let Nodes::Expression(Expressions::Operator { name, left, right }) = &statement.node {
+					assert_eq!(name, "=");
+
+					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = &left.node {
+						assert_eq!(name, "n");
+						assert_eq!(r#type, "f32");
+					} else { panic!("Not a variable declaration"); }
+
+					if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
+						if let Nodes::Expression(Expressions::Call { name, parameters }) = &left.node {
+							assert_eq!(name, "intrinsic");
+							assert_eq!(parameters.len(), 1);
+
+							if let Nodes::Expression(Expressions::Literal { value }) = &parameters[0].node {
+								assert_eq!(value, "0");
+							} else { panic!("Not a literal"); }
+						} else { panic!("Not a function call"); }
+
+						if let Nodes::Expression(Expressions::Member { name }) = &right.node {
+							assert_eq!(name, "y");
+						} else { panic!("Not a member"); }
+					} else { panic!("Not an accessor"); }
+				} else { panic!("Not an operator"); }
+			} else { panic!("Not a function"); }
+		} else { panic!("Not root node") }
 	}
 }

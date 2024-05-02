@@ -275,12 +275,13 @@ impl Node {
 		}
 	}
 
-	pub fn intrinsic(name: &str, elements: Vec<NodeReference>) -> Node {
+	pub fn intrinsic(name: &str, elements: Vec<NodeReference>, r#return: NodeReference) -> Node {
 		Node {
 			// parent: None,
 			node: Nodes::Intrinsic {
 				name: name.to_string(),
 				elements,
+				r#return,
 			},
 		}
 	}
@@ -400,7 +401,15 @@ impl Node {
 							}
 						}
 					}
-					Expressions::Macro { .. } | Expressions::Accessor { .. } | Expressions::FunctionCall { .. } | Expressions::IntrinsicCall { .. } | Expressions::Member { .. } | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } | Expressions::Return => {}
+					Expressions::IntrinsicCall { intrinsic, .. } => {
+						match RefCell::borrow(&intrinsic).node() {
+							Nodes::Intrinsic { r#return, .. } => {
+								return RefCell::borrow(r#return).get_child(child_name);
+							}
+							_ => { panic!("Expected intrinsic"); }
+						}
+					}
+					Expressions::Macro { .. } | Expressions::Accessor { .. } | Expressions::FunctionCall { .. } | Expressions::Member { .. } | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } | Expressions::Return => {}
 				}
 			}
 			Nodes::GLSL { output, .. } => {
@@ -608,6 +617,7 @@ pub enum Nodes {
 	Intrinsic {
 		name: String,
 		elements: Vec<NodeReference>,
+		r#return: NodeReference,
 	},
 	Parameter {
 		name: String,
@@ -929,9 +939,20 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					Node::expression(Expressions::Return)
 				}
 				parser::Expressions::Accessor{ left, right } => {
+					let left = lex_parsed_node(chain.clone(), left, parser_program,)?;
+
+					let right = {
+						let left = left.borrow();
+
+						let mut chain = chain.clone();
+						chain.push(&left); // Add left to chain to be able to access its members
+
+						lex_parsed_node(chain.clone(), right, parser_program,)?
+					};
+
 					Node::expression(Expressions::Accessor {
-						left: lex_parsed_node(chain.clone(), left, parser_program,)?,
-						right: lex_parsed_node(chain.clone(), right, parser_program,)?,
+						left,
+						right,
 					})
 				}
 				parser::Expressions::Member{ name } => {
@@ -1021,8 +1042,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 			this
 		}
-		parser::Nodes::Intrinsic { name, elements } => {
-			let mut this = Node::intrinsic(name, Vec::new());
+		parser::Nodes::Intrinsic { name, elements, r#return, .. } => {
+			let mut this = Node::intrinsic(name, Vec::new(), get_reference(&chain, &r#return).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#return.clone() })?);
 
 			for e in elements {
 				let mut chain = chain.clone();
@@ -1046,9 +1067,9 @@ fn build_intrinsic<'a>(elements: &[NodeReference], parameters: &mut impl Iterato
 		let e = match f.node() {
 			Nodes::Expression(expression) => {
 				match expression {
-					Expressions::Member { name, source } => {
+					Expressions::Member { source, .. } => {
 						match source.deref().borrow().node() {
-							Nodes::Parameter { name, r#type } => {
+							Nodes::Parameter { .. } => {
 								parameters.next().ok_or(LexError::Undefined{ message: Some("Expected parameter".to_string()) })?.clone()
 							}
 							_ => { e.clone() }
@@ -1357,17 +1378,16 @@ color: In<vec4f>;
 	// TODO: test function with body with missing close brace
 
 	#[test]
-	#[ignore = "Intrinsic work is not finalized"]
 	fn lex_intrinsic() {
 		let source = "
 main: fn () -> void {
-	let n: u32 = intrinsic(0);
+	let n: f32 = intrinsic(0).y;
 }";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, mut program) = parser::parse(tokens).expect("Failed to parse");
 
-		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::parameter("num", "u32"), parser::NodeReference::glsl("0", Vec::new(), Vec::new()));
+		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::parameter("num", "u32"), parser::NodeReference::sentence(vec![parser::NodeReference::glsl("vec3(", vec![], vec![]), parser::NodeReference::member_expression("num"), parser::NodeReference::glsl(")", Vec::new(), Vec::new())]), "vec3f");
 
 		program.insert("intrinsic".to_string(), intrinsic.into());
 
@@ -1396,28 +1416,14 @@ main: fn () -> void {
 								match n.node() {
 									Nodes::Expression(Expressions::VariableDeclaration{ name, r#type }) => {
 										assert_eq!(name, "n");
-										assert_type(&r#type.borrow(), "u32");
+										assert_type(&r#type.borrow(), "f32");
 									}
 									_ => { panic!("Expected variable declaration"); }
 								}
 
 								let intrinsic = right.borrow();
 
-								match intrinsic.node() {
-									Nodes::Expression(Expressions::FunctionCall{ function, parameters }) => {
-										let function = function.borrow();
-
-										match function.node() {
-											Nodes::Intrinsic { name, .. } => {
-												assert_eq!(name, "intrinsic");
-											}
-											_ => { panic!("Expected intrinsic"); }
-										}
-
-										assert_eq!(parameters.len(), 1);
-									}
-									_ => { panic!("Expected function call"); }
-								}
+								// TODO: assert
 							}
 							_ => { panic!("Expected assignment"); }
 						}

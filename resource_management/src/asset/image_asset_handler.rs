@@ -3,7 +3,7 @@ use std::any::Any;
 
 use utils::Extent;
 
-use crate::{types::{CompressionSchemes, Formats, Image}, Description, GenericResourceSerialization, Resource, StorageBackend};
+use crate::{types::{CompressionSchemes, Formats, Gamma, Image}, Description, GenericResourceSerialization, Resource, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -32,6 +32,7 @@ impl AssetHandler for ImageAssetHandler {
 			let extent;
 			let format;
 			let mut buffer;
+			let gamma;
 
 			match dt.as_str() {
 				"png" | "image/png" => {
@@ -44,6 +45,14 @@ impl AssetHandler for ImageAssetHandler {
 					let info = reader.next_frame(&mut buffer).unwrap();
 		
 					extent = Extent::rectangle(info.width, info.height);
+
+					gamma = reader.info().gama_chunk.map(|gamma| {
+						if gamma.into_scaled() == 45455 {
+							Gamma::SRGB
+						} else {
+							Gamma::Linear
+						}
+					});
 
 					format = match info.color_type {
 						png::ColorType::Rgb => {
@@ -69,10 +78,15 @@ impl AssetHandler for ImageAssetHandler {
 
 			assert_eq!(extent.depth(), 1); // TODO: support 3D textures
 
+			let semantic = guess_semantic_from_name(url);
+
+			let gamma = gamma.unwrap_or(if semantic == Semantic::Albedo { Gamma::SRGB } else { Gamma::Linear });
+
 			let (image, data) = self.produce(&ImageDescription {
 				format,
 				extent,
-				semantic: if url.contains("Normal") { Semantic::Normal } else { Semantic::Other }
+				semantic,
+				gamma,
 			}, &buffer);
 
 			let resource_document = GenericResourceSerialization::new(url, image);
@@ -95,9 +109,22 @@ impl AssetHandler for ImageAssetHandler {
 	}
 }
 
+pub fn guess_semantic_from_name(name: &str) -> Semantic {
+	if name.contains("Base_color") || name.contains("Albedo") || name.contains("Diffuse") { Semantic::Albedo }
+	else if name.contains("Normal") { Semantic::Normal }
+	else if name.contains("Metallic") { Semantic::Metallic }
+	else if name.contains("Roughness") { Semantic::Roughness }
+	else if name.contains("Emissive") { Semantic::Emissive }
+	else if name.contains("Height") { Semantic::Height }
+	else if name.contains("Opacity") { Semantic::Opacity }
+	else if name.contains("Displacement") { Semantic::Displacement }
+	else if name.contains("AO") { Semantic::AO }
+	else { Semantic::Other }
+}
+
 impl ImageAssetHandler {
 	fn produce(&self, description: &ImageDescription, buffer: &[u8]) -> (Image, Box<[u8]>) {
-		let ImageDescription { format, extent, semantic } = description;
+		let ImageDescription { format, extent, semantic, gamma } = description;
 
 		let compress = *semantic != Semantic::Normal;
 
@@ -167,12 +194,13 @@ impl ImageAssetHandler {
 			format,
 			extent: extent.as_array(),
 			compression,
+			gamma: *gamma,
 		},
 		data.into())
 	}
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Semantic {
 	Albedo,
 	Normal,
@@ -189,6 +217,7 @@ pub enum Semantic {
 pub struct ImageDescription {
 	pub format: Formats,
 	pub extent: Extent,
+	pub gamma: Gamma,
 	pub semantic: Semantic,
 }
 

@@ -50,8 +50,6 @@ fn  revolver() {
 		}
 	}
 
-	// TODO: treat roughness and metalness as linear data and add colorspace data to image resources
-
 	let target = Arc::new(Mutex::new(Vector3::new(0f32, 0f32, 1f32)));
 	let mut animation = Animation::new(*target.lock().unwrap(), 2f32);
 

@@ -4,8 +4,8 @@ use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
 use utils::Extent;
 
 use crate::{
-    types::{
-        AlphaMode, CreateImage, Formats, Image, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value, VertexComponent, VertexSemantics
+    asset::image_asset_handler::{guess_semantic_from_name, Semantic}, types::{
+        AlphaMode, CreateImage, Formats, Gamma, Image, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, SubMesh, Value, VertexComponent, VertexSemantics
     }, Description, GenericResourceResponse, GenericResourceSerialization, Resource, StorageBackend, TypedResource
 };
 
@@ -72,10 +72,13 @@ impl AssetHandler for MeshAssetHandler {
 				};
 				let extent = Extent::rectangle(image.width, image.height);
 
+				let semantic = guess_semantic_from_name(&url);
+
 				let image_description = crate::asset::image_asset_handler::ImageDescription {
 					format,
 					extent,
-					semantic: if url.contains("Normal") { crate::asset::image_asset_handler::Semantic::Normal } else { crate::asset::image_asset_handler::Semantic::Other },
+					semantic,
+					gamma: if semantic == Semantic::Albedo { Gamma::SRGB } else { Gamma::Linear },
 				};
 
 				let resource: TypedResource<Image> = asset_manager.produce(&url, "image/png", &image_description, &image.pixels).await;

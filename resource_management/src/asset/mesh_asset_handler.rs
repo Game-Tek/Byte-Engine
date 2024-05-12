@@ -24,7 +24,7 @@ impl AssetHandler for MeshAssetHandler {
 		r#type == "gltf" || r#type == "glb"
 	}
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>,) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>,) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
     	Box::pin(async move {
             if let Some(dt) = asset_resolver.get_type(url) {
                 if dt != "gltf" && dt != "glb" {
@@ -81,9 +81,9 @@ impl AssetHandler for MeshAssetHandler {
 					gamma: if semantic == Semantic::Albedo { Gamma::SRGB } else { Gamma::Linear },
 				};
 
-				let resource: TypedResource<Image> = asset_manager.produce(&url, "image/png", &image_description, &image.pixels).await;
+				let resource = asset_manager.produce(&url, "image/png", &image_description, &image.pixels).await;
 
-				return Ok(Some(resource.into()));
+				return Ok(Some(resource));
 			}
 
             const MESHLETIZE: bool = true;
@@ -281,22 +281,6 @@ impl AssetHandler for MeshAssetHandler {
 				*transform = maths_rs::Mat4f::from_scale(Vec3::new(1f32, 1f32, -1f32)) * *transform;
 			}
 
-			// println!("MESHES:");
-
-			// for mesh in gltf.meshes() {
-			// 	println!("	Mesh: {}", mesh.name().unwrap());
-			// }
-
-			// println!("NODES:");
-
-			// for (node, _) in flat_tree.clone() {
-			// 	if let Some(mesh) = node.mesh() {
-			// 		println!("	Node: {}, mesh: {} -> {}", node.name().unwrap(), mesh.name().unwrap(), mesh.primitives().len());
-			// 	} else {
-			// 		println!("	Node: {:?}", node.name());
-			// 	}
-			// }
-
 			let primitives = flat_tree.iter().filter_map(|(node, transform)| {
 				if let Some(mesh) = node.mesh() {
 					Some(mesh.primitives().map(|primitive| (primitive, *transform)))
@@ -410,10 +394,15 @@ impl AssetHandler for MeshAssetHandler {
 						IntegralTypes::U16 => {
 							for meshlet in meshlets.iter() {
 								for x in meshlet.vertices {
-									(*x as u16)
-										.to_le_bytes()
-										.iter()
-										.for_each(|byte| buffer.push(*byte));
+									assert!(*x <= 0xFFFFu32, "Index out of bounds"); // Max vertices per meshlet
+									(*x as u16).to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
+								}
+							}
+						}
+						IntegralTypes::U32 => {
+							for meshlet in meshlets.iter() {
+								for x in meshlet.vertices {
+									x.to_le_bytes().iter().for_each(|byte| buffer.push(*byte));
 								}
 							}
 						}
@@ -423,7 +412,7 @@ impl AssetHandler for MeshAssetHandler {
 					let vertex_index_count = meshlets.iter().map(|e| e.vertices.len()).sum::<usize>();
 
 					index_streams.push(IndexStream {
-						data_type: IntegralTypes::U16,
+						data_type: index_type,
 						stream_type: IndexStreamTypes::Vertices,
 						offset,
 						count: vertex_index_count as u32,
@@ -458,7 +447,7 @@ impl AssetHandler for MeshAssetHandler {
 				None
 			};
 
-			{
+			if false {
 				let offset = buffer.len();
 
 				let index_type = IntegralTypes::U16;
@@ -535,12 +524,6 @@ impl AssetHandler for MeshAssetHandler {
             Ok(Some(resource_document))
         })
     }
-
-	fn produce<'a>(&'a self, _: &'a dyn Description, _: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
-		Box::pin(async move {
-			Err("Not implemented".to_string())
-		})
-	}
 }
 
 struct MeshDescription {
@@ -794,4 +777,27 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
     }
+
+	#[test]
+	#[ignore]
+	fn load_16bit_normal_image() {
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		let asset_resolver = TestAssetResolver::new();
+		let storage_backend = TestStorageBackend::new();
+		let asset_handler = MeshAssetHandler::new();
+
+		let url = "Revolver.glb#Revolver_Normal_OpenGL";
+
+		let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
+
+		let generated_resources = storage_backend.get_resources();
+
+		assert_eq!(generated_resources.len(), 1);
+
+		let resource = &generated_resources[0];
+
+		assert_eq!(resource.id, url);
+		assert_eq!(resource.class, "Image");
+	}
 }

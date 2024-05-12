@@ -759,6 +759,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
 		let size = if let Some(compression) = compression {
 			let block_size = match compression {
+				CompressionSchemes::BC5 => {
+					match format {
+						graphics_hardware_interface::Formats::RG8(_) => { 16usize }
+						_ => { panic!("Invalid format for BC5 compression"); }
+					}
+				}
 				CompressionSchemes::BC7 => {
 					match format {
 						graphics_hardware_interface::Formats::RGBA8(_) => { 16usize }
@@ -1694,6 +1700,13 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R32_SINT }
 			}
 		}
+		graphics_hardware_interface::Formats::RG8(encoding) => {
+			match encoding {
+				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
+				graphics_hardware_interface::Encodings::UnsignedNormalized => { if let Some(compression) = compression { match compression { graphics_hardware_interface::CompressionSchemes::BC5 => vk::Format::BC5_UNORM_BLOCK, _ => vk::Format::UNDEFINED } } else { vk::Format::R8G8_UNORM } }
+				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8_SNORM }
+			}
+		}
 		graphics_hardware_interface::Formats::RG16(encoding) => {
 			match encoding {
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16_SFLOAT }
@@ -1718,7 +1731,7 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 		graphics_hardware_interface::Formats::RGBA8(encoding) => {
 			match encoding {
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { if let Some(compression) = compression { match compression { graphics_hardware_interface::CompressionSchemes::BC7 => vk::Format::BC7_SRGB_BLOCK, } } else { vk::Format::R8G8B8A8_UNORM } }
+				graphics_hardware_interface::Encodings::UnsignedNormalized => { if let Some(compression) = compression { match compression { graphics_hardware_interface::CompressionSchemes::BC7 => vk::Format::BC7_SRGB_BLOCK, _ => vk::Format::UNDEFINED } } else { vk::Format::R8G8B8A8_UNORM } }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8A8_SNORM }
 			}
 		}
@@ -4625,6 +4638,15 @@ mod tests {
 		assert_eq!(value, vk::Format::R32_SINT);
 		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::FloatingPoint), None);
 		assert_eq!(value, vk::Format::R32_SFLOAT);
+
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		assert_eq!(value, vk::Format::R8G8_UNORM);
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::UnsignedNormalized), Some(graphics_hardware_interface::CompressionSchemes::BC5));
+		assert_eq!(value, vk::Format::BC5_UNORM_BLOCK);
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		assert_eq!(value, vk::Format::R8G8_SNORM);
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		assert_eq!(value, vk::Format::UNDEFINED);
 
 		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
 		assert_eq!(value, vk::Format::R16G16_UNORM);

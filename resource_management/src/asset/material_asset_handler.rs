@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
 
 use log::debug;
 
@@ -6,13 +6,13 @@ use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, type
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
-pub trait ProgramGenerator {
+pub trait ProgramGenerator: Send + Sync {
 	/// Transforms a program.
 	fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference>;
 }
 
 pub struct MaterialAssetHandler {
-	generator: Option<Box<dyn ProgramGenerator>>,
+	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
 impl MaterialAssetHandler {
@@ -23,7 +23,7 @@ impl MaterialAssetHandler {
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Box::new(generator));
+		self.generator = Some(Arc::new(generator));
     }
 }
 
@@ -32,7 +32,7 @@ impl AssetHandler for MaterialAssetHandler {
 		r#type == "json"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "json" { return Err("Not my type".to_string()); }
@@ -61,7 +61,7 @@ impl AssetHandler for MaterialAssetHandler {
 			let resource = if is_material {
 				let material_domain = asset_json["domain"].as_str().ok_or("Domain not found".to_string()).or_else(|e| { debug!("{}", e); Err("Domain not found".to_string()) })?;
 				
-				let generator = self.generator.as_ref().or_else(|| { log::warn!("No shader generator set for material asset handler"); None }).ok_or("No shader generator set".to_string()).or_else(|e| { debug!("{}", e); Err("No shader generator set".to_string()) })?;
+				let generator = self.generator.clone().ok_or("Generator not set".to_string())?;
 
 				let shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| { // TODO: desilence
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
@@ -129,12 +129,6 @@ impl AssetHandler for MaterialAssetHandler {
 			};
 
 			Ok(Some(resource))
-		})
-	}
-
-	fn produce<'a>(&'a self, description: &'a dyn Description, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
-		Box::pin(async move {
-			Err("Not implemented".to_string())
 		})
 	}
 }

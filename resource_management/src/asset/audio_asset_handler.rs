@@ -13,7 +13,7 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
 				if dt != "wav" { return Err("Not my type".to_string()); }
@@ -99,12 +99,6 @@ impl AssetHandler for AudioAssetHandler {
 			storage_backend.store(&resource, data.into()).await.map_err(|_| format!("Failed to store resource"))?;
 
 			Ok(Some(resource))
-		})
-	}
-
-	fn produce<'a>(&'a self, _: &'a dyn Description, _: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
-		Box::pin(async move {
-			Err("Not implemented".to_string())
 		})
 	}
 }

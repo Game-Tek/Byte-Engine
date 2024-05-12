@@ -9,7 +9,7 @@ use maths_rs::exp;
 
 #[ignore]
 #[test]
-fn  revolver() {
+fn revolver() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Revolver");
 
 	app.initialize(std::env::args());

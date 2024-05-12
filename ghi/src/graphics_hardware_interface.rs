@@ -650,6 +650,7 @@ pub enum Formats {
 	R8(Encodings),
 	R16(Encodings),
 	R32(Encodings),
+	RG8(Encodings),
 	RG16(Encodings),
 	RGB8(Encodings),
 	RGB16(Encodings),
@@ -671,6 +672,7 @@ impl Size for Formats {
 			Formats::R8(_) => 1,
 			Formats::R16(_) => 2,
 			Formats::R32(_) => 4,
+			Formats::RG8(_) => 2,
 			Formats::RG16(_) => 4,
 			Formats::RGB8(_) => 3,
 			Formats::RGB16(_) => 6,
@@ -682,6 +684,7 @@ impl Size for Formats {
 
 #[derive(Clone, Copy, Debug)]
 pub enum CompressionSchemes {
+	BC5,
 	BC7,
 }
 

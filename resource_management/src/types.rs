@@ -432,6 +432,7 @@ impl CreateResource for CreateImage {}
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionSchemes {
 	BC7,
+	BC5,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -442,6 +443,7 @@ pub enum Gamma {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Formats {
+	RG8,
 	RGB8,
 	RGBA8,
 	RGB16,

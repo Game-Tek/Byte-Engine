@@ -266,7 +266,7 @@ mat3 TBN = mat3(T, B, N);
 // mat3 TBN = mat3(T, B, N);
 
 vec3 albedo = vec3(1, 0, 0);
-vec3 normal = world_space_vertex_normal;
+vec3 normal = vec3(0, 0, 1);
 float metalness = 0;
 float roughness = float(0.5);";
 

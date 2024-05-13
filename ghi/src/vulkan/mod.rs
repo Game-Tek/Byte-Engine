@@ -756,28 +756,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
-		let size = if let Some(compression) = compression {
-			let block_size = match compression {
-				CompressionSchemes::BC5 => {
-					match format {
-						graphics_hardware_interface::Formats::RG8(_) => { 16usize }
-						_ => { panic!("Invalid format for BC5 compression"); }
-					}
-				}
-				CompressionSchemes::BC7 => {
-					match format {
-						graphics_hardware_interface::Formats::RGBA8(_) => { 16usize }
-						graphics_hardware_interface::Formats::RGBA16(_) => { 16usize }
-						_ => { panic!("Invalid format for BC7 compression"); }
-					}
-				}
-			};
-
-			(((extent.width() + 3) / 4) * ((extent.height() + 3) / 4)) as usize * block_size
-		} else {
-			(extent.width() * extent.height() * extent.depth()) as usize * format.size()
-		};
+	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
+		let size = (extent.width() * extent.height() * extent.depth()) as usize * format.size();
 
 		let texture_handle = graphics_hardware_interface::ImageHandle(self.images.len() as u64);
 
@@ -791,13 +771,13 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			let texture_handle = ImageHandle(self.images.len() as u64);
 
 			if extent.width != 0 && extent.height != 0 && extent.depth != 0 {
-				let texture_creation_result = self.create_vulkan_texture(name, extent, format, compression, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1); // TODO: check if image is being created as linear layout
+				let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1); // TODO: check if image is being created as linear layout
 	
 				let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, device_accesses);
 	
 				let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 	
-				let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, compression, 0);
+				let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, 0);
 	
 				let (staging_buffer, pointer) = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 					let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
@@ -853,7 +833,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					image_view,
 					pointer,
 					extent,
-					format: to_format(format, compression),
+					format: to_format(format),
 					format_: format,
 					layout: vk::ImageLayout::UNDEFINED,
 					uses: resource_uses,
@@ -869,7 +849,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					image_view: vk::ImageView::null(),
 					pointer: std::ptr::null_mut(),
 					extent,
-					format: to_format(format, compression),
+					format: to_format(format),
 					format_: format,
 					layout: vk::ImageLayout::UNDEFINED,
 					uses: resource_uses,
@@ -1128,13 +1108,13 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	
 			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
 	
-			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, None, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
 	
 			let (allocation_handle, _) = self.create_allocation_internal(r.size, graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 	
 			let (_, pointer) = self.bind_vulkan_texture_memory(&r, allocation_handle, 0);
 	
-			let image_view = self.create_vulkan_texture_view(None, &r.resource, format_, None, 0);
+			let image_view = self.create_vulkan_texture_view(None, &r.resource, format_, 0);
 	
 			let image = &mut self.images[image_handle.0 as usize];
 			image.pointer = pointer;
@@ -1677,7 +1657,7 @@ fn to_load_operation(value: bool) -> vk::AttachmentLoadOp {	if value { vk::Attac
 
 fn to_store_operation(value: bool) -> vk::AttachmentStoreOp { if value { vk::AttachmentStoreOp::STORE } else { vk::AttachmentStoreOp::DONT_CARE } }
 
-fn to_format(format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>) -> vk::Format {
+fn to_format(format: graphics_hardware_interface::Formats) -> vk::Format {
 	match format {
 		graphics_hardware_interface::Formats::R8(encoding) => {
 			match encoding {
@@ -1703,7 +1683,7 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 		graphics_hardware_interface::Formats::RG8(encoding) => {
 			match encoding {
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { if let Some(compression) = compression { match compression { graphics_hardware_interface::CompressionSchemes::BC5 => vk::Format::BC5_UNORM_BLOCK, _ => vk::Format::UNDEFINED } } else { vk::Format::R8G8_UNORM } }
+				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8_SNORM }
 			}
 		}
@@ -1731,7 +1711,7 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 		graphics_hardware_interface::Formats::RGBA8(encoding) => {
 			match encoding {
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { if let Some(compression) = compression { match compression { graphics_hardware_interface::CompressionSchemes::BC7 => vk::Format::BC7_SRGB_BLOCK, _ => vk::Format::UNDEFINED } } else { vk::Format::R8G8B8A8_UNORM } }
+				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8B8A8_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8A8_SNORM }
 			}
 		}
@@ -1746,6 +1726,8 @@ fn to_format(format: graphics_hardware_interface::Formats, compression: Option<g
 		graphics_hardware_interface::Formats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
 		graphics_hardware_interface::Formats::Depth32 => vk::Format::D32_SFLOAT,
 		graphics_hardware_interface::Formats::U32 => vk::Format::R32_UINT,
+		graphics_hardware_interface::Formats::BC5 => vk::Format::BC5_UNORM_BLOCK,
+		graphics_hardware_interface::Formats::BC7 => vk::Format::BC7_SRGB_BLOCK,
 	}
 }
 
@@ -2400,7 +2382,7 @@ impl VulkanGHI {
 								.alpha_blend_op(vk::BlendOp::ADD)
 						}).collect::<Vec<_>>();
 	
-						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|a| to_format(a.format, None)).collect::<Vec<_>>();
+						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|a| to_format(a.format)).collect::<Vec<_>>();
 
 						let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
 							.logic_op_enable(false)
@@ -2605,10 +2587,10 @@ impl VulkanGHI {
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
 
-	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, _access_policies: graphics_hardware_interface::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
+	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, _access_policies: graphics_hardware_interface::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_create_info = vk::ImageCreateInfo::default()
 			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
-			.format(to_format(format, compression))
+			.format(to_format(format))
 			.extent(extent)
 			.mip_levels(mip_levels)
 			.array_layers(1)
@@ -2724,11 +2706,11 @@ impl VulkanGHI {
 		handle
 	}
 
-	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: graphics_hardware_interface::Formats, compression: Option<graphics_hardware_interface::CompressionSchemes>, _mip_levels: u32) -> vk::ImageView {
+	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: graphics_hardware_interface::Formats, _mip_levels: u32) -> vk::ImageView {
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
 			.view_type(vk::ImageViewType::TYPE_2D)
-			.format(to_format(format, compression))
+			.format(to_format(format))
 			.components(vk::ComponentMapping {
 				r: vk::ComponentSwizzle::IDENTITY,
 				g: vk::ComponentSwizzle::IDENTITY,
@@ -4618,73 +4600,73 @@ mod tests {
 
 	#[test]
 	fn test_to_format() {
-		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R8_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R8_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::UNDEFINED);
 
-		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::R16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R32_UINT);
-		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R32_SINT);
-		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::R32_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R8G8_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::UnsignedNormalized), Some(graphics_hardware_interface::CompressionSchemes::BC5));
+		let value = to_format(graphics_hardware_interface::Formats::BC5);
 		assert_eq!(value, vk::Format::BC5_UNORM_BLOCK);
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R8G8_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::UNDEFINED);
 
-		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R16G16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R16G16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::R16G16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R16G16B16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R16G16B16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::R16G16B16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R8G8B8A8_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), Some(graphics_hardware_interface::CompressionSchemes::BC7));
+		let value = to_format(graphics_hardware_interface::Formats::BC7);
 		assert_eq!(value, vk::Format::BC7_SRGB_BLOCK);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R8G8B8A8_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::UNDEFINED);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::UnsignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::UnsignedNormalized));
 		assert_eq!(value, vk::Format::R16G16B16A16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::SignedNormalized), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::SignedNormalized));
 		assert_eq!(value, vk::Format::R16G16B16A16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::FloatingPoint), None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::FloatingPoint));
 		assert_eq!(value, vk::Format::R16G16B16A16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::BGRAu8, None);
+		let value = to_format(graphics_hardware_interface::Formats::BGRAu8);
 		assert_eq!(value, vk::Format::B8G8R8A8_SRGB);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGBu10u10u11, None);
+		let value = to_format(graphics_hardware_interface::Formats::RGBu10u10u11);
 		assert_eq!(value, vk::Format::R16G16_S10_5_NV);
 
-		let value = to_format(graphics_hardware_interface::Formats::Depth32, None);
+		let value = to_format(graphics_hardware_interface::Formats::Depth32);
 		assert_eq!(value, vk::Format::D32_SFLOAT);
 	}
 

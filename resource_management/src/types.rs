@@ -79,7 +79,7 @@ pub struct ParameterModel {
 impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
 	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Image>, SolveErrors> {
 		let (gr, mut resource_reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-		let Image { compression, format, extent, gamma } = Image::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let Image { format, extent, gamma } = Image::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		let bx = {
 			let mut vec = Vec::with_capacity(gr.size);
@@ -91,7 +91,6 @@ impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
 		};
 
 		Ok(TypedResource::new_with_buffer(&self.id, self.hash, Image {
-			compression,
 			format,
 			extent,
 			gamma,
@@ -429,11 +428,11 @@ pub struct CreateImage {
 
 impl CreateResource for CreateImage {}
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum CompressionSchemes {
-	BC7,
-	BC5,
-}
+// #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+// pub enum CompressionSchemes {
+// 	BC7,
+// 	BC5,
+// }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Gamma {
@@ -443,16 +442,18 @@ pub enum Gamma {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Formats {
+	BC5,
 	RG8,
 	RGB8,
 	RGBA8,
+	BC7,
 	RGB16,
 	RGBA16,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Image {
-	pub compression: Option<CompressionSchemes>,
+	// pub compression: Option<CompressionSchemes>,
 	pub format: Formats,
 	pub gamma: Gamma,
 	pub extent: [u32; 3],

@@ -4,7 +4,7 @@ use std::any::Any;
 use maths_rs::vec::Vec2;
 use utils::Extent;
 
-use crate::{types::{CompressionSchemes, Formats, Gamma, Image}, Description, GenericResourceSerialization, Resource, StorageBackend};
+use crate::{types::{Formats, Gamma, Image}, Description, GenericResourceSerialization, Resource, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -137,12 +137,11 @@ impl ImageAssetHandler {
 		let ImageDescription { format, extent, semantic, gamma } = description;
 
 		let compress = match semantic {
-			Semantic::Albedo => true,
-			Semantic::Normal => true,
+			Semantic::Albedo | Semantic::Normal => true,
 			_ => false,
 		};
 
-		let (data, format, compression) = match format {
+		let (data, format) = match format {
 			Formats::RGB8 => {
 				let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
 
@@ -156,87 +155,90 @@ impl ImageAssetHandler {
 					}
 				}
 
-				if compress { // TODO: make this a setting
-					let rgba_surface = intel_tex_2::RgbaSurface {
-						data: &buf,
-						width: extent.width(),
-						height: extent.height(),
-						stride: extent.width() * 4,
-					};
-		
-					let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
-
-					(intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface), Formats::RGBA8, Some(CompressionSchemes::BC7))
-				} else {
-					(buf, Formats::RGBA8, None)
+				match (compress, semantic) {
+					(true, Semantic::Normal) => {
+						(buf, Formats::BC5)
+					}
+					(true, _) => {
+						(buf, Formats::BC7)
+					}
+					(false, _) => {
+						(buf, Formats::RGBA8)
+					}
 				}
 			}
 			Formats::RGB16 => {
-				if compress {
-					match semantic {
-						Semantic::Normal => {
-							assert_eq!(buffer.len(), extent.width() as usize * extent.height() as usize * 6);
+				match (compress, semantic) {
+					(true, Semantic::Normal) => {
+						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
 
-							let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
-
-							for y in 0..extent.height() {
-								for x in 0..extent.width() {
-									let index = ((x + y * extent.width()) * 6) as usize;
-									let x = u16::from_le_bytes([buffer[index + 0], buffer[index + 1]]);
-									let y = u16::from_le_bytes([buffer[index + 2], buffer[index + 3]]);
-									let x: u8 = (x / 256) as u8;
-									let y: u8 = (y / 256) as u8;
-									buf.push(x); buf.push(y); buf.push(0x00); buf.push(0xFF);
-								}
+						for y in 0..extent.height() {
+							for x in 0..extent.width() {
+								let index = ((x + y * extent.width()) * 6) as usize;
+								let x = u16::from_le_bytes([buffer[index + 0], buffer[index + 1]]);
+								let y = u16::from_le_bytes([buffer[index + 2], buffer[index + 3]]);
+								let x: u8 = (x / 256) as u8;
+								let y: u8 = (y / 256) as u8;
+								buf.push(x); buf.push(y); buf.push(0x00); buf.push(0xFF);
 							}
-
-							let rgba_surface = intel_tex_2::RgbaSurface {
-								data: &buf,
-								width: extent.width(),
-								height: extent.height(),
-								stride: extent.width() * 4,
-							};
-
-							(intel_tex_2::bc5::compress_blocks(&rgba_surface), Formats::RG8, Some(CompressionSchemes::BC5))
 						}
-						_ => {
-							let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
 
-							for y in 0..extent.height() {
-								for x in 0..extent.width() {
-									let index = ((x + y * extent.width()) * 6) as usize;
-									buf.push(buffer[index + 0]); buf.push(buffer[index + 1]);
-									buf.push(buffer[index + 2]); buf.push(buffer[index + 3]);
-									buf.push(buffer[index + 4]); buf.push(buffer[index + 5]);
-									buf.push(0xFF); buf.push(0xFF);
-								}
+						(buf, Formats::BC5)
+					}
+					(compress, _) => {
+						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
+
+						for y in 0..extent.height() {
+							for x in 0..extent.width() {
+								let index = ((x + y * extent.width()) * 6) as usize;
+								buf.push(buffer[index + 0]); buf.push(buffer[index + 1]);
+								buf.push(buffer[index + 2]); buf.push(buffer[index + 3]);
+								buf.push(buffer[index + 4]); buf.push(buffer[index + 5]);
+								buf.push(0xFF); buf.push(0xFF);
 							}
+						}
 
-							let rgba_surface = intel_tex_2::RgbaSurface {
-								data: &buf,
-								width: extent.width(),
-								height: extent.height(),
-								stride: extent.width() * 8,
-							};
-
-							(intel_tex_2::bc7::compress_blocks(&intel_tex_2::bc7::opaque_ultra_fast_settings(), &rgba_surface), Formats::RGBA8, Some(CompressionSchemes::BC7))
+						if compress {
+							(buf, Formats::BC7)
+						} else {
+							(buf, Formats::RGBA16)
 						}
 					}
-				} else {
-					let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
-
-					for y in 0..extent.height() {
-						for x in 0..extent.width() {
-							let index = ((x + y * extent.width()) * 6) as usize;
-							buf.push(buffer[index + 0]); buf.push(buffer[index + 1]);
-							buf.push(buffer[index + 2]); buf.push(buffer[index + 3]);
-							buf.push(buffer[index + 4]); buf.push(buffer[index + 5]);
-							buf.push(0xFF); buf.push(0xFF);
-						}
-					}
-
-					(buf, Formats::RGBA16, None)
 				}
+			}
+			_ => {
+				panic!("Unsupported format")
+			}
+		};
+
+		let data = match format {
+			Formats::BC5 => {
+				let rgba_surface = intel_tex_2::RgbaSurface {
+					data: &data,
+					width: extent.width(),
+					height: extent.height(),
+					stride: extent.width() * 4,
+				};
+
+				intel_tex_2::bc5::compress_blocks(&rgba_surface)
+			}
+			Formats::RGB8 | Formats::RGBA8 => {
+				data
+			}
+			Formats::BC7 => {
+				let rgba_surface = intel_tex_2::RgbaSurface {
+					data: &data,
+					width: extent.width(),
+					height: extent.height(),
+					stride: extent.width() * 4,
+				};
+	
+				let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
+
+				intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)
+			}
+			Formats::RGB16 | Formats::RGBA16 => {
+				data
 			}
 			_ => {
 				panic!("Unsupported format")
@@ -246,7 +248,6 @@ impl ImageAssetHandler {
 		(Image {
 			format,
 			extent: extent.as_array(),
-			compression,
 			gamma: *gamma,
 		},
 		data.into())

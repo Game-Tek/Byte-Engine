@@ -11,7 +11,7 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::ResourceStore;
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
-use resource_management::types::{CompressionSchemes, Image, IndexStreamTypes, IntegralTypes, Mesh, Shader, ShaderTypes, Variant};
+use resource_management::types::{Image, IndexStreamTypes, IntegralTypes, Mesh, Shader, ShaderTypes, Variant};
 use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
@@ -168,9 +168,9 @@ impl VisibilityWorldRenderDomain {
 			let vertex_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
@@ -205,8 +205,8 @@ impl VisibilityWorldRenderDomain {
 			let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[7], meshlets_data_buffer));
 			let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &bindings[8]);
 
-			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
 				ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
@@ -258,7 +258,7 @@ impl VisibilityWorldRenderDomain {
 			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let shadow_map_image = {
 				shadow_render_pass.read_sync().get_shadow_map_image()
@@ -368,29 +368,24 @@ impl VisibilityWorldRenderDomain {
 
 	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut ghi::GHI, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle, texture_count: &mut u32) {
 		if let Some(texture) = resource.resource().downcast_ref::<Image>() {
-			let compression = texture.compression.map(|compression| {
-				match compression {
-					CompressionSchemes::BC5 => ghi::CompressionSchemes::BC5,
-					CompressionSchemes::BC7 => ghi::CompressionSchemes::BC7,
-				}
-			});
-
 			let format = match texture.format {
 				resource_management::types::Formats::RG8 => ghi::Formats::RG8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGB8 => ghi::Formats::RGB8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGB16 => ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
+				resource_management::types::Formats::BC5 => ghi::Formats::BC5,
+				resource_management::types::Formats::BC7 => ghi::Formats::BC7,
 			};
 
 			let extent = Extent::from(texture.extent);
 
 			let image = if let Some(b) = resource.get_buffer() {
-				let new_texture = ghi.create_image(Some(&resource.id()), extent, format, compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				let new_texture = ghi.create_image(Some(&resource.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
 				new_texture
 			} else {
-				let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
 				let slice = ghi.get_texture_slice_mut(new_texture);
 

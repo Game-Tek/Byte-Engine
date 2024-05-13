@@ -60,17 +60,17 @@ impl Deref for NodeReference {
 	}
 }
 
-pub(super) fn lex(node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
-	lex_with_root(Node::root(), node, parser_program)
+pub(super) fn lex(node: &parser::Node) -> Result<NodeReference, LexError> {
+	lex_with_root(Node::root(), node)
 }
 
-pub(super) fn lex_with_root(mut root: Node, node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
+pub(super) fn lex_with_root(mut root: Node, node: &parser::Node) -> Result<NodeReference, LexError> {
 	match &node.node {
 		parser::Nodes::Scope { name, children } => {
 			assert_eq!(name, "root");
 
 			for child in children {
-				let c = lex_parsed_node(vec![&root], child, parser_program,)?;
+				let c = lex_parsed_node(vec![&root], child,)?;
 				root.add_child(c);
 			}
 		
@@ -105,6 +105,11 @@ impl Node {
 			Node::member("y", u16_t.clone()).into(),
 		]).into();
 
+		let vec2f32: NodeReference = Node::r#struct("vec2f", vec![
+			Node::member("x", f32_t.clone()).into(),
+			Node::member("y", f32_t.clone()).into(),
+		]).into();
+
 		let vec3f32: NodeReference = Node::r#struct("vec3f", vec![
 			Node::member("x", f32_t.clone()).into(),
 			Node::member("y", f32_t.clone()).into(),
@@ -118,7 +123,7 @@ impl Node {
 			Node::member("w", f32_t.clone()).into(),
 		]).into();
 
-		let mat4f32: NodeReference = Node::r#struct("mat4f32", vec![
+		let mat4f32: NodeReference = Node::r#struct("mat4f", vec![
 			Node::member("x", vec4f32.clone()).into(),
 			Node::member("y", vec4f32.clone()).into(),
 			Node::member("z", vec4f32.clone()).into(),
@@ -134,6 +139,7 @@ impl Node {
 			u32_t,
 			f32_t,
 			vec2u16,
+			vec2f32,
 			vec3f32,
 			vec4f32,
 			mat4f32
@@ -708,7 +714,7 @@ fn get_reference(chain: &[&Node], name: &str) -> Option<NodeReference> {
 	None
 }
 
-fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_program: &parser::ProgramState) -> Result<NodeReference, LexError> {
+fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
 	let node = match &parser_node.node {
 		parser::Nodes::Null => { Node::new(Nodes::Null) }
 		parser::Nodes::Scope{ name, children } => {
@@ -719,7 +725,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			for child in children {
 				let mut chain = chain.clone();
 				chain.push(&this);
-				let c = lex_parsed_node(chain, child, parser_program,)?;
+				let c = lex_parsed_node(chain, child)?;
 				this.add_child(c);
 			}
 
@@ -735,14 +741,14 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			for field in fields {
 				let mut chain = chain.clone();
 				chain.push(&this);
-				let c = lex_parsed_node(chain, &field, parser_program,)?;
+				let c = lex_parsed_node(chain, &field)?;
 				this.add_child(c);
 			}
 
 			this
 		}
 		parser::Nodes::Specialization { name, r#type } => {
-			let t = lex_parsed_node(chain.clone(), parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?, parser_program,)?;
+			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType { type_name: r#type.clone() })?;
 
 			let this = Node::new(Nodes::Specialization {
 				name: name.clone(),
@@ -757,7 +763,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 				let outer_type_name = s.next().ok_or(LexError::Undefined{ message: Some("No outer name".to_string()) })?;
 
-				let outer_type = lex_parsed_node(chain.clone(), parser_program.types.get(outer_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: outer_type_name.to_string() })?, parser_program,)?;
+				let outer_type = get_reference(&chain, outer_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: outer_type_name.to_string() })?;
 
 				let inner_type_name = s.next().ok_or(LexError::Undefined{ message: Some("No inner name".to_string()) })?;
 
@@ -774,8 +780,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					);
 
 					x
-				} else {					
-					lex_parsed_node(chain.clone(), parser_program.types.get(inner_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: inner_type_name.to_string() })?, parser_program,)?
+				} else {
+					get_reference(&chain, inner_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: inner_type_name.to_string() })?
 				};
 
 				if let Some(n) = get_reference(&chain, r#type) { // If the type already exists, return it.
@@ -801,13 +807,13 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 
 				let type_name = s.next().ok_or(LexError::Undefined{ message: Some("No type name".to_string()) })?;
 
-				let member_type = lex_parsed_node(chain, parser_program.types.get(type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: type_name.to_string() })?, parser_program,)?;
+				let member_type = get_reference(&chain, type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: type_name.to_string() })?;
 
 				let count = s.next().ok_or(LexError::Undefined{ message: Some("No count".to_string()) })?.parse().map_err(|_| LexError::Undefined{ message: Some("Invalid count".to_string()) })?;
 
 				return Ok(Node::array(&name, member_type, count));
 			} else {
-				lex_parsed_node(chain, parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?, parser_program,)?
+				get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?
 			};
 
 			let this = Node::member(&name, t,);
@@ -815,8 +821,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			this
 		}
 		parser::Nodes::Parameter { name, r#type } => {
-			let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
-			let t = lex_parsed_node(chain.clone(), t, parser_program,)?;
+			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType { type_name: r#type.clone() })?;
 
 			let this = Node::new(Nodes::Parameter {
 				name: name.clone(),
@@ -826,15 +831,14 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			this
 		}
 		parser::Nodes::Function { name, return_type, statements, params, .. } => {
-			let t = parser_program.types.get(return_type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: return_type.clone() })?;
-			let t = lex_parsed_node(chain.clone(), t, parser_program,)?;
+			let t = get_reference(&chain, return_type).ok_or(LexError::ReferenceToUndefinedType { type_name: return_type.clone() })?;
 
 			let mut this = Node::function(name, Vec::new(), t, Vec::new(),);
 
 			for param in params {
 				let mut chain = chain.clone();
 				chain.push(&this);
-				let c = lex_parsed_node(chain, param, parser_program,)?;
+				let c = lex_parsed_node(chain, param)?;
 				match this.node_mut() {
 					Nodes::Function { params, .. } => {
 						params.push(c);
@@ -846,7 +850,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			for statement in statements {
 				let mut chain = chain.clone();
 				chain.push(&this);
-				let c = lex_parsed_node(chain, statement, parser_program,)?;
+				let c = lex_parsed_node(chain, statement)?;
 				this.add_child(c);
 			}
 
@@ -859,9 +863,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 				let mut chain = chain.clone();
 				chain.push(&this);
 				if let parser::Nodes::Member { r#type, .. } = &member.node {
-					let t = parser_program.types.get(r#type.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?;
-					let _ = lex_parsed_node(chain.clone(), t, parser_program,)?;
-					let c = lex_parsed_node(chain, &member, parser_program,)?;
+					let c = lex_parsed_node(chain, &member)?;
 					this.add_child(c);
 				}
 			}
@@ -871,7 +873,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 		parser::Nodes::Binding { name, r#type, set, descriptor, read, write, count } => {
 			let r#type = match &r#type.node {
 				parser::Nodes::Type { .. } => {
-					BindingTypes::buffer(lex_parsed_node(chain, &r#type, parser_program,)?)
+					BindingTypes::buffer(lex_parsed_node(chain, &r#type)?)
 				}
 				parser::Nodes::Image { format } => {
 					BindingTypes::Image { format: format.clone() }
@@ -894,7 +896,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			let mut this = Node::r#struct(name, Vec::new());
 
 			for member in members {
-				let c = lex_parsed_node(chain.clone(), member, parser_program,)?;
+				let c = lex_parsed_node(chain.clone(), member)?;
 				this.add_child(c);
 			}
 
@@ -930,7 +932,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 		parser::Nodes::Literal { name, body } => {
 			Node::new(Nodes::Literal {
 				name: name.clone(),
-				value: lex_parsed_node(chain, body, parser_program,)?,
+				value: lex_parsed_node(chain, body)?,
 			})
 		}
 		parser::Nodes::Expression(expression) => {
@@ -939,7 +941,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					Node::expression(Expressions::Return)
 				}
 				parser::Expressions::Accessor{ left, right } => {
-					let left = lex_parsed_node(chain.clone(), left, parser_program,)?;
+					let left = lex_parsed_node(chain.clone(), left)?;
 
 					let right = {
 						let left = left.borrow();
@@ -947,7 +949,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 						let mut chain = chain.clone();
 						chain.push(&left); // Add left to chain to be able to access its members
 
-						lex_parsed_node(chain.clone(), right, parser_program,)?
+						lex_parsed_node(chain.clone(), right)?
 					};
 
 					Node::expression(Expressions::Accessor {
@@ -967,14 +969,13 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					})
 				}
 				parser::Expressions::Expression(elements) => {
-					Node::sentence(elements.iter().map(|e| lex_parsed_node(chain.clone(), e, parser_program,)).collect::<Result<Vec<NodeReference>, LexError>>()?)
+					Node::sentence(elements.iter().map(|e| lex_parsed_node(chain.clone(), e)).collect::<Result<Vec<NodeReference>, LexError>>()?)
 				}
 				parser::Expressions::Call{ name, parameters } => {
-					let t = parser_program.types.get(name.as_str()).ok_or(LexError::ReferenceToUndefinedType{ type_name: name.clone() })?;
-					let function = lex_parsed_node(chain.clone(), t, parser_program,)?;
-					let parameters = parameters.iter().map(|e| lex_parsed_node(chain.clone(), e, parser_program,)).collect::<Result<Vec<NodeReference>, LexError>>()?;
-
+					// let r = function.clone(); // Clone to be able to borrow it in and return it
+					let function = get_reference(&chain, name).ok_or(LexError::ReferenceToUndefinedType{ type_name: name.clone() })?;
 					let r = function.clone(); // Clone to be able to borrow it in and return it
+					let parameters = parameters.iter().map(|e| lex_parsed_node(chain.clone(), e)).collect::<Result<Vec<NodeReference>, LexError>>()?;
 
 					{ // Validate function call
 						let b = RefCell::borrow(&function.0);
@@ -1008,8 +1009,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 							"==" => Operators::Equality,
 							_ => { panic!("Invalid operator") }
 						},
-						left: lex_parsed_node(chain.clone(), left, parser_program,)?,
-						right: lex_parsed_node(chain.clone(), right, parser_program,)?,
+						left: lex_parsed_node(chain.clone(), left)?,
+						right: lex_parsed_node(chain.clone(), right)?,
 					})
 				}
 				parser::Expressions::VariableDeclaration{ name, r#type } => {
@@ -1036,7 +1037,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 					Node::glsl(code.clone(), inputs, outputs)
 				}
 				parser::Expressions::Macro { name, body } => {
-					Node::r#macro(&name, lex_parsed_node(chain, body, parser_program,)?)
+					Node::r#macro(&name, lex_parsed_node(chain, body)?)
 				}
 			};
 
@@ -1048,7 +1049,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node, parser_
 			for e in elements {
 				let mut chain = chain.clone();
 				chain.push(&this);
-				let c = lex_parsed_node(chain, e, parser_program,)?;
+				let c = lex_parsed_node(chain, e)?;
 				this.add_child(c);
 			}
 
@@ -1116,7 +1117,7 @@ Foo: struct {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+		lex(&node).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
 	#[test]
@@ -1126,7 +1127,7 @@ main: fn () -> NonExistantType {}";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node, &program).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+		lex(&node,).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
 	#[test]
@@ -1139,7 +1140,7 @@ main: fn () -> void {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node, &program).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
+		lex(&node,).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
 	}
 
 	#[test]
@@ -1152,7 +1153,7 @@ main: fn () -> void {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).expect("Failed to lex");
+		let node = lex(&node,).expect("Failed to lex");
 		let node = node.borrow();
 
 		let vec4f = node.get_child("vec4f").expect("Expected vec4f");
@@ -1216,7 +1217,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).expect("Failed to lex");
+		let node = lex(&node).expect("Failed to lex");
 		let node = node.borrow();
 
 		match node.node() {
@@ -1255,7 +1256,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node, &program).expect("Failed to lex");
+		lex(&node,).expect("Failed to lex");
 	}
 
 	#[test]
@@ -1270,7 +1271,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).expect("Failed to lex");
+		let node = lex(&node).expect("Failed to lex");
 
 		let node = node.borrow();
 
@@ -1318,7 +1319,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node, &program).expect("Failed to lex");
+		let node = lex(&node).expect("Failed to lex");
 
 		let node = node.borrow();
 
@@ -1389,9 +1390,7 @@ main: fn () -> void {
 
 		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::parameter("num", "u32"), parser::NodeReference::sentence(vec![parser::NodeReference::glsl("vec3(", vec![], vec![]), parser::NodeReference::member_expression("num"), parser::NodeReference::glsl(")", Vec::new(), Vec::new())]), "vec3f");
 
-		program.insert("intrinsic".to_string(), intrinsic.into());
-
-		let node = lex(&node, &program).expect("Failed to lex");
+		let node = lex(&node).expect("Failed to lex");
 		let node = node.borrow();
 
 		match node.node() {

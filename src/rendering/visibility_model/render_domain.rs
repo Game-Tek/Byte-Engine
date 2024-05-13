@@ -770,7 +770,7 @@ impl VisibilityWorldRenderDomain {
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
-			if false {
+			if true {
 				if let Some(most_significant_light) = directional_lights.get(0) {
 					shadow_render_pass.render(command_buffer_recording, self);
 				} else {

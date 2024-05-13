@@ -8,7 +8,7 @@ use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResol
 
 pub trait ProgramGenerator: Send + Sync {
 	/// Transforms a program.
-	fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference>;
+	fn transform(&self, node: besl::parser::Node, material: &json::JsonValue) -> Vec<besl::parser::NodeReference>;
 }
 
 pub struct MaterialAssetHandler {
@@ -139,9 +139,9 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
-	let mut program_state = if format == "glsl" {
+	let root_node = if format == "glsl" {
 		// besl::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
-		besl::parser::ProgramState::new()
+		panic!()
 	} else if format == "besl" {
 		if let Ok(e) = besl::parse(&shader_code,/*Some(parent_scope.clone())*/) {
 			e
@@ -154,9 +154,9 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		return None;
 	};
 
-	let generator_elements = generator.transform(&mut program_state, material);
+	let generator_elements = generator.transform(root_node, material);
 
-	let root_node = match besl::lex(besl::parser::NodeReference::root_with_children(generator_elements), &program_state) {
+	let root_node = match besl::lex(besl::parser::NodeReference::root_with_children(generator_elements)) {
 		Ok(e) => e,
 		Err(e) => {
 			log::error!("Error compiling shader: {:#?}", e);
@@ -251,17 +251,14 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
+		fn transform(&self, node: besl::parser::Node, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 			let material_struct = besl::parser::NodeReference::buffer("Material", vec![besl::parser::NodeReference::member("color", "vec4f")]);
-			program_state.insert("Material".to_string(), material_struct.clone());
 
 			let sample_function = besl::parser::NodeReference::function("sample_", vec![besl::parser::NodeReference::member("t", "u32")], "void", vec![]);
 
-			program_state.insert("sample_".to_string(), sample_function.clone());
-
 			let mid_test_shader_generator = MidTestShaderGenerator::new();
 
-			let child = mid_test_shader_generator.transform(program_state, material);
+			let child = mid_test_shader_generator.transform(node, material);
 
 			// besl::parser::NodeReference::scope("RootTestShaderGenerator", vec![material, child])
 			vec![material_struct, sample_function].into_iter().chain(child.into_iter()).collect()
@@ -277,13 +274,12 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
+		fn transform(&self, node: besl::parser::Node, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 			let binding = besl::parser::NodeReference::binding("materials", besl::parser::NodeReference::buffer("Materials", vec![besl::parser::NodeReference::member("materials", "Material[16]")]), 0, 0, true, false);
-			program_state.insert("materials".to_string(), binding.clone());
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
 
-			let child = leaf_test_shader_generator.transform(program_state, material);
+			let child = leaf_test_shader_generator.transform(node, material);
 
 			// besl::parser::NodeReference::scope("MidTestShaderGenerator", vec![binding, child])
 			vec![binding].into_iter().chain(child.into_iter()).collect()
@@ -299,12 +295,10 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for LeafTestShaderGenerator {
-		fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
+		fn transform(&self, node: besl::parser::Node, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 			let push_constant = besl::parser::NodeReference::push_constant(vec![besl::parser::NodeReference::member("material_index", "u32")]);
-			program_state.insert("push_constant".to_string(), push_constant.clone());
 
 			let main = besl::parser::NodeReference::function("main", vec![], "void", vec![besl::parser::NodeReference::glsl("push_constant;\nmaterials;\nsample_(0);\n", vec!["push_constant".to_string(), "materials".to_string(), "sample_".to_string()], Vec::new())]);
-			program_state.insert("main".to_string(), main.clone());
 
 			// besl::parser::NodeReference::scope("LeafTestShaderGenerator", vec![push_constant, main])
 			vec![push_constant, main]
@@ -315,11 +309,9 @@ pub mod tests {
 	fn generate_program() {
 		let test_shader_generator = RootTestShaderGenerator::new();
 
-		let mut program_state = besl::parser::ProgramState::new();
+		let root = test_shader_generator.transform(besl::parser::Node::root(), &json::object! {});
 
-		let root = test_shader_generator.transform(&mut program_state, &json::object! {});
-
-		let root = besl::lex(besl::parser::NodeReference::root_with_children(root), &program_state).unwrap();
+		let root = besl::lex(besl::parser::NodeReference::root_with_children(root)).unwrap();
 
 		let main_node = root.borrow().get_main().unwrap();
 

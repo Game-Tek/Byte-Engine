@@ -51,7 +51,8 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 }
 
 use std::num::NonZeroUsize;
-use std::{collections::HashMap, rc::Rc};
+use std::sync::Arc;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -61,6 +62,205 @@ pub struct Node {
 impl Node {
 	pub fn node_mut(&mut self) -> &mut Nodes {
 		&mut self.node
+	}
+
+	pub fn root() -> Node {
+		Node {
+			node: Nodes::Scope {
+				name: "root".to_string(),
+				children: vec![],
+			},
+		}
+	}
+
+	pub fn root_with_children(children: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Scope {
+				name: "root".to_string(),
+				children,
+			},
+		}
+	}
+
+	pub fn scope(name: &str, children: Vec<NodeReference>) -> Node {
+		make_scope(name, children)
+	}
+
+	pub fn r#struct(name: &str, fields: Vec<NodeReference>) -> Node {
+		make_struct(name, fields)
+	}
+
+	pub fn member(name: &str, r#type: &str) -> Node {
+		make_member(name, r#type)
+	}
+
+	pub fn member_expression(name: &str) -> Node {
+		Node {
+			node: Nodes::Expression(Expressions::Member { name: name.to_string() }),
+		}
+	}
+
+	pub fn function(name: &str, params: Vec<NodeReference>, return_type: &str, statements: Vec<NodeReference>) -> Node {
+		make_function(name, params, return_type, statements)
+	}
+
+	pub fn binding(name: &str, r#type: NodeReference, set: u32, descriptor: u32, read: bool, write: bool) -> Node {
+		Node {
+			node: Nodes::Binding {
+				name: name.to_string(),
+				r#type,
+				set,
+				descriptor,
+				read,
+				write,
+				count: None,
+			},
+		}
+	}
+
+	pub fn binding_array(name: &str, r#type: NodeReference, set: u32, descriptor: u32, read: bool, write: bool, count: u32) -> Node {
+		Node {
+			node: Nodes::Binding {
+				name: name.to_string(),
+				r#type,
+				set,
+				descriptor,
+				read,
+				write,
+				count: NonZeroUsize::new(count as usize),
+			},
+		}
+	}
+
+	pub fn specialization(name: &str, r#type: &str) -> Node {
+		Node {
+			node: Nodes::Specialization {
+				name: name.to_string(),
+				r#type: r#type.to_string(),
+			},
+		}
+	}
+
+	pub fn buffer(name: &str, members: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Type {
+				name: name.to_string(),
+				members,
+			},
+		}
+	}
+
+	pub fn image(format: &str) -> Node {
+		Node {
+			node: Nodes::Image {
+				format: format.to_string(),
+			},
+		}
+	}
+
+	pub fn push_constant(members: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::PushConstant {
+				members,
+			},
+		}
+	}
+
+	pub fn combined_image_sampler() -> Node {
+		Node {
+			node: Nodes::CombinedImageSampler {
+				format: "".to_string(),
+			},
+		}
+	}
+
+	pub fn r#macro(name: &str, body: NodeReference) -> Node {
+		Node {
+			node: Nodes::Expression(Expressions::Macro {
+				name: name.to_string(),
+				body,
+			}),
+		}
+	}
+
+	pub fn sentence(expressions: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Expression(Expressions::Expression(expressions)),
+		}
+	}
+
+	pub fn glsl(code: &str, input: Vec<String>, output: Vec<String>) -> Node {
+		Node {
+			node: Nodes::GLSL {
+				code: code.to_string(),
+				input,
+				output,
+			},
+		}
+	}
+
+	pub fn literal(name: &str, body: NodeReference) -> Node {
+		Node {
+			node: Nodes::Literal {
+				name: name.to_string(),
+				body,
+			},
+		}
+	}
+
+	pub fn intrinsic(name: &str, parameters: NodeReference, body: NodeReference, r#return: &str) -> Node {
+		Node {
+			node: Nodes::Intrinsic {
+				name: name.to_string(),
+				elements: vec![parameters, body],
+				r#return: r#return.to_string(),
+			},
+		}
+	}
+
+	pub fn null() -> Node {
+		Node {
+			node: Nodes::Null,
+		}
+	}
+
+	pub fn parameter(name: &str, r#type: &str) -> Node {
+		Node {
+			node: Nodes::Parameter {
+				name: name.to_string(),
+				r#type: r#type.to_string(),
+			},
+		}
+	}
+
+	pub fn get_mut(&mut self, name: &str) -> Option<&mut NodeReference> {
+		match &mut self.node {
+			Nodes::Scope { children, .. } => {
+				children.iter_mut().find(|n| n.name() == Some(name))
+			},
+			_ => None,
+		}
+	}
+
+	pub fn name(&self) -> Option<&str> {
+		match &self.node {
+			Nodes::Scope { name, .. } => Some(name),
+			Nodes::Struct { name, .. } => Some(name),
+			Nodes::Member { name, .. } => Some(name),
+			Nodes::Function { name, .. } => Some(name),
+			Nodes::Binding { name, .. } => Some(name),
+			Nodes::Specialization { name, .. } => Some(name),
+			Nodes::Type { name, .. } => Some(name),
+			Nodes::Image { .. } => None,
+			Nodes::CombinedImageSampler { .. } => None,
+			Nodes::Expression(_) => None,
+			Nodes::GLSL { .. } => None,
+			Nodes::Intrinsic { name, .. } => Some(name),
+			Nodes::Literal { name, .. } => Some(name),
+			Nodes::Parameter { name, .. } => Some(name),
+			Nodes::PushConstant { .. } => None,
+			Nodes::Null => None,
+		}
 	}
 }
 
@@ -171,191 +371,100 @@ pub enum Expressions {
 	Return,
 }
 
+type InnerType = Arc<Node>;
+
 #[derive(Clone, Debug)]
-pub struct NodeReference(Rc<Node>);
+pub struct NodeReference(InnerType);
 
 impl NodeReference {
 	pub fn root() -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Scope {
-				name: "root".to_string(),
-				children: vec![],
-			},
-		}))
+		Node::root().into()
 	}
 
 	pub fn root_with_children(children: Vec<NodeReference>) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Scope {
-				name: "root".to_string(),
-				children,
-			},
-		}))
+		Node::root_with_children(children).into()
 	}
 
 	pub fn scope(name: &str, children: Vec<NodeReference>) -> NodeReference {
-		NodeReference(Rc::new(make_scope(name, children)))
+		Node::scope(name, children).into()
 	}
 
 	pub fn r#struct(name: &str, fields: Vec<NodeReference>) -> NodeReference {
-		NodeReference(Rc::new(make_struct(name, fields)))
+		Node::r#struct(name, fields).into()
 	}
 
 	pub fn member(name: &str, r#type: &str) -> NodeReference {
-		NodeReference(Rc::new(make_member(name, r#type)))
+		Node::member(name, r#type).into()
 	}
 
 	pub fn member_expression(name: &str) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Expression(Expressions::Member { name: name.to_string() }),
-		}))
+		Node::member_expression(name).into()
 	}
 
 	pub fn function(name: &str, params: Vec<NodeReference>, return_type: &str, statements: Vec<NodeReference>) -> NodeReference {
-		NodeReference(Rc::new(make_function(name, params, return_type, statements)))
+		Node::function(name, params, return_type, statements).into()
 	}
 
 	pub fn binding(name: &str, r#type: NodeReference, set: u32, descriptor: u32, read: bool, write: bool) -> NodeReference {
-		NodeReference(
-			Rc::new(Node {
-				node: Nodes::Binding {
-					name: name.to_string(),
-					r#type,
-					set,
-					descriptor,
-					read,
-					write,
-					count: None,
-				},
-			})
-		)
+		Node::binding(name, r#type, set, descriptor, read, write).into()
 	}
 
 	pub fn binding_array(name: &str, r#type: NodeReference, set: u32, descriptor: u32, read: bool, write: bool, count: u32) -> NodeReference {
-		NodeReference(
-			Rc::new(Node {
-				node: Nodes::Binding {
-					name: name.to_string(),
-					r#type,
-					set,
-					descriptor,
-					read,
-					write,
-					count: NonZeroUsize::new(count as usize),
-				},
-			})
-		)
+		Node::binding_array(name, r#type, set, descriptor, read, write, count).into()
 	}
 
 	pub fn specialization(name: &str, r#type: &str) -> NodeReference {
-		NodeReference(
-			Rc::new(Node {
-				node: Nodes::Specialization {
-					name: name.to_string(),
-					r#type: r#type.to_string(),
-				},
-			})
-		)
+		Node::specialization(name, r#type).into()
 	}
 
 	pub fn buffer(name: &str, members: Vec<NodeReference>) -> NodeReference {
-		NodeReference(
-			Rc::new(Node {
-				node: Nodes::Type {
-					name: name.to_string(),
-					members,
-				},
-			})
-		)
+		Node::buffer(name, members).into()
 	}
 
 	pub fn image(format: &str) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Image {
-				format: format.to_string(),
-			},
-		}))
+		Node::image(format).into()
 	}
 
 	pub fn push_constant(members: Vec<NodeReference>) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::PushConstant {
-				members,
-			},
-		}))
+		Node::push_constant(members).into()
 	}
 
 	pub fn combined_image_sampler() -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::CombinedImageSampler {
-				format: "".to_string(),
-			},
-		}))
+		Node::combined_image_sampler().into()
 	}
 
 	pub fn r#macro(name: &str, body: NodeReference) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Expression(Expressions::Macro {
-				name: name.to_string(),
-				body,
-			}),
-		}))
+		Node::r#macro(name, body).into()
 	}
 
 	pub fn sentence(expressions: Vec<NodeReference>) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Expression(Expressions::Expression(expressions)),
-		}))
+		Node::sentence(expressions).into()
 	}
 
 	pub fn glsl(code: &str, input: Vec<String>, output: Vec<String>) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::GLSL {
-				code: code.to_string(),
-				input,
-				output,
-			},
-		}))
+		Node::glsl(code, input, output).into()
 	}
 
 	pub fn literal(name: &str, body: NodeReference) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Literal {
-				name: name.to_string(),
-				body,
-			},
-		}))
+		Node::literal(name, body).into()
 	}
 
 	pub fn intrinsic(name: &str, parameters: NodeReference, body: NodeReference, r#return: &str) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Intrinsic {
-				name: name.to_string(),
-				elements: vec![parameters, body],
-				r#return: r#return.to_string(),
-			},
-		}))
+		Node::intrinsic(name, parameters, body, r#return).into()
 	}
 
 	pub fn null() -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Null,
-		}))
+		Node::null().into()
 	}
 
 	pub fn parameter(name: &str, r#type: &str) -> NodeReference {
-		NodeReference(Rc::new(Node {
-			node: Nodes::Parameter {
-				name: name.to_string(),
-				r#type: r#type.to_string(),
-			},
-		}))
+		Node::parameter(name, r#type).into()
 	}
 }
 
 impl From<Node> for NodeReference {
 	fn from(node: Node) -> Self {
-		NodeReference(Rc::new(node))
+		NodeReference(InnerType::new(node))
 	}
 }
 
@@ -369,7 +478,7 @@ impl Deref for NodeReference {
 
 impl DerefMut for NodeReference {
 	fn deref_mut(&mut self) -> &mut Self::Target {
-		Rc::make_mut(&mut self.0)
+		InnerType::make_mut(&mut self.0)
 	}
 }
 
@@ -582,7 +691,7 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 	let mut program = program.clone();
 
-	program.types.insert(name.clone(), node.clone());
+	// program.types.insert(name.clone(), node.clone());
 
 	Ok(((node, program.clone()), iterator))
 }
@@ -795,7 +904,7 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 
 	let node = NodeReference::function(name, vec![], return_type, statements);
 
-	program.types.insert(name.clone(), node.clone());
+	// program.types.insert(name.clone(), node.clone());
 
 	Ok(((node, program.clone()), iterator))
 }
@@ -836,7 +945,7 @@ impl Index<&str> for Node {
 
 #[derive(Clone)]
 pub struct ProgramState {
-	pub(super) types: HashMap<String, NodeReference>,
+	// pub(super) types: HashMap<String, NodeReference>,
 }
 
 impl ProgramState {
@@ -871,21 +980,7 @@ impl ProgramState {
 		types.insert("vec4f".to_string(), vec4f);
 		types.insert("mat4f".to_string(), mat4f);
 
-		Self {
-			types,
-		}
-	}
-
-	pub fn get(&self, name: &str) -> Option<&NodeReference> {
-		self.types.get(name)
-	}
-
-	pub fn get_mut(&mut self, name: &str) -> Option<&mut NodeReference> {
-		self.types.get_mut(name)
-	}
-
-	pub fn insert(&mut self, name: String, node: NodeReference) {
-		self.types.insert(name, node);
+		Self {}
 	}
 }
 
@@ -946,7 +1041,7 @@ Light: struct {
 		let tokens = tokenize(source).unwrap();
 		let (node, program) = parse(tokens).expect("Failed to parse");
 
-		program.types.get("Light").expect("Failed to get Light type");
+		// program.types.get("Light").expect("Failed to get Light type");
 
 		if let Nodes::Struct { name, .. } = &node.node {
 			assert_eq!(name, "root");

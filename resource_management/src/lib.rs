@@ -386,7 +386,7 @@ impl <T: Resource + Clone> From<TypedResource<T>> for ResourceResponse<'_> {
 }
 
 /// Trait that defines a resource.
-pub trait Resource: downcast_rs::Downcast {
+pub trait Resource: downcast_rs::Downcast + Send + Sync {
 	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	/// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
 	/// Is needed by the deserialize function.
@@ -521,7 +521,7 @@ trait Solver<'de, T> where Self: serde::Deserialize<'de> {
 pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
 	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
-	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>>;
+	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>>;
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
 	fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
 		Box::pin(async move {})
@@ -680,7 +680,7 @@ impl StorageBackend for DbStorageBackend {
 		})
 	}
 
-	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::BoxedFuture<'a, Result<(), ()>> { // TODO: define schema
+	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>> { // TODO: define schema
 		// TODO: skip storage of items with same hash
 		Box::pin(async move {
 			let mut resource_document = bson::Document::new();
@@ -736,7 +736,7 @@ impl StorageBackend for DbStorageBackend {
 	}
 }
 
-pub trait Description: Any {
+pub trait Description: Any + Send + Sync {
 	// type Resource: Resource;
 	fn get_resource_class() -> &'static str where Self: Sized;
 }

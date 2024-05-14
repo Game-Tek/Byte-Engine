@@ -11,7 +11,7 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::ResourceStore;
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
-use resource_management::types::{CompressionSchemes, Image, IndexStreamTypes, IntegralTypes, Mesh, Shader, ShaderTypes, Variant};
+use resource_management::types::{Image, IndexStreamTypes, IntegralTypes, Mesh, Shader, ShaderTypes, Variant};
 use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
@@ -62,6 +62,8 @@ struct RayTracing {
 }
 
 struct Material {
+	#[cfg(debug_assertions)]
+	name: String,
 	index: u32,
 	pipeline: ghi::PipelineHandle,
 	shaders: Vec<String>,
@@ -103,9 +105,6 @@ pub struct VisibilityWorldRenderDomain {
 	vertex_positions_buffer: ghi::BaseBufferHandle,
 	vertex_normals_buffer: ghi::BaseBufferHandle,
 	vertex_uvs_buffer: ghi::BaseBufferHandle,
-
-	/// Indices laid out as a triangle list
-	triangle_indices_buffer: ghi::BaseBufferHandle,
 
 	/// Indices laid out as indices into the vertex buffers
 	vertex_indices_buffer: ghi::BaseBufferHandle,
@@ -165,13 +164,13 @@ impl VisibilityWorldRenderDomain {
 			let vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_uv_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex UV Buffer"), std::mem::size_of::<[[f32; 2]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-			let triangle_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Triangle Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+			// let triangle_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Triangle Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, None, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
@@ -206,8 +205,8 @@ impl VisibilityWorldRenderDomain {
 			let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[7], meshlets_data_buffer));
 			let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &bindings[8]);
 
-			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, None, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
 				ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
@@ -259,7 +258,7 @@ impl VisibilityWorldRenderDomain {
 			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let shadow_map_image = {
 				shadow_render_pass.read_sync().get_shadow_map_image()
@@ -322,10 +321,8 @@ impl VisibilityWorldRenderDomain {
 
 				vertex_positions_buffer: vertex_positions_buffer_handle,
 				vertex_normals_buffer: vertex_normals_buffer_handle,
-				// vertex_tangents_buffer: vertex_tangents_buffer_handle,
 				vertex_uvs_buffer: vertex_uv_buffer_handle,
 
-				triangle_indices_buffer: triangle_indices_buffer_handle,
 				vertex_indices_buffer: vertex_indices_buffer_handle,
 				primitive_indices_buffer: primitive_indices_buffer_handle,
 
@@ -371,27 +368,24 @@ impl VisibilityWorldRenderDomain {
 
 	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut ghi::GHI, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle, texture_count: &mut u32) {
 		if let Some(texture) = resource.resource().downcast_ref::<Image>() {
-			let compression = texture.compression.map(|compression| {
-				match compression {
-					CompressionSchemes::BC7 => ghi::CompressionSchemes::BC7
-				}
-			});
-
 			let format = match texture.format {
+				resource_management::types::Formats::RG8 => ghi::Formats::RG8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGB8 => ghi::Formats::RGB8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGB16 => ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
+				resource_management::types::Formats::BC5 => ghi::Formats::BC5,
+				resource_management::types::Formats::BC7 => ghi::Formats::BC7,
 			};
 
 			let extent = Extent::from(texture.extent);
 
 			let image = if let Some(b) = resource.get_buffer() {
-				let new_texture = ghi.create_image(Some(&resource.id()), extent, format, compression, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				let new_texture = ghi.create_image(Some(&resource.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
 				new_texture
 			} else {
-				let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), None, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+				let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 				log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
 				let slice = ghi.get_texture_slice_mut(new_texture);
 
@@ -514,6 +508,7 @@ impl VisibilityWorldRenderDomain {
 										let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec3f".to_string(), [1f32, 0f32, 1f32])]));
 										
 										self.material_evaluation_materials.insert(material_store.id().to_string(), Material {
+											name: resource.id().to_string(),
 											index: self.material_evaluation_materials.len() as u32,
 											pipeline,
 											shaders: material.shaders().iter().map(|s| s.id().to_string()).collect(),
@@ -567,6 +562,7 @@ impl VisibilityWorldRenderDomain {
 				let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 				
 				self.material_evaluation_materials.insert(resource.id().to_string(), Material {
+					name: resource.id().to_string(),
 					index: self.material_evaluation_materials.len() as u32,
 					pipeline,
 					shaders: material.shaders.clone(),
@@ -664,6 +660,7 @@ impl VisibilityWorldRenderDomain {
 								let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec3f".to_string(), [1f32, 0f32, 1f32])]));
 								
 								self.material_evaluation_materials.insert(resource.id().to_string(), Material {
+									name: resource.id().to_string(),
 									index: self.material_evaluation_materials.len() as u32,
 									pipeline,
 									shaders: material.shaders().iter().map(|s| s.id().to_string()).collect(),
@@ -773,7 +770,7 @@ impl VisibilityWorldRenderDomain {
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
-			if false {
+			if true {
 				if let Some(most_significant_light) = directional_lights.get(0) {
 					shadow_render_pass.render(command_buffer_recording, self);
 				} else {
@@ -786,7 +783,8 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_region("Material Evaluation");
 		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(RGBA::black())),]);
-		for (_, Material { index: i, pipeline, .. }) in self.material_evaluation_materials.iter() {
+		for (_, Material { name, index: i, pipeline, .. }) in self.material_evaluation_materials.iter() {
+			command_buffer_recording.start_region(&format!("Material: {}", name));
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
@@ -794,6 +792,7 @@ impl VisibilityWorldRenderDomain {
 				std::slice::from_raw_parts(&(*i as u32) as *const u32 as *const u8, std::mem::size_of::<u32>())
 			});
 			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, *i as usize);
+			command_buffer_recording.end_region();
 		}
 		command_buffer_recording.end_region();
 	}
@@ -906,7 +905,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 			let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 			let mut vertex_uv_buffer = ghi.get_splitter(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector2>());
-			let mut triangle_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u16>());
 			let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.vertex_indices_count as usize * std::mem::size_of::<u16>());
 			let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
 
@@ -916,9 +914,9 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 			let load_request = if let Some(mesh_resource) = resource_request.resource().downcast_ref::<Mesh>() {
 				assert_eq!(mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Meshlets).unwrap().data_type, IntegralTypes::U8, "Meshlet index stream is not u8");
+				assert_eq!(mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().data_type, IntegralTypes::U16, "Vertex index stream is not u16");
 
 				let total_vertex_count = mesh_resource.vertex_count;
-				let total_triangle_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap().count;
 				let total_vertex_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().count;
 				let total_primitive_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Meshlets).unwrap().count;
 				let total_meshlet_count = mesh_resource.meshlet_stream.as_ref().map(|ms| ms.count).unwrap();
@@ -926,7 +924,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				let vertex_positions_buffer = vertex_positions_buffer.take(total_vertex_count as usize * std::mem::size_of::<Vector3>());
 				let vertex_normals_buffer = vertex_normals_buffer.take(total_vertex_count as usize * std::mem::size_of::<Vector3>());
 				let vertex_uv_buffer = vertex_uv_buffer.take(total_vertex_count as usize * std::mem::size_of::<Vector2>());
-				let triangle_indices_buffer = triangle_indices_buffer.take(total_triangle_indices_count as usize * std::mem::size_of::<u16>());
 				let vertex_indices_buffer = vertex_indices_buffer.take(total_vertex_indices_count as usize * std::mem::size_of::<u16>());
 				let primitive_indices_buffer = primitive_indices_buffer.take(total_primitive_indices_count as usize * std::mem::size_of::<u8>());
 				let meshlet_stream_buffer = buffer_allocator.take(total_meshlet_count as usize * 2usize);
@@ -935,7 +932,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 					resource_management::Stream::new("Vertex.Position", vertex_positions_buffer),
 					resource_management::Stream::new("Vertex.Normal", vertex_normals_buffer),
 					resource_management::Stream::new("Vertex.UV", vertex_uv_buffer),
-					resource_management::Stream::new("TriangleIndices", triangle_indices_buffer),
 					resource_management::Stream::new("VertexIndices", vertex_indices_buffer),
 					resource_management::Stream::new("MeshletIndices", primitive_indices_buffer),
 					resource_management::Stream::new("Meshlets", meshlet_stream_buffer),
@@ -955,26 +951,34 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			if let Some(mesh_resource) = response.resource().downcast_ref::<Mesh>() {
 				self.mesh_resources.insert(mesh.get_resource_id(), self.visibility_info.triangle_count);
 
-				// let acceleration_structure = if false {
-				// 	let triangle_index_stream = primitive.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap();
+				let acceleration_structure = if false {
+					let triangle_index_stream = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap();
 
-				// 	assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16, "Triangle index stream is not u16");
+					assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16, "Triangle index stream is not u16");
 
-				// 	let bottom_level_acceleration_structure = ghi.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
-				// 		description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
-				// 			vertex_count: primitive.vertex_count,
-				// 			vertex_position_encoding: ghi::Encodings::FloatingPoint,
-				// 			triangle_count: triangle_index_stream.count / 3,
-				// 			index_format: ghi::DataTypes::U16,
-				// 		}
-				// 	});
+					let index_format = match triangle_index_stream.data_type {
+						IntegralTypes::U16 => ghi::DataTypes::U16,
+						IntegralTypes::U32 => ghi::DataTypes::U32,
+						_ => panic!("Unsupported index format"),
+					};
 
-				// 	// ray_tracing.pending_meshes.push(MeshState::Build { mesh_handle: mesh.resource_id.to_string() });
+					let mut ghi = self.ghi.write().unwrap();
 
-				// 	Some(bottom_level_acceleration_structure)
-				// } else {
-				// 	None
-				// };
+					let bottom_level_acceleration_structure = ghi.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
+						description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
+							vertex_count: mesh_resource.vertex_count,
+							vertex_position_encoding: ghi::Encodings::FloatingPoint,
+							triangle_count: triangle_index_stream.count / 3,
+							index_format,
+						}
+					});
+
+					// ray_tracing.pending_meshes.push(MeshState::Build { mesh_handle: mesh.resource_id.to_string() });
+
+					Some(bottom_level_acceleration_structure)
+				} else {
+					None
+				};
 
 				let acceleration_structure = None;
 
@@ -983,7 +987,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 					let vertex_triangles_offset = self.visibility_info.vertex_count;
 					let primitive_triangle_offset = self.visibility_info.triangle_count;
 
-					let mut mesh_triangle_count = 0; // TODO: this might be wrongs
+					let mut mesh_triangle_count = 0;
 
 					let mut meshlets = Vec::with_capacity(total_meshlet_count as usize);
 
@@ -1422,13 +1426,13 @@ impl MaterialEvaluationPass {
 const VERTEX_COUNT: u32 = 64;
 const TRIANGLE_COUNT: u32 = 126;
 
-const MAX_MESHLETS: usize = 1024;
+const MAX_MESHLETS: usize = 1024 * 4;
 const MAX_INSTANCES: usize = 1024;
 const MAX_MATERIALS: usize = 1024;
 const MAX_LIGHTS: usize = 16;
-const MAX_TRIANGLES: usize = 65536;
-const MAX_PRIMITIVE_TRIANGLES: usize = 65536;
-const MAX_VERTICES: usize = 65536;
+const MAX_TRIANGLES: usize = 65536 * 4;
+const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
+const MAX_VERTICES: usize = 65536 * 4;
 
 pub fn get_visibility_pass_mesh_source() -> String {
 	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Mesh"));

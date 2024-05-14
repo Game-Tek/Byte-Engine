@@ -40,8 +40,8 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let depth_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&depth_binding_template, depth_target, sampler, ghi::Layouts::Read));
 		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&result_binding_template, occlusion_target, ghi::Layouts::General));
 
-		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-		let y_blur_target = ghi.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), None, ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let y_blur_target = ghi.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		let blur_x_depth_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&depth_binding_template, depth_target, sampler, ghi::Layouts::Read));
 		let blur_x_source_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&source_binding_template, occlusion_target, sampler, ghi::Layouts::Read));
@@ -90,9 +90,11 @@ impl ScreenSpaceAmbientOcclusionPass {
 	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer_recording.start_region("SSAO");
 		command_buffer_recording.clear_images(&[(self.result, ghi::ClearValue::Color(RGBA::white())),]);
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]).bind_compute_pipeline(&self.pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+		if false {
+			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]).bind_compute_pipeline(&self.pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+		}
 		command_buffer_recording.end_region();
 	}
 

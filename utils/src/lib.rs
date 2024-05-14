@@ -1,4 +1,6 @@
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+pub type SendSyncBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
+pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
 
 pub struct BufferAllocator<'a> {
 	buffer: &'a mut [u8],

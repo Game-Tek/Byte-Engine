@@ -8,7 +8,7 @@ pub struct CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform(&self, program_state: &mut besl::parser::ProgramState, _: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
+	fn transform(&self, _: besl::parser::Node, _: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 		let code = "vec4 get_debug_color(uint i) {
 vec4 colors[16] = vec4[16](
 	vec4(0.16863, 0.40392, 0.77647, 1),

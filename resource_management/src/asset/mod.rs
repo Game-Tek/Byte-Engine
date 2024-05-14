@@ -16,7 +16,7 @@ pub mod mesh_asset_handler;
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
-async fn read_asset_from_source(url: &str, base_path: Option<&std::path::Path>) -> Result<(Vec<u8>, String), ()> {
+fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, String), ()>> { Box::pin(async move {
 	let resource_origin = if url.starts_with("http://") || url.starts_with("https://") { "network" } else { "local" };
 	let mut source_bytes;
 	let format;
@@ -52,7 +52,7 @@ async fn read_asset_from_source(url: &str, base_path: Option<&std::path::Path>) 
 	}
 
 	Ok((source_bytes, format))
-}
+}) }
 
 pub trait AssetResolver: Sync + Send {
 	fn get_base<'a>(&'a self, url: &'a str) -> Option<&'a str> {
@@ -81,18 +81,16 @@ pub trait AssetResolver: Sync + Send {
 		}
 	}
 
-	fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
-		async move {
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, String)>> {
+		Box::pin(async move {
 			read_asset_from_source(url, None).await.ok()
-		}.boxed()
+		})
 	}
 }
 
 #[cfg(test)]
 pub mod tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
-    
-    use smol::future::FutureExt;
 
     use crate::{resource::{resource_handler::ResourceReader, tests::TestResourceReader}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
 
@@ -115,20 +113,18 @@ pub mod tests {
 	}
 
 	impl AssetResolver for TestAssetResolver {
-		fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
-			async move {
-				if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
-					Some(x)
+		fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, String)>> { Box::pin(async {
+			if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
+				Some(x)
+			} else {
+				if let Some(f) = self.files.lock().unwrap().get(url) {
+					// Extract extension from url
+					Some((f.to_vec(), url.split('.').last().unwrap().to_string()))
 				} else {
-					if let Some(f) = self.files.lock().unwrap().get(url) {
-						// Extract extension from url
-						Some((f.to_vec(), url.split('.').last().unwrap().to_string()))
-					} else {
-						None
-					}
+					None
 				}
-			}.boxed()
-		}
+			}
+		}) }
 	}
 
 	pub struct TestStorageBackend {
@@ -186,7 +182,7 @@ pub mod tests {
 			}
 		}
 		
-		fn store<'a>(&'a self, resource: &GenericResourceSerialization, data: &[u8]) -> utils::BoxedFuture<'a, Result<(), ()>> {
+		fn store<'a>(&'a self, resource: &GenericResourceSerialization, data: &[u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>> {
 			self.resources.lock().unwrap().push((resource.clone(), data.into()));
 
 			Box::pin(async move {

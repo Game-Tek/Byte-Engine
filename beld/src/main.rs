@@ -1,6 +1,8 @@
+use std::{future, sync::Arc};
+
 use clap::{Parser, Subcommand};
-use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
-use smol::Executor;
+use futures::{stream::futures_unordered, StreamExt};
+use resource_management::{asset::{self, asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -16,21 +18,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-	/// Wipes all resources
+	/// Wipe all resources
 	Wipe {},
-	/// Lists all resources
+	/// List all resources
 	List {},
-	/// Bakes assets into resources
+	/// Bake assets into resources
 	Bake {
-		/// The ID of the resource to bake
+		/// The IDs of the resources to bake.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 1..)]
 		ids: Vec<String>,
+		/// Build resources synchronously
+		#[clap(long, default_value = "false")]
+		sync: bool,
 	},
-    /// Deletes a resource
+    /// Delete resources
     Delete {
-        /// The ID of the resource to delete
-        id: String,
+        /// The IDs of the resources to delete.
+		/// Example: `beld delete audio.wav mesh.gltf mesh.gltf#image`
+		#[clap(value_delimiter = ' ', num_args = 1..)]
+        ids: Vec<String>,
     },
 }
 
@@ -42,7 +49,7 @@ fn main() -> Result<(), i32> {
 	let path = cli.path;
 	
 	match command {
-		Commands::Wipe {  } => {
+		Commands::Wipe {} => {
 			std::fs::remove_dir_all(&path).map_err(|e| {
 				println!("Failed to wipe resources. Error: {}", e);
 				1
@@ -55,7 +62,7 @@ fn main() -> Result<(), i32> {
 			
 			Ok(())
 		}
-		Commands::List {  } => {
+		Commands::List {} => {
 			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
 
 			match smol::block_on(storage_backend.list()) {
@@ -76,7 +83,7 @@ fn main() -> Result<(), i32> {
 				}
 			}
 		}
-		Commands::Bake { ids } => {
+		Commands::Bake { ids, sync } => {
 			let mut asset_manager = asset_manager::AssetManager::new(path.into());
 
 			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
@@ -95,22 +102,65 @@ fn main() -> Result<(), i32> {
 				asset_manager.add_asset_handler(material_asset_handler);
 			}
 
-			let mut ok = true;
-
 			if ids.is_empty() {
 				println!("No resources to bake.");
 				return Ok(());
 			}
 
-			for id in ids {
-				println!("Baking resource '{}'", id);
+			if sync {
+				for id in ids {
+					println!("Baking resource '{}'", id);
+					match smol::block_on(asset_manager.load(&id)) {
+						Ok(_) => {
+							println!("Baked resource '{}'", id);
+						}
+						Err(e) => {
+							println!("Failed to bake '{}'. Error: {:#?}", id, e);
+						}
+					}
+				}
+			} else {
+				let asset_manager = Arc::new(asset_manager);
 
-				match smol::block_on(asset_manager.load(&id)) {
-					Ok(_) => {
-						println!("Baked resource '{}'", id);
+				tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
+					let tasks = ids.into_iter().map(|id| {
+						let asset_manager = asset_manager.clone();
+						tokio::spawn(async move {
+							println!("Baking resource '{}'", id);
+							match asset_manager.load(&id).await {
+								Ok(_) => {
+									println!("Baked resource '{}'", id);
+								}
+								Err(e) => {
+									eprintln!("Failed to bake '{}'. Error: {:#?}", id, e);
+								}
+							}
+						}
+					)}).collect::<Vec<_>>();
+
+					futures::future::join_all(tasks).await
+				});
+			}
+
+			Ok(())
+		}
+		Commands::Delete { ids } => {
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
+
+			let mut ok = true;
+
+			if ids.is_empty() {
+				println!("No resources to delete.");
+				return Ok(());
+			}
+
+			for id in ids {
+				match smol::block_on(storage_backend.delete(&id)) {
+					Ok(()) => {
+						println!("Deleted resource '{}'", id);
 					}
 					Err(e) => {
-						println!("Failed to bake '{}'. Error: {:#?}", id, e);
+						println!("Failed to delete '{}'. Error: {}", id, e);
 						ok = false;
 					}
 				}
@@ -120,20 +170,6 @@ fn main() -> Result<(), i32> {
 				Ok(())
 			} else {
 				Err(1)
-			}
-		}
-		Commands::Delete { id } => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
-
-			match smol::block_on(storage_backend.delete(&id)) {
-				Ok(()) => {
-					println!("Deleted resource '{}'", id);
-					Ok(())
-				}
-				Err(e) => {
-					println!("Failed to delete '{}'. Error: {}", id, e);
-					Err(1)
-				}
 			}
 		}
 	}

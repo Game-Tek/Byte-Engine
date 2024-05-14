@@ -532,7 +532,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8];
 
 	/// Creates an image.
-	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, compression: Option<CompressionSchemes>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
+	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
 
 	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
 
@@ -650,11 +650,14 @@ pub enum Formats {
 	R8(Encodings),
 	R16(Encodings),
 	R32(Encodings),
+	RG8(Encodings),
 	RG16(Encodings),
 	RGB8(Encodings),
 	RGB16(Encodings),
 	RGBA8(Encodings),
 	RGBA16(Encodings),
+	BC5,
+	BC7,
 }
 
 pub trait Size {
@@ -671,17 +674,21 @@ impl Size for Formats {
 			Formats::R8(_) => 1,
 			Formats::R16(_) => 2,
 			Formats::R32(_) => 4,
+			Formats::RG8(_) => 2,
 			Formats::RG16(_) => 4,
 			Formats::RGB8(_) => 3,
 			Formats::RGB16(_) => 6,
 			Formats::RGBA8(_) => 4,
 			Formats::RGBA16(_) => 8,
+			Formats::BC5 => 1,
+			Formats::BC7 => 1,
 		}
 	}
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum CompressionSchemes {
+	BC5,
 	BC7,
 }
 
@@ -1461,7 +1468,7 @@ use super::*;
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1593,7 +1600,7 @@ use super::*;
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1719,7 +1726,7 @@ use super::*;
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1850,7 +1857,7 @@ use super::*;
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -1988,7 +1995,7 @@ use super::*;
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -2121,7 +2128,7 @@ use super::*;
 
 		let pipeline = renderer.create_compute_pipeline(&pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
 
-		let image = renderer.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let image = renderer.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_template);
 
@@ -2264,7 +2271,7 @@ use super::*;
 
 		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
-		let sampled_texture = renderer.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let sampled_texture = renderer.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -2294,7 +2301,7 @@ use super::*;
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC);
 
 		let attachments = [
 			AttachmentInformation {
@@ -2502,7 +2509,7 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), None, Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC);
 
 		let acceleration_structure_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
 		let render_target_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));

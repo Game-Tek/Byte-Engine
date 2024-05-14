@@ -41,6 +41,9 @@ pub struct VisibilityShaderGenerator {
 	calculate_full_bary: besl::parser::NodeReference,
 	sample_function: besl::parser::NodeReference,
 	sample_normal_function: besl::parser::NodeReference,
+	unit_vector_from_xy: besl::parser::NodeReference,
+	interpolate_vec3f_with_deriv: besl::parser::NodeReference,
+	interpolate_vec2f_with_deriv: besl::parser::NodeReference,
 }
 
 impl VisibilityShaderGenerator {
@@ -86,9 +89,17 @@ impl VisibilityShaderGenerator {
 		let barycentric_deriv = NodeReference::r#struct("BarycentricDeriv", vec![NodeReference::member("lambda", "vec3f"), NodeReference::member("ddx", "vec3f"), NodeReference::member("ddy", "vec3f")]);
 
 		let calculate_full_bary = NodeReference::function("calculate_full_bary", vec![NodeReference::member("pt0", "vec4f"), NodeReference::member("pt1", "vec4f"), NodeReference::member("pt2", "vec4f"), NodeReference::member("pixelNdc", "vec2f"), NodeReference::member("winSize", "vec2f")], "BarycentricDeriv", vec![NodeReference::glsl("BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;", Vec::new(), Vec::new())]);
+		let interpolate_vec3f_with_deriv = NodeReference::function("interpolate_vec3f_with_deriv", vec![NodeReference::member("interp", "vec3f"), NodeReference::member("v0", "vec3f"), NodeReference::member("v1", "vec3f"), NodeReference::member("v2", "vec3f")], "vec3f", vec![NodeReference::glsl("return vec3(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp), dot(vec3(v0.z, v1.z, v2.z), interp));", Vec::new(), Vec::new())]);
+		let interpolate_vec2f_with_deriv = NodeReference::function("interpolate_vec2f_with_deriv", vec![NodeReference::member("interp", "vec3f"), NodeReference::member("v0", "vec2f"), NodeReference::member("v1", "vec2f"), NodeReference::member("v2", "vec2f")], "vec2f", vec![NodeReference::glsl("return vec2(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp));", Vec::new(), Vec::new())]);
 		
 		let sample_function = NodeReference::intrinsic("sample", NodeReference::parameter("smplr", "u32"), NodeReference::sentence(vec![NodeReference::glsl("texture(", Vec::new(), Vec::new()), NodeReference::member_expression("smplr"), NodeReference::glsl(", vertex_uv).rgb", Vec::new(), Vec::new())]), "vec3f");
-		let sample_normal_function = NodeReference::intrinsic("sample_normal", NodeReference::parameter("smplr", "u32"), NodeReference::sentence(vec![NodeReference::glsl("normalize(texture(", Vec::new(), Vec::new()), NodeReference::member_expression("smplr"), NodeReference::glsl(", vertex_uv).xyz * 2.0 - 1.0)", Vec::new(), Vec::new())]), "vec3f");
+		let unit_vector_from_xy = NodeReference::function("unit_vector_from_xy", vec![NodeReference::member("v", "vec2f")], "vec3f", vec![NodeReference::glsl("v = v * 2.0f - 1.0f; return normalize(vec3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));", Vec::new(), Vec::new())]);
+
+		let sample_normal_function = if true {
+			NodeReference::intrinsic("sample_normal", NodeReference::parameter("smplr", "u32"), NodeReference::sentence(vec![NodeReference::glsl("unit_vector_from_xy(texture(", Vec::new(), Vec::new()), NodeReference::member_expression("smplr"), NodeReference::glsl(", vertex_uv).xy)", vec!["unit_vector_from_xy".to_string()], Vec::new())]), "vec3f")
+		} else {
+			NodeReference::intrinsic("sample_normal", NodeReference::parameter("smplr", "u32"), NodeReference::sentence(vec![NodeReference::glsl("normalize(texture(", Vec::new(), Vec::new()), NodeReference::member_expression("smplr"), NodeReference::glsl(", vertex_uv).xyz * 2.0f - 1.0f)", vec![], Vec::new())]), "vec3f")
+		};
 
 		Self {
 			mesh_struct,
@@ -123,14 +134,17 @@ impl VisibilityShaderGenerator {
 			fresnel_schlick,
 			barycentric_deriv,
 			calculate_full_bary,
+			interpolate_vec3f_with_deriv,
+			interpolate_vec2f_with_deriv,
 			sample_function,
+			unit_vector_from_xy,
 			sample_normal_function,
 		}
 	}
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, program_state: &mut besl::parser::ProgramState, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
+	fn transform(&self, mut node: besl::parser::Node, material: &json::JsonValue) -> Vec<besl::parser::NodeReference> {
 		let mesh_struct = self.mesh_struct.clone();
 		let camera_struct = self.camera_struct.clone();
 		let meshlet_struct = self.meshlet_struct.clone();
@@ -189,7 +203,7 @@ uint vertex_indices[3] = uint[3](
 	mesh.base_vertex_index + vertex_indices.vertex_indices[meshlet.vertex_offset + primitive_indices[2]]
 );
 
-vec4 vertex_positions[3] = vec4[3](
+vec4 model_space_vertex_positions[3] = vec4[3](
 	vec4(positions.positions[vertex_indices[0]], 1.0),
 	vec4(positions.positions[vertex_indices[1]], 1.0),
 	vec4(positions.positions[vertex_indices[2]], 1.0)
@@ -215,32 +229,45 @@ vec2 nc = normalized_xy * 2 - 1;
 
 Camera camera = camera.camera;
 
-vec4 clip_space_vertex_positions[3] = vec4[3](camera.view_projection * mesh.model * vertex_positions[0], camera.view_projection * mesh.model * vertex_positions[1], camera.view_projection * mesh.model * vertex_positions[2]);
+vec4 world_space_vertex_positions[3] = vec4[3](mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]);
+vec4 clip_space_vertex_positions[3] = vec4[3](camera.view_projection * world_space_vertex_positions[0], camera.view_projection * world_space_vertex_positions[1], camera.view_projection * world_space_vertex_positions[2]);
+
+vec4 world_space_vertex_normals[3] = vec4[3](normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2]));
 
 BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, image_extent);
 vec3 barycenter = barycentric_deriv.lambda;
 vec3 ddx = barycentric_deriv.ddx;
 vec3 ddy = barycentric_deriv.ddy;
 
-vec3 vertex_position = vec3((mesh.model * vertex_positions[0]).xyz * barycenter.x + (mesh.model * vertex_positions[1]).xyz * barycenter.y + (mesh.model * vertex_positions[2]).xyz * barycenter.z);
-vec3 vertex_normal = vec3((vertex_normals[0]).xyz * barycenter.x + (vertex_normals[1]).xyz * barycenter.y + (vertex_normals[2]).xyz * barycenter.z);
-vec2 vertex_uv = vec2((vertex_uvs[0]).xy * barycenter.x + (vertex_uvs[1]).xy * barycenter.y + (vertex_uvs[2]).xy * barycenter.z);
+vec3 world_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
+vec3 clip_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, clip_space_vertex_positions[0].xyz, clip_space_vertex_positions[1].xyz, clip_space_vertex_positions[2].xyz);
+vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycenter, world_space_vertex_normals[0].xyz, world_space_vertex_normals[1].xyz, world_space_vertex_normals[2].xyz));
+vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
-vec3 N = normalize(vec3(mesh.model * vec4(vertex_normal, 0)));
-vec3 V = normalize(-(camera.view[3].xyz - vertex_position));
+vec3 N = world_space_vertex_normal;
+vec3 V = normalize(-(camera.view[3].xyz - world_space_vertex_position));
 
-vec3 edge1 = ddx.x * vec3(vertex_positions[0]) + ddx.y * vec3(vertex_positions[1]) + ddx.z * vec3(vertex_positions[2]);
-vec3 edge2 = ddy.x * vec3(vertex_positions[0]) + ddy.y * vec3(vertex_positions[1]) + ddy.z * vec3(vertex_positions[2]);
-vec2 duv1 = barycentric_deriv.ddx.x * vec2(vertex_uvs[0]) + barycentric_deriv.ddx.y * vec2(vertex_uvs[1]) + barycentric_deriv.ddx.z * vec2(vertex_uvs[2]);
-vec2 duv2 = barycentric_deriv.ddy.x * vec2(vertex_uvs[0]) + barycentric_deriv.ddy.y * vec2(vertex_uvs[1]) + barycentric_deriv.ddy.z * vec2(vertex_uvs[2]);
-float f = 1.0 / (duv1.x * duv2.y - duv2.x * duv1.y);
-vec3 T = normalize(f * (duv2.y * edge1 - duv1.y * edge2));
-vec3 B = normalize(f * (-duv2.x * edge1 + duv1.x * edge2));
+vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
+vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
+
+vec2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
+vec2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
+
+// // Method 1
+float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
+vec3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
+vec3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
 mat3 TBN = mat3(T, B, N);
 
+// Method 2
+// vec3 T = (uv_dy.y * pos_dx - uv_dx.y * pos_dy) / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
+// T = normalize(T - N * dot(T, N));
+// vec3 B = cross(N, T);
+// mat3 TBN = mat3(T, B, N);
+
 vec3 albedo = vec3(1, 0, 0);
-vec3 normal = normalize(vertex_normal);
-vec3 metalness = vec3(0);
+vec3 normal = vec3(0, 0, 1);
+float metalness = 0;
 float roughness = float(0.5);";
 
 		let mut extra = Vec::new();
@@ -254,12 +281,10 @@ float roughness = float(0.5);";
 			match data_type {
 				"u32" | "f32" | "vec2f" | "vec3f" | "vec4" => {
 					let x = besl::parser::NodeReference::specialization(name, data_type);
-					program_state.insert(name.to_string(), x.clone());
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let x = besl::parser::NodeReference::literal(name, besl::parser::NodeReference::glsl(&format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), vec!["textures".to_string()], Vec::new()));
-					program_state.insert(name.to_string(), x.clone());
+					let x = besl::parser::NodeReference::literal(name, besl::parser::NodeReference::glsl(&format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), vec![/* TODO: fix literals "material".to_string(), */"textures".to_string()], Vec::new()));
 					extra.push(x);
 					texture_count += 1;
 				}
@@ -286,7 +311,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	if (light_type == 68) { // Infinite
 		L = normalize(-light_pos);
 	} else {
-		L = normalize(light_pos - vertex_position);
+		L = normalize(light_pos - world_space_vertex_position);
 	}
 
 	float NdotL = max(dot(normal, L), 0.0);
@@ -297,7 +322,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	float attenuation = 1.0;
 
 	if (light_type == 68) { // Infinite
-		vec4 surface_light_clip_position = light_matrix * vec4(vertex_position + normal * 0.001, 1.0);
+		vec4 surface_light_clip_position = light_matrix * vec4(world_space_vertex_position + normal * 0.001, 1.0);
 		vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
 		vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
 		float z = surface_light_ndc_position.z;
@@ -308,7 +333,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 		attenuation = 1.0;
 	} else {
-		float distance = length(light_pos - vertex_position);
+		float distance = length(light_pos - world_space_vertex_position);
 		attenuation = 1.0 / (distance * distance);
 	}
 
@@ -354,55 +379,18 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		let out_albedo = self.out_albedo.clone();
 		let out_diffuse = self.out_diffuse.clone();
 
-		let mut m = program_state.get_mut("main").unwrap().clone();
+		let mut m = node.get_mut("main").unwrap().clone();
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, besl::parser::NodeReference::glsl(a, vec!["uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "positions".to_string(), "normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string(), "BarycentricDeriv".to_string()], vec!["albedo".to_string(), "normal".to_string(), "roughness".to_string(),]));
+				statements.insert(0, besl::parser::NodeReference::glsl(a, vec!["uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "positions".to_string(), "normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "interpolate_vec3f_with_deriv".to_string(), "interpolate_vec2f_with_deriv".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string()], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
 				statements.push(besl::parser::NodeReference::glsl(b, vec!["lighting_data".to_string(), "out_albedo".to_string(), "out_diffuse".to_string()], Vec::new()));
 			}
 			_ => {}
 		}
 
-		program_state.insert("Mesh".to_string(), mesh_struct.clone());
-		program_state.insert("Camera".to_string(), camera_struct.clone());
-		program_state.insert("Meshlet".to_string(), meshlet_struct.clone());
-		program_state.insert("Light".to_string(), light_struct.clone());
-		program_state.insert("Material".to_string(), material_struct.clone());
-		program_state.insert("BarycentricDeriv".to_string(), self.barycentric_deriv.clone());
-
-		program_state.insert("calculate_full_bary".to_string(), self.calculate_full_bary.clone());
-		program_state.insert("distribution_ggx".to_string(), self.distribution_ggx.clone());
-		program_state.insert("geometry_schlick_ggx".to_string(), self.geometry_schlick_ggx.clone());
-		program_state.insert("geometry_smith".to_string(), self.geometry_smith.clone());
-		program_state.insert("fresnel_schlick".to_string(), self.fresnel_schlick.clone());
-
-		program_state.insert("meshes".to_string(), set0_binding1.clone());
-		program_state.insert("positions".to_string(), set0_binding2.clone());
-		program_state.insert("normals".to_string(), set0_binding3.clone());
-		program_state.insert("tangents".to_string(), self.tangents.clone());
-		program_state.insert("uvs".to_string(), self.uvs.clone());
-		program_state.insert("vertex_indices".to_string(), set0_binding4.clone());
-		program_state.insert("primitive_indices".to_string(), set0_binding5.clone());
-		program_state.insert("meshlets".to_string(), set0_binding6.clone());
-		program_state.insert("textures".to_string(), set0_binding7.clone());
-		program_state.insert("material_count".to_string(), set1_binding0.clone());
-		program_state.insert("material_offset".to_string(), set1_binding1.clone());
-		program_state.insert("pixel_mapping".to_string(), set1_binding4.clone());
-		program_state.insert("triangle_index".to_string(), set1_binding6.clone());
-		program_state.insert("out_albedo".to_string(), set2_binding0.clone());
-		program_state.insert("camera".to_string(), set2_binding1.clone());
-		program_state.insert("out_diffuse".to_string(), set2_binding2.clone());
-		program_state.insert("lighting_data".to_string(), set2_binding4.clone());
-		program_state.insert("materials".to_string(), set2_binding5.clone());
-		program_state.insert("ao".to_string(), set2_binding10.clone());
-		program_state.insert("depth_shadow_map".to_string(), set2_binding11.clone());
-		program_state.insert("main".to_string(), m.clone());
-		program_state.insert("sample".to_string(), self.sample_function.clone());
-		program_state.insert("sample_normal".to_string(), self.sample_normal_function.clone());
-
 		let mut ret = Vec::with_capacity(32);
-		ret.append(&mut vec![push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, self.uvs.clone(), set0_binding7, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), self.sample_function.clone(), self.sample_normal_function.clone()]);
+		ret.append(&mut vec![self.mesh_struct.clone(), self.camera_struct.clone(), self.meshlet_struct.clone(), self.light_struct.clone(), self.lighting_data.clone(), push_constant, self.barycentric_deriv.clone(), set2_binding11, material_offset, meshes, set0_binding1, set1_binding0, self.uvs.clone(), set0_binding7, set1_binding4, set1_binding6, set2_binding1, meshlets, material, set2_binding5, set2_binding10, primitive_indices, vertex_indices, positions, normals, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.interpolate_vec3f_with_deriv.clone(), self.interpolate_vec2f_with_deriv.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), self.sample_function.clone(), self.unit_vector_from_xy.clone(), self.sample_normal_function.clone()]);
 		ret.append(&mut extra);
 		ret.push(m);
 		ret

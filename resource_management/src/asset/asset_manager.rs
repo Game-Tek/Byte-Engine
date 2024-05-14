@@ -1,13 +1,13 @@
 use std::ops::Deref;
 
-use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Description, Model, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
+use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Description, GenericResourceSerialization, Model, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
 use super::asset_handler::AssetHandler;
 
 struct MyAssetResolver {}
 
 impl AssetResolver for MyAssetResolver {
-	fn resolve<'a>(&'a self, url: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Vec<u8>, String)>> + Send + 'a>> {
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<Option<(Vec<u8>, String)>> {
 		Box::pin(async move {
 			read_asset_from_source(url, Some(&assets_path())).await.ok()
 		})
@@ -60,7 +60,7 @@ impl AssetManager {
 	}
 
 	/// Load a source asset from a JSON asset description.
-	pub async fn load(&self, id: &str) -> Result<(), LoadMessages> {
+	pub async fn load<'a>(&self, id: &str) -> Result<(), LoadMessages> {
 		let asset_resolver = MyAssetResolver {};
 
 		let storage_backend = self.get_storage_backend();
@@ -106,10 +106,10 @@ impl AssetManager {
 		Ok(resource.into())
 	}
 
-	pub async fn produce<'a, D: Description, R: Resource + Clone + serde::Serialize>(&self, id: &str, resource_type: &str, description: &D, data: &[u8]) -> TypedResource<R> {
+	pub async fn produce<'a, D: Description>(&self, id: &str, resource_type: &str, description: &D, data: &[u8]) -> GenericResourceSerialization {
 		let asset_handler = self.asset_handlers.iter().find(|asset_handler| asset_handler.can_handle(resource_type)).expect("No asset handler found for class");
 
-		let (resource, buffer) = match asset_handler.produce(description, data).await {
+		let (resource, buffer) = match asset_handler.produce(id, description, data).await {
 			Ok(x) => x,
 			Err(error) => {
 				log::error!("Failed to produce resource: {}", error);
@@ -117,17 +117,9 @@ impl AssetManager {
 			}
 		};
 		
-		let resource = resource.into_any();
-		
-		if let Ok(resource) = resource.downcast::<R>() {
-			let resource = TypedResource::new(id, 0, *resource);
+		self.storage_backend.store(&resource, &buffer).await.unwrap();
 
-			self.storage_backend.store(&resource.clone().into(), &buffer).await.unwrap();
-
-			resource
-		} else {
-			panic!("Failed to downcast resource");
-		}
+		resource
 	}
 }
 
@@ -161,18 +153,14 @@ use smol::future::FutureExt;
 	struct TestDescription {}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::BoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 			let res = if id == "example" {
 				Ok(Some(GenericResourceSerialization::new_with_serialized("id", "TestAsset", bson::Bson::Null)))
 			} else {
 				Err("Failed to load".to_string())
 			};
 
-			async move { res }.boxed()
-		}
-
-		fn produce<'a>(&'a self, _: &'a dyn crate::Description, _: &'a [u8]) -> utils::BoxedFuture<'a, Result<(Box<dyn Resource>, Box<[u8]>), String>> {
-			unimplemented!()
+			Box::pin(async move { res })
 		}
 	}
 	

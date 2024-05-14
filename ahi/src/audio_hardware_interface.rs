@@ -4,10 +4,12 @@ pub trait AudioHardwareInterface {
 	fn pause(&self);
 }
 
+#[cfg(target_os = "linux")]
 struct ALSAAudioHardwareInterface {
 	pcm: Option<alsa::pcm::PCM>,
 }
 
+#[cfg(target_os = "linux")]
 impl ALSAAudioHardwareInterface {
 	fn open() -> Self {
 		let name = std::ffi::CString::new("default").unwrap();
@@ -36,6 +38,7 @@ impl ALSAAudioHardwareInterface {
 	}
 }
 
+#[cfg(target_os = "linux")]
 impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 	fn play(&self, audio_data: &[i16]) {
 		let pcm = if let Some(pcm) = &self.pcm { pcm } else { return; };
@@ -52,7 +55,33 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 	}
 }
 
+#[cfg(target_os = "windows")]
+struct WindowsAudioHardwareInterface {
+}
+
+#[cfg(target_os = "windows")]
+impl AudioHardwareInterface for WindowsAudioHardwareInterface {
+	fn play(&self, audio_data: &[i16]) {
+	}
+
+	fn pause(&self) {
+	}
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsAudioHardwareInterface {
+	fn open() -> Self {
+		WindowsAudioHardwareInterface {
+		}
+	}
+}
+
 pub fn create_ahi() -> impl AudioHardwareInterface {
-	#[cfg(target_os = "linux")]
-	ALSAAudioHardwareInterface::open()
+	#[cfg(target_os = "linux")] {
+		ALSAAudioHardwareInterface::open()
+	}
+
+	#[cfg(target_os = "windows")] {
+		WindowsAudioHardwareInterface::open()
+	}
 }

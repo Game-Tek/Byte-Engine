@@ -14,6 +14,8 @@ fn  revolver() {
 
 	app.initialize(std::env::args());
 
+	println!("{}", std::env::current_dir().unwrap().display());
+
 	let space_handle = app.get_root_space_handle();
 
 	let lookaround_action_handle = core::spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[

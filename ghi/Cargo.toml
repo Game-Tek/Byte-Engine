@@ -9,11 +9,16 @@ rust-version = "1.73.0"
 utils = { path = "../utils" }
 
 ash = { version = "0.38.0", features=['linked'] }
-xcb = { version = "1.2.2", features=['xtest'] }
 shaderc = "0.8.2"
 bitflags = "2.4.0"
 colored = "2.0.4"
 renderdoc = "0.12.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.56.0", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "System", "Win32_System_LibraryLoader"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+xcb = { version = "1.2.2", features=['xtest'] }
 wayland-client = "0.31.2"
 wayland-protocols = { version = "0.31.2", features = ['client'] }
 wayland-backend = { version = "0.3.3", features = ["client_system"] }

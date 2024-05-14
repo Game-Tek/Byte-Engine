@@ -1,8 +1,14 @@
 use utils::Extent;
 
+#[cfg(target_os = "linux")]
 use crate::wayland_window;
+#[cfg(target_os = "linux")]
 use crate::wayland_window::WaylandWindow;
+#[cfg(target_os = "linux")]
 use crate::x11_window::{self, X11Window};
+
+#[cfg(target_os = "windows")]
+use crate::win32_window::{self, Win32Window};
 
 #[derive(Debug, Clone, Copy)]
 /// The keys that can be pressed on a keyboard.
@@ -280,6 +286,8 @@ enum OSWindow {
 	Wayland(WaylandWindow),
 	#[cfg(target_os = "linux")]
 	X11(X11Window),
+	#[cfg(target_os = "windows")]
+	Windows(Win32Window),
 }
 
 pub struct Window {
@@ -295,6 +303,7 @@ impl Window {
 	}
 
 	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Option<Window> {
+		#[cfg(target_os = "linux")]
 		let window_impl = if let Some(_) = std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY") {
 			if let Some(_) = std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland") {
 				OSWindow::Wayland(WaylandWindow::try_new().ok()?)
@@ -304,6 +313,9 @@ impl Window {
 		} else {
 			OSWindow::X11(X11Window::try_new(name, extent, id_name)?)
 		};
+
+		#[cfg(target_os = "windows")]
+		let window_impl = OSWindow::Windows(Win32Window::try_new(name, extent, id_name)?);
 
 		Some(Window {
 			name: name.to_owned(),
@@ -315,15 +327,23 @@ impl Window {
 
 	pub fn poll(&mut self) -> WindowIterator {
 		match self.os_window {
+			#[cfg(target_os = "linux")]
 			OSWindow::X11(ref mut window) => WindowIterator::X11(window.poll()),
+			#[cfg(target_os = "linux")]
 			OSWindow::Wayland(ref window) => WindowIterator::Wayland(window.poll()),
+			#[cfg(target_os = "windows")]
+			OSWindow::Windows(ref mut window) => WindowIterator::Win32(window.poll()),
 		}
 	}
 
 	pub fn get_os_handles(&self) -> OSHandles {
 		match self.os_window {
+			#[cfg(target_os = "linux")]
 			OSWindow::X11(ref window) => OSHandles::X11(window.get_os_handles()),
+			#[cfg(target_os = "linux")]
 			OSWindow::Wayland(ref window) => OSHandles::Wayland(window.get_os_handles()),
+			#[cfg(target_os = "windows")]
+			OSWindow::Windows(ref window) => OSHandles::Win32(window.get_os_handles()),
 		}
 	}
 }
@@ -333,6 +353,8 @@ pub enum WindowIterator<'a> {
 	X11(x11_window::WindowIterator<'a>),
 	#[cfg(target_os = "linux")]
 	Wayland(wayland_window::WindowIterator<'a>),
+	#[cfg(target_os = "windows")]
+	Win32(win32_window::WindowIterator<'a>),
 }
 
 impl Iterator for WindowIterator<'_> {
@@ -344,6 +366,8 @@ impl Iterator for WindowIterator<'_> {
 			WindowIterator::X11(window) => window.next(),
 			#[cfg(target_os = "linux")]
 			WindowIterator::Wayland(window) => window.next(),
+			#[cfg(target_os = "windows")]
+			WindowIterator::Win32(window) => window.next(),
 		}
 	}
 }
@@ -354,4 +378,6 @@ pub enum OSHandles {
 	X11(x11_window::OSHandles),
 	#[cfg(target_os = "linux")]
 	Wayland(wayland_window::OSHandles),
+	#[cfg(target_os = "windows")]
+	Win32(win32_window::OSHandles),
 }

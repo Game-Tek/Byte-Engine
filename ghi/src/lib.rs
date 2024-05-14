@@ -8,6 +8,8 @@ pub mod window;
 pub mod x11_window;
 #[cfg(target_os = "linux")]
 pub mod wayland_window;
+#[cfg(target_os = "windows")]
+pub mod win32_window;
 
 pub mod graphics_hardware_interface;
 pub mod shader_compilation;

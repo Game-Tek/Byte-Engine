@@ -2043,6 +2043,13 @@ impl VulkanGHI {
 			}
 		}
 
+		#[cfg(target_os = "windows")]
+		{
+			if is_instance_extension_available(ash::khr::win32_surface::NAME.to_str().unwrap()) {
+				extension_names.push(ash::khr::win32_surface::NAME.as_ptr());
+			}
+		}
+
 		if settings.validation {
 			extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
 		}
@@ -2740,6 +2747,7 @@ impl VulkanGHI {
 
 	fn create_vulkan_surface(&self, window_os_handles: &window::OSHandles) -> vk::SurfaceKHR {
 		let surface = match window_os_handles {
+			#[cfg(target_os = "linux")]
 			window::OSHandles::Wayland(os_handles) => {
 				let wayland_surface = ash::khr::wayland_surface::Instance::new(&self.entry, &self.instance);
 
@@ -2749,6 +2757,7 @@ impl VulkanGHI {
 
 				unsafe { wayland_surface.create_wayland_surface(&wayland_surface_create_info, None).expect("No surface") }
 			}
+			#[cfg(target_os = "linux")]
 			window::OSHandles::X11(os_handles) => {
 				let xcb_surface = ash::khr::xcb_surface::Instance::new(&self.entry, &self.instance);
 
@@ -2757,6 +2766,16 @@ impl VulkanGHI {
 					.window(os_handles.xcb_window);
 		
 				unsafe { xcb_surface.create_xcb_surface(&xcb_surface_create_info, None).expect("No surface") }
+			}
+			#[cfg(target_os = "windows")]
+			window::OSHandles::Win32(os_handles) => {
+				let win32_surface = ash::khr::win32_surface::Instance::new(&self.entry, &self.instance);
+
+				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
+					.hinstance(os_handles.hinstance.0)
+					.hwnd(os_handles.hwnd.0);
+
+				unsafe { win32_surface.create_win32_surface(&win32_surface_create_info, None).expect("No surface") }
 			}
 		};
 

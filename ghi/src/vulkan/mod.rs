@@ -1200,9 +1200,11 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
 		let buffer_handle = BufferHandle(buffer_handle.0);
 
-		todo!("Resize staging buffer");
-
 		let buffer = &self.buffers[buffer_handle.0 as usize];
+
+		if buffer.size != 0 {
+			todo!("Resize staging buffer");
+		}
 
 		if buffer.size >= size {
 			return;
@@ -3814,6 +3816,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		for buffer_handle in buffer_handles {
 			let internal_buffer_handle = self.get_internal_buffer_handle(*buffer_handle);
 			let buffer = self.get_buffer(internal_buffer_handle);
+
+			if buffer.buffer.is_null() { continue; }
 
 			unsafe {
 				self.ghi.device.cmd_fill_buffer(self.get_command_buffer().command_buffer, buffer.buffer, 0, vk::WHOLE_SIZE, 0);

@@ -39,7 +39,7 @@ impl Renderer {
 			}))));
 
 			let extent = Extent::square(0);
-			let extent = Extent::rectangle(1920, 1080);
+			// let extent = Extent::rectangle(1920, 1080);
 
 			let result = {
 				let mut ghi = ghi_instance.write().unwrap();

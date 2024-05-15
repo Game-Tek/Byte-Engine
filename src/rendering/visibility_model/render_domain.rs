@@ -158,7 +158,7 @@ impl VisibilityWorldRenderDomain {
 			let mut ghi_instance = ghi.write().unwrap();
 
 			let extent = Extent::square(0);
-			let extent = Extent::rectangle(1920, 1080);
+			// let extent = Extent::rectangle(1920, 1080);
 			
 			let vertex_positions_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -1346,7 +1346,7 @@ impl MaterialOffsetPass {
 
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
 		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1))); // BUG: [ SYNC-HAZARD-READ-AFTER-WRITE ] Object 0: handle = 0x5eb05e000000003b, name = Material Evaluation Dipatches, type = VK_OBJECT_TYPE_BUFFER; | MessageID = 0xe4d96472 | vkCmdDispatch: Hazard READ_AFTER_WRITE for VkBuffer 0x5eb05e000000003b[Material Evaluation Dipatches] in VkCommandBuffer 0x1d6cf653400[Render], VkPipeline 0x210d07000000003a[], and VkDescriptorSet 0xa21a4e0000000030[Visibility Descriptor Set], type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding #3 index 0. Access info (usage: SYNC_COMPUTE_SHADER_SHADER_STORAGE_READ, prior_usage: SYNC_COPY_TRANSFER_WRITE, write_barriers: SYNC_COMPUTE_SHADER_SHADER_STORAGE_WRITE, command: vkCmdFillBuffer, seq_no: 15, reset_no: 2), [ SYNC-HAZARD-READ-AFTER-WRITE ] Object 0: handle = 0x59ffe0000000003d, name = Material Offset, type = VK_OBJECT_TYPE_BUFFER; | MessageID = 0xe4d96472 | vkCmdDispatch: Hazard READ_AFTER_WRITE for VkBuffer 0x59ffe0000000003d[Material Offset] in VkCommandBuffer 0x1d6cf653400[Render], VkPipeline 0x210d07000000003a[], and VkDescriptorSet 0xa21a4e0000000030[Visibility Descriptor Set], type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding #1 index 0. Access info (usage: SYNC_COMPUTE_SHADER_SHADER_STORAGE_READ, prior_usage: SYNC_COPY_TRANSFER_WRITE, write_barriers: SYNC_COMPUTE_SHADER_SHADER_STORAGE_WRITE, command: vkCmdFillBuffer, seq_no: 13, reset_no: 2), [ SYNC-HAZARD-READ-AFTER-WRITE ] Object 0: handle = 0x808562000000003f, name = Material Offset Scratch, type = VK_OBJECT_TYPE_BUFFER; | MessageID = 0xe4d96472 | vkCmdDispatch: Hazard READ_AFTER_WRITE for VkBuffer 0x808562000000003f[Material Offset Scratch] in VkCommandBuffer 0x1d6cf653400[Render], VkPipeline 0x210d07000000003a[], and VkDescriptorSet 0xa21a4e0000000030[Visibility Descriptor Set], type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding #2 index 0. Access info (usage: SYNC_COMPUTE_SHADER_SHADER_STORAGE_READ, prior_usage: SYNC_COPY_TRANSFER_WRITE, write_barriers: SYNC_COMPUTE_SHADER_SHADER_STORAGE_WRITE, command: vkCmdFillBuffer, seq_no: 14, reset_no: 2)
 		command_buffer_recording.end_region();
 	}
 
@@ -1381,7 +1381,7 @@ impl PixelMappingPass {
 
 		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
 
-		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 1920 * 1080 * 4, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let material_xy = ghi_instance.create_buffer(Some("Material XY"), 0, ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		PixelMappingPass {
 			material_xy,
@@ -1410,7 +1410,7 @@ impl PixelMappingPass {
 	}
 
 	fn resize(&self, extent: Extent, ghi: &mut ghi::GHI) {
-		ghi.resize_buffer(self.material_xy, (extent.width() * extent.height() * 2) as usize);
+		ghi.resize_buffer(self.material_xy, (extent.width() * extent.height() * 4) as usize);
 	}
 }
 

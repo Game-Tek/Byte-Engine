@@ -116,6 +116,8 @@ impl Renderer {
 
 		let (present_key, extent) = ghi.acquire_swapchain_image(modulo_frame_index, swapchain_handle, self.image_ready);
 
+		assert!(extent.width() <= 65535 && extent.height() <= 65535, "The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits.", extent);
+
 		drop(ghi);
 
 		if extent != self.extent {

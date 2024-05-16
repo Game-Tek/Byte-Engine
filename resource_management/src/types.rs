@@ -284,13 +284,13 @@ impl <'de> Solver<'de, TypedResource<Shader>> for TypedResourceModel<Shader> {
 
 // Mesh
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum VertexSemantics {
 	Position,
 	Normal,
 	Tangent,
 	BiTangent,
-	Uv,
+	UV,
 	Color,
 }
 
@@ -307,7 +307,7 @@ pub enum IntegralTypes {
 	F64,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
@@ -321,7 +321,7 @@ pub enum QuantizationSchemes {
 	OctahedralQuantization,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum IndexStreamTypes {
 	Vertices,
 	Meshlets,
@@ -336,6 +336,28 @@ pub struct IndexStream {
 	pub data_type: IntegralTypes,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Stream {
+	pub stream_type: Streams,
+	pub offset: usize,
+	pub size: usize,
+	pub stride: usize,
+}
+
+impl Stream {
+	/// Returns the number of logical elements (not bytes) in the stream.
+	pub fn count(&self) -> usize {
+		self.size / self.stride
+	}	
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum Streams {
+	Vertices(VertexSemantics),
+	Indices(IndexStreamTypes),
+	Meshlets,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MeshletStream {
 	pub offset: usize,
@@ -345,6 +367,7 @@ pub struct MeshletStream {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Primitive {
 	// pub material: Material,
+	pub streams: Vec<Stream>,
 	pub quantization: Option<QuantizationSchemes>,
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_count: u32,
@@ -363,11 +386,51 @@ pub struct SubMesh {
 /// 	- `Meshlets`: Each entry is a "pointer" to an index in the `Vertices` index stream.
 /// 	- `Triangles`: Each entry is a "pointer" to a vertex in the vertex buffer.
 pub struct Mesh {
-	pub index_streams: Vec<IndexStream>,
-	pub meshlet_stream: Option<MeshletStream>,
 	pub vertex_components: Vec<VertexComponent>,
-	pub sub_meshes: Vec<SubMesh>,
-	pub vertex_count: u32,
+	pub streams: Vec<Stream>,
+	pub primitives: Vec<Primitive>,
+}
+
+impl Mesh {
+	pub fn position_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Position))
+	}
+
+	pub fn normal_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Normal))
+	}
+
+	pub fn tangent_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Tangent))
+	}
+
+	pub fn bi_tangent_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::BiTangent))
+	}
+
+	pub fn uv_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::UV))
+	}
+
+	pub fn color_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Color))
+	}
+
+	pub fn triangle_indices_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Indices(IndexStreamTypes::Triangles))
+	}
+
+	pub fn vertex_indices_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Indices(IndexStreamTypes::Vertices))
+	}
+
+	pub fn meshlet_indices_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Indices(IndexStreamTypes::Meshlets))
+	}
+
+	pub fn meshlets_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Meshlets)
+	}
 }
 
 impl Resource for Mesh {
@@ -385,7 +448,7 @@ impl Size for VertexSemantics {
 			VertexSemantics::Normal => 3 * 4,
 			VertexSemantics::Tangent => 4 * 4,
 			VertexSemantics::BiTangent => 3 * 4,
-			VertexSemantics::Uv => 2 * 4,
+			VertexSemantics::UV => 2 * 4,
 			VertexSemantics::Color => 4 * 4,
 		}
 	}

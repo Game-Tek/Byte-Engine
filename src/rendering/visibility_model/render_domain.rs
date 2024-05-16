@@ -913,20 +913,65 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
 			let load_request = if let Some(mesh_resource) = resource_request.resource().downcast_ref::<Mesh>() {
-				assert_eq!(mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Meshlets).unwrap().data_type, IntegralTypes::U8, "Meshlet index stream is not u8");
-				assert_eq!(mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().data_type, IntegralTypes::U16, "Vertex index stream is not u16");
+				let vertex_positions_stream;
+				let vertex_normals_stream;
+				let vertex_uv_stream;
+				let vertex_indices_stream;
+				let primitive_indices_stream;
+				let meshlet_stream;
 
-				let total_vertex_count = mesh_resource.vertex_count;
-				let total_vertex_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().count;
-				let total_primitive_indices_count = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Meshlets).unwrap().count;
-				let total_meshlet_count = mesh_resource.meshlet_stream.as_ref().map(|ms| ms.count).unwrap();
+				if let Some(stream) = mesh_resource.position_stream() {
+					vertex_positions_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain vertex position stream");
+					return;
+				}
 
-				let vertex_positions_buffer = vertex_positions_buffer.take(total_vertex_count as usize * std::mem::size_of::<Vector3>());
-				let vertex_normals_buffer = vertex_normals_buffer.take(total_vertex_count as usize * std::mem::size_of::<Vector3>());
-				let vertex_uv_buffer = vertex_uv_buffer.take(total_vertex_count as usize * std::mem::size_of::<Vector2>());
-				let vertex_indices_buffer = vertex_indices_buffer.take(total_vertex_indices_count as usize * std::mem::size_of::<u16>());
-				let primitive_indices_buffer = primitive_indices_buffer.take(total_primitive_indices_count as usize * std::mem::size_of::<u8>());
-				let meshlet_stream_buffer = buffer_allocator.take(total_meshlet_count as usize * 2usize);
+				if let Some(stream) = mesh_resource.normal_stream() {
+					vertex_normals_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain vertex normal stream");
+					return;
+				}
+
+				if let Some(stream) = mesh_resource.uv_stream() {
+					vertex_uv_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain vertex uv stream");
+					return;
+				}
+
+				if let Some(stream) = mesh_resource.vertex_indices_stream() {
+					vertex_indices_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain vertex index stream");
+					return;
+				}
+
+				if let Some(stream) = mesh_resource.meshlet_indices_stream() {
+					primitive_indices_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain meshlet index stream");
+					return;
+				}
+
+				if let Some(stream) = mesh_resource.meshlets_stream() {
+					meshlet_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain meshlet stream");
+					return;
+				}
+
+				assert_eq!(primitive_indices_stream.stride, 1, "Meshlet index stream is not u8");
+				assert_eq!(vertex_indices_stream.stride, 2, "Vertex index stream is not u16");
+				assert_eq!(meshlet_stream.stride, 2, "Meshlet stream stride is not of size 2");
+
+				let vertex_positions_buffer = vertex_positions_buffer.take(vertex_positions_stream.size);
+				let vertex_normals_buffer = vertex_normals_buffer.take(vertex_normals_stream.size);
+				let vertex_uv_buffer = vertex_uv_buffer.take(vertex_uv_stream.size);
+				let vertex_indices_buffer = vertex_indices_buffer.take(vertex_indices_stream.size);
+				let primitive_indices_buffer = primitive_indices_buffer.take(primitive_indices_stream.size);
+				let meshlet_stream_buffer = buffer_allocator.take(meshlet_stream.size);
 
 				let streams = vec![
 					resource_management::Stream::new("Vertex.Position", vertex_positions_buffer),
@@ -951,14 +996,30 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			if let Some(mesh_resource) = response.resource().downcast_ref::<Mesh>() {
 				self.mesh_resources.insert(mesh.get_resource_id(), self.visibility_info.triangle_count);
 
+				let vertex_positions_stream;
+
+				if let Some(stream) = mesh_resource.position_stream() {
+					vertex_positions_stream = stream;
+				} else {
+					log::error!("Mesh resource does not contain vertex position stream");
+					return;
+				}
+
 				let acceleration_structure = if false {
-					let triangle_index_stream = mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Triangles).unwrap();
+					let triangle_index_stream;
 
-					assert_eq!(triangle_index_stream.data_type, IntegralTypes::U16, "Triangle index stream is not u16");
+					if let Some(stream) = mesh_resource.triangle_indices_stream() {
+						triangle_index_stream = stream;
+					} else {
+						log::error!("Mesh resource does not contain triangle index stream");
+						return;
+					}
 
-					let index_format = match triangle_index_stream.data_type {
-						IntegralTypes::U16 => ghi::DataTypes::U16,
-						IntegralTypes::U32 => ghi::DataTypes::U32,
+					assert_eq!(triangle_index_stream.stride, 2, "Triangle index stream is not u16");
+
+					let index_format = match triangle_index_stream.stride {
+						2 => ghi::DataTypes::U16,
+						4 => ghi::DataTypes::U32,
 						_ => panic!("Unsupported index format"),
 					};
 
@@ -966,9 +1027,9 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 					let bottom_level_acceleration_structure = ghi.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
 						description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
-							vertex_count: mesh_resource.vertex_count,
+							vertex_count: vertex_positions_stream.count() as u32,
 							vertex_position_encoding: ghi::Encodings::FloatingPoint,
-							triangle_count: triangle_index_stream.count / 3,
+							triangle_count: triangle_index_stream.count() as u32 / 3,
 							index_format,
 						}
 					});
@@ -983,7 +1044,27 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				let acceleration_structure = None;
 
 				{
-					let total_meshlet_count = mesh_resource.meshlet_stream.as_ref().map(|ms| ms.count).unwrap();
+					let meshlets_stream;
+
+					if let Some(stream) = mesh_resource.meshlets_stream() {
+						meshlets_stream = stream;
+					} else {
+						log::error!("Mesh resource does not contain meshlet stream");
+						return;
+					}
+
+					let vertex_indices_stream;
+
+					if let Some(stream) = mesh_resource.vertex_indices_stream() {
+						vertex_indices_stream = stream;
+					} else {
+						log::error!("Mesh resource does not contain vertex index stream");
+						return;
+					}
+
+					let mesh_vertex_count = vertex_positions_stream.count();
+
+					let total_meshlet_count = meshlets_stream.count();
 					let vertex_triangles_offset = self.visibility_info.vertex_count;
 					let primitive_triangle_offset = self.visibility_info.triangle_count;
 
@@ -1025,11 +1106,11 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						}
 					}
 
-					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_count: mesh_resource.vertex_count, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_count: mesh_vertex_count as u32, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
 
-					self.visibility_info.vertex_count += mesh_resource.vertex_count;
+					self.visibility_info.vertex_count += mesh_vertex_count as u32;
 					self.visibility_info.triangle_count += mesh_triangle_count;
-					self.visibility_info.vertex_indices_count += mesh_resource.index_streams.iter().find(|is| is.stream_type == IndexStreamTypes::Vertices).unwrap().count;
+					self.visibility_info.vertex_indices_count += vertex_indices_stream.count() as u32;
 				}
 			}
 		}
@@ -1433,6 +1514,8 @@ const MAX_LIGHTS: usize = 16;
 const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
+
+type INDEX_TYPE = u32;
 
 pub fn get_visibility_pass_mesh_source() -> String {
 	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Mesh"));

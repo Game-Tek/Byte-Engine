@@ -8,7 +8,7 @@ use polodb_core;
 
 pub struct FileTracker {
 	db: polodb_core::Database,
-	#[cfg(linux)]
+	#[cfg(unix)]
 	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, FileIdMap>,
 	#[cfg(windows)]
 	debouncer: notify_debouncer_full::Debouncer<ReadDirectoryChangesWatcher, FileIdMap>,

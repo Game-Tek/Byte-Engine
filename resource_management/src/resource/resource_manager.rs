@@ -63,7 +63,7 @@ impl ResourceManager {
 
 	pub fn set_asset_manager(&mut self, asset_manager: AssetManager) {
 		#[cfg(debug_assertions)]
-		self.asset_manager = Some(asset_manager);
+		{ self.asset_manager = Some(asset_manager); }
 	}
 
 	pub fn add_resource_handler<T>(&mut self, resource_handler: T) where T: ResourceHandler + Send + 'static {

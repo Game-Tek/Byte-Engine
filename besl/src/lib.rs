@@ -21,7 +21,7 @@ pub fn parse(source: &str) -> Result<parser::Node, CompilationError> {
 	Ok(parser_root_node)
 }
 
-pub fn lex(node: parser::NodeReference) -> Result<NodeReference, CompilationError> {
+pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
 	let besl = lexer::lex(&node).map_err(|e| CompilationError::Lex(e))?;
 
 	Ok(besl)

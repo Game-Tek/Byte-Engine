@@ -70,6 +70,11 @@ pub fn generate_glsl_header_block(compilation_settings: &ShaderGenerationSetting
 		}
 		"Mesh" => {
 			glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
+			// TODO: make this next lines configurable
+			glsl_block.push_str("layout(location=0) perprimitiveEXT out uint out_instance_index[126]\n");
+			glsl_block.push_str("layout(location=1) perprimitiveEXT out uint out_primitive_index[126]\n");
+			glsl_block.push_str("layout(triangles,max_vertices=64,max_primitives=126) out\n");
+			glsl_block.push_str("layout(local_size_x=128) in\n");
 		}
 		_ => {}
 	}

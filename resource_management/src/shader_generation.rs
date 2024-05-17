@@ -454,8 +454,6 @@ impl ShaderCompilation {
 mod tests {
     use std::cell::RefCell;
 
-    use besl::parser::NodeReference;
-
     use crate::shader_generation::ShaderGenerator;
 
 	#[test]
@@ -612,8 +610,10 @@ mod tests {
 		}
 		"#;
 
-		let number_literal = besl::parser::NodeReference::literal("number", besl::parser::NodeReference::glsl("1.0", Vec::new(), Vec::new()));
-		let sample_function = besl::parser::NodeReference::intrinsic("sample", NodeReference::parameter("num", "f32"), NodeReference::sentence(vec![NodeReference::glsl("0 + ", Vec::new(), Vec::new()), NodeReference::member_expression("num"), NodeReference::glsl(" * 2", Vec::new(), Vec::new())]), "f32");
+		use besl::parser::Node;
+
+		let number_literal = Node::literal("number", Node::glsl("1.0", Vec::new(), Vec::new()));
+		let sample_function = Node::intrinsic("sample", Node::parameter("num", "f32"), Node::sentence(vec![Node::glsl("0 + ", Vec::new(), Vec::new()), Node::member_expression("num"), Node::glsl(" * 2", Vec::new(), Vec::new())]), "f32");
 
 		let mut program_state = besl::parse(&script).unwrap();
 

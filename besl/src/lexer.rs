@@ -1388,7 +1388,7 @@ main: fn () -> void {
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, mut program) = parser::parse(tokens).expect("Failed to parse");
 
-		let intrinsic = parser::NodeReference::intrinsic("intrinsic", parser::NodeReference::parameter("num", "u32"), parser::NodeReference::sentence(vec![parser::NodeReference::glsl("vec3(", vec![], vec![]), parser::NodeReference::member_expression("num"), parser::NodeReference::glsl(")", Vec::new(), Vec::new())]), "vec3f");
+		let intrinsic = parser::Node::intrinsic("intrinsic", parser::Node::parameter("num", "u32"), parser::Node::sentence(vec![parser::Node::glsl("vec3(", vec![], vec![]), parser::Node::member_expression("num"), parser::Node::glsl(")", Vec::new(), Vec::new())]), "vec3f");
 
 		let node = lex(&node).expect("Failed to lex");
 		let node = node.borrow();

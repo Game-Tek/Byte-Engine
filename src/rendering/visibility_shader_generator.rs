@@ -4,7 +4,7 @@ use besl::{Node, NodeReference};
 use maths_rs::vec;
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 
-use crate::{rendering::{shader_strings::{CALCULATE_FULL_BARY, DISTRIBUTION_GGX, FRESNEL_SCHLICK, GEOMETRY_SMITH}, visibility_model::render_domain::{CAMERA_STRUCT_GLSL, LIGHTING_DATA_STRUCT_GLSL, LIGHT_STRUCT_GLSL, MATERIAL_STRUCT_GLSL, MESHLET_STRUCT_GLSL, MESH_STRUCT_GLSL}}, shader_generator};
+use crate::rendering::shader_strings::{CALCULATE_FULL_BARY, DISTRIBUTION_GGX, FRESNEL_SCHLICK, GEOMETRY_SMITH};
 
 pub struct VisibilityShaderGenerator {
 	out_albedo: besl::parser::Node,
@@ -131,21 +131,21 @@ uint vertex_indices[3] = uint[3](
 );
 
 vec4 model_space_vertex_positions[3] = vec4[3](
-	vec4(positions.positions[vertex_indices[0]], 1.0),
-	vec4(positions.positions[vertex_indices[1]], 1.0),
-	vec4(positions.positions[vertex_indices[2]], 1.0)
+	vec4(vertex_positions.positions[vertex_indices[0]], 1.0),
+	vec4(vertex_positions.positions[vertex_indices[1]], 1.0),
+	vec4(vertex_positions.positions[vertex_indices[2]], 1.0)
 );
 
 vec4 vertex_normals[3] = vec4[3](
-	vec4(normals.normals[vertex_indices[0]], 0.0),
-	vec4(normals.normals[vertex_indices[1]], 0.0),
-	vec4(normals.normals[vertex_indices[2]], 0.0)
+	vec4(vertex_normals.normals[vertex_indices[0]], 0.0),
+	vec4(vertex_normals.normals[vertex_indices[1]], 0.0),
+	vec4(vertex_normals.normals[vertex_indices[2]], 0.0)
 );
 
 vec2 vertex_uvs[3] = vec2[3](
-	uvs.uvs[vertex_indices[0]],
-	uvs.uvs[vertex_indices[1]],
-	uvs.uvs[vertex_indices[2]]
+	vertex_uvs.uvs[vertex_indices[0]],
+	vertex_uvs.uvs[vertex_indices[1]],
+	vertex_uvs.uvs[vertex_indices[2]]
 );
 
 vec2 image_extent = imageSize(triangle_index);

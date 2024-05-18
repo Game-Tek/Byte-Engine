@@ -1,3 +1,5 @@
+use std::{io::Write, mem::transmute};
+
 use json::object;
 use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
@@ -7,23 +9,26 @@ use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationP
 
 use crate::{core::Entity, ghi, math, Vector3};
 
-use super::{common_shader_generator::CommonShaderGenerator, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
+use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{LightData, LightingData}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
 
 pub struct ShadowRenderingPass {
 	pipeline: ghi::PipelineHandle,
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	shadow_map: ghi::ImageHandle,
+	lighting_data: ghi::BaseBufferHandle,
 }
 
 impl ShadowRenderingPass {
 	pub fn new(ghi: &mut ghi::GHI, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, view_depth_image: &ghi::ImageHandle) -> ShadowRenderingPass {
 		let light_depth_map = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 		let view_depth_map = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+		let lighting_data = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 
 		let bindings = [
 			light_depth_map.clone(),
 			view_depth_map.clone(),
+			lighting_data.clone(),
 		];
 
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
@@ -37,11 +42,12 @@ impl ShadowRenderingPass {
 		let shadow_map_resolution = Extent::square(4096);
 		
 		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, ghi::Uses::Image | ghi::Uses::Clear, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-		
 		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+		let lighting_data_buffer = ghi.create_buffer(Some("Lighting Data"), 1024, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		
 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&light_depth_map, shadow_map, sampler, ghi::Layouts::Read));
 		let view_depth_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&view_depth_map, view_depth_image.clone(), sampler, ghi::Layouts::Read));
+		let lighting_data_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&lighting_data, lighting_data_buffer.clone()));
 
 		let source_code = {
 			let shader_generator = {
@@ -54,6 +60,10 @@ impl ShadowRenderingPass {
 
 			Meshlet meshlet = meshlets[meshlet_index];
 			Mesh mesh = meshes[meshlet.instance_index];
+
+			if (lighting_data.light_count == 0) return;
+
+			Light light = lighting_data.lights[0];
 		
 			uint instance_index = meshlet.instance_index;
 		
@@ -61,7 +71,7 @@ impl ShadowRenderingPass {
 		
 			if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
 				uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
-				gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = light_matrix * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
+				gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = light.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
 			}
 			
 			if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
@@ -73,9 +83,10 @@ impl ShadowRenderingPass {
 			}
 			"#;
 
+			let lighting_data = besl::parser::Node::binding("lighting_data", besl::parser::Node::buffer("LightingData", vec![besl::parser::Node::member("light_count", "u32"), besl::parser::Node::member("lights", "Light[16]")]), 1, 2, true, false);
 			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshlets".to_string(), "meshes".to_string(), "primitive_indeces".to_string(), "triangle_indices".to_string()], Vec::new())]);
 
-			let root_node = besl::parser::Node::root_with_children(vec![main]);
+			let root_node = besl::parser::Node::root_with_children(vec![lighting_data, main]);
 
 			let root = shader_generator.transform(root_node, &object! {});
 
@@ -83,7 +94,7 @@ impl ShadowRenderingPass {
 
 			let main_node = root_node.borrow().get_main().unwrap();
 
-			let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::new("Mesh"), &main_node);
+			let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
 
 			glsl
 		};
@@ -104,7 +115,7 @@ impl ShadowRenderingPass {
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
-		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map }
+		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, lighting_data: lighting_data_buffer }
 	}
 
 	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
@@ -126,7 +137,18 @@ impl ShadowRenderingPass {
 		let x = 4f32;
 		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
-		todo!("Write light matrices");
+		let light = LightData {
+			view_matrix: normal,
+			projection_matrix: light_projection_matrix,
+			vp_matrix: light_projection_matrix * normal,
+			position: Vector3::new(0f32, 0f32, 0f32),
+			color: Vector3::new(1f32, 1f32, 1f32),
+			light_type: 0,
+		};
+
+		ghi.get_mut_buffer_slice(self.lighting_data).write(&0u32.to_le_bytes());
+		let lights: &mut [LightData] = unsafe { transmute(&mut ghi.get_mut_buffer_slice(self.lighting_data)[4..]) };
+		lights[0] = light;
 	}
 
 	pub fn get_shadow_map_image(&self) -> ghi::ImageHandle { self.shadow_map }

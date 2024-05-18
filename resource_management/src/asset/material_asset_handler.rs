@@ -1,6 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use log::debug;
+use utils::Extent;
 
 use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, Solver, StorageBackend, TypedResource, TypedResourceModel};
 
@@ -166,7 +167,14 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 
 	let main_node = root_node.borrow().get_main()?;
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::new(stage), &main_node);
+	let settings = match stage {
+		"Vertex" => ShaderGenerationSettings::vertex(),
+		"Fragment" => ShaderGenerationSettings::fragment(),
+		"Compute" => ShaderGenerationSettings::compute(Extent::square(32)),
+		_ => { panic!("Invalid shader stage") }
+	};
+
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&settings, &main_node);
 
 	let compiler = shaderc::Compiler::new().unwrap();
 	let mut options = shaderc::CompileOptions::new().unwrap();
@@ -314,7 +322,7 @@ pub mod tests {
 
 		let main_node = root.borrow().get_main().unwrap();
 
-		let glsl = crate::shader_generation::ShaderGenerator::new().minified(true).compilation().generate_glsl_shader(&crate::shader_generation::ShaderGenerationSettings::new("Fragment"), &main_node);
+		let glsl = crate::shader_generation::ShaderGenerator::new().minified(true).compilation().generate_glsl_shader(&crate::shader_generation::ShaderGenerationSettings::fragment(), &main_node);
 
 		dbg!(&glsl);
 

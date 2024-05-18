@@ -1,5 +1,7 @@
 use std::{cell::RefCell, collections::HashSet};
 
+use utils::Extent;
+
 pub struct ShaderGenerator {
 	minified: bool,
 }
@@ -36,14 +38,35 @@ impl Default for GLSLSettings {
 	}
 }
 
+enum Stages {
+	Vertex,
+	Compute {
+		local_size: Extent,
+	},
+	Mesh,
+	Fragment,
+}
+
 pub struct ShaderGenerationSettings {
 	glsl: GLSLSettings,
-	stage: String,
+	stage: Stages,
 }
 
 impl ShaderGenerationSettings {
-	pub fn new(stage: &str) -> ShaderGenerationSettings {
-		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: stage.to_string() }
+	pub fn compute(extent: Extent) -> ShaderGenerationSettings {
+		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: Stages::Compute { local_size: extent } }
+	}
+
+	pub fn mesh() -> ShaderGenerationSettings {
+		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: Stages::Mesh }
+	}
+
+	pub fn fragment() -> ShaderGenerationSettings {
+		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: Stages::Fragment }
+	}
+	
+	pub fn vertex() -> ShaderGenerationSettings {
+		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: Stages::Vertex }
 	}
 }
 
@@ -73,7 +96,6 @@ impl ShaderCompilation {
 		{
 			let mut glsl_block = String::with_capacity(248);
 			self.generate_glsl_header_block(&mut glsl_block, shader_compilation_settings);
-			glsl_block.push_str("layout(local_size_x=32) in;\n");
 			string.insert_str(0, &glsl_block);
 		}
 	
@@ -408,14 +430,11 @@ impl ShaderCompilation {
 	
 		// shader type
 	
-		let shader_stage = compilation_settings.stage.as_str();
-	
-		match shader_stage {
-			"Vertex" => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
-			"Fragment" => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
-			"Compute" => glsl_block.push_str("#pragma shader_stage(compute)\n"),
-			"Mesh" => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
-			_ => glsl_block.push_str("#define BE_UNKNOWN_SHADER_TYPE\n")
+		match compilation_settings.stage {
+			Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
+			Stages::Fragment => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
+			Stages::Compute { .. } => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+			Stages::Mesh => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
 		}
 	
 		// extensions
@@ -428,15 +447,21 @@ impl ShaderCompilation {
 		glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
 		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
 	
-		match shader_stage {
-			"Compute" => {
+		match compilation_settings.stage {
+			Stages::Compute { local_size } => {
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:enable\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_arithmetic:enable\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_ballot:enable\n");
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_shuffle:enable\n");
+				glsl_block.push_str(&format!("layout(local_size_x={},local_size_y={},local_size_z={}) in;\n", local_size.width(), local_size.height(), local_size.depth()));
 			}
-			"Mesh" => {
+			Stages::Mesh => {
 				glsl_block.push_str("#extension GL_EXT_mesh_shader:require\n");
+				// TODO: make this next lines configurable
+				glsl_block.push_str("layout(location=0) perprimitiveEXT out uint out_instance_index[126];\n");
+				glsl_block.push_str("layout(location=1) perprimitiveEXT out uint out_primitive_index[126];\n");
+				glsl_block.push_str("layout(triangles,max_vertices=64,max_primitives=126) out;\n");
+				glsl_block.push_str("layout(local_size_x=128) in;\n");
 			}
 			_ => {}
 		}

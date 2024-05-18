@@ -5,6 +5,7 @@ use resource_management::asset::material_asset_handler::ProgramGenerator;
 use crate::besl::lexer;
 
 pub struct CommonShaderGenerator {
+	camera_binding: besl::parser::Node,
 	mesh_struct: besl::parser::Node,
 	camera_struct: besl::parser::Node,
 	meshlet_struct: besl::parser::Node,
@@ -13,7 +14,6 @@ pub struct CommonShaderGenerator {
 	meshes: besl::parser::Node,
 	positions: besl::parser::Node,
 	normals: besl::parser::Node,
-	tangents: besl::parser::Node,
 	uvs: besl::parser::Node,
 	vertex_indices: besl::parser::Node,
 	primitive_indices: besl::parser::Node,
@@ -55,6 +55,7 @@ return colors[i % 16];
 		let light_struct = self.light_struct.clone();
 		let material_struct = self.material_struct.clone();
 
+		let camera_binding = self.camera_binding.clone();
 		let material_offset = self.material_offset.clone();
 		let meshes = self.meshes.clone();
 		let material_count = self.material_count.clone();
@@ -68,7 +69,7 @@ return colors[i % 16];
 		let positions = self.positions.clone();
 		let normals = self.normals.clone();
 
-		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, material_offset, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, material_struct]);
+		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, camera_binding, material_offset, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, material_struct]);
 		root.add(vec![besl::parser::Node::glsl(code, Vec::new(), Vec::new()).into()]);
 
 		root
@@ -87,20 +88,20 @@ impl CommonShaderGenerator {
 		let light_struct = Node::r#struct("Light", vec![Node::member("view_matrix", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("vp_matrix", "mat4f"), Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
 
+		let camera_binding = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 0, 0, true, false);
 		let meshes = Node::binding("meshes", Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[64]")]), 0, 1, true, false);
-		let position = Node::binding("positions", Node::buffer("Positions", vec![Node::member("positions", "vec3f[8192]")]), 0, 2, true, false);
-		let normals = Node::binding("normals", Node::buffer("Normals", vec![Node::member("normals", "vec3f[8192]")]), 0, 3, true, false);
-		let tangents = Node::binding("tangents", Node::buffer("Tangents", vec![Node::member("tangents", "vec3f[8192]")]), 0, 4, true, false);
-		let uvs = Node::binding("uvs", Node::buffer("UVs", vec![Node::member("uvs", "vec2f[8192]")]), 0, 5, true, false);
-		let set0_binding4 = Node::binding("vertex_indices", Node::buffer("VertexIndices", vec![Node::member("vertex_indices", "u16[8192]")]), 0, 6, true, false);
-		let set0_binding5 = Node::binding("primitive_indices", Node::buffer("PrimitiveIndices", vec![Node::member("primitive_indices", "u8[8192]")]), 0, 7, true, false);
+		let positions = Node::binding("vertex_positions", Node::buffer("Positions", vec![Node::member("positions", "vec3f[8192]")]), 0, 2, true, false);
+		let normals = Node::binding("vertex_normals", Node::buffer("Normals", vec![Node::member("normals", "vec3f[8192]")]), 0, 3, true, false);
+		let uvs = Node::binding("vertex_uvs", Node::buffer("UVs", vec![Node::member("uvs", "vec2f[8192]")]), 0, 5, true, false);
+		let vertex_indices = Node::binding("vertex_indices", Node::buffer("VertexIndices", vec![Node::member("vertex_indices", "u16[8192]")]), 0, 6, true, false);
+		let primitive_indices = Node::binding("primitive_indices", Node::buffer("PrimitiveIndices", vec![Node::member("primitive_indices", "u8[8192]")]), 0, 7, true, false);
 		let meshlets = Node::binding("meshlets", Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", "Meshlet[8192]")]), 0, 8, true, false);
 		let textures = Node::binding_array("textures", Node::combined_image_sampler(), 0, 9, true, false, 16);
 
-		let set1_binding0 = Node::binding("material_count", Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[2073600]")]), 1, 0, true, false);
-		let set1_binding1 = Node::binding("material_offset", Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600")]), 1, 1, true, false);
-		let set1_binding4 = Node::binding("pixel_mapping", Node::buffer("PixelMapping", vec![Node::member("pixel_mapping", "vec2u16[2073600]")]), 1, 4, true, false);
-		let set1_binding6 = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
+		let material_count = Node::binding("material_count", Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[2073600]")]), 1, 0, true, false);
+		let material_offset = Node::binding("material_offset", Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600")]), 1, 1, true, false);
+		let pixel_mapping = Node::binding("pixel_mapping", Node::buffer("PixelMapping", vec![Node::member("pixel_mapping", "vec2u16[2073600]")]), 1, 4, true, false);
+		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
 
 		Self {
 			mesh_struct,
@@ -108,19 +109,20 @@ impl CommonShaderGenerator {
 			meshlet_struct,
 			light_struct,
 			material_struct,
+
+			camera_binding,
 			meshes,
-			positions: position,
+			positions,
 			normals,
-			tangents,
 			uvs,
-			vertex_indices: set0_binding4,
-			primitive_indices: set0_binding5,
+			vertex_indices,
+			primitive_indices,
 			meshlets,
 			textures,
-			material_count: set1_binding0,
-			material_offset: set1_binding1,
-			pixel_mapping: set1_binding4,
-			triangle_index: set1_binding6,
+			material_count,
+			material_offset,
+			pixel_mapping,
+			triangle_index,
 		}
 	}
 }

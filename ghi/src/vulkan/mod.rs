@@ -175,6 +175,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 						let error_string = shader_compilation::format_glslang_error("shader_name:", &compiler_error_string, &source_code).unwrap_or(compiler_error_string);
 
+						println!("{}", error_string);
+
 						return Err(());
 					}
 				}

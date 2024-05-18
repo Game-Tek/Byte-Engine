@@ -31,7 +31,6 @@ extern crate besl;
 
 pub mod application;
 pub mod window_system;
-pub mod shader_generator;
 pub mod input;
 pub mod camera;
 pub mod audio;

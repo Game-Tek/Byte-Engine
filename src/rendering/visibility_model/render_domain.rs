@@ -5,9 +5,12 @@ use std::sync::RwLock;
 
 use ghi::ImageHandle;
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
+use json::object;
 use log::error;
 use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
+use resource_management::asset::material_asset_handler::ProgramGenerator;
+use resource_management::shader_generation::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::ResourceStore;
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
@@ -17,10 +20,11 @@ use utils::{Extent, RGBA};
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{self, Entity, EntityHandle};
+use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
-use crate::{shader_generator, Vector2};
+use crate::{Vector2};
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
 
 struct MeshData {
@@ -839,9 +843,9 @@ struct ShaderInstanceData {
 }
 
 #[repr(C)]
-struct LightingData {
-	count: u32,
-	lights: [LightData; MAX_LIGHTS],
+pub struct LightingData {
+	pub count: u32,
+	pub lights: [LightData; MAX_LIGHTS],
 }
 
 #[repr(C)]
@@ -857,13 +861,13 @@ struct ShaderCameraData {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-struct LightData {
-	view_matrix: Mat4f,
-	projection_matrix: Mat4f,
-	vp_matrix: Mat4f,
-	position: Vector3,
-	color: Vector3,
-	light_type: u8,
+pub struct LightData {
+	pub view_matrix: Mat4f,
+	pub projection_matrix: Mat4f,
+	pub vp_matrix: Mat4f,
+	pub position: Vector3,
+	pub color: Vector3,
+	pub light_type: u8,
 }
 
 #[repr(C)]
@@ -1389,7 +1393,7 @@ struct MaterialOffsetPass {
 
 impl MaterialOffsetPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::GLSL(MATERIAL_OFFSET_SOURCE.to_string()), ghi::ShaderTypes::Compute,
+		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::GLSL(get_material_offset_source()), ghi::ShaderTypes::Compute,
 			&[
 				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
 				ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::WRITE),
@@ -1515,67 +1519,55 @@ const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
 
-type INDEX_TYPE = u32;
-
 pub fn get_visibility_pass_mesh_source() -> String {
-	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Mesh"));
-	string.push_str(CAMERA_STRUCT_GLSL);
-	string.push_str(MESH_STRUCT_GLSL);
-	string.push_str(MESHLET_STRUCT_GLSL);
-	string.push_str("layout(location=0) perprimitiveEXT out uint out_instance_index[126];
-	layout(location=1) perprimitiveEXT out uint out_primitive_index[126];
-	
-	layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
-		Camera camera;
+	let shader_generator = {
+		let common_shader_generator = CommonShaderGenerator::new();
+		common_shader_generator
 	};
+
+	let main_code = r#"
+	uint meshlet_index = gl_WorkGroupID.x;
+
+	Meshlet meshlet = meshlets.meshlets[meshlet_index];
+	Mesh mesh = meshes.meshes[meshlet.instance_index];
+	Camera camera = camera.camera;
+
+	uint instance_index = meshlet.instance_index;
+
+	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+
+	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
+		uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices.vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
+		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
+		// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions.positions[vertex_index], 1.0);
+	}
 	
-	layout(set=0,binding=1,scalar) buffer readonly MeshesBuffer {
-		Mesh meshes[];
-	};
-	
-	layout(set=0,binding=2,scalar) buffer readonly MeshVertexPositions {
-		vec3 vertex_positions[];
-	};
-	
-	layout(set=0,binding=6,scalar) buffer readonly VertexIndices {
-		uint16_t vertex_indices[];
-	};
-	
-	layout(set=0,binding=7,scalar) buffer readonly PrimitiveIndices {
-		uint8_t primitive_indices[];
-	};
-	
-	layout(set=0,binding=8,scalar) buffer readonly MeshletsBuffer {
-		Meshlet meshlets[];
-	};
-	
-	layout(triangles, max_vertices=64, max_primitives=126) out;
-	layout(local_size_x=128) in;
-	void main() {
-		uint meshlet_index = gl_WorkGroupID.x;
-	
-		Meshlet meshlet = meshlets[meshlet_index];
-		Mesh mesh = meshes[meshlet.instance_index];
-	
-		uint instance_index = meshlet.instance_index;
-	
-		SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
-	
-		if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
-			uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
-			gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
-			// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions[vertex_index], 1.0);
-		}
-		
-		if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
-			uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
-			uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
-			gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-			out_instance_index[gl_LocalInvocationID.x] = instance_index;
-			out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
-		}
-	}");
-	string
+	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
+		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
+		uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index * 3 + 0], primitive_indices.primitive_indices[triangle_index * 3 + 1], primitive_indices.primitive_indices[triangle_index * 3 + 2]);
+		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+		out_instance_index[gl_LocalInvocationID.x] = instance_index;
+		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
+	}
+	"#;
+
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["camera".to_string(), "meshes".to_string(), "vertex_positions".to_string(), "vertex_indices".to_string(), "primitive_indices".to_string(), "meshlets".to_string()], Vec::new())]);
+
+	let root_node = besl::parser::Node::root();
+
+	let mut root = shader_generator.transform(root_node, &object! {});
+
+	root.add(vec![main]);
+
+	let root_node = besl::lex(root).unwrap();
+
+	let main_node = root_node.borrow().get_main().unwrap();
+
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
+
+	dbg!(&glsl);
+
+	glsl
 }
 
 const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
@@ -1601,61 +1593,46 @@ void main() {
 "#;
 
 pub fn get_material_count_source() -> String {
-	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
-	string.push_str(MESH_STRUCT_GLSL);
-	string.push_str("	
-	layout(set=0,binding=1,scalar) buffer MeshesBuffer {
-		Mesh meshes[];
+	let shader_generator = {
+		let common_shader_generator = CommonShaderGenerator::new();
+		common_shader_generator
 	};
-	
-	layout(set=1,binding=0,scalar) buffer MaterialCount {
-		uint material_count[];
-	};
-	
-	layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
-	
-	layout(local_size_x=32, local_size_y=32) in;
-	void main() {
-		// If thread is out of bound respect to the material_id texture, return
-		if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
-	
-		uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
-	
-		if (pixel_instance_index == 0xFFFFFFFF) { return; }
-	
-		uint material_index = meshes[pixel_instance_index].material_index;
-	
-		atomicAdd(material_count[material_index], 1);
-	}");
-	string
+
+	let main_code = r#"
+	// If thread is out of bound respect to the material_id texture, return
+	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+
+	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+
+	if (pixel_instance_index == 0xFFFFFFFF) { return; }
+
+	uint material_index = meshes[pixel_instance_index].material_index;
+
+	atomicAdd(material_count[material_index], 1);
+	"#;
+
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_count".to_string(), "instance_index".to_string()], Vec::new())]);
+
+	let root_node = besl::parser::Node::root_with_children(vec![main]);
+
+	let root = shader_generator.transform(root_node, &object! {});
+
+	let root_node = besl::lex(root).unwrap();
+
+	let main_node = root_node.borrow().get_main().unwrap();
+
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+
+	glsl
 }
 
-const MATERIAL_OFFSET_SOURCE: &'static str = r#"
-#version 450
-#pragma shader_stage(compute)
+pub fn get_material_offset_source() -> String {
+	let shader_generator = {
+		let common_shader_generator = CommonShaderGenerator::new();
+		common_shader_generator
+	};
 
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_shader_explicit_arithmetic_types : enable
-
-layout(set=1,binding=0,scalar) buffer readonly MaterialCount {
-	uint material_count[];
-};
-
-layout(set=1,binding=1,scalar) buffer writeonly MaterialOffset {
-	uint material_offset[];
-};
-
-layout(set=1,binding=2,scalar) buffer writeonly MaterialOffsetScratch {
-	uint material_offset_scratch[];
-};
-
-layout(set=1,binding=3,scalar) buffer writeonly MaterialEvaluationDispatches {
-	uvec3 material_evaluation_dispatches[];
-};
-
-layout(local_size_x=1) in;
-void main() {
+	let main_code = r#"
 	uint sum = 0;
 
 	for (uint i = 0; i < 4; i++) {
@@ -1664,85 +1641,55 @@ void main() {
 		material_evaluation_dispatches[i] = uvec3((material_count[i] + 31) / 32, 1, 1);
 		sum += material_count[i];
 	}
+	"#;
+
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["material_offset".to_string(), "material_offset_scratch".to_string(), "material_count".to_string(), "material_evaluation_dispatches".to_string(),], Vec::new())]);
+
+	let root_node = besl::parser::Node::root_with_children(vec![main]);
+
+	let root = shader_generator.transform(root_node, &object! {});
+
+	let root_node = besl::lex(root).unwrap();
+
+	let main_node = root_node.borrow().get_main().unwrap();
+
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node);
+
+	glsl
 }
-"#;
 
 pub fn get_pixel_mapping_source() -> String {
-	let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
-	string.push_str(MESH_STRUCT_GLSL);
-	string.push_str(MESHLET_STRUCT_GLSL);
-	string.push_str("	
-	layout(set=0,binding=1,scalar) buffer MeshesBuffer {
-		Mesh meshes[];
+	let shader_generator = {
+		let common_shader_generator = CommonShaderGenerator::new();
+		common_shader_generator
 	};
-	
-	layout(set=1,binding=2,scalar) buffer MaterialOffsetScratch {
-		uint material_offset_scratch[];
-	};
-	
-	layout(set=1,binding=4,scalar) buffer writeonly PixelMapping {
-		u16vec2 pixel_mapping[];
-	};
-	
-	layout(set=1, binding=7, r32ui) uniform readonly uimage2D instance_index;
-	
-	layout(local_size_x=32, local_size_y=32) in;
-	void main() {
-		// If thread is out of bound respect to the material_id texture, return
-		if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
-	
-		uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
-	
-		if (pixel_instance_index == 0xFFFFFFFF) { return; }
-	
-		uint material_index = meshes[pixel_instance_index].material_index;
-	
-		uint offset = atomicAdd(material_offset_scratch[material_index], 1);
-	
-		pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
-	}
-	");
-	string
 
+	let main_code = r#"
+	// If thread is out of bound respect to the material_id texture, return
+	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+
+	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+
+	if (pixel_instance_index == 0xFFFFFFFF) { return; }
+
+	uint material_index = meshes[pixel_instance_index].material_index;
+
+	uint offset = atomicAdd(material_offset_scratch[material_index], 1);
+
+	pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
+	"#;
+
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_offset_scratch".to_string(), "pixel_mapping".to_string(), "instance_index".to_string(),], Vec::new())]);
+
+	let root_node = besl::parser::Node::root_with_children(vec![main]);
+
+	let root = shader_generator.transform(root_node, &object! {});
+
+	let root_node = besl::lex(root).unwrap();
+
+	let main_node = root_node.borrow().get_main().unwrap();
+
+	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+
+	glsl
 }
-
-pub const LIGHT_STRUCT_GLSL: &'static str = "struct Light {
-	mat4 view_matrix;
-	mat4 projection_matrix;
-	mat4 vp_matrix;
-	vec3 position;
-	vec3 color;
-	uint8_t light_type;
-};";
-
-pub const LIGHTING_DATA_STRUCT_GLSL: &'static str = "struct LightingData {
-	uint light_count;
-	Light lights[16];
-};";
-
-pub const MATERIAL_STRUCT_GLSL: &'static str = "struct Material {
-	uint textures[16];
-};";
-
-pub const CAMERA_STRUCT_GLSL: &'static str = "struct Camera {
-	mat4 view;
-	mat4 projection_matrix;
-	mat4 view_projection;
-	mat4 inverse_view_matrix;
-	mat4 inverse_projection_matrix;
-	mat4 inverse_view_projection_matrix;
-};";
-
-pub const MESHLET_STRUCT_GLSL: &'static str = "struct Meshlet {
-	uint32_t instance_index;
-	uint16_t vertex_offset;
-	uint16_t triangle_offset;
-	uint8_t vertex_count;
-	uint8_t triangle_count;
-};";
-
-pub const MESH_STRUCT_GLSL: &'static str = "struct Mesh {
-	mat4 model;
-	uint material_index;
-	uint32_t base_vertex_index;
-};";

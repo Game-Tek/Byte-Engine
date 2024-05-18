@@ -236,6 +236,7 @@ impl Node {
 	pub fn add(&mut self, children: Vec<Node>) {
 		match &mut self.node {
 			Nodes::Scope { children: c, .. } => {
+				// Extend from the beginning of the vector
 				c.extend(children);
 			},
 			_ => { println!("Tried to add children to a non-scope node."); },

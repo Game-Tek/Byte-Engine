@@ -1431,7 +1431,7 @@ impl MaterialOffsetPass {
 
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
 		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1))); // BUG: [ SYNC-HAZARD-READ-AFTER-WRITE ] Object 0: handle = 0x5eb05e000000003b, name = Material Evaluation Dipatches, type = VK_OBJECT_TYPE_BUFFER; | MessageID = 0xe4d96472 | vkCmdDispatch: Hazard READ_AFTER_WRITE for VkBuffer 0x5eb05e000000003b[Material Evaluation Dipatches] in VkCommandBuffer 0x1d6cf653400[Render], VkPipeline 0x210d07000000003a[], and VkDescriptorSet 0xa21a4e0000000030[Visibility Descriptor Set], type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding #3 index 0. Access info (usage: SYNC_COMPUTE_SHADER_SHADER_STORAGE_READ, prior_usage: SYNC_COPY_TRANSFER_WRITE, write_barriers: SYNC_COMPUTE_SHADER_SHADER_STORAGE_WRITE, command: vkCmdFillBuffer, seq_no: 15, reset_no: 2), [ SYNC-HAZARD-READ-AFTER-WRITE ] Object 0: handle = 0x59ffe0000000003d, name = Material Offset, type = VK_OBJECT_TYPE_BUFFER; | MessageID = 0xe4d96472 | vkCmdDispatch: Hazard READ_AFTER_WRITE for VkBuffer 0x59ffe0000000003d[Material Offset] in VkCommandBuffer 0x1d6cf653400[Render], VkPipeline 0x210d07000000003a[], and VkDescriptorSet 0xa21a4e0000000030[Visibility Descriptor Set], type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding #1 index 0. Access info (usage: SYNC_COMPUTE_SHADER_SHADER_STORAGE_READ, prior_usage: SYNC_COPY_TRANSFER_WRITE, write_barriers: SYNC_COMPUTE_SHADER_SHADER_STORAGE_WRITE, command: vkCmdFillBuffer, seq_no: 13, reset_no: 2), [ SYNC-HAZARD-READ-AFTER-WRITE ] Object 0: handle = 0x808562000000003f, name = Material Offset Scratch, type = VK_OBJECT_TYPE_BUFFER; | MessageID = 0xe4d96472 | vkCmdDispatch: Hazard READ_AFTER_WRITE for VkBuffer 0x808562000000003f[Material Offset Scratch] in VkCommandBuffer 0x1d6cf653400[Render], VkPipeline 0x210d07000000003a[], and VkDescriptorSet 0xa21a4e0000000030[Visibility Descriptor Set], type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, binding #2 index 0. Access info (usage: SYNC_COMPUTE_SHADER_SHADER_STORAGE_READ, prior_usage: SYNC_COPY_TRANSFER_WRITE, write_barriers: SYNC_COMPUTE_SHADER_SHADER_STORAGE_WRITE, command: vkCmdFillBuffer, seq_no: 14, reset_no: 2)
+		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
 		command_buffer_recording.end_region();
 	}
 
@@ -1571,7 +1571,7 @@ void main() {
 
 pub fn get_material_count_source() -> String {
 	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
+		let common_shader_generator = CommonShaderGenerator::new_with_params(false, true, false, true, false, true, false, false);
 		common_shader_generator
 	};
 
@@ -1607,7 +1607,7 @@ pub fn get_material_count_source() -> String {
 
 pub fn get_material_offset_source() -> String {
 	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
+		let common_shader_generator = CommonShaderGenerator::new_with_params(true, false, false, true, false, true, false, false);
 		common_shader_generator
 	};
 
@@ -1641,7 +1641,7 @@ pub fn get_material_offset_source() -> String {
 
 pub fn get_pixel_mapping_source() -> String {
 	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
+		let common_shader_generator = CommonShaderGenerator::new_with_params(false, false, false, false, false, true, false, true);
 		common_shader_generator
 	};
 

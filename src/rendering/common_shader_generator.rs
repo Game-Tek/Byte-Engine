@@ -163,4 +163,80 @@ impl CommonShaderGenerator {
 			process_meshlet,
 		}
 	}
+
+	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
+		use besl::parser::Node;
+
+		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32")]);
+		let camera_struct = Node::r#struct("Camera", vec![Node::member("view", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view_matrix", "mat4f"), Node::member("inverse_projection_matrix", "mat4f"), Node::member("inverse_view_projection_matrix", "mat4f")]);
+		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("instance_index", "u32"), Node::member("vertex_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("vertex_count", "u8"), Node::member("triangle_count", "u8")]);
+		let light_struct = Node::r#struct("Light", vec![Node::member("view_matrix", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
+		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
+
+		let camera_binding = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 0, 0, true, false);
+		let meshes = Node::binding("meshes", Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[64]")]), 0, 1, true, false);
+		let positions = Node::binding("vertex_positions", Node::buffer("Positions", vec![Node::member("positions", "vec3f[8192]")]), 0, 2, true, false);
+		let normals = Node::binding("vertex_normals", Node::buffer("Normals", vec![Node::member("normals", "vec3f[8192]")]), 0, 3, true, false);
+		let uvs = Node::binding("vertex_uvs", Node::buffer("UVs", vec![Node::member("uvs", "vec2f[8192]")]), 0, 5, true, false);
+		let vertex_indices = Node::binding("vertex_indices", Node::buffer("VertexIndices", vec![Node::member("vertex_indices", "u16[8192]")]), 0, 6, true, false);
+		let primitive_indices = Node::binding("primitive_indices", Node::buffer("PrimitiveIndices", vec![Node::member("primitive_indices", "u8[8192]")]), 0, 7, true, false);
+		let meshlets = Node::binding("meshlets", Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", "Meshlet[8192]")]), 0, 8, true, false);
+		let textures = Node::binding_array("textures", Node::combined_image_sampler(), 0, 9, true, false, 16);
+
+		let material_count = Node::binding("material_count", Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[2073600]")]), 1, 0, material_count_read, material_count_write); // TODO: somehow set read/write properties per shader
+		let material_offset = Node::binding("material_offset", Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600")]), 1, 1, material_offset_read, material_offset_write);
+		let material_offset_scratch = Node::binding("material_offset_scratch", Node::buffer("MaterialOffsetScratch", vec![Node::member("material_offset_scratch", "u32[2073600]")]), 1, 2, material_offset_scratch_read, material_offset_scratch_write);
+		let material_evaluation_dispatches = Node::binding("material_evaluation_dispatches", Node::buffer("MaterialEvaluationDispatches", vec![Node::member("material_evaluation_dispatches", "vec3u[2073600]")]), 1, 3, material_offset_read, material_offset_write);
+		let pixel_mapping = Node::binding("pixel_mapping", Node::buffer("PixelMapping", vec![Node::member("pixel_mapping", "vec2u16[2073600]")]), 1, 4, pixel_mapping_read, pixel_mapping_write);
+		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
+		let instance_index = Node::binding("instance_index", Node::image("r32ui"), 1, 7, true, false);
+
+		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("uint meshlet_index = gl_WorkGroupID.x;
+		Meshlet meshlet = meshlets.meshlets[meshlet_index];
+		Mesh mesh = meshes.meshes[meshlet.instance_index];
+	
+		uint instance_index = meshlet.instance_index;
+	
+		SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+	
+		if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
+			uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices.vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
+			gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
+		}
+		
+		if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
+			uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
+			uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index * 3 + 0], primitive_indices.primitive_indices[triangle_index * 3 + 1], primitive_indices.primitive_indices[triangle_index * 3 + 2]);
+			gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+			out_instance_index[gl_LocalInvocationID.x] = instance_index;
+			out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
+		}", vec!["meshes".to_string(), "vertex_positions".to_string(), "vertex_indices".to_string(), "primitive_indices".to_string(), "meshlets".to_string()], vec![])]);
+
+		Self {
+			mesh_struct,
+			camera_struct,
+			meshlet_struct,
+			light_struct,
+			material_struct,
+
+			camera_binding,
+			meshes,
+			positions,
+			normals,
+			uvs,
+			vertex_indices,
+			primitive_indices,
+			meshlets,
+			textures,
+			material_count,
+			material_offset,
+			material_offset_scratch,
+			material_evaluation_dispatches,
+			pixel_mapping,
+			triangle_index,
+			instance_index,
+
+			process_meshlet,
+		}
+	}
 }

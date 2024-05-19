@@ -231,18 +231,6 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 	Some((shader, result_shader_bytes.into()))
 }
 
-fn default_vertex_shader() -> &'static str {
-	"void main() { gl_Position = pc.camera.view_projection * pc.meshes[gl_InstanceIndex].model * vec4(in_position, 1.0); out_instance_index = gl_InstanceIndex; }"
-}
-
-fn default_fragment_shader() -> &'static str {
-	"void main() { out_color = get_debug_color(in_instance_index); }"
-}
-
-struct MaterialDescription {
-
-}
-
 #[cfg(test)]
 pub mod tests {
 	use super::{MaterialAssetHandler, ProgramGenerator};

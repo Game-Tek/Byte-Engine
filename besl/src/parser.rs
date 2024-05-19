@@ -270,6 +270,27 @@ impl Node {
 			Nodes::Null => None,
 		}
 	}
+	
+	pub fn sort(&mut self) {
+		// Place main function node at the end
+		
+		match &mut self.node {
+			Nodes::Scope { children, .. } => { // Only sort scopes
+				// Place main function node at the end
+				children.sort_by(|a, b| {
+					if a.name() == Some("main") {
+						std::cmp::Ordering::Greater
+					} else if b.name() == Some("main") {
+						std::cmp::Ordering::Less
+					} else {
+						std::cmp::Ordering::Equal
+					}
+				});
+				children.iter_mut().for_each(|n| n.sort()); // Recursively sort children
+			},
+			_ => {},
+		}
+	}
 }
 
 #[derive(Clone, Debug)]

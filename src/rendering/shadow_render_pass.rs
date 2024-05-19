@@ -23,7 +23,7 @@ impl ShadowRenderingPass {
 	pub fn new(ghi: &mut ghi::GHI, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, view_depth_image: &ghi::ImageHandle) -> ShadowRenderingPass {
 		let light_depth_map = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 		let view_depth_map = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
-		let lighting_data = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+		let lighting_data = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH);
 
 		let bindings = [
 			light_depth_map.clone(),
@@ -125,10 +125,10 @@ impl ShadowRenderingPass {
 			vp_matrix: light_projection_matrix * normal,
 			position: Vector3::new(0f32, 0f32, 0f32),
 			color: Vector3::new(1f32, 1f32, 1f32),
-			light_type: 0,
+			light_type: 'D' as u8,
 		};
 
-		ghi.get_mut_buffer_slice(self.lighting_data).write(&0u32.to_le_bytes());
+		ghi.get_mut_buffer_slice(self.lighting_data).write(&1u32.to_le_bytes());
 		let lights: &mut [LightData] = unsafe { transmute(&mut ghi.get_mut_buffer_slice(self.lighting_data)[4..]) };
 		lights[0] = light;
 	}

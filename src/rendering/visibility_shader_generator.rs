@@ -6,6 +6,8 @@ use resource_management::asset::material_asset_handler::ProgramGenerator;
 
 use crate::rendering::shader_strings::{CALCULATE_FULL_BARY, DISTRIBUTION_GGX, FRESNEL_SCHLICK, GEOMETRY_SMITH};
 
+use super::common_shader_generator::CommonShaderGenerator;
+
 pub struct VisibilityShaderGenerator {
 	out_albedo: besl::parser::Node,
 	camera: besl::parser::Node,
@@ -230,7 +232,7 @@ normal = normalize(TBN * normal);
 for (uint i = 0; i < lighting_data.light_count; ++i) {
 	vec3 light_pos = lighting_data.lights[i].position;
 	vec3 light_color = lighting_data.lights[i].color;
-	mat4 light_matrix = lighting_data.lights[i].vp_matrix;
+	mat4 light_matrix = lighting_data.lights[i].view_projection;
 	uint8_t light_type = lighting_data.lights[i].light_type;
 
 	vec3 L = vec3(0.0);
@@ -298,7 +300,11 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		let out_albedo = self.out_albedo.clone();
 		let out_diffuse = self.out_diffuse.clone();
 
-		let mut m = root.get_mut("main").unwrap().clone();
+		let common_shader_generator = CommonShaderGenerator::new();
+
+		root = common_shader_generator.transform(root, material);
+
+		let mut m = root.get_mut("main").unwrap();
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
@@ -310,7 +316,6 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 
 		root.add(vec![self.lighting_data.clone(), push_constant, self.barycentric_deriv.clone(), set2_binding11, set2_binding1, set2_binding5, set2_binding10, lighting_data, out_albedo, out_diffuse, self.calculate_full_bary.clone(), self.interpolate_vec3f_with_deriv.clone(), self.interpolate_vec2f_with_deriv.clone(), self.distribution_ggx.clone(), self.geometry_schlick_ggx.clone(), self.geometry_smith.clone(), self.fresnel_schlick.clone(), self.sample_function.clone(), self.unit_vector_from_xy.clone(), self.sample_normal_function.clone()]);
 		root.add(extra);
-		root.add(vec![m]);
 
 		root
 	}

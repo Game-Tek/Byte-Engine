@@ -6,7 +6,6 @@ use byte_engine::rendering::mesh::{self, Mesh};
 use byte_engine::rendering::point_light::PointLight;
 use byte_engine::{application::Application, Vector3};
 use byte_engine::core::{self, EntityHandle};
-use maths_rs::prelude::{MatTranslate, MatScale,};
 
 fn main() {
 	let mut app = byte_engine::application::GraphicsApplication::new("GI");

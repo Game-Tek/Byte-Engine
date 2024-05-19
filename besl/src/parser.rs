@@ -20,7 +20,7 @@
 
 /// Parse consumes an stream of tokens and return a JSPD describing the shader.
 pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), ParsingFailReasons> {
-	let mut program_state = ProgramState::new();
+	let mut program_state = ProgramState{};
 
 	let mut iterator = tokens.iter();
 
@@ -51,8 +51,6 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 }
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -843,42 +841,6 @@ impl Index<&str> for Node {
 #[derive(Clone)]
 pub struct ProgramState {
 	// pub(super) types: HashMap<String, NodeReference>,
-}
-
-impl ProgramState {
-	pub fn new() -> Self {
-		let mut types = HashMap::new();
-
-		let void = Node::r#struct("void", Vec::new());
-		let u8 = Node::r#struct("u8", Vec::new());
-		let u16 = Node::r#struct("u16", Vec::new());
-		let u32 = Node::r#struct("u32", Vec::new());
-		let f32 = Node::r#struct("f32", Vec::new());
-		let in_type = Node::r#struct("In", Vec::new()); // Input type
-		let out_type = Node::r#struct("Out", Vec::new()); // Output type
-		let push_constant_type = Node::r#struct("PushConstant", Vec::new()); // Output type
-		let vec2f = Node::r#struct("vec2f", vec![Node::member("x", "f32"), Node::member("y", "f32")]);
-		let vec2u16 = Node::r#struct("vec2u16", vec![Node::member("x", "u16"), Node::member("y", "u16")]);
-		let vec3f = Node::r#struct("vec3f", vec![Node::member("x", "f32"), Node::member("y", "f32"), Node::member("z", "f32")]);
-		let vec4f = Node::r#struct("vec4f", vec![Node::member("x", "f32"), Node::member("y", "f32"), Node::member("z", "f32"), Node::member("w", "f32")]);
-		let mat4f = Node::r#struct("mat4f", vec![Node::member("x", "f32"), Node::member("y", "f32"), Node::member("z", "f32"), Node::member("w", "f32")]);
-	
-		types.insert("void".to_string(), void);
-		types.insert("u8".to_string(), u8);
-		types.insert("u16".to_string(), u16);
-		types.insert("u32".to_string(), u32);
-		types.insert("f32".to_string(), f32);
-		types.insert("In".to_string(), in_type);
-		types.insert("Out".to_string(), out_type);
-		types.insert("PushConstant".to_string(), push_constant_type);
-		types.insert("vec2f".to_string(), vec2f);
-		types.insert("vec2u16".to_string(), vec2u16);
-		types.insert("vec3f".to_string(), vec3f);
-		types.insert("vec4f".to_string(), vec4f);
-		types.insert("mat4f".to_string(), mat4f);
-
-		Self {}
-	}
 }
 
 #[cfg(test)]

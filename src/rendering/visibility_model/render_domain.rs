@@ -1526,32 +1526,11 @@ pub fn get_visibility_pass_mesh_source() -> String {
 	};
 
 	let main_code = r#"
-	uint meshlet_index = gl_WorkGroupID.x;
-
-	Meshlet meshlet = meshlets.meshlets[meshlet_index];
-	Mesh mesh = meshes.meshes[meshlet.instance_index];
 	Camera camera = camera.camera;
-
-	uint instance_index = meshlet.instance_index;
-
-	SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
-
-	if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
-		uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices.vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
-		gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = camera.view_projection * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
-		// gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = vec4(vertex_positions.positions[vertex_index], 1.0);
-	}
-	
-	if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
-		uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
-		uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index * 3 + 0], primitive_indices.primitive_indices[triangle_index * 3 + 1], primitive_indices.primitive_indices[triangle_index * 3 + 2]);
-		gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-		out_instance_index[gl_LocalInvocationID.x] = instance_index;
-		out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
-	}
+	process_meshlet(camera.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["camera".to_string(), "meshes".to_string(), "vertex_positions".to_string(), "vertex_indices".to_string(), "primitive_indices".to_string(), "meshlets".to_string()], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["camera".to_string(), "process_meshlet".to_string()], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
@@ -1564,8 +1543,6 @@ pub fn get_visibility_pass_mesh_source() -> String {
 	let main_node = root_node.borrow().get_main().unwrap();
 
 	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
-
-	dbg!(&glsl);
 
 	glsl
 }
@@ -1606,16 +1583,18 @@ pub fn get_material_count_source() -> String {
 
 	if (pixel_instance_index == 0xFFFFFFFF) { return; }
 
-	uint material_index = meshes[pixel_instance_index].material_index;
+	uint material_index = meshes.meshes[pixel_instance_index].material_index;
 
-	atomicAdd(material_count[material_index], 1);
+	atomicAdd(material_count.material_count[material_index], 1);
 	"#;
 
 	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_count".to_string(), "instance_index".to_string()], Vec::new())]);
 
-	let root_node = besl::parser::Node::root_with_children(vec![main]);
+	let root_node = besl::parser::Node::root();
 
-	let root = shader_generator.transform(root_node, &object! {});
+	let mut root = shader_generator.transform(root_node, &object! {});
+
+	root.add(vec![main]);
 
 	let root_node = besl::lex(root).unwrap();
 
@@ -1636,18 +1615,20 @@ pub fn get_material_offset_source() -> String {
 	uint sum = 0;
 
 	for (uint i = 0; i < 4; i++) {
-		material_offset[i] = sum;
-		material_offset_scratch[i] = sum;
-		material_evaluation_dispatches[i] = uvec3((material_count[i] + 31) / 32, 1, 1);
-		sum += material_count[i];
+		material_offset.material_offset[i] = sum;
+		material_offset_scratch.material_offset_scratch[i] = sum;
+		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec3((material_count.material_count[i] + 31) / 32, 1, 1);
+		sum += material_count.material_count[i];
 	}
 	"#;
 
 	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["material_offset".to_string(), "material_offset_scratch".to_string(), "material_count".to_string(), "material_evaluation_dispatches".to_string(),], Vec::new())]);
 
-	let root_node = besl::parser::Node::root_with_children(vec![main]);
+	let root_node = besl::parser::Node::root();
 
-	let root = shader_generator.transform(root_node, &object! {});
+	let mut root = shader_generator.transform(root_node, &object! {});
+
+	root.add(vec![main]);
 
 	let root_node = besl::lex(root).unwrap();
 
@@ -1672,18 +1653,20 @@ pub fn get_pixel_mapping_source() -> String {
 
 	if (pixel_instance_index == 0xFFFFFFFF) { return; }
 
-	uint material_index = meshes[pixel_instance_index].material_index;
+	uint material_index = meshes.meshes[pixel_instance_index].material_index;
 
-	uint offset = atomicAdd(material_offset_scratch[material_index], 1);
+	uint offset = atomicAdd(material_offset_scratch.material_offset_scratch[material_index], 1);
 
-	pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
+	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
 	"#;
 
 	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_offset_scratch".to_string(), "pixel_mapping".to_string(), "instance_index".to_string(),], Vec::new())]);
 
-	let root_node = besl::parser::Node::root_with_children(vec![main]);
+	let root_node = besl::parser::Node::root();
 
-	let root = shader_generator.transform(root_node, &object! {});
+	let mut root = shader_generator.transform(root_node, &object! {});
+
+	root.add(vec![main]);
 
 	let root_node = besl::lex(root).unwrap();
 

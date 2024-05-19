@@ -107,6 +107,7 @@ impl ShaderCompilation {
 			"void" => "void",
 			"vec2f" => "vec2",
 			"vec2u16" => "u16vec2",
+			"vec3u" => "uvec3",
 			"vec3f" => "vec3",
 			"vec4f" => "vec4",
 			"mat2f" => "mat2",

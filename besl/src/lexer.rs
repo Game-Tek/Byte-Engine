@@ -115,6 +115,12 @@ impl Node {
 			Node::member("y", f32_t.clone()).into(),
 			Node::member("z", f32_t.clone()).into(),
 		]).into();
+
+		let vec3u32: NodeReference = Node::r#struct("vec3u", vec![
+			Node::member("x", u32_t.clone()).into(),
+			Node::member("y", u32_t.clone()).into(),
+			Node::member("z", u32_t.clone()).into(),
+		]).into();
 	
 		let vec4f32: NodeReference = Node::r#struct("vec4f", vec![
 			Node::member("x", f32_t.clone()).into(),
@@ -140,6 +146,7 @@ impl Node {
 			f32_t,
 			vec2u16,
 			vec2f32,
+			vec3u32,
 			vec3f32,
 			vec4f32,
 			mat4f32

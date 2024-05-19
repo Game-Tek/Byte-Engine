@@ -56,39 +56,21 @@ impl ShadowRenderingPass {
 			};
 
 			let main_code = r#"
-			uint meshlet_index = gl_WorkGroupID.x;
-
-			Meshlet meshlet = meshlets[meshlet_index];
-			Mesh mesh = meshes[meshlet.instance_index];
-
 			if (lighting_data.light_count == 0) return;
 
 			Light light = lighting_data.lights[0];
-		
-			uint instance_index = meshlet.instance_index;
-		
-			SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
-		
-			if (gl_LocalInvocationID.x < uint(meshlet.vertex_count)) {
-				uint vertex_index = mesh.base_vertex_index + uint32_t(vertex_indices[uint(meshlet.vertex_offset) + gl_LocalInvocationID.x]);
-				gl_MeshVerticesEXT[gl_LocalInvocationID.x].gl_Position = light.view_projection * meshes[instance_index].model * vec4(vertex_positions[vertex_index], 1.0);
-			}
 			
-			if (gl_LocalInvocationID.x < uint(meshlet.triangle_count)) {
-				uint triangle_index = uint(meshlet.triangle_offset) + gl_LocalInvocationID.x;
-				uint triangle_indices[3] = uint[](primitive_indices[triangle_index * 3 + 0], primitive_indices[triangle_index * 3 + 1], primitive_indices[triangle_index * 3 + 2]);
-				gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationID.x] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-				out_instance_index[gl_LocalInvocationID.x] = instance_index;
-				out_primitive_index[gl_LocalInvocationID.x] = (meshlet_index << 8) | (gl_LocalInvocationID.x & 0xFF);
-			}
+			process_meshlet(light.view_projection);
 			"#;
 
 			let lighting_data = besl::parser::Node::binding("lighting_data", besl::parser::Node::buffer("LightingData", vec![besl::parser::Node::member("light_count", "u32"), besl::parser::Node::member("lights", "Light[16]")]), 1, 2, true, false);
-			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshlets".to_string(), "meshes".to_string(), "primitive_indeces".to_string(), "triangle_indices".to_string()], Vec::new())]);
+			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["process_meshlet".to_string(), "lighting_data".to_string(),], Vec::new())]);
 
-			let root_node = besl::parser::Node::root_with_children(vec![lighting_data, main]);
+			let root_node = besl::parser::Node::root();
 
-			let root = shader_generator.transform(root_node, &object! {});
+			let mut root = shader_generator.transform(root_node, &object! {});
+
+			root.add(vec![lighting_data, main]);
 
 			let root_node = besl::lex(root).unwrap();
 

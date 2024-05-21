@@ -18,7 +18,5 @@ pub mod tonemap_render_pass;
 
 pub mod shadow_render_pass;
 pub mod ssao_render_pass;
-// pub mod ssgi_render_pass;
+pub mod ssgi_render_pass;
 pub mod aces_tonemap_render_pass;
-
-pub mod shader_strings;

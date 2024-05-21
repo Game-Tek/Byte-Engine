@@ -373,6 +373,12 @@ pub struct Primitive {
 	pub vertex_count: u32,
 }
 
+impl Primitive {
+	pub fn meshlet_stream(&self) -> Option<&Stream> {
+		self.streams.iter().find(|s| s.stream_type == Streams::Meshlets)
+	}
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SubMesh {
 	pub primitives: Vec<Primitive>,
@@ -430,6 +436,14 @@ impl Mesh {
 
 	pub fn meshlets_stream(&self) -> Option<&Stream> {
 		self.streams.iter().find(|s| s.stream_type == Streams::Meshlets)
+	}
+	
+	pub fn vertex_count(&self) -> usize {
+		self.primitives.iter().map(|p| p.vertex_count as usize).sum()
+	}
+	
+	pub fn triangle_count(&self) -> usize {
+		self.meshlet_indices_stream().map(|s| s.count()).unwrap_or(0) / 3
 	}
 }
 

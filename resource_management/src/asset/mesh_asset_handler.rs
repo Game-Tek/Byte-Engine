@@ -264,15 +264,11 @@ impl AssetHandler for MeshAssetHandler {
 			}).flatten().collect::<Vec<(gltf::Node, maths_rs::Mat4f)>>();
 
 			for (_, transform) in &mut flat_tree {
-				*transform = maths_rs::Mat4f::from_scale(Vec3::new(1f32, 1f32, -1f32)) * *transform;
+				*transform = maths_rs::Mat4f::from_scale(Vec3::new(1f32, 1f32, -1f32)) * *transform; // Make vertices left-handed
 			}
 
 			let primitives = flat_tree.iter().filter_map(|(node, transform)| {
-				if let Some(mesh) = node.mesh() {
-					Some(mesh.primitives().map(|primitive| (primitive, *transform)))
-				} else {
-					None
-				}
+				node.mesh().map(|mesh| mesh.primitives().map(|primitive| (primitive, *transform)))
 			}).flatten().collect::<Vec<_>>();
 
 			let flat_mesh_tree = {
@@ -309,10 +305,17 @@ impl AssetHandler for MeshAssetHandler {
 				MeshBuilds::Primitive => {
 					let buffer_blocks = [Streams::Vertices(VertexSemantics::Position), Streams::Vertices(VertexSemantics::Normal), Streams::Vertices(VertexSemantics::UV), Streams::Indices(IndexStreamTypes::Vertices), Streams::Indices(IndexStreamTypes::Meshlets), Streams::Meshlets];
 
-					let indices_per_primitive = flat_mesh_tree.clone().map(|(_, reader, _)| {
+					let indices_per_primitive = flat_mesh_tree.clone().map(|(a, reader, _)| {
 						let vertex_count = reader.read_positions().unwrap().len();
-						meshopt::optimize_vertex_cache(&reader.read_indices().unwrap().into_u32().collect::<Vec<u32>>(), vertex_count)
+						let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<u32>>();
+						meshopt::optimize_vertex_cache(&indices, vertex_count)
 					}).collect::<Vec<Vec<u32>>>();
+
+					// let indices_per_primitive = flat_mesh_tree.clone().zip(vertex_prefix_sum.iter()).map(|((_, reader, _), vps)| {
+					// 	let vertex_count = reader.read_positions().unwrap().len();
+					// 	let indices = reader.read_indices().unwrap().into_u32().map(|i| i + *vps as u32).collect::<Vec<u32>>();
+					// 	meshopt::optimize_vertex_cache(&indices, vertex_count)
+					// }).collect::<Vec<Vec<u32>>>();
 
 					let vertices_per_primitive = flat_mesh_tree.clone().map(|(_, reader, transform)| {
 						if let Some(positions) = reader.read_positions() {
@@ -365,7 +368,7 @@ impl AssetHandler for MeshAssetHandler {
 								}).collect::<Vec<Vec<u8>>>()
 							}
 							Streams::Indices(IndexStreamTypes::Vertices) => {
-								meshlets_per_primitive.iter().map(|meshlets| {
+								meshlets_per_primitive.iter().zip(vertex_prefix_sum.iter()).map(|(meshlets, vps)| {
 									let index_type = IntegralTypes::U16;
 
 									let max_size = match index_type {
@@ -378,7 +381,8 @@ impl AssetHandler for MeshAssetHandler {
 
 									match index_type {
 										IntegralTypes::U16 => {
-											meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>()
+											// meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per primitive
+											meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16 + *vps as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per mesh
 										}
 										IntegralTypes::U32 => {
 											meshlets.iter().map(|e| e.vertices.iter().map(|i| *i)).flatten().map(|e| e.to_le_bytes()).flatten().collect::<Vec<u8>>()
@@ -431,26 +435,55 @@ impl AssetHandler for MeshAssetHandler {
 					}).collect::<Vec<Vec<Vec<u8>>>>();
 
 					let primitives = flat_mesh_tree.clone().enumerate().map(|(i, (primitive, reader, _))| {
-						let streams = buffer_blocks.iter().zip(blocks.iter()).map(|(streams, instance_block_data)| {
-							// This offset is local to the primitive, not the buffer
-							let offset = instance_block_data[..i].iter().map(|e| e.len()).sum::<usize>();
-							let size = instance_block_data[i].len();
-							Stream {
-								offset,
-								size,
-								stream_type: *streams,
-								stride: match streams {
-									Streams::Vertices(VertexSemantics::Position) => 12,
-									Streams::Vertices(VertexSemantics::Normal) => 12,
-									Streams::Vertices(VertexSemantics::UV) => 8,
-									Streams::Indices(IndexStreamTypes::Vertices) => 2,
-									Streams::Indices(IndexStreamTypes::Meshlets) => 1,
-									Streams::Indices(IndexStreamTypes::Triangles) => 2,
-									Streams::Meshlets => 2,
-									_ => panic!("Unsupported stream type"),
-								},
-							}.into()
-						}).collect::<Vec<_>>();
+						let global = false;
+
+						let streams = if global {
+							buffer_blocks.iter().zip(blocks.iter()).scan(0, |state, (streams, primitives)| {
+								// This offset is global
+								let offset = *state + primitives.iter().take(i).map(|e| e.len()).sum::<usize>();
+								let size = primitives[i].len();
+
+								*state += primitives.iter().map(|e| e.len()).sum::<usize>();
+
+								Stream {
+									offset,
+									size,
+									stream_type: *streams,
+									stride: match streams {
+										Streams::Vertices(VertexSemantics::Position) => 12,
+										Streams::Vertices(VertexSemantics::Normal) => 12,
+										Streams::Vertices(VertexSemantics::UV) => 8,
+										Streams::Indices(IndexStreamTypes::Vertices) => 2,
+										Streams::Indices(IndexStreamTypes::Meshlets) => 1,
+										Streams::Indices(IndexStreamTypes::Triangles) => 2,
+										Streams::Meshlets => 2,
+										_ => panic!("Unsupported stream type"),
+									},
+								}.into()
+							}).collect::<Vec<_>>()
+						} else {
+							buffer_blocks.iter().zip(blocks.iter()).map(|(streams, primitives)| {
+								// This offset is per stream
+								let offset = primitives.iter().take(i).map(|e| e.len()).sum::<usize>();
+								let size = primitives[i].len();
+
+								Stream {
+									offset,
+									size,
+									stream_type: *streams,
+									stride: match streams {
+										Streams::Vertices(VertexSemantics::Position) => 12,
+										Streams::Vertices(VertexSemantics::Normal) => 12,
+										Streams::Vertices(VertexSemantics::UV) => 8,
+										Streams::Indices(IndexStreamTypes::Vertices) => 2,
+										Streams::Indices(IndexStreamTypes::Meshlets) => 1,
+										Streams::Indices(IndexStreamTypes::Triangles) => 2,
+										Streams::Meshlets => 2,
+										_ => panic!("Unsupported stream type"),
+									},
+								}.into()
+							}).collect::<Vec<_>>()
+						};
 
 						Primitive {
 							streams,

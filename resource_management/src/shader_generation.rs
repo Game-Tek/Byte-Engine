@@ -9,7 +9,7 @@ pub struct ShaderGenerator {
 impl ShaderGenerator {
 	pub fn new() -> Self {
 		ShaderGenerator {
-			minified: false,
+			minified: !cfg!(debug_assertions), // Minify by default in release mode
 		}
 	}
 
@@ -43,6 +43,7 @@ enum Stages {
 	Compute {
 		local_size: Extent,
 	},
+	Task,
 	Mesh,
 	Fragment,
 }
@@ -55,6 +56,10 @@ pub struct ShaderGenerationSettings {
 impl ShaderGenerationSettings {
 	pub fn compute(extent: Extent) -> ShaderGenerationSettings {
 		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: Stages::Compute { local_size: extent } }
+	}
+
+	pub fn task() -> ShaderGenerationSettings {
+		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage: Stages::Task }
 	}
 
 	pub fn mesh() -> ShaderGenerationSettings {
@@ -435,6 +440,7 @@ impl ShaderCompilation {
 			Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
 			Stages::Fragment => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => glsl_block.push_str("#pragma shader_stage(compute)\n"),
+			Stages::Task => glsl_block.push_str("#pragma shader_stage(task)\n"),
 			Stages::Mesh => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
 		}
 	

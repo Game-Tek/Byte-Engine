@@ -174,7 +174,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		_ => { panic!("Invalid shader stage") }
 	};
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&settings, &main_node);
+	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&settings, &main_node);
 
 	let compiler = shaderc::Compiler::new().unwrap();
 	let mut options = shaderc::CompileOptions::new().unwrap();

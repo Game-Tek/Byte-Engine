@@ -104,3 +104,17 @@ If the material **does** specify a vertex shader then this will be converted to 
 
 ### Fragment Shaders
 Since shading is deferred in the Visibility Buffer rendering model, all fragment shaders are turned into a compute shader for the material evaluation pass.
+
+---
+
+## Mesh rendering
+
+```mermaid
+graph LR
+	Mesh --> Meshlets
+	Meshlets --> PrimitiveIndices
+	Meshlets --> VertexIndices
+
+	PrimitiveIndices --> VertexData
+	VertexIndices --> VertexData
+```

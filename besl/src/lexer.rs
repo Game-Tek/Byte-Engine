@@ -157,9 +157,9 @@ impl Node {
 
 	/// Creates a scope node which is a logical container for other nodes.
 	pub fn scope(name: String) -> Node {
-		let mut node = Node {
+		let node = Node {
 			// parent: None,
-			node: Nodes::Scope{ name, children: Vec::with_capacity(16), program_state: ProgramState { types: HashMap::new(), members: HashMap::new() } },
+			node: Nodes::Scope{ name, children: Vec::with_capacity(16), },
 		};
 
 		node
@@ -308,21 +308,8 @@ impl Node {
 
 	pub fn add_child(&mut self, child: NodeReference) -> NodeReference {
 		match &mut self.node {
-			Nodes::Scope{ children: c, program_state, .. } => {
-				match RefCell::borrow(&child).node() {
-					Nodes::Struct { name, .. } => {
-						program_state.types.insert(name.clone(), child.clone());
-					}
-					Nodes::Binding { name, .. } | Nodes::Member { name, .. } => {
-						program_state.members.insert(name.clone(), child.clone());
-					}
-					Nodes::PushConstant { .. } => {
-						program_state.members.insert("push_constant".to_string(), child.clone());
-					}
-					_ => {}
-				}
-
-				c.push(child.clone());
+			Nodes::Scope{ children, .. } => {
+				children.push(child.clone());
 			}
 			Nodes::Struct { fields, .. } => {
 				fields.push(child.clone());
@@ -356,6 +343,7 @@ impl Node {
 		&self.node
 	}
 
+	/// Gets a child node by name.
 	pub fn get_child(&self, child_name: &str) -> Option<NodeReference> {
 		match &self.node {
 			Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } | Nodes::Intrinsic { elements: members, .. } => {
@@ -438,6 +426,7 @@ impl Node {
 		None
 	}
 
+	/// Returns r if this node is named child_name.
 	fn get_child_a(&self, child_name: &str, r: NodeReference) -> Option<NodeReference> {
 		match &self.node {
 			Nodes::Scope { name, .. } | Nodes::Struct { name, .. } | Nodes::Function { name, .. } | Nodes::Binding { name, .. } | Nodes::Parameter { name, .. } | Nodes::Specialization { name, .. } | Nodes::Member { name, .. } | Nodes::Intrinsic { name, .. } | Nodes::Literal { name, .. } => {
@@ -486,6 +475,7 @@ impl Node {
 		None
 	}
 
+	/// Returns the main function of the program.
 	pub fn get_main(&self) -> Option<NodeReference> {
 		if let Some(m) = self.get_child("main") {
 			return Some(m);
@@ -524,28 +514,6 @@ impl Node {
 
 	pub fn node_mut(&mut self) -> &mut Nodes {
 		&mut self.node
-	}
-
-	fn get_program_state(&self) -> Option<&ProgramState> {
-		match &self.node {
-			Nodes::Scope { program_state, .. } => {
-				Some(program_state)
-			}
-			_ => {
-				None
-			}
-		}
-	}
-
-	fn get_program_state_mut(&mut self) -> Option<&mut ProgramState> {
-		match &mut self.node {
-			Nodes::Scope { program_state, .. } => {
-				Some(program_state)
-			}
-			_ => {
-				None
-			}
-		}
 	}
 	
 	fn null() -> Node {
@@ -586,7 +554,6 @@ pub enum Nodes {
 	Scope {
 		name: String,
 		children: Vec<NodeReference>,
-		program_state: ProgramState,
 	},
 	Struct {
 		name: String,
@@ -705,12 +672,7 @@ pub enum LexError {
 	},
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct ProgramState {
-	pub(crate) types: HashMap<String, NodeReference>,
-	pub(crate) members: HashMap<String, NodeReference>,
-}
-
+/// Tries to resolve a reference to a node by visiting the chain of nodes which are the context of the element of the program being lexed.
 fn get_reference(chain: &[&Node], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		if let Some(c) = node.get_child(name) {
@@ -869,7 +831,7 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node) -> Resu
 			for member in members {
 				let mut chain = chain.clone();
 				chain.push(&this);
-				if let parser::Nodes::Member { r#type, .. } = &member.node {
+				if let parser::Nodes::Member { .. } = &member.node {
 					let c = lex_parsed_node(chain, &member)?;
 					this.add_child(c);
 				}

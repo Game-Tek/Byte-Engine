@@ -5,10 +5,11 @@ use core::{entity::EntityBuilder, Entity};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
 
+use json::object;
+use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::Extent;
 
-use crate::shader_generator;
-use super::shader_strings;
+use super::{common_shader_generator::CommonShaderGenerator};
 
 /// The SSGI render pass.
 pub struct SSGIRenderPass {
@@ -49,74 +50,77 @@ impl SSGIRenderPass {
 	}
 
 	fn make_stochastic_normals_shader() -> String {
-		let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
+		let shader_generator = {
+			let common_shader_generator = CommonShaderGenerator::new_with_params(false, false, false, false, false, true, false, true);
+			common_shader_generator
+		};
 
-		string.push_str(shader_strings::LENGTH_SQUARED);
-		string.push_str(shader_strings::MIN_DIFF);
-		string.push_str(shader_strings::ANIMATED_INTERLEAVED_GRADIENT_NOISE);
-		string.push_str(shader_strings::GET_WORLD_SPACE_POSITION_FROM_DEPTH);
-		string.push_str(shader_strings::MAKE_NORMAL_FROM_NEIGHBOURING_DEPTH_SAMPLES);
-		string.push_str(shader_strings::MAKE_NORMAL_FROM_DEPTH);
-		string.push_str(shader_strings::GET_COSINE_HEMISPHERE_SAMPLE);
+		use besl::parser::Node;
 
-		string.push_str(&shader_generator::generate_uniform_block(1, 0, ghi::AccessPolicies::READ, "sampler2D", "depth"));
-		string.push_str(&shader_generator::generate_uniform_block(1, 1, ghi::AccessPolicies::WRITE, "image2D", "normals"));
+		let _ = Node::binding("depth", Node::combined_image_sampler(), 1, 0, true, false);
+		let _ = Node::binding("normals", Node::image("rgba8"), 1, 1, false, true);
 
-		string.push_str("void main() {\n");
-		string.push_str("ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n");
-		string.push_str("Camera camera = get_camera();\n");
-		string.push_str("vec3 normal = make_normal_from_depth(depth, uvec2(coord), camera.inverse_projection_matrix, camera.inverse_view_matrix);\n");
-		string.push_str("float noise = interleaved_gradient_noise(uint32_t(coord.x), uint32_t(coord.y), 0);\n");
-		string.push_str("vec3 stochastic_normal = normalize(get_cosine_hemisphere_sample(noise, noise, normal));\n");
-		string.push_str("imageStore(normals, coord, vec4(stochastic_normal, 1.0));\n");
-		string.push_str("}\n");
+		const CODE: &str = "uvec2 coord = uvec2(gl_GlobalInvocationID.xy);
+		Camera camera = camera.camera;
+		vec3 normal = make_normal_from_depth(depth, coord, camera.inverse_projection_matrix, camera.inverse_view_matrix);
+		float noise = interleaved_gradient_noise(coord.x, coord.y, 0);
+		vec3 stochastic_normal = get_cosine_hemisphere_sample(noise, noise, normal);
+		imageStore(normals, ivec2(coord), vec4(stochastic_normal, 1.0));";
 
-		string
+		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, vec!["make_normal_from_depth".to_string(), "camera".to_string(), "interleaved_gradient_noise".to_string(), "get_cosine_hemisphere_sample".to_string()], vec![])]);
+
+		let mut root = shader_generator.transform(Node::root(), &object!{});
+
+		root.add(vec![main]);
+
+		let root = besl::lex(root).unwrap();
+
+		let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &root);
+
+		glsl
 	}
 
 	fn make_ray_march_normals_shader() -> String {
-		let mut string = shader_generator::generate_glsl_header_block(&shader_generator::ShaderGenerationSettings::new("Compute"));
+		let shader_generator = {
+			let common_shader_generator = CommonShaderGenerator::new_with_params(false, false, false, false, false, true, false, true);
+			common_shader_generator
+		};
 
-		string.push_str(shader_strings::LENGTH_SQUARED);
-		string.push_str(shader_strings::MAKE_UV);
-		string.push_str(shader_strings::GET_WORLD_SPACE_POSITION_FROM_DEPTH);
-		string.push_str(shader_strings::GET_VIEW_SPACE_POSITION_FROM_DEPTH);
+		use besl::parser::Node;
 
-		string.push_str(&shader_generator::generate_uniform_block(1, 0, ghi::AccessPolicies::READ, "sampler2D", "depth"));
-		string.push_str(&shader_generator::generate_uniform_block(1, 2, ghi::AccessPolicies::WRITE, "image2D", "trace"));
-		string.push_str(&shader_generator::generate_uniform_block(1, 3, ghi::AccessPolicies::READ, "sampler2D", "diffuse"));
+		let _ = Node::binding("depth", Node::combined_image_sampler(), 1, 0, true, false);
+		let _ = Node::binding("trace", Node::image("rgb16"), 1, 2, false, true);
+		let _ = Node::binding("diffuse", Node::combined_image_sampler(), 1, 3, true, false);
 
-		string.push_str("void main() {\n");
-		string.push_str("ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n");
-		string.push_str("vec2 uv = make_uv(coord, ivec2(1920, 1080));\n");
+		const CODE: &str = "ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+		vec2 uv = make_uv(coord, ivec2(1920, 1080));
+		Camera camera = camera.camera;
+		vec3 position = get_world_space_position_from_depth(uv, depth, camera.inverse_projection_matrix, camera.inverse_view_matrix);
+		vec3 normal = texture(normals, uv).xyz;
+		vec3 view_position = get_view_space_position_from_depth(uv, depth, camera.inverse_projection_matrix);
+		vec2 jitter = vec2(0.0);
+		vec3 direction = normalize(normal * camera.view_matrix);
+		jitter += vec2(0.5);
+		float step_count = 10f;
+		float step_size = 1.0f / step_count;
+		step_size = step_size * ((jitter.x + jitter.y) + 1.0f);
+		vec4 ray_trace = ray_march(depth, camera.projection_matrix, direction, step_count, view_position, screen_position, uv, step_size, 1.0f);
+		float ray_mask = ray_trace.w;
+		vec2 hit_uv = ray_trace.xy;
+		vec4 result = vec4(vec3(0.0), 1.0);
+		result.xyz = texture(diffuse, hit_uv).xyz;
+		imageStore(trace, coord, result);";
 
-		string.push_str("Camera camera = get_camera();\n");
+		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, vec!["make_uv".to_string(), "camera".to_string(), "get_world_space_position_from_depth".to_string(), "get_view_space_position_from_depth".to_string(), "ray_march".to_string()], vec![])]);
 
-		string.push_str("vec3 position = get_world_space_position_from_depth(uv, depth, camera.inverse_projection_matrix, camera.inverse_view_matrix);\n");
-		string.push_str("vec3 normal = texture(normals, uv).xyz;\n");
+		let mut root = shader_generator.transform(Node::root(), &object!{});
 
-		string.push_str("vec3 view_position = get_view_space_position_from_depth(uv, depth, camera.inverse_projection_matrix);\n");
+		root.add(vec![main]);
 
-		string.push_str("vec2 jitter = vec2(0.0);\n");
+		let root = besl::lex(root).unwrap();
 
-		string.push_str("vec3 direction = normalize(normal * camera.view_matrix);\n");
+		let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &root);
 
-		string.push_str("jitter += vec2(0.5);\n");
-
-		string.push_str("float step_count = 10f;\n");
-		string.push_str("float step_size = 1.0f / step_count;\n");
-		string.push_str("step_size = step_size * ((jitter.x + jitter.y) + 1.0f);\n");
-
-		string.push_str("vec4 ray_trace = ray_march(depth, camera.projection_matrix, direction, step_count, view_position, screen_position, uv, step_size, 1.0f);\n");
-
-		string.push_str("float ray_mask = ray_trace.w;\n");
-		string.push_str("vec2 hit_uv = ray_trace.xy;\n");
-
-		string.push_str("vec4 result = vec4(vec3(0.0), 1.0);\n");
-		string.push_str("result.xyz = texture(diffuse, hit_uv).xyz;\n");
-
-		string.push_str("imageStore(trace, coord, result);\n");
-
-		string
+		glsl
 	}
 }

@@ -29,11 +29,9 @@ use crate::{resource_management::{self, }, core::orchestrator::{self, Orchestrat
 
 struct MeshData {
 	meshlets: Vec<ShaderMeshletData>,
-	vertex_count: u32,
-	triangle_count: u32,
-	/// The base index of the vertex buffer
+	/// The base position into the vertex buffer or vertex indices buffer
 	vertex_offset: u32,
-	/// The base index into the triangle indices buffer
+	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
 	triangle_offset: u32,
 	acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
 }
@@ -178,7 +176,7 @@ impl VisibilityWorldRenderDomain {
 
 			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-			let meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderInstanceData; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderMesh; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
@@ -724,7 +722,7 @@ impl VisibilityWorldRenderDomain {
 
 		{
 			let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
-			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderInstanceData, MAX_INSTANCES) };
+			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
 			for (i, m) in self.render_entities.iter().enumerate() {
 				let mesh = m.write_sync();
@@ -828,18 +826,35 @@ impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 #[derive(Copy, Clone)]
 #[repr(C)]
 struct ShaderMeshletData {
+	// The mesh instance this meshlet belongs to
 	instance_index: u32,
-	vertex_triangles_offset: u16,
+	/// Base index into the vertex indices buffer
+	/// ```glsl
+	/// vertex_index = mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + gl_LocalInvocationID.x];
+	/// ```
+	vertex_offset: u16,
+	/// Base index into the primitive/triangle indices buffer
+	/// This is stored as index / 3, as the meshlet contains 3 indices per triangle
+	/// ```glsl
+	/// triangle_index = primitive_indices.primitive_indices[(meshlet.triangle_offset + gl_LocalInvocationID.x) * 3 + 0..2]
+	/// ```
 	triangle_offset: u16,
+	// The number of vertices in the meshlet
 	vertex_count: u8,
+	// The number of triangles in the meshlet
 	triangle_count: u8,
+	primitive_vertex_offset: u32,
+	primitive_triangle_offset: u32,
 }
 
 #[repr(C)]
-struct ShaderInstanceData {
+struct ShaderMesh {
 	model: Mat4f,
-	material_id: u32,
+	material_index: u32,
+	/// The position into the vertex components data (positions, normals, uvs, ..) buffer this instance's data starts
+	/// Also, the position into the vertex indices buffer this instance's data starts
 	base_vertex_index: u32,
+	base_triangle_index: u32,
 }
 
 #[repr(C)]
@@ -1066,54 +1081,89 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						return;
 					}
 
-					let mesh_vertex_count = vertex_positions_stream.count();
-
 					let total_meshlet_count = meshlets_stream.count();
-					let vertex_triangles_offset = self.visibility_info.vertex_count;
-					let primitive_triangle_offset = self.visibility_info.triangle_count;
-
-					let mut mesh_triangle_count = 0;
-
-					let mut meshlets = Vec::with_capacity(total_meshlet_count as usize);
 
 					struct Meshlet {
 						vertex_count: u8,
 						triangle_count: u8,
 					}
 
-					let meshlet_stream = response.get_stream("Meshlets").unwrap();
+					let meshlets = mesh_resource.primitives.iter().scan((0, 0), |state, e| {
+						if let Some(stream) = e.meshlet_stream() {
+							let meshlet_stream = response.get_stream("Meshlets").unwrap();
 					
-					let meshlet_stream = unsafe {
-						std::slice::from_raw_parts(meshlet_stream.as_ptr() as *const Meshlet, meshlet_stream.len() / std::mem::size_of::<Meshlet>())
-					};
-
-					{
-						let mut mesh_vertex_count = 0;
-						
-						for i in 0..total_meshlet_count as usize {
-							let meshlet = &meshlet_stream[i];
-							let meshlet_vertex_count = meshlet.vertex_count;
-							let meshlet_triangle_count = meshlet.triangle_count;
-	
-							let meshlet_data = ShaderMeshletData {
-								instance_index: self.visibility_info.instance_count,
-								vertex_triangles_offset: vertex_triangles_offset as u16 + mesh_vertex_count as u16,
-								triangle_offset: primitive_triangle_offset as u16 + mesh_triangle_count as u16,
-								vertex_count: meshlet_vertex_count,
-								triangle_count: meshlet_triangle_count,
+							let meshlet_stream = unsafe {
+								std::slice::from_raw_parts(meshlet_stream.as_ptr().byte_add(stream.offset) as *const Meshlet, stream.count())
 							};
-							
-							meshlets.push(meshlet_data);
-	
-							mesh_triangle_count += meshlet_triangle_count as u32;
-							mesh_vertex_count += meshlet_vertex_count as u32;
+
+							// Update vertex and triangle offsets per primitive, relative to the mesh
+							let primitive_vertex_offset = state.0 as u32;
+							let primitive_triangle_offset = state.1 as u32;
+
+							meshlet_stream.iter().scan((0, 0), |x, meshlet| {
+								let meshlet_vertex_count = meshlet.vertex_count;
+								let meshlet_triangle_count = meshlet.triangle_count;
+
+								// let vertex_offset = state.0 as u16;
+								// let triangle_offset = state.1 as u16;
+
+								state.0 += meshlet_vertex_count as u32;
+								state.1 += meshlet_triangle_count as u32;
+
+								// Update vertex and triangle offsets per meshlet, relative to the primitive
+								let vertex_offset = x.0 as u16;
+								let triangle_offset = x.1 as u16;
+
+								x.0 += meshlet_vertex_count as u32;
+								x.1 += meshlet_triangle_count as u32;
+
+								ShaderMeshletData {
+									instance_index: self.visibility_info.instance_count,
+									vertex_offset,
+									triangle_offset,
+									vertex_count: meshlet_vertex_count,
+									triangle_count: meshlet_triangle_count,
+									primitive_vertex_offset,
+									primitive_triangle_offset,
+								}.into()
+							}).collect::<Vec<_>>().into()
+						} else {
+							panic!();
 						}
-					}
+					}).flatten().collect::<Vec<_>>();
 
-					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_count: mesh_vertex_count as u32, triangle_count: mesh_triangle_count, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+					// let meshlet_stream = response.get_stream("Meshlets").unwrap();
+			
+					// let meshlet_stream = unsafe {
+					// 	std::slice::from_raw_parts(meshlet_stream.as_ptr() as *const Meshlet, meshlet_stream.len() / 2)
+					// };
 
-					self.visibility_info.vertex_count += mesh_vertex_count as u32;
-					self.visibility_info.triangle_count += mesh_triangle_count;
+					// let meshlets = meshlet_stream.iter().scan((0, 0), |state, meshlet| {
+					// 	let meshlet_vertex_count = meshlet.vertex_count;
+					// 	let meshlet_triangle_count = meshlet.triangle_count;
+	
+					// 	let vertex_offset = state.0 as u16;
+					// 	let triangle_offset = state.1 as u16;
+
+					// 	state.0 += meshlet_vertex_count as u32;
+					// 	state.1 += meshlet_triangle_count as u32;
+
+					// 	ShaderMeshletData {
+					// 		instance_index: self.visibility_info.instance_count,
+					// 		vertex_offset,
+					// 		triangle_offset,
+					// 		vertex_count: meshlet_vertex_count,
+					// 		triangle_count: meshlet_triangle_count,
+					// 	}.into()
+					// }).collect::<Vec<_>>().into();
+
+					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+
+					let vertex_count = mesh_resource.vertex_count();
+					let triangle_count = mesh_resource.triangle_count();
+
+					self.visibility_info.vertex_count += vertex_count as u32;
+					self.visibility_info.triangle_count += triangle_count as u32;
 					self.visibility_info.vertex_indices_count += vertex_indices_stream.count() as u32;
 				}
 			}
@@ -1130,13 +1180,14 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			return;
 		};
 
-		let shader_mesh_data = ShaderInstanceData {
+		let shader_mesh_data = ShaderMesh {
 			model: mesh.get_transform(),
-			material_id,
+			material_index: material_id,
 			base_vertex_index: mesh_data.vertex_offset,
+			base_triangle_index: mesh_data.triangle_offset,
 		};
 
-		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderInstanceData, MAX_INSTANCES) };
+		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
 		meshes_data_slice[self.visibility_info.instance_count as usize] = shader_mesh_data;
 
@@ -1542,7 +1593,7 @@ pub fn get_visibility_pass_mesh_source() -> String {
 
 	let main_node = root_node.borrow().get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
+	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
 
 	glsl
 }
@@ -1600,7 +1651,7 @@ pub fn get_material_count_source() -> String {
 
 	let main_node = root_node.borrow().get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
 
 	glsl
 }
@@ -1634,7 +1685,7 @@ pub fn get_material_offset_source() -> String {
 
 	let main_node = root_node.borrow().get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node);
+	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node);
 
 	glsl
 }
@@ -1672,7 +1723,7 @@ pub fn get_pixel_mapping_source() -> String {
 
 	let main_node = root_node.borrow().get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
 
 	glsl
 }

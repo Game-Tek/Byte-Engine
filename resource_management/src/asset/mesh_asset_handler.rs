@@ -368,6 +368,7 @@ impl AssetHandler for MeshAssetHandler {
 								}).collect::<Vec<Vec<u8>>>()
 							}
 							Streams::Indices(IndexStreamTypes::Vertices) => {
+								#[allow(unused_variables)]
 								meshlets_per_primitive.iter().zip(vertex_prefix_sum.iter()).map(|(meshlets, vps)| {
 									let index_type = IntegralTypes::U16;
 
@@ -381,8 +382,8 @@ impl AssetHandler for MeshAssetHandler {
 
 									match index_type {
 										IntegralTypes::U16 => {
-											// meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per primitive
-											meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16 + *vps as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per mesh
+											meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per primitive
+											// meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16 + *vps as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per mesh
 										}
 										IntegralTypes::U32 => {
 											meshlets.iter().map(|e| e.vertices.iter().map(|i| *i)).flatten().map(|e| e.to_le_bytes()).flatten().collect::<Vec<u8>>()

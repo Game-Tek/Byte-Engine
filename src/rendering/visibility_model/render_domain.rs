@@ -1088,7 +1088,13 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						triangle_count: u8,
 					}
 
-					let meshlets = mesh_resource.primitives.iter().scan((0, 0), |state, e| {
+					let vcps = mesh_resource.primitives.iter().scan(0, |state, p| {
+						let offset = *state;
+						*state += p.vertex_count;
+						offset.into()
+					}).collect::<Vec<_>>();
+
+					let meshlets = mesh_resource.primitives.iter().zip(vcps.iter()).scan((0, 0), |state, (e, vcps)| {
 						if let Some(stream) = e.meshlet_stream() {
 							let meshlet_stream = response.get_stream("Meshlets").unwrap();
 					
@@ -1097,7 +1103,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 							};
 
 							// Update vertex and triangle offsets per primitive, relative to the mesh
-							let primitive_vertex_offset = state.0 as u32;
+							let primitive_vertex_offset = *vcps;
 							let primitive_triangle_offset = state.1 as u32;
 
 							meshlet_stream.iter().scan((0, 0), |x, meshlet| {
@@ -1107,14 +1113,13 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 								// let vertex_offset = state.0 as u16;
 								// let triangle_offset = state.1 as u16;
 
-								state.0 += meshlet_vertex_count as u32;
 								state.1 += meshlet_triangle_count as u32;
 
 								// Update vertex and triangle offsets per meshlet, relative to the primitive
-								let vertex_offset = x.0 as u16;
+								let vertex_offset = state.0 as u16;
 								let triangle_offset = x.1 as u16;
 
-								x.0 += meshlet_vertex_count as u32;
+								state.0 += meshlet_vertex_count as u32;
 								x.1 += meshlet_triangle_count as u32;
 
 								ShaderMeshletData {

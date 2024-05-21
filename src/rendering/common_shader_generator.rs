@@ -27,6 +27,7 @@ pub struct CommonShaderGenerator {
 	pixel_mapping: besl::parser::Node,
 	triangle_index: besl::parser::Node,
 	instance_index: besl::parser::Node,
+	compute_vertex_index: besl::parser::Node,
 	process_meshlet: besl::parser::Node,
 	distribution_ggx: besl::parser::Node,
 	geometry_schlick_ggx: besl::parser::Node,
@@ -86,6 +87,7 @@ return colors[i % 16];";
 		let positions = self.positions.clone();
 		let normals = self.normals.clone();
 
+		let compute_vertex_index = self.compute_vertex_index.clone();
 		let process_meshlet = self.process_meshlet.clone();
 		let distribution_ggx = self.distribution_ggx.clone();
 		let geometry_schlick_ggx = self.geometry_schlick_ggx.clone();
@@ -100,7 +102,7 @@ return colors[i % 16];";
 
 		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct]);
 		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
-		root.add(vec![process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy]);
+		root.add(vec![compute_vertex_index, process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy]);
 		root.add(vec![get_debug_color]);
 
 		root
@@ -141,6 +143,8 @@ impl CommonShaderGenerator {
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
 		let instance_index = Node::binding("instance_index", Node::image("r32ui"), 1, 7, true, false);
 
+		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + meshlet.primitive_vertex_offset + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.vertex_offset + primitive_index]; // Indices are relative to primitives", vec!["vertex_indices".to_string()], Vec::new())]);
+
 		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("uint meshlet_index = gl_WorkGroupID.x;
 		Meshlet meshlet = meshlets.meshlets[meshlet_index];
 		Mesh mesh = meshes.meshes[meshlet.instance_index];
@@ -152,8 +156,7 @@ impl CommonShaderGenerator {
 		uint primitive_index = gl_LocalInvocationID.x;
 	
 		if (primitive_index < uint(meshlet.vertex_count)) {
-			uint vertex_index = mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.primitive_vertex_offset + meshlet.vertex_offset + primitive_index]; // Indices are relative to mesh resource
-			// uint vertex_index = mesh.base_vertex_index + meshlet.primitive_vertex_offset + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.primitive_vertex_offset + meshlet.vertex_offset + primitive_index]; // Indices are relative to primitives
+			uint vertex_index = compute_vertex_index(mesh, meshlet, primitive_index);
 			gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
 		}
 		
@@ -163,7 +166,7 @@ impl CommonShaderGenerator {
 			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
 			out_instance_index[primitive_index] = instance_index;
 			out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);
-		}", vec!["meshes".to_string(), "vertex_positions".to_string(), "vertex_indices".to_string(), "primitive_indices".to_string(), "meshlets".to_string()], vec![])]);
+		}", vec!["meshes".to_string(), "vertex_positions".to_string(), "vertex_indices".to_string(), "primitive_indices".to_string(), "meshlets".to_string(), "compute_vertex_index".to_string()], Vec::new())]);
 
 		let square_vec2 = Node::function("vec2f_squared_length", vec![Node::parameter("v", "vec2")], "vec2", vec![Node::glsl("return dot(v, v);", Vec::new(), Vec::new())]);
 		let square_vec3 = Node::function("vec3f_squared_length", vec![Node::parameter("v", "vec3")], "vec3", vec![Node::glsl("return dot(v, v);", Vec::new(), Vec::new())]);
@@ -246,6 +249,7 @@ impl CommonShaderGenerator {
 			triangle_index,
 			instance_index,
 
+			compute_vertex_index,
 			process_meshlet,
 			distribution_ggx,
 			geometry_schlick_ggx,

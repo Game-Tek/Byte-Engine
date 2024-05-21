@@ -91,9 +91,9 @@ uint primitive_indices[3] = uint[3](
 );
 
 uint vertex_indices[3] = uint[3](
-	mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.primitive_vertex_offset + meshlet.vertex_offset + primitive_indices[0]],
-	mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.primitive_vertex_offset + meshlet.vertex_offset + primitive_indices[1]],
-	mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.primitive_vertex_offset + meshlet.vertex_offset + primitive_indices[2]]
+	compute_vertex_index(mesh, meshlet, primitive_indices[0]),
+	compute_vertex_index(mesh, meshlet, primitive_indices[1]),
+	compute_vertex_index(mesh, meshlet, primitive_indices[2])
 );
 
 vec4 model_space_vertex_positions[3] = vec4[3](
@@ -272,7 +272,7 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, besl::parser::Node::glsl(a, vec!["vertex_uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "vertex_positions".to_string(), "vertex_normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "interpolate_vec3f_with_deriv".to_string(), "interpolate_vec2f_with_deriv".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string()], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
+				statements.insert(0, besl::parser::Node::glsl(a, vec!["vertex_uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "vertex_positions".to_string(), "vertex_normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "interpolate_vec3f_with_deriv".to_string(), "interpolate_vec2f_with_deriv".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "geometry_schlick_ggx".to_string(), "compute_vertex_index".to_string()], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
 				statements.push(besl::parser::Node::glsl(b, vec!["lighting_data".to_string(), "out_albedo".to_string(), "out_diffuse".to_string()], Vec::new()));
 			}
 			_ => {}

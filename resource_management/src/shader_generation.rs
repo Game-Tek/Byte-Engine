@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashSet};
+use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}};
 
 use utils::Extent;
 
@@ -80,11 +80,65 @@ pub struct ShaderCompilation {
 	present_symbols: HashSet<besl::NodeReference>,
 }
 
+struct Graph {
+	set: HashSet<(besl::NodeReference, besl::NodeReference)>,
+}
+
+impl Graph {
+	pub fn new() -> Self {
+		Graph {
+			set: HashSet::new(),
+		}
+	}
+
+	pub fn add(&mut self, from: besl::NodeReference, to: besl::NodeReference) {
+		self.set.insert((from, to));
+	}
+}
+
+fn topological_sort(graph: &Graph) -> Vec<besl::NodeReference> {
+	let mut in_degree = HashMap::new();
+	let mut queue = Vec::new();
+	let mut result = Vec::new();
+
+	for (from, to) in &graph.set {
+		*in_degree.entry(to).or_insert(0) += 1;
+	}
+
+	for (from, to) in &graph.set {
+		if !in_degree.contains_key(from) {
+			queue.push(from.clone());
+		}
+	}
+
+	while !queue.is_empty() {
+		let node = queue.pop().unwrap();
+		result.push(node.clone());
+
+		for (from, to) in &graph.set {
+			if from == &node {
+				*in_degree.get_mut(to).unwrap() -= 1;
+				if *in_degree.get(to).unwrap() == 0 {
+					queue.push(to.clone());
+				}
+			}
+		}
+	}
+
+	result
+}
+
 impl ShaderCompilation {
 	pub fn generate_shader(&mut self, main_function_node: &besl::NodeReference) -> String {
 		let mut string = String::with_capacity(2048);
 	
-		self.generate_shader_internal(&mut string, main_function_node);
+		let graph = self.build_graph(main_function_node.clone());
+
+		let order = topological_sort(&graph);
+		
+		for node in order {
+			self.emit_node_string(&mut string, &node);
+		}
 	
 		string
 	}
@@ -96,12 +150,14 @@ impl ShaderCompilation {
 			panic!("GLSL shader generation requires a function node as the main function.");
 		}
 
-		self.generate_shader_internal(&mut string, main_function_node);
+		let graph = self.build_graph(main_function_node.clone());
+
+		let order = topological_sort(&graph);
+
+		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
 		
-		{
-			let mut glsl_block = String::with_capacity(248);
-			self.generate_glsl_header_block(&mut glsl_block, shader_compilation_settings);
-			string.insert_str(0, &glsl_block);
+		for node in order {
+			self.emit_node_string(&mut string, &node);
 		}
 	
 		string
@@ -127,95 +183,197 @@ impl ShaderCompilation {
 		}
 	}
 
-	fn generate_shader_internal(&mut self, string: &mut String, this_node: &besl::NodeReference) {
-		if self.present_symbols.contains(this_node) { return; }
+	fn build_graph(&mut self, node: besl::NodeReference) -> Graph {
+		let mut graph = Graph::new();
 
+		graph = self.build_graph_inner(node, graph);
+
+		graph
+	}
+
+	fn build_graph_inner(&mut self, node: besl::NodeReference, mut graph: Graph) -> Graph {
+		if self.present_symbols.contains(&node) { return graph; }
+
+		let node = RefCell::borrow(&node);
+		let node = node.node();
+
+		match node {
+			besl::Nodes::Null => {}
+			besl::Nodes::Scope { children, .. } => {
+				for child in children {
+					graph = self.build_graph_inner(child.clone(), graph);
+				}
+			}
+			besl::Nodes::Function { statements, .. } => {
+				for statement in statements {
+					graph = self.build_graph_inner(statement.clone(), graph);
+				}
+			}
+			besl::Nodes::Struct { fields, .. } => {
+				graph.add(from, to);
+
+				for field in fields {
+					graph = self.build_graph_inner(field.clone(), graph);
+				}
+			}
+			besl::Nodes::PushConstant { members } => {
+				for member in members {
+					graph = self.build_graph_inner(member.clone(), graph);
+				}
+			}
+			besl::Nodes::Specialization { r#type, .. } => {
+				graph = self.build_graph_inner(r#type.clone(), graph);
+			}
+			besl::Nodes::Member { r#type, .. } => {
+				self.build_graph_inner(r#type.clone(), graph);
+			}
+			besl::Nodes::GLSL { input, output, .. } => {
+				for reference in input {
+					graph = self.build_graph_inner(reference.clone(), graph);
+				}
+
+				for reference in output {
+					graph = self.build_graph_inner(reference.clone(), graph);
+				}
+			}
+			besl::Nodes::Parameter { r#type, .. } => {
+				self.build_graph_inner(r#type.clone(), graph);
+			}
+			besl::Nodes::Expression(expression) => {
+				match expression {
+					besl::Expressions::Operator { operator, left, right } => {
+						if operator == &besl::Operators::Assignment {
+							graph = self.build_graph_inner(left.clone(), graph);
+							graph = self.build_graph_inner(right.clone(), graph);
+						}
+					}
+					besl::Expressions::FunctionCall { parameters, function, .. } => {
+						graph = self.build_graph_inner(function.clone(), graph);
+
+						for parameter in parameters {
+							graph = self.build_graph_inner(parameter.clone(), graph);
+						}
+					}
+					besl::Expressions::IntrinsicCall { elements: parameters, .. } => {
+						for e in parameters {
+							graph = self.build_graph_inner(e.clone(), graph);
+						}
+					}
+					besl::Expressions::Expression { elements } => {
+						for element in elements {
+							graph = self.build_graph_inner(element.clone(), graph);
+						}
+					}
+					besl::Expressions::Macro { body, .. } => {
+						graph = self.build_graph_inner(body.clone(), graph);
+					}
+					besl::Expressions::Member { source, .. } => {
+						match source.borrow().node() {
+							besl::Nodes::Expression { .. } => {}
+							besl::Nodes::Literal { .. } => {
+								graph = self.build_graph_inner(source.clone(), graph);
+							}
+							besl::Nodes::Member { .. } => {}
+							_ => {
+								graph = self.build_graph_inner(source.clone(), graph);
+							}
+						}
+					}
+					besl::Expressions::VariableDeclaration { r#type, .. } => {
+						graph = self.build_graph_inner(r#type.clone(), graph);
+					}
+					besl::Expressions::Literal { .. } => {
+						// graph = self.build_graph_inner(value.clone(), graph);
+					}
+					besl::Expressions::Return => {}
+					besl::Expressions::Accessor { left, right } => {
+						graph = self.build_graph_inner(left.clone(), graph);
+						graph = self.build_graph_inner(right.clone(), graph);
+					}
+				}
+			}
+			besl::Nodes::Binding { r#type, .. } => {
+				match r#type {
+					besl::BindingTypes::Buffer{ r#type } => {
+						graph = self.build_graph_inner(r#type.clone(), graph);
+					}
+					besl::BindingTypes::Image { .. } => {}
+					besl::BindingTypes::CombinedImageSampler => {}
+				}
+			}
+			besl::Nodes::Intrinsic { elements, .. } => {
+				for element in elements {
+					graph = self.build_graph_inner(element.clone(), graph);
+				}
+			}
+			besl::Nodes::Literal { value, .. } => {
+				graph = self.build_graph_inner(value.clone(), graph);
+			}
+		}
+
+		graph
+	}
+
+	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(&this_node);
 	
 		match node.node() {
 			besl::Nodes::Null => {}
-			besl::Nodes::Scope { children, .. } => {
-				for child in children {
-					self.generate_shader_internal(string, &child,);
-				}
-			}
+			besl::Nodes::Scope { .. } => {}
 			besl::Nodes::Function { name, statements, return_type, params, .. } => {
-				let mut l_string = String::with_capacity(128);
+				string.push_str(Self::translate_type(&return_type.borrow().get_name().unwrap()));
 
-				self.generate_shader_internal(&mut l_string, &return_type);
+				string.push(' ');
 
-				l_string.push_str(Self::translate_type(&return_type.borrow().get_name().unwrap()));
+				string.push_str(name);
 
-				l_string.push(' ');
-
-				l_string.push_str(name);
-
-				l_string.push('(');
+				string.push('(');
 
 				for (i, param) in params.iter().enumerate() {
 					if i > 0 {
-						if !self.minified { l_string.push_str(", "); } else { l_string.push(','); }
+						if !self.minified { string.push_str(", "); } else { string.push(','); }
 					}
-
-					self.generate_shader_internal(&mut l_string, &param);
 				}
 
-				if self.minified { l_string.push_str("){"); } else { l_string.push_str(") {\n"); }
+				if self.minified { string.push_str("){"); } else { string.push_str(") {\n"); }
 	
 				for statement in statements {
-					if !self.minified { l_string.push('\t'); }
-					self.generate_shader_internal(&mut l_string, &statement,);
-					if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
+					if !self.minified { string.push('\t'); }
+					if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
 				}
 				
-				if self.minified { l_string.push('}') } else { l_string.push_str("}\n"); }
-
-				string.insert_str(0, &l_string);
-
-				self.present_symbols.insert(this_node.clone());
+				if self.minified { string.push('}') } else { string.push_str("}\n"); }
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
 				if name == "void" || name == "vec2u16" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" { return; }
 
-				let mut l_string = String::with_capacity(128);
+				string.push_str("struct ");
+				string.push_str(name.as_str());
 
-				l_string.push_str("struct ");
-				l_string.push_str(name.as_str());
-
-				if self.minified { l_string.push('{'); } else { l_string.push_str(" {\n"); }
+				if self.minified { string.push('{'); } else { string.push_str(" {\n"); }
 
 				for field in fields {
-					if !self.minified { l_string.push('\t'); }
-					self.generate_shader_internal(&mut l_string, &field,);
-					if self.minified { l_string.push(';') } else { l_string.push_str(";\n"); }
+					if !self.minified { string.push('\t'); }
+					if self.minified { string.push(';') } else { string.push_str(";\n"); }
 				}
 
-				l_string.push_str("};");
+				string.push_str("};");
 
-				if !self.minified { l_string.push('\n'); }
-
-				string.insert_str(0, &l_string);
-
-				self.present_symbols.insert(this_node.clone());
+				if !self.minified { string.push('\n'); }
 			}
 			besl::Nodes::PushConstant { members } => {
-				let mut l_string = String::with_capacity(128);
+				string.push_str("layout(push_constant) uniform PushConstant {");
 
-				l_string.push_str("layout(push_constant) uniform PushConstant {");
-
-				if !self.minified { l_string.push('\n'); }
+				if !self.minified { string.push('\n'); }
 
 				for member in members {
-					if !self.minified { l_string.push('\t'); }
-					self.generate_shader_internal(&mut l_string, &member,);
-					if self.minified { l_string.push(';') } else { l_string.push_str(";\n"); }
+					if !self.minified { string.push('\t'); }
+					if self.minified { string.push(';') } else { string.push_str(";\n"); }
 				}
 
-				l_string.push_str("} push_constant;");
+				string.push_str("} push_constant;");
 
-				if !self.minified { l_string.push('\n'); }
-
-				string.insert_str(0, &l_string);
+				if !self.minified { string.push('\n'); }
 			}
 			besl::Nodes::Specialization { name, r#type } => {
 				let mut l_string = String::with_capacity(128);
@@ -246,7 +404,6 @@ impl ShaderCompilation {
 				string.insert_str(0, &l_string);
 			}
 			besl::Nodes::Member { name, r#type, count } => {
-				self.generate_shader_internal(string, &r#type); // Demand the type to be present in the shader
 				if let Some(type_name) = r#type.borrow().get_name() {
 					let type_name = Self::translate_type(type_name.as_str());
 
@@ -262,27 +419,21 @@ impl ShaderCompilation {
 			}
 			besl::Nodes::GLSL { code, input, .. } => {
 				for reference in input {
-					self.generate_shader_internal(string, reference);
 				}
 
 				string.push_str(code);
 			}
 			besl::Nodes::Parameter { name, r#type } => {
-				self.generate_shader_internal(string, &r#type);
 				string.push_str(&format!("{} {}", Self::translate_type(&r#type.borrow().get_name().unwrap()), name));
 			}
 			besl::Nodes::Expression(expression) => {
 				match expression {
 					besl::Expressions::Operator { operator, left, right } => {
 						if operator == &besl::Operators::Assignment {
-							self.generate_shader_internal(string, &left,);
 							if self.minified { string.push('=') } else { string.push_str(" = "); }
-							self.generate_shader_internal(string, &right,);
 						}
 					}
 					besl::Expressions::FunctionCall { parameters, function, .. } => {
-						self.generate_shader_internal(string, &function);
-
 						let function = RefCell::borrow(&function);
 						let name = function.get_name().unwrap();
 
@@ -293,23 +444,18 @@ impl ShaderCompilation {
 							if i > 0 {
 								if self.minified { string.push(',') } else { string.push_str(", "); }
 							}
-
-							self.generate_shader_internal(string, &parameter,);
 						}
 						string.push_str(&format!(")"));
 					}
 					besl::Expressions::IntrinsicCall { elements: parameters, .. } => {
 						for e in parameters {
-							self.generate_shader_internal(string, e);
 						}
 					}
 					besl::Expressions::Expression { elements } => {
 						for element in elements {
-							self.generate_shader_internal(string, &element,);
 						}
 					}
 					besl::Expressions::Macro { body, .. } => {
-						self.generate_shader_internal(string, body);
 					}
 					besl::Expressions::Member { name, source, .. } => {
 						match source.borrow().node() {
@@ -317,20 +463,16 @@ impl ShaderCompilation {
 								string.push_str(name);
 							}
 							besl::Nodes::Literal { .. } => {
-								self.generate_shader_internal(string, &source);
 							}
 							besl::Nodes::Member { .. } => { // If member being accessed belongs to a struct don't generate the "member definifition" it already existing inside the member's struct
 								string.push_str(name);
 							}
 							_ => {
-								self.generate_shader_internal(string, &source);
 								string.push_str(name);
 							}
 						}						
 					}
 					besl::Expressions::VariableDeclaration { name, r#type } => {
-						self.generate_shader_internal(string, r#type);
-
 						string.push_str(&format!("{} {}", Self::translate_type(&r#type.borrow().get_name().unwrap()), name));
 					}
 					besl::Expressions::Literal { value } => {
@@ -340,15 +482,11 @@ impl ShaderCompilation {
 						string.push_str("return");
 					}
 					besl::Expressions::Accessor { left, right } => {
-						self.generate_shader_internal(string, &left,);
 						string.push('.');
-						self.generate_shader_internal(string, &right,);
 					}
 				}
 			}
 			besl::Nodes::Binding { name, set, binding, read, write, r#type, count, .. } => {
-				let mut l_string = String::with_capacity(128);
-
 				let binding_type = match r#type {
 					besl::BindingTypes::Buffer{ .. } => "buffer",
 					besl::BindingTypes::Image{ format, .. } => {
@@ -360,25 +498,25 @@ impl ShaderCompilation {
 					besl::BindingTypes::CombinedImageSampler => "uniform sampler2D",
 				};
 
-				l_string.push_str(&format!("layout(set={},binding={}", set, binding));
+				string.push_str(&format!("layout(set={},binding={}", set, binding));
 
 				match r#type {
 					besl::BindingTypes::Buffer{ .. } => {
-						l_string.push_str(",scalar");
+						string.push_str(",scalar");
 					}
 					besl::BindingTypes::Image { format } => {
-						l_string.push(',');
-						l_string.push_str(&format);
+						string.push(',');
+						string.push_str(&format);
 					}
 					besl::BindingTypes::CombinedImageSampler => {}
 				}
 
 				match r#type {
 					besl::BindingTypes::Buffer{ .. } | besl::BindingTypes::Image { .. } => {
-						l_string.push_str(&format!(") {}{} ", if *read && !*write { "readonly " } else if *write && !*read { "writeonly " } else { "" }, binding_type));
+						string.push_str(&format!(") {}{} ", if *read && !*write { "readonly " } else if *write && !*read { "writeonly " } else { "" }, binding_type));
 					}
 					besl::BindingTypes::CombinedImageSampler => {
-						l_string.push_str(&format!(") {} ", binding_type));
+						string.push_str(&format!(") {} ", binding_type));
 					}
 				}
 
@@ -386,18 +524,17 @@ impl ShaderCompilation {
 					besl::BindingTypes::Buffer{ r#type } => {						
 						match RefCell::borrow(&r#type).node() {
 							besl::Nodes::Struct { name, fields, .. } => {
-								l_string.push_str(&name);
-								l_string.push('{');
+								string.push_str(&name);
+								string.push('{');
 
-								if !self.minified { l_string.push('\n'); }
+								if !self.minified { string.push('\n'); }
 
 								for field in fields {
-									if !self.minified { l_string.push('\t'); }
-									self.generate_shader_internal(&mut l_string, &field,);
-									if self.minified { l_string.push(';') } else { l_string.push_str(";\n"); }
+									if !self.minified { string.push('\t'); }
+									if self.minified { string.push(';') } else { string.push_str(";\n"); }
 								}
 
-								l_string.push('}');
+								string.push('}');
 							}
 							_ => { panic!("Need struct node type for buffer binding type."); }
 						}
@@ -405,26 +542,21 @@ impl ShaderCompilation {
 					_ => {}
 				}
 
-				l_string.push_str(&name);
+				string.push_str(&name);
 
 				if let Some(count) = count {
-					l_string.push('[');
-					l_string.push_str(count.to_string().as_str());
-					l_string.push(']');
+					string.push('[');
+					string.push_str(count.to_string().as_str());
+					string.push(']');
 				}
 
-				if !self.minified { l_string.push_str(";\n"); } else { l_string.push(';'); }
-				string.insert_str(0, &l_string);
-
-				self.present_symbols.insert(this_node.clone());
+				if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
-					self.generate_shader_internal(string, &element,);
 				}
 			}
 			besl::Nodes::Literal { value, .. } => {
-				self.generate_shader_internal(string, &value);
 			}
 		}
 	}

@@ -76,7 +76,7 @@ impl ShadowRenderingPass {
 
 			let main_node = root_node.borrow().get_main().unwrap();
 
-			let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
+			let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node);
 
 			glsl
 		};

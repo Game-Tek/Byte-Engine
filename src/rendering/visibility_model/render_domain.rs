@@ -24,7 +24,7 @@ use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
-use crate::{Vector2};
+use crate::Vector2;
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
 
 struct MeshData {
@@ -1598,7 +1598,7 @@ pub fn get_visibility_pass_mesh_source() -> String {
 
 	let main_node = root_node.borrow().get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(), &main_node);
+	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node);
 
 	glsl
 }

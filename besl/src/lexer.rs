@@ -5,8 +5,14 @@ use super::parser;
 
 pub type ParentNodeReference = Weak<RefCell<Node>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NodeReference(Rc<RefCell<Node>>);
+
+impl std::fmt::Debug for NodeReference {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		self.0.borrow().fmt(f)
+	}
+}
 
 impl NodeReference {
 	pub fn new<F, E>(f: F) -> Result<NodeReference, E> where F: FnOnce(ParentNodeReference) -> Result<Node, E> {
@@ -80,7 +86,7 @@ pub(super) fn lex_with_root(mut root: Node, node: &parser::Node) -> Result<NodeR
 	}
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Node {
 	// parent: Option<ParentNodeReference>,
 	node: Nodes,
@@ -534,7 +540,7 @@ impl Node {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingTypes {
 	Buffer {
-		r#type: NodeReference,
+		members: Vec<NodeReference>,
 	},
 	CombinedImageSampler,
 	Image {
@@ -542,13 +548,7 @@ pub enum BindingTypes {
 	},
 }
 
-impl BindingTypes {
-	pub fn buffer(r#type: NodeReference) -> BindingTypes {
-		BindingTypes::Buffer{ r#type }
-	}
-}
-
-#[derive(Clone, Debug,)]
+#[derive(Clone,)]
 pub enum Nodes {
 	Null,
 	Scope {
@@ -607,6 +607,26 @@ pub enum Nodes {
 		name: String,
 		value: NodeReference,
 	},
+}
+
+impl std::fmt::Debug for Node {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match &self.node {
+			Nodes::Null => { write!(f, "Null") }
+			Nodes::Scope { name, children } => { write!(f, "Scope {{ name: {}, children: {:#?} }}", name, children.iter().map(|c| c.0.borrow().get_name())) }
+			Nodes::Struct { name, fields, .. } => { write!(f, "Struct {{ name: {}, fields: {:?} }}", name, fields.iter().map(|c| c.0.borrow().get_name())) }
+			Nodes::Member { name, r#type, .. } => { write!(f, "Member {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name()) }
+			Nodes::Function { name, params, return_type, statements } => { write!(f, "Function {{ name: {}  }}", name) }
+			Nodes::Specialization { name, r#type } => { write!(f, "Specialization {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name()) }
+			Nodes::Expression(expression) => { write!(f, "Expression {{ {:?} }}", expression) }
+			Nodes::GLSL { code, input, output } => { write!(f, "GLSL {{ code: {}, input: {:?}, output: {:?} }}", code, input.iter().map(|c| c.0.borrow().get_name()), output.iter().map(|c| c.0.borrow().get_name())) }
+			Nodes::Binding { name, set, binding, read, write, r#type, count } => { write!(f, "Binding {{ name: {}, set: {}, binding: {}, read: {}, write: {}, type: {:?}, count: {:?} }}", name, set, binding, read, write, r#type, count) }
+			Nodes::PushConstant { members } => { write!(f, "PushConstant {{ members: {:?} }}", members.iter().map(|c| c.0.borrow().get_name())) }
+			Nodes::Intrinsic { name, elements, r#return } => { write!(f, "Intrinsic {{ name: {}, elements: {:?}, return: {:?} }}", name, elements.iter().map(|c| c.0.borrow().get_name()), r#return.0.borrow().get_name()) }
+			Nodes::Parameter { name, r#type } => { write!(f, "Parameter {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name()) }
+			Nodes::Literal { name, value } => { write!(f, "Literal {{ name: {}, value: {:?} }}", name, value.0.borrow().get_name()) }
+		}
+	}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -841,8 +861,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node) -> Resu
 		}
 		parser::Nodes::Binding { name, r#type, set, descriptor, read, write, count } => {
 			let r#type = match &r#type.node {
-				parser::Nodes::Type { .. } => {
-					BindingTypes::buffer(lex_parsed_node(chain, &r#type)?)
+				parser::Nodes::Type { members, .. } => {
+					BindingTypes::Buffer { members: members.iter().map(|m| lex_parsed_node(chain.clone(), m)).collect::<Result<Vec<NodeReference>, LexError>>()? }
 				}
 				parser::Nodes::Image { format } => {
 					BindingTypes::Image { format: format.clone() }

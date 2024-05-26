@@ -168,7 +168,7 @@ impl ShaderCompilation {
 
 		let order = topological_sort(&graph);
 		// Generate only direct definition to non leaf nodes
-		let order = order.into_iter().filter(|n| matches!(n.borrow().node(), besl::Nodes::Function { .. }) || matches!(n.borrow().node(), besl::Nodes::Struct { .. }) || matches!(n.borrow().node(), besl::Nodes::Binding { .. }) || matches!(n.borrow().node(), besl::Nodes::PushConstant { .. }));
+		let order = order.into_iter().filter(|n| matches!(n.borrow().node(), besl::Nodes::Function { .. }) || matches!(n.borrow().node(), besl::Nodes::Struct { .. }) || matches!(n.borrow().node(), besl::Nodes::Binding { .. }) || matches!(n.borrow().node(), besl::Nodes::PushConstant { .. }) || matches!(n.borrow().node(), besl::Nodes::Specialization { .. }));
 
 		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
 		
@@ -421,8 +421,6 @@ impl ShaderCompilation {
 				if !self.minified { string.push('\n'); }
 			}
 			besl::Nodes::Specialization { name, r#type } => {
-				let mut l_string = String::with_capacity(128);
-
 				let mut members = Vec::new();
 
 				let t = &r#type.borrow().get_name().unwrap();
@@ -434,7 +432,7 @@ impl ShaderCompilation {
 							match field.borrow().node() {
 								besl::Nodes::Member { name: member_name, r#type, .. } => {
 									let member_name = format!("{}_{}", name, {member_name});
-									l_string.push_str(&format!("layout(constant_id={}) const {} {} = {};\n", i, Self::translate_type(&r#type.borrow().get_name().unwrap()), &member_name, "1.0"));
+									string.push_str(&format!("layout(constant_id={})const {} {}={};{}", i, Self::translate_type(&r#type.borrow().get_name().unwrap()), &member_name, "1.0f", if !self.minified { "\n" } else { "" }));
 									members.push(member_name);
 								}
 								_ => {}
@@ -444,9 +442,7 @@ impl ShaderCompilation {
 					_ => {}
 				}
 
-				l_string.push_str(&format!("const {} {} = {};\n", &type_name, name, format!("{}({})", &type_name, members.join(","))));
-
-				string.insert_str(0, &l_string);
+				string.push_str(&format!("const {} {}={};{}", &type_name, name, format!("{}({})", &type_name, members.join(",")), if !self.minified { "\n" } else { "" }));
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
@@ -568,11 +564,9 @@ impl ShaderCompilation {
 					besl::BindingTypes::Buffer{ members } => {
 						string.push_str(&format!("_{}{{", name));
 
-						for (i, member) in members.iter().enumerate() {
-							if i > 0 {
-								if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
-							}
+						for member in members.iter() {
 							self.emit_node_string(string, &member);
+							if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
 						}
 
 						string.push_str("}");
@@ -685,8 +679,10 @@ mod tests {
 
 		let mut root_node = besl::Node::root();
 		
+		let float_type = root_node.get_child("f32").unwrap();
+
 		root_node.add_children(vec![
-			besl::Node::binding("buff", besl::BindingTypes::Buffer{ members: Vec::new() }, 0, 0, true, true).into(),
+			besl::Node::binding("buff", besl::BindingTypes::Buffer{ members: vec![besl::Node::member("member", float_type).into()] }, 0, 0, true, true).into(),
 			besl::Node::binding("image", besl::BindingTypes::Image{ format: "r8".to_string() }, 0, 1, false, true).into(),
 			besl::Node::binding("texture", besl::BindingTypes::CombinedImageSampler, 1, 0, true, false).into(),
 		]);
@@ -700,13 +696,40 @@ mod tests {
 		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
 
 		// We have to split the assertions because the order of the bindings is not guaranteed.
-		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{}buff;");
+		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
 		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
 		assert_string_contains!(shader, "layout(set=1,binding=0) uniform sampler2D texture;");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
 
 		// Assert that main is the last element in the shader string, which means that the bindings are before it.
 		shader.ends_with("void main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn test_specializtions() {
+		let script = r#"
+		main: fn () -> void {
+			color;
+		}
+		"#;
+
+		let mut root_node = besl::Node::root();
+		
+		let vec3f_type = root_node.get_child("vec3f").unwrap();
+
+		root_node.add_children(vec![
+			besl::Node::specialization("color", vec3f_type).into(),
+		]);
+
+		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
+
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		let shader_generator = ShaderGenerator::new().minified(true);
+
+		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+
+		assert_string_contains!(shader, "layout(constant_id=0)const float color_x=1.0f;layout(constant_id=1)const float color_y=1.0f;layout(constant_id=2)const float color_z=1.0f;const vec3 color=vec3(color_x,color_y,color_z);void main(){color;}");
 	}
 
 	#[test]

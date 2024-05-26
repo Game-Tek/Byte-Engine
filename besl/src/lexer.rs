@@ -305,6 +305,16 @@ impl Node {
 		}
 	}
 
+	pub fn specialization(name: &str, r#type: NodeReference) -> Node {
+		Node {
+			// parent: None,
+			node: Nodes::Specialization {
+				name: name.to_string(),
+				r#type,
+			},
+		}
+	}
+
 	pub fn new(node: Nodes) -> Node {
 		Node {
 			// parent: None,

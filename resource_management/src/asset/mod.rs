@@ -1,9 +1,7 @@
 //! This module contains the asset management system.
 //! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
 
-use smol::{future::FutureExt, io::AsyncReadExt};
-
-
+use smol::io::AsyncReadExt;
 
 pub mod asset_manager;
 pub mod asset_handler;
@@ -13,13 +11,16 @@ pub mod material_asset_handler;
 pub mod image_asset_handler;
 pub mod mesh_asset_handler;
 
+pub type BEADType = json::JsonValue;
+
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
-fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, String), ()>> { Box::pin(async move {
+fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async move {
 	let resource_origin = if url.starts_with("http://") || url.starts_with("https://") { "network" } else { "local" };
 	let mut source_bytes;
 	let format;
+	let spec;
 	match resource_origin {
 		"network" => {
 			let request = if let Ok(request) = ureq::get(url).call() { request } else { return Err(()); };
@@ -27,6 +28,8 @@ fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Pat
 			format = content_type;
 
 			source_bytes = Vec::new();
+
+			spec = None;
 
 			request.into_reader().read_to_end(&mut source_bytes).or(Err(()))?;
 		},
@@ -36,6 +39,24 @@ fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Pat
 			let path = path.join(url);
 
 			let mut file = smol::fs::File::open(&path).await.or(Err(()))?;
+
+			spec = {
+				// Append ".bead" to the file name to check for a resource file
+				let mut spec_path = path.clone();
+				spec_path.set_extension("bead");
+				let file = smol::fs::File::open(spec_path).await.ok();
+				if let Some(mut file) = file {
+					let mut spec_bytes = Vec::with_capacity(file.metadata().await.unwrap().len() as usize);
+					if let Err(_) = file.read_to_end(&mut spec_bytes).await {
+						return Err(());
+					}
+					let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
+					let spec = json::from(spec);
+					Some(spec)
+				} else {
+					None
+				}
+			};
 
 			format = path.extension().unwrap().to_str().unwrap().to_string();
 
@@ -51,7 +72,7 @@ fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Pat
 		}
 	}
 
-	Ok((source_bytes, format))
+	Ok((source_bytes, spec, format))
 }) }
 
 pub trait AssetResolver: Sync + Send {
@@ -81,8 +102,9 @@ pub trait AssetResolver: Sync + Send {
 		}
 	}
 
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, String)>> {
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, Option<BEADType>, String)>> {
 		Box::pin(async move {
+			let url = self.get_base(url)?;
 			read_asset_from_source(url, None).await.ok()
 		})
 	}
@@ -94,7 +116,7 @@ pub mod tests {
 
     use crate::{resource::{resource_handler::ResourceReader, tests::TestResourceReader}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
 
-    use super::{read_asset_from_source, AssetResolver,};
+    use super::{read_asset_from_source, AssetResolver, BEADType,};
 
 	pub struct TestAssetResolver {
 		files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
@@ -113,13 +135,13 @@ pub mod tests {
 	}
 
 	impl AssetResolver for TestAssetResolver {
-		fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, String)>> { Box::pin(async {
+		fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, Option<BEADType>, String)>> { Box::pin(async {
 			if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
 				Some(x)
 			} else {
 				if let Some(f) = self.files.lock().unwrap().get(url) {
 					// Extract extension from url
-					Some((f.to_vec(), url.split('.').last().unwrap().to_string()))
+					Some((f.to_vec(), None, url.split('.').last().unwrap().to_string()))
 				} else {
 					None
 				}

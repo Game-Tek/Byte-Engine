@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use log::debug;
 use utils::Extent;
 
-use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, Solver, StorageBackend, TypedResource, TypedResourceModel};
+use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, Solver, StorageBackend, Reference, ReferenceModel};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -30,18 +30,18 @@ impl MaterialAssetHandler {
 
 impl AssetHandler for MaterialAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
-		r#type == "json"
+		r#type == "bema"
 	}
 
 	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
 			if let Some(dt) = asset_resolver.get_type(url) {
-				if dt != "json" { return Err("Not my type".to_string()); }
+				if dt != "bema" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, at) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, _, at) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
-			if at != "json" {
+			if at != "bema" {
 				return Err("Not my type".to_string());
 			}
 
@@ -87,7 +87,7 @@ impl AssetHandler for MaterialAssetHandler {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-					shaders: shaders.iter().map(|(s, b)| TypedResource::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
+					shaders: shaders.iter().map(|(s, b)| Reference::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
 					parameters,
 				});
 
@@ -107,7 +107,7 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				};
 
-				let material: TypedResourceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
+				let material: ReferenceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
 
 				let resource = GenericResourceSerialization::new(url, Variant {
 					material: material.solve(storage_backend).map_err(|_| { "Failed to solve material".to_string() })?,
@@ -136,7 +136,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<(Shader, Box<[u8]>)> {
 	let path = shader_json.as_str()?;
-	let (arlp, format) = asset_resolver.resolve(&path).await?;
+	let (arlp, _, format) = asset_resolver.resolve(&path).await?;
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 

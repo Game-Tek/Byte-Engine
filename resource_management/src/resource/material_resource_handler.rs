@@ -1,4 +1,4 @@
-use crate::{types::{Material, MaterialModel, Variant, VariantModel}, GenericResourceResponse, ResourceResponse, StorageBackend, TypedResourceModel, Solver};
+use crate::{types::{Material, MaterialModel, Variant, VariantModel}, GenericResourceResponse, ResourceResponse, StorageBackend, ReferenceModel, Solver};
 
 use super::resource_handler::{ResourceHandler, ResourceReader};
 
@@ -20,12 +20,12 @@ impl ResourceHandler for MaterialResourcerHandler {
 		Box::pin(async move {
 			match meta_resource.class.as_str() {
 				"Material" => {
-					let resource: TypedResourceModel<MaterialModel> = meta_resource.into();
+					let resource: ReferenceModel<MaterialModel> = meta_resource.into();
 					let material = resource.solve(storage_backend).ok()?;
 					Some(material.into())
 				}
 				"Variant" => {
-					let resource: TypedResourceModel<VariantModel> = meta_resource.into();
+					let resource: ReferenceModel<VariantModel> = meta_resource.into();
 					let variant = resource.solve(storage_backend).ok()?;
 					Some(variant.into())
 				}

@@ -3,8 +3,8 @@ use utils::Extent;
 
 use crate::{
     asset::image_asset_handler::{guess_semantic_from_name, Semantic}, types::{
-        AlphaMode, CreateImage, Formats, Gamma, Image, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, Stream, Streams, SubMesh, Value, VertexComponent, VertexSemantics
-    }, Description, GenericResourceResponse, GenericResourceSerialization, Resource, StorageBackend, TypedResource
+        AlphaMode, CreateImage, Formats, Gamma, Image, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, Stream, Streams, SubMesh, Value, Variant, VariantModel, VertexComponent, VertexSemantics
+    }, Description, GenericResourceResponse, GenericResourceSerialization, Resource, StorageBackend, Reference
 };
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
@@ -36,7 +36,7 @@ impl AssetHandler for MeshAssetHandler {
 				"assets/".to_string() + asset_resolver.get_base(url).ok_or("Bad URL".to_string())?
 			};
 
-			let (data, dt) = asset_resolver.resolve(asset_resolver.get_base(url).ok_or("Bad URL".to_string())?).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, spec, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
 			let (gltf, buffers) = if dt == "glb" {
 				let glb = gltf::Glb::from_slice(&data).map_err(|e| e.to_string())?;
@@ -47,7 +47,7 @@ impl AssetHandler for MeshAssetHandler {
 				let gltf = gltf::Gltf::open(path).map_err(|e| e.to_string())?;
 				
 				let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| if let gltf::buffer::Source::Uri(r) = b.source() { if r.ends_with(".bin") { Some(r) } else { None } } else { None }) {
-					let (bin, _) = asset_resolver.resolve(bin_file).await.ok_or("Failed to resolve binary file")?;
+					let (bin, _, _) = asset_resolver.resolve(bin_file).await.ok_or("Failed to resolve binary file")?;
 					gltf.buffers().map(|_| {
 						gltf::buffer::Data(bin.clone())
 					}).collect::<Vec<_>>()
@@ -277,6 +277,20 @@ impl AssetHandler for MeshAssetHandler {
 				})
 			};
 
+			let materials_per_primitive = flat_mesh_tree.clone().map(move |(primitive, _, _)| {
+				let spec = spec.as_ref().unwrap();
+
+				let asset = &spec["asset"];
+
+				let gltf_material = primitive.material();
+				let gltf_material_name = gltf_material.name().unwrap();
+
+				let material = &asset[gltf_material_name];
+				let material_asset_name = material["asset"].as_str().unwrap();
+
+				smol::block_on(asset_manager.load_typed_resource::<Variant, VariantModel>(material_asset_name)).unwrap()
+			});
+
 			let vertex_counts = flat_mesh_tree.clone().map(|(_, reader, _)| {
 				if let Some(positions) = reader.read_positions() {
 					positions.clone().count()
@@ -435,7 +449,7 @@ impl AssetHandler for MeshAssetHandler {
 						}
 					}).collect::<Vec<Vec<Vec<u8>>>>();
 
-					let primitives = flat_mesh_tree.clone().enumerate().map(|(i, (primitive, reader, _))| {
+					let primitives = flat_mesh_tree.clone().enumerate().zip(materials_per_primitive).map(|((i, (primitive, reader, _)), material)| {
 						let global = false;
 
 						let streams = if global {
@@ -487,6 +501,7 @@ impl AssetHandler for MeshAssetHandler {
 						};
 
 						Primitive {
+							material,
 							streams,
 							quantization: None,
 							bounding_box: make_bounding_box(primitive),

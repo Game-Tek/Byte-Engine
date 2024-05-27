@@ -1,4 +1,4 @@
-use crate::{types::{Audio, BitDepths}, Description, GenericResourceResponse, GenericResourceSerialization, Resource, StorageBackend};
+use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -19,7 +19,7 @@ impl AssetHandler for AudioAssetHandler {
 				if dt != "wav" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, _, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
 			if dt != "wav" { return Err("Not my type".to_string()); }
 

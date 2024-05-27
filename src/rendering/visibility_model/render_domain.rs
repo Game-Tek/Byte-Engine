@@ -652,6 +652,7 @@ impl VisibilityWorldRenderDomain {
 				let material_data = unsafe { material_data.as_mut().unwrap() };
 
 				for (i, e) in material.parameters.iter().enumerate() {
+					todo!("Implement material parameter handling");
 					material_data.textures[i] = i as u32; // TODO: make dynamic based on supplied textures
 				}
 
@@ -895,19 +896,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		Box::pin(async move {
 		self.render_entities.push(handle);
 
-		if !self.material_evaluation_materials.contains_key(mesh.get_material_id()) {
-			let response_and_data = {
-				if let Some(x) = self.resource_manager.read().await.get(mesh.get_material_id()).await {
-					x
-				} else {
-					log::error!("Failed to load material {} for mesh {}", mesh.get_material_id(), mesh.get_resource_id());
-					return;
-				}
-			};
-
-			self.load_material(response_and_data,);
-		}
-
 		if !self.mesh_resources.contains_key(mesh.get_resource_id()) { // Load only if not already loaded
 			let ghi = self.ghi.write().unwrap();
 
@@ -932,6 +920,12 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
 			let load_request = if let Some(mesh_resource) = resource_request.resource().downcast_ref::<Mesh>() {
+				for primitive in mesh_resource.primitives {
+					if !self.material_evaluation_materials.contains_key(primitive.material.id()) {			
+						self.load_material(primitive.material,);
+					}
+				}
+
 				let vertex_positions_stream;
 				let vertex_normals_stream;
 				let vertex_uv_stream;
@@ -1094,7 +1088,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						offset.into()
 					}).collect::<Vec<_>>();
 
-					let meshlets = mesh_resource.primitives.iter().zip(vcps.iter()).scan((0, 0), |state, (e, vcps)| {
+					let meshlets = mesh_resource.primitives.iter().zip(vcps.iter()).scan((0, 0), |(mesh_vertex_count, mesh_triangle_count), (e, vcps)| {
 						if let Some(stream) = e.meshlet_stream() {
 							let meshlet_stream = response.get_stream("Meshlets").unwrap();
 					
@@ -1104,23 +1098,20 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 							// Update vertex and triangle offsets per primitive, relative to the mesh
 							let primitive_vertex_offset = *vcps;
-							let primitive_triangle_offset = state.1 as u32;
+							let primitive_triangle_offset = *mesh_triangle_count as u32;
 
-							meshlet_stream.iter().scan((0, 0), |x, meshlet| {
+							meshlet_stream.iter().scan(0, |meshlet_triangle_counter, meshlet| {
 								let meshlet_vertex_count = meshlet.vertex_count;
 								let meshlet_triangle_count = meshlet.triangle_count;
 
-								// let vertex_offset = state.0 as u16;
-								// let triangle_offset = state.1 as u16;
-
-								state.1 += meshlet_triangle_count as u32;
+								*mesh_triangle_count += meshlet_triangle_count as u32;
 
 								// Update vertex and triangle offsets per meshlet, relative to the primitive
-								let vertex_offset = state.0 as u16;
-								let triangle_offset = x.1 as u16;
+								let vertex_offset = *mesh_vertex_count as u16;
+								let triangle_offset = *meshlet_triangle_counter as u16;
 
-								state.0 += meshlet_vertex_count as u32;
-								x.1 += meshlet_triangle_count as u32;
+								*mesh_vertex_count += meshlet_vertex_count as u32;
+								*meshlet_triangle_counter += meshlet_triangle_count as u32;
 
 								ShaderMeshletData {
 									instance_index: self.visibility_info.instance_count,
@@ -1136,31 +1127,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 							panic!();
 						}
 					}).flatten().collect::<Vec<_>>();
-
-					// let meshlet_stream = response.get_stream("Meshlets").unwrap();
-			
-					// let meshlet_stream = unsafe {
-					// 	std::slice::from_raw_parts(meshlet_stream.as_ptr() as *const Meshlet, meshlet_stream.len() / 2)
-					// };
-
-					// let meshlets = meshlet_stream.iter().scan((0, 0), |state, meshlet| {
-					// 	let meshlet_vertex_count = meshlet.vertex_count;
-					// 	let meshlet_triangle_count = meshlet.triangle_count;
-	
-					// 	let vertex_offset = state.0 as u16;
-					// 	let triangle_offset = state.1 as u16;
-
-					// 	state.0 += meshlet_vertex_count as u32;
-					// 	state.1 += meshlet_triangle_count as u32;
-
-					// 	ShaderMeshletData {
-					// 		instance_index: self.visibility_info.instance_count,
-					// 		vertex_offset,
-					// 		triangle_offset,
-					// 		vertex_count: meshlet_vertex_count,
-					// 		triangle_count: meshlet_triangle_count,
-					// 	}.into()
-					// }).collect::<Vec<_>>().into();
 
 					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
 
@@ -1179,11 +1145,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
 		let mesh_data = self.meshes.get(mesh.get_resource_id()).expect("Mesh not loaded");
-
-		let material_id = if let Some(x) = self.material_evaluation_materials.get(mesh.get_material_id()) { x.index } else {
-			log::error!("Mesh {} requested material {} but it was not loaded. It most likely failed renderer processing and wasn't made available.", mesh.get_resource_id(), mesh.get_material_id());
-			return;
-		};
 
 		let shader_mesh_data = ShaderMesh {
 			model: mesh.get_transform(),

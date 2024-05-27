@@ -1,0 +1,19 @@
+{
+	"asset": {
+		"Revolver": {
+			"asset": "Revolver.bema"
+		},
+		"Material.001": {
+			"asset": "Material.001.bema"
+		},
+		"RedDotScopeLens": {
+			"asset": "RedDotScopeLens.bema"
+		},
+		"RedDotScopeDot": {
+			"asset": "RedDotScopeDot.bema"
+		},
+		"FlashLight": {
+			"asset": "FalshLight.bema"
+		}
+	}
+}

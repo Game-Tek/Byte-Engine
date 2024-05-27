@@ -1,10 +1,9 @@
 
 use std::any::Any;
 
-use maths_rs::vec::Vec2;
 use utils::Extent;
 
-use crate::{types::{Formats, Gamma, Image}, Description, GenericResourceSerialization, Resource, StorageBackend};
+use crate::{types::{Formats, Gamma, Image}, Description, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
 
@@ -28,7 +27,7 @@ impl AssetHandler for ImageAssetHandler {
 				if dt != "png" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, _, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
 
 			let extent;
 			let format;

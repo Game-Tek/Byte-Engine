@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{types::{IndexStreamTypes, Mesh, Size, Streams, VertexSemantics}, GenericResourceResponse, ResourceResponse, StorageBackend};
+use crate::{types::{IndexStreamTypes, Mesh, MeshModel, Streams, VertexSemantics}, GenericResourceResponse, Reference, ReferenceModel, ResourceResponse, Solver, StorageBackend};
 
 use super::resource_handler::{ReadTargets, ResourceHandler, ResourceReader};
 
@@ -20,9 +20,11 @@ impl ResourceHandler for MeshResourceHandler {
 		&["Mesh"]
 	}
 
-	fn read<'s, 'a, 'b>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, _: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b {
+	fn read<'s, 'a, 'b>(&'s self, mut resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, s: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b {
 		Box::pin(async move {
-			let mesh_resource = Mesh::deserialize(bson::Deserializer::new(resource.resource.clone().into())).ok()?;
+			let re = ReferenceModel::new(&resource.id, resource.hash);
+			let r: Reference<Mesh> = re.solve(s).unwrap();
+			let mesh_resource = r.resource();
 
 			if let Some(mut reader) = reader {
 				let mut buffers = if let Some(read_target) = &mut resource.read_target {
@@ -87,7 +89,7 @@ impl ResourceHandler for MeshResourceHandler {
 				}
 			}
 
-			Some(ResourceResponse::new(resource, mesh_resource))
+			Some(r.into())
 		})
 	}
 }

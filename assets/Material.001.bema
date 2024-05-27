@@ -1,0 +1,24 @@
+{
+	"domain": "World",
+	"type": "Surface",
+	"shaders": {
+		"Compute": "shaders/pbr.besl"
+	},
+	"variables": [
+		{
+			"name": "color",
+			"data_type": "Texture2D",
+			"value": "Revolver.glb#Revolver_Base_color"
+		},
+		{
+			"name": "normalll",
+			"data_type": "Texture2D",
+			"value": "Revolver.glb#Revolver_Normal_OpenGL"
+		},
+		{
+			"name": "metallic_roughness",
+			"data_type": "Texture2D",
+			"value": "Revolver.glb#Revolver_Metallic-Revolver_Roughness"
+		}
+	]
+}

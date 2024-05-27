@@ -8,7 +8,6 @@ use crate::{core::{orchestrator, Entity}, math};
 
 pub trait RenderEntity: Entity {
 	fn get_transform(&self) -> maths_rs::Mat4f;
-	fn get_material_id(&self) -> &'static str;
 	fn get_resource_id(&self) -> &'static str;
 }
 
@@ -109,7 +108,6 @@ impl Transform {
 
 pub struct Mesh {
 	resource_id: &'static str,
-	material_id: &'static str,
 	transform: Transform,
 }
 
@@ -122,21 +120,18 @@ impl Entity for Mesh {
 
 impl RenderEntity for Mesh {
 	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_transform() }
-	fn get_material_id(&self) -> &'static str { self.material_id }
 	fn get_resource_id(&self) -> &'static str { self.resource_id }
 }
 
 impl Mesh {
-	pub fn new(resource_id: &'static str, material_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
+	pub fn new(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
 		Self {
 			resource_id,
-			material_id,
 			transform,
 		}.into()
 	}
 
 	pub fn get_resource_id(&self) -> &'static str { self.resource_id }
-	pub fn get_material_id(&self) -> &'static str { self.material_id }
 
 	pub fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
 		self.transform.set_orientation(normalize(orientation));

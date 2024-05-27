@@ -1,7 +1,7 @@
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{CreateResource, Resource, SolveErrors, Solver, StorageBackend, TypedResource, TypedResourceModel};
+use crate::{CreateResource, Resource, SolveErrors, Solver, StorageBackend, Reference, ReferenceModel};
 
 // Audio
 
@@ -51,15 +51,15 @@ pub enum Value {
 	Scalar(f32),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
-	Image(TypedResource<Image>),
+	Image(Reference<Image>),
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub enum ValueModel {
 	Scalar(f32),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
-	Image(TypedResourceModel<Image>),
+	Image(ReferenceModel<Image>),
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -69,15 +69,15 @@ pub struct Parameter {
 	pub value: Value,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct ParameterModel {
 	pub r#type: String,
 	pub name: String,
 	pub value: ValueModel,
 }
 
-impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
-	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Image>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Image>> for ReferenceModel<Image> {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Image>, SolveErrors> {
 		let (gr, mut resource_reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Image { format, extent, gamma } = Image::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
@@ -90,7 +90,7 @@ impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
 			vec.into_boxed_slice()
 		};
 
-		Ok(TypedResource::new_with_buffer(&self.id, self.hash, Image {
+		Ok(Reference::new_with_buffer(&self.id, self.hash, Image {
 			format,
 			extent,
 			gamma,
@@ -99,14 +99,14 @@ impl <'de> Solver<'de, TypedResource<Image>> for TypedResourceModel<Image> {
 }
 
 impl <'de> Solver<'de, Parameter> for ParameterModel {
-	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<Parameter, SolveErrors> {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
 			r#type: self.r#type.clone(),
 			name: self.name.clone(),
-			value: match &self.value {
-				ValueModel::Scalar(scalar) => Value::Scalar(*scalar),
-				ValueModel::Vector3(vector) => Value::Vector3(*vector),
-				ValueModel::Vector4(vector) => Value::Vector4(*vector),
+			value: match self.value {
+				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+				ValueModel::Vector3(vector) => Value::Vector3(vector),
+				ValueModel::Vector4(vector) => Value::Vector4(vector),
 				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
 			},
 		})
@@ -131,7 +131,7 @@ pub struct Material {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
 
-	pub(crate) shaders: Vec<TypedResource<Shader>>,
+	pub(crate) shaders: Vec<Reference<Shader>>,
 
 	/// The render model this material is for.
 	pub model: Model,
@@ -139,12 +139,12 @@ pub struct Material {
 	pub parameters: Vec<Parameter>,
 }
 
-#[derive(Debug,serde::Deserialize,)]
+#[derive(Clone, Debug, serde::Deserialize,)]
 pub struct MaterialModel {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
 
-	pub(crate) shaders: Vec<TypedResourceModel<Shader>>,
+	pub(crate) shaders: Vec<ReferenceModel<Shader>>,
 
 	/// The render model this material is for.
 	pub model: Model,
@@ -153,7 +153,7 @@ pub struct MaterialModel {
 }
 
 impl Material {
-	pub fn shaders(&self) -> &[TypedResource<Shader>] {
+	pub fn shaders(&self) -> &[Reference<Shader>] {
 		&self.shaders
 	}
 }
@@ -170,12 +170,12 @@ impl super::Model for MaterialModel {
 	fn get_class() -> &'static str { "Material" }
 }
 
-impl <'de> Solver<'de, TypedResource<Material>> for TypedResourceModel<MaterialModel> {
-	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Material>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Material>, SolveErrors> {
 		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(TypedResource::new(&self.id, self.hash, Material {
+		Ok(Reference::new(&self.id, self.hash, Material {
 			double_sided,
 			alpha_mode,
 			shaders: shaders.into_iter().map(|s| s.solve(storage_backend)).collect::<Result<_, _>>()?,
@@ -193,7 +193,7 @@ pub struct VariantVariable {
 
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct Variant {
-	pub material: TypedResource<Material>,
+	pub material: Reference<Material>,
 	pub variables: Vec<VariantVariable>,
 }
 
@@ -201,22 +201,26 @@ impl Resource for Variant {
 	fn get_class(&self) -> &'static str { "Variant" }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct VariantModel {
-	pub material: TypedResourceModel<MaterialModel>,
+	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariable>,
+}
+
+impl Resource for VariantModel {
+	fn get_class(&self) -> &'static str { "Variant" }
 }
 
 impl super::Model for VariantModel {
 	fn get_class() -> &'static str { "Variant" }
 }
 
-impl <'de> Solver<'de, TypedResource<Variant>> for TypedResourceModel<VariantModel> {
-	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Variant>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Variant>, SolveErrors> {
 		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(TypedResource::new(&self.id, self.hash, Variant {
+		Ok(Reference::new(&self.id, self.hash, Variant {
 			material: material.solve(storage_backend)?,
 			variables,
 		}))
@@ -262,8 +266,8 @@ impl super::Model for Shader {
 	fn get_class() -> &'static str { "Shader" }
 }
 
-impl <'de> Solver<'de, TypedResource<Shader>> for TypedResourceModel<Shader> {
-	fn solve(&self, storage_backend: &dyn StorageBackend) -> Result<TypedResource<Shader>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Shader>, SolveErrors> {
 		let (gr, mut reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
@@ -275,7 +279,7 @@ impl <'de> Solver<'de, TypedResource<Shader>> for TypedResourceModel<Shader> {
 
 		smol::block_on(reader.read_into(0, &mut buffer));
 
-		Ok(TypedResource::new_with_buffer(&self.id, self.hash, Shader {
+		Ok(Reference::new_with_buffer(&self.id, self.hash, Shader {
 			id,
 			stage,
 		}, buffer.into()))
@@ -314,7 +318,7 @@ pub struct VertexComponent {
 	pub channel: u32,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum QuantizationSchemes {
 	Quantization,
 	Octahedral,
@@ -364,9 +368,18 @@ pub struct MeshletStream {
 	pub count: u32,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Primitive {
-	// pub material: Material,
+	pub material: Reference<Variant>,
+	pub streams: Vec<Stream>,
+	pub quantization: Option<QuantizationSchemes>,
+	pub bounding_box: [[f32; 3]; 2],
+	pub vertex_count: u32,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PrimitiveModel {
+	pub material: ReferenceModel<VariantModel>,
 	pub streams: Vec<Stream>,
 	pub quantization: Option<QuantizationSchemes>,
 	pub bounding_box: [[f32; 3]; 2],
@@ -379,12 +392,41 @@ impl Primitive {
 	}
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+impl Resource for Primitive {
+	fn get_class(&self) -> &'static str { "Primitive" }
+}
+
+impl super::Model for PrimitiveModel {
+	fn get_class() -> &'static str {
+		"Primitive"
+	}
+}
+
+impl <'de> Solver<'de, Primitive> for PrimitiveModel {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Primitive, SolveErrors> {
+		let PrimitiveModel { material, streams, quantization, bounding_box, vertex_count } = self;
+
+		Ok(Primitive {
+			material: material.solve(storage_backend)?,
+			streams,
+			quantization,
+			bounding_box,
+			vertex_count,
+		})
+	}
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct SubMesh {
 	pub primitives: Vec<Primitive>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
+pub struct SubMeshModel {
+	pub primitives: Vec<PrimitiveModel>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
 /// Mesh represent a piece of geometry.
 /// It is composed of multiple sub meshes that can be rendered with different materials.
 /// Indices:
@@ -449,6 +491,32 @@ impl Mesh {
 
 impl Resource for Mesh {
 	fn get_class(&self) -> &'static str { "Mesh" }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct MeshModel {
+	vertex_components: Vec<VertexComponent>,
+	streams: Vec<Stream>,
+	primitives: Vec<PrimitiveModel>,
+}
+
+impl super::Model for MeshModel {
+	fn get_class() -> &'static str {
+		"Mesh"
+	}
+}
+
+impl <'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Mesh>, SolveErrors> {
+		let (gr, _) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+		let MeshModel { vertex_components, streams, primitives } = MeshModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(Reference::new(&self.id, self.hash, Mesh {
+			vertex_components,
+			streams,
+			primitives: primitives.into_iter().map(|p| p.solve(storage_backend)).collect::<Result<_, _>>()?,
+		}))
+	}
 }
 
 pub trait Size {

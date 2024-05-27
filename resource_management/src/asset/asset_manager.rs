@@ -1,13 +1,13 @@
 use std::ops::Deref;
 
-use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Description, GenericResourceSerialization, Model, Resource, Solver, StorageBackend, TypedResource, TypedResourceModel};
+use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Description, GenericResourceSerialization, Model, Resource, Solver, StorageBackend, Reference, ReferenceModel};
 
-use super::asset_handler::AssetHandler;
+use super::{asset_handler::AssetHandler, BEADType};
 
 struct MyAssetResolver {}
 
 impl AssetResolver for MyAssetResolver {
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<Option<(Vec<u8>, String)>> {
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<Option<(Vec<u8>, Option<BEADType>, String)>> {
 		Box::pin(async move {
 			read_asset_from_source(url, Some(&assets_path())).await.ok()
 		})
@@ -79,7 +79,7 @@ impl AssetManager {
 		Ok(())
 	}
 	
-	pub async fn load_typed_resource<'a, T: Resource + Model + Clone + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<TypedResource<T>, LoadMessages> where TypedResourceModel<T>: Solver<'a, TypedResource<T>> {
+	pub async fn load_typed_resource<'a, R: Resource + Clone, M: Model + Clone + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<Reference<R>, LoadMessages> where ReferenceModel<M>: Solver<'a, Reference<R>> {
 		let asset_resolver = MyAssetResolver {};
 
 		let storage_backend = &self.storage_backend;
@@ -97,7 +97,7 @@ impl AssetManager {
 
 		let meta_resource = load_results.iter().find(|load_result| { load_result.is_ok() }).ok_or(LoadMessages::NoAsset)?.clone().unwrap().unwrap();
 
-		let resource: TypedResourceModel<T> = meta_resource.try_into().or(Err(LoadMessages::IO))?;
+		let resource: ReferenceModel<M> = meta_resource.try_into().or(Err(LoadMessages::IO))?;
 		let resource = resource.solve(storage_backend.deref()).or_else(|_| {
 			log::error!("Failed to solve resource {}", id);
 			Err(LoadMessages::IO)

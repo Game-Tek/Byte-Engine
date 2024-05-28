@@ -144,7 +144,8 @@ mod tests {
 
 		let url = "Suzanne.gltf";
 
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
@@ -241,7 +242,8 @@ mod tests {
 
 		let url = "Box.glb";
 
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 

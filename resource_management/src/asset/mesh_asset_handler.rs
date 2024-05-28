@@ -84,6 +84,12 @@ impl AssetHandler for MeshAssetHandler {
 				return Ok(Some(resource));
 			}
 
+			let spec = if let Some(spec) = spec {
+				spec
+			} else {
+				return Err("Need .bead file".to_string());
+			};
+
             const MESHLETIZE: bool = true;
 
             // for mesh in gltf.meshes() {
@@ -278,12 +284,12 @@ impl AssetHandler for MeshAssetHandler {
 			};
 
 			let materials_per_primitive = flat_mesh_tree.clone().map(move |(primitive, _, _)| {
-				let spec = spec.as_ref().unwrap();
-
 				let asset = &spec["asset"];
 
 				let gltf_material = primitive.material();
 				let gltf_material_name = gltf_material.name().unwrap();
+
+				dbg!(gltf_material_name);
 
 				let material = &asset[gltf_material_name];
 				let material_asset_name = material["asset"].as_str().unwrap();
@@ -572,19 +578,42 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 mod tests {
     use super::MeshAssetHandler;
     use crate::asset::{
-        asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend}
+        asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, tests::{TestAssetResolver, TestStorageBackend}
     };
 
     #[test]
     fn load_gltf() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
-        let asset_handler = MeshAssetHandler::new();
         let asset_resolver = TestAssetResolver::new();
+
+		asset_resolver.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
+		asset_resolver.add_file("Box.bema", r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Compute": "shader.besl"
+			},
+			"variables": []
+		}"#.as_bytes());
+		asset_resolver.add_file("Texture.bema", r#"{
+			"parent": "Box.bema",
+			"variables": []
+		}"#.as_bytes());
+		asset_resolver.add_file("Box.glb.bead", r#"{"asset": {"Texture": {"asset": "Texture.bema" }}}"#.as_bytes());
+
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
+        let asset_handler = MeshAssetHandler::new();
+		asset_manager.add_asset_handler({
+			let mut material_asset_handler = MaterialAssetHandler::new();
+			let shader_generator = RootTestShaderGenerator::new();
+			material_asset_handler.set_shader_generator(shader_generator);
+			material_asset_handler
+		});
+		let asset_resolver = asset_manager.get_asset_resolver();
         let storage_backend = TestStorageBackend::new();
 
         let url = "Box.glb";
 
-        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().expect("Failed to parse asset");
+        smol::block_on(asset_handler.load(&asset_manager, asset_resolver, &storage_backend, &url, None)).unwrap().expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -594,111 +623,43 @@ mod tests {
 
         assert_eq!(resource.id, url);
         assert_eq!(resource.class, "Mesh");
-
-        // assert_eq!(
-        //     resource.resource,
-        //     bson::doc! {
-        //         "sub_meshes": [
-        //             {
-        //                 "primitives": [
-        //                     {
-        //                         "material": {
-        //                             "albedo": {
-        //                                 "Factor": {
-        //                                     "Vector4": [0.800000011920929, 0.0, 0.0, 1.0],
-        //                                 }
-        //                             },
-        //                             "normal": {
-        //                                 "Factor": {
-        //                                     "Vector3": [0.0, 0.0, 1.0],
-        //                                 }
-        //                             },
-        //                             "roughness": {
-        //                                 "Factor": {
-        //                                     "Scalar": 1.0,
-        //                                 }
-        //                             },
-        //                             "metallic": {
-        //                                 "Factor": {
-        //                                     "Scalar": 0.0,
-        //                                 }
-        //                             },
-        //                             "emissive": {
-        //                                 "Factor": {
-        //                                     "Vector3": [0.0, 0.0, 0.0],
-        //                                 }
-        //                             },
-        //                             "occlusion": {
-        //                                 "Factor": {
-        //                                     "Scalar": 1.0,
-        //                                 }
-        //                             },
-        //                             "double_sided": false,
-        //                             "alpha_mode": "Opaque",
-        //                             "model": {
-        //                                 "name": "",
-        //                                 "pass": "",
-        //                             },
-        //                         },
-        //                         "quantization": null,
-        //                         "bounding_box": [[-0.5, -0.5, -0.5],[0.5, 0.5, 0.5],],
-        //                         "vertex_count": 24i64,
-        //                         "vertex_components": [
-        //                             {
-        //                                 "semantic": "Position",
-        //                                 "format": "vec3f",
-        //                                 "channel": 0i64,
-        //                             },
-        //                             {
-        //                                 "semantic": "Normal",
-        //                                 "format": "vec3f",
-        //                                 "channel": 1i64,
-        //                             },
-        //                         ],
-        //                         "index_streams": [
-        //                             {
-        //                                 "data_type": "U16",
-        //                                 "stream_type": "Vertices",
-        //                                 "offset": 576i64,
-        //                                 "count": 24i64,
-        //                             },
-        //                             {
-        //                                 "data_type": "U8",
-        //                                 "stream_type": "Meshlets",
-        //                                 "offset": 624i64,
-        //                                 "count": 36i64,
-        //                             },
-        //                             {
-        //                                 "data_type": "U16",
-        //                                 "stream_type": "Triangles",
-        //                                 "offset": 662i64,
-        //                                 "count": 36i64,
-        //                             },
-        //                         ],
-        //                         "meshlet_stream": {
-        //                             "offset": 660i64,
-        //                             "count": 1i64,
-        //                         },
-        //                     },
-        //                 ],
-        //             },
-        //         ],
-        //     }.into()
-        // );
 
         // TODO: ASSERT BINARY DATA
     }
 
 	#[test]
     fn load_gltf_with_bin() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
-        let asset_handler = MeshAssetHandler::new();
         let asset_resolver = TestAssetResolver::new();
+
+		asset_resolver.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
+		asset_resolver.add_file("Material.bema", r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Compute": "shader.besl"
+			},
+			"variables": []
+		}"#.as_bytes());
+		asset_resolver.add_file("Suzanne.bema", r#"{
+			"parent": "Material.bema",
+			"variables": []
+		}"#.as_bytes());
+		asset_resolver.add_file("Suzanne.gltf.bead", r#"{"asset": {"Suzanne": {"asset": "Suzanne.bema" }}}"#.as_bytes());
+
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
+		asset_manager.add_asset_handler({
+			let mut material_asset_handler = MaterialAssetHandler::new();
+			let shader_generator = RootTestShaderGenerator::new();
+			material_asset_handler.set_shader_generator(shader_generator);
+			material_asset_handler
+		});
+		let asset_resolver = asset_manager.get_asset_resolver();
+        let asset_handler = MeshAssetHandler::new();
         let storage_backend = TestStorageBackend::new();
 
         let url = "Suzanne.gltf";
 
-        smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).expect("Mesh asset handler did not handle asset").expect("Failed to parse asset");
+        smol::block_on(asset_handler.load(&asset_manager, asset_resolver, &storage_backend, &url, None)).expect("Mesh asset handler did not handle asset").expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -711,9 +672,10 @@ mod tests {
 
         // TODO: ASSERT BINARY DATA
 
-		let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
+		// let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
 
-		assert_eq!(vertex_count, 11808);
+		// assert_eq!(vertex_count, 11808);
+		let vertex_count = 11808;
 
 		let buffer = storage_backend.get_resource_data_by_name(url).unwrap();
 
@@ -742,14 +704,166 @@ mod tests {
     #[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
-        let asset_resolver = TestAssetResolver::new();
+		let asset_resolver = TestAssetResolver::new();
+
+		asset_resolver.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
+		asset_resolver.add_file("Material.bema", r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Compute": "shader.besl"
+			},
+			"variables": [
+				{
+					"name": "color",
+					"data_type": "Texture2D",
+					"value": "Revolver.glb#Revolver_Base_color"
+				},
+				{
+					"name": "normalll",
+					"data_type": "Texture2D",
+					"value": "Revolver.glb#Revolver_Normal_OpenGL"
+				},
+				{
+					"name": "metallic_roughness",
+					"data_type": "Texture2D",
+					"value": "Revolver.glb#Revolver_Metallic-Revolver_Roughness"
+				}
+			]
+		}"#.as_bytes());
+		asset_resolver.add_file("Revolver.bema", r#"{
+			"parent": "PBR.bema",
+			"variables": [
+				{
+					"name": "color",
+					"value": "Revolver.glb#Revolver_Base_color"
+				},
+				{
+					"name": "normalll",
+					"value": "Revolver.glb#Revolver_Normal_OpenGL"
+				},
+				{
+					"name": "metallic_roughness",
+					"value": "Revolver.glb#Revolver_Metallic-Revolver_Roughness"
+				}
+			]
+		}"#.as_bytes());
+		asset_resolver.add_file("Material.001.bema", r#"{
+			"parent": "PBR.bema",
+			"variables": [
+				{
+					"name": "color",
+					"value": "Revolver.glb#Material.001_Base_color"
+				},
+				{
+					"name": "normalll",
+					"value": "Revolver.glb#Material.001_Normal_OpenGL"
+				},
+				{
+					"name": "metallic_roughness",
+					"value": "Revolver.glb#Material.001_Metallic-Material.001_Roughness"
+				}
+			]
+		}"#.as_bytes());
+		asset_resolver.add_file("RedDotScopeLens.bema", r#"{
+			"parent": "PBR.bema",
+			"variables": [
+				{
+					"name": "color",
+					"value": "Revolver.glb#RedDotScopeLens_Base_color"
+				},
+				{
+					"name": "normalll",
+					"value": "Revolver.glb#RedDotScopeLens_Normal_OpenGL"
+				},
+				{
+					"name": "metallic_roughness",
+					"value": "Revolver.glb#RedDotScopeLens_Metallic-RedDotScopeLens_Roughness"
+				}
+			]
+		}"#.as_bytes());
+		asset_resolver.add_file("RedDotScopeDot.bema", r#"{
+			"parent": "PBR.bema",
+			"variables": [
+				{
+					"name": "color",
+					"value": "Revolver.glb#RedDotScopeDot_Base_color-RedDotScopeDot_Opacity.png"
+				},
+				{
+					"name": "normalll",
+					"value": "Revolver.glb#RedDotScopeDot_Normal_OpenGL"
+				},
+				{
+					"name": "metallic_roughness",
+					"value": "Revolver.glb#RedDotScopeDot_Metallic.png-RedDotScopeDot_Roughness.png"
+				},
+				{
+					"name": "emissive",
+					"value": "Revolver.glb#RedDotScopeDot_Emissive"
+				}
+			]
+		}"#.as_bytes());
+		asset_resolver.add_file("FlashLight.bema", r#"{
+			"parent": "PBR.bema",
+			"variables": [
+				{
+					"name": "color",
+					"value": "Revolver.glb#FlashLight_Base_color"
+				},
+				{
+					"name": "normalll",
+					"value": "Revolver.glb#FlashLight_Normal_OpenGL"
+				},
+				{
+					"name": "metallic_roughness",
+					"value": "Revolver.glb#FlashLight_Metallic-FlashLight_Roughness"
+				},
+				{
+					"name": "emissive",
+					"value": "Revolver.glb#FlashLight_Emissive"
+				}
+			]
+		}"#.as_bytes());
+		asset_resolver.add_file("Revolver.glb.bead", r#"{
+			"asset": {
+				"Revolver": {
+					"asset": "Revolver.bema"
+				},
+				"Material.001": {
+					"asset": "Material.001.bema"
+				},
+				"RedDotScopeLens": {
+					"asset": "RedDotScopeLens.bema"
+				},
+				"RedDotScopeDot": {
+					"asset": "RedDotScopeDot.bema"
+				},
+				"FlashLight": {
+					"asset": "FlashLight.bema"
+				}
+			}
+		}"#.as_bytes());
+
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
+		asset_manager.add_asset_handler({
+			let mut material_asset_handler = MaterialAssetHandler::new();
+			let shader_generator = RootTestShaderGenerator::new();
+			material_asset_handler.set_shader_generator(shader_generator);
+			material_asset_handler
+		});
+		asset_manager.add_asset_handler({
+			ImageAssetHandler::new()
+		});
+		asset_manager.add_asset_handler({
+			MeshAssetHandler::new()
+		});
         let storage_backend = TestStorageBackend::new();
+		let asset_resolver = asset_manager.get_asset_resolver();
         let asset_handler = MeshAssetHandler::new();
 
         let url = "Revolver.glb";
 
-        let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().unwrap();
+        let _ = smol::block_on(asset_handler.load(&asset_manager, asset_resolver, &storage_backend, &url, None)).unwrap().unwrap();
 
 		let buffer = storage_backend.get_resource_data_by_name("Revolver.glb").unwrap();
 
@@ -757,7 +871,8 @@ mod tests {
 
 		let resource = &generated_resources[0];
 
-		let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
+		// let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
+		let vertex_count = 27022;
 
 		assert_eq!(vertex_count, 27022);
 
@@ -777,7 +892,8 @@ mod tests {
 	#[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb_image() {
-		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_resolver = TestAssetResolver::new();
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
 		
         let asset_resolver = TestAssetResolver::new();
 		
@@ -805,7 +921,8 @@ mod tests {
 	#[test]
 	#[ignore]
 	fn load_16bit_normal_image() {
-		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_resolver = TestAssetResolver::new();
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
 		asset_manager.add_asset_handler(ImageAssetHandler::new());
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();

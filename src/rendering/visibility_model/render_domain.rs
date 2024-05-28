@@ -28,6 +28,8 @@ use crate::Vector2;
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
 
 struct MeshData {
+	// (material_id)
+	primitives: Vec<(u32)>,
 	meshlets: Vec<ShaderMeshletData>,
 	/// The base position into the vertex buffer or vertex indices buffer
 	vertex_offset: u32,
@@ -368,7 +370,9 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
-	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut ghi::GHI, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle, texture_count: &mut u32) {
+	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut ghi::GHI, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle, texture_count: &mut u32) -> Option<u32> {
+		// TODO: check if the resource is already loaded
+
 		if let Some(texture) = resource.resource().downcast_ref::<Image>() {
 			let format = match texture.format {
 				resource_management::types::Formats::RG8 => ghi::Formats::RG8(ghi::Encodings::UnsignedNormalized),
@@ -415,13 +419,23 @@ impl VisibilityWorldRenderDomain {
 
 			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(textures_binding, image, sampler, ghi::Layouts::Read, *texture_count),]);
 
+			let texture_index = *texture_count;
+
 			*texture_count += 1;
 
 			pending_texture_loads.push(image);
+
+			Some(texture_index)
+		} else {
+			None
 		}
 	}
 
-	fn load_material<'a>(&'a mut self, resource: impl resource_management::ResourceStore<'a>) {
+	/// Creates the needed GHI resource for the given material.
+	/// Does nothing if the material has already been loaded.
+	fn create_material_resources<'a>(&'a mut self, resource: &impl resource_management::ResourceStore<'a>) {
+		if self.material_evaluation_materials.contains_key(resource.id()) { return; }
+
 		let mut ghi = self.ghi.write().unwrap();
 
 		if let Some(variant) = resource.resource().downcast_ref::<Variant>() {
@@ -636,24 +650,26 @@ impl VisibilityWorldRenderDomain {
 					return;
 				}
 
-				for parameter in &material.parameters {
+				let textures_indices = material.parameters.iter().map(|parameter| {
 					match &parameter.value {
 						resource_management::types::Value::Image(image) => {
-							Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding, &mut self.texture_count);
+							Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding, &mut self.texture_count)
 						}
-						_ => {}
+						_ => { None }
 					}
-				}
-
+				}).collect::<Vec<_>>();
 				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
 				let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
 				let material_data = unsafe { material_data.as_mut().unwrap() };
 
-				for (i, e) in material.parameters.iter().enumerate() {
-					todo!("Implement material parameter handling");
-					material_data.textures[i] = i as u32; // TODO: make dynamic based on supplied textures
+				for (i, e) in textures_indices.iter().enumerate() {
+					if let Some(e) = e {
+						material_data.textures[i] = *e as u32;
+					} else {
+						material_data.textures[i] = 0xFFFFFFFF;
+					}
 				}
 
 				match material.model.name.as_str() {
@@ -827,8 +843,6 @@ impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 #[derive(Copy, Clone)]
 #[repr(C)]
 struct ShaderMeshletData {
-	// The mesh instance this meshlet belongs to
-	instance_index: u32,
 	/// Base index into the vertex indices buffer
 	/// ```glsl
 	/// vertex_index = mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + gl_LocalInvocationID.x];
@@ -856,6 +870,7 @@ struct ShaderMesh {
 	/// Also, the position into the vertex indices buffer this instance's data starts
 	base_vertex_index: u32,
 	base_triangle_index: u32,
+	base_meshlet_index: u32,
 }
 
 #[repr(C)]
@@ -897,8 +912,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		self.render_entities.push(handle);
 
 		if !self.mesh_resources.contains_key(mesh.get_resource_id()) { // Load only if not already loaded
-			let ghi = self.ghi.write().unwrap();
-
 			let resource_request = {
 				let resource_manager = self.resource_manager.read().await;
 				resource_manager.request(mesh.get_resource_id()).await
@@ -908,6 +921,14 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				log::error!("Failed to load mesh resource {}", mesh.get_resource_id());
 				return;
 			};
+
+			if let Some(mesh_resource) = resource_request.resource().downcast_ref::<Mesh>() {
+				for primitive in &mesh_resource.primitives {
+					self.create_material_resources(&primitive.material,);
+				}
+			}
+
+			let ghi = self.ghi.write().unwrap();
 
 			let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 			let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
@@ -920,12 +941,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
 			let load_request = if let Some(mesh_resource) = resource_request.resource().downcast_ref::<Mesh>() {
-				for primitive in mesh_resource.primitives {
-					if !self.material_evaluation_materials.contains_key(primitive.material.id()) {			
-						self.load_material(primitive.material,);
-					}
-				}
-
 				let vertex_positions_stream;
 				let vertex_normals_stream;
 				let vertex_uv_stream;
@@ -1114,7 +1129,6 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 								*meshlet_triangle_counter += meshlet_triangle_count as u32;
 
 								ShaderMeshletData {
-									instance_index: self.visibility_info.instance_count,
 									vertex_offset,
 									triangle_offset,
 									vertex_count: meshlet_vertex_count,
@@ -1128,7 +1142,17 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 						}
 					}).flatten().collect::<Vec<_>>();
 
-					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure });
+					let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
+
+					let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
+			
+					for (i, meshlet) in meshlets.iter().enumerate() {
+						meshlets_data_slice[self.visibility_info.meshlet_count as usize + i] = *meshlet;
+					}
+
+					let primitives = Vec::new();
+
+					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure, primitives });
 
 					let vertex_count = mesh_resource.vertex_count();
 					let triangle_count = mesh_resource.triangle_count();
@@ -1136,6 +1160,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 					self.visibility_info.vertex_count += vertex_count as u32;
 					self.visibility_info.triangle_count += triangle_count as u32;
 					self.visibility_info.vertex_indices_count += vertex_indices_stream.count() as u32;
+					self.visibility_info.meshlet_count += total_meshlet_count as u32;
 				}
 			}
 		}
@@ -1146,16 +1171,21 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 		let mesh_data = self.meshes.get(mesh.get_resource_id()).expect("Mesh not loaded");
 
-		let shader_mesh_data = ShaderMesh {
-			model: mesh.get_transform(),
-			material_index: material_id,
-			base_vertex_index: mesh_data.vertex_offset,
-			base_triangle_index: mesh_data.triangle_offset,
-		};
-
 		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
-		meshes_data_slice[self.visibility_info.instance_count as usize] = shader_mesh_data;
+		let base_meshlet_index = self.visibility_info.meshlet_count;
+
+		for (i, (material_id)) in mesh_data.primitives.iter().enumerate() {			
+			let shader_mesh_data = ShaderMesh {
+				model: mesh.get_transform(),
+				material_index: *material_id,
+				base_vertex_index: mesh_data.vertex_offset,
+				base_triangle_index: mesh_data.triangle_offset,
+				base_meshlet_index,
+			};	
+	
+			meshes_data_slice[self.visibility_info.instance_count as usize + i] = shader_mesh_data;
+		}
 
 		if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
 			let mesh_transform = mesh.get_transform();
@@ -1169,17 +1199,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			ghi.write_instance(ray_tracing.instances_buffer, self.visibility_info.instance_count as usize, transform, self.visibility_info.instance_count as u16, 0xFF, 0, acceleration_structure);
 		}
 
-		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
-
-		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
-
-		for (i, meshlet) in mesh_data.meshlets.iter().enumerate() {
-			let meshlet = ShaderMeshletData { instance_index: self.visibility_info.instance_count, ..(*meshlet) };
-			meshlets_data_slice[self.visibility_info.meshlet_count as usize + i] = meshlet;
-		}
-
-		self.visibility_info.meshlet_count += mesh_data.meshlets.len() as u32;
-		self.visibility_info.instance_count += 1;
+		self.visibility_info.instance_count += mesh_data.primitives.len() as u32;
 
 		assert!((self.visibility_info.meshlet_count as usize) < MAX_MESHLETS, "Meshlet count exceeded");
 		assert!((self.visibility_info.instance_count as usize) < MAX_INSTANCES, "Instance count exceeded");

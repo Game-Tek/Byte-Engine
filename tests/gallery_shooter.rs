@@ -4,7 +4,6 @@
 
 use core::{self, entity::{EntityBuilder, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
 use byte_engine::{application::Application, audio::audio_system::DefaultAudioSystem, gameplay::{self, space::Space}, input, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, Vector3};
-use maths_rs::prelude::{MatTranslate, MatScale};
 
 #[ignore]
 #[test]
@@ -29,13 +28,13 @@ fn gallery_shooter() {
 
 	let scale = Vector3::new(0.1, 0.1, 0.1);
 	
-	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", "white_solid.json", mesh::Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale)));
+	let duck_1: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale)));
 	
 	let physics_duck_1 = core::spawn_as_child(space_handle.clone(), physics::Sphere::new(Vector3::new(0.0, 0.0, 2.0), Vector3::new(0.0, 0.0, 0.0), 0.1));
 	
-	let duck_2: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", "green_solid.json", mesh::Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale)));
-	let duck_3: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", "green_solid.json", mesh::Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale)));
-	let duck_4: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", "red_solid.json",   mesh::Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale)));
+	let duck_2: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale)));
+	let duck_3: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale)));
+	let duck_4: EntityHandle<mesh::Mesh> = core::spawn_as_child(space_handle.clone(), mesh::Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale)));
 	
 	let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 2.5, -1.5), 4500.0));
 
@@ -81,7 +80,7 @@ impl Player {
 				audio_system: audio_system,
 
 				camera: camera_handle,
-				mesh: core::spawn_as_child(parent, mesh::Mesh::new("Box.glb", "solid.json", transform)),
+				mesh: core::spawn_as_child(parent, mesh::Mesh::new("Box.glb", transform)),
 
 				magazine_size,
 				magazine_as_string,

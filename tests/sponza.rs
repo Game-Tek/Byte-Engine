@@ -29,7 +29,7 @@ fn sponza() {
 	let _: EntityHandle<DirectionalLight> = core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 1.0, 0.0), 4000f32));
 	let _: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32));
 	let _: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32));
-	let mesh: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("sponza/Sponza.gltf", "white_solid.json", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
+	let mesh: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("sponza/Sponza.gltf", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
 
 	struct Animation {
 		value: Vector3,

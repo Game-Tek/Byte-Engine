@@ -119,9 +119,9 @@ impl CommonShaderGenerator {
 	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
 		use besl::parser::Node;
 
-		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_triangle_index", "u32")]);
+		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
 		let camera_struct = Node::r#struct("Camera", vec![Node::member("view", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view_matrix", "mat4f"), Node::member("inverse_projection_matrix", "mat4f"), Node::member("inverse_view_projection_matrix", "mat4f")]);
-		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("instance_index", "u32"), Node::member("vertex_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("vertex_count", "u8"), Node::member("triangle_count", "u8"), Node::member("primitive_vertex_offset", "u32"), Node::member("primitive_triangle_offset", "u32")]);
+		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("vertex_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("vertex_count", "u8"), Node::member("triangle_count", "u8"), Node::member("primitive_vertex_offset", "u32"), Node::member("primitive_triangle_offset", "u32")]);
 		let light_struct = Node::r#struct("Light", vec![Node::member("view_matrix", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
 

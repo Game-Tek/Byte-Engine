@@ -183,7 +183,6 @@ impl Node {
 	/// The struct node.
 	pub fn r#struct(name: &str, fields: Vec<NodeReference>) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Struct {
 				name: name.to_string(),
 				template: None,
@@ -195,7 +194,6 @@ impl Node {
 
 	pub fn member(name: &str, r#type: NodeReference) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Member {
 				name: name.to_string(),
 				r#type,
@@ -206,7 +204,6 @@ impl Node {
 
 	pub fn array(name: &str, r#type: NodeReference, size: usize) -> NodeReference {
 		Self::internal_new(Node {
-			// parent: None,
 			node: Nodes::Member {
 				name: name.to_string(),
 				r#type,
@@ -217,7 +214,6 @@ impl Node {
 
 	pub fn function(name: &str, params: Vec<NodeReference>, return_type: NodeReference, statements: Vec<NodeReference>,) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Function {
 				name: name.to_string(),
 				params,
@@ -229,14 +225,12 @@ impl Node {
 
 	pub fn expression(expression: Expressions) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Expression(expression),
 		}
 	}
 
 	pub fn glsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::GLSL {
 				code,
 				input: inputs,
@@ -247,7 +241,6 @@ impl Node {
 
 	pub fn r#macro(name: &str, body: NodeReference) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Expression(Expressions::Macro {
 				name: name.to_string(),
 				body,
@@ -257,7 +250,6 @@ impl Node {
 
 	pub fn binding(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Binding {
 				name: name.to_string(),
 				r#type,
@@ -272,7 +264,6 @@ impl Node {
 
 	pub fn binding_array(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool, count: usize) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Binding {
 				name: name.to_string(),
 				r#type,
@@ -287,7 +278,6 @@ impl Node {
 
 	pub fn push_constant(members: Vec<NodeReference>) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::PushConstant {
 				members,
 			},
@@ -296,7 +286,6 @@ impl Node {
 
 	pub fn intrinsic(name: &str, elements: Vec<NodeReference>, r#return: NodeReference) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Intrinsic {
 				name: name.to_string(),
 				elements,
@@ -307,7 +296,6 @@ impl Node {
 
 	pub fn specialization(name: &str, r#type: NodeReference) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Specialization {
 				name: name.to_string(),
 				r#type,
@@ -317,7 +305,6 @@ impl Node {
 
 	pub fn new(node: Nodes) -> Node {
 		Node {
-			// parent: None,
 			node,
 		}
 	}
@@ -1385,9 +1372,13 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, mut program) = parser::parse(tokens).expect("Failed to parse");
+		let (mut node, _) = parser::parse(tokens).expect("Failed to parse");
 
 		let intrinsic = parser::Node::intrinsic("intrinsic", parser::Node::parameter("num", "u32"), parser::Node::sentence(vec![parser::Node::glsl("vec3(", vec![], vec![]), parser::Node::member_expression("num"), parser::Node::glsl(")", Vec::new(), Vec::new())]), "vec3f");
+
+		node.add(vec![intrinsic]);
+
+		node.sort();
 
 		let node = lex(&node).expect("Failed to lex");
 		let node = node.borrow();
@@ -1421,7 +1412,36 @@ main: fn () -> void {
 
 								let intrinsic = right.borrow();
 
-								// TODO: assert
+								match intrinsic.node() {
+									Nodes::Expression(Expressions::Accessor { left, right }) => {
+										let left = left.borrow();
+
+										match left.node() {
+											Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
+												let intrinsic = intrinsic.borrow();
+
+												match intrinsic.node() {
+													Nodes::Intrinsic { name, elements, .. } => {
+														assert_eq!(name, "intrinsic");
+														assert_eq!(elements.len(), 2);
+													}
+													_ => { panic!("Expected intrinsic"); }
+												}
+											}
+											_ => { panic!("Expected intrinsic call"); }
+										}
+
+										let right = right.borrow();
+
+										match right.node() {
+											Nodes::Expression(Expressions::Member { name, .. }) => {
+												assert_eq!(name, "y");
+											}
+											_ => { panic!("Expected member"); }
+										}
+									}
+									_ => { panic!("Expected accessor"); }
+								}
 							}
 							_ => { panic!("Expected assignment"); }
 						}

@@ -288,7 +288,8 @@ mod tests {
 
 	#[test]
 	fn load_image() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let asset_handler = ImageAssetHandler::new();
@@ -309,7 +310,8 @@ mod tests {
 
 	#[test]
 	fn load_16_bit_normal_image() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
 		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 		let asset_handler = ImageAssetHandler::new();

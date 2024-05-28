@@ -136,15 +136,38 @@ pub mod tests {
 
 	impl AssetResolver for TestAssetResolver {
 		fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, Option<BEADType>, String)>> { Box::pin(async {
-			if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
-				Some(x)
-			} else {
-				if let Some(f) = self.files.lock().unwrap().get(url) {
-					// Extract extension from url
-					Some((f.to_vec(), None, url.split('.').last().unwrap().to_string()))
+			if let Ok(x) = read_asset_from_source(self.get_base(url)?, Some(&std::path::Path::new("../assets"))).await {
+				let bead = if let None = x.1 {
+					let mut url = self.get_base(url)?.to_string();
+					url.push_str(".bead");
+					if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
+						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+					} else {
+						None
+					}
 				} else {
-					None
-				}
+					x.1
+				};
+				Some((x.0, bead, x.2))
+			} else {
+				let m = if let Some(f) = self.files.lock().unwrap().get(url) {
+					f.to_vec()
+				} else {
+					return None;
+				};
+
+				let bead = {
+					let mut url = self.get_base(url)?.to_string();
+					url.push_str(".bead");
+					if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
+						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+					} else {
+						None
+					}
+				};
+
+				// Extract extension from url
+				Some((m, bead, url.split('.').last().unwrap().to_string()))
 			}
 		}) }
 	}

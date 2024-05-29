@@ -9,7 +9,7 @@ use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationP
 
 use crate::{core::Entity, ghi, math, Vector3};
 
-use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{LightData, LightingData}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
+use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{LightData, LightingData, MeshData}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
 
 pub struct ShadowRenderingPass {
 	pipeline: ghi::PipelineHandle,
@@ -33,7 +33,7 @@ impl ShadowRenderingPass {
 
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Shadow Rendering Set Layout"), &bindings);
 
-		let pipeline_layout = ghi.create_pipeline_layout(&[visibility_descriptor_set_template.clone(), descriptor_set_template], &[]);
+		let pipeline_layout = ghi.create_pipeline_layout(&[visibility_descriptor_set_template.clone(), descriptor_set_template], &[ghi::PushConstantRange::new(0, 4)]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
 		
@@ -60,17 +60,19 @@ impl ShadowRenderingPass {
 
 			Light light = lighting_data.lights[0];
 			
-			process_meshlet(light.view_projection);
+			process_meshlet(push_constant.instance_index, light.view_projection);
 			"#;
 
 			let lighting_data = besl::parser::Node::binding("lighting_data", besl::parser::Node::buffer("LightingData", vec![besl::parser::Node::member("light_count", "u32"), besl::parser::Node::member("lights", "Light[16]")]), 1, 2, true, false);
-			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["process_meshlet".to_string(), "lighting_data".to_string(),], Vec::new())]);
+			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["push_constant".to_string(), "process_meshlet".to_string(), "lighting_data".to_string(),], Vec::new())]);
 
 			let root_node = besl::parser::Node::root();
 
 			let mut root = shader_generator.transform(root_node, &object! {});
 
-			root.add(vec![lighting_data, main]);
+			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+
+			root.add(vec![lighting_data, push_constant, main]);
 
 			let root_node = besl::lex(root).unwrap();
 
@@ -100,7 +102,7 @@ impl ShadowRenderingPass {
 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, lighting_data: lighting_data_buffer }
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain) {
+	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain, meshes: &[MeshData]) {
 		command_buffer_recording.start_region("Shadow Rendering");
 
 		let visibility_info = render_domain.get_visibility_info();
@@ -108,8 +110,13 @@ impl ShadowRenderingPass {
 		let binding = [ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)];
   		let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &binding);
 		render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
-		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);
-		pipeline.dispatch_meshes(visibility_info.meshlet_count, 1, 1);
+
+		let pipeline_bind = render_pass.bind_raster_pipeline(&self.pipeline);
+		for (i, mesh) in meshes.iter().enumerate() {
+			pipeline_bind.write_push_constant(&self.pipeline_layout, 0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
+			pipeline_bind.dispatch_meshes(mesh.meshlet_count, 1, 1);
+		}
+
 		render_pass.end_render_pass();
 
 		command_buffer_recording.end_region();

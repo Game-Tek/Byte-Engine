@@ -18,10 +18,10 @@ fn main() {
 	core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 0.5, -2.0),));
 
 	let _floor: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, -0.5, 1.0)).scale(Vector3::new(5.0, 1.0, 5.0))));
-	let _wall: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, -1.0, 1.0)).scale(Vector3::new(5.0, 10.0, 1.0))));
-	// let _a: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Suzanne.gltf", "white_solid.json", mesh::Transform::default().position(Vector3::new(0.0, 0.5, 0.0)).scale(Vector3::new(0.4, 0.4, 0.4))));
-	let _b: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(-0.6, 0.17, -0.1)).scale(Vector3::new(0.34, 0.34, 0.34))));
-	let _c: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.5, 0.13, -0.3)).scale(Vector3::new(0.26, 0.26, 0.26))));
+	// let _wall: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, -1.0, 1.0)).scale(Vector3::new(5.0, 10.0, 1.0))));
+	// // let _a: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Suzanne.gltf", "white_solid.json", mesh::Transform::default().position(Vector3::new(0.0, 0.5, 0.0)).scale(Vector3::new(0.4, 0.4, 0.4))));
+	// let _b: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(-0.6, 0.17, -0.1)).scale(Vector3::new(0.34, 0.34, 0.34))));
+	// let _c: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.5, 0.13, -0.3)).scale(Vector3::new(0.26, 0.26, 0.26))));
 
 	// let _wall: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("mountainside_2k.gltf", "white_solid.json", mesh::Transform::default().position(Vector3::new(0.0, -1.0, 5.0))));
 

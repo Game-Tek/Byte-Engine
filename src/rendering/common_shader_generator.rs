@@ -141,15 +141,15 @@ impl CommonShaderGenerator {
 		let material_evaluation_dispatches = Node::binding("material_evaluation_dispatches", Node::buffer("MaterialEvaluationDispatches", vec![Node::member("material_evaluation_dispatches", "vec3u[2073600]")]), 1, 3, material_offset_read, material_offset_write);
 		let pixel_mapping = Node::binding("pixel_mapping", Node::buffer("PixelMapping", vec![Node::member("pixel_mapping", "vec2u16[2073600]")]), 1, 4, pixel_mapping_read, pixel_mapping_write);
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
-		let instance_index = Node::binding("instance_index", Node::image("r32ui"), 1, 7, true, false);
+		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
 
 		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + meshlet.primitive_vertex_offset + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.vertex_offset + primitive_index]; // Indices are relative to primitives", vec!["vertex_indices".to_string()], Vec::new())]);
 
-		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("uint meshlet_index = gl_WorkGroupID.x;
+		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("instance_index", "u32"), Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("
+		Mesh mesh = meshes.meshes[instance_index];
+
+		uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
 		Meshlet meshlet = meshlets.meshlets[meshlet_index];
-		Mesh mesh = meshes.meshes[meshlet.instance_index];
-	
-		uint instance_index = meshlet.instance_index;
 	
 		SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
 

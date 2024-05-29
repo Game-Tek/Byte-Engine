@@ -27,10 +27,12 @@ use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::Vector2;
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
 
-struct MeshData {
+#[derive(Debug, Clone)]
+pub struct MeshData {
 	// (material_id)
 	primitives: Vec<(u32)>,
-	meshlets: Vec<ShaderMeshletData>,
+	pub meshlet_count: u32,
+	meshlet_offset: u32,
 	/// The base position into the vertex buffer or vertex indices buffer
 	vertex_offset: u32,
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
@@ -195,7 +197,7 @@ impl VisibilityWorldRenderDomain {
 
 			let descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
 
-			let pipeline_layout_handle = ghi_instance.create_pipeline_layout(&[descriptor_set_layout], &[]);
+			let pipeline_layout_handle = ghi_instance.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4)]);
 
 			let descriptor_set = ghi_instance.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
@@ -772,7 +774,7 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
-		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, self.primitive_index, self.instance_id, self.depth_target, extent);
+		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, &self.meshes.clone().into_values().collect::<Vec<_>>(), self.primitive_index, self.instance_id, self.depth_target, extent);
 		self.material_count_pass.render(command_buffer_recording, extent);
 		self.material_offset_pass.render(command_buffer_recording);
 		self.pixel_mapping_pass.render(command_buffer_recording, extent);
@@ -791,7 +793,7 @@ impl VisibilityWorldRenderDomain {
 
 			if true {
 				if let Some(most_significant_light) = directional_lights.get(0) {
-					shadow_render_pass.render(command_buffer_recording, self);
+					shadow_render_pass.render(command_buffer_recording, self, &self.meshes.clone().into_values().collect::<Vec<_>>());
 				} else {
 					command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(1f32)),]);
 				}
@@ -1152,7 +1154,10 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 					let primitives = Vec::new();
 
-					self.meshes.insert(response.id().to_string(), MeshData{ meshlets, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure, primitives });
+					let meshlet_count = meshlets.len() as u32;
+					let meshlet_offset = self.visibility_info.meshlet_count;
+
+					self.meshes.insert(response.id().to_string(), MeshData{ meshlet_count, meshlet_offset, vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, acceleration_structure, primitives });
 
 					let vertex_count = mesh_resource.vertex_count();
 					let triangle_count = mesh_resource.triangle_count();
@@ -1345,7 +1350,7 @@ impl VisibilityPass {
 		}
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, visibility_info: &VisibilityInfo, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) {
+	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, visibility_info: &VisibilityInfo, meshes: &[MeshData], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) {
 		command_buffer_recording.start_region("Visibility Buffer");
 
 		let attachments = [
@@ -1356,7 +1361,13 @@ impl VisibilityPass {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 		render_pass_command.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline).dispatch_meshes(visibility_info.meshlet_count, 1, 1);
+		let pipeline_bind = render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline);
+
+		for (i, mesh) in meshes.iter().enumerate() {
+			pipeline_bind.write_push_constant(&self.pipeline_layout, 0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
+			pipeline_bind.dispatch_meshes(mesh.meshlet_count, 1, 1);
+		}
+
 		render_pass_command.end_render_pass();
 
 		command_buffer_recording.end_region();
@@ -1564,16 +1575,18 @@ pub fn get_visibility_pass_mesh_source() -> String {
 
 	let main_code = r#"
 	Camera camera = camera.camera;
-	process_meshlet(camera.view_projection);
+	process_meshlet(push_constant.instance_index, camera.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["camera".to_string(), "process_meshlet".to_string()], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["camera".to_string(), "push_constant".to_string(), "process_meshlet".to_string()], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
 	let mut root = shader_generator.transform(root_node, &object! {});
 
-	root.add(vec![main]);
+	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+
+	root.add(vec![push_constant, main]);
 
 	let root_node = besl::lex(root).unwrap();
 
@@ -1614,9 +1627,10 @@ pub fn get_material_count_source() -> String {
 
 	let main_code = r#"
 	// If thread is out of bound respect to the material_id texture, return
-	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+	ivec2 extent = imageSize(instance_index_render_target);
+	if (gl_GlobalInvocationID.x >= extent.x || gl_GlobalInvocationID.y >= extent.y) { return; }
 
-	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
 
 	if (pixel_instance_index == 0xFFFFFFFF) { return; }
 
@@ -1625,7 +1639,7 @@ pub fn get_material_count_source() -> String {
 	atomicAdd(material_count.material_count[material_index], 1);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_count".to_string(), "instance_index".to_string()], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_count".to_string(), "instance_index_render_target".to_string()], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
@@ -1683,10 +1697,11 @@ pub fn get_pixel_mapping_source() -> String {
 	};
 
 	let main_code = r#"
+	ivec2 extent = imageSize(instance_index_render_target);
 	// If thread is out of bound respect to the material_id texture, return
-	if (gl_GlobalInvocationID.x >= imageSize(instance_index).x || gl_GlobalInvocationID.y >= imageSize(instance_index).y) { return; }
+	if (gl_GlobalInvocationID.x >= extent.x || gl_GlobalInvocationID.y >= extent.y) { return; }
 
-	uint pixel_instance_index = imageLoad(instance_index, ivec2(gl_GlobalInvocationID.xy)).r;
+	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
 
 	if (pixel_instance_index == 0xFFFFFFFF) { return; }
 
@@ -1697,7 +1712,7 @@ pub fn get_pixel_mapping_source() -> String {
 	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_offset_scratch".to_string(), "pixel_mapping".to_string(), "instance_index".to_string(),], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_offset_scratch".to_string(), "pixel_mapping".to_string(), "instance_index_render_target".to_string(),], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 

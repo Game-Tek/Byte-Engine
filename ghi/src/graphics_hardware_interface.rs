@@ -282,6 +282,8 @@ pub trait CommandBufferRecording where Self: Sized {
 	/// Writes to the push constant register.
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: &[u8]);
 
+	fn write_push_constant<T: Copy + 'static>(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized;
+
 	unsafe fn consume_resources(&mut self, handles: &[Consumption]);
 
 	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
@@ -1358,6 +1360,15 @@ pub enum PipelineConfigurationBlocks<'a> {
 pub struct PushConstantRange {
 	pub offset: u32,
 	pub size: u32,
+}
+
+impl PushConstantRange {
+	pub fn new(offset: u32, size: u32) -> Self {
+		Self {
+			offset,
+			size,
+		}
+	}
 }
 
 pub enum AccelerationStructureTypes {

@@ -87,6 +87,7 @@ impl AssetHandler for MeshAssetHandler {
 			let spec = if let Some(spec) = spec {
 				spec
 			} else {
+				log::error!("No spec found for {}", url);
 				return Err("Need .bead file".to_string());
 			};
 
@@ -288,8 +289,6 @@ impl AssetHandler for MeshAssetHandler {
 
 				let gltf_material = primitive.material();
 				let gltf_material_name = gltf_material.name().unwrap();
-
-				dbg!(gltf_material_name);
 
 				let material = &asset[gltf_material_name];
 				let material_asset_name = material["asset"].as_str().unwrap();

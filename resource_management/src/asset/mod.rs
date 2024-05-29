@@ -42,8 +42,8 @@ fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Pat
 
 			spec = {
 				// Append ".bead" to the file name to check for a resource file
-				let mut spec_path = path.clone();
-				spec_path.set_extension("bead");
+				let mut spec_path = path.clone().as_os_str().to_os_string();
+				spec_path.push(".bead");
 				let file = smol::fs::File::open(spec_path).await.ok();
 				if let Some(mut file) = file {
 					let mut spec_bytes = Vec::with_capacity(file.metadata().await.unwrap().len() as usize);
@@ -51,7 +51,7 @@ fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Pat
 						return Err(());
 					}
 					let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-					let spec = json::from(spec);
+					let spec = json::parse(spec).or(Err(()))?;
 					Some(spec)
 				} else {
 					None

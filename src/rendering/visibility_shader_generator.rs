@@ -34,7 +34,6 @@ impl VisibilityShaderGenerator {
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 		
 		let sample_function = Node::intrinsic("sample", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("texture(", Vec::new(), Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).rgb", Vec::new(), Vec::new())]), "vec3f");
-		
 
 		let sample_normal_function = if true {
 			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("unit_vector_from_xy(texture(", Vec::new(), Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xy)", vec!["unit_vector_from_xy".to_string()], Vec::new())]), "vec3f")
@@ -73,12 +72,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 uint offset = material_offset.material_offset[push_constant.material_id];
 ivec2 pixel_coordinates = ivec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
 uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;
+uint instance_index = imageLoad(instance_index_render_target, pixel_coordinates).r;
 uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
 uint meshlet_index = triangle_meshlet_indices >> 8;
 
 Meshlet meshlet = meshlets.meshlets[meshlet_index];
-
-uint instance_index = meshlet.instance_index;
 
 Mesh mesh = meshes.meshes[instance_index];
 
@@ -272,7 +270,7 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, besl::parser::Node::glsl(a, vec!["vertex_uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "vertex_positions".to_string(), "vertex_normals".to_string(), "triangle_index".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "interpolate_vec3f_with_deriv".to_string(), "interpolate_vec2f_with_deriv".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "compute_vertex_index".to_string()], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
+				statements.insert(0, besl::parser::Node::glsl(a, vec!["vertex_uvs".to_string(), "ao".to_string(), "depth_shadow_map".to_string(), "push_constant".to_string(), "material_offset".to_string(), "pixel_mapping".to_string(), "material_count".to_string(), "meshes".to_string(), "meshlets".to_string(), "materials".to_string(), "primitive_indices".to_string(), "vertex_indices".to_string(), "vertex_positions".to_string(), "vertex_normals".to_string(), "triangle_index".to_string(), "instance_index_render_target".to_string(), "camera".to_string(), "calculate_full_bary".to_string(), "interpolate_vec3f_with_deriv".to_string(), "interpolate_vec2f_with_deriv".to_string(), "fresnel_schlick".to_string(), "distribution_ggx".to_string(), "geometry_smith".to_string(), "compute_vertex_index".to_string()], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
 				statements.push(besl::parser::Node::glsl(b, vec!["lighting_data".to_string(), "out_albedo".to_string(), "out_diffuse".to_string()], Vec::new()));
 			}
 			_ => {}

@@ -89,7 +89,7 @@ impl ResourceHandler for MeshResourceHandler {
 				}
 			}
 
-			Some(r.into())
+			Some(ResourceResponse::new(resource, mesh_resource.clone()))
 		})
 	}
 }

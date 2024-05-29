@@ -3743,6 +3743,12 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
 	}
 
+	fn write_push_constant<T: Copy + 'static>(&mut self, pipeline_layout_handle: &crate::PipelineLayoutHandle, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized {
+		let command_buffer = self.get_command_buffer();
+		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
+		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>())); }	
+	}
+
 	fn clear_images(&mut self, textures: &[(graphics_hardware_interface::ImageHandle, graphics_hardware_interface::ClearValue)]) {
 		unsafe { self.consume_resources(textures.iter().map(|(image_handle, _)| Consumption {
 			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),

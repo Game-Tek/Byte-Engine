@@ -1,5 +1,5 @@
 {
-	"parent": "solid.json",
+	"parent": "solid.bema",
 	"variables": [
 		{
 			"name": "color",

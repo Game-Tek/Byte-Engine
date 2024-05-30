@@ -855,7 +855,9 @@ mod tests {
 
 		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
 
-		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};void used(){}void main(){gl_Position = vec4(0);}");
+		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};");
+		assert_string_contains!(shader, "void used(){}");
+		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
 	}
 
 	#[test]

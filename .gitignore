@@ -7,5 +7,4 @@ coverage/
 .byte
 .byte-engine
 .byte-editor
-assets/**/mountainside*
-assets/sponza
+assets

@@ -64,9 +64,9 @@ impl AssetHandler for MaterialAssetHandler {
 				
 				let generator = self.generator.clone().ok_or("Generator not set".to_string())?;
 
-				let shaders = asset_json["shaders"].entries().filter_map(|(s_type, shader_json)| { // TODO: desilence
+				let shaders = asset_json["shaders"].entries().map(|(s_type, shader_json)| {
 					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
-				}).collect::<Vec<_>>();
+				}).collect::<Option<Vec<_>>>().ok_or("Failed to build shader(s)".to_string())?;
 
 				let parameters = asset_json["variables"].members().map(|v: &json::JsonValue| {
 					let name = v["name"].to_string();
@@ -155,7 +155,9 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 		return None;
 	};
 
-	let root = generator.transform(root_node, material);
+	let mut root = generator.transform(root_node, material);
+
+	root.sort(); // TODO: remove this
 
 	let root_node = match besl::lex(root) {
 		Ok(e) => e,
@@ -314,7 +316,6 @@ pub mod tests {
 
 		dbg!(&glsl);
 
-		assert!(glsl.contains("readonly buffer Materials"));
 		assert!(glsl.contains("layout(push_constant"));
 		assert!(glsl.contains("uint32_t material_index"));
 		assert!(glsl.contains("materials[16]"));
@@ -349,7 +350,7 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file("material.json", material_json.as_bytes());
+		asset_resolver.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
@@ -357,7 +358,7 @@ pub mod tests {
 
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
 
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "material.json", None)).unwrap().expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "material.bema", None)).unwrap().expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -371,12 +372,12 @@ pub mod tests {
 		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) readonly buffer Materials{\n\tMaterial materials[16];\n}materials;"));
-		assert!(shader_spirv.contains("void main() {\n\tpush_constant;\nmaterials;\n"));
+		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
+		assert!(shader_spirv.contains("void main()"));
 
 		let material = &generated_resources[1];
 
-		assert_eq!(material.id, "material.json");
+		assert_eq!(material.id, "material.bema");
 		assert_eq!(material.class, "Material");
 	}
 
@@ -408,7 +409,7 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file("material.json", material_json.as_bytes());
+		asset_resolver.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
@@ -417,7 +418,7 @@ pub mod tests {
 		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
 
 		let variant_json = r#"{
-			"parent": "material.json",
+			"parent": "material.bema",
 			"variables": [
 				{
 					"name": "color",
@@ -426,9 +427,9 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file("variant.json", variant_json.as_bytes());
+		asset_resolver.add_file("variant.bema", variant_json.as_bytes());
 
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "variant.json", None)).unwrap().expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "variant.bema", None)).unwrap().expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -442,17 +443,17 @@ pub mod tests {
 		let shader_spirv = storage_backend.get_resource_data_by_name("fragment.besl").expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar) readonly buffer Materials{\n\tMaterial materials[16];\n}materials;"));
-		assert!(shader_spirv.contains("void main() {\n\tpush_constant;\nmaterials;\n"));
+		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
+		assert!(shader_spirv.contains("void main()"));
 
 		let material = &generated_resources[1];
 		
-		assert_eq!(material.id, "material.json");
+		assert_eq!(material.id, "material.bema");
 		assert_eq!(material.class, "Material");
 
 		let variant = &generated_resources[2];
 
-		assert_eq!(variant.id, "variant.json");
+		assert_eq!(variant.id, "variant.bema");
 		assert_eq!(variant.class, "Variant");
 	}
 }

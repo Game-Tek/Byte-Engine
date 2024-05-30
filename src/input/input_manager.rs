@@ -247,7 +247,7 @@ impl InputManager {
 	/// # Example
 	/// 
 	/// ```rust
-	/// # use byte_engine::input_manager::{InputManager, InputTypes, InputSourceDescription};
+	/// # use byte_engine::input::{InputManager, InputTypes, InputSourceDescription};
 	/// # let mut input_manager = InputManager::new();
 	/// # let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
 	/// input_manager.register_input_source(&keyboard_device_class_handle, "Up", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
@@ -275,7 +275,7 @@ impl InputManager {
 	/// 
 	/// # Example
 	/// ```rust
-	/// # use byte_engine::input_manager::{InputManager, InputTypes, InputSourceDescription};
+	/// # use byte_engine::input::{InputManager, InputTypes, InputSourceDescription};
 	/// # let mut input_manager = InputManager::new();
 	/// # let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
 	/// input_manager.register_input_destination(&gamepad_device_class_handle, "Rumble", InputTypes::Float(InputSourceDescription::new(0f32, 0f32, 0f32, 1f32)));
@@ -294,7 +294,7 @@ impl InputManager {
 	/// # Example
 	/// 
 	/// ```rust
-	/// # use byte_engine::input_manager::InputManager;
+	/// # use byte_engine::input::InputManager;
 	/// # let mut input_manager = InputManager::new();
 	/// # let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
 	/// let keyboard_device = input_manager.create_device(&keyboard_device_class_handle);

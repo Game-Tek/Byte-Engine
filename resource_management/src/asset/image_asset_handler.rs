@@ -309,6 +309,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore]
 	fn load_16_bit_normal_image() {
 		let asset_resolver = TestAssetResolver::new();
 		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);

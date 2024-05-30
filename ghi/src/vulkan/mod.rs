@@ -733,7 +733,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn get_mut_buffer_slice(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> &mut [u8] {
+	fn get_mut_buffer_slice<'a>(&'a self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> &'a mut [u8] {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		unsafe {
@@ -741,7 +741,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn get_splitter(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter {
+	fn get_splitter<'a>(&'a self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter<'a> {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		let slice = unsafe {

@@ -130,7 +130,7 @@ impl ResourceManager {
 	/// If no buffer range is provided it will return the data in a vector.
 	/// 
 	/// If a buffer is not provided for a resurce in the options parameters it will be either be loaded into the provided buffer or returned in a vector.
-	pub async fn load<'a, 's>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
+	pub async fn load<'s, 'a: 's>(&'s self, request: LoadResourceRequest<'a>) -> Option<ResourceResponse<'a>> {
 		let (mut resource, reader) = self.get_storage_backend().read(request.id()).await?;
 
 		let resource_handler = self.resource_handlers.iter().find(|rh| rh.get_handled_resource_classes().contains(&resource.class.as_str()))?;

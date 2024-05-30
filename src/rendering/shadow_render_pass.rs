@@ -9,7 +9,7 @@ use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationP
 
 use crate::{core::Entity, ghi, math, Vector3};
 
-use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{LightData, LightingData, MeshData}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
+use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{Instance, LightData, LightingData, MeshData}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
 
 pub struct ShadowRenderingPass {
 	pipeline: ghi::PipelineHandle,
@@ -102,7 +102,7 @@ impl ShadowRenderingPass {
 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, lighting_data: lighting_data_buffer }
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain, meshes: &[MeshData]) {
+	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain, instances: &[Instance]) {
 		command_buffer_recording.start_region("Shadow Rendering");
 
 		let visibility_info = render_domain.get_visibility_info();
@@ -112,9 +112,9 @@ impl ShadowRenderingPass {
 		render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
 
 		let pipeline_bind = render_pass.bind_raster_pipeline(&self.pipeline);
-		for (i, mesh) in meshes.iter().enumerate() {
-			pipeline_bind.write_push_constant(&self.pipeline_layout, 0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
-			pipeline_bind.dispatch_meshes(mesh.meshlet_count, 1, 1);
+		for (i, instance) in instances.iter().enumerate() {
+			pipeline_bind.write_push_constant(&self.pipeline_layout, 0, i as u32);
+			pipeline_bind.dispatch_meshes(instance.meshlet_count, 1, 1);
 		}
 
 		render_pass.end_render_pass();

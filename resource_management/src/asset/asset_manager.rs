@@ -9,6 +9,12 @@ struct MyAssetResolver {}
 impl AssetResolver for MyAssetResolver {
 	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<Option<(Vec<u8>, Option<BEADType>, String)>> {
 		Box::pin(async move {
+			println!("Resolving asset: {}", url);
+
+			let url = self.get_base(url)?;
+
+			println!("Resolved asset: {}", url);
+
 			read_asset_from_source(url, Some(&assets_path())).await.ok()
 		})
 	}

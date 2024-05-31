@@ -223,6 +223,9 @@ mod tests {
 
 	#[test]
 	fn test_wayland_window() {
-		let window = WaylandWindow::try_new().unwrap();
+		// Only run this test if we are on a Wayland session
+		if std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY").is_some() && std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland").is_some() {
+			let window = WaylandWindow::try_new().unwrap();
+		}
 	}
 }

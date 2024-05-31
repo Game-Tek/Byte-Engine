@@ -775,30 +775,26 @@ impl VisibilityWorldRenderDomain {
 
 			let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = vec![];
 
-			for (i, variable) in variant.variables.iter().enumerate() {
-				// TODO: use actual variable type
-
-				let value = match variable.value.as_str() {
-					"White" => { [1f32, 1f32, 1f32, 1f32] }
-					"Red" => { [1f32, 0f32, 0f32, 1f32] }
-					"Green" => { [0f32, 1f32, 0f32, 1f32] }
-					"Blue" => { [0f32, 0f32, 1f32, 1f32] }
-					"Purple" => { [1f32, 0f32, 1f32, 1f32] }
-					"Yellow" => { [1f32, 1f32, 0f32, 1f32] }
-					"Black" => { [0f32, 0f32, 0f32, 1f32] }
-					_ => {
-						error!("Unknown variant value: {}", variable.value);
-
-						[0f32, 0f32, 0f32, 1f32]
-					}
-				};
-
-				let value = [value[0], value[1], value[2]];
-
-				specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), value));
-			}
-
 			let mut ghi = self.ghi.write().unwrap();
+
+			for (i, variable) in variant.variables.iter().enumerate() {
+				match &variable.value {
+					resource_management::types::Value::Scalar(scalar) => {
+
+					}
+					resource_management::types::Value::Vector3(value) => {		
+						specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value));
+					}
+					resource_management::types::Value::Vector4(value) => {		
+						specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value));
+					}
+					resource_management::types::Value::Image(image) => {
+						let v = Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding, &mut self.texture_count);
+
+						todo!("Write material struct");
+					}
+				}
+			}
 
 			let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 			

@@ -107,16 +107,24 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				};
 
+				let variables = material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().map(|v| {
+					let v = v.as_document().unwrap();
+					let name = v.get_str("name").unwrap().to_string();
+					let r#type = v.get_str("type").unwrap().to_string();
+					let value = variant_json["variables"].members().find(|v2| { v2["name"].to_string() == name }).unwrap()["value"].to_string();
+
+					VariantVariable {
+						value: to_value(&r#type, &value),
+						name,
+						r#type,
+					}
+				}).collect::<Vec<_>>();
+
 				let material: ReferenceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
 
 				let resource = GenericResourceSerialization::new(url, Variant {
 					material: material.solve(storage_backend).map_err(|_| { "Failed to solve material".to_string() })?,
-					variables: variant_json["variables"].members().map(|v| {
-						VariantVariable {
-							name: v["name"].to_string(),
-							value: v["value"].to_string(),
-						}
-					}).collect::<Vec<_>>()
+					variables,
 				});
 
 				match storage_backend.store(&resource, &[]).await {

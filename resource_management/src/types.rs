@@ -185,10 +185,33 @@ impl <'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct VariantVariable {
 	pub name: String,
-	pub value: String,
+	pub r#type: String,
+	pub value: Value,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct VariantVariableModel {
+	pub name: String,
+	pub r#type: String,
+	pub value: ValueModel,
+}
+
+impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
+	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<VariantVariable, SolveErrors> {
+		Ok(VariantVariable {
+			name: self.name,
+			r#type: self.r#type,
+			value: match self.value {
+				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
+				ValueModel::Vector3(vector) => Value::Vector3(vector),
+				ValueModel::Vector4(vector) => Value::Vector4(vector),
+				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
+			},
+		})
+	}
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
@@ -204,7 +227,7 @@ impl Resource for Variant {
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
-	pub variables: Vec<VariantVariable>,
+	pub variables: Vec<VariantVariableModel>,
 }
 
 impl Resource for VariantModel {
@@ -222,7 +245,7 @@ impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 
 		Ok(Reference::new(&self.id, self.hash, Variant {
 			material: material.solve(storage_backend)?,
-			variables,
+			variables: variables.into_iter().map(|v| v.solve(storage_backend)).collect::<Result<_, _>>()?,
 		}))
 	}
 }

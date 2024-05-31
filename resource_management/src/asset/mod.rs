@@ -80,7 +80,7 @@ pub trait AssetResolver: Sync + Send {
 		let mut split = url.split('#');
 		let url = split.next()?;
 		let path = std::path::Path::new(url);
-		Some(path.file_name()?.to_str()?)
+		Some(path.to_str()?)
 	}
 
 	/// Returns the type of the asset, if attainable from the url.

@@ -1,27 +1,10 @@
 use std::ops::Deref;
 
-use crate::{asset::{read_asset_from_source, AssetResolver}, DbStorageBackend, Description, GenericResourceSerialization, Model, Resource, Solver, StorageBackend, Reference, ReferenceModel};
+use crate::{asset::read_asset_from_source, DbStorageBackend, Description, GenericResourceSerialization, Model, Resource, Solver, StorageBackend, Reference, ReferenceModel};
 
 use super::{asset_handler::AssetHandler, BEADType};
 
-struct MyAssetResolver {}
-
-impl AssetResolver for MyAssetResolver {
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<Option<(Vec<u8>, Option<BEADType>, String)>> {
-		Box::pin(async move {
-			println!("Resolving asset: {}", url);
-
-			let url = self.get_base(url)?;
-
-			println!("Resolved asset: {}", url);
-
-			read_asset_from_source(url, Some(&assets_path())).await.ok()
-		})
-	}
-}
-
 pub struct AssetManager {
-	asset_resolver: Box<dyn AssetResolver>,
 	read_base_path: std::path::PathBuf,
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
 	storage_backend: Box<dyn StorageBackend>,
@@ -47,15 +30,14 @@ impl AssetManager {
 			}
 		}
 
-		Self::new_with_path_and_storage_backend("assets".into(), DbStorageBackend::new(&read_base_path), MyAssetResolver {})
+		Self::new_with_path_and_storage_backend("assets".into(), DbStorageBackend::new(&read_base_path))
 	}
 
-	pub fn new_with_path_and_storage_backend<SB: StorageBackend, AR: AssetResolver + 'static>(read_base_path: std::path::PathBuf, storage_backend: SB, asset_resolver: AR) -> AssetManager {
+	pub fn new_with_path_and_storage_backend<SB: StorageBackend>(read_base_path: std::path::PathBuf, storage_backend: SB) -> AssetManager {
 		AssetManager {
 			read_base_path,
 			asset_handlers: Vec::new(),
 			storage_backend: Box::new(storage_backend),
-			asset_resolver: Box::new(asset_resolver),
 		}
 	}
 
@@ -71,7 +53,7 @@ impl AssetManager {
 	pub async fn load<'a>(&self, id: &str) -> Result<(), LoadMessages> {
 		let storage_backend = self.get_storage_backend();
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, self.asset_resolver.as_ref(), storage_backend.deref(), id, None));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -88,7 +70,7 @@ impl AssetManager {
 	pub async fn load_typed_resource<'a, R: Resource + Clone, M: Model + Clone + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<Reference<R>, LoadMessages> where ReferenceModel<M>: Solver<'a, Reference<R>> {
 		let storage_backend = &self.storage_backend;
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, self.asset_resolver.as_ref(), storage_backend.deref(), id, None));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -125,10 +107,6 @@ impl AssetManager {
 
 		resource
 	}
-
-	pub fn get_asset_resolver(&self) -> &dyn AssetResolver {
-		self.asset_resolver.deref()
-	}
 }
 
 fn assets_path() -> std::path::PathBuf {
@@ -143,7 +121,7 @@ fn assets_path() -> std::path::PathBuf {
 pub mod tests {
 	use polodb_core::bson;
 
-	use crate::{asset::tests::{TestAssetResolver, TestStorageBackend}, GenericResourceSerialization};
+	use crate::{asset::tests::TestStorageBackend, GenericResourceSerialization};
 
 	use super::*;
 
@@ -160,7 +138,7 @@ pub mod tests {
 	struct TestDescription {}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn AssetResolver, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 			let res = if id == "example" {
 				Ok(Some(GenericResourceSerialization::new_with_serialized("id", "TestAsset", bson::Bson::Null)))
 			} else {
@@ -172,7 +150,7 @@ pub mod tests {
 	}
 
 	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(), TestAssetResolver::new())
+		AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),)
 	}
 	
 	#[test]
@@ -182,7 +160,7 @@ pub mod tests {
 
 	#[test]
 	fn test_add_asset_manager() {
-		let mut asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(), TestAssetResolver::new());
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -192,7 +170,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_with_asset_manager() {
-		let mut asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(), TestAssetResolver::new());
+		let mut asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -206,7 +184,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(), TestAssetResolver::new());
+		let asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
 
 		let _ = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -216,7 +194,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(), TestAssetResolver::new());
+		let asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
 
 		let _ = json::parse(r#"{}"#).unwrap();
 

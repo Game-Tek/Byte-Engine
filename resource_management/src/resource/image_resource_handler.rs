@@ -53,7 +53,7 @@ impl ResourceHandler for ImageResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, tests::{TestAssetResolver, TestStorageBackend}};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, tests::TestStorageBackend};
 
 	use super::*;
 
@@ -65,20 +65,18 @@ mod tests {
 
 		let url = "patterned_brick_floor_02_diff_2k.png";
 
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
-		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), storage_backend);
 
-		smol::block_on(image_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Image asset handler did not handle asset").expect("Image asset handler failed to load asset");
+		smol::block_on(image_asset_handler.load(&asset_manager, asset_manager.get_storage_backend(), url, None)).expect("Image asset handler did not handle asset").expect("Image asset handler failed to load asset");
 
 		// Load resource from storage
 
 		let image_resource_handler = ImageResourceHandler::new();
 
-		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
+		let (resource, reader) = smol::block_on(asset_manager.get_storage_backend().read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader), &storage_backend)).expect("Failed to read image resource");
+		let resource = smol::block_on(image_resource_handler.read(resource, Some(reader), asset_manager.get_storage_backend())).expect("Failed to read image resource");
 
 		assert!(resource.get_buffer().is_some());
 

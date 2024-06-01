@@ -55,7 +55,7 @@ impl ResourceHandler for AudioResourceHandler {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, tests::{TestAssetResolver, TestStorageBackend}}, types::BitDepths};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, tests::TestStorageBackend}, types::BitDepths};
 
 	use super::*;
 
@@ -67,20 +67,18 @@ mod tests {
 
 		let url = "gun.wav";
 
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
-		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), storage_backend);
 
-		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, asset_manager.get_storage_backend(), url, None)).expect("Audio asset handler did not handle asset").expect("Audio asset handler failed to load asset");
 
 		// Load resource from storage
 
 		let audio_resource_handler = AudioResourceHandler::new();
 
-		let (resource, reader) = smol::block_on(storage_backend.read(url)).expect("Failed to read asset from storage");
+		let (resource, reader) = smol::block_on(asset_manager.get_storage_backend().read(url)).expect("Failed to read asset from storage");
 
-		let resource = smol::block_on(audio_resource_handler.read(resource, Some(reader), &storage_backend)).unwrap();
+		let resource = smol::block_on(audio_resource_handler.read(resource, Some(reader), asset_manager.get_storage_backend())).unwrap();
 
 		assert_eq!(resource.id(), "gun.wav");
 		assert_eq!(resource.class, "Audio");

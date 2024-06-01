@@ -5,7 +5,7 @@ use utils::Extent;
 
 use crate::{types::{Formats, Gamma, Image}, Description, GenericResourceSerialization, StorageBackend};
 
-use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
 pub struct ImageAssetHandler {
 }
@@ -21,13 +21,13 @@ impl AssetHandler for ImageAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			if let Some(dt) = asset_resolver.get_type(url) {
+			if let Some(dt) = storage_backend.get_type(url) {
 				if dt != "png" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, _, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, _, dt) = storage_backend.resolve(url).await.or(Err("Failed to resolve asset".to_string()))?;
 
 			let extent;
 			let format;
@@ -284,19 +284,17 @@ impl Description for ImageDescription {
 #[cfg(test)]
 mod tests {
 	use super::ImageAssetHandler;
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::{TestAssetResolver, TestStorageBackend}};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::TestStorageBackend};
 
 	#[test]
 	fn load_image() {
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
-		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(),);
 		let storage_backend = TestStorageBackend::new();
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = "patterned_brick_floor_02_diff_2k.png";
 
-		let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
+		let _ = smol::block_on(asset_handler.load(&asset_manager, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -311,15 +309,13 @@ mod tests {
 	#[test]
 	#[ignore]
 	fn load_16_bit_normal_image() {
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
-		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(),);
 		let storage_backend = TestStorageBackend::new();
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = "Revolver_Normal.png";
 
-		let _ = smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
+		let _ = smol::block_on(asset_handler.load(&asset_manager, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 

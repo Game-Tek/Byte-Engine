@@ -10,6 +10,7 @@
 
 use std::{any::Any, hash::Hasher};
 
+use asset::{get_base, read_asset_from_source, BEADType};
 use polodb_core::bson;
 use resource::resource_handler::{FileResourceReader, ReadTargets, ResourceReader};
 use serde::{ser::SerializeStruct, Serialize};
@@ -527,6 +528,20 @@ pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
 	fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
 		Box::pin(async move {})
+	}
+	/// Returns the type of the asset, if attainable from the url.
+	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
+	fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
+		let url = get_base(url)?;
+		let path = std::path::Path::new(url);
+		Some(path.extension()?.to_str()?)
+	}
+
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+		Box::pin(async move {
+			let url = get_base(url).ok_or(())?;
+			read_asset_from_source(url, None).await
+		})
 	}
 }
 

@@ -1,6 +1,6 @@
 use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
 
-use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
 pub struct AudioAssetHandler {
 
@@ -13,13 +13,13 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			if let Some(dt) = asset_resolver.get_type(url) {
+			if let Some(dt) = storage_backend.get_type(url) {
 				if dt != "wav" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, _, dt) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, _, dt) = storage_backend.resolve(url).await.or(Err("Failed to resolve asset".to_string()))?;
 
 			if dt != "wav" { return Err("Not my type".to_string()); }
 
@@ -109,22 +109,20 @@ struct AudioDescription {
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::tests::{TestAssetResolver, TestStorageBackend};
+	use crate::asset::tests::TestStorageBackend;
 
 	use super::*;
 
 	#[test]
 	fn test_audio_asset_handler() {
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let url = "gun.wav";
 
-		let asset_resolver = TestAssetResolver::new();
 		let storage_backend = TestStorageBackend::new();
 
-		smol::block_on(audio_asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, url, None)).unwrap().expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, &storage_backend, url, None)).unwrap().expect("Audio asset handler failed to load asset");
 
 		let generated_resources = storage_backend.get_resources();
 

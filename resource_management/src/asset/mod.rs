@@ -16,7 +16,7 @@ pub type BEADType = json::JsonValue;
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
-fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async move {
+pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async move {
 	let resource_origin = if url.starts_with("http://") || url.starts_with("https://") { "network" } else { "local" };
 	let mut source_bytes;
 	let format;
@@ -75,38 +75,29 @@ fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Pat
 	Ok((source_bytes, spec, format))
 }) }
 
-pub trait AssetResolver: Sync + Send {
-	fn get_base<'a>(&'a self, url: &'a str) -> Option<&'a str> {
-		let mut split = url.split('#');
-		let url = split.next()?;
-		let path = std::path::Path::new(url);
-		Some(path.to_str()?)
-	}
+enum ResolvedAsset {
+	Loaded((Vec<u8>, Option<BEADType>, String)),
+	AlreadyExists,
+}
 
-	/// Returns the type of the asset, if attainable from the url.
-	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
-	fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
-		let url = self.get_base(url)?;
-		let path = std::path::Path::new(url);
-		Some(path.extension()?.to_str()?)
-	}
+pub fn get_base<'a>(url: &'a str) -> Option<&'a str> {
+	let mut split = url.split('#');
+	let url = split.next()?;
+	if url.is_empty() {
+		return None;
+	} 
+	let path = std::path::Path::new(url);
+	Some(path.to_str()?)
+}
 
-	fn get_fragment(&self, url: &str) -> Option<String> {
-		let mut split = url.split('#');
-		let _ = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
-		let fragment = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
-		if split.count() == 0 {
-			Some(fragment.to_string())
-		} else {
-			None
-		}
-	}
-
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, Option<BEADType>, String)>> {
-		Box::pin(async move {
-			let url = self.get_base(url)?;
-			read_asset_from_source(url, None).await.ok()
-		})
+fn get_fragment(url: &str) -> Option<String> {
+	let mut split = url.split('#');
+	let _ = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
+	let fragment = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
+	if split.count() == 0 {
+		Some(fragment.to_string())
+	} else {
+		None
 	}
 }
 
@@ -114,73 +105,25 @@ pub trait AssetResolver: Sync + Send {
 pub mod tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-    use crate::{resource::{resource_handler::ResourceReader, tests::TestResourceReader}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
+    use crate::{asset::get_fragment, resource::{resource_handler::ResourceReader, tests::TestResourceReader}, GenericResourceResponse, GenericResourceSerialization, StorageBackend};
 
-    use super::{read_asset_from_source, AssetResolver, BEADType,};
-
-	pub struct TestAssetResolver {
-		files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
-	}
-
-	impl TestAssetResolver {
-		pub fn new() -> TestAssetResolver {
-			TestAssetResolver {
-				files: Arc::new(Mutex::new(HashMap::new())),
-			}
-		}
-
-		pub fn add_file(&self, name: &'static str, data: &[u8]) {
-			self.files.lock().unwrap().insert(name, data.into());
-		}
-	}
-
-	impl AssetResolver for TestAssetResolver {
-		fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Option<(Vec<u8>, Option<BEADType>, String)>> { Box::pin(async {
-			if let Ok(x) = read_asset_from_source(self.get_base(url)?, Some(&std::path::Path::new("../assets"))).await {
-				let bead = if let None = x.1 {
-					let mut url = self.get_base(url)?.to_string();
-					url.push_str(".bead");
-					if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
-						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
-					} else {
-						None
-					}
-				} else {
-					x.1
-				};
-				Some((x.0, bead, x.2))
-			} else {
-				let m = if let Some(f) = self.files.lock().unwrap().get(url) {
-					f.to_vec()
-				} else {
-					return None;
-				};
-
-				let bead = {
-					let mut url = self.get_base(url)?.to_string();
-					url.push_str(".bead");
-					if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
-						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
-					} else {
-						None
-					}
-				};
-
-				// Extract extension from url
-				Some((m, bead, url.split('.').last().unwrap().to_string()))
-			}
-		}) }
-	}
+    use super::{get_base, read_asset_from_source, BEADType};
 
 	pub struct TestStorageBackend {
 		resources: Arc<Mutex<Vec<(GenericResourceSerialization, Box<[u8]>)>>>,
+		files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
 	}
 
 	impl TestStorageBackend {
 		pub fn new() -> TestStorageBackend {
 			TestStorageBackend {
 				resources: Arc::new(Mutex::new(Vec::new())),
+				files: Arc::new(Mutex::new(HashMap::new())),
 			}
+		}
+
+		pub fn add_file(&self, name: &'static str, data: &[u8]) {
+			self.files.lock().unwrap().insert(name, data.into());
 		}
 
 		pub fn get_resources(&self) -> Vec<GenericResourceSerialization> {
@@ -251,25 +194,61 @@ pub mod tests {
 				x
 			})
 		}
+
+		fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async {
+			if let Ok(x) = read_asset_from_source(get_base(url).ok_or(())?, Some(&std::path::Path::new("../assets"))).await {
+				let bead = if let None = x.1 {
+					let mut url = get_base(url).ok_or(())?.to_string();
+					url.push_str(".bead");
+					if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
+						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+					} else {
+						None
+					}
+				} else {
+					x.1
+				};
+				Ok((x.0, bead, x.2))
+			} else {
+				let m = if let Some(f) = self.files.lock().unwrap().get(url) {
+					f.to_vec()
+				} else {
+					return Err(());
+				};
+
+				let bead = {
+					let mut url = get_base(url).ok_or(())?.to_string();
+					url.push_str(".bead");
+					if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
+						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+					} else {
+						None
+					}
+				};
+
+				// Extract extension from url
+				Ok((m, bead, url.split('.').last().unwrap().to_string()))
+			}
+		}) }
 	}
 
 	#[test]
 	fn test_base_url_parse() {
-		let asset_resolver = TestAssetResolver::new();
-
-		assert_eq!(asset_resolver.get_base("name.extension").unwrap(), "name.extension");
-		assert_eq!(asset_resolver.get_base("name.extension#").unwrap(), "name.extension");
-		assert_eq!(asset_resolver.get_base("#fragment"), None);
-		assert_eq!(asset_resolver.get_base("name.extension#fragment").unwrap(), "name.extension");
+		assert_eq!(get_base("name.extension").unwrap(), "name.extension");
+		assert_eq!(get_base("name.extension#").unwrap(), "name.extension");
+		assert_eq!(get_base("#fragment"), None);
+		assert_eq!(get_base("name.extension#fragment").unwrap(), "name.extension");
+		assert_eq!(get_base("dir/name.extension").unwrap(), "dir/name.extension");
+		assert_eq!(get_base("dir/name.extension#").unwrap(), "dir/name.extension");
+		assert_eq!(get_base("dir/#fragment").unwrap(), "dir/");
+		assert_eq!(get_base("dir/name.extension#fragment").unwrap(), "dir/name.extension");
 	}
 
 	#[test]
 	fn test_fragment_parse() {
-		let asset_resolver = TestAssetResolver::new();
-
-		assert_eq!(asset_resolver.get_fragment("name.extension"), None);
-		assert_eq!(asset_resolver.get_fragment("name.extension#"), None);
-		assert_eq!(asset_resolver.get_fragment("#fragment"), None);
-		assert_eq!(asset_resolver.get_fragment("name.extension#fragment").unwrap(), "fragment");
+		assert_eq!(get_fragment("name.extension"), None);
+		assert_eq!(get_fragment("name.extension#"), None);
+		assert_eq!(get_fragment("#fragment"), None);
+		assert_eq!(get_fragment("name.extension#fragment").unwrap(), "fragment");
 	}
 }

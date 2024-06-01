@@ -5,7 +5,7 @@ use utils::Extent;
 
 use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, Solver, StorageBackend, Reference, ReferenceModel};
 
-use super::{asset_handler::AssetHandler, asset_manager::AssetManager, AssetResolver};
+use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
 pub trait ProgramGenerator: Send + Sync {
 	/// Transforms a program.
@@ -33,13 +33,13 @@ impl AssetHandler for MaterialAssetHandler {
 		r#type == "bema"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, asset_resolver: &'a dyn AssetResolver, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
 		Box::pin(async move {
-			if let Some(dt) = asset_resolver.get_type(url) {
+			if let Some(dt) = storage_backend.get_type(url) {
 				if dt != "bema" { return Err("Not my type".to_string()); }
 			}
 
-			let (data, _, at) = asset_resolver.resolve(url).await.ok_or("Failed to resolve asset".to_string())?;
+			let (data, _, at) = storage_backend.resolve(url).await.or(Err("Failed to resolve asset".to_string()))?;
 
 			if at != "bema" {
 				return Err("Not my type".to_string());
@@ -65,7 +65,7 @@ impl AssetHandler for MaterialAssetHandler {
 				let generator = self.generator.clone().ok_or("Generator not set".to_string())?;
 
 				let shaders = asset_json["shaders"].entries().map(|(s_type, shader_json)| {
-					smol::block_on(transform_shader(generator.deref(), asset_resolver, storage_backend, &material_domain, &asset_json, &shader_json, s_type))
+					smol::block_on(transform_shader(generator.deref(), storage_backend, &material_domain, &asset_json, &shader_json, s_type))
 				}).collect::<Option<Vec<_>>>().ok_or("Failed to build shader(s)".to_string())?;
 
 				let parameters = asset_json["variables"].members().map(|v: &json::JsonValue| {
@@ -99,7 +99,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-				let material = match self.load(asset_manager, asset_resolver, storage_backend, parent_material_url, None).await {
+				let material = match self.load(asset_manager, storage_backend, parent_material_url, None).await {
 					Ok(Some(m)) => { m }
 					Ok(None) | Err(_) => {
 						log::error!("Failed to load parent material");						
@@ -142,9 +142,9 @@ impl AssetHandler for MaterialAssetHandler {
 	}
 }
 
-async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn AssetResolver, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<(Shader, Box<[u8]>)> {
+async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<(Shader, Box<[u8]>)> {
 	let path = shader_json.as_str()?;
-	let (arlp, _, format) = asset_resolver.resolve(&path).await?;
+	let (arlp, _, format) = storage_backend.resolve(&path).await.ok()?;
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
@@ -244,7 +244,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, asset_resolver: &dyn
 #[cfg(test)]
 pub mod tests {
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::{TestAssetResolver, TestStorageBackend}};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::TestStorageBackend};
 
 	pub struct RootTestShaderGenerator {
 
@@ -332,9 +332,7 @@ pub mod tests {
 
 	#[test]
 	fn load_material() {
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
-		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
 
@@ -358,15 +356,15 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file("material.bema", material_json.as_bytes());
+		storage_backend.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
 		}";
 
-		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
+		storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "material.bema", None)).unwrap().expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &storage_backend, "material.bema", None)).unwrap().expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -391,9 +389,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let asset_resolver = TestAssetResolver::new();
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(), asset_resolver);
-		let asset_resolver = TestAssetResolver::new();
+		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
 		let storage_backend = TestStorageBackend::new();
 		let mut asset_handler = MaterialAssetHandler::new();
 
@@ -417,13 +413,13 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file("material.bema", material_json.as_bytes());
+		storage_backend.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
 		}";
 
-		asset_resolver.add_file("fragment.besl", shader_file.as_bytes());
+		storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
 		let variant_json = r#"{
 			"parent": "material.bema",
@@ -435,9 +431,9 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_resolver.add_file("variant.bema", variant_json.as_bytes());
+		storage_backend.add_file("variant.bema", variant_json.as_bytes());
 
-		smol::block_on(asset_handler.load(&asset_manager, &asset_resolver, &storage_backend, "variant.bema", None)).unwrap().expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, &storage_backend, "variant.bema", None)).unwrap().expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 

@@ -34,7 +34,7 @@ pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path:
 			request.into_reader().read_to_end(&mut source_bytes).or(Err(()))?;
 		},
 		"local" => {
-			let path = base_path.ok_or(())?;
+			let path = base_path.unwrap_or(std::path::Path::new(""));
 
 			let path = path.join(url);
 
@@ -178,14 +178,14 @@ pub mod tests {
 			})
 		}
 
-		fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
+		fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
 			let mut x = None;
 
 			let resources = self.resources.lock().unwrap();
 			for (resource, data) in resources.iter() {
 				if resource.id == id {
 					// TODO: use actual hash
-					x = Some((GenericResourceResponse::new(&resource.id, 0, resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
+					x = Some((GenericResourceResponse::new(id, 0, resource.class.clone(), data.len(), resource.resource.clone()), Box::new(TestResourceReader::new(data.clone())) as Box<dyn ResourceReader>));
 					break;
 				}
 			}

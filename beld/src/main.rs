@@ -42,6 +42,8 @@ enum Commands {
 }
 
 fn main() -> Result<(), i32> {
+	let _ = simple_logger::SimpleLogger::new().env().init();
+
     let cli = Cli::parse();
 
 	let command = cli.command;
@@ -126,10 +128,10 @@ fn main() -> Result<(), i32> {
 					let tasks = ids.into_iter().map(|id| {
 						let asset_manager = asset_manager.clone();
 						tokio::spawn(async move {
-							println!("Baking resource '{}'", id);
+							log::trace!("Baking resource '{}'", id);
 							match asset_manager.load(&id).await {
 								Ok(_) => {
-									println!("Baked resource '{}'", id);
+									log::trace!("Baked resource '{}'", id);
 								}
 								Err(e) => {
 									eprintln!("Failed to bake '{}'. Error: {:#?}", id, e);

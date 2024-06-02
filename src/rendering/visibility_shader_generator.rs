@@ -83,9 +83,9 @@ Mesh mesh = meshes.meshes[instance_index];
 Material material = materials.materials[push_constant.material_id];
 
 uint primitive_indices[3] = uint[3](
-	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.primitive_triangle_offset + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 0],
-	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.primitive_triangle_offset + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 1],
-	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.primitive_triangle_offset + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 2]
+	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 0],
+	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 1],
+	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 2]
 );
 
 uint vertex_indices[3] = uint[3](

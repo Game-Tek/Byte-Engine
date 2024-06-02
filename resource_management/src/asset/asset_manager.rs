@@ -53,6 +53,11 @@ impl AssetManager {
 	pub async fn load<'a>(&self, id: &str) -> Result<(), LoadMessages> {
 		let storage_backend = self.get_storage_backend();
 
+		// TODO: check hash
+		if let Some(_) = self.storage_backend.read(id).await {
+			return Ok(());
+		}
+
 		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
@@ -61,14 +66,34 @@ impl AssetManager {
 
 		if !asset_handler_found {
 			log::warn!("No asset handler found for asset: {}", id);
+
+			for load_result in load_results {
+				if let Err(error) = load_result {
+					log::error!("Failed to load asset: {}", error);
+				}
+			}
+
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
 		Ok(())
 	}
 	
+	/// Generates a resource from a loaded asset.
+	/// Does nothing if the resource already exists (with a matching hash).
 	pub async fn load_typed_resource<'a, R: Resource + Clone, M: Model + Clone + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<Reference<R>, LoadMessages> where ReferenceModel<M>: Solver<'a, Reference<R>> {
 		let storage_backend = &self.storage_backend;
+
+		// TODO: check hash
+		if let Some((r, _)) = self.storage_backend.read(id).await {
+			let m: GenericResourceSerialization = r.into();
+			let r: ReferenceModel<M> = m.try_into().or(Err(LoadMessages::IO))?;
+			let resource = r.solve(storage_backend.deref()).or_else(|_| {
+				log::error!("Failed to solve resource {}", id);
+				Err(LoadMessages::IO)
+			})?;
+			return Ok(resource.into())
+		}
 
 		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
 
@@ -92,8 +117,15 @@ impl AssetManager {
 		Ok(resource.into())
 	}
 
+	/// Generates a resource from a description and data.
+	/// Does nothing if the resource already exists (with a matching hash).
 	pub async fn produce<'a, D: Description>(&self, id: &str, resource_type: &str, description: &D, data: &[u8]) -> GenericResourceSerialization {
 		let asset_handler = self.asset_handlers.iter().find(|asset_handler| asset_handler.can_handle(resource_type)).expect("No asset handler found for class");
+
+		// TODO: check hash
+		if let Some((r, _)) = self.storage_backend.read(id).await {
+			return r.into();
+		}
 
 		let (resource, buffer) = match asset_handler.produce(id, description, data).await {
 			Ok(x) => x,

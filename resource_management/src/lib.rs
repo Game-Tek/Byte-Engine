@@ -82,6 +82,16 @@ impl <T: Resource + Serialize + Clone> From<Reference<T>> for GenericResourceSer
 	}
 }
 
+impl <'a> From<GenericResourceResponse<'a>> for GenericResourceSerialization {
+	fn from(value: GenericResourceResponse<'a>) -> Self {
+		GenericResourceSerialization {
+			id: value.id,
+			class: value.class,
+			resource: value.resource,
+		}
+	}
+}
+
 #[derive()]
 pub struct GenericResourceResponse<'a> {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
@@ -515,7 +525,7 @@ enum SolveErrors {
 	StorageError,
 }
 
-trait Solver<'de, T> where Self: serde::Deserialize<'de> {
+pub trait Solver<'de, T> where Self: serde::Deserialize<'de> {
 	fn solve(self, storage_backend: &dyn StorageBackend) -> Result<T, SolveErrors>;
 }
 
@@ -525,16 +535,23 @@ pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
 	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
 	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>>;
-	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
+	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
 	fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
 		Box::pin(async move {})
 	}
+
 	/// Returns the type of the asset, if attainable from the url.
 	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
 	fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
 		let url = get_base(url)?;
 		let path = std::path::Path::new(url);
 		Some(path.extension()?.to_str()?)
+	}
+
+	fn exists<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, bool> {
+		Box::pin(async move {
+			self.read(id).await.is_some()
+		})
 	}
 
 	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
@@ -674,7 +691,7 @@ impl StorageBackend for DbStorageBackend {
 		})
 	}
 
-	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::BoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
+	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
 		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }).ok();
 		let id = id.to_string();
 		let base_path = self.base_path.clone();
@@ -698,7 +715,6 @@ impl StorageBackend for DbStorageBackend {
 	}
 
 	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>> { // TODO: define schema
-		// TODO: skip storage of items with same hash
 		Box::pin(async move {
 			let mut resource_document = bson::Document::new();
 	
@@ -750,6 +766,13 @@ impl StorageBackend for DbStorageBackend {
 		}
 
 		Box::pin(async move {})
+	}
+
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+		Box::pin(async move {
+			let url = get_base(url).ok_or(())?;
+			read_asset_from_source(url, Some(&std::path::Path::new("assets"))).await
+		})
 	}
 }
 

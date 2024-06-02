@@ -37,8 +37,11 @@ struct MeshPrimitive {
 	/// The base position into the meshlets buffer relative to the primitive in the mesh
 	meshlet_offset: u32,
 	/// The vertex offset.
-	/// The base position into the vertex buffer or vertex indices buffer
+	/// The base position into the vertex buffer
 	vertex_offset: u32,
+	/// The primitive indices offset.
+	/// The base position into the primitive indices buffer
+	primitive_offset: u32,
 	/// The triangle offset.
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
 	triangle_offset: u32,
@@ -50,8 +53,9 @@ struct MeshPrimitive {
 pub struct MeshData {
 	// (material_id)
 	primitives: Vec<MeshPrimitive>,
-	/// The base position into the vertex buffer or vertex indices buffer
+	/// The base position into the vertex buffer
 	vertex_offset: u32,
+	primitive_offset: u32,
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
 	triangle_offset: u32,
 	/// The meshlet offset.
@@ -325,7 +329,7 @@ impl VisibilityWorldRenderDomain {
 
 				resource_manager: resource_manager_handle,
 
-				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, vertex_indices_count: 0 },
+				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, primitives_count: 0, vertex_indices_count: 0 },
 
 				visibility_pass,
 				material_count_pass,
@@ -657,7 +661,7 @@ impl VisibilityWorldRenderDomain {
 			let total_meshlet_count = meshlets_stream.count();
 
 			struct Meshlet {
-				vertex_count: u8,
+				primitive_count: u8,
 				triangle_count: u8,
 			}
 
@@ -667,8 +671,9 @@ impl VisibilityWorldRenderDomain {
 				offset.into()
 			}).collect::<Vec<_>>();
 
-			let meshlets_per_primitive = mesh_resource.primitives.iter().zip(vcps.iter()).zip(instance_material.iter()).scan((0, 0, 0), |(mesh_vertex_counter, mesh_triangle_counter, mesh_meshlet_counter), ((e, vcps), &im)| {
-				let vertex_offset = *mesh_vertex_counter;
+			let meshlets_per_primitive = mesh_resource.primitives.iter().zip(vcps.iter()).zip(instance_material.iter()).scan((0, 0, 0), |(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), ((e, vcps), &im)| {
+				let vertex_offset = *vcps;
+				let primitive_offset = *mesh_primitive_counter;
 				let triangle_offset = *mesh_triangle_counter;
 				let meshlet_offset = *mesh_meshlet_counter;
 
@@ -679,31 +684,27 @@ impl VisibilityWorldRenderDomain {
 						std::slice::from_raw_parts(meshlet_stream.as_ptr().byte_add(stream.offset) as *const Meshlet, stream.count())
 					};
 
-					// Update vertex and triangle offsets per primitive, relative to the mesh
-					let primitive_vertex_offset = *vcps;
-					let primitive_triangle_offset = *mesh_triangle_counter as u32;
-
-					meshlet_stream.iter().scan(0, |meshlet_triangle_counter, meshlet| {
-						let meshlet_vertex_count = meshlet.vertex_count;
+					meshlet_stream.iter().scan((0, 0), |(primitive_primitive_counter, primitive_triangle_counter), meshlet| {
+						let meshlet_primitive_count = meshlet.primitive_count;
 						let meshlet_triangle_count = meshlet.triangle_count;
 
+						let primitive_offset = *primitive_primitive_counter as u16;
+						let triangle_offset = *primitive_triangle_counter as u16;
+						
+						// Update vertex and triangle offsets per meshlet, relative to the primitive
+						*primitive_primitive_counter += meshlet_primitive_count as u32;
+						*primitive_triangle_counter += meshlet_triangle_count as u32;
+
+						// Update vertex, triangle and meshlet offsets per meshlet, relative to the mesh
+						*mesh_primitive_counter += meshlet_primitive_count as u32;
 						*mesh_triangle_counter += meshlet_triangle_count as u32;
 						*mesh_meshlet_counter += 1;
 
-						// Update vertex and triangle offsets per meshlet, relative to the primitive
-						let vertex_offset = *mesh_vertex_counter as u16;
-						let triangle_offset = *meshlet_triangle_counter as u16;
-
-						*mesh_vertex_counter += meshlet_vertex_count as u32;
-						*meshlet_triangle_counter += meshlet_triangle_count as u32;
-
 						ShaderMeshletData {
-							vertex_offset,
+							primitive_offset,
 							triangle_offset,
-							vertex_count: meshlet_vertex_count,
+							primitive_count: meshlet_primitive_count,
 							triangle_count: meshlet_triangle_count,
-							primitive_vertex_offset,
-							primitive_triangle_offset,
 						}.into()
 					}).collect::<Vec<_>>()
 				} else {
@@ -715,6 +716,7 @@ impl VisibilityWorldRenderDomain {
 					meshlet_count: meshlets.len() as u32,
 					meshlet_offset,
 					vertex_offset,
+					primitive_offset,
 					triangle_offset,
 				},
 				meshlets).into()
@@ -734,12 +736,14 @@ impl VisibilityWorldRenderDomain {
 
 			let meshlet_offset = self.visibility_info.meshlet_count;
 
-			self.meshes.insert(response.id().to_string(), MeshData { vertex_offset: self.visibility_info.vertex_count, triangle_offset: self.visibility_info.triangle_count, meshlet_offset, acceleration_structure, primitives });
+			self.meshes.insert(response.id().to_string(), MeshData { vertex_offset: self.visibility_info.vertex_count, primitive_offset: self.visibility_info.primitives_count, triangle_offset: self.visibility_info.triangle_count, meshlet_offset, acceleration_structure, primitives });
 
 			let vertex_count = mesh_resource.vertex_count();
+			let primitive_count = mesh_resource.primitive_count();
 			let triangle_count = mesh_resource.triangle_count();
 
 			self.visibility_info.vertex_count += vertex_count as u32;
+			self.visibility_info.primitives_count += primitive_count as u32;
 			self.visibility_info.triangle_count += triangle_count as u32;
 			self.visibility_info.vertex_indices_count += vertex_indices_stream.count() as u32;
 			self.visibility_info.meshlet_count += total_meshlet_count as u32;
@@ -773,14 +777,14 @@ impl VisibilityWorldRenderDomain {
 				(shader.1, shader.2)
 			}).collect::<Vec<_>>();
 
-			let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = vec![];
+			let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = Vec::with_capacity(4);
 
 			let mut ghi = self.ghi.write().unwrap();
 
 			for (i, variable) in variant.variables.iter().enumerate() {
 				match &variable.value {
 					resource_management::types::Value::Scalar(scalar) => {
-
+						specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar));
 					}
 					resource_management::types::Value::Vector3(value) => {		
 						specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value));
@@ -893,11 +897,13 @@ impl VisibilityWorldRenderDomain {
 				material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 			}
 
+			let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = Vec::with_capacity(4);
+
 			match material.model.name.as_str() {
 				"Visibility" => {
 					match material.model.pass.as_str() {
 						"MaterialEvaluation" => {
-							let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec3f".to_string(), [1f32, 0f32, 1f32])]));
+							let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 							
 							let index = self.material_evaluation_materials.len() as u32;
 
@@ -970,6 +976,7 @@ impl VisibilityWorldRenderDomain {
 			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
 			for (i, m) in self.render_entities.iter().enumerate() {
+				// TODO: write transform to each mesh belonging to the entity/resource
 				let mesh = m.write_sync();
 				meshes_data_slice[i as usize].model = mesh.get_transform();
 			}
@@ -1073,19 +1080,17 @@ struct ShaderMeshletData {
 	/// ```glsl
 	/// vertex_index = mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + gl_LocalInvocationID.x];
 	/// ```
-	vertex_offset: u16,
+	primitive_offset: u16,
 	/// Base index into the primitive/triangle indices buffer
 	/// This is stored as index / 3, as the meshlet contains 3 indices per triangle
 	/// ```glsl
 	/// triangle_index = primitive_indices.primitive_indices[(meshlet.triangle_offset + gl_LocalInvocationID.x) * 3 + 0..2]
 	/// ```
 	triangle_offset: u16,
-	// The number of vertices in the meshlet
-	vertex_count: u8,
+	// The number of primitives in the meshlet
+	primitive_count: u8,
 	// The number of triangles in the meshlet
 	triangle_count: u8,
-	primitive_vertex_offset: u32,
-	primitive_triangle_offset: u32,
 }
 
 #[repr(C)]
@@ -1095,6 +1100,7 @@ struct ShaderMesh {
 	/// The position into the vertex components data (positions, normals, uvs, ..) buffer this instance's data starts
 	/// Also, the position into the vertex indices buffer this instance's data starts
 	base_vertex_index: u32,
+	base_primitive_index: u32,
 	base_triangle_index: u32,
 	base_meshlet_index: u32,
 }
@@ -1156,6 +1162,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				model: mesh.get_transform(),
 				material_index: p.material_index,
 				base_vertex_index: mesh_data.vertex_offset + p.vertex_offset, // Add the mesh relative vertex offset and the primitive relative vertex offset to get the absolute vertex offset
+				base_primitive_index: mesh_data.primitive_offset + p.primitive_offset, // Add the mesh relative primitive offset and the primitive relative primitive offset to get the absolute primitive offset
 				base_triangle_index: mesh_data.triangle_offset + p.triangle_offset, // Add the mesh relative triangle offset and the primitive relative triangle offset to get the absolute triangle offset
 				base_meshlet_index: mesh_data.meshlet_offset + p.meshlet_offset, // Add the mesh relative meshlet offset and the primitive relative meshlet offset to get the absolute meshlet offset
 			};	

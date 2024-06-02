@@ -510,6 +510,10 @@ impl Mesh {
 	pub fn triangle_count(&self) -> usize {
 		self.meshlet_indices_stream().map(|s| s.count()).unwrap_or(0) / 3
 	}
+
+	pub fn primitive_count(&self) -> usize {
+		self.vertex_indices_stream().map(|s| s.count()).unwrap_or(0)
+	}
 }
 
 impl Resource for Mesh {

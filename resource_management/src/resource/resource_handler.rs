@@ -9,7 +9,7 @@ pub enum ReadTargets<'a> {
 }
 
 /// The resource reader trait provides methods to read a single resource.
-pub trait ResourceReader {
+pub trait ResourceReader: Send + Sync {
 	fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>>;
 }
 

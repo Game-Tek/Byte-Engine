@@ -206,7 +206,7 @@ impl ImageAssetHandler {
 				}
 			}
 			_ => {
-				panic!("Unsupported format")
+				panic!("Unsupported format: {:#?}", format);
 			}
 		};
 

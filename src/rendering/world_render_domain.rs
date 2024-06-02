@@ -6,6 +6,7 @@ pub struct VisibilityInfo {
 	pub triangle_count: u32,
 	pub meshlet_count: u32,
 	pub vertex_count: u32,
+	pub primitives_count: u32,
 	pub vertex_indices_count: u32,
 }
 

@@ -119,9 +119,9 @@ impl CommonShaderGenerator {
 	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
 		use besl::parser::Node;
 
-		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
+		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_primitive_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
 		let camera_struct = Node::r#struct("Camera", vec![Node::member("view", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view_matrix", "mat4f"), Node::member("inverse_projection_matrix", "mat4f"), Node::member("inverse_view_projection_matrix", "mat4f")]);
-		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("vertex_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("vertex_count", "u8"), Node::member("triangle_count", "u8"), Node::member("primitive_vertex_offset", "u32"), Node::member("primitive_triangle_offset", "u32")]);
+		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("primitive_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("primitive_count", "u8"), Node::member("triangle_count", "u8")]);
 		let light_struct = Node::r#struct("Light", vec![Node::member("view_matrix", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
 
@@ -143,7 +143,7 @@ impl CommonShaderGenerator {
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
 		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
 
-		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + meshlet.primitive_vertex_offset + vertex_indices.vertex_indices[mesh.base_vertex_index + meshlet.vertex_offset + primitive_index]; // Indices are relative to primitives", vec!["vertex_indices".to_string()], Vec::new())]);
+		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; // Indices in the buffer are relative to each mesh/primitives", vec!["vertex_indices".to_string()], Vec::new())]);
 
 		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("instance_index", "u32"), Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("
 		Mesh mesh = meshes.meshes[instance_index];
@@ -151,18 +151,18 @@ impl CommonShaderGenerator {
 		uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
 		Meshlet meshlet = meshlets.meshlets[meshlet_index];
 	
-		SetMeshOutputsEXT(meshlet.vertex_count, meshlet.triangle_count);
+		SetMeshOutputsEXT(meshlet.primitive_count, meshlet.triangle_count);
 
 		uint primitive_index = gl_LocalInvocationID.x;
 	
-		if (primitive_index < uint(meshlet.vertex_count)) {
+		if (primitive_index < uint(meshlet.primitive_count)) {
 			uint vertex_index = compute_vertex_index(mesh, meshlet, primitive_index);
 			gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
 		}
 		
 		if (primitive_index < uint(meshlet.triangle_count)) {
-			uint triangle_index = mesh.base_triangle_index + meshlet.primitive_triangle_offset + meshlet.triangle_offset + primitive_index;
-			uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index * 3 + 0], primitive_indices.primitive_indices[triangle_index * 3 + 1], primitive_indices.primitive_indices[triangle_index * 3 + 2]);
+			uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + primitive_index) * 3;
+			uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index + 0], primitive_indices.primitive_indices[triangle_index + 1], primitive_indices.primitive_indices[triangle_index + 2]);
 			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
 			out_instance_index[primitive_index] = instance_index;
 			out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);

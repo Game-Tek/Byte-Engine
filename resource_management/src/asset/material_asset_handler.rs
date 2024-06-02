@@ -50,9 +50,27 @@ impl AssetHandler for MaterialAssetHandler {
 			let is_material = asset_json["parent"].is_null();
 
 			let to_value = |t: &str, v: &str| {
+				let to_color = |name: &str| {
+					match name {
+						"Red" => [1f32, 0f32, 0f32, 1f32],
+						"Green" => [0f32, 1f32, 0f32, 1f32],
+						"Blue" => [0f32, 0f32, 1f32, 1f32],
+						"Purple" => [1f32, 0f32, 1f32, 1f32],
+						"White" => [1f32, 1f32, 1f32, 1f32],
+						"Black" => [0f32, 0f32, 0f32, 1f32],
+						_ => [1f32, 0f32, 1f32, 1f32]
+					}
+				};
+
 				match t {
-					"vec4f" => Value::Vector4([0f32, 0f32, 0f32, 0f32]),
-					"vec3f" => Value::Vector3([0f32, 0f32, 0f32]),
+					"vec4f" => {
+						let value = to_color(v);
+						Value::Vector4([value[0], value[1], value[2], value[3]])
+					}
+					"vec3f" => {
+						let value = to_color(v);
+						Value::Vector3([value[0], value[1], value[2]])
+					}
 					"float" => Value::Scalar(0f32),
 					"Texture2D" => Value::Image(smol::block_on(asset_manager.load_typed_resource(v)).unwrap()),
 					_ => panic!("Unknown data type")

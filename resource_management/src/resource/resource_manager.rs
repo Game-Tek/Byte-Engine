@@ -16,7 +16,7 @@ pub struct ResourceManager {
 	// storage_backend: Box<dyn StorageBackend>,
 	resource_handlers: Vec<Box<dyn ResourceHandler + Send>>,
 
-	#[cfg(debug_assertions)]
+	// #[cfg(debug_assertions)]
 	asset_manager: Option<AssetManager>,
 }
 
@@ -46,7 +46,6 @@ impl ResourceManager {
 			// storage_backend: Box::new(DbStorageBackend::new(std::path::Path::new("resources"))),
 			resource_handlers: Vec::with_capacity(8),
 
-			#[cfg(debug_assertions)]
 			asset_manager: None,
 		}
 	}
@@ -56,13 +55,11 @@ impl ResourceManager {
 			// storage_backend: Box::new(storage_backend),
 			resource_handlers: Vec::with_capacity(8),
 
-			#[cfg(debug_assertions)]
 			asset_manager: None,
 		}
 	}
 
 	pub fn set_asset_manager(&mut self, asset_manager: AssetManager) {
-		#[cfg(debug_assertions)]
 		{ self.asset_manager = Some(asset_manager); }
 	}
 

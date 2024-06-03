@@ -213,6 +213,10 @@ impl <T: Resource + Clone> Reference<T> {
 		&self.resource
 	}
 
+	pub fn into_resource(self) -> T {
+		self.resource
+	}
+
 	pub fn get_buffer(&self) -> Option<&[u8]> {
 		self.buffer.as_ref().map(|b| &**b)
 	}

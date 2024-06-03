@@ -24,7 +24,7 @@ impl ResourceHandler for MeshResourceHandler {
 		Box::pin(async move {
 			let re = ReferenceModel::new(&resource.id, resource.hash);
 			let r: Reference<Mesh> = re.solve(s).unwrap();
-			let mesh_resource = r.resource();
+			let mesh_resource = r.into_resource();
 
 			if let Some(mut reader) = reader {
 				let mut buffers = if let Some(read_target) = &mut resource.read_target {
@@ -89,7 +89,7 @@ impl ResourceHandler for MeshResourceHandler {
 				}
 			}
 
-			Some(ResourceResponse::new(resource, mesh_resource.clone()))
+			Some(ResourceResponse::new(resource, mesh_resource))
 		})
 	}
 }

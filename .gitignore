@@ -8,3 +8,7 @@ coverage/
 .byte-engine
 .byte-editor
 assets
+
+flamegraph.svg
+perf.data
+perf.data.old

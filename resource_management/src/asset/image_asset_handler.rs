@@ -166,6 +166,44 @@ impl ImageAssetHandler {
 					}
 				}
 			}
+			Formats::RGBA8 => {
+				match (compress, semantic) {
+					(true, Semantic::Normal) => {
+						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
+
+						for y in 0..extent.height() {
+							for x in 0..extent.width() {
+								let index = ((x + y * extent.width()) * 4) as usize;
+								buf.push(buffer[index + 0]);
+								buf.push(buffer[index + 1]);
+								buf.push(buffer[index + 2]);
+								buf.push(0xFF);
+							}
+						}
+
+						(buf, Formats::BC5)
+					}
+					(compress, _) => {
+						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
+
+						for y in 0..extent.height() {
+							for x in 0..extent.width() {
+								let index = ((x + y * extent.width()) * 4) as usize;
+								buf.push(buffer[index + 0]);
+								buf.push(buffer[index + 1]);
+								buf.push(buffer[index + 2]);
+								buf.push(buffer[index + 3]);
+							}
+						}
+
+						if compress {
+							(buf, Formats::BC7)
+						} else {
+							(buf, Formats::RGBA8)
+						}
+					}
+				}
+			}
 			Formats::RGB16 => {
 				match (compress, semantic) {
 					(true, Semantic::Normal) => {

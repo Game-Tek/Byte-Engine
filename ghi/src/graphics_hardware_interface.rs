@@ -468,6 +468,7 @@ pub struct PresentKey(pub u32);
 
 pub trait GraphicsHardwareInterface where Self: Sized {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
+	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
 
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.

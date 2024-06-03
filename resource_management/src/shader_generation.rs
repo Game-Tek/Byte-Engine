@@ -15,7 +15,8 @@ impl ShaderGenerator {
 	/// Creates a new ShaderGenerator.
 	pub fn new() -> Self {
 		ShaderGenerator {
-			minified: !cfg!(debug_assertions), // Minify by default in release mode
+			// minified: !cfg!(debug_assertions), // Minify by default in release mode
+			minified: false,
 		}
 	}
 

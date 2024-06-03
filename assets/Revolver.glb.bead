@@ -1,19 +1,19 @@
 {
 	"asset": {
 		"Revolver": {
-			"asset": "white_solid.bema"
+			"asset": "Revolver.bema"
 		},
 		"Material.001": {
-			"asset": "white_solid.bema"
+			"asset": "Material.001.bema"
 		},
 		"RedDotScopeLens": {
-			"asset": "white_solid.bema"
+			"asset": "RedDotScopeLens.bema"
 		},
 		"RedDotScopeDot": {
-			"asset": "white_solid.bema"
+			"asset": "RedDotScopeDot.bema"
 		},
 		"FlashLight": {
-			"asset": "white_solid.bema"
+			"asset": "FlashLight.bema"
 		}
 	}
 }

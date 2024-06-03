@@ -14,7 +14,8 @@ use resource_management::shader_generation::{ShaderGenerationSettings, ShaderGen
 use resource_management::ResourceStore;
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
-use resource_management::types::{Image, IndexStreamTypes, IntegralTypes, Mesh, Shader, ShaderTypes, Variant};
+use resource_management::types::{IndexStreamTypes, IntegralTypes, Mesh, Shader, ShaderTypes, Variant};
+use resource_management::types::Image as ResourceImage;
 use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
@@ -92,7 +93,6 @@ struct RayTracing {
 }
 
 struct Material {
-	#[cfg(debug_assertions)]
 	name: String,
 	index: u32,
 	pipeline: ghi::PipelineHandle,
@@ -105,6 +105,12 @@ pub struct Instance {
 
 struct RenderInfo {
 	instances: Vec<Instance>,
+}
+
+/// This structure hosts data analogous to the image resource's data.
+struct Image {
+	/// This is the index of the image in the descriptor set.
+	index: u32,
 }
 
 /// This the visibility buffer implementation of the world render domain.
@@ -120,6 +126,7 @@ pub struct VisibilityWorldRenderDomain {
 	render_entities: Vec<EntityHandle<dyn mesh::RenderEntity>>,
 
 	meshes: HashMap<String, MeshData>,
+	images: HashMap<String, Image>,
 
 	mesh_resources: HashMap<String, u32>,
 
@@ -186,8 +193,6 @@ pub struct VisibilityWorldRenderDomain {
 	shadow_map_binding: ghi::DescriptorSetBindingHandle,
 
 	lights: Vec<LightData>,
-
-	texture_count: u32,
 
 	render_info: RenderInfo,
 }
@@ -329,7 +334,7 @@ impl VisibilityWorldRenderDomain {
 
 				resource_manager: resource_manager_handle,
 
-				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, primitives_count: 0, vertex_indices_count: 0 },
+				visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, primitives_count: 0, },
 
 				visibility_pass,
 				material_count_pass,
@@ -338,11 +343,12 @@ impl VisibilityWorldRenderDomain {
 
 				shadow_render_pass,
 
-				shaders: HashMap::new(),
+				shaders: HashMap::with_capacity(1024),
 
 				camera: None,
 
-				meshes: HashMap::new(),
+				meshes: HashMap::with_capacity(1024),
+				images: HashMap::with_capacity(1024),
 
 				mesh_resources: HashMap::new(),
 
@@ -397,8 +403,6 @@ impl VisibilityWorldRenderDomain {
 
 				lights: Vec::new(),
 
-				texture_count: 0,
-
 				render_info: RenderInfo { instances: Vec::with_capacity(4096) }
 			}
 		})
@@ -408,10 +412,12 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
-	fn load_image<'a>(resource: &impl resource_management::ResourceStore<'a>, ghi: &mut ghi::GHI, pending_texture_loads: &mut Vec<ImageHandle>, textures_binding: ghi::DescriptorSetBindingHandle, texture_count: &mut u32) -> Option<u32> {
-		// TODO: check if the resource is already loaded
+	fn load_image<'a>(&mut self, resource: &impl resource_management::ResourceStore<'a>, ghi: &mut ghi::GHI,) -> Option<u32> {
+		if let Some(r) = self.images.get(resource.id()) {
+			return Some(r.index);
+		}
 
-		if let Some(texture) = resource.resource().downcast_ref::<Image>() {
+		if let Some(texture) = resource.resource().downcast_ref::<ResourceImage>() {
 			let format = match texture.format {
 				resource_management::types::Formats::RG8 => ghi::Formats::RG8(ghi::Encodings::UnsignedNormalized),
 				resource_management::types::Formats::RGB8 => ghi::Formats::RGB8(ghi::Encodings::UnsignedNormalized),
@@ -455,13 +461,15 @@ impl VisibilityWorldRenderDomain {
 			
 			let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
-			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(textures_binding, image, sampler, ghi::Layouts::Read, *texture_count),]);
+			let texture_index = self.images.len() as u32;
 
-			let texture_index = *texture_count;
+			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
 
-			*texture_count += 1;
+			self.images.insert(resource.id().to_string(), Image {
+				index: texture_index,
+			});
 
-			pending_texture_loads.push(image);
+			self.pending_texture_loads.push(image);
 
 			Some(texture_index)
 		} else {
@@ -502,7 +510,7 @@ impl VisibilityWorldRenderDomain {
 		let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 		let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 		let mut vertex_uv_buffer = ghi.get_splitter(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector2>());
-		let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.vertex_indices_count as usize * std::mem::size_of::<u16>());
+		let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.primitives_count as usize * std::mem::size_of::<u16>());
 		let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
 
 		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
@@ -745,7 +753,6 @@ impl VisibilityWorldRenderDomain {
 			self.visibility_info.vertex_count += vertex_count as u32;
 			self.visibility_info.primitives_count += primitive_count as u32;
 			self.visibility_info.triangle_count += triangle_count as u32;
-			self.visibility_info.vertex_indices_count += vertex_indices_stream.count() as u32;
 			self.visibility_info.meshlet_count += total_meshlet_count as u32;
 
 			return Ok(id);
@@ -771,6 +778,8 @@ impl VisibilityWorldRenderDomain {
 
 			let material = self.material_evaluation_materials.get(variant.material.id()).unwrap();
 
+			let shader_names = material.shaders.clone();
+
 			let shaders = material.shaders.iter().map(|s| {
 				let shader = self.shaders.get(s).unwrap();
 
@@ -778,8 +787,6 @@ impl VisibilityWorldRenderDomain {
 			}).collect::<Vec<_>>();
 
 			let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = Vec::with_capacity(4);
-
-			let mut ghi = self.ghi.write().unwrap();
 
 			for (i, variable) in variant.variables.iter().enumerate() {
 				match &variable.value {
@@ -792,23 +799,41 @@ impl VisibilityWorldRenderDomain {
 					resource_management::types::Value::Vector4(value) => {		
 						specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value));
 					}
-					resource_management::types::Value::Image(image) => {
-						let v = Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding, &mut self.texture_count);
-
-						todo!("Write material struct");
-					}
+					resource_management::types::Value::Image(image) => {}
 				}
 			}
 
-			let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
-			
+			let ghi = self.ghi.clone();
+			let mut ghi = ghi.write().unwrap();
+
+			let textures_indices = variant.variables.iter().map(|parameter| {
+				match &parameter.value {
+					resource_management::types::Value::Image(image) => {
+						self.load_image(image, ghi.deref_mut(),)
+					}
+					_ => { None }
+				}
+			}).collect::<Vec<_>>();
+
+			let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+
+			let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+
 			let index = self.material_evaluation_materials.len() as u32;
+
+			let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+
+			for (i, e) in textures_indices.iter().enumerate() {
+				material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
+			}
+
+			let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 
 			self.material_evaluation_materials.insert(resource.id().to_string(), Material {
 				name: resource.id().to_string(),
 				index,
 				pipeline,
-				shaders: material.shaders.clone(),
+				shaders: shader_names,
 			});
 
 			return Ok(index);
@@ -817,7 +842,8 @@ impl VisibilityWorldRenderDomain {
 		if let Some(material) = resource.resource().downcast_ref::<resource_management::types::Material>() {
 			let shaders = material.shaders();
 
-			let mut ghi = self.ghi.write().unwrap();
+			let ghi = self.ghi.clone();
+			let mut ghi = ghi.write().unwrap();
 
 			let shaders = shaders.iter().filter_map(|shader| {
 				let resource_id = shader.id();
@@ -882,16 +908,19 @@ impl VisibilityWorldRenderDomain {
 			let textures_indices = material.parameters.iter().map(|parameter| {
 				match &parameter.value {
 					resource_management::types::Value::Image(image) => {
-						Self::load_image(image, ghi.deref_mut(), &mut self.pending_texture_loads, self.textures_binding, &mut self.texture_count)
+						self.load_image(image, ghi.deref_mut(),)
 					}
 					_ => { None }
 				}
 			}).collect::<Vec<_>>();
+
 			let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+
+			let index = self.material_evaluation_materials.len() as u32;
 
 			let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
-			let material_data = unsafe { material_data.as_mut().unwrap() };
+			let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
 
 			for (i, e) in textures_indices.iter().enumerate() {
 				material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
@@ -904,8 +933,6 @@ impl VisibilityWorldRenderDomain {
 					match material.model.pass.as_str() {
 						"MaterialEvaluation" => {
 							let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
-							
-							let index = self.material_evaluation_materials.len() as u32;
 
 							self.material_evaluation_materials.insert(resource.id().to_string(), Material {
 								name: resource.id().to_string(),

@@ -34,6 +34,9 @@ machineid-rs = "1.2.4"
 incremental = true
 lto="off"
 
+[profile.bench]
+debug = true
+
 [profile.release]
 lto="fat"
 panic="abort"

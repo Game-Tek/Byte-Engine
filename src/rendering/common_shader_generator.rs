@@ -143,7 +143,7 @@ impl CommonShaderGenerator {
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
 		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
 
-		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; // Indices in the buffer are relative to each mesh/primitives", vec!["vertex_indices".to_string()], Vec::new())]);
+		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */", vec!["vertex_indices".to_string()], Vec::new())]);
 
 		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("instance_index", "u32"), Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("
 		Mesh mesh = meshes.meshes[instance_index];

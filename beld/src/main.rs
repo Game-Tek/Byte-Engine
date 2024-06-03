@@ -1,7 +1,6 @@
 use std::{future, sync::Arc};
 
 use clap::{Parser, Subcommand};
-use futures::{stream::futures_unordered, StreamExt};
 use resource_management::{asset::{self, asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
 
 #[derive(Parser)]
@@ -53,12 +52,12 @@ fn main() -> Result<(), i32> {
 	match command {
 		Commands::Wipe {} => {
 			std::fs::remove_dir_all(&path).map_err(|e| {
-				println!("Failed to wipe resources. Error: {}", e);
+				log::error!("Failed to wipe resources. Error: {}", e);
 				1
 			})?;
 
 			std::fs::create_dir(&path).map_err(|e| {
-				println!("Failed to create resources directory. Error: {}", e);
+				log::error!("Failed to create resources directory. Error: {}", e);
 				1
 			})?;
 			
@@ -70,7 +69,7 @@ fn main() -> Result<(), i32> {
 			match smol::block_on(storage_backend.list()) {
 				Ok(resources) => {
 					if resources.is_empty() {
-						println!("No resources found.");
+						log::info!("No resources found.");
 					}
 
 					for resource in resources {
@@ -80,7 +79,7 @@ fn main() -> Result<(), i32> {
 					Ok(())
 				}
 				Err(e) => {
-					println!("Failed to list resources. Error: {}", e);
+					log::error!("Failed to list resources. Error: {}", e);
 					Err(1)
 				}
 			}
@@ -105,7 +104,7 @@ fn main() -> Result<(), i32> {
 			}
 
 			if ids.is_empty() {
-				println!("No resources to bake.");
+				log::info!("No resources to bake.");
 				return Ok(());
 			}
 
@@ -128,13 +127,13 @@ fn main() -> Result<(), i32> {
 					let tasks = ids.into_iter().map(|id| {
 						let asset_manager = asset_manager.clone();
 						tokio::spawn(async move {
-							log::trace!("Baking resource '{}'", id);
+							log::info!("Baking resource '{}'", id);
 							match asset_manager.load(&id).await {
 								Ok(_) => {
-									log::trace!("Baked resource '{}'", id);
+									log::info!("Baked resource '{}'", id);
 								}
 								Err(e) => {
-									eprintln!("Failed to bake '{}'. Error: {:#?}", id, e);
+									log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
 								}
 							}
 						}
@@ -152,17 +151,17 @@ fn main() -> Result<(), i32> {
 			let mut ok = true;
 
 			if ids.is_empty() {
-				println!("No resources to delete.");
+				log::info!("No resources to delete.");
 				return Ok(());
 			}
 
 			for id in ids {
 				match smol::block_on(storage_backend.delete(&id)) {
 					Ok(()) => {
-						println!("Deleted resource '{}'", id);
+						log::info!("Deleted resource '{}'", id);
 					}
 					Err(e) => {
-						println!("Failed to delete '{}'. Error: {}", id, e);
+						log::error!("Failed to delete '{}'. Error: {}", id, e);
 						ok = false;
 					}
 				}

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use resource_management::{resource::resource_manager::ResourceManager, types::{Audio, BitDepths}};
+use resource_management::{audio::Audio, resource::resource_manager::ResourceManager, types::BitDepths, Reference};
 
 use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, entity::EntityBuilder,}};
 
@@ -48,11 +48,13 @@ impl AudioSystem for DefaultAudioSystem {
 		} else {
 			let resources = {
 				let resource_manager = self.resource_manager.read().await;
-				resource_manager.get(audio_asset_url).await
+				let mut request: Reference<Audio> = resource_manager.request(audio_asset_url).await.unwrap();
+				request.set_buffer(); // Request resource be written into a managed buffer.
+				resource_manager.get(request).await
 			};
 
 			if let Some(response) = resources {
-				let audio_resource = response.resource().downcast_ref::<Audio>().unwrap();
+				let audio_resource = response.resource();
 
 				assert_eq!(audio_resource.bit_depth, BitDepths::Sixteen);
 

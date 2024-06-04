@@ -3,7 +3,7 @@ use std::any::Any;
 
 use utils::Extent;
 
-use crate::{types::{Formats, Gamma, Image}, Description, GenericResourceSerialization, StorageBackend};
+use crate::{image::Image, types::{Formats, Gamma}, Description, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 

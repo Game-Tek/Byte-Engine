@@ -1,18 +1,32 @@
+use std::fmt::Debug;
+
 use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
 
-use crate::{GenericResourceResponse, ResourceResponse, StorageBackend, Stream};
+use crate::Stream;
 
+#[derive(Debug)]
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),
 	Buffer(&'a mut [u8]),
 	Streams(Vec<Stream<'a>>),
 }
 
+impl <'a> ReadTargets<'a> {
+	pub fn get_buffer(&self) -> Option<&[u8]> {
+		match self {
+			ReadTargets::Box(buffer) => Some(buffer),
+			ReadTargets::Buffer(buffer) => Some(buffer),
+			_ => None,
+		}
+	}
+}
+
 /// The resource reader trait provides methods to read a single resource.
-pub trait ResourceReader: Send + Sync {
+pub trait ResourceReader: Send + Sync + Debug {
 	fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>>;
 }
 
+#[derive(Debug)]
 pub struct FileResourceReader {
 	file: File,
 }
@@ -33,22 +47,4 @@ impl ResourceReader for FileResourceReader {
 			Some(())
 		})
 	}
-}
-
-pub trait ResourceHandler: Send {
-	fn get_handled_resource_classes<'a>(&self,) -> &'a [&'a str] {
-		&[]
-	}
-
-	/// Reads a resource from a reader.
-	///
-	/// # Arguments
-	///
-	/// * `resource` - The resource to read.
-	/// * `reader` - The reader to read the resource from. The reader is an optional parameter so binary data load can be skipped and only deserialization can be done.
-	///
-	/// # Returns
-	///
-	/// The resource response.
-	fn read<'s, 'a, 'b>(&'s self, resource: GenericResourceResponse<'a>, reader: Option<Box<dyn ResourceReader>>, storage_backend: &'b dyn StorageBackend) -> utils::BoxedFuture<'b, Option<ResourceResponse<'a>>> where 'a: 'b;
 }

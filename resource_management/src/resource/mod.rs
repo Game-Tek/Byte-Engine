@@ -12,6 +12,7 @@ pub mod audio_resource_handler;
 pub mod tests {
     use super::resource_handler::ResourceReader;
 
+	#[derive(Debug)]
 	pub struct TestResourceReader {
 		data: Box<[u8]>,
 	}

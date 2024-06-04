@@ -1,11 +1,7 @@
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
 use utils::Extent;
 
-use crate::{
-    asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, types::{
-        AlphaMode, CreateImage, Formats, Gamma, Image, IndexStream, IndexStreamTypes, IntegralTypes, Material, Mesh, MeshletStream, Model, Primitive, Property, Stream, Streams, SubMesh, Value, Variant, VariantModel, VertexComponent, VertexSemantics
-    }, Description, GenericResourceResponse, GenericResourceSerialization, Reference, Resource, StorageBackend
-};
+use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
@@ -293,7 +289,7 @@ impl AssetHandler for MeshAssetHandler {
 				let material = &asset[gltf_material_name];
 				let material_asset_name = material["asset"].as_str().unwrap();
 
-				smol::block_on(asset_manager.load_typed_resource::<Variant, VariantModel>(material_asset_name)).unwrap()
+				smol::block_on(asset_manager.load_typed_resource::<VariantModel>(material_asset_name)).unwrap()
 			});
 
 			let vertex_counts = flat_mesh_tree.clone().map(|(_, reader, _)| {
@@ -505,7 +501,7 @@ impl AssetHandler for MeshAssetHandler {
 							}).collect::<Vec<_>>()
 						};
 
-						Primitive {
+						PrimitiveModel {
 							material,
 							streams,
 							quantization: None,
@@ -535,7 +531,7 @@ impl AssetHandler for MeshAssetHandler {
 						}.into()
 					}).collect::<Vec<_>>();
 
-					(Mesh {
+					(MeshModel {
 						streams,
 						primitives,
 						vertex_components: vertex_layout,

@@ -55,7 +55,7 @@ use std::{ops::{Deref, DerefMut}, time::Duration};
 use log::{info, trace};
 use maths_rs::prelude::Base;
 
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, resource::{audio_resource_handler::AudioResourceHandler, image_resource_handler::ImageResourceHandler, material_resource_handler::MaterialResourcerHandler, mesh_resource_handler::MeshResourceHandler, resource_manager::ResourceManager}};
+use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, resource::resource_manager::ResourceManager};
 use utils::Extent;
 use crate::{audio::audio_system::{self, AudioSystem}, core::{self, entity::EntityHandle, orchestrator}, gameplay::space::Space, input, physics, rendering::{self, common_shader_generator}, window_system::{self, Window}, Vector2};
 
@@ -158,12 +158,6 @@ impl Application for GraphicsApplication {
 		{
 			let mut resource_manager = resource_manager.write_sync();
 
-			resource_manager.add_resource_handler(MeshResourceHandler::new());
-			resource_manager.add_resource_handler(ImageResourceHandler::new());
-			resource_manager.add_resource_handler(AudioResourceHandler::new());
-
-			let material_resourcer_handler = MaterialResourcerHandler::new();
-
 			let mut asset_manager = AssetManager::new("resources".into());
 
 			asset_manager.add_asset_handler(MeshAssetHandler::new());
@@ -182,8 +176,6 @@ impl Application for GraphicsApplication {
 	
 			asset_manager.add_asset_handler(ImageAssetHandler::new());
 			asset_manager.add_asset_handler(AudioAssetHandler::new());
-
-			resource_manager.add_resource_handler(material_resourcer_handler);
 
 			resource_manager.set_asset_manager(asset_manager);
 		}

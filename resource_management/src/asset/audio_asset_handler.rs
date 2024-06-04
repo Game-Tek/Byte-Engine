@@ -1,4 +1,4 @@
-use crate::{types::{Audio, BitDepths}, GenericResourceSerialization, StorageBackend};
+use crate::{audio::Audio, types::BitDepths, GenericResourceSerialization, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 

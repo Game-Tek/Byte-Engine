@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use log::debug;
 use utils::Extent;
 
-use crate::{shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, Material, MaterialModel, Model, Parameter, Shader, ShaderTypes, Value, Variant, VariantVariable}, GenericResourceSerialization, Solver, StorageBackend, Reference, ReferenceModel};
+use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, GenericResourceSerialization, ReferenceModel, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
@@ -65,14 +65,14 @@ impl AssetHandler for MaterialAssetHandler {
 				match t {
 					"vec4f" => {
 						let value = to_color(v);
-						Value::Vector4([value[0], value[1], value[2], value[3]])
+						ValueModel::Vector4([value[0], value[1], value[2], value[3]])
 					}
 					"vec3f" => {
 						let value = to_color(v);
-						Value::Vector3([value[0], value[1], value[2]])
+						ValueModel::Vector3([value[0], value[1], value[2]])
 					}
-					"float" => Value::Scalar(0f32),
-					"Texture2D" => Value::Image(smol::block_on(asset_manager.load_typed_resource(v)).unwrap()),
+					"float" => ValueModel::Scalar(0f32),
+					"Texture2D" => ValueModel::Image(smol::block_on(asset_manager.load_typed_resource(v)).unwrap()),
 					_ => panic!("Unknown data type")
 				}
 			};
@@ -91,21 +91,21 @@ impl AssetHandler for MaterialAssetHandler {
 					let data_type = v["data_type"].to_string();
 					let value = v["value"].to_string();
 
-					Parameter {
+					ParameterModel {
 						name,
 						r#type: data_type.clone(),
 						value: to_value(&data_type, &value),
 					}
 				}).collect::<Vec<_>>();
 
-				let resource = GenericResourceSerialization::new(url, Material {
+				let resource = GenericResourceSerialization::new(url, MaterialModel {
 					double_sided: false,
 					alpha_mode: AlphaMode::Opaque,
-					model: Model {
+					model: RenderModel {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-					shaders: shaders.iter().map(|(s, b)| Reference::new_with_buffer(&s.id, 0, s.clone(), b.clone())).collect(),
+					shaders: shaders.iter().map(|(s, b)| ReferenceModel::new(&s.id, 0, s)).collect(),
 					parameters,
 				});
 
@@ -131,7 +131,7 @@ impl AssetHandler for MaterialAssetHandler {
 					let r#type = v.get_str("type").unwrap().to_string();
 					let value = variant_json["variables"].members().find(|v2| { v2["name"].to_string() == name }).unwrap()["value"].to_string();
 
-					VariantVariable {
+					VariantVariableModel {
 						value: to_value(&r#type, &value),
 						name,
 						r#type,
@@ -140,8 +140,8 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let material: ReferenceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
 
-				let resource = GenericResourceSerialization::new(url, Variant {
-					material: material.solve(storage_backend).map_err(|_| { "Failed to solve material".to_string() })?,
+				let resource = GenericResourceSerialization::new(url, VariantModel {
+					material,
 					variables,
 				});
 

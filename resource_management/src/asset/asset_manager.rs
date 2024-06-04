@@ -81,18 +81,14 @@ impl AssetManager {
 	
 	/// Generates a resource from a loaded asset.
 	/// Does nothing if the resource already exists (with a matching hash).
-	pub async fn load_typed_resource<'a, R: Resource + Clone, M: Model + Clone + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<Reference<R>, LoadMessages> where ReferenceModel<M>: Solver<'a, Reference<R>> {
+	pub async fn load_typed_resource<'a, M: Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
 		let storage_backend = &self.storage_backend;
 
 		// TODO: check hash
 		if let Some((r, _)) = self.storage_backend.read(id).await {
 			let m: GenericResourceSerialization = r.into();
 			let r: ReferenceModel<M> = m.try_into().or(Err(LoadMessages::IO))?;
-			let resource = r.solve(storage_backend.deref()).or_else(|_| {
-				log::error!("Failed to solve resource {}", id);
-				Err(LoadMessages::IO)
-			})?;
-			return Ok(resource.into())
+			return Ok(r)
 		}
 
 		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
@@ -109,10 +105,6 @@ impl AssetManager {
 		let meta_resource = load_results.iter().find(|load_result| { load_result.is_ok() }).ok_or(LoadMessages::NoAsset)?.clone().unwrap().unwrap();
 
 		let resource: ReferenceModel<M> = meta_resource.try_into().or(Err(LoadMessages::IO))?;
-		let resource = resource.solve(storage_backend.deref()).or_else(|_| {
-			log::error!("Failed to solve resource {}", id);
-			Err(LoadMessages::IO)
-		})?;
 
 		Ok(resource.into())
 	}

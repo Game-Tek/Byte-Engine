@@ -3,7 +3,7 @@ use std::any::Any;
 
 use utils::Extent;
 
-use crate::{image::Image, types::{Formats, Gamma}, Description, GenericResourceSerialization, StorageBackend};
+use crate::{image::Image, types::{Formats, Gamma}, Description, ProcessedAsset, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
@@ -21,7 +21,7 @@ impl AssetHandler for ImageAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(), String>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
 				if dt != "png" { return Err("Not my type".to_string()); }
@@ -98,19 +98,19 @@ impl AssetHandler for ImageAssetHandler {
 				gamma,
 			}, &buffer);
 
-			let resource_document = GenericResourceSerialization::new(url, image);
+			let resource_document = ProcessedAsset::new(url, image);
 
 			storage_backend.store(&resource_document, &data).await;
 
-			Ok(Some(resource_document))
+			Ok(())
 		})
 	}
 
-	fn produce<'a>(&'a self, id: &'a str, description: &'a dyn Description, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(GenericResourceSerialization, Box<[u8]>), String>> {
+	fn produce<'a>(&'a self, id: &'a str, description: &'a dyn Description, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), String>> {
 		Box::pin(async move {
 			if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
 				let (resource, buffer) = self.produce(description, data);
-				Ok((GenericResourceSerialization::new(id, resource), buffer))
+				Ok((ProcessedAsset::new(id, resource), buffer))
 			} else {
 				Err("Invalid description".to_string())
 			}
@@ -322,17 +322,18 @@ impl Description for ImageDescription {
 #[cfg(test)]
 mod tests {
 	use super::ImageAssetHandler;
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::TestStorageBackend};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
 	#[test]
 	fn load_image() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(),);
-		let storage_backend = TestStorageBackend::new();
+		let asset_manager = AssetManager::new("../assets".into());
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = "patterned_brick_floor_02_diff_2k.png";
 
-		let _ = smol::block_on(asset_handler.load(&asset_manager, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
+		let storage_backend = asset_manager.get_test_storage_backend();
+
+		let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -347,13 +348,14 @@ mod tests {
 	#[test]
 	#[ignore]
 	fn load_16_bit_normal_image() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new(),);
-		let storage_backend = TestStorageBackend::new();
+		let asset_manager = AssetManager::new("../assets".into(),);
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = "Revolver_Normal.png";
 
-		let _ = smol::block_on(asset_handler.load(&asset_manager, &storage_backend, &url, None)).unwrap().expect("Image asset handler did not handle asset");
+		let storage_backend = asset_manager.get_test_storage_backend();
+
+		let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 

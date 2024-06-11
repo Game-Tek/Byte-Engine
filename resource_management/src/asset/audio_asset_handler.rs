@@ -1,4 +1,4 @@
-use crate::{audio::Audio, types::BitDepths, GenericResourceSerialization, StorageBackend};
+use crate::{audio::Audio, types::BitDepths, ProcessedAsset, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
@@ -13,7 +13,7 @@ impl AudioAssetHandler {
 }
 
 impl AssetHandler for AudioAssetHandler {
-	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(), String>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
 				if dt != "wav" { return Err("Not my type".to_string()); }
@@ -94,11 +94,11 @@ impl AssetHandler for AudioAssetHandler {
 				sample_count,
 			};
 
-			let resource = GenericResourceSerialization::new(url, audio_resource);
+			let resource = ProcessedAsset::new(url, audio_resource);
 
 			storage_backend.store(&resource, data.into()).await.map_err(|_| format!("Failed to store resource"))?;
 
-			Ok(Some(resource))
+			Ok(())
 		})
 	}
 }
@@ -109,20 +109,18 @@ struct AudioDescription {
 
 #[cfg(test)]
 mod tests {
-	use crate::asset::tests::TestStorageBackend;
-
 	use super::*;
 
 	#[test]
 	fn test_audio_asset_handler() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
+		let asset_manager = AssetManager::new("../assets".into());
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let url = "gun.wav";
 
-		let storage_backend = TestStorageBackend::new();
+		let storage_backend = asset_manager.get_test_storage_backend();
 
-		smol::block_on(audio_asset_handler.load(&asset_manager, &storage_backend, url, None)).unwrap().expect("Audio asset handler failed to load asset");
+		smol::block_on(audio_asset_handler.load(&asset_manager, storage_backend, url,)).expect("Audio asset handler failed to load asset");
 
 		let generated_resources = storage_backend.get_resources();
 

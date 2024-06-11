@@ -1,4 +1,4 @@
-use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadResults, Loader, Reference, ReferenceModel, Resource, Solver, StorageBackend};
+use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadResults, Reference, ReferenceModel, Resource, Solver, StorageBackend};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -61,7 +61,7 @@ impl ResourceManager {
 	/// Tries to load the information/metadata for a resource (and it's dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
-	pub async fn request<'s, 'a, 'b, T: Resource>(&'s self, id: &'a str) -> Option<Reference<'a, T>> where 'b: 'a, ReferenceModel<T::Model>: Solver<'a, Reference<'a, T>>, GenericResourceResponse<'a>: TryInto<ReferenceModel<T::Model>> {
+	pub async fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Option<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, GenericResourceResponse<'a>: TryInto<ReferenceModel<T::Model>> {
 		// Try to load the resource from cache or source.
 		if let Some(asset_manager) = &self.asset_manager {
 			asset_manager.load(id).await.ok()?;
@@ -74,26 +74,27 @@ impl ResourceManager {
 		};
 
 		let reference_model: ReferenceModel<T::Model> = resource.try_into().ok()?;
-		let reference: Reference<'a, T> = reference_model.solve(self.get_storage_backend()).await.unwrap();
+		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()).await.unwrap();
 		reference.into()
 	}
 
-	/// Tries to load a resource from cache or source.\
-	/// This is a more advanced version of get() as it allows to load resources that depend on other resources.\
-	/// 
-	/// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
-	/// If the resource is in cache but it's data cannot be parsed, it will return None.
-	/// Return is a tuple containing the resource description and it's associated binary data.\
-	/// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
-	pub async fn get<'s, 'a, 'b, T: Resource>(&'s self, resource: Reference<'a, T>) -> Option<Reference<'a, T>> where 'b: 'a, ReferenceModel<T::Model>: Solver<'a, Reference<'a, T>>, Reference<'a, T>: Loader {
-		let reference: Reference<T> = resource.load().await.ok()?;
-		reference.into()
-	}
+	// /// Tries to load a resource from cache or source.\
+	// /// This is a more advanced version of get() as it allows to load resources that depend on other resources.\
+	// /// 
+	// /// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
+	// /// If the resource is in cache but it's data cannot be parsed, it will return None.
+	// /// Return is a tuple containing the resource description and it's associated binary data.\
+	// /// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
+	// pub async fn get<'s, 'a, T: Resource + 'a>(&'s self, mut resource: Reference<'a, T>) -> Option<Reference<'a, T>> where ReferenceModel<T::Model>: Solver<'a, Reference<'a, T>>, Reference<'a, T>: Loader<'b>, 'a: 'b {
+	// 	// let reference: Reference<T> = resource.load().await.ok()?;
+	// 	resource.load().await.ok()?;
+	// 	resource.into()
+	// }
 }
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::tests::TestStorageBackend, Model, GenericResourceSerialization, Resource};
+	use crate::{Model, Resource};
 
 	use super::*;
 

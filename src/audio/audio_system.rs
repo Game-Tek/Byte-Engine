@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use resource_management::{audio::Audio, resource::resource_manager::ResourceManager, types::BitDepths, Reference};
+use resource_management::{audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
 
 use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, entity::EntityBuilder,}};
 
@@ -46,36 +46,28 @@ impl AudioSystem for DefaultAudioSystem {
 		let data = if let Some(a) = self.audio_resources.get(audio_asset_url) {
 			Some(a)
 		} else {
-			let resources = {
-				let resource_manager = self.resource_manager.read().await;
-				let mut request: Reference<Audio> = resource_manager.request(audio_asset_url).await.unwrap();
-				request.set_buffer(); // Request resource be written into a managed buffer.
-				resource_manager.get(request).await
+			let resource_manager = self.resource_manager.read().await;
+			let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).await.unwrap();
+			let load_target = audio_resource_reference.load(ReadTargets::create_buffer(&audio_resource_reference)).await.unwrap(); // Request resource be written into a managed buffer.
+
+			let bytes = match load_target.get_buffer() {
+				Some(b) => {
+					b.chunks_exact(2).map(|chunk| {
+						let mut bytes = [0; 2];
+						bytes.copy_from_slice(chunk);
+						i16::from_le_bytes(bytes)
+					}).collect::<Vec<_>>()
+				},
+				None => return,
 			};
 
-			if let Some(response) = resources {
-				let audio_resource = response.resource();
+			let audio_resource = audio_resource_reference.resource_mut();
 
-				assert_eq!(audio_resource.bit_depth, BitDepths::Sixteen);
+			assert_eq!(audio_resource.bit_depth, BitDepths::Sixteen);
 
-				let bytes = match response.get_buffer() {
-        			Some(b) => b,
-        			None => return,
-    			};
+			self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, bytes));
 
-				let audio_data = bytes.chunks_exact(2).map(|chunk| {
-					let mut bytes = [0; 2];
-					bytes.copy_from_slice(chunk);
-					i16::from_le_bytes(bytes)
-				}).collect::<Vec<_>>();
-
-				self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, audio_data));
-
-				Some(self.audio_resources.get(audio_asset_url).unwrap())
-			} else {
-				log::warn!("Audio asset {} not found.", audio_asset_url);
-				None
-			}
+			Some(self.audio_resources.get(audio_asset_url).unwrap())
 		};
 
 		if let Some(_) = data {

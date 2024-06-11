@@ -3,6 +3,8 @@ use std::ops::DerefMut;
 use std::rc::Rc;
 use std::sync::RwLock;
 
+use futures::future::try_join_all;
+use futures::Future;
 use ghi::ImageHandle;
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use json::object;
@@ -11,12 +13,12 @@ use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use resource_management::shader_generation::{ShaderGenerationSettings, ShaderGenerator};
-use resource_management::{Reference, ResourceStore};
+use resource_management::Reference;
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::image::Image as ResourceImage;
-use resource_management::mesh::Mesh as ResourceMesh;
+use resource_management::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::material::{Material as ResourceMaterial, Value};
 use resource_management::material::Variant as ResourceVariant;
 use utils::{Extent, RGBA};
@@ -415,7 +417,7 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
-	fn load_image<'a>(&mut self, resource: &resource_management::Reference<'a, ResourceImage>, ghi: &mut ghi::GHI,) -> Option<u32> {
+	async fn load_image<'a>(&mut self, mut resource: resource_management::Reference<ResourceImage>, ghi: &mut ghi::GHI,) -> Option<u32> {
 		if let Some(r) = self.images.get(resource.id()) {
 			return Some(r.index);
 		}
@@ -434,34 +436,38 @@ impl VisibilityWorldRenderDomain {
 
 		let extent = Extent::from(texture.extent);
 
-		let image = if let Some(b) = resource.get_buffer() {
-			let new_texture = ghi.create_image(Some(&resource.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-			ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
-			new_texture
-		} else {
-			let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-			log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
-			let slice = ghi.get_texture_slice_mut(new_texture);
+		let image = ghi.create_image(Some(&resource.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		let target_buffer = ghi.get_texture_slice_mut(image);
 
-			// Generate checkboard pattern image
-			for y in 0..extent.height() {
-				for x in 0..extent.width() {
-					let color = if (x / 32 + y / 32) % 2 == 0 {
-						RGBA::white()
-					} else {
-						RGBA::black()
-					};
+		let load_target = resource.load(target_buffer.into()).await.unwrap();
 
-					let index = ((y * extent.width() + x) * 4) as usize;
-					slice[index + 0] = (color.r * 255.0) as u8;
-					slice[index + 1] = (color.g * 255.0) as u8;
-					slice[index + 2] = (color.b * 255.0) as u8;
-					slice[index + 3] = (color.a * 255.0) as u8;
-				}
-			}
+		// let image = if let Some(b) = resource.get_buffer() {
+		// 	ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
+		// 	new_texture
+		// } else {
+		// 	let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		// 	log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
+		// 	let slice = ghi.get_texture_slice_mut(new_texture);
 
-			new_texture
-		};
+		// 	// Generate checkboard pattern image
+		// 	for y in 0..extent.height() {
+		// 		for x in 0..extent.width() {
+		// 			let color = if (x / 32 + y / 32) % 2 == 0 {
+		// 				RGBA::white()
+		// 			} else {
+		// 				RGBA::black()
+		// 			};
+
+		// 			let index = ((y * extent.width() + x) * 4) as usize;
+		// 			slice[index + 0] = (color.r * 255.0) as u8;
+		// 			slice[index + 1] = (color.g * 255.0) as u8;
+		// 			slice[index + 2] = (color.b * 255.0) as u8;
+		// 			slice[index + 3] = (color.a * 255.0) as u8;
+		// 		}
+		// 	}
+
+		// 	new_texture
+		// };
 		
 		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
 
@@ -485,23 +491,69 @@ impl VisibilityWorldRenderDomain {
 			return Ok(id);
 		}
 
-		let resource_request = {
+		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
+
+		let mut resource_request: Reference<ResourceMesh> = {
 			let resource_manager = self.resource_manager.read().await;
-			resource_manager.request(id).await
+			let mut resource_request: Reference<ResourceMesh> = if let Some(resource_info) = resource_manager.request(id).await { resource_info } else {
+				log::error!("Failed to load mesh resource {}", id);
+				return Err(());
+			};
+			resource_request
 		};
 
-		let mut resource_request: resource_management::Reference<ResourceMesh> = if let Some(resource_info) = resource_request { resource_info } else {
-			log::error!("Failed to load mesh resource {}", id);
-			return Err(());
-		};
+		let vertex_positions_stream;
+		let vertex_normals_stream;
+		let vertex_uv_stream;
+		let vertex_indices_stream;
+		let primitive_indices_stream;
+		let meshlet_stream;
 
-		let instance_material;
-
-		let mesh_resource = resource_request.resource();
-
-		instance_material = mesh_resource.primitives.iter().map(|primitive| {
-			self.create_variant_resources(&primitive.material,)
-		}).collect::<Result<Vec<_>, _>>().unwrap();
+		{
+			let mesh_resource = resource_request.resource();
+	
+			if let Some(stream) = mesh_resource.position_stream() {
+				vertex_positions_stream = stream;
+			} else {
+				log::error!("Mesh resource does not contain vertex position stream");
+				return Err(());
+			}
+	
+			if let Some(stream) = mesh_resource.normal_stream() {
+				vertex_normals_stream = stream;
+			} else {
+				log::error!("Mesh resource does not contain vertex normal stream");
+				return Err(());
+			}
+	
+			if let Some(stream) = mesh_resource.uv_stream() {
+				vertex_uv_stream = stream;
+			} else {
+				log::error!("Mesh resource does not contain vertex uv stream");
+				return Err(());
+			}
+	
+			if let Some(stream) = mesh_resource.vertex_indices_stream() {
+				vertex_indices_stream = stream;
+			} else {
+				log::error!("Mesh resource does not contain vertex index stream");
+				return Err(());
+			}
+	
+			if let Some(stream) = mesh_resource.meshlet_indices_stream() {
+				primitive_indices_stream = stream;
+			} else {
+				log::error!("Mesh resource does not contain meshlet index stream");
+				return Err(());
+			}
+	
+			if let Some(stream) = mesh_resource.meshlets_stream() {
+				meshlet_stream = stream;
+			} else {
+				log::error!("Mesh resource does not contain meshlet stream");
+				return Err(());
+			}
+		}
 
 		let ghi = self.ghi.write().unwrap();
 
@@ -511,112 +563,39 @@ impl VisibilityWorldRenderDomain {
 		let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.primitives_count as usize * std::mem::size_of::<u16>());
 		let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
 
-		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
+		drop(ghi);
 
 		let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
-
-		let vertex_positions_stream;
-		let vertex_normals_stream;
-		let vertex_uv_stream;
-		let vertex_indices_stream;
-		let primitive_indices_stream;
-		let meshlet_stream;
-
-		if let Some(stream) = mesh_resource.position_stream() {
-			vertex_positions_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain vertex position stream");
-			return Err(());
-		}
-
-		if let Some(stream) = mesh_resource.normal_stream() {
-			vertex_normals_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain vertex normal stream");
-			return Err(());
-		}
-
-		if let Some(stream) = mesh_resource.uv_stream() {
-			vertex_uv_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain vertex uv stream");
-			return Err(());
-		}
-
-		if let Some(stream) = mesh_resource.vertex_indices_stream() {
-			vertex_indices_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain vertex index stream");
-			return Err(());
-		}
-
-		if let Some(stream) = mesh_resource.meshlet_indices_stream() {
-			primitive_indices_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain meshlet index stream");
-			return Err(());
-		}
-
-		if let Some(stream) = mesh_resource.meshlets_stream() {
-			meshlet_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain meshlet stream");
-			return Err(());
-		}
 
 		assert_eq!(primitive_indices_stream.stride, 1, "Meshlet index stream is not u8");
 		assert_eq!(vertex_indices_stream.stride, 2, "Vertex index stream is not u16");
 		assert_eq!(meshlet_stream.stride, 2, "Meshlet stream stride is not of size 2");
 
-		let vertex_positions_buffer = vertex_positions_buffer.take(vertex_positions_stream.size);
-		let vertex_normals_buffer = vertex_normals_buffer.take(vertex_normals_stream.size);
-		let vertex_uv_buffer = vertex_uv_buffer.take(vertex_uv_stream.size);
-		let vertex_indices_buffer = vertex_indices_buffer.take(vertex_indices_stream.size);
-		let primitive_indices_buffer = primitive_indices_buffer.take(primitive_indices_stream.size);
-		let meshlet_stream_buffer = buffer_allocator.take(meshlet_stream.size);
-
 		let streams = vec![
-			resource_management::Stream::new("Vertex.Position", vertex_positions_buffer),
-			resource_management::Stream::new("Vertex.Normal", vertex_normals_buffer),
-			resource_management::Stream::new("Vertex.UV", vertex_uv_buffer),
-			resource_management::Stream::new("VertexIndices", vertex_indices_buffer),
-			resource_management::Stream::new("MeshletIndices", primitive_indices_buffer),
-			resource_management::Stream::new("Meshlets", meshlet_stream_buffer),
+			resource_management::StreamMut::new("Vertex.Position", vertex_positions_buffer.take(vertex_positions_stream.size)),
+			resource_management::StreamMut::new("Vertex.Normal", vertex_normals_buffer.take(vertex_normals_stream.size)),
+			resource_management::StreamMut::new("Vertex.UV", vertex_uv_buffer.take(vertex_uv_stream.size)),
+			resource_management::StreamMut::new("VertexIndices", vertex_indices_buffer.take(vertex_indices_stream.size)),
+			resource_management::StreamMut::new("MeshletIndices", primitive_indices_buffer.take(primitive_indices_stream.size)),
+			resource_management::StreamMut::new("Meshlets", buffer_allocator.take(meshlet_stream.size)),
 		];
 
-		resource_request.set_streams(streams); // Request mesh data be loaded into the buffers
+		let load_target = resource_request.load(streams.into()).await.unwrap();
 
-		let response: Reference<ResourceMesh> = {
-			let resource_manager = self.resource_manager.read().await;
-			if let Some(a) = resource_manager.get(resource_request,).await { a } else { return Err(()) }
-		};
+		let Reference { resource: ResourceMesh { vertex_components, streams, primitives }, .. } = resource_request;
+		
+		let vcps = primitives.iter().scan(0, |state, p| {
+			let offset = *state;
+			*state += p.vertex_count;
+			offset.into()
+		}).collect::<Vec<_>>();
 
-		let mesh_resource = response.resource();
-
-		self.mesh_resources.insert(response.id().to_string(), self.visibility_info.triangle_count);
-
-		let vertex_positions_stream;
-
-		if let Some(stream) = mesh_resource.position_stream() {
-			vertex_positions_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain vertex position stream");
-			return Err(());
-		}
+		self.mesh_resources.insert(id.to_string(), self.visibility_info.triangle_count);
 
 		let acceleration_structure = if false {
-			let triangle_index_stream;
+			assert_eq!(primitive_indices_stream.stride, 2, "Triangle index stream is not u16");
 
-			if let Some(stream) = mesh_resource.triangle_indices_stream() {
-				triangle_index_stream = stream;
-			} else {
-				log::error!("Mesh resource does not contain triangle index stream");
-				return Err(());
-			}
-
-			assert_eq!(triangle_index_stream.stride, 2, "Triangle index stream is not u16");
-
-			let index_format = match triangle_index_stream.stride {
+			let index_format = match primitive_indices_stream.stride {
 				2 => ghi::DataTypes::U16,
 				4 => ghi::DataTypes::U32,
 				_ => panic!("Unsupported index format"),
@@ -628,7 +607,7 @@ impl VisibilityWorldRenderDomain {
 				description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
 					vertex_count: vertex_positions_stream.count() as u32,
 					vertex_position_encoding: ghi::Encodings::FloatingPoint,
-					triangle_count: triangle_index_stream.count() as u32 / 3,
+					triangle_count: primitive_indices_stream.count() as u32 / 3,
 					index_format,
 				}
 			});
@@ -642,48 +621,24 @@ impl VisibilityWorldRenderDomain {
 
 		let acceleration_structure = None;
 
-		let meshlets_stream;
-
-		if let Some(stream) = mesh_resource.meshlets_stream() {
-			meshlets_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain meshlet stream");
-			return Err(());
-		}
-
-		let vertex_indices_stream;
-
-		if let Some(stream) = mesh_resource.vertex_indices_stream() {
-			vertex_indices_stream = stream;
-		} else {
-			log::error!("Mesh resource does not contain vertex index stream");
-			return Err(());
-		}
-
-		let total_meshlet_count = meshlets_stream.count();
+		let total_meshlet_count = meshlet_stream.count();
 
 		struct Meshlet {
 			primitive_count: u8,
 			triangle_count: u8,
 		}
 
-		let vcps = mesh_resource.primitives.iter().scan(0, |state, p| {
-			let offset = *state;
-			*state += p.vertex_count;
-			offset.into()
-		}).collect::<Vec<_>>();
-
-		let meshlets_per_primitive: Vec<(MeshPrimitive, Vec<ShaderMeshletData>)> = mesh_resource.primitives.iter().zip(vcps.iter()).zip(instance_material.iter()).scan((0, 0, 0), |(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), ((e, vcps), &im)| {
+		let meshlets_per_primitive: Vec<(MeshPrimitive, Vec<ShaderMeshletData>)> = primitives.into_iter().zip(vcps.iter()).scan((0, 0, 0), |(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), (primitive, vcps)| {
 			let vertex_offset = *vcps;
 			let primitive_offset = *mesh_primitive_counter;
 			let triangle_offset = *mesh_triangle_counter;
 			let meshlet_offset = *mesh_meshlet_counter;
 
-			let meshlets = if let Some(stream) = e.meshlet_stream() {
-				let mut meshlet_stream = response.get_stream("Meshlets").unwrap();
-		
+			let meshlets = if let Some(stream) = primitive.meshlet_stream() {		
+				let m = load_target.get_stream("Meshlets").unwrap();
+
 				let meshlet_stream = unsafe {
-					std::slice::from_raw_parts(meshlet_stream.as_ptr().byte_add(stream.offset) as *const Meshlet, stream.count())
+					std::slice::from_raw_parts(m.buffer().as_ptr().byte_add(stream.offset) as *const Meshlet, stream.count())
 				};
 
 				meshlet_stream.iter().scan((0, 0), |(primitive_primitive_counter, primitive_triangle_counter), meshlet| {
@@ -713,6 +668,8 @@ impl VisibilityWorldRenderDomain {
 				panic!();
 			};
 
+			let im = futures::executor::block_on(self.create_variant_resources(primitive.material,)).unwrap();
+
 			(MeshPrimitive {
 				material_index: im,
 				meshlet_count: meshlets.len() as u32,
@@ -724,6 +681,8 @@ impl VisibilityWorldRenderDomain {
 			meshlets).into()
 		}).collect::<Vec<_>>();
 
+		let ghi = self.ghi.write().unwrap();
+		
 		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
 
 		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
@@ -738,11 +697,11 @@ impl VisibilityWorldRenderDomain {
 
 		let meshlet_offset = self.visibility_info.meshlet_count;
 
-		self.meshes.insert(response.id().to_string(), MeshData { vertex_offset: self.visibility_info.vertex_count, primitive_offset: self.visibility_info.primitives_count, triangle_offset: self.visibility_info.triangle_count, meshlet_offset, acceleration_structure, primitives });
+		self.meshes.insert(id.to_string(), MeshData { vertex_offset: self.visibility_info.vertex_count, primitive_offset: self.visibility_info.primitives_count, triangle_offset: self.visibility_info.triangle_count, meshlet_offset, acceleration_structure, primitives });
 
-		let vertex_count = mesh_resource.vertex_count();
-		let primitive_count = mesh_resource.primitive_count();
-		let triangle_count = mesh_resource.triangle_count();
+		let vertex_count = vertex_positions_stream.count();
+		let primitive_count = vertex_indices_stream.count();
+		let triangle_count = primitive_indices_stream.count() / 3;
 
 		self.visibility_info.vertex_count += vertex_count as u32;
 		self.visibility_info.primitives_count += primitive_count as u32;
@@ -752,19 +711,19 @@ impl VisibilityWorldRenderDomain {
 		return Ok(id);
 	}
 
-	fn create_material_resources<'a>(&'a mut self, resource: &resource_management::Reference<'a, ResourceMaterial>) -> Result<u32, ()> {
-		let material = resource.resource();
-
-		let shaders = material.shaders();
-
+	fn create_material_resources<'a>(&'a mut self, resource: resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
 		let ghi = self.ghi.clone();
 		let mut ghi = ghi.write().unwrap();
 
-		let shaders = shaders.iter().filter_map(|shader| {
-			let resource_id = shader.id();
+		let material_id = resource.id().to_string();
+
+		let ResourceMaterial { model, parameters, mut shaders, .. } = resource.into_resource();
+
+		let rndr_shaders = shaders.iter_mut().filter_map(|shader| {
+			let resource_id = shader.id().to_string();
 			let hash = shader.hash();
 
-			if let Some((old_hash, _old_shader, _)) = self.shaders.get(resource_id) {
+			if let Some((old_hash, _old_shader, _)) = self.shaders.get(&resource_id) {
 				if *old_hash == hash { return None; }
 			}
 
@@ -782,7 +741,10 @@ impl VisibilityWorldRenderDomain {
 				ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
 			};
 
-			let buffer = if let Some(b) = shader.get_buffer() {
+			let read_target = shader.into();
+			let load_request = futures::executor::block_on(shader.load(read_target)).unwrap();
+
+			let buffer = if let Some(b) = load_request.get_buffer() {
 				b
 			} else {
 				return None;
@@ -812,18 +774,18 @@ impl VisibilityWorldRenderDomain {
 
 			self.shaders.insert(resource_id.to_string(), (hash, new_shader, stage));
 
-			Some((self.shaders.get(resource_id).unwrap().clone().1, stage))
+			Some((self.shaders.get(&resource_id).unwrap().clone().1, stage))
 		}).collect::<Vec<_>>();
 		
 		if shaders.is_empty() {
-			log::warn!("No shaders found for material: {}", resource.id());
+			log::warn!("No shaders found for material: {}", &material_id);
 			return Err(());
 		}
 
-		let textures_indices = material.parameters.iter().map(|parameter| {
-			match &parameter.value {
+		let textures_indices = parameters.into_iter().map(|parameter| {
+			match parameter.value {
 				Value::Image(image) => {
-					self.load_image(image, ghi.deref_mut(),)
+					futures::executor::block_on(self.load_image(image, ghi.deref_mut(),))
 				}
 				_ => { None }
 			}
@@ -843,28 +805,28 @@ impl VisibilityWorldRenderDomain {
 
 		let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = Vec::with_capacity(4);
 
-		match material.model.name.as_str() {
+		match model.name.as_str() {
 			"Visibility" => {
-				match material.model.pass.as_str() {
+				match model.pass.as_str() {
 					"MaterialEvaluation" => {
-						let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
+						let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&rndr_shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 
-						self.material_evaluation_materials.insert(resource.id().to_string(), Material {
-							name: resource.id().to_string(),
+						self.material_evaluation_materials.insert(material_id.clone(), Material {
+							name: material_id,
 							index,
 							pipeline,
-							shaders: material.shaders().iter().map(|s| s.id().to_string()).collect(),
+							shaders: shaders.iter().map(|s| s.id().to_string()).collect(),
 						});
 
 						return Ok(index);
 					}
 					_ => {
-						error!("Unknown material pass: {}", material.model.pass);
+						error!("Unknown material pass: {}", model.pass);
 					}
 				}
 			}
 			_ => {
-				error!("Unknown material model: {}", material.model.name);
+				error!("Unknown material model");
 			}
 		}
 
@@ -873,21 +835,21 @@ impl VisibilityWorldRenderDomain {
 
 	/// Creates the needed GHI resource for the given material.
 	/// Does nothing if the material has already been loaded.
-	fn create_variant_resources<'a>(&'a mut self, resource: &resource_management::Reference<'a, ResourceVariant>) -> Result<u32, ()> {
+	async fn create_variant_resources<'s, 'a>(&'s mut self, resource: resource_management::Reference<ResourceVariant>) -> Result<u32, ()> {
 		let entry = self.material_evaluation_materials.get(resource.id());
 		
 		if let Some(e) = entry {
 			return Ok(e.index);
 		}
 
-		let variant = resource.resource();
+		let variant_id = resource.id().to_string();
+		let variant = resource.into_resource();
 
-		{
-			let material_store = &variant.material;
-			self.create_material_resources(material_store)?;
-		}
+		let material_store = variant.material;
+		let material_id = material_store.id().to_string();
+		self.create_material_resources(material_store)?;
 
-		let material = self.material_evaluation_materials.get(variant.material.id()).unwrap();
+		let material = self.material_evaluation_materials.get(&material_id).unwrap();
 
 		let shader_names = material.shaders.clone();
 
@@ -917,10 +879,10 @@ impl VisibilityWorldRenderDomain {
 		let ghi = self.ghi.clone();
 		let mut ghi = ghi.write().unwrap();
 
-		let textures_indices = variant.variables.iter().map(|parameter| {
-			match &parameter.value {
+		let textures_indices = variant.variables.into_iter().map(|parameter| {
+			match parameter.value {
 				Value::Image(image) => {
-					self.load_image(image, ghi.deref_mut(),)
+					futures::executor::block_on(self.load_image(image, ghi.deref_mut(),))
 				}
 				_ => { None }
 			}
@@ -940,8 +902,8 @@ impl VisibilityWorldRenderDomain {
 
 		let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
 
-		self.material_evaluation_materials.insert(resource.id().to_string(), Material {
-			name: resource.id().to_string(),
+		self.material_evaluation_materials.insert(variant_id.clone(), Material {
+			name: variant_id,
 			index,
 			pipeline,
 			shaders: shader_names,

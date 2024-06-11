@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use crate::{asset::read_asset_from_source, DbStorageBackend, Description, GenericResourceSerialization, Model, Resource, Solver, StorageBackend, Reference, ReferenceModel};
+use crate::{asset::read_asset_from_source, DbStorageBackend, Description, ProcessedAsset, Model, Resource, Solver, StorageBackend, Reference, ReferenceModel};
 
 use super::{asset_handler::AssetHandler, BEADType};
 
@@ -49,6 +49,11 @@ impl AssetManager {
 		self.storage_backend.deref()
 	}
 
+	#[cfg(test)]
+	pub fn get_test_storage_backend(&self) -> &DbStorageBackend {
+		self.storage_backend.deref().downcast_ref::<DbStorageBackend>().expect("Storage backend is not a TestStorageBackend")
+	}
+
 	/// Load a source asset from a JSON asset description.
 	pub async fn load<'a>(&self, id: &str) -> Result<(), LoadMessages> {
 		let storage_backend = self.get_storage_backend();
@@ -58,7 +63,7 @@ impl AssetManager {
 			return Ok(());
 		}
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id,));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -84,14 +89,15 @@ impl AssetManager {
 	pub async fn load_typed_resource<'a, M: Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
 		let storage_backend = &self.storage_backend;
 
-		// TODO: check hash
-		if let Some((r, _)) = self.storage_backend.read(id).await {
-			let m: GenericResourceSerialization = r.into();
-			let r: ReferenceModel<M> = m.try_into().or(Err(LoadMessages::IO))?;
+		// Try to load the resource from the storage backend.
+		if let Some((r, _)) = self.storage_backend.read(id).await { // TODO: check hash
+			let r: ReferenceModel<M> = r.into();
 			return Ok(r)
 		}
 
-		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id, None));
+		// The resource was not found in the storage backend, so we need to load it from the source.
+
+		let asset_handler_loads = self.asset_handlers.iter().map(|asset_handler| asset_handler.load(self, storage_backend.deref(), id,));
 
 		let load_results = futures::future::join_all(asset_handler_loads).await;
 
@@ -102,16 +108,18 @@ impl AssetManager {
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
-		let meta_resource = load_results.iter().find(|load_result| { load_result.is_ok() }).ok_or(LoadMessages::NoAsset)?.clone().unwrap().unwrap();
+		// We tried resolving the asset. Now try to load it from the storage backend.
+		if let Some((r, _)) = self.storage_backend.read(id).await { // TODO: check hash
+			let r: ReferenceModel<M> = r.into();
+			return Ok(r)
+		}
 
-		let resource: ReferenceModel<M> = meta_resource.try_into().or(Err(LoadMessages::IO))?;
-
-		Ok(resource.into())
+		Err(LoadMessages::NoAsset)
 	}
 
 	/// Generates a resource from a description and data.
 	/// Does nothing if the resource already exists (with a matching hash).
-	pub async fn produce<'a, D: Description>(&self, id: &str, resource_type: &str, description: &D, data: &[u8]) -> GenericResourceSerialization {
+	pub async fn produce<'a, D: Description>(&self, id: &str, resource_type: &str, description: &D, data: &[u8]) -> ProcessedAsset {
 		let asset_handler = self.asset_handlers.iter().find(|asset_handler| asset_handler.can_handle(resource_type)).expect("No asset handler found for class");
 
 		// TODO: check hash
@@ -143,10 +151,6 @@ fn assets_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 pub mod tests {
-	use polodb_core::bson;
-
-	use crate::{asset::tests::TestStorageBackend, GenericResourceSerialization};
-
 	use super::*;
 
 	struct TestAssetHandler {
@@ -162,9 +166,9 @@ pub mod tests {
 	struct TestDescription {}
 
 	impl AssetHandler for TestAssetHandler {
-		fn load<'a>(&'a self, _: &'a AssetManager, _ : &'a dyn StorageBackend, id: &'a str, _: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _ : &'a dyn StorageBackend, id: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(), String>> {
 			let res = if id == "example" {
-				Ok(Some(GenericResourceSerialization::new_with_serialized("id", "TestAsset", bson::Bson::Null)))
+				Ok(())
 			} else {
 				Err("Failed to load".to_string())
 			};
@@ -174,7 +178,7 @@ pub mod tests {
 	}
 
 	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),)
+		AssetManager::new(std::path::PathBuf::from("../assets"),)
 	}
 	
 	#[test]
@@ -184,7 +188,7 @@ pub mod tests {
 
 	#[test]
 	fn test_add_asset_manager() {
-		let mut asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
+		let mut asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -194,7 +198,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_with_asset_manager() {
-		let mut asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
+		let mut asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -208,7 +212,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
+		let asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
 
 		let _ = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -218,7 +222,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend(std::path::PathBuf::from("../assets"), TestStorageBackend::new(),);
+		let asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
 
 		let _ = json::parse(r#"{}"#).unwrap();
 

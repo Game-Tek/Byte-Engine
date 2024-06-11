@@ -742,7 +742,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn get_splitter<'a>(&'a self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter<'a> {
+	fn get_splitter<'a>(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter<'a> {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		let slice = unsafe {
@@ -751,7 +751,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		graphics_hardware_interface::BufferSplitter::new(slice, offset)
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
+	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
 		let texture = &self.images[texture_handle.0 as usize];
 		assert!(texture.pointer != std::ptr::null());
 		unsafe {

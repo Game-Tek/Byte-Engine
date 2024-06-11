@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use log::debug;
 use utils::Extent;
 
-use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, GenericResourceSerialization, ReferenceModel, StorageBackend};
+use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, GenericResourceResponse, ProcessedAsset, ReferenceModel, StorageBackend};
 
 use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
 
@@ -33,7 +33,7 @@ impl AssetHandler for MaterialAssetHandler {
 		r#type == "bema"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str, json: Option<&'a json::JsonValue>) -> utils::SendSyncBoxedFuture<'a, Result<Option<GenericResourceSerialization>, String>> {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(), String>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
 				if dt != "bema" { return Err("Not my type".to_string()); }
@@ -98,14 +98,14 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				}).collect::<Vec<_>>();
 
-				let resource = GenericResourceSerialization::new(url, MaterialModel {
+				let resource = ProcessedAsset::new(url, MaterialModel {
 					double_sided: false,
 					alpha_mode: AlphaMode::Opaque,
 					model: RenderModel {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-					shaders: shaders.iter().map(|(s, b)| ReferenceModel::new(&s.id, 0, s)).collect(),
+					shaders: shaders.iter().map(|(s, b)| ReferenceModel::new(&s.id, 0, 0, s, None)).collect(), // TODO: get this data from the actual created resource
 					parameters,
 				});
 
@@ -117,13 +117,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-				let material = match self.load(asset_manager, storage_backend, parent_material_url, None).await {
-					Ok(Some(m)) => { m }
-					Ok(None) | Err(_) => {
-						log::error!("Failed to load parent material");						
-						return Err("Failed to load parent material".to_string());
-					}
-				};
+				let material = asset_manager.load_typed_resource(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
 
 				let variables = material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().map(|v| {
 					let v = v.as_document().unwrap();
@@ -138,9 +132,7 @@ impl AssetHandler for MaterialAssetHandler {
 					}
 				}).collect::<Vec<_>>();
 
-				let material: ReferenceModel<MaterialModel> = material.try_into().or_else(|_| { Err("Failed to convert material") })?;
-
-				let resource = GenericResourceSerialization::new(url, VariantModel {
+				let resource = ProcessedAsset::new(url, VariantModel {
 					material,
 					variables,
 				});
@@ -155,7 +147,7 @@ impl AssetHandler for MaterialAssetHandler {
 				resource
 			};
 
-			Ok(Some(resource))
+			Ok(())
 		})
 	}
 }
@@ -254,7 +246,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 		stage,
 	};
 
-	storage_backend.store(&GenericResourceSerialization::new(path, shader.clone()), result_shader_bytes).await.ok()?;
+	storage_backend.store(&ProcessedAsset::new(path, shader.clone()), result_shader_bytes).await.ok()?;
 
 	Some((shader, result_shader_bytes.into()))
 }
@@ -262,7 +254,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 #[cfg(test)]
 pub mod tests {
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, tests::TestStorageBackend};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager,};
 
 	pub struct RootTestShaderGenerator {
 
@@ -350,8 +342,7 @@ pub mod tests {
 
 	#[test]
 	fn load_material() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
-		let storage_backend = TestStorageBackend::new();
+		let asset_manager = AssetManager::new("../assets".into(),);
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
@@ -374,6 +365,8 @@ pub mod tests {
 			]
 		}"#;
 
+		let storage_backend = asset_manager.get_test_storage_backend();
+
 		storage_backend.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
@@ -382,7 +375,7 @@ pub mod tests {
 
 		storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-		smol::block_on(asset_handler.load(&asset_manager, &storage_backend, "material.bema", None)).unwrap().expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, storage_backend, "material.bema",)).expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 
@@ -407,8 +400,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let asset_manager = AssetManager::new_with_path_and_storage_backend("../assets".into(), TestStorageBackend::new());
-		let storage_backend = TestStorageBackend::new();
+		let asset_manager = AssetManager::new("../assets".into());
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
@@ -431,6 +423,8 @@ pub mod tests {
 			]
 		}"#;
 
+		let storage_backend = asset_manager.get_test_storage_backend();
+
 		storage_backend.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
@@ -451,7 +445,7 @@ pub mod tests {
 
 		storage_backend.add_file("variant.bema", variant_json.as_bytes());
 
-		smol::block_on(asset_handler.load(&asset_manager, &storage_backend, "variant.bema", None)).unwrap().expect("Failed to load material");
+		smol::block_on(asset_handler.load(&asset_manager, storage_backend, "variant.bema",)).expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 

@@ -2,19 +2,19 @@ use futures::future::try_join_all;
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{image::Image, resource::resource_handler::ReadTargets, types::{AlphaMode, ShaderTypes}, LoadResults, Loader, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, StorageBackend};
+use crate::{image::Image, resource::resource_handler::{LoadTargets, ReadTargets, ResourceReader}, types::{AlphaMode, ShaderTypes}, LoadResults, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, StorageBackend};
 
 #[derive(Debug, serde::Serialize)]
-pub struct Material<'a> {
+pub struct Material {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
 
-	pub(crate) shaders: Vec<Reference<'a, Shader>>,
+	pub shaders: Vec<Reference<Shader>>,
 
 	/// The render model this material is for.
 	pub model: RenderModel,
 
-	pub parameters: Vec<Parameter<'a>>,
+	pub parameters: Vec<Parameter>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -30,13 +30,21 @@ pub struct MaterialModel {
 	pub parameters: Vec<ParameterModel>,
 }
 
-impl <'a> Material<'a> {
+impl Material {
+	pub fn into_shaders(self) -> Vec<Reference<Shader>> {
+		self.shaders
+	}
+
 	pub fn shaders(&self) -> &[Reference<Shader>] {
 		&self.shaders
 	}
+
+	pub fn shaders_mut(&mut self) -> &mut [Reference<Shader>] {
+		&mut self.shaders
+	}
 }
 
-impl <'a> Resource for Material<'a> {
+impl Resource for Material {
 	fn get_class(&self) -> &'static str { "Material" }
 
 	type Model = MaterialModel;
@@ -46,12 +54,12 @@ impl Model for MaterialModel {
 	fn get_class() -> &'static str { "Material" }
 }
 
-impl <'a, 'de> Solver<'de, Reference<'a, Material<'a>>> for ReferenceModel<MaterialModel> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Material<'a>>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
+	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Material>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(Reference::new(&self.id, self.hash, gr.size, Material {
+		Ok(Reference::from_model(self, Material {
 			double_sided,
 			alpha_mode,
 			shaders: try_join_all(shaders.into_iter().map(|s| s.solve(storage_backend))).await?,
@@ -77,10 +85,10 @@ impl <'a, 'de> Solver<'de, Reference<'a, Material<'a>>> for ReferenceModel<Mater
 // }
 
 #[derive(Debug, serde::Serialize)]
-pub struct VariantVariable<'a> {
+pub struct VariantVariable {
 	pub name: String,
 	pub r#type: String,
-	pub value: Value<'a>,
+	pub value: Value,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -90,8 +98,8 @@ pub struct VariantVariableModel {
 	pub value: ValueModel,
 }
 
-impl <'a, 'de> Solver<'de, VariantVariable<'a>> for VariantVariableModel {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<VariantVariable<'a>, SolveErrors> {
+impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
+	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<VariantVariable, SolveErrors> {
 		Ok(VariantVariable {
 			name: self.name,
 			r#type: self.r#type,
@@ -106,12 +114,12 @@ impl <'a, 'de> Solver<'de, VariantVariable<'a>> for VariantVariableModel {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct Variant<'a> {
-	pub material: Reference<'a, Material<'a>>,
-	pub variables: Vec<VariantVariable<'a>>,
+pub struct Variant {
+	pub material: Reference<Material>,
+	pub variables: Vec<VariantVariable>,
 }
 
-impl <'a> Resource for Variant<'a> {
+impl Resource for Variant {
 	fn get_class(&self) -> &'static str { "Variant" }
 
 	type Model = VariantModel;
@@ -127,33 +135,15 @@ impl Model for VariantModel {
 	fn get_class() -> &'static str { "Variant" }
 }
 
-impl <'a, 'de> Solver<'de, Reference<'a, Variant<'a>>> for ReferenceModel<VariantModel> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Variant<'a>>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
+	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Variant>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(Reference::new(&self.id, self.hash, gr.size, Variant {
+		Ok(Reference::from_model(self, Variant {
 			material: material.solve(storage_backend).await?,
 			variables: try_join_all(variables.into_iter().map(|v| v.solve(storage_backend))).await?,
 		}, reader))
-	}
-}
-
-// impl <'a, 'de> Solver<'de, RequestReference<'a, Variant<'a>>> for ReferenceModel<VariantModel> {
-// 	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<RequestReference<'a, Variant<'a>>, SolveErrors> {
-// 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
-// 		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-// 		Ok(RequestReference::new(Reference::new(&self.id, self.hash, gr.size, Variant {
-// 			material: material.solve(storage_backend).await?,
-// 			variables: try_join_all(variables.into_iter().map(|v| v.solve(storage_backend))).await?,
-// 		}), reader))
-// 	}
-// }
-
-impl <'a> Loader for Reference<'a, Variant<'a>> {
-	async fn load(self,) -> Result<Self, LoadResults> {
-		Ok(self) // No need to load anything
 	}
 }
 
@@ -179,52 +169,15 @@ impl super::Model for Shader {
 	fn get_class() -> &'static str { "Shader" }
 }
 
-impl <'a, 'de> Solver<'de, Reference<'a, Shader>> for ReferenceModel<Shader> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Shader>, SolveErrors> {
+impl <'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
+	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Shader>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(Reference::new(&self.id, self.hash, gr.size, Shader {
+		Ok(Reference::from_model(self, Shader {
 			id,
 			stage,
 		}, reader))
-	}
-}
-
-// impl <'a, 'de> Solver<'de, RequestReference<'a, Shader>> for ReferenceModel<Shader> {
-// 	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<RequestReference<'a, Shader>, SolveErrors> {
-// 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
-// 		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-// 		Ok(RequestReference::new(Reference::new(&self.id, self.hash, gr.size, Shader {
-// 			id,
-// 			stage,
-// 		}), reader))
-// 	}
-// }
-
-impl <'a> Loader for Reference<'a, Shader> {
-	async fn load(mut self,) -> Result<Self, LoadResults> {
-		let reader = &mut self.reader;
-
-		if let Some(read_target) = &mut self.read_target {
-			match read_target {
-				ReadTargets::Buffer(buffer) => {
-					reader.read_into(0, buffer).await.ok_or(LoadResults::LoadFailed)?;
-				},
-				ReadTargets::Box(buffer) => {
-					reader.read_into(0, buffer).await.ok_or(LoadResults::LoadFailed)?;
-				},
-				_ => {
-					return Err(LoadResults::NoReadTarget);
-				}
-				
-			}
-		} else {
-			// log::warn!("No read target found for shader resource: {}", self.id);
-		}
-
-		Ok(self)
 	}
 }
 
@@ -237,11 +190,11 @@ pub struct RenderModel {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub enum Value<'a> {
+pub enum Value {
 	Scalar(f32),
 	Vector3([f32; 3]),
 	Vector4([f32; 4]),
-	Image(Reference<'a, Image>),
+	Image(Reference<Image>),
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -253,10 +206,10 @@ pub enum ValueModel {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct Parameter<'a> {
+pub struct Parameter {
 	pub r#type: String,
 	pub name: String,
-	pub value: Value<'a>,
+	pub value: Value,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -266,8 +219,8 @@ pub struct ParameterModel {
 	pub value: ValueModel,
 }
 
-impl <'a, 'de> Solver<'de, Parameter<'a>> for ParameterModel {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Parameter<'a>, SolveErrors> {
+impl <'de> Solver<'de, Parameter> for ParameterModel {
+	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
 			r#type: self.r#type.clone(),
 			name: self.name.clone(),
@@ -282,7 +235,7 @@ impl <'a, 'de> Solver<'de, Parameter<'a>> for ParameterModel {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub enum Property<'a> {
-	Factor(Value<'a>),
+pub enum Property {
+	Factor(Value),
 	Texture(String),
 }

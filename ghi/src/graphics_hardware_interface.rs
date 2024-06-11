@@ -532,7 +532,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice<'a>(&'a self, buffer_handle: BaseBufferHandle) -> &'a mut [u8];
 
-	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &mut [u8];
+	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &'static mut [u8];
 
 	/// Creates an image.
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
@@ -579,7 +579,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn end_frame_capture(&self);
 
-	fn get_splitter<'a>(&'a self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a>;
+	fn get_splitter<'a>(&self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

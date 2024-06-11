@@ -8,21 +8,21 @@
 #![feature(path_file_prefix)]
 #![feature(trait_upcasting)]
 
-use std::{any::Any, hash::Hasher};
-
-use asset::{get_base, read_asset_from_source, BEADType};
+use std::{any::Any, collections::HashMap, hash::Hasher, sync::{Arc, Mutex}};
 use polodb_core::bson;
-use resource::resource_handler::{FileResourceReader, ReadTargets, ResourceReader};
 use serde::{ser::SerializeStruct, Serialize};
 use smol::io::AsyncWriteExt;
+
+use resource::resource_handler::{FileResourceReader, LoadTargets, ReadTargets, ResourceReader};
+use asset::{get_base, read_asset_from_source, BEADType};
 
 pub mod asset;
 pub mod resource;
 
 pub mod types;
 
-pub mod image;
 pub mod audio;
+pub mod image;
 pub mod material;
 pub mod mesh;
 
@@ -34,290 +34,329 @@ pub mod shader_generation;
 
 /// This is the struct resource handlers should return when processing a resource.
 #[derive(Debug, Clone)]
-pub struct GenericResourceSerialization {
-	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-	id: String,
-	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
-	class: String,
-	/// List of resources that this resource depends on.
-	// required_resources: Vec<ProcessedResources>,
-	/// The resource data.
-	resource: bson::Bson,
+pub struct ProcessedAsset {
+    /// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
+    id: String,
+    /// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
+    class: String,
+    /// List of resources that this resource depends on.
+    // required_resources: Vec<ProcessedResources>,
+    /// The resource data.
+    resource: bson::Bson,
+    streams: Option<Vec<StreamDescription>>,
 }
 
-impl GenericResourceSerialization {
-	pub fn new<T: Model + serde::Serialize>(id: &str, resource: T) -> Self {
-		GenericResourceSerialization {
-			id: id.to_string(),
-			class: T::get_class().to_string(),
-			resource: polodb_core::bson::to_bson(&resource).unwrap(),
-		}
-	}
+impl ProcessedAsset {
+    pub fn new<T: Model + serde::Serialize>(id: &str, resource: T) -> Self {
+        ProcessedAsset {
+            id: id.to_string(),
+            class: T::get_class().to_string(),
+            resource: polodb_core::bson::to_bson(&resource).unwrap(),
+            streams: None,
+        }
+    }
 
-	pub fn new_with_serialized(id: &str, class: &str, resource: bson::Bson) -> Self {
-		GenericResourceSerialization {
-			id: id.to_string(),
-			class: class.to_string(),
-			resource,
-		}
-	}
+    pub fn new_with_serialized(id: &str, class: &str, resource: bson::Bson) -> Self {
+        ProcessedAsset {
+            id: id.to_string(),
+            class: class.to_string(),
+            resource,
+            streams: None,
+        }
+    }
+
+    pub fn with_streams(mut self, streams: Vec<StreamDescription>) -> Self {
+        self.streams = Some(streams);
+        self
+    }
 }
 
-impl <T: Model + for <'de> serde::Deserialize<'de>> From<GenericResourceSerialization> for ReferenceModel<T> {
-	fn from(value: GenericResourceSerialization) -> Self {
-		ReferenceModel::new_serialized(&value.id, 0, value.resource) // TODO: hash
-	}
+impl<'a, T: Resource + Serialize + Clone> From<Reference<T>> for ProcessedAsset {
+    fn from(value: Reference<T>) -> Self {
+        ProcessedAsset {
+            id: value.id,
+            class: value.resource.get_class().to_string(),
+            resource: polodb_core::bson::to_bson(&value.resource).unwrap(),
+            streams: None,
+        }
+    }
 }
 
-impl <'a, T: Resource + Serialize + Clone> From<Reference<'a, T>> for GenericResourceSerialization {
-	fn from(value: Reference<T>) -> Self {
-		GenericResourceSerialization {
-			id: value.id,
-			class: value.resource.get_class().to_string(),
-			resource: polodb_core::bson::to_bson(&value.resource).unwrap(),
-		}
-	}
+impl<'a> From<GenericResourceResponse<'a>> for ProcessedAsset {
+    fn from(value: GenericResourceResponse<'a>) -> Self {
+        ProcessedAsset {
+            id: value.id,
+            class: value.class,
+            resource: value.resource,
+            streams: None,
+        }
+    }
 }
 
-impl <'a> From<GenericResourceResponse<'a>> for GenericResourceSerialization {
-	fn from(value: GenericResourceResponse<'a>) -> Self {
-		GenericResourceSerialization {
-			id: value.id,
-			class: value.class,
-			resource: value.resource,
-		}
-	}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StreamDescription {
+    /// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
+    name: String,
+    /// The subresource size.
+    size: usize,
+    /// The subresource offset.
+    offset: usize,
+}
+
+impl StreamDescription {
+    pub fn new(name: &str, size: usize, offset: usize) -> Self {
+        StreamDescription {
+            name: name.to_string(),
+            size,
+            offset,
+        }
+    }
 }
 
 #[derive()]
 pub struct GenericResourceResponse<'a> {
-	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-	id: String,
-	hash: u64,
-	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
-	class: String,
-	size: usize,
-	/// The resource data.
-	resource: bson::Bson,
-	read_target: Option<ReadTargets<'a>>,
+    /// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
+    id: String,
+    hash: u64,
+    /// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
+    class: String,
+    size: usize,
+    /// The resource data.
+    resource: bson::Bson,
+    read_target: Option<ReadTargets<'a>>,
+	streams: Option<Vec<StreamDescription>>,
 }
 
-impl <'a> GenericResourceResponse<'a> {
-	pub fn new(id: &str, hash: u64, class: String, size: usize, resource: bson::Bson,) -> Self {
-		GenericResourceResponse {
-			id: id.to_string(),
-			hash,
-			class,
-			size,
-			resource,
-			read_target: None,
-		}
-	}
+impl<'a> GenericResourceResponse<'a> {
+    pub fn new(id: String, hash: u64, class: String, size: usize, resource: bson::Bson, streams: Option<Vec<StreamDescription>>) -> Self {
+        GenericResourceResponse {
+            id,
+            hash,
+            class,
+            size,
+            resource,
+            read_target: None,
+			streams,
+        }
+    }
 
-	pub fn set_box_buffer(&mut self, buffer: Box<[u8]>) {
-		self.read_target = Some(ReadTargets::Box(buffer));
-	}
+    pub fn set_box_buffer(&mut self, buffer: Box<[u8]>) {
+        self.read_target = Some(ReadTargets::Box(buffer));
+    }
 
-	pub fn set_streams(&mut self, streams: Vec<Stream<'a>>) {
-		self.read_target = Some(ReadTargets::Streams(streams));
-	}
-	
-	pub fn set_buffer(&mut self) {
-		self.read_target = ReadTargets::Box(unsafe { let mut v = Vec::with_capacity(self.size); v.set_len(self.size); v }.into_boxed_slice()).into();
+    pub fn set_streams(&mut self, streams: Vec<StreamMut<'a>>) {
+        self.read_target = Some(ReadTargets::Streams(streams));
+    }
+
+    pub fn set_buffer(&mut self) {
+        self.read_target = ReadTargets::Box(
+            unsafe {
+                let mut v = Vec::with_capacity(self.size);
+                v.set_len(self.size);
+                v
+            }
+            .into_boxed_slice(),
+        )
+        .into();
+    }
+}
+
+impl <'a, M: Model> Into<ReferenceModel<M>> for GenericResourceResponse<'a> {
+	fn into(self) -> ReferenceModel<M> {
+		ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
 	}
 }
 
-pub trait Model: for <'de> serde::Deserialize<'de> {
-	fn get_class() -> &'static str;
+pub trait Model: for<'de> serde::Deserialize<'de> {
+    fn get_class() -> &'static str;
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ReferenceModel<T: Model> {
-	pub id: String,
-	hash: u64,
-	class: String,
-	resource: bson::Bson,
-	#[serde(skip)]
-	phantom: std::marker::PhantomData<T>,
+    pub id: String,
+    hash: u64,
+	size: usize,
+    class: String,
+    resource: bson::Bson,
+    #[serde(skip)]
+    phantom: std::marker::PhantomData<T>,
+	streams: Option<Vec<StreamDescription>>,
 }
 
-impl <T: Model> ReferenceModel<T> {
-	pub fn new(id: &str, hash: u64, resource: &T) -> Self where T: serde::Serialize {
-		ReferenceModel {
-			id: id.to_string(),
-			hash,
-			class: T::get_class().to_string(),
-			resource: {
-				let resource = polodb_core::bson::to_bson(resource).unwrap();
-				resource
-			},
-			phantom: std::marker::PhantomData,
-		}
-	}
+impl<T: Model> ReferenceModel<T> {
+    pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self where T: serde::Serialize {
+        ReferenceModel {
+            id: id.to_string(),
+            hash,
+			size,
+            class: T::get_class().to_string(),
+            resource: {
+                let resource = polodb_core::bson::to_bson(resource).unwrap();
+                resource
+            },
+            phantom: std::marker::PhantomData,
+			streams,
+        }
+    }
 
-	pub fn new_serialized(id: &str, hash: u64, resource: bson::Bson) -> Self {
-		ReferenceModel {
-			id: id.to_string(),
-			hash,
-			class: T::get_class().to_string(),
-			resource,
-			phantom: std::marker::PhantomData,
-		}
-	}
+    pub fn new_serialized(id: &str, hash: u64, size: usize, resource: bson::Bson, streams: Option<Vec<StreamDescription>>) -> Self {
+        ReferenceModel {
+            id: id.to_string(),
+            hash,
+			size,
+            class: T::get_class().to_string(),
+            resource,
+            phantom: std::marker::PhantomData,
+			streams,
+        }
+    }
 }
 
 #[derive(Debug)]
 /// Represents a resource reference and can be use to embed resources in other resources.
-pub struct Reference<'a, T: Resource> {
-	pub id: String,
-	hash: u64,
-	size: usize,
-	resource: T,
-	read_target: Option<ReadTargets<'a>>,
-	reader: Box<dyn ResourceReader>,
+pub struct Reference<T: Resource> {
+    pub id: String,
+    pub hash: u64,
+    pub size: usize,
+    pub resource: T,
+    reader: Option<FileResourceReader>,
+	streams: Option<Vec<StreamDescription>>,
 }
 
-impl <'a, T: Resource> Serialize for Reference<'a, T> {
-	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-		let mut state = serializer.serialize_struct("TypedDocument", 3)?;
+impl<'a, T: Resource + 'a> Serialize for Reference<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("TypedDocument", 3)?;
 
-		state.serialize_field("id", &self.id)?;
-		state.serialize_field("hash", &self.hash)?;
-		state.serialize_field("class", &self.resource.get_class())?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("hash", &self.hash)?;
+        state.serialize_field("class", &self.resource.get_class())?;
 
-		state.end()
-	}
+        state.end()
+    }
 }
 
-impl <'a, T: Resource> Reference<'a, T> {
-	pub fn new(id: &str, hash: u64, size: usize, resource: T, reader: Box<dyn ResourceReader>) -> Self {
+impl<'a, T: Resource + 'a> Reference<T> {
+	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: FileResourceReader) -> Self {
 		Reference {
-			id: id.to_string(),
-			hash,
-			size,
+			id: model.id,
+			hash: model.hash,
+			size: model.size,
 			resource,
-			read_target: None,
-			reader,
+			reader: Some(reader),
+			streams: model.streams,
 		}
 	}
 
-	pub fn id(&self) -> &str {
-		&self.id
-	}
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 
-	pub fn hash(&self) -> u64 {
-		self.hash
-	}
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
 
-	pub fn resource(&self) -> &T {
-		&self.resource
-	}
+    pub fn resource(&self) -> &T {
+        &self.resource
+    }
 
-	pub fn into_resource(self) -> T {
-		self.resource
-	}
+    pub fn resource_mut(&mut self) -> &mut T {
+        &mut self.resource
+    }
 
-	pub fn get_buffer(&self) -> Option<&[u8]> {
-		self.read_target.as_ref().and_then(|r| r.get_buffer())
-	}
+    pub fn into_resource(self) -> T {
+        self.resource
+    }
 
-	pub fn set_buffer(&mut self) {
-		self.read_target = ReadTargets::Box(unsafe { let mut v = Vec::with_capacity(self.size); v.set_len(self.size); v }.into_boxed_slice()).into();
-	}
-	
-	pub fn set_streams(&mut self, streams: Vec<Stream<'a>>) {
-		self.read_target = ReadTargets::Streams(streams).into();
-	}
-	
-	pub fn get_stream(&self, arg: &str) -> Option<&[u8]> {
-		self.read_target.as_ref().map(|r| match r {
-			ReadTargets::Streams(streams) => {
-				streams.iter().find(|s| s.name == arg).map(|s| s.buffer.as_ref())
-			}
-			_ => None,
-		})?
-	}
-}
+    pub fn consume_reader(&mut self) -> FileResourceReader {
+        self.reader.take().unwrap()
+    }
 
-impl <'a, M: Model + serde::Serialize + for<'de> serde::Deserialize<'de>> Into<ReferenceModel<M>> for GenericResourceResponse<'a> {
-	fn into(self) -> ReferenceModel<M> {
-		ReferenceModel::new_serialized(&self.id, self.hash, self.resource)
-	}
-}
+    pub fn map(self, f: impl FnOnce(T) -> T) -> Self {
+        Reference {
+            resource: f(self.resource),
+            ..self
+        }
+    }
 
-#[derive(Debug, Clone)]
-pub enum ProcessedResources {
-	Generated((GenericResourceSerialization, Vec<u8>)),
-	Reference(String),
+	/// Loads the resource's binary data into memory from the storage backend.
+	pub async fn load<'s>(&'s mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults> {
+		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
+		reader.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target).await.map_err(|_| LoadResults::LoadFailed)
+	}
 }
 
 #[derive(Debug)]
 pub struct Stream<'a> {
-	/// The slice of the buffer to load the resource binary data into.
-	buffer: &'a mut [u8],
-	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
-	name: &'a str,
+    /// The slice of the buffer to load the resource binary data into.
+    buffer: &'a [u8],
+    /// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
+    name: &'a str,
 }
 
-impl <'a> Stream<'a> {
-	pub fn new(name: &'a str, buffer: &'a mut [u8]) -> Self {
-		Stream {
-			buffer,
-			name,
-		}
-	}
+impl<'a> Stream<'a> {
+    pub fn new(name: &'a str, buffer: &'a [u8]) -> Self {
+        Stream { buffer, name }
+    }
 
-	pub fn buffer(&'a mut self) -> &'a mut [u8] {
-		self.buffer
-	}
+    pub fn buffer(&'a self) -> &'a [u8] {
+        self.buffer
+    }
+}
+
+impl<'a> From<StreamMut<'a>> for Stream<'a> {
+    fn from(value: StreamMut<'a>) -> Self {
+        Stream::new(value.name, value.buffer)
+    }
+}
+
+#[derive(Debug)]
+pub struct StreamMut<'a> {
+    /// The slice of the buffer to load the resource binary data into.
+    buffer: &'a mut [u8],
+    /// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
+    name: &'a str,
+}
+
+impl<'a> StreamMut<'a> {
+    pub fn new(name: &'a str, buffer: &'a mut [u8]) -> Self {
+        StreamMut { buffer, name }
+    }
+
+    pub fn buffer(&'a self) -> &'a [u8] {
+        self.buffer
+    }
+
+    pub fn buffer_mut(&'a mut self) -> &'a mut [u8] {
+        self.buffer
+    }
 }
 
 /// Enumaration for all the possible results of a resource load fails.
 #[derive(Debug)]
 pub enum LoadResults {
-	/// No resource could be resolved for the given path.
-	ResourceNotFound,
-	/// The resource could not be loaded.
-	LoadFailed,
-	/// The resource could not be found in cache.
-	CacheFileNotFound,
-	/// The resource type is not supported.
-	UnsuportedResourceType,
-	/// No read target was set for the resource.
-	NoReadTarget,
+    /// No resource could be resolved for the given path.
+    ResourceNotFound,
+    /// The resource could not be loaded.
+    LoadFailed,
+    /// The resource could not be found in cache.
+    CacheFileNotFound,
+    /// The resource type is not supported.
+    UnsuportedResourceType,
+    /// No read target was set for the resource.
+    NoReadTarget,
 }
 
 /// Trait that defines a resource.
 pub trait Resource: Send + Sync {
-	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
-	/// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
-	/// Is needed by the deserialize function.
-	fn get_class(&self) -> &'static str;
+    /// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
+    /// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
+    /// Is needed by the deserialize function.
+    fn get_class(&self) -> &'static str;
 
-	type Model: Model;
-}
-
-// downcast_rs::impl_downcast!(Resource);
-
-pub trait ResourceStore<'a> {
-	fn id(&self) -> &str;
-	fn get_buffer(&self) -> Option<&[u8]>;
-	fn class(&self) -> &str;
-}
-
-impl <'a, T: Resource + Clone> ResourceStore<'a> for Reference<'a, T> {
-	fn id(&self) -> &str {
-		self.id()
-	}
-	
-	fn class(&self) -> &str {
-		self.resource().get_class()
-	}
-
-	fn get_buffer(&self) -> Option<&[u8]> {
-		// self.get_buffer()
-		todo!()
-	}
+    type Model: Model;
 }
 
 #[derive(Debug, Clone)]
@@ -326,316 +365,461 @@ pub struct SerializedResourceDocument(polodb_core::bson::Document);
 /// Options for loading a resource.
 #[derive(Debug)]
 pub struct OptionResource<'a> {
-	/// The resource to apply this option to.
-	pub url: String,
-	/// The buffers to load the resource binary data into.
-	pub streams: Vec<Stream<'a>>,
+    /// The resource to apply this option to.
+    pub url: String,
+    /// The buffers to load the resource binary data into.
+    pub streams: Vec<StreamMut<'a>>,
 }
 
 /// Represents the options for performing a bundled/batch resource load.
 pub struct Options<'a> {
-	pub resources: Vec<OptionResource<'a>>,
+    pub resources: Vec<OptionResource<'a>>,
 }
 
-pub trait CreateResource: downcast_rs::Downcast + Send + Sync {
-}
+pub trait CreateResource: downcast_rs::Downcast + Send + Sync {}
 
 downcast_rs::impl_downcast!(CreateResource);
 
 pub struct CreateInfo<'a> {
-	pub name: &'a str,
-	pub info: Box<dyn CreateResource>,
-	pub data: &'a [u8],
-}
-
-pub struct TypedResourceDocument {
-	url: String,
-	class: String,
-	resource: bson::Bson,
-}
-
-impl TypedResourceDocument {
-	pub fn new(url: String, class: String, resource: bson::Bson) -> Self {
-		TypedResourceDocument {
-			url,
-			class,
-			resource,
-		}
-	}
-}
-
-impl From<GenericResourceSerialization> for TypedResourceDocument {
-	fn from(value: GenericResourceSerialization) -> Self {
-		TypedResourceDocument::new(value.id, value.class, value.resource)
-	}
+    pub name: &'a str,
+    pub info: Box<dyn CreateResource>,
+    pub data: &'a [u8],
 }
 
 #[derive(Debug)]
 enum SolveErrors {
-	DeserializationFailed(String),
-	StorageError,
+    DeserializationFailed(String),
+    StorageError,
 }
 
 /// The solver trait provides methods to solve a resource.
 /// This is used to load resources from the storage backend.
-pub trait Solver<'de, T> where Self: serde::Deserialize<'de> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<T, SolveErrors>;
+pub trait Solver<'de, T>
+where
+    Self: serde::Deserialize<'de>,
+{
+    async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<T, SolveErrors>;
 }
 
-pub trait Loader where Self: Sized {
-	async fn load(self) -> Result<Self, LoadResults>;
-}
+// pub trait Loader<'a> where Self: Sized, Self: 'a {
+// 	// async fn load(self) -> Result<Self, LoadResults>;
+// 	async fn load(&mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults>;
+// }
 
-// impl <T: Resource, 'de> Solver<'de> for T where T: Clone 
+// impl <T: Resource, 'de> Solver<'de> for T where T: Clone
 
 pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
-	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
-	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
-	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>>;
-	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>>;
-	fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
-		Box::pin(async move {})
-	}
+    fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
+    fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
+    fn store<'a>(&'a self, resource: &'a ProcessedAsset, data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse<'a>, ()>>;
+    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, FileResourceReader)>>;
+    fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
+        Box::pin(async move {})
+    }
 
-	/// Returns the type of the asset, if attainable from the url.
-	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
-	fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
-		let url = get_base(url)?;
-		let path = std::path::Path::new(url);
-		Some(path.extension()?.to_str()?)
-	}
+    /// Returns the type of the asset, if attainable from the url.
+    /// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
+    fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
+        let url = get_base(url)?;
+        let path = std::path::Path::new(url);
+        Some(path.extension()?.to_str()?)
+    }
 
-	fn exists<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, bool> {
-		Box::pin(async move {
-			self.read(id).await.is_some()
-		})
-	}
+    fn exists<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, bool> {
+        Box::pin(async move { self.read(id).await.is_some() })
+    }
 
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
-		Box::pin(async move {
-			let url = get_base(url).ok_or(())?;
-			read_asset_from_source(url, None).await
-		})
-	}
+    fn resolve<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+        Box::pin(async move {
+            let url = get_base(url).ok_or(())?;
+            read_asset_from_source(url, None).await
+        })
+    }
 }
 
 downcast_rs::impl_downcast!(StorageBackend);
 
 pub struct DbStorageBackend {
-	db: polodb_core::Database,
-	base_path: std::path::PathBuf,
+    db: polodb_core::Database,
+    base_path: std::path::PathBuf,
+
+	#[cfg(test)]
+	resources: Arc<Mutex<Vec<(ProcessedAsset, Box<[u8]>)>>>,
+	#[cfg(test)]
+	files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
 }
 
 impl DbStorageBackend {
-	pub fn new(base_path: &std::path::Path) -> Self {
-		let mut memory_only = false;
+    pub fn new(base_path: &std::path::Path) -> Self {
+        let mut memory_only = false;
 
-		if cfg!(test) { // If we are running tests we want to use memory database. This way we can run tests in parallel.
-			memory_only = true;
-		}
+        if cfg!(test) {
+            // If we are running tests we want to use memory database. This way we can run tests in parallel.
+            memory_only = true;
+        }
 
-		let db_res = if !memory_only {
-			polodb_core::Database::open_file(base_path.join("resources.db"))
-		} else {
-			log::info!("Using memory database instead of file database.");
-			polodb_core::Database::open_memory()
-		};
+        let db_res = if !memory_only {
+            polodb_core::Database::open_file(base_path.join("resources.db"))
+        } else {
+            log::info!("Using memory database instead of file database.");
+            polodb_core::Database::open_memory()
+        };
 
-		let db = match db_res {
-			Ok(db) => db,
-			Err(_) => {
-				// // Delete file and try again
-				// std::fs::remove_file(path).unwrap();
+        let db = match db_res {
+            Ok(db) => db,
+            Err(_) => {
+                // // Delete file and try again
+                // std::fs::remove_file(path).unwrap();
 
-				// log::warn!("Database file was corrupted, deleting and trying again.");
+                // log::warn!("Database file was corrupted, deleting and trying again.");
 
-				// let db_res = polodb_core::Database::open_file(path);
+                // let db_res = polodb_core::Database::open_file(path);
 
-				// match db_res {
-				// 	Ok(db) => db,
-				// 	Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
-				// 		Ok(db) => {
-				// 			log::error!("Could not create database file, using memory database instead.");
-				// 			db
-				// 		},
-				// 		Err(_) => panic!("Could not create database"),
-				// 	}
-				// }
-				panic!("Could not create database")
-			}
-		};
+                // match db_res {
+                // 	Ok(db) => db,
+                // 	Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
+                // 		Ok(db) => {
+                // 			log::error!("Could not create database file, using memory database instead.");
+                // 			db
+                // 		},
+                // 		Err(_) => panic!("Could not create database"),
+                // 	}
+                // }
+                panic!("Could not create database")
+            }
+        };
 
-		// db.collection::<bson::Document>("resources").create_index(polodb_core::IndexModel{ keys: bson::doc! { "id": 1 }, options: Some(polodb_core::IndexOptions{ name: None, unique: Some(true) }) });
+        // db.collection::<bson::Document>("resources").create_index(polodb_core::IndexModel{ keys: bson::doc! { "id": 1 }, options: Some(polodb_core::IndexOptions{ name: None, unique: Some(true) }) });
 
-		DbStorageBackend {
-			db,
-			base_path: base_path.to_path_buf(),
-		}
+        DbStorageBackend {
+            db,
+            base_path: base_path.to_path_buf(),
+
+			#[cfg(test)]
+			resources: Arc::new(Mutex::new(Vec::new())),
+			#[cfg(test)]
+			files: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+	#[cfg(test)]
+	pub fn add_file(&self, name: &'static str, data: &[u8]) {
+		self.files.lock().unwrap().insert(name, data.into());
+	}
+
+	#[cfg(test)]
+	pub fn get_resources(&self) -> Vec<ProcessedAsset> {
+		self.resources.lock().unwrap().iter().map(|x| x.0.clone()).collect()
+	}
+
+	#[cfg(test)]
+	pub fn get_resource_data_by_name(&self, name: &str) -> Option<Box<[u8]>> {
+		Some(self.resources.lock().unwrap().iter().find(|x| x.0.id == name)?.1.clone())
 	}
 }
 
+#[cfg(not(test))]
+impl StorageBackend for DbStorageBackend {
+    fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>> {
+        Box::pin(async move {
+            let mut resources = Vec::new();
+
+            let cursor = self.db.collection::<bson::Document>("resources").find(None); // polodb_core can sometimes return deleted records, so don't worry about it
+
+            for doc in cursor.unwrap() {
+                let doc = doc.unwrap();
+                resources.push(doc.get_str("id").unwrap().to_string());
+            }
+
+            Ok(resources)
+        })
+    }
+
+    fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            match self
+                .db
+                .collection::<bson::Document>("resources")
+                .find_one(bson::doc! { "id": id })
+            {
+                Ok(o) => {
+                    match o {
+                        Some(o) => {
+                            let db_id = o.get_object_id("_id").map_err(|_| {
+                                "Resource entry does not have '_id' key of type 'ObjectId'"
+                                    .to_string()
+                            })?;
+                            let resource_path = self
+                                .base_path
+                                .join(std::path::Path::new(db_id.to_string().as_str()));
+
+                            let file_deletion_result = smol::fs::remove_file(&resource_path).await;
+
+                            let doc_deletion_result = match self
+                                .db
+                                .collection::<bson::Document>("resources")
+                                .delete_one(bson::doc! { "_id": db_id })
+                            {
+                                Ok(o) => {
+                                    if o.deleted_count == 1 {
+                                        // polodb_core sometimes returns 1 even if the resource was supposed to be deleted
+                                        Ok(())
+                                    } else {
+                                        Err("Resource not found".to_string())
+                                    }
+                                }
+                                Err(e) => Err(e.to_string()),
+                            };
+
+                            match (file_deletion_result, doc_deletion_result) {
+                                (Ok(()), Ok(())) => Ok(()),
+                                (Ok(_), Err(_)) => Ok(()),
+                                (Err(e), Ok(_)) => match e.kind() {
+                                    std::io::ErrorKind::NotFound => Ok(()),
+                                    _ => Err(e.to_string()),
+                                },
+                                (Err(_), Err(_)) => Err("Resource not found".to_string()),
+                            }
+                        }
+                        None => Err("Resource not found".to_string()),
+                    }
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    }
+
+    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, FileResourceReader)>> {
+        let resource_document = self
+            .db
+            .collection::<bson::Document>("resources")
+            .find_one(bson::doc! { "id": id })
+            .ok();
+        let id = id.to_string();
+        let base_path = self.base_path.clone();
+
+        Box::pin(async move {
+            let resource_document = resource_document??;
+
+            let resource = {
+                let hash = resource_document.get_i64("hash").ok()? as u64;
+                let class = resource_document.get_str("class").ok()?.to_string();
+                let size = resource_document.get_i64("size").ok()? as usize;
+                let resource = resource_document.get("resource")?.clone();
+				let streams = resource_document.get_array("streams").map(|a| a.iter().map(|v| {
+					let v = v.as_document()?;
+					Some(StreamDescription::new(v.get_str("name").ok()?, v.get_i64("size").ok()? as usize, v.get_i64("offset").ok()? as usize))
+				}).collect::<Option<Vec<_>>>()).ok()?;
+                GenericResourceResponse::new(id, hash, class, size, resource, streams)
+            };
+
+            let resource_reader = FileResourceReader::new(
+                smol::fs::File::open(base_path.join(std::path::Path::new(
+                    &resource_document.get_object_id("_id").ok()?.to_string(),
+                )))
+                .await
+                .ok()?,
+            );
+
+            Some((resource, resource_reader))
+        })
+    }
+
+    fn store<'a>(&'a self,resource: &'a ProcessedAsset,data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse<'a>, ()>> {
+        // TODO: define schema
+        Box::pin(async move {
+            let mut resource_document = bson::Document::new();
+
+            let size = data.len();
+            let id = resource.id.clone();
+            let class = &resource.class;
+
+            resource_document.insert("id", &id);
+            resource_document.insert("size", size as i64);
+            resource_document.insert("class", class);
+
+            let json_resource = resource.resource.clone();
+
+            let hash = if let Some(bson::Bson::Int64(hash)) = resource_document.get("hash") {
+				*hash as u64
+			} else {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+                std::hash::Hasher::write(&mut hasher, data); // Hash binary data (For identifying the resource)
+                std::hash::Hasher::write(&mut hasher, &bson::to_vec(&json_resource).unwrap()); // Hash resource metadata, since changing the resources description must also change the hash. (For caching purposes)
+
+				let hash = hasher.finish() as u64;
+
+                resource_document.insert("hash", hash as i64);
+
+				hash
+            };
+
+            resource_document.insert("resource", json_resource.clone());
+
+            let insert_result = self
+                .db
+                .collection::<bson::Document>("resources")
+                .insert_one(&resource_document)
+                .or(Err(()))?;
+
+            let resource_id = insert_result.inserted_id.as_object_id().unwrap();
+
+            let resource_path = self.base_path.join(std::path::Path::new(&resource_id.to_string()));
+
+            let mut file = smol::fs::File::create(resource_path).await.or(Err(()))?;
+
+            file.write_all(data).await.or(Err(()))?;
+            file.flush().await.or(Err(()))?; // Must flush to ensure the file is written to disk, or else reads can cause failures
+            resource_document.insert("_id", resource_id);
+
+            Ok(GenericResourceResponse::new(id, hash, class.to_string(), size, json_resource, resource.streams.clone()))
+        })
+    }
+
+    fn sync<'s, 'a>(&'s self, other: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
+        if let Some(other) = other.downcast_ref::<DbStorageBackend>() {
+            self.db.collection::<bson::Document>("resources").drop();
+
+            other
+                .db
+                .collection::<bson::Document>("resources")
+                .find(bson::doc! {})
+                .unwrap()
+                .for_each(|doc| {
+                    self.db
+                        .collection::<bson::Document>("resources")
+                        .insert_one(&doc.unwrap())
+                        .unwrap();
+                });
+        }
+
+        Box::pin(async move {})
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+        Box::pin(async move {
+            let url = get_base(url).ok_or(())?;
+            read_asset_from_source(url, Some(&std::path::Path::new("assets"))).await
+        })
+    }
+}
+
+#[cfg(test)]
 impl StorageBackend for DbStorageBackend {
 	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>> {
+		let resources = self.resources.lock().unwrap();
+		let mut names = Vec::with_capacity(resources.len());
+		for resource in resources.iter() {
+			names.push(resource.0.id.clone());
+		}
+
 		Box::pin(async move {
-			let mut resources = Vec::new();
-
-			let cursor = self.db.collection::<bson::Document>("resources").find(None); // polodb_core can sometimes return deleted records, so don't worry about it
-
-			for doc in cursor.unwrap() {
-				let doc = doc.unwrap();
-				resources.push(doc.get_str("id").unwrap().to_string());
-			}
-
-			Ok(resources)
+			Ok(names)
 		})
 	}
 
 	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>> {
-		Box::pin(async move {
-			match self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }) {
-				Ok(o) => {
-					match o {
-						Some(o) => {
-							let db_id = o.get_object_id("_id").map_err(|_| "Resource entry does not have '_id' key of type 'ObjectId'".to_string())?;
-							let resource_path = self.base_path.join(std::path::Path::new(db_id.to_string().as_str()));
-
-							let file_deletion_result = smol::fs::remove_file(&resource_path).await;
-
-							let doc_deletion_result = match self.db.collection::<bson::Document>("resources").delete_one(bson::doc!{ "_id": db_id }) {
-								Ok(o) => {
-									if o.deleted_count == 1 { // polodb_core sometimes returns 1 even if the resource was supposed to be deleted
-										Ok(())
-									} else {
-										Err("Resource not found".to_string())
-									}
-								}
-								Err(e) => {
-									Err(e.to_string())
-								}
-							};
-
-							match (file_deletion_result, doc_deletion_result) {
-								(Ok(()), Ok(())) => {
-									Ok(())
-								}
-								(Ok(_), Err(_)) => {
-									Ok(())
-								}
-								(Err(e), Ok(_)) => {
-									match e.kind() {
-										std::io::ErrorKind::NotFound => {
-											Ok(())
-										}
-										_ => {
-											Err(e.to_string())
-										}
-									}
-								}
-								(Err(_) , Err(_)) => {
-									Err("Resource not found".to_string())
-								}
-							}
-						}
-						None => {
-							Err("Resource not found".to_string())
-						}
-					}
-				}
-				Err(e) => {
-					Err(e.to_string())
-				}
+		let mut resources = self.resources.lock().unwrap();
+		let mut index = None;
+		for (i, resource) in resources.iter().enumerate() {
+			if resource.0.id == id {
+				index = Some(i);
+				break;
 			}
-		})
-	}
-
-	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, Box<dyn ResourceReader>)>> {
-		let resource_document = self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id }).ok();
-		let id = id.to_string();
-		let base_path = self.base_path.clone();
-
-		Box::pin(async move {
-			let resource_document = resource_document??;
-
-			let resource = {
-				let hash = resource_document.get_i64("hash").ok()? as u64;
-				let class = resource_document.get_str("class").ok()?.to_string();
-				let size = resource_document.get_i64("size").ok()? as usize;
-				let resource = resource_document.get("resource")?.clone();
-
-				GenericResourceResponse::new(&id, hash, class, size, resource)
-			};
-
-			let resource_reader = FileResourceReader::new(smol::fs::File::open(base_path.join(std::path::Path::new(&resource_document.get_object_id("_id").ok()?.to_string()))).await.ok()?);	
-	
-			Some((resource, Box::new(resource_reader) as Box<dyn ResourceReader>))
-		})
-	}
-
-	fn store<'a>(&'a self, resource: &'a GenericResourceSerialization, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(), ()>> { // TODO: define schema
-		Box::pin(async move {
-			let mut resource_document = bson::Document::new();
-	
-			let size = data.len();
-			let url = &resource.id;
-			let class = &resource.class;
-	
-			resource_document.insert("id", url);
-			resource_document.insert("size", size as i64);
-			resource_document.insert("class", class);
-	
-			let json_resource = resource.resource.clone();
-	
-			if let None = resource_document.get("hash") {
-				let mut hasher = std::collections::hash_map::DefaultHasher::new();
-	
-				std::hash::Hasher::write(&mut hasher, data); // Hash binary data
-	
-				std::hash::Hasher::write(&mut hasher, &bson::to_vec(&json_resource).unwrap()); // Hash resource metadata, since changing the resources description must also change the hash. (For caching purposes)
-	
-				resource_document.insert("hash", hasher.finish() as i64);
-			}
-	
-			resource_document.insert("resource", json_resource);
-	
-			let insert_result = self.db.collection::<bson::Document>("resources").insert_one(&resource_document).or(Err(()))?;
-	
-			let resource_id = insert_result.inserted_id.as_object_id().unwrap();
-	
-			let resource_path = self.base_path.join(std::path::Path::new(&resource_id.to_string()));
-
-			let mut file = smol::fs::File::create(resource_path).await.or(Err(()))?;
-	
-			file.write_all(data).await.or(Err(()))?;
-			file.flush().await.or(Err(()))?; // Must flush to ensure the file is written to disk, or else reads can cause failures
-			resource_document.insert("_id", resource_id);
-	
-			Ok(())
-		})
-	}
-
-	fn sync<'s, 'a>(&'s self, other: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
-		if let Some(other) = other.downcast_ref::<DbStorageBackend>() {
-			self.db.collection::<bson::Document>("resources").drop();
-
-			other.db.collection::<bson::Document>("resources").find(bson::doc! {}).unwrap().for_each(|doc| {
-				self.db.collection::<bson::Document>("resources").insert_one(&doc.unwrap()).unwrap();
-			});
 		}
 
-		Box::pin(async move {})
+		if let Some(i) = index {
+			resources.remove(i);
+			Box::pin(async move {
+				Ok(())
+			})
+		} else {
+			Box::pin(async move {
+				Err("Resource not found".to_string())
+			})
+		}
 	}
+	
+	fn store<'a>(&'a self, resource: &ProcessedAsset, data: &[u8]) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse<'a>, ()>> {
+		self.resources.lock().unwrap().push((resource.clone(), data.into()));
 
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+		let id = resource.id.clone();
+		let class = resource.class.clone();
+		let size = data.len();
+		let streams = resource.streams.clone();
+		let resource = resource.resource.clone();
+
 		Box::pin(async move {
-			let url = get_base(url).ok_or(())?;
-			read_asset_from_source(url, Some(&std::path::Path::new("assets"))).await
+			Ok(GenericResourceResponse::new(id, 0, class, size, resource, streams))
 		})
 	}
+
+	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, FileResourceReader)>> {
+		let mut x = None;
+
+		let resources = self.resources.lock().unwrap();
+		for (resource, data) in resources.iter() {
+			if resource.id == id {
+				// TODO: use actual hash
+				x = Some((GenericResourceResponse::new(id.to_string(), 0, resource.class.clone(), data.len(), resource.resource.clone(), resource.streams.clone()), FileResourceReader::new(data.clone())));
+				break;
+			}
+		}
+
+		Box::pin(async move {
+			x
+		})
+	}
+
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async {
+		if let Ok(x) = read_asset_from_source(get_base(url).ok_or(())?, Some(&std::path::Path::new("../assets"))).await {
+			let bead = if let None = x.1 {
+				let mut url = get_base(url).ok_or(())?.to_string();
+				url.push_str(".bead");
+				if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
+					Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+				} else {
+					None
+				}
+			} else {
+				x.1
+			};
+			Ok((x.0, bead, x.2))
+		} else {
+			let m = if let Some(f) = self.files.lock().unwrap().get(url) {
+				f.to_vec()
+			} else {
+				return Err(());
+			};
+
+			let bead = {
+				let mut url = get_base(url).ok_or(())?.to_string();
+				url.push_str(".bead");
+				if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
+					Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+				} else {
+					None
+				}
+			};
+
+			// Extract extension from url
+			Ok((m, bead, url.split('.').last().unwrap().to_string()))
+		}
+	}) }
 }
 
 pub trait Description: Any + Send + Sync {
-	// type Resource: Resource;
-	fn get_resource_class() -> &'static str where Self: Sized;
+    // type Resource: Resource;
+    fn get_resource_class() -> &'static str
+    where
+        Self: Sized;
 }
 
 #[cfg(test)]
@@ -644,94 +828,94 @@ mod tests {
     use polodb_core::bson;
     use serde::Deserialize;
 
-    use crate::{asset::tests::TestStorageBackend, GenericResourceSerialization, Model, Resource, SolveErrors, Solver, StorageBackend, Reference, ReferenceModel};
+    use crate::{ProcessedAsset, Model, Reference,ReferenceModel, Resource, SolveErrors, Solver, StorageBackend,};
 
-	// #[test]
-	// fn solve_resources() {
-	// 	#[derive(serde::Serialize)]
-	// 	struct Base<'a> {
-	// 		items: Vec<Reference<'a, Item>>,
-	// 	}
+    // #[test]
+    // fn solve_resources() {
+    // 	#[derive(serde::Serialize)]
+    // 	struct Base<'a> {
+    // 		items: Vec<Reference<'a, Item>>,
+    // 	}
 
-	// 	#[derive(serde::Deserialize)]
-	// 	struct BaseModel {
-	// 		items: Vec<ReferenceModel<Item>>,
-	// 	}
+    // 	#[derive(serde::Deserialize)]
+    // 	struct BaseModel {
+    // 		items: Vec<ReferenceModel<Item>>,
+    // 	}
 
-	// 	#[derive(serde::Serialize, serde::Deserialize)]
-	// 	struct Item {
-	// 		property: String,
-	// 	}
+    // 	#[derive(serde::Serialize, serde::Deserialize)]
+    // 	struct Item {
+    // 		property: String,
+    // 	}
 
-	// 	#[derive(serde::Serialize,)]
-	// 	struct Variant<'a> {
-	// 		parent: Reference<'a, Base<'a>>
-	// 	}
+    // 	#[derive(serde::Serialize,)]
+    // 	struct Variant<'a> {
+    // 		parent: Reference<'a, Base<'a>>
+    // 	}
 
-	// 	#[derive(serde::Deserialize)]
-	// 	struct VariantModel {
-	// 		parent: ReferenceModel<BaseModel>
-	// 	}
+    // 	#[derive(serde::Deserialize)]
+    // 	struct VariantModel {
+    // 		parent: ReferenceModel<BaseModel>
+    // 	}
 
-	// 	impl <'a> Resource for Base<'a> {
-	// 		fn get_class(&self) -> &'static str { "Base" }
+    // 	impl <'a> Resource for Base<'a> {
+    // 		fn get_class(&self) -> &'static str { "Base" }
 
-	// 		type Model = BaseModel;
-	// 	}
+    // 		type Model = BaseModel;
+    // 	}
 
-	// 	impl Model for BaseModel {
-	// 		fn get_class() -> &'static str { "Base" }
-	// 	}
+    // 	impl Model for BaseModel {
+    // 		fn get_class() -> &'static str { "Base" }
+    // 	}
 
-	// 	impl Resource for Item {
-	// 		fn get_class(&self) -> &'static str { "Item" }
+    // 	impl Resource for Item {
+    // 		fn get_class(&self) -> &'static str { "Item" }
 
-	// 		type Model = Item;
-	// 	}
+    // 		type Model = Item;
+    // 	}
 
-	// 	impl Model for Item {
-	// 		fn get_class() -> &'static str { "Item" }
-	// 	}
+    // 	impl Model for Item {
+    // 		fn get_class() -> &'static str { "Item" }
+    // 	}
 
-	// 	impl <'a> Resource for Variant<'a> {
-	// 		fn get_class(&self) -> &'static str { "Variant" }
+    // 	impl <'a> Resource for Variant<'a> {
+    // 		fn get_class(&self) -> &'static str { "Variant" }
 
-	// 		type Model = VariantModel;
-	// 	}
+    // 		type Model = VariantModel;
+    // 	}
 
-	// 	impl Model for VariantModel {
-	// 		fn get_class() -> &'static str { "Variant" }
-	// 	}
+    // 	impl Model for VariantModel {
+    // 		fn get_class() -> &'static str { "Variant" }
+    // 	}
 
-	// 	let storage_backend = TestStorageBackend::new();
+    // 	let storage_backend = TestStorageBackend::new();
 
-	// 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("item", Item{ property: "hello".to_string() }), &[])).unwrap();
-	// 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("base", Base{ items: vec![Reference::new("item", 0, 0, Item{ property: "hello".to_string() })] }), &[])).unwrap();
-	// 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("variant", Variant{ parent: Reference::new("base", 0, 0, Base{ items: vec![Reference::new("item", 0, 0, Item{ property: "hello".to_string() })] }) }), &[])).unwrap();
+    // 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("item", Item{ property: "hello".to_string() }), &[])).unwrap();
+    // 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("base", Base{ items: vec![Reference::new("item", 0, 0, Item{ property: "hello".to_string() })] }), &[])).unwrap();
+    // 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("variant", Variant{ parent: Reference::new("base", 0, 0, Base{ items: vec![Reference::new("item", 0, 0, Item{ property: "hello".to_string() })] }) }), &[])).unwrap();
 
-	// 	impl <'a, 'de> Solver<'de, Reference<'a, Base<'a>>> for ReferenceModel<BaseModel> {
-	// 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Base<'a>>, SolveErrors> {
-	// 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-	// 			println!("{:#?}", gr.resource);
-	// 			let resource = BaseModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-	// 			let base = Base{
-	// 				items: try_join_all(resource.items.into_iter().map(|item| {
-	// 					item.solve(storage_backend)
-	// 				})).await.map_err(|_| SolveErrors::StorageError)?
-	// 			};
-	// 			Ok(Reference::new(&gr.id, 0, 0, base, reader))
-	// 		}
-	// 	}
+    // 	impl <'a, 'de> Solver<'de, Reference<'a, Base<'a>>> for ReferenceModel<BaseModel> {
+    // 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Base<'a>>, SolveErrors> {
+    // 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+    // 			println!("{:#?}", gr.resource);
+    // 			let resource = BaseModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+    // 			let base = Base{
+    // 				items: try_join_all(resource.items.into_iter().map(|item| {
+    // 					item.solve(storage_backend)
+    // 				})).await.map_err(|_| SolveErrors::StorageError)?
+    // 			};
+    // 			Ok(Reference::new(&gr.id, 0, 0, base, reader))
+    // 		}
+    // 	}
 
-	// 	impl <'a, 'de> Solver<'de, Reference<'a, Item>> for ReferenceModel<Item> {
-	// 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Item>, SolveErrors> {
-	// 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-	// 			let item = Item::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-	// 			Ok(Reference::new(&gr.id, 0, 0, item, reader))
-	// 		}
-	// 	}
+    // 	impl <'a, 'de> Solver<'de, Reference<'a, Item>> for ReferenceModel<Item> {
+    // 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Item>, SolveErrors> {
+    // 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
+    // 			let item = Item::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+    // 			Ok(Reference::new(&gr.id, 0, 0, item, reader))
+    // 		}
+    // 	}
 
-	// 	let base: ReferenceModel<BaseModel> = smol::block_on(storage_backend.read("base")).unwrap().0.into();
-	// 	let base = base.solve(&storage_backend);
-	// }
+    // 	let base: ReferenceModel<BaseModel> = smol::block_on(storage_backend.read("base")).unwrap().0.into();
+    // 	let base = base.solve(&storage_backend);
+    // }
 }

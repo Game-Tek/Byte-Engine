@@ -10,7 +10,9 @@ pub mod audio_resource_handler;
 
 #[cfg(test)]
 pub mod tests {
-    use super::resource_handler::ResourceReader;
+    use crate::StreamDescription;
+
+    use super::resource_handler::{LoadTargets, ReadTargets, ResourceReader};
 
 	#[derive(Debug)]
 	pub struct TestResourceReader {
@@ -26,11 +28,25 @@ pub mod tests {
 	}
 
 	impl ResourceReader for TestResourceReader {
-		fn read_into<'a>(&'a mut self, offset: usize, buffer: &'a mut [u8]) -> utils::BoxedFuture<'a, Option<()>> {
+		fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, streams: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> utils::BoxedFuture<'a, Result<LoadTargets<'a>, ()>> {
 			Box::pin(async move {
-				let l = buffer.len();
-				buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-				Some(())
+				let offset = 0;
+
+				match read_target {
+					ReadTargets::Buffer(buffer) => {
+						let l = buffer.len();
+						buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
+						Ok(LoadTargets::Buffer(&buffer[..self.data.len().min(l)]))
+					}
+					ReadTargets::Box(mut buffer) => {
+						let l = buffer.len();
+						buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
+						Ok(LoadTargets::Box(buffer))
+					}
+					_ => {
+						Err(())
+					}
+				}
 			})
 		}
 	}

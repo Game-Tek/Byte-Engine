@@ -254,7 +254,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 #[cfg(test)]
 pub mod tests {
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager,};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager,}, material::VariantModel, ReferenceModel};
 
 	pub struct RootTestShaderGenerator {
 
@@ -400,7 +400,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let asset_manager = AssetManager::new("../assets".into());
+		let mut asset_manager = AssetManager::new("../assets".into());
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
@@ -423,29 +423,35 @@ pub mod tests {
 			]
 		}"#;
 
+		{
+			let storage_backend = asset_manager.get_test_storage_backend();
+	
+			storage_backend.add_file("material.bema", material_json.as_bytes());
+	
+			let shader_file = "main: fn () -> void {
+				materials;
+			}";
+	
+			storage_backend.add_file("fragment.besl", shader_file.as_bytes());
+	
+			let variant_json = r#"{
+				"parent": "material.bema",
+				"variables": [
+					{
+						"name": "color",
+						"value": "White"
+					}
+				]
+			}"#;
+
+			storage_backend.add_file("variant.bema", variant_json.as_bytes());
+		}
+
+		asset_manager.add_asset_handler(asset_handler);
+
 		let storage_backend = asset_manager.get_test_storage_backend();
 
-		storage_backend.add_file("material.bema", material_json.as_bytes());
-
-		let shader_file = "main: fn () -> void {
-			materials;
-		}";
-
-		storage_backend.add_file("fragment.besl", shader_file.as_bytes());
-
-		let variant_json = r#"{
-			"parent": "material.bema",
-			"variables": [
-				{
-					"name": "color",
-					"value": "White"
-				}
-			]
-		}"#;
-
-		storage_backend.add_file("variant.bema", variant_json.as_bytes());
-
-		smol::block_on(asset_handler.load(&asset_manager, storage_backend, "variant.bema",)).expect("Failed to load material");
+		let variant: ReferenceModel<VariantModel> = smol::block_on(asset_manager.load_typed_resource("variant.bema")).expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 

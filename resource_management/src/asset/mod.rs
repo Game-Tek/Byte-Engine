@@ -16,7 +16,7 @@ pub type BEADType = json::JsonValue;
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
-pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async move {
+pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async move {
 	let resource_origin = if url.starts_with("http://") || url.starts_with("https://") { "network" } else { "local" };
 	let mut source_bytes;
 	let format;
@@ -72,7 +72,7 @@ pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path:
 		}
 	}
 
-	Ok((source_bytes, spec, format))
+	Ok((source_bytes.into(), spec, format))
 }) }
 
 enum ResolvedAsset {

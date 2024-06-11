@@ -45,7 +45,7 @@ impl AssetHandler for MeshAssetHandler {
 				let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| if let gltf::buffer::Source::Uri(r) = b.source() { if r.ends_with(".bin") { Some(r) } else { None } } else { None }) {
 					let (bin, _, _) = storage_backend.resolve(bin_file).await.or(Err("Failed to resolve binary file"))?;
 					gltf.buffers().map(|_| {
-						gltf::buffer::Data(bin.clone())
+						gltf::buffer::Data(bin.clone().into())
 					}).collect::<Vec<_>>()
 				} else {
 					gltf::import_buffers(&gltf, None, None).map_err(|e| e.to_string())?
@@ -592,8 +592,8 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 #[cfg(test)]
 mod tests {
     use super::MeshAssetHandler;
-    use crate::asset::{
-        asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler},};
+    use crate::{asset::{
+        asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler},}, mesh::MeshModel, ReferenceModel};
 
     #[test]
     fn load_gltf() {
@@ -626,20 +626,20 @@ mod tests {
 			material_asset_handler
 		});
 
+		asset_manager.add_asset_handler(asset_handler);
+
 		let storage_backend = asset_manager.get_test_storage_backend();
 
         let url = "Box.glb";
 
-        smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load_typed_resource(url)).expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
-        assert_eq!(generated_resources.len(), 1);
+        assert_eq!(generated_resources.len(), 4);
 
-        let resource = &generated_resources[0];
-
-        assert_eq!(resource.id, url);
-        assert_eq!(resource.class, "Mesh");
+        assert_eq!(mesh.id, url);
+        assert_eq!(mesh.class, "Mesh");
 
         // TODO: ASSERT BINARY DATA
     }
@@ -670,22 +670,23 @@ mod tests {
 			material_asset_handler.set_shader_generator(shader_generator);
 			material_asset_handler
 		});
+
         let asset_handler = MeshAssetHandler::new();
+
+		asset_manager.add_asset_handler(asset_handler);
 
         let url = "Suzanne.gltf";
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 
-        smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load_typed_resource(url,)).expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
-        assert_eq!(generated_resources.len(), 1);
+        assert_eq!(generated_resources.len(), 4);
 
-        let resource = &generated_resources[0];
-
-        assert_eq!(resource.id, url);
-        assert_eq!(resource.class, "Mesh");
+        assert_eq!(mesh.id, url);
+        assert_eq!(mesh.class, "Mesh");
 
         // TODO: ASSERT BINARY DATA
 
@@ -726,7 +727,7 @@ mod tests {
 		let storage_backend = asset_manager.get_test_storage_backend();
 
 		storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
-		storage_backend.add_file("Material.bema", r#"{
+		storage_backend.add_file("PBR.bema", r#"{
 			"domain": "World",
 			"type": "Surface",
 			"shaders": {
@@ -879,15 +880,13 @@ mod tests {
 
         let url = "Revolver.glb";
 
-		let storage_backend = asset_manager.get_test_storage_backend();
+        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load_typed_resource(&url,)).unwrap();
 
-        let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).unwrap();
+		let storage_backend = asset_manager.get_test_storage_backend();
 
 		let buffer = storage_backend.get_resource_data_by_name("Revolver.glb").unwrap();
 
-		let generated_resources = storage_backend.get_resources();
-
-		let resource = &generated_resources[0];
+		let resource = storage_backend.get_resource_data_by_name(&url);
 
 		// let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
 		let vertex_count = 27022;

@@ -36,7 +36,7 @@ impl AssetHandler for ImageAssetHandler {
 
 			match dt.as_str() {
 				"png" | "image/png" => {
-					let mut decoder = png::Decoder::new(data.as_slice());
+					let decoder = png::Decoder::new(data.as_ref());
 					if true { // TODO: make this a setting
 						// decoder.set_transformations(png::Transformations::normalize_to_color8());
 					}
@@ -345,25 +345,25 @@ mod tests {
 		assert_eq!(resource.class, "Image");
 	}
 
-	#[test]
-	#[ignore]
-	fn load_16_bit_normal_image() {
-		let asset_manager = AssetManager::new("../assets".into(),);
-		let asset_handler = ImageAssetHandler::new();
+	// #[test]
+	// #[ignore]
+	// fn load_16_bit_normal_image() {
+	// 	let asset_manager = AssetManager::new("../assets".into(),);
+	// 	let asset_handler = ImageAssetHandler::new();
 
-		let url = "Revolver_Normal.png";
+	// 	let url = "Revolver_Normal.png";
 
-		let storage_backend = asset_manager.get_test_storage_backend();
+	// 	let storage_backend = asset_manager.get_test_storage_backend();
 
-		let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
+	// 	let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
 
-		let generated_resources = storage_backend.get_resources();
+	// 	let generated_resources = storage_backend.get_resources();
 
-		assert_eq!(generated_resources.len(), 1);
+	// 	assert_eq!(generated_resources.len(), 1);
 
-		let resource = &generated_resources[0];
+	// 	let resource = &generated_resources[0];
 
-		assert_eq!(resource.id, url);
-		assert_eq!(resource.class, "Image");
-	}
+	// 	assert_eq!(resource.id, url);
+	// 	assert_eq!(resource.class, "Image");
+	// }
 }

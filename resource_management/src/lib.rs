@@ -429,10 +429,7 @@ pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
         Box::pin(async move { self.read(id).await.is_some() })
     }
 
-    fn resolve<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+    fn resolve<'a>(&'a self, url: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
         Box::pin(async move {
             let url = get_base(url).ok_or(())?;
             read_asset_from_source(url, None).await
@@ -703,7 +700,7 @@ impl StorageBackend for DbStorageBackend {
     fn resolve<'a>(
         &'a self,
         url: &'a str,
-    ) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> {
+    ) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
         Box::pin(async move {
             let url = get_base(url).ok_or(())?;
             read_asset_from_source(url, Some(&std::path::Path::new("assets"))).await
@@ -778,27 +775,30 @@ impl StorageBackend for DbStorageBackend {
 		})
 	}
 
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Vec<u8>, Option<BEADType>, String), ()>> { Box::pin(async {
-		if let Ok(x) = read_asset_from_source(get_base(url).ok_or(())?, Some(&std::path::Path::new("../assets"))).await {
-			let bead = if let None = x.1 {
-				let mut url = get_base(url).ok_or(())?.to_string();
-				url.push_str(".bead");
-				if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
-					Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
-				} else {
-					None
-				}
-			} else {
-				x.1
-			};
-			Ok((x.0, bead, x.2))
-		} else {
-			let m = if let Some(f) = self.files.lock().unwrap().get(url) {
-				f.to_vec()
-			} else {
-				return Err(());
-			};
+	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async {
+		// All of this weirdness is to avoid Send + Sync errors because of the locks
 
+		let r = {
+			let files = self.files.lock().unwrap();
+			if let Some(f) = files.get(url) {
+				let bead = {
+					let mut url = get_base(url).ok_or(())?.to_string();
+					url.push_str(".bead");
+					if let Some(spec) = files.get(url.as_str()) {
+						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+					} else {
+						None
+					}
+				};
+
+				// Extract extension from url
+				Ok((f.clone(), bead, url.split('.').last().unwrap().to_string()))
+			} else {
+				Err(())
+			}
+		};
+		
+		if let Err(_) = r {
 			let bead = {
 				let mut url = get_base(url).ok_or(())?.to_string();
 				url.push_str(".bead");
@@ -809,8 +809,14 @@ impl StorageBackend for DbStorageBackend {
 				}
 			};
 
-			// Extract extension from url
-			Ok((m, bead, url.split('.').last().unwrap().to_string()))
+			if let Ok(x) = read_asset_from_source(get_base(url).ok_or(())?, Some(&std::path::Path::new("../assets"))).await {
+				let bead = bead.or(x.1);
+				Ok((x.0, bead, x.2))
+			} else {
+				Err(())
+			}
+		} else {
+			r
 		}
 	}) }
 }

@@ -61,10 +61,10 @@ impl ResourceManager {
 	/// Tries to load the information/metadata for a resource (and it's dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
-	pub async fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Option<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, GenericResourceResponse<'a>: TryInto<ReferenceModel<T::Model>> {
+	pub async fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Option<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, GenericResourceResponse: TryInto<ReferenceModel<T::Model>> {
 		// Try to load the resource from cache or source.
 		if let Some(asset_manager) = &self.asset_manager {
-			asset_manager.load(id).await.ok()?;
+			asset_manager.bake(id).await.ok()?;
 		}
 
 		let (resource, _) = if let Some(x) = self.get_storage_backend().read(id).await {

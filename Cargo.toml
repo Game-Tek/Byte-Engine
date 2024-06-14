@@ -31,6 +31,7 @@ gxhash = "3.0.0"
 machineid-rs = "1.2.4"
 tokio = "1.38.0"
 futures = "0.3.30"
+smol = "2.0.0"
 
 [profile.dev]
 incremental = true

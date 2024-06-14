@@ -55,7 +55,7 @@ impl AssetManager {
 	}
 
 	/// Load a source asset from a JSON asset description.
-	pub async fn load<'a>(&self, id: &str) -> Result<(), LoadMessages> {
+	pub async fn bake<'a>(&self, id: &str) -> Result<(), LoadMessages> {
 		let storage_backend = self.get_storage_backend();
 
 		// TODO: check hash
@@ -86,7 +86,7 @@ impl AssetManager {
 	
 	/// Generates a resource from a loaded asset.
 	/// Does nothing if the resource already exists (with a matching hash).
-	pub async fn load_typed_resource<'a, M: Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
+	pub async fn load<'a, M: Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
 		let storage_backend = &self.storage_backend;
 
 		// Try to load the resource from the storage backend.

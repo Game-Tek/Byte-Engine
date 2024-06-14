@@ -194,7 +194,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);
 
-		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).or(Err(()))? };
+		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).unwrap() };
 
 		let handle = graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64);
 

@@ -712,6 +712,10 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	fn create_material_resources<'a>(&'a mut self, resource: resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
+		if let Some(material) = self.material_evaluation_materials.get(resource.id()) { // If the material has already been loaded, return the index
+			return Ok(material.index);
+		}
+
 		let ghi = self.ghi.clone();
 		let mut ghi = ghi.write().unwrap();
 
@@ -723,8 +727,8 @@ impl VisibilityWorldRenderDomain {
 			let resource_id = shader.id().to_string();
 			let hash = shader.hash();
 
-			if let Some((old_hash, _old_shader, _)) = self.shaders.get(&resource_id) {
-				if *old_hash == hash { return None; }
+			if let Some((old_hash, old_shader, old_shader_type)) = self.shaders.get(&resource_id) {
+				if *old_hash == hash { return Some((*old_shader, *old_shader_type)); } // If the shader has not changed, return the old shader
 			}
 
 			let stage = match shader.resource().stage {
@@ -742,7 +746,7 @@ impl VisibilityWorldRenderDomain {
 			};
 
 			let read_target = shader.into();
-			let load_request = futures::executor::block_on(shader.load(read_target)).unwrap();
+			let load_request = smol::block_on(shader.load(read_target)).unwrap();
 
 			let buffer = if let Some(b) = load_request.get_buffer() {
 				b
@@ -785,7 +789,7 @@ impl VisibilityWorldRenderDomain {
 		let textures_indices = parameters.into_iter().map(|parameter| {
 			match parameter.value {
 				Value::Image(image) => {
-					futures::executor::block_on(self.load_image(image, ghi.deref_mut(),))
+					smol::block_on(self.load_image(image, ghi.deref_mut(),))
 				}
 				_ => { None }
 			}
@@ -882,7 +886,7 @@ impl VisibilityWorldRenderDomain {
 		let textures_indices = variant.variables.into_iter().map(|parameter| {
 			match parameter.value {
 				Value::Image(image) => {
-					futures::executor::block_on(self.load_image(image, ghi.deref_mut(),))
+					smol::block_on(self.load_image(image, ghi.deref_mut(),))
 				}
 				_ => { None }
 			}

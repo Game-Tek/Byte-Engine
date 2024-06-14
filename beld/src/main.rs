@@ -111,7 +111,7 @@ fn main() -> Result<(), i32> {
 			if sync {
 				for id in ids {
 					println!("Baking resource '{}'", id);
-					match smol::block_on(asset_manager.load(&id)) {
+					match smol::block_on(asset_manager.bake(&id)) {
 						Ok(_) => {
 							println!("Baked resource '{}'", id);
 						}
@@ -128,7 +128,7 @@ fn main() -> Result<(), i32> {
 						let asset_manager = asset_manager.clone();
 						tokio::spawn(async move {
 							log::info!("Baking resource '{}'", id);
-							match asset_manager.load(&id).await {
+							match asset_manager.bake(&id).await {
 								Ok(_) => {
 									log::info!("Baked resource '{}'", id);
 								}

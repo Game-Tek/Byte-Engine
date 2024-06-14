@@ -82,8 +82,8 @@ impl<'a, T: Resource + Serialize + Clone> From<Reference<T>> for ProcessedAsset 
     }
 }
 
-impl<'a> From<GenericResourceResponse<'a>> for ProcessedAsset {
-    fn from(value: GenericResourceResponse<'a>) -> Self {
+impl From<GenericResourceResponse> for ProcessedAsset {
+    fn from(value: GenericResourceResponse) -> Self {
         ProcessedAsset {
             id: value.id,
             class: value.class,
@@ -114,7 +114,7 @@ impl StreamDescription {
 }
 
 #[derive()]
-pub struct GenericResourceResponse<'a> {
+pub struct GenericResourceResponse {
     /// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
     id: String,
     hash: u64,
@@ -123,11 +123,10 @@ pub struct GenericResourceResponse<'a> {
     size: usize,
     /// The resource data.
     resource: bson::Bson,
-    read_target: Option<ReadTargets<'a>>,
 	streams: Option<Vec<StreamDescription>>,
 }
 
-impl<'a> GenericResourceResponse<'a> {
+impl GenericResourceResponse {
     pub fn new(id: String, hash: u64, class: String, size: usize, resource: bson::Bson, streams: Option<Vec<StreamDescription>>) -> Self {
         GenericResourceResponse {
             id,
@@ -135,33 +134,12 @@ impl<'a> GenericResourceResponse<'a> {
             class,
             size,
             resource,
-            read_target: None,
 			streams,
         }
     }
-
-    pub fn set_box_buffer(&mut self, buffer: Box<[u8]>) {
-        self.read_target = Some(ReadTargets::Box(buffer));
-    }
-
-    pub fn set_streams(&mut self, streams: Vec<StreamMut<'a>>) {
-        self.read_target = Some(ReadTargets::Streams(streams));
-    }
-
-    pub fn set_buffer(&mut self) {
-        self.read_target = ReadTargets::Box(
-            unsafe {
-                let mut v = Vec::with_capacity(self.size);
-                v.set_len(self.size);
-                v
-            }
-            .into_boxed_slice(),
-        )
-        .into();
-    }
 }
 
-impl <'a, M: Model> Into<ReferenceModel<M>> for GenericResourceResponse<'a> {
+impl <M: Model> Into<ReferenceModel<M>> for GenericResourceResponse {
 	fn into(self) -> ReferenceModel<M> {
 		ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
 	}
@@ -411,8 +389,8 @@ where
 pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
     fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
     fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
-    fn store<'a>(&'a self, resource: &'a ProcessedAsset, data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse<'a>, ()>>;
-    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, FileResourceReader)>>;
+    fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse, ()>>;
+    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>>;
     fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
         Box::pin(async move {})
     }
@@ -589,7 +567,7 @@ impl StorageBackend for DbStorageBackend {
         })
     }
 
-    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, FileResourceReader)>> {
+    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
         let resource_document = self
             .db
             .collection::<bson::Document>("resources")
@@ -606,10 +584,14 @@ impl StorageBackend for DbStorageBackend {
                 let class = resource_document.get_str("class").ok()?.to_string();
                 let size = resource_document.get_i64("size").ok()? as usize;
                 let resource = resource_document.get("resource")?.clone();
-				let streams = resource_document.get_array("streams").map(|a| a.iter().map(|v| {
-					let v = v.as_document()?;
-					Some(StreamDescription::new(v.get_str("name").ok()?, v.get_i64("size").ok()? as usize, v.get_i64("offset").ok()? as usize))
-				}).collect::<Option<Vec<_>>>()).ok()?;
+				let streams: Option<Vec<StreamDescription>> = if let Ok(arr) = resource_document.get_array("streams") {
+					arr.iter().map(|v| {
+						let v = v.as_document()?;
+						Some(StreamDescription::new(v.get_str("name").ok()?, v.get_i64("size").ok()? as usize, v.get_i64("offset").ok()? as usize))
+					}).collect::<Option<Vec<_>>>()
+				} else {
+					None
+				};				
                 GenericResourceResponse::new(id, hash, class, size, resource, streams)
             };
 
@@ -625,7 +607,7 @@ impl StorageBackend for DbStorageBackend {
         })
     }
 
-    fn store<'a>(&'a self,resource: &'a ProcessedAsset,data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse<'a>, ()>> {
+    fn store<'a, 'b: 'a>(&'a self,resource: &'b ProcessedAsset,data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse, ()>> {
         // TODO: define schema
         Box::pin(async move {
             let mut resource_document = bson::Document::new();
@@ -638,17 +620,28 @@ impl StorageBackend for DbStorageBackend {
             resource_document.insert("size", size as i64);
             resource_document.insert("class", class);
 
+			if let Some(streams) = resource.streams.as_ref() {
+				let streams = streams.iter().map(|s| {
+					let mut doc = bson::Document::new();
+					doc.insert("name", &s.name);
+					doc.insert("size", s.size as i64);
+					doc.insert("offset", s.offset as i64);
+					doc
+				}).collect::<Vec<_>>();
+				resource_document.insert("streams", streams);
+			}
+
             let json_resource = resource.resource.clone();
 
             let hash = if let Some(bson::Bson::Int64(hash)) = resource_document.get("hash") {
 				*hash as u64
 			} else {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                let mut hasher = gxhash::GxHasher::with_seed(961961961961961);
 
                 std::hash::Hasher::write(&mut hasher, data); // Hash binary data (For identifying the resource)
                 std::hash::Hasher::write(&mut hasher, &bson::to_vec(&json_resource).unwrap()); // Hash resource metadata, since changing the resources description must also change the hash. (For caching purposes)
 
-				let hash = hasher.finish() as u64;
+				let hash = hasher.finish() % 0xFFFFFFFF; // TODO: This is a temporary fix, the hash should be 64 bits
 
                 resource_document.insert("hash", hash as i64);
 
@@ -744,7 +737,7 @@ impl StorageBackend for DbStorageBackend {
 		}
 	}
 	
-	fn store<'a>(&'a self, resource: &ProcessedAsset, data: &[u8]) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse<'a>, ()>> {
+	fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &[u8]) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse, ()>> {
 		self.resources.lock().unwrap().push((resource.clone(), data.into()));
 
 		let id = resource.id.clone();
@@ -758,7 +751,7 @@ impl StorageBackend for DbStorageBackend {
 		})
 	}
 
-	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse<'a>, FileResourceReader)>> {
+	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
 		let mut x = None;
 
 		let resources = self.resources.lock().unwrap();

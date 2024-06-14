@@ -289,7 +289,7 @@ impl AssetHandler for MeshAssetHandler {
 				let material = &asset[gltf_material_name];
 				let material_asset_name = material["asset"].as_str().unwrap();
 
-				smol::block_on(asset_manager.load_typed_resource::<VariantModel>(material_asset_name)).unwrap()
+				smol::block_on(asset_manager.load::<VariantModel>(material_asset_name)).unwrap()
 			});
 
 			let vertex_counts = flat_mesh_tree.clone().map(|(_, reader, _)| {
@@ -632,7 +632,7 @@ mod tests {
 
         let url = "Box.glb";
 
-        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load_typed_resource(url)).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load(url)).expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -679,7 +679,7 @@ mod tests {
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 
-        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load_typed_resource(url,)).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load(url,)).expect("Failed to parse asset");
 
         let generated_resources = storage_backend.get_resources();
 
@@ -880,7 +880,7 @@ mod tests {
 
         let url = "Revolver.glb";
 
-        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load_typed_resource(&url,)).unwrap();
+        let mesh: ReferenceModel<MeshModel> = smol::block_on(asset_manager.load(&url,)).unwrap();
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 

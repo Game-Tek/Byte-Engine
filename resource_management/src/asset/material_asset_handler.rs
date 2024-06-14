@@ -72,7 +72,7 @@ impl AssetHandler for MaterialAssetHandler {
 						ValueModel::Vector3([value[0], value[1], value[2]])
 					}
 					"float" => ValueModel::Scalar(0f32),
-					"Texture2D" => ValueModel::Image(smol::block_on(asset_manager.load_typed_resource(v)).unwrap()),
+					"Texture2D" => ValueModel::Image(smol::block_on(asset_manager.load(v)).unwrap()),
 					_ => panic!("Unknown data type")
 				}
 			};
@@ -105,7 +105,7 @@ impl AssetHandler for MaterialAssetHandler {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-					shaders: shaders.iter().map(|(s, b)| ReferenceModel::new(&s.id, 0, 0, s, None)).collect(), // TODO: get this data from the actual created resource
+					shaders: shaders.into_iter().map(|(s, _)| s).collect(), // TODO: get this data from the actual created resource
 					parameters,
 				});
 
@@ -117,7 +117,7 @@ impl AssetHandler for MaterialAssetHandler {
 
 				let parent_material_url = variant_json["parent"].as_str().unwrap();
 
-				let material = asset_manager.load_typed_resource(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
+				let material = asset_manager.load(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
 
 				let variables = material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().map(|v| {
 					let v = v.as_document().unwrap();
@@ -152,7 +152,7 @@ impl AssetHandler for MaterialAssetHandler {
 	}
 }
 
-async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<(Shader, Box<[u8]>)> {
+async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Option<(ReferenceModel<Shader>, Box<[u8]>)> {
 	let path = shader_json.as_str()?;
 	let (arlp, _, format) = storage_backend.resolve(&path).await.ok()?;
 
@@ -246,9 +246,9 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 		stage,
 	};
 
-	storage_backend.store(&ProcessedAsset::new(path, shader.clone()), result_shader_bytes).await.ok()?;
+	let r = storage_backend.store(&ProcessedAsset::new(path, shader.clone()), result_shader_bytes).await.ok()?;
 
-	Some((shader, result_shader_bytes.into()))
+	Some((r.into(), result_shader_bytes.into()))
 }
 
 #[cfg(test)]
@@ -451,7 +451,7 @@ pub mod tests {
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 
-		let variant: ReferenceModel<VariantModel> = smol::block_on(asset_manager.load_typed_resource("variant.bema")).expect("Failed to load material");
+		let variant: ReferenceModel<VariantModel> = smol::block_on(asset_manager.load("variant.bema")).expect("Failed to load material");
 
 		let generated_resources = storage_backend.get_resources();
 

@@ -128,7 +128,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	camera: Option<EntityHandle<crate::camera::Camera>>,
 
-	render_entities: Vec<EntityHandle<dyn mesh::RenderEntity>>,
+	render_entities: Vec<((usize, usize), EntityHandle<dyn mesh::RenderEntity>)>,
 
 	meshes: HashMap<String, MeshData>,
 	images: HashMap<String, Image>,
@@ -959,10 +959,12 @@ impl VisibilityWorldRenderDomain {
 			let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
-			for (i, m) in self.render_entities.iter().enumerate() {
+			for ((b, e), m) in self.render_entities.iter() {
 				// TODO: write transform to each mesh belonging to the entity/resource
 				let mesh = m.write_sync();
-				meshes_data_slice[i as usize].model = mesh.get_transform();
+				meshes_data_slice[*b..*e].iter_mut().for_each(|m| {
+					m.model = mesh.get_transform();
+				});
 			}
 		}
 
@@ -1008,7 +1010,7 @@ impl VisibilityWorldRenderDomain {
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
-			if true {
+			if false {
 				if let Some(most_significant_light) = directional_lights.get(0) {
 					shadow_render_pass.render(command_buffer_recording, self, &self.render_info.instances);
 				} else {
@@ -1125,8 +1127,6 @@ struct MaterialData {
 impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>, mesh: &'a dyn mesh::RenderEntity) -> utils::BoxedFuture<'a, ()> {
 		Box::pin(async move {
-		self.render_entities.push(handle);		
-
 		let mesh_id = self.create_mesh_resources(mesh.get_resource_id()).await.unwrap().to_string(); // I had to use to_string here because I couldn't solve the lifetime issue
 
 		let mut ghi = self.ghi.write().unwrap();
@@ -1141,6 +1141,8 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 			meshlet_count: p.meshlet_count,
 		}));
 
+		let instance_base_index = self.visibility_info.instance_count as usize;
+
 		for (i, p) in mesh_data.primitives.iter().enumerate() {
 			let shader_mesh_data = ShaderMesh {
 				model: mesh.get_transform(),
@@ -1151,7 +1153,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				base_meshlet_index: mesh_data.meshlet_offset + p.meshlet_offset, // Add the mesh relative meshlet offset and the primitive relative meshlet offset to get the absolute meshlet offset
 			};	
 	
-			meshes_data_slice[self.visibility_info.instance_count as usize + i] = shader_mesh_data;
+			meshes_data_slice[instance_base_index as usize + i] = shader_mesh_data;
 		}
 
 		if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
@@ -1167,6 +1169,8 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		}
 
 		self.visibility_info.instance_count += mesh_data.primitives.len() as u32;
+
+		self.render_entities.push(((instance_base_index, instance_base_index + mesh_data.primitives.len()), handle));
 
 		assert!((self.visibility_info.meshlet_count as usize) < MAX_MESHLETS, "Meshlet count exceeded");
 		assert!((self.visibility_info.instance_count as usize) < MAX_INSTANCES, "Instance count exceeded");
@@ -1627,7 +1631,7 @@ pub fn get_material_offset_source() -> String {
 	let main_code = r#"
 	uint sum = 0;
 
-	for (uint i = 0; i < 4; i++) {
+	for (uint i = 0; i < 1024; i++) { /* 1024 is the maximum number of materials */
 		material_offset.material_offset[i] = sum;
 		material_offset_scratch.material_offset_scratch[i] = sum;
 		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec3((material_count.material_count[i] + 31) / 32, 1, 1);

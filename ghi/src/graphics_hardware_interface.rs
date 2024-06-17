@@ -386,7 +386,7 @@ pub struct ShaderBindingDescriptor {
 }
 
 impl ShaderBindingDescriptor {
-	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
+	pub(crate) fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
 		Self {
 			set,
 			binding,
@@ -986,7 +986,7 @@ pub struct DescriptorSetBindingTemplate {
 }
 
 impl DescriptorSetBindingTemplate {
-	pub fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages,) -> Self {
+	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages,) -> Self {
 		Self {
 			binding,
 			descriptor_type,
@@ -996,7 +996,7 @@ impl DescriptorSetBindingTemplate {
 		}
 	}
 
-	pub fn new_array(binding: u32, descriptor_type: DescriptorType, stages: Stages, count: u32) -> Self {
+	pub const fn new_array(binding: u32, descriptor_type: DescriptorType, stages: Stages, count: u32) -> Self {
 		Self {
 			binding,
 			descriptor_type,
@@ -1014,6 +1014,15 @@ impl DescriptorSetBindingTemplate {
 			stages,
 			immutable_samplers: samplers,
 		}
+	}
+
+	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> ShaderBindingDescriptor {
+		ShaderBindingDescriptor::new(set, self.binding, access_policies)
+	}
+	
+	/// Returns the binding index of the descriptor set layout binding.
+	pub fn binding(&self) -> u32 {
+		self.binding
 	}
 }
 

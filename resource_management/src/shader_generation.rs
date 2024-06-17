@@ -185,6 +185,7 @@ impl ShaderCompilation {
 		match source {
 			"void" => "void",
 			"vec2f" => "vec2",
+			"vec2u" => "uvec2",
 			"vec2u16" => "u16vec2",
 			"vec3u" => "uvec3",
 			"vec3f" => "vec3",
@@ -197,6 +198,7 @@ impl ShaderCompilation {
 			"u16" => "uint16_t",
 			"u32" => "uint32_t",
 			"i32" => "int32_t",
+			"Texture2D" => "in sampler2D",
 			_ => source,
 		}
 	}
@@ -388,7 +390,7 @@ impl ShaderCompilation {
 				if self.minified { string.push('}') } else { string.push_str("}\n"); }
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
-				if name == "void" || name == "vec2u16" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" { return; }
+				if name == "void" || name == "vec2u16" || name == "vec2u" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" || name == "Texture2D" { return; }
 
 				string.push_str("struct ");
 				string.push_str(name.as_str());
@@ -870,14 +872,12 @@ mod tests {
 
 		use besl::parser::Node;
 
-		let number_literal = Node::literal("number", Node::glsl("1.0", Vec::new(), Vec::new()));
-		let sample_function = Node::intrinsic("sample", Node::parameter("num", "f32"), Node::sentence(vec![Node::glsl("0 + ", Vec::new(), Vec::new()), Node::member_expression("num"), Node::glsl(" * 2", Vec::new(), Vec::new())]), "f32");
+		let number_literal = Node::literal("number", Node::glsl("1.0", &[], Vec::new()));
+		let sample_function = Node::intrinsic("sample", Node::parameter("num", "f32"), Node::sentence(vec![Node::glsl("0 + ", &[], Vec::new()), Node::member_expression("num"), Node::glsl(" * 2", &[], Vec::new())]), "f32");
 
 		let mut root = besl::parse(&script).unwrap();
 
 		root.add(vec![sample_function.clone(), number_literal.clone(),]);
-
-		root.sort();
 
 		let root = besl::lex(root).unwrap();
 

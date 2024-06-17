@@ -9,7 +9,7 @@ use json::object;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::Extent;
 
-use super::{common_shader_generator::CommonShaderGenerator};
+use super::common_shader_generator::CommonShaderGenerator;
 
 /// The SSGI render pass.
 pub struct SSGIRenderPass {
@@ -24,21 +24,21 @@ pub struct SSGIRenderPass {
 
 impl Entity for SSGIRenderPass {}
 
+pub const DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+pub const NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const TRACE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+
 impl SSGIRenderPass {
 	pub fn new(ghi: &mut ghi::GHI) -> EntityBuilder<'static, Self> {
 		let normals = ghi.create_image(Some("Normals"), Extent::rectangle(1920, 1080), ghi::Formats::RGBA8(ghi::Encodings::SignedNormalized), ghi::Uses::Image, ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite, ghi::UseCases::DYNAMIC);
 		let trace = ghi.create_image(Some("Trace"), Extent::rectangle(1920, 1080), ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image, ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite, ghi::UseCases::DYNAMIC);
 
-		let depth_binding = ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ);
-		let normals_binding = ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE);
-		let trace_binding = ghi::ShaderBindingDescriptor::new(3, 0, ghi::AccessPolicies::WRITE);
-
 		let pipeline_layout = ghi.create_pipeline_layout(&[], &[]);
 
-		let stochastic_normals_shader = ghi.create_shader(Some("SSGI Stochastic Normals"), ghi::ShaderSource::GLSL(Self::make_stochastic_normals_shader()), ghi::ShaderTypes::Compute, &vec![depth_binding.clone(), normals_binding.clone()]).expect("Failed to create the stochastic normals shader.");
+		let stochastic_normals_shader = ghi.create_shader(Some("SSGI Stochastic Normals"), ghi::ShaderSource::GLSL(Self::make_stochastic_normals_shader()), ghi::ShaderTypes::Compute, &vec![DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create the stochastic normals shader.");
 		let stochastic_normals = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&stochastic_normals_shader, ghi::ShaderTypes::Compute));
 
-		let ray_march_shader = ghi.create_shader(Some("SSGI Ray March"), ghi::ShaderSource::GLSL(Self::make_ray_march_normals_shader()), ghi::ShaderTypes::Compute, &vec![normals_binding.clone(), trace_binding.clone()]).expect("Failed to create the ray march shader.");
+		let ray_march_shader = ghi.create_shader(Some("SSGI Ray March"), ghi::ShaderSource::GLSL(Self::make_ray_march_normals_shader()), ghi::ShaderTypes::Compute, &vec![NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), TRACE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create the ray march shader.");
 		let ray_march = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&ray_march_shader, ghi::ShaderTypes::Compute));
 
 		EntityBuilder::new(SSGIRenderPass {
@@ -67,7 +67,7 @@ impl SSGIRenderPass {
 		vec3 stochastic_normal = get_cosine_hemisphere_sample(noise, noise, normal);
 		imageStore(normals, ivec2(coord), vec4(stochastic_normal, 1.0));";
 
-		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, vec!["make_normal_from_depth".to_string(), "camera".to_string(), "interleaved_gradient_noise".to_string(), "get_cosine_hemisphere_sample".to_string()], vec![])]);
+		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, &["make_normal_from_depth", "camera", "interleaved_gradient_noise", "get_cosine_hemisphere_sample"], vec![])]);
 
 		let mut root = shader_generator.transform(Node::root(), &object!{});
 
@@ -111,7 +111,7 @@ impl SSGIRenderPass {
 		result.xyz = texture(diffuse, hit_uv).xyz;
 		imageStore(trace, coord, result);";
 
-		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, vec!["make_uv".to_string(), "camera".to_string(), "get_world_space_position_from_depth".to_string(), "get_view_space_position_from_depth".to_string(), "ray_march".to_string()], vec![])]);
+		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, &["make_uv", "camera", "get_world_space_position_from_depth", "get_view_space_position_from_depth", "ray_march"], vec![])]);
 
 		let mut root = shader_generator.transform(Node::root(), &object!{});
 

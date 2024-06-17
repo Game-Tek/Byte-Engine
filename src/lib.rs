@@ -15,6 +15,8 @@
 #![feature(generic_const_exprs)]
 #![feature(unchecked_shifts)]
 #![feature(duration_millis_float)]
+#![feature(const_trait_impl)]
+#![feature(effects)]
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

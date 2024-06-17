@@ -12,6 +12,7 @@ pub struct Renderer {
 	ghi: Rc<RwLock<ghi::GHI>>,
 
 	rendered_frame_count: usize,
+	frame_queue_depth: usize,
 
 	swapchain_handles: Vec<ghi::SwapchainHandle>,
 
@@ -49,7 +50,7 @@ impl Renderer {
 				ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
-			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle));
+			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle.clone()));
 
 			let ui_render_model = core::spawn(UIRenderModel::new_as_system());
 			
@@ -74,13 +75,14 @@ impl Renderer {
 			let ao_render_pass = {
 				let mut ghi = ghi_instance.write().unwrap();
 				let vrm = visibility_render_model.read_sync();
-				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()))
+				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), resource_manager_handle, vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()))
 			};
 
 			Renderer {
 				ghi: ghi_instance,
 
 				rendered_frame_count: 0,
+				frame_queue_depth: 2,
 
 				swapchain_handles: vec![],
 
@@ -106,7 +108,7 @@ impl Renderer {
 	pub fn render(&mut self,) {
 		if self.swapchain_handles.is_empty() { return; }
 
-		let modulo_frame_index = (self.rendered_frame_count % 2) as u32; // TODO: use actual frame count
+		let modulo_frame_index = (self.rendered_frame_count % self.frame_queue_depth) as u32;
 
 		let mut ghi = self.ghi.write().unwrap();
 

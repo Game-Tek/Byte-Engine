@@ -58,6 +58,8 @@ impl AssetManager {
 	pub async fn bake<'a>(&self, id: &str) -> Result<(), LoadMessages> {
 		let storage_backend = self.get_storage_backend();
 
+		let start_time = std::time::Instant::now();
+
 		// TODO: check hash
 		if let Some(_) = self.storage_backend.read(id).await {
 			return Ok(());
@@ -81,6 +83,8 @@ impl AssetManager {
 			return Err(LoadMessages::NoAssetHandler);
 		}
 
+		log::trace!("Baked '{}' resource in {:#?}", id, start_time.elapsed());
+
 		Ok(())
 	}
 	
@@ -88,6 +92,8 @@ impl AssetManager {
 	/// Does nothing if the resource already exists (with a matching hash).
 	pub async fn load<'a, M: Model + for <'de> serde::Deserialize<'de>>(&self, id: &str) -> Result<ReferenceModel<M>, LoadMessages> {
 		let storage_backend = &self.storage_backend;
+
+		let start_time = std::time::Instant::now();
 
 		// Try to load the resource from the storage backend.
 		if let Some((r, _)) = self.storage_backend.read(id).await { // TODO: check hash
@@ -110,6 +116,7 @@ impl AssetManager {
 
 		// We tried resolving the asset. Now try to load it from the storage backend.
 		if let Some((r, _)) = self.storage_backend.read(id).await { // TODO: check hash
+			log::trace!("Baked '{}' resource in {:#?}", id, start_time.elapsed());
 			let r: ReferenceModel<M> = r.into();
 			return Ok(r)
 		}
@@ -135,6 +142,8 @@ impl AssetManager {
 			}
 		};
 		
+		log::trace!("Baked '{}' resource", id);
+
 		self.storage_backend.store(&resource, &buffer).await.unwrap();
 
 		resource

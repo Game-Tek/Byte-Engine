@@ -105,7 +105,7 @@ impl AssetHandler for MaterialAssetHandler {
 						name: "Visibility".to_string(),
 						pass: "MaterialEvaluation".to_string(),
 					},
-					shaders: shaders.into_iter().map(|(s, _)| s).collect(), // TODO: get this data from the actual created resource
+					shaders: shaders.into_iter().map(|(s, _)| s).collect(),
 					parameters,
 				});
 
@@ -174,8 +174,6 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 	};
 
 	let mut root = generator.transform(root_node, material);
-
-	root.sort(); // TODO: remove this
 
 	let root_node = match besl::lex(root) {
 		Ok(e) => e,
@@ -312,7 +310,7 @@ pub mod tests {
 		fn transform(&self, mut root: besl::parser::Node, _: &json::JsonValue) -> besl::parser::Node {
 			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("material_index", "u32")]);
 
-			let main = besl::parser::Node::function("main", vec![], "void", vec![besl::parser::Node::glsl("push_constant;\nmaterials;\nsample_(0);\n", vec!["push_constant".to_string(), "materials".to_string(), "sample_".to_string()], Vec::new())]);
+			let main = besl::parser::Node::function("main", vec![], "void", vec![besl::parser::Node::glsl("push_constant;\nmaterials;\nsample_(0);\n", &["push_constant", "materials", "sample_"], Vec::new())]);
 
 			root.add(vec![push_constant, main]);
 

@@ -188,6 +188,10 @@ impl<T: Model> ReferenceModel<T> {
 			streams,
         }
     }
+
+	pub fn id(&self) -> &str {
+		&self.id
+	}
 }
 
 #[derive(Debug)]

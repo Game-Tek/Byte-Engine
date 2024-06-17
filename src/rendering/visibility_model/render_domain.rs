@@ -202,6 +202,35 @@ pub struct VisibilityWorldRenderDomain {
 	render_info: RenderInfo,
 }
 
+/* BASE */
+pub const CAMERA_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::RAYGEN).union(ghi::Stages::COMPUTE));
+pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE));
+pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
+pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
+pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
+pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
+pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
+pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(8, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
+pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16);
+
+/* Visibility */
+pub const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::SampledImage, ghi::Stages::COMPUTE);
+
+/* Material Evaluation */
+pub const OUT_ALBEDO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const CAMERA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const MATERIALS: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+
 impl VisibilityWorldRenderDomain {
 	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_function(move || {
@@ -228,15 +257,15 @@ impl VisibilityWorldRenderDomain {
 			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
-				ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::FRAGMENT | ghi::Stages::RAYGEN | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::FRAGMENT | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(8, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH | ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16),
+				CAMERA_DATA_BINDING,
+				MESH_DATA_BINDING,
+				VERTEX_POSITIONS_BINDING,
+				VERTEX_NORMALS_BINDING,
+				VERTEX_UV_BINDING,
+				VERTEX_INDICES_BINDING,
+				PRIMITIVE_INDICES_BINDING,
+				MESHLET_DATA_BINDING,
+				TEXTURES_BINDING,
 			];
 
 			let descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
@@ -245,28 +274,27 @@ impl VisibilityWorldRenderDomain {
 
 			let descriptor_set = ghi_instance.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
-			let camera_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[0], camera_data_buffer_handle));
-			let meshes_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[1], meshes_data_buffer));
-			let vertex_positions_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[2], vertex_positions_buffer_handle));
-			let vertex_normals_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[3], vertex_normals_buffer_handle));
-			let vertex_uv_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], vertex_uv_buffer_handle));
-			let vertex_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], vertex_indices_buffer_handle));
-			let primitive_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[6], primitive_indices_buffer_handle));
-			let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&bindings[7], meshlets_data_buffer));
-			let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &bindings[8]);
+			let camera_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&CAMERA_DATA_BINDING, camera_data_buffer_handle));
+			let meshes_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer));
+			let vertex_positions_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer_handle));
+			let vertex_normals_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer_handle));
+			let vertex_uv_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uv_buffer_handle));
+			let vertex_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer_handle));
+			let primitive_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer_handle));
+			let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer));
+			let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &TEXTURES_BINDING);
 
 			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
-				ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-				ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
+				MATERIAL_COUNT_BINDING,
+				MATERIAL_OFFSET_BINDING,
+				MATERIAL_OFFSET_SCRATCH_BINDING,
+				MATERIAL_EVALUATION_DISPATCHES_BINDING,
+				MATERIAL_XY_BINDING,
+				TRIANGLE_INDEX_BINDING,
+				INSTANCE_ID_BINDING,
 			];
 
 			let visibility_descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
@@ -278,13 +306,13 @@ impl VisibilityWorldRenderDomain {
 			let material_offset_pass = MaterialOffsetPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set);
 			let pixel_mapping_pass = PixelMappingPass::new(ghi_instance.deref_mut(), visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set,);
 
-			let material_count_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&bindings[0], material_count_pass.get_material_count_buffer()));
-			let material_offset_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&bindings[1], material_offset_pass.get_material_offset_buffer()));
-			let material_offset_scratch_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&bindings[2], material_offset_pass.get_material_offset_scratch_buffer()));
-			let material_evaluation_dispatches_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&bindings[3], material_offset_pass.material_evaluation_dispatches));
-			let material_xy_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], pixel_mapping_pass.material_xy));
-			let vertex_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&bindings[6], primitive_index, ghi::Layouts::General));
-			let instance_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&bindings[7], instance_id, ghi::Layouts::General));
+			let material_count_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_pass.get_material_count_buffer()));
+			let material_offset_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_BINDING, material_offset_pass.get_material_offset_buffer()));
+			let material_offset_scratch_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_pass.get_material_offset_scratch_buffer()));
+			let material_evaluation_dispatches_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_EVALUATION_DISPATCHES_BINDING, material_offset_pass.material_evaluation_dispatches));
+			let material_xy_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_XY_BINDING, pixel_mapping_pass.material_xy));
+			let vertex_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index, ghi::Layouts::General));
+			let instance_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id, ghi::Layouts::General));
 
 			let light_data_buffer = ghi_instance.create_buffer(Some("Light Data"), std::mem::size_of::<LightingData>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 			
@@ -755,25 +783,26 @@ impl VisibilityWorldRenderDomain {
 			};
 
 			let new_shader = ghi.create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, &[
-				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 8, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 9, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 6, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
+				CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				TEXTURES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				OUT_ALBEDO.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
+				CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+				OUT_DIFFUSE.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
+				LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+				MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+				AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+				DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
 			]).expect("Failed to create shader");
 
 			self.shaders.insert(resource_id.to_string(), (hash, new_shader, stage));
@@ -938,29 +967,37 @@ impl VisibilityWorldRenderDomain {
 
 		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
 
-		let (camera_position, camera_orientation, camera_fov) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
+		let (camera_position, camera_orientation, fov_y) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
+
+		let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 
 		let view_matrix = maths_rs::Mat4f::from_translation(-camera_position) * math::look_at(camera_orientation);
-
-		let projection_matrix = math::projection_matrix(camera_fov, 16f32 / 9f32, 0.1f32, 100f32);
-
+		let projection_matrix = math::projection_matrix(fov_y, aspect_ratio, 0.1f32, 100f32);
 		let view_projection_matrix = projection_matrix * view_matrix;
+		let fov = {
+			let fov_x = 2f32 * ((fov_y / 2f32).to_radians().tan() * aspect_ratio).atan();
+			[fov_x, fov_y]
+		};
 
 		let camera_data_reference = unsafe { (camera_data_buffer.as_mut_ptr() as *mut ShaderCameraData).as_mut().unwrap() };
 
-		camera_data_reference.view_matrix = view_matrix;
-		camera_data_reference.projection_matrix = projection_matrix;
-		camera_data_reference.view_projection_matrix = view_projection_matrix;
-		camera_data_reference.inverse_view_matrix = math::inverse(view_matrix);
-		camera_data_reference.inverse_projection_matrix = math::inverse(projection_matrix);
-		camera_data_reference.inverse_view_projection_matrix = math::inverse(view_projection_matrix);
+		let camera = ShaderCameraData {
+			view_matrix,
+			projection_matrix,
+			view_projection_matrix,
+			inverse_view_matrix: math::inverse(view_matrix),
+			inverse_projection_matrix: math::inverse(projection_matrix),
+			inverse_view_projection_matrix: math::inverse(view_projection_matrix),
+			fov,
+		};
+
+		*camera_data_reference = camera;
 
 		{
 			let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
 			for ((b, e), m) in self.render_entities.iter() {
-				// TODO: write transform to each mesh belonging to the entity/resource
 				let mesh = m.write_sync();
 				meshes_data_slice[*b..*e].iter_mut().for_each(|m| {
 					m.model = mesh.get_transform();
@@ -1106,6 +1143,7 @@ struct ShaderCameraData {
 	inverse_view_matrix: maths_rs::Mat4f,
 	inverse_projection_matrix: maths_rs::Mat4f,
 	inverse_view_projection_matrix: maths_rs::Mat4f,
+	fov: [f32; 2],
 }
 
 #[repr(C)]
@@ -1275,13 +1313,13 @@ impl VisibilityPass {
 	pub fn new(ghi_instance: &mut ghi::GHI, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
 		let visibility_pass_mesh_shader = ghi_instance.create_shader(Some("Visibility Pass Mesh Shader"), ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
 			&[
-				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
+				CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				// ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
+				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			]
 		).expect("Failed to create shader");
 
@@ -1354,9 +1392,9 @@ impl MaterialCountPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
 		let material_count_shader = ghi_instance.create_shader(Some("Material Count Pass Compute Shader"), ghi::ShaderSource::GLSL(get_material_count_source()), ghi::ShaderTypes::Compute,
 			&[
-				ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(1, 7, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+				INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 			]
 		).expect("Failed to create shader");
 
@@ -1409,10 +1447,10 @@ impl MaterialOffsetPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::GLSL(get_material_offset_source()), ghi::ShaderTypes::Compute,
 			&[
-				ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(1, 3, ghi::AccessPolicies::WRITE),
+				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+				MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+				MATERIAL_EVALUATION_DISPATCHES_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 			]
 		).expect("Failed to create shader");
 
@@ -1471,10 +1509,10 @@ impl PixelMappingPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let pixel_mapping_shader = ghi_instance.create_shader(Some("Pixel Mapping Pass Compute Shader"), ghi::ShaderSource::GLSL(get_pixel_mapping_source()), ghi::ShaderTypes::Compute,
 			&[
-				ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-				ghi::ShaderBindingDescriptor::new(1, 2, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::WRITE),
-				ghi::ShaderBindingDescriptor::new(1, 7, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+				INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 			]
 		).expect("Failed to create shader");
 
@@ -1544,7 +1582,7 @@ pub fn get_visibility_pass_mesh_source() -> String {
 	process_meshlet(push_constant.instance_index, camera.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["camera".to_string(), "push_constant".to_string(), "process_meshlet".to_string()], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["camera", "push_constant", "process_meshlet"], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
@@ -1605,7 +1643,7 @@ pub fn get_material_count_source() -> String {
 	atomicAdd(material_count.material_count[material_index], 1);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_count".to_string(), "instance_index_render_target".to_string()], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_count", "instance_index_render_target"], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
@@ -1639,7 +1677,7 @@ pub fn get_material_offset_source() -> String {
 	}
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["material_offset".to_string(), "material_offset_scratch".to_string(), "material_count".to_string(), "material_evaluation_dispatches".to_string(),], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["material_offset", "material_offset_scratch", "material_count", "material_evaluation_dispatches",], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
@@ -1678,7 +1716,7 @@ pub fn get_pixel_mapping_source() -> String {
 	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["meshes".to_string(), "material_offset_scratch".to_string(), "pixel_mapping".to_string(), "instance_index_render_target".to_string(),], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_offset_scratch", "pixel_mapping", "instance_index_render_target",], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 

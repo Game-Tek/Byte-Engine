@@ -66,11 +66,13 @@ impl Deref for NodeReference {
 	}
 }
 
-pub(super) fn lex(node: &parser::Node) -> Result<NodeReference, LexError> {
+pub(super) fn lex(mut node: parser::Node) -> Result<NodeReference, LexError> {
+	node.sort();
 	lex_with_root(Node::root(), node)
 }
 
-pub(super) fn lex_with_root(mut root: Node, node: &parser::Node) -> Result<NodeReference, LexError> {
+pub(super) fn lex_with_root(mut root: Node, mut node: parser::Node) -> Result<NodeReference, LexError> {
+	node.sort();
 	match &node.node {
 		parser::Nodes::Scope { name, children } => {
 			assert_eq!(name, "root");
@@ -111,6 +113,11 @@ impl Node {
 			Node::member("y", u16_t.clone()).into(),
 		]).into();
 
+		let vec2u32: NodeReference = Node::r#struct("vec2u", vec![
+			Node::member("x", u32_t.clone()).into(),
+			Node::member("y", u32_t.clone()).into(),
+		]).into();
+
 		let vec2f32: NodeReference = Node::r#struct("vec2f", vec![
 			Node::member("x", f32_t.clone()).into(),
 			Node::member("y", f32_t.clone()).into(),
@@ -141,6 +148,8 @@ impl Node {
 			Node::member("z", vec4f32.clone()).into(),
 			Node::member("w", vec4f32.clone()).into(),
 		]).into();
+
+		let texture_2d: NodeReference = Node::r#struct("Texture2D", vec![]).into();
 	
 		let mut root = Node::scope("root".to_string());
 		
@@ -151,11 +160,13 @@ impl Node {
 			u32_t,
 			f32_t,
 			vec2u16,
+			vec2u32,
 			vec2f32,
 			vec3u32,
 			vec3f32,
 			vec4f32,
-			mat4f32
+			mat4f32,
+			texture_2d,
 		]);
 
 		root
@@ -1103,7 +1114,7 @@ Foo: struct {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+		lex(node).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
 	#[test]
@@ -1113,7 +1124,7 @@ main: fn () -> NonExistantType {}";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node,).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
+		lex(node,).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
 	#[test]
@@ -1126,7 +1137,7 @@ main: fn () -> void {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node,).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
+		lex(node,).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
 	}
 
 	#[test]
@@ -1139,7 +1150,7 @@ main: fn () -> void {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node,).expect("Failed to lex");
+		let node = lex(node,).expect("Failed to lex");
 		let node = node.borrow();
 
 		let vec4f = node.get_child("vec4f").expect("Expected vec4f");
@@ -1203,7 +1214,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node).expect("Failed to lex");
+		let node = lex(node).expect("Failed to lex");
 		let node = node.borrow();
 
 		match node.node() {
@@ -1242,7 +1253,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		lex(&node,).expect("Failed to lex");
+		lex(node,).expect("Failed to lex");
 	}
 
 	#[test]
@@ -1257,7 +1268,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node).expect("Failed to lex");
+		let node = lex(node).expect("Failed to lex");
 
 		let node = node.borrow();
 
@@ -1305,7 +1316,7 @@ color: In<vec4f>;
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (node, program) = parser::parse(tokens).expect("Failed to parse");
-		let node = lex(&node).expect("Failed to lex");
+		let node = lex(node).expect("Failed to lex");
 
 		let node = node.borrow();
 
@@ -1374,13 +1385,13 @@ main: fn () -> void {
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let (mut node, _) = parser::parse(tokens).expect("Failed to parse");
 
-		let intrinsic = parser::Node::intrinsic("intrinsic", parser::Node::parameter("num", "u32"), parser::Node::sentence(vec![parser::Node::glsl("vec3(", vec![], vec![]), parser::Node::member_expression("num"), parser::Node::glsl(")", Vec::new(), Vec::new())]), "vec3f");
+		let intrinsic = parser::Node::intrinsic("intrinsic", parser::Node::parameter("num", "u32"), parser::Node::sentence(vec![parser::Node::glsl("vec3(", &[], vec![]), parser::Node::member_expression("num"), parser::Node::glsl(")", &[], Vec::new())]), "vec3f");
 
 		node.add(vec![intrinsic]);
 
 		node.sort();
 
-		let node = lex(&node).expect("Failed to lex");
+		let node = lex(node).expect("Failed to lex");
 		let node = node.borrow();
 
 		match node.node() {

@@ -9,7 +9,7 @@ use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationP
 
 use crate::{core::Entity, ghi, math, Vector3};
 
-use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{Instance, LightData, LightingData, MeshData}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
+use super::{common_shader_generator::CommonShaderGenerator, visibility_model::render_domain::{Instance, LightData, LightingData, MeshData, CAMERA_DATA_BINDING, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING}, visibility_shader_generator::VisibilityShaderGenerator, world_render_domain::WorldRenderDomain};
 
 pub struct ShadowRenderingPass {
 	pipeline: ghi::PipelineHandle,
@@ -64,7 +64,7 @@ impl ShadowRenderingPass {
 			"#;
 
 			let lighting_data = besl::parser::Node::binding("lighting_data", besl::parser::Node::buffer("LightingData", vec![besl::parser::Node::member("light_count", "u32"), besl::parser::Node::member("lights", "Light[16]")]), 1, 2, true, false);
-			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, vec!["push_constant".to_string(), "process_meshlet".to_string(), "lighting_data".to_string(),], Vec::new())]);
+			let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["push_constant", "process_meshlet", "lighting_data",], Vec::new())]);
 
 			let root_node = besl::parser::Node::root();
 
@@ -84,13 +84,14 @@ impl ShadowRenderingPass {
 		};
 
 		let mesh_shader = ghi.create_shader(Some("Shadow Pass Mesh Shader"), ghi::ShaderSource::GLSL(source_code), ghi::ShaderTypes::Mesh, &[
-			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
+			CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 		]).expect("Failed to create mesh shader");
 
 		let pipeline = ghi.create_raster_pipeline(&[

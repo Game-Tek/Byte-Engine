@@ -60,7 +60,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let shader = ghi.create_shader(Some("HBAO Shader"), ghi::ShaderSource::GLSL(get_source()), ghi::ShaderTypes::Compute, &[
 			CAMERA_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DEPTH_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+			RESULT_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 			NOISE_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 		]).expect("Failed to create SSAO shader");
 
@@ -82,7 +82,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let format = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
 
-		let image = ghi.create_image(blue_noise.id().into(), blue_noise.resource().extent.into(), format, Uses::Image, DeviceAccesses::GpuRead | DeviceAccesses::GpuWrite, ghi::UseCases::STATIC);
+		let image = ghi.create_image(blue_noise.id().into(), blue_noise.resource().extent.into(), format, Uses::Image, DeviceAccesses::GpuRead | DeviceAccesses::CpuWrite, ghi::UseCases::STATIC);
 
 		let buffer = ghi.get_texture_slice_mut(image);
 
@@ -188,11 +188,11 @@ pub fn get_source() -> String {
 		float theta = alpha * float(d);
 
 		/* Apply noise to the direction */
-		vec2 dir = RotateDirections(vec2(cos(theta), sin(theta)), random.xy);
+		vec2 dir = rotate_directions(vec2(cos(theta), sin(theta)), random.xy);
 		vec2 delta_uv = dir * trace.uv_step_size;
 
 		/* Sample the pixels along the direction */
-		ao += compute_occlusion(delta_uv, p, derivatives, random.z, trace.step_count);
+		ao += compute_occlusion(uv, delta_uv, p, derivatives, random.z, trace.step_count);
 	}
 
 	/* Average the results and produce the final AO */
@@ -269,10 +269,10 @@ pub fn get_source() -> String {
 	let biased_tangent = Node::function("biased_tangent", vec![Node::parameter("v", "vec3f")], "f32", vec![Node::glsl("return v.z * inversesqrt(dot(v,v)) + tan(30.0 * PI / 180.0)", &[], Vec::new())]);
 
 	let camera_binding = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 0, CAMERA_BINDING_TEMPLATE.binding(), true, false);
-	let out_ao = Node::binding("out_ao", Node::image("r8"), 2, 1, false, true);
-	let depth = Node::binding("depth_map",besl::parser::Node::combined_image_sampler(), 2, 0, true, false);
-	let noise_texture_binding = besl::parser::Node::binding("noise_texture", besl::parser::Node::combined_image_sampler(), 2, 3, true, false);
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["noise_texture", "out_ao", "depth_map", "camera", "compute_trace", "min_diff", "get_view_space_position_from_depth", "compute_occlusion", "UVDerivatives",], Vec::new())]);
+	let out_ao = Node::binding("out_ao", Node::image("r8"), 1, RESULT_BINDING_TEMPLATE.binding(), false, true);
+	let depth = Node::binding("depth_map",besl::parser::Node::combined_image_sampler(), 1, DEPTH_BINDING_TEMPLATE.binding(), true, false);
+	let noise_texture_binding = besl::parser::Node::binding("noise_texture", besl::parser::Node::combined_image_sampler(), 1, NOISE_BINDING_TEMPLATE.binding(), true, false);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["noise_texture", "out_ao", "depth_map", "camera", "compute_trace", "min_diff", "get_view_space_position_from_depth", "compute_occlusion", "UVDerivatives", "rotate_directions"], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 

@@ -51,6 +51,7 @@ pub struct CommonShaderGenerator {
 	square_vec4: besl::parser::Node,
 	get_world_space_position_from_depth: besl::parser::Node,
 	get_view_space_position_from_depth: besl::parser::Node,
+	rotate_directions: besl::parser::Node,
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
@@ -121,13 +122,14 @@ return colors[i % 16];";
 
 		let get_world_space_position_from_depth = self.get_world_space_position_from_depth.clone();
 		let get_view_space_position_from_depth = self.get_view_space_position_from_depth.clone();
+		let rotate_directions = self.rotate_directions.clone();
 
 		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
 
 		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct, uv_derivatives_struct]);
 		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
 		root.add(vec![compute_vertex_index, process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff]);
-		root.add(vec![get_world_space_position_from_depth, get_view_space_position_from_depth]);
+		root.add(vec![get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions]);
 		root.add(vec![get_debug_color]);
 
 		root
@@ -247,7 +249,8 @@ impl CommonShaderGenerator {
 		// Get our cosine-weighted hemisphere lobe sample direction
 		return normalize(tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hit_norm.xyz * sqrt(max(0.0, 1.0f - randVal.x)));", &["get_perpendicular_vector"], Vec::new())]);
 
-		let make_uv = Node::function("make_uv", vec![Node::parameter("coordinates", "vec2u"), Node::parameter("extent", "vec2u")], "vec2", vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], Vec::new())]);
+		let make_uv = Node::function("make_uv", vec![Node::parameter("coordinates", "vec2u"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], Vec::new())]);
+		let rotate_directions = Node::function("rotate_directions", vec![Node::parameter("dir", "vec2f"), Node::parameter("cos_sin", "vec2f")], "vec2f", vec![Node::glsl("return vec2(dir.x*cos_sin.x - dir.y*cos_sin.y,dir.x*cos_sin.y + dir.y*cos_sin.x)", &[], Vec::new())]);
 
 		let distribution_ggx = Node::function("distribution_ggx", vec![Node::member("n", "vec3f"), Node::member("h", "vec3f"), Node::member("roughness", "f32")], "f32", vec![Node::glsl("float a = roughness*roughness; float a2 = a*a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h*n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;", &[], Vec::new())]);
 		let geometry_schlick_ggx = Node::function("geometry_schlick_ggx", vec![Node::member("n_dot_v", "f32"), Node::member("roughness", "f32")], "f32", vec![Node::glsl("float r = (roughness + 1.0); float k = (r*r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);", &[], Vec::new())]);
@@ -307,6 +310,7 @@ impl CommonShaderGenerator {
 			square_vec4,
 			get_world_space_position_from_depth,
 			get_view_space_position_from_depth,
+			rotate_directions,
 		}
 	}
 }

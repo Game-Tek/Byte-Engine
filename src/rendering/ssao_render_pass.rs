@@ -19,7 +19,6 @@ pub struct ScreenSpaceAmbientOcclusionPass {
 	depth_binding: ghi::DescriptorSetBindingHandle,
 	result: ghi::ImageHandle,
 	x_blur_target: ghi::ImageHandle,
-	y_blur_target: ghi::ImageHandle,
 
 	// Not owned by this render pass
 	depth_target: ghi::ImageHandle,
@@ -46,8 +45,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let depth_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&DEPTH_BINDING_TEMPLATE, depth_target, sampler, ghi::Layouts::Read));
 		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&RESULT_BINDING_TEMPLATE, occlusion_target, ghi::Layouts::General));
 
-		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-		let y_blur_target = ghi.create_image(Some("Y Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R16(ghi::Encodings::FloatingPoint), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		let blur_x_depth_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&DEPTH_BINDING_TEMPLATE, depth_target, sampler, ghi::Layouts::Read));
 		let blur_x_source_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&SOURCE_BINDING_TEMPLATE, occlusion_target, sampler, ghi::Layouts::Read));
@@ -55,7 +53,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let blur_y_depth_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&DEPTH_BINDING_TEMPLATE, depth_target, sampler, ghi::Layouts::Read));
 		let blur_y_source_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&SOURCE_BINDING_TEMPLATE, x_blur_target, sampler, ghi::Layouts::Read));
-		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::image(&RESULT_BINDING_TEMPLATE, y_blur_target, ghi::Layouts::General));
+		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::image(&RESULT_BINDING_TEMPLATE, occlusion_target, ghi::Layouts::General));
 
 		let shader = ghi.create_shader(Some("HBAO Shader"), ghi::ShaderSource::GLSL(get_source()), ghi::ShaderTypes::Compute, &[
 			CAMERA_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -83,6 +81,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let format = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
 
 		let image = ghi.create_image(blue_noise.id().into(), blue_noise.resource().extent.into(), format, Uses::Image, DeviceAccesses::GpuRead | DeviceAccesses::CpuWrite, ghi::UseCases::STATIC);
+		let sampler = ghi.create_sampler(ghi::FilteringModes::Closest, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Repeat, None, 0f32, 0f32);
 
 		let buffer = ghi.get_texture_slice_mut(image);
 
@@ -102,7 +101,6 @@ impl ScreenSpaceAmbientOcclusionPass {
 			depth_binding,
 			result: occlusion_target,
 			x_blur_target,
-			y_blur_target,
 
 			depth_target,
 		}
@@ -111,17 +109,16 @@ impl ScreenSpaceAmbientOcclusionPass {
 	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer_recording.start_region("SSAO");
 		command_buffer_recording.clear_images(&[(self.result, ghi::ClearValue::Color(RGBA::white())),]);
-		if false {
+		if true {
 			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]).bind_compute_pipeline(&self.pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-			// command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-			// command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
 		}
 		command_buffer_recording.end_region();
 	}
 
 	pub fn resize(&mut self, ghi: &mut ghi::GHI, extent: Extent) {
 		ghi.resize_image(self.x_blur_target, extent);
-		ghi.resize_image(self.y_blur_target, extent);
 	}
 }
 
@@ -143,30 +140,30 @@ pub fn get_source() -> String {
 
 	vec2 render_target_extent = vec2(1920.0, 1080.0);
 	vec2 render_target_pixel_size = vec2(1.0f) / render_target_extent;
-	vec2 noise_scale = render_target_extent / 4.0f;
+	vec2 noise_scale = render_target_extent / 128.0f; /* Scale by noise size */
 
 	uvec2 texel = uvec2(gl_GlobalInvocationID.xy);
-	vec2 uv = vec2(texel) / vec2(1920, 1080);
+	vec2 uv = (vec2(texel) + vec2(0.5f)) / vec2(1920, 1080);
 	Camera camera = camera.camera;
 
-	vec3 p = get_view_space_position_from_depth(depth_map, texel, camera.inverse_projection_matrix);
+	vec3 p = get_view_space_position_from_depth(depth_map, uv, camera.inverse_projection_matrix);
 
 	/* Sample neighboring pixels */
-    vec3 pr = get_view_space_position_from_depth(depth_map, texel + uvec2( 1, 0), camera.inverse_projection_matrix);
-    vec3 pl = get_view_space_position_from_depth(depth_map, texel + uvec2(-1, 0), camera.inverse_projection_matrix);
-    vec3 pt = get_view_space_position_from_depth(depth_map, texel + uvec2( 0, 1), camera.inverse_projection_matrix);
-    vec3 pb = get_view_space_position_from_depth(depth_map, texel + uvec2( 0,-1), camera.inverse_projection_matrix);
+    vec3 pr = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 1, 0)), camera.inverse_projection_matrix);
+    vec3 pl = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2(-1, 0)), camera.inverse_projection_matrix);
+    vec3 pt = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0, 1)), camera.inverse_projection_matrix);
+    vec3 pb = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0,-1)), camera.inverse_projection_matrix);
 
     /* Calculate tangent basis vectors using the minimu difference */
     vec3 dPdu = min_diff(p, pr, pl);
-    vec3 dPdv = min_diff(p, pt, pb) * (render_target_extent.y * render_target_pixel_size.x);
+    vec3 dPdv = min_diff(p, pt, pb);
 	UVDerivatives derivatives = UVDerivatives(dPdu, dPdv);
 
     /* Get the random samples from the noise texture */
 	vec3 random = texture(noise_texture, uv * noise_scale).rgb;
 
 	/* Calculate the projected size of the hemisphere */
-    vec2 uv_ray_radius = 0.5 * R * camera.fov / -p.z;
+    vec2 uv_ray_radius = 0.5 * R * camera.fov / p.z;
     float pixel_ray_radius = uv_ray_radius.x * render_target_extent.x;
 
     float ao = 1.0;
@@ -196,7 +193,7 @@ pub fn get_source() -> String {
 	}
 
 	/* Average the results and produce the final AO */
-	ao = 1.0 - ao / float(direction_count) * 1.9f/* AO_STRENGTH */;
+	ao = 1.0 - ao / float(direction_count) * 3.0f;
 
 	imageStore(out_ao, ivec2(texel), vec4(vec3(ao), 1.0));
 	"#;
@@ -246,12 +243,12 @@ pub fn get_source() -> String {
 	// Compute the step size (in uv space) from the number of steps
 	let compute_trace = besl::parser::Node::function("compute_trace", vec![besl::parser::Node::member("pixel_ray_radius", "f32"), besl::parser::Node::member("rand", "f32")], "TraceSettings", vec![Node::glsl(r#"
 		/* Avoid oversampling if numSteps is greater than the kernel radius in pixels */
-		uint32_t step_count = min(4/* SAMPLE_COUNT */, uint32_t(pixel_ray_radius));
+		uint32_t step_count = min(6/* SAMPLE_COUNT */, uint32_t(pixel_ray_radius));
 
 		/* Divide by Ns+1 so that the farthest samples are not fully attenuated */
 		float stepSizePix = pixel_ray_radius / (step_count + 1);
 
-		float max_pixel_radius = 50.f; /* Tweak this for performance and effect */
+		float max_pixel_radius = 75.f; /* Tweak this for performance and effect */
 
 		/* Clamp numSteps if it is greater than the max kernel footprint */
 		float maxNumSteps = max_pixel_radius / stepSizePix;
@@ -266,7 +263,7 @@ pub fn get_source() -> String {
 		return TraceSettings(step_count, stepSizePix * (vec2(1.0) / vec2(1920, 1080)));
 	"#, &[], Vec::new())]);
 
-	let biased_tangent = Node::function("biased_tangent", vec![Node::parameter("v", "vec3f")], "f32", vec![Node::glsl("return v.z * inversesqrt(dot(v,v)) + tan(30.0 * PI / 180.0)", &[], Vec::new())]);
+	let biased_tangent = Node::function("biased_tangent", vec![Node::parameter("v", "vec3f")], "f32", vec![Node::glsl("return -v.z * inversesqrt(dot(v,v)) + tan(30.0 * PI / 180.0)", &[], Vec::new())]);
 
 	let camera_binding = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 0, CAMERA_BINDING_TEMPLATE.binding(), true, false);
 	let out_ao = Node::binding("out_ao", Node::image("r8"), 1, RESULT_BINDING_TEMPLATE.binding(), false, true);

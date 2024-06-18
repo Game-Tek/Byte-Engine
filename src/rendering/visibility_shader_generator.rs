@@ -144,17 +144,10 @@ vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].
 vec2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 vec2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
-// // Method 1
 float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
 vec3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
 vec3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
 mat3 TBN = mat3(T, B, N);
-
-// Method 2
-// vec3 T = (uv_dy.y * pos_dx - uv_dx.y * pos_dy) / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
-// T = normalize(T - N * dot(T, N));
-// vec3 B = cross(N, T);
-// mat3 TBN = mat3(T, B, N);
 
 vec3 albedo = vec3(1, 0, 0);
 vec3 normal = vec3(0, 0, 1);

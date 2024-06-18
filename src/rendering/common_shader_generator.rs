@@ -229,11 +229,13 @@ impl CommonShaderGenerator {
 		return view_space.xyz;", &[], Vec::new())]);
 
 		let sin_from_tan = Node::function("sin_from_tan", vec![Node::parameter("x", "f32")], "f32", vec![Node::glsl("return x * inversesqrt(x*x + 1.0)", &[], Vec::new())]);
-		let tangent = Node::function("tangent", vec![Node::parameter("p", "vec3f"), Node::parameter("s", "vec3f")], "f32", vec![Node::glsl("return -(p.z - s.z) * inversesqrt(dot(s.xy - p.xy, s.xy - p.xy))", &[], Vec::new())]);
+		let tangent = Node::function("tangent", vec![Node::parameter("p", "vec3f"), Node::parameter("s", "vec3f")], "f32", vec![Node::glsl("return (p.z - s.z) * inversesqrt(dot(s.xy - p.xy, s.xy - p.xy))", &[], Vec::new())]);
 
 		let make_normal_from_neighbouring_depth_samples = Node::function("make_normal_from_neighbouring_depth_samples", vec![Node::parameter("p", "vec3"), Node::parameter("pr", "vec3"), Node::parameter("pl", "vec3"), Node::parameter("pt", "vec3"), Node::parameter("pb", "vec3")], "vec3f", vec![Node::glsl("return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))", &["min_diff"], Vec::new())]);
 
 		let get_perpendicular_vector = Node::function("get_perpendicular_vector", vec![Node::parameter("v", "vec3f")], "vec3f", vec![Node::glsl("return normalize(abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0) : vec3(0.0, -v.z, v.y));", &[], Vec::new())]);
+
+		// Should we add .5 to the coordinates before dividing by the extent?
 		let snap_uv = Node::function("snap_uv", vec![Node::parameter("uv", "vec2f"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return round(uv * vec2(extent)) * (1.0f / vec2(extent))", &[], Vec::new())]);
 
 		// Get a cosine-weighted random vector centered around a specified normal direction.

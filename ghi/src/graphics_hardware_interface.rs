@@ -532,7 +532,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice<'a>(&'a self, buffer_handle: BaseBufferHandle) -> &'a mut [u8];
 
-	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &'static mut [u8];
+	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
 	/// Creates an image.
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;

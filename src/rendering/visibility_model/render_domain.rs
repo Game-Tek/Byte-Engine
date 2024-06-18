@@ -976,6 +976,7 @@ impl VisibilityWorldRenderDomain {
 		let view_projection_matrix = projection_matrix * view_matrix;
 		let fov = {
 			let fov_x = 2f32 * ((fov_y / 2f32).to_radians().tan() * aspect_ratio).atan();
+			let fov_y = fov_y.to_radians();
 			[fov_x, fov_y]
 		};
 
@@ -1024,10 +1025,6 @@ impl VisibilityWorldRenderDomain {
 	pub fn render_a(&mut self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent, modulo_frame_index: u32) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
-		command_buffer_recording.transfer_textures(&self.pending_texture_loads);
-
-		self.pending_texture_loads.clear();
-
 		command_buffer_recording.start_region("Visibility Render Model");
 
 		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, &self.render_info.instances, self.primitive_index, self.instance_id, self.depth_target, extent);
@@ -1047,7 +1044,7 @@ impl VisibilityWorldRenderDomain {
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
-			if false {
+			if true {
 				if let Some(most_significant_light) = directional_lights.get(0) {
 					shadow_render_pass.render(command_buffer_recording, self, &self.render_info.instances);
 				} else {

@@ -35,7 +35,7 @@ pub struct Renderer {
 impl Renderer {
 	pub fn new_as_system<'a>(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
-			let enable_validation = std::env::vars().find(|(k, _)| k == "BE_RENDER_DEBUG").is_some() || true;
+			let enable_validation = std::env::vars().find(|(k, _)| k == "BE_RENDER_DEBUG").is_some() || false;
 
 			let ghi_instance = Rc::new(RwLock::new(ghi::create(ghi::Features::new().validation(enable_validation).api_dump(false).debug_log_function(|message| {
 				log::error!("{}", message);

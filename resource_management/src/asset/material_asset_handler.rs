@@ -188,7 +188,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 	let settings = match stage {
 		"Vertex" => ShaderGenerationSettings::vertex(),
 		"Fragment" => ShaderGenerationSettings::fragment(),
-		"Compute" => ShaderGenerationSettings::compute(Extent::square(32)),
+		"Compute" => ShaderGenerationSettings::compute(Extent::line(128)),
 		_ => { panic!("Invalid shader stage") }
 	};
 

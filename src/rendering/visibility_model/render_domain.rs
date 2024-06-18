@@ -1669,7 +1669,7 @@ pub fn get_material_offset_source() -> String {
 	for (uint i = 0; i < 1024; i++) { /* 1024 is the maximum number of materials */
 		material_offset.material_offset[i] = sum;
 		material_offset_scratch.material_offset_scratch[i] = sum;
-		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec3((material_count.material_count[i] + 31) / 32, 1, 1);
+		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec3((material_count.material_count[i] + 127) / 128, 1, 1);
 		sum += material_count.material_count[i];
 	}
 	"#;

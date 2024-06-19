@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use windows::{core::HRESULT, Win32::{Foundation::S_OK, Media::Audio::{eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX}, System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED}}};
 
 pub trait AudioHardwareInterface {

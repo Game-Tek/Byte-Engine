@@ -225,7 +225,6 @@ pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descript
 /* Material Evaluation */
 pub const OUT_ALBEDO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const CAMERA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const MATERIALS: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
@@ -798,7 +797,6 @@ impl VisibilityWorldRenderDomain {
 				TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 				OUT_ALBEDO.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
 				CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				OUT_DIFFUSE.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
 				LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
 				MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
 				AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),

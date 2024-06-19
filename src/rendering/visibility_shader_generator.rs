@@ -9,7 +9,6 @@ use super::common_shader_generator::CommonShaderGenerator;
 pub struct VisibilityShaderGenerator {
 	out_albedo: besl::parser::Node,
 	camera: besl::parser::Node,
-	out_diffuse: besl::parser::Node,
 	lighting_data: besl::parser::Node,
 	materials: besl::parser::Node,
 	ao: besl::parser::Node,
@@ -25,7 +24,6 @@ impl VisibilityShaderGenerator {
 
 		let set2_binding0 = Node::binding("out_albedo", Node::image("rgba16"), 2, 0, false, true);
 		let set2_binding1 = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 2, 1, true, false);
-		let set2_binding2 = Node::binding("out_diffuse", Node::image("rgba16"), 2, 2, false, true);
 		let set2_binding4 = Node::binding("lighting_data", Node::buffer("LightingBuffer", vec![Node::member("light_count", "u32"), Node::member("lights", "Light[16]")]), 2, 4, true, false);
 		let set2_binding5 = Node::binding("materials", Node::buffer("MaterialBuffer", vec![Node::member("materials", "Material[16]")]), 2, 5, true, false);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
@@ -44,7 +42,6 @@ impl VisibilityShaderGenerator {
 		Self {
 			out_albedo: set2_binding0,
 			camera: set2_binding1,
-			out_diffuse: set2_binding2,
 			lighting_data: set2_binding4,
 			materials: set2_binding5,
 			ao: set2_binding10,
@@ -60,7 +57,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform(&self, mut root: besl::parser::Node, material: &json::JsonValue) -> besl::parser::Node {
 		let set2_binding0 = self.out_albedo.clone();
 		let set2_binding1 = self.camera.clone();
-		let set2_binding2 = self.out_diffuse.clone();
 		let set2_binding4 = self.lighting_data.clone();
 		let set2_binding5 = self.materials.clone();
 		let set2_binding10 = self.ao.clone();
@@ -202,7 +198,6 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	if (NdotL <= 0.0) { continue; }
 
-	float occlusion_factor = 1.0;
 	float attenuation = 1.0;
 
 	if (light_type == 68) { // Infinite
@@ -240,20 +235,18 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	vec3 local_diffuse = kD * albedo / PI;
 
-	lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
+	lo += (local_diffuse + specular) * radiance * NdotL * attenuation;
 	diffuse += local_diffuse;
 }
 
 lo *= ao_factor;
 
-imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));
-imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
+imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));";
 
 		let push_constant = self.push_constant.clone();
 
 		let lighting_data = self.lighting_data.clone();
 		let out_albedo = self.out_albedo.clone();
-		let out_diffuse = self.out_diffuse.clone();
 
 		let common_shader_generator = CommonShaderGenerator::new();
 
@@ -264,12 +257,12 @@ imageStore(out_diffuse, pixel_coordinates, vec4(diffuse, 1.0));";
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
 				statements.insert(0, besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "camera", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
-				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "out_albedo", "out_diffuse"], Vec::new()));
+				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "out_albedo"], Vec::new()));
 			}
 			_ => {}
 		}
 
-		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding1, set2_binding5, set2_binding10, lighting_data, out_albedo, out_diffuse, self.sample_function.clone(), self.sample_normal_function.clone()]);
+		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding1, set2_binding5, set2_binding10, lighting_data, out_albedo, self.sample_function.clone(), self.sample_normal_function.clone()]);
 		root.add(extra);
 
 		root

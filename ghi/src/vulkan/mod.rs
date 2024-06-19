@@ -55,6 +55,8 @@ pub struct VulkanGHI {
 	settings: graphics_hardware_interface::Features,
 
 	states: HashMap<Handle, TransitionState>,
+
+	pending_images: Vec<graphics_hardware_interface::ImageHandle>,
 }
 
 enum Descriptor {
@@ -624,8 +626,11 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frmae_index: Option<u32>) -> impl graphics_hardware_interface::CommandBufferRecording + '_ {
 		use graphics_hardware_interface::CommandBufferRecording;
+		let pending_images = self.pending_images.clone();
+		self.pending_images.clear();
 		let mut recording = VulkanCommandBufferRecording::new(self, command_buffer_handle, frmae_index);
 		recording.begin();
+		recording.transfer_textures(&pending_images);
 		recording
 	}
 
@@ -751,7 +756,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		graphics_hardware_interface::BufferSplitter::new(slice, offset)
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
+		self.pending_images.push(texture_handle);
 		let texture = &self.images[texture_handle.0 as usize];
 		assert!(texture.pointer != std::ptr::null());
 		unsafe {
@@ -2335,6 +2341,8 @@ impl VulkanGHI {
 			settings,
 
 			states: HashMap::with_capacity(4096),
+
+			pending_images: Vec::with_capacity(128),
 		})
 	}
 

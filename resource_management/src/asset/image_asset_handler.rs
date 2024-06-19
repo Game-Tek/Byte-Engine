@@ -55,6 +55,7 @@ impl AssetHandler for ImageAssetHandler {
 					});
 
 					match info.bit_depth {
+						png::BitDepth::Eight => {}
 						png::BitDepth::Sixteen => {
 							for i in 0..buffer.len() / 2 {
 								buffer.swap(i * 2, i * 2 + 1);

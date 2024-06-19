@@ -84,9 +84,8 @@ vec4 blur(in sampler2D sourceTexture, vec2 blurDirection, vec2 uv)
 {
     vec4 result = vec4(0.0);
     for (int i = 0; i < SAMPLE_COUNT; ++i) {
-        vec2 offset = blurDirection * OFFSETS[i] / textureSize(sourceTexture, 0);
-        float weight = WEIGHTS[i];
-        result += texture(sourceTexture, uv + offset) * weight;
+        vec2 offset = blurDirection * OFFSETS[i] / vec2(textureSize(sourceTexture, 0));
+        result += texture(sourceTexture, uv + offset) * WEIGHTS[i];
     }
     return result;
 }
@@ -95,7 +94,10 @@ layout(local_size_x=128) in;
 void main() {
 	if (gl_GlobalInvocationID.x >= imageSize(result).x || gl_GlobalInvocationID.y >= imageSize(result).y) { return; }
 
-	float value = blur(source, DIRECTION, vec2(gl_GlobalInvocationID.xy) / vec2(imageSize(result).xy)).r;
+	uvec2 texel = uvec2(gl_GlobalInvocationID.xy);
+	vec2 uv = (vec2(texel) + vec2(0.5)) / vec2(imageSize(result).xy);
+
+	float value = blur(source, DIRECTION, uv).r;
 
 	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(value), 1.0));
 }

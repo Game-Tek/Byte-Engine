@@ -187,11 +187,11 @@ impl Node {
 		}
 	}
 
-	pub fn glsl(code: &str, input: Vec<String>, output: Vec<String>) -> Node {
+	pub fn glsl(code: &str, input: &[&str], output: Vec<String>) -> Node {
 		Node {
 			node: Nodes::GLSL {
 				code: code.to_string(),
-				input,
+				input: input.iter().map(|v| v.to_string()).collect(),
 				output,
 			},
 		}
@@ -271,7 +271,7 @@ impl Node {
 		}
 	}
 	
-	pub fn sort(&mut self) {
+	pub(crate) fn sort(&mut self) {
 		// Place main function node at the end
 		
 		match &mut self.node {

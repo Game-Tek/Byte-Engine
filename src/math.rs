@@ -10,6 +10,14 @@ pub fn look_at(direction: crate::Vector3) -> maths_rs::Mat4f {
 	))
 }
 
+/// Calculates a left handed perspective projection matrix for 0 to 1 depth range
+/// 
+/// # Arguments
+/// 
+/// * `fov` - Full vertical field of view in degrees
+/// * `aspect_ratio` - Aspect ratio of the screen
+/// * `near_plane` - Distance to the near plane
+/// * `far_plane` - Distance to the far plane
 pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
 	let h = 1f32 / (fov / 2f32).to_radians().tan();
 	let w = h / aspect_ratio;

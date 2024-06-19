@@ -15,25 +15,23 @@ pub struct AcesToneMapPass {
 	result_image_handle: ghi::ImageHandle,
 }
 
+const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+
 impl AcesToneMapPass {
     fn new(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
-        let bindings = [
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-		];
-
-		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &bindings);
+		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
 
-		let albedo_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[0], source_image, ghi::Layouts::General));
-		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[1], result_image, ghi::Layouts::General));
+		let albedo_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, source_image, ghi::Layouts::General));
+		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, result_image, ghi::Layouts::General));
 
 		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
-			ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
-			ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::WRITE),
+			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create tone mapping shader");
 			
 		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));

@@ -2,8 +2,8 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use core::{self, entity::{EntityBuilder, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
-use byte_engine::{application::Application, audio::audio_system::DefaultAudioSystem, gameplay::{self, space::Space}, input, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, Vector3};
+use core::{self, entity::{EntityBuilder, SelfDestroyingEntity, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
+use byte_engine::{application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{self, space::Space}, input, physics::{self, PhysicsEntity}, rendering::{mesh, point_light::PointLight}, Vector3};
 
 #[ignore]
 #[test]
@@ -38,13 +38,46 @@ fn gallery_shooter() {
 	
 	let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 2.5, -1.5), 4500.0));
 
-	let mut player: EntityHandle<Player> = core::spawn_as_child(space_handle.clone(), Player::new(lookaround_action_handle, trigger_action, audio_system_handle, physics_duck_1.clone()));
+	let mut game_state: EntityHandle<GameState> = core::spawn_as_child(space_handle.clone(), GameState::new());
+
+	let mut player: EntityHandle<Player> = core::spawn_as_child(space_handle.clone(), Player::new(game_state, lookaround_action_handle, trigger_action, audio_system_handle, physics_duck_1.clone()));
 
 	app.do_loop();
 }
 
+/// This struct represents the state of the game.
+/// It contains match duration, score, and other game-related information.
+struct GameState {
+	/// The score of the player.
+	points: Property<usize>,
+
+	/// The duration of the match.
+	duration: std::time::Duration,
+}
+
+impl Entity for GameState {}
+
+impl GameState {
+	fn new() -> EntityBuilder<'static, Self> {
+		EntityBuilder::new_from_closure(|| {
+			Self {
+				points: Property::new(0),
+				duration: std::time::Duration::new(30, 0),
+			}
+		})
+	}
+
+	/// This function is called when a duck is hit.
+	fn on_duck_hit(&mut self, other: &EntityHandle<dyn physics::PhysicsEntity>) {
+		self.points.set(|points| points + 1);
+
+		log::info!("Duck hit! Points: {}", self.points.get());
+	}
+}
+
 struct Player {
 	parent: EntityHandle<Space>,
+	game_state: EntityHandle<GameState>,
 
 	mesh: EntityHandle<mesh::Mesh>,
 	camera: EntityHandle<byte_engine::camera::Camera>,
@@ -65,7 +98,7 @@ impl SpawnerEntity<Space> for Player {
 }
 
 impl Player {
-	fn new(lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'static, Self> {
+	fn new(game_state: EntityHandle<GameState>, lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
 			let transform = mesh::Transform::default().position(Vector3::new(0.25, -0.15, 0.4f32)).scale(Vector3::new(0.05, 0.03, 0.2));
 			let camera_handle = core::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
@@ -75,6 +108,7 @@ impl Player {
 
 			Self {
 				parent: parent.downcast().unwrap(),
+				game_state,
 				physics_duck,
 
 				audio_system: audio_system,
@@ -86,7 +120,7 @@ impl Player {
 				magazine_as_string,
 				magazine_capacity: 5,
 			}
-		}).add_post_creation_function(move |this| {
+		}).then(move |this| {
 			lookaround.write_sync().value_mut().link_to(this.clone(), Player::lookaround);
 			click.write_sync().value_mut().link_to(this.clone(), Player::shoot);
 		})
@@ -105,10 +139,10 @@ impl Player {
 
 			{
 				let mut audio_system = self.audio_system.write_sync();
-				// smol::block_on(audio_system.play("gun"));
+				smol::block_on(audio_system.play("gun.wav"));
 			}
 
-			self.spawn::<Bullet>(Bullet::new(Vector3::new(0.0, 0.0, 0.0), self.physics_duck.clone()));
+			self.spawn::<Bullet>(Bullet::new(Vector3::new(0.0, 0.0, 0.0), self.physics_duck.clone()).then(|s| { s.read_sync().bullet_object.write_sync().on_collision().subscribe(self.game_state.clone(), GameState::on_duck_hit) }));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -147,6 +181,11 @@ struct Bullet {
 
 impl Entity for Bullet {}
 
+impl SelfDestroyingEntity for Bullet {
+	fn destroy(&self) {
+	}
+}
+
 impl Bullet {
 	fn new<'a>(position: Vector3, physics_duck: EntityHandle<physics::Sphere>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
@@ -156,7 +195,7 @@ impl Bullet {
 				physics_duck,
 				bullet_object,
 			}
-		}).add_post_creation_function(|s| {
+		}).then(|s| {
 			let me = s.clone();
 			
 			{
@@ -169,7 +208,7 @@ impl Bullet {
 
 	fn on_collision(&mut self, other: &EntityHandle<dyn physics::PhysicsEntity>) {
 		if other == &self.physics_duck {
-			log::info!("Bullet collided with duck!");
+			self.destroy();
 		}
 	}
 }

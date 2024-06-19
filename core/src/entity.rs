@@ -47,6 +47,10 @@ pub trait SpawnerEntity<P: Entity>: Entity {
 	}
 }
 
+pub trait SelfDestroyingEntity: Entity {
+	fn destroy(&self);
+}
+
 downcast_rs::impl_downcast!(Entity);
 
 pub(super) type EntityWrapper<T> = std::sync::Arc<smol::lock::RwLock<T>>;
@@ -238,7 +242,7 @@ impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
 		}))
 	}
 
-	pub fn add_post_creation_function(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
+	pub fn then(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
 		self.post_creation_functions.push(Box::new(function));
 		self
 	}

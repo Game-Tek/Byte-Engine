@@ -57,6 +57,7 @@ impl PhysicsEntity for Sphere {
 pub struct PhysicsWorld {
 	spheres: Vec<InternalSphere>,
 	spheres_map: HashMap<EntityHash, usize>,
+	ongoing_collisions: Vec<(usize, usize)>,
 }
 
 impl PhysicsWorld {
@@ -64,6 +65,7 @@ impl PhysicsWorld {
 		Self {
 			spheres: Vec::new(),
 			spheres_map: HashMap::new(),
+			ongoing_collisions: Vec::new(),
 		}
 	}
 
@@ -97,12 +99,20 @@ impl PhysicsWorld {
 			}
 		}
 
-		for (i, j) in collisions {
+		for &(i, j) in &collisions {
+			if self.ongoing_collisions.contains(&(i, j)) { continue; }
+			
+			self.ongoing_collisions.push((i, j));
+
 			self.spheres[j].handle.map(|e| {
 				let mut e = e.write_sync();
 				e.on_collision().ocurred(&self.spheres[i].handle);
 			});
 		}
+
+		self.ongoing_collisions.retain(|(i, j)| {
+			collisions.contains(&(*i, *j))
+		});
 	}
 }
 

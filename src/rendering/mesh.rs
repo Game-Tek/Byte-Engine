@@ -97,12 +97,29 @@ impl Transform {
 		}
 	}
 
-	fn get_transform(&self) -> maths_rs::Mat4f {
+	pub fn get_matrix(&self) -> maths_rs::Mat4f {
 		maths_rs::Mat4f::from_translation(self.position) * math::from_normal(self.rotation) * maths_rs::Mat4f::from_scale(self.scale)
 	}
 
-	fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
+	pub fn set_position(&mut self, position: maths_rs::Vec3f) {
+		self.position = position;
+	}
+	pub fn get_position(&self) -> maths_rs::Vec3f { self.position }
+
+	pub fn set_scale(&mut self, scale: maths_rs::Vec3f) {
+		self.scale = scale;
+	}
+	pub fn get_scale(&self) -> maths_rs::Vec3f { self.scale }
+
+	pub fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
 		self.rotation = orientation;
+	}
+	pub fn get_orientation(&self) -> maths_rs::Vec3f { self.rotation }
+}
+
+impl From<&Transform> for maths_rs::Mat4f {
+	fn from(transform: &Transform) -> Self {
+		transform.get_matrix()
 	}
 }
 
@@ -119,7 +136,7 @@ impl Entity for Mesh {
 }
 
 impl RenderEntity for Mesh {
-	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_transform() }
+	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_matrix() }
 	fn get_resource_id(&self) -> &'static str { self.resource_id }
 }
 

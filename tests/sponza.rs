@@ -57,8 +57,8 @@ fn sponza() {
 		let target = Arc::clone(&target);
 
 		app.get_tick_handle().sync_get_mut(|tick| {
-			tick.event().add(move |dt| {
-				let value = animation.evaluate(*target.lock().unwrap(), dt.as_secs_f32());
+			tick.add(move |time| {
+				let value = animation.evaluate(*target.lock().unwrap(), time.delta().as_secs_f32());
 				mesh.sync_get_mut(move |mesh| {
 					mesh.set_orientation(value);
 				});

@@ -7,13 +7,27 @@ use crate::{core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike
 pub trait PhysicsEntity: Entity {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>>;
 
+	fn get_body_type(&self) -> BodyTypes;
+
 	fn get_position(&self) -> Vec3f;
 	fn set_position(&mut self, position: Vec3f);
 	
 	fn get_velocity(&self) -> Vec3f;
 }
 
+/// The type of body that an entity has.
+#[derive(Debug, Clone, Copy)]
+pub enum BodyTypes {
+	/// Static bodies are not affected by forces or collisions.
+	Static,
+	/// Kinematic bodies are not affected by forces, but are affected by collisions.
+	Kinematic,
+	/// Dynamic bodies are affected by forces and collisions.
+	Dynamic,
+}
+
 pub struct Sphere {
+	body_type: BodyTypes,
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
@@ -21,6 +35,7 @@ pub struct Sphere {
 }
 
 struct InternalSphere {
+	body_type: BodyTypes,
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
@@ -28,8 +43,9 @@ struct InternalSphere {
 }
 
 impl Sphere {
-	pub fn new(position: Vec3f, velocity: Vec3f, radius: f32) -> EntityBuilder<'static, Self> {
+	pub fn new(body_type: BodyTypes, position: Vec3f, velocity: Vec3f, radius: f32) -> EntityBuilder<'static, Self> {
 		Self {
+			body_type,
 			position,
 			velocity,
 			radius,
@@ -47,6 +63,8 @@ impl Entity for Sphere {
 
 impl PhysicsEntity for Sphere {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>> { &mut self.collision_event }
+
+	fn get_body_type(&self) -> BodyTypes { self.body_type }
 
 	fn get_position(&self) -> Vec3f { self.position }
 	fn get_velocity(&self) -> Vec3f { self.velocity }
@@ -81,8 +99,16 @@ impl PhysicsWorld {
 
 	pub fn update(&mut self) {
 		for sphere in self.spheres.iter_mut() {
-			sphere.position += sphere.velocity;
-			sphere.handle.write_sync().set_position(sphere.position);
+			match sphere.body_type {
+				BodyTypes::Static => continue,
+				BodyTypes::Kinematic => {
+					sphere.position = sphere.handle.write_sync().get_position();
+				},
+				BodyTypes::Dynamic => {
+					sphere.position += sphere.velocity;
+					sphere.handle.write_sync().set_position(sphere.position);
+				}
+			}
 		}
 
 		let mut collisions = Vec::new();
@@ -121,7 +147,7 @@ impl Entity for PhysicsWorld {}
 impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> utils::BoxedFuture<()> {
 		Box::pin(async move {
-			let index = self.add_sphere(InternalSphere{ position: params.get_position(), velocity: params.get_velocity(), radius: 0.1f32, handle: handle.clone() });
+			let index = self.add_sphere(InternalSphere{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), radius: 0.1f32, handle: handle.clone() });
 			self.spheres_map.insert(EntityHash::from(&handle), index);
 		})
 	}

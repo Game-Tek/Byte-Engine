@@ -59,6 +59,8 @@ impl <T: Clone + 'static> Property<T> {
 	}
 }
 
+impl <T: 'static> Entity for Property<T> {}
+
 /// A derived property is a property that has no value of its own, but is derived from another property.
 pub struct DerivedProperty<F, T> {
 	internal_state: std::rc::Rc<std::sync::RwLock<DerivedPropertyState<F, T>>>,

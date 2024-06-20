@@ -111,23 +111,21 @@ impl OrchestratedApplication {
 	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.orchestrator.as_ref().borrow_mut() }
 }
 
-pub struct Tick {
-	event: Property<(Duration)>,
+#[derive(Debug, Clone)]
+pub struct Time {
+	elapsed: Duration,
+	delta: Duration,
 }
 
-impl Tick {
-	pub fn new() -> Self {
-		Tick {
-			event: Property::new((Duration::new(0, 0))),
-		}
+impl Time {
+	pub fn elapsed(&self) -> Duration {
+		self.elapsed
 	}
 
-	pub fn event(&mut self) -> &mut Property<(Duration)> {
-		&mut self.event
+	pub fn delta(&self) -> Duration {
+		self.delta
 	}
 }
-
-impl Entity for Tick {}
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
@@ -141,8 +139,9 @@ pub struct GraphicsApplication {
 	renderer_handle: EntityHandle<rendering::renderer::Renderer>,
 	audio_system_handle: EntityHandle<audio_system::DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
-	tick_handle: EntityHandle<Tick>,
+	tick_handle: EntityHandle<Property<Time>>,
 	root_space_handle: EntityHandle<Space>,
+	start_time: std::time::Instant,
 }
 
 impl Application for GraphicsApplication {
@@ -216,9 +215,22 @@ impl Application for GraphicsApplication {
 
 		let physics_system_handle = core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system());
 
-		let tick_handle = core::spawn_as_child(root_space_handle.clone(), Tick::new());
+		let tick_handle = core::spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }));
 
-		GraphicsApplication { application, window_system_handle, input_system_handle, mouse_device_handle, renderer_handle, tick_count: 0, audio_system_handle, physics_system_handle, root_space_handle, tick_handle }
+		GraphicsApplication {
+			application,
+			window_system_handle,
+			input_system_handle,
+			mouse_device_handle,
+			renderer_handle,
+			audio_system_handle,
+			physics_system_handle,
+			root_space_handle,
+			tick_handle,
+
+			tick_count: 0,
+			start_time: std::time::Instant::now(),
+		}
 	}
 
 	fn initialize(&mut self, _arguments: std::env::Args) {
@@ -276,7 +288,7 @@ impl Application for GraphicsApplication {
 		}
 
 		self.tick_handle.sync_get_mut(|tick| {
-			tick.event().set(|_| dt);
+			tick.set(|_| Time { elapsed: self.start_time.elapsed(), delta: dt });
 		});
 
 		self.input_system_handle.map(|handle| {
@@ -341,7 +353,7 @@ impl GraphicsApplication {
 		&self.root_space_handle
 	}
 
-	pub fn get_tick_handle(&self) -> &EntityHandle<Tick> {
+	pub fn get_tick_handle(&self) -> &EntityHandle<Property<Time>> {
 		&self.tick_handle
 	}
 

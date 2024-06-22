@@ -153,4 +153,12 @@ impl Mesh {
 	pub fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
 		self.transform.set_orientation(normalize(orientation));
 	}
+
+	pub fn transform(&self) -> &Transform {
+		&self.transform
+	}
+
+	pub fn transform_mut(&mut self) -> &mut Transform {
+		&mut self.transform
+	}
 }

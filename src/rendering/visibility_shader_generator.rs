@@ -132,7 +132,7 @@ vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycent
 vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 vec3 N = world_space_vertex_normal;
-vec3 V = normalize(-(camera.view[3].xyz - world_space_vertex_position));
+vec3 V = normalize(camera.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
 
 vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
 vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);

@@ -1,3 +1,5 @@
+use crate::Vector3;
+
 pub fn look_at(direction: crate::Vector3) -> maths_rs::Mat4f {
 	let x_axis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(direction)));
 	let y_axis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(direction), x_axis));
@@ -45,19 +47,21 @@ pub fn orthographic_matrix(width: f32, height: f32, near_plane: f32, far_plane: 
 	))
 }
 
-pub fn from_normal(normal: crate::Vector3) -> maths_rs::Mat4f {
+pub fn are_colinear(a: crate::Vector3, b: crate::Vector3) -> bool {
+	maths_rs::dot(a, b).abs() > 0.99f32
+}
+
+pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 	let x_basis;
 	let y_basis;
 	let z_basis = normal;
 
-	if maths_rs::dot(normal, crate::Vector3::new(0f32, 1f32, 0f32)).abs() < 0.99f32 {
-		// If not colinear
-		x_basis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));
-		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
-	} else {
-		// If colinear
+	if are_colinear(normal, Vector3::new(0f32, 1f32, 0f32)) {
 		x_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), crate::Vector3::new(0f32, 0f32, 1f32)));
 		y_basis = maths_rs::normalize(maths_rs::cross(x_basis, maths_rs::normalize(normal)));
+	} else {
+		x_basis = maths_rs::normalize(maths_rs::cross(Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));
+		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
 	}
 
 	maths_rs::Mat4f::from((

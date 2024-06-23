@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use maths_rs::{Vec3f, mag};
 
-use crate::{core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator::{self,}, property::Property, Entity, EntityHandle}, utils};
+use crate::{application::Time, core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, utils, Vector3};
 
 pub trait PhysicsEntity: Entity {
 	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn PhysicsEntity>>;
@@ -34,11 +34,21 @@ pub struct Sphere {
 	collision_event: Event<EntityHandle<dyn PhysicsEntity>>,
 }
 
-struct InternalSphere {
+pub enum CollisionShapes {
+	Sphere {
+		radius: f32,
+	},
+	Cube {
+		size: Vec3f,
+	},
+}
+
+struct Body {
 	body_type: BodyTypes,
+	collision_shape: CollisionShapes,
 	position: Vec3f,
+	acceleration: Vec3f,
 	velocity: Vec3f,
-	radius: f32,
 	handle: EntityHandle<dyn PhysicsEntity>,
 }
 
@@ -73,7 +83,7 @@ impl PhysicsEntity for Sphere {
 }
 
 pub struct PhysicsWorld {
-	spheres: Vec<InternalSphere>,
+	bodies: Vec<Body>,
 	spheres_map: HashMap<EntityHash, usize>,
 	ongoing_collisions: Vec<(usize, usize)>,
 }
@@ -81,7 +91,7 @@ pub struct PhysicsWorld {
 impl PhysicsWorld {
 	fn new() -> Self {
 		Self {
-			spheres: Vec::new(),
+			bodies: Vec::new(),
 			spheres_map: HashMap::new(),
 			ongoing_collisions: Vec::new(),
 		}
@@ -91,21 +101,27 @@ impl PhysicsWorld {
 		EntityBuilder::new(Self::new()).listen_to::<dyn PhysicsEntity>()
 	}
 
-	fn add_sphere(&mut self, sphere: InternalSphere) -> usize {
-		let index = self.spheres.len();
-		self.spheres.push(sphere);
+	fn add_sphere(&mut self, sphere: Body) -> usize {
+		let index = self.bodies.len();
+		self.bodies.push(sphere);
 		index
 	}
 
-	pub fn update(&mut self) {
-		for sphere in self.spheres.iter_mut() {
+	pub fn update(&mut self, time: Time) {
+		let dt = time.delta();
+		let dt = dt.as_secs_f32();
+
+		for sphere in self.bodies.iter_mut() {
 			match sphere.body_type {
 				BodyTypes::Static => continue,
 				BodyTypes::Kinematic => {
 					sphere.position = sphere.handle.write_sync().get_position();
 				},
 				BodyTypes::Dynamic => {
-					sphere.position += sphere.velocity;
+					let forces = Vector3::new(0f32, -9.81f32, 0f32);
+					sphere.acceleration = forces;
+					sphere.velocity += sphere.acceleration * dt;
+					sphere.position += sphere.velocity * dt;
 					sphere.handle.write_sync().set_position(sphere.position);
 				}
 			}
@@ -113,14 +129,31 @@ impl PhysicsWorld {
 
 		let mut collisions = Vec::new();
 
-		for (i, a) in self.spheres.iter().enumerate() {
-			for (j, b) in self.spheres.iter().enumerate() {
+		for (i, a) in self.bodies.iter().enumerate() {
+			for (j, b) in self.bodies.iter().enumerate() {
 				if i == j { continue; }
 
 				if collisions.contains(&(j, i)) { continue; }
 
-				if mag(a.position - b.position) < a.radius + b.radius {
-					collisions.push((i, j));
+				match (&a.collision_shape, &b.collision_shape) {
+					(CollisionShapes::Sphere { radius: ra }, CollisionShapes::Sphere { radius: rb }) => {
+						if mag(a.position - b.position) < ra + rb {
+							collisions.push((i, j));
+						}
+					},
+					(&CollisionShapes::Cube { size: sa }, &CollisionShapes::Cube { size: sb }) => {
+						let a_min = a.position - sa / 2f32;
+						let a_max = a.position + sa / 2f32;
+						let b_min = b.position - sb / 2f32;
+						let b_max = b.position + sb / 2f32;
+
+						if a_min.x < b_max.x && a_max.x > b_min.x &&
+							a_min.y < b_max.y && a_max.y > b_min.y &&
+							a_min.z < b_max.z && a_max.z > b_min.z {
+							collisions.push((i, j));
+						}
+					},
+					_ => unimplemented!(),
 				}
 			}
 		}
@@ -130,9 +163,9 @@ impl PhysicsWorld {
 			
 			self.ongoing_collisions.push((i, j));
 
-			self.spheres[j].handle.map(|e| {
+			self.bodies[j].handle.map(|e| {
 				let mut e = e.write_sync();
-				e.on_collision().ocurred(&self.spheres[i].handle);
+				e.on_collision().ocurred(&self.bodies[i].handle);
 			});
 		}
 
@@ -147,7 +180,7 @@ impl Entity for PhysicsWorld {}
 impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> utils::BoxedFuture<()> {
 		Box::pin(async move {
-			let index = self.add_sphere(InternalSphere{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), radius: 0.1f32, handle: handle.clone() });
+			let index = self.add_sphere(Body{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: CollisionShapes::Sphere { radius: 0.1f32 }, handle: handle.clone() });
 			self.spheres_map.insert(EntityHash::from(&handle), index);
 		})
 	}

@@ -211,7 +211,7 @@ impl SelfDestroyingEntity for Bullet {
 impl Bullet {
 	fn new<'a>(position: Vector3, direction: Vector3) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
-			let bullet_object = core::spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 0.1f32,));
+			let bullet_object = core::spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,));
 
 			Self {
 				bullet_object,

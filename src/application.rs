@@ -111,7 +111,7 @@ impl OrchestratedApplication {
 	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.orchestrator.as_ref().borrow_mut() }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Time {
 	elapsed: Duration,
 	delta: Duration,
@@ -297,8 +297,10 @@ impl Application for GraphicsApplication {
 			}
 		}
 
-		self.tick_handle.sync_get_mut(|tick| {
-			tick.set(|_| Time { elapsed: self.start_time.elapsed(), delta: dt });
+		let time = Time { elapsed: self.start_time.elapsed(), delta: dt };
+
+		self.tick_handle.sync_get_mut(move |tick| {
+			tick.set(|_| time);
 		});
 
 		self.input_system_handle.map(|handle| {
@@ -306,9 +308,9 @@ impl Application for GraphicsApplication {
 			e.update();
 		});
 		
-		self.physics_system_handle.map(|handle| {
+		self.physics_system_handle.map(move |handle| {
 			let mut e = handle.write_sync();
-			e.update();
+			e.update(time);
 		});
 
 		self.renderer_handle.map(|handle| {

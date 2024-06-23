@@ -16,6 +16,7 @@ pub struct VisibilityShaderGenerator {
 	push_constant: besl::parser::Node,
 	sample_function: besl::parser::Node,
 	sample_normal_function: besl::parser::Node,
+	sample_shadow: besl::parser::Node,
 }
 
 impl VisibilityShaderGenerator {
@@ -39,6 +40,13 @@ impl VisibilityShaderGenerator {
 			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("normalize(texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xyz * 2.0f - 1.0f)", &[], Vec::new())]), "vec3f")
 		};
 
+		let sample_shadow = Node::function("sample_shadow", vec![Node::parameter("shadow_map", "Texture2D"), Node::parameter("light_matrix", "mat4f"), Node::parameter("world_space_position", "vec3f"), Node::parameter("surface_normal", "vec3f"), Node::parameter("offset", "vec2f")], "f32", vec![Node::glsl("vec4 surface_light_clip_position = light_matrix * vec4(world_space_position + surface_normal * 0.001, 1.0);
+			vec3 surface_light_ndc_position = (surface_light_clip_position.xyz + vec3(offset, 0)) / surface_light_clip_position.w;
+			vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
+			float z = surface_light_ndc_position.z;
+			float shadow_sample_depth = texture(shadow_map, shadow_uv).r;
+			return z < shadow_sample_depth ? 0.0 : 1.0", &[], Vec::new())]);
+
 		Self {
 			out_albedo: set2_binding0,
 			camera: set2_binding1,
@@ -49,6 +57,7 @@ impl VisibilityShaderGenerator {
 			push_constant,
 			sample_function,
 			sample_normal_function,
+			sample_shadow,
 		}
 	}
 }
@@ -201,16 +210,17 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	float attenuation = 1.0;
 
 	if (light_type == 68) { // Infinite
-		vec4 surface_light_clip_position = light_matrix * vec4(world_space_vertex_position + normal * 0.001, 1.0);
-		vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
-		vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
-		float z = surface_light_ndc_position.z;
-		float shadow_sample_depth = texture(depth_shadow_map, shadow_uv).r;
-		float occlusion_factor = z < shadow_sample_depth ? 0.0 : 1.0;
+		float c_occlusion_factor  = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.00,  0.00));
+		float lt_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01,  0.01));
+		float lr_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01,  0.01));
+		float bl_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01, -0.01));
+		float br_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01, -0.01));
+
+		float occlusion_factor = (c_occlusion_factor + lt_occlusion_factor + lr_occlusion_factor + bl_occlusion_factor + br_occlusion_factor) / 5.0;
 
 		if (occlusion_factor == 0.0) { continue; }
 
-		attenuation = 1.0;
+		attenuation = occlusion_factor;
 	} else {
 		float distance = length(light_pos - world_space_vertex_position);
 		attenuation = 1.0 / (distance * distance);
@@ -257,12 +267,12 @@ imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));";
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
 				statements.insert(0, besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "camera", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
-				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "out_albedo"], Vec::new()));
+				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "out_albedo", "sample_shadow"], Vec::new()));
 			}
 			_ => {}
 		}
 
-		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding1, set2_binding5, set2_binding10, lighting_data, out_albedo, self.sample_function.clone(), self.sample_normal_function.clone()]);
+		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding1, set2_binding5, set2_binding10, lighting_data, out_albedo, self.sample_function.clone(), self.sample_normal_function.clone(), self.sample_shadow.clone()]);
 		root.add(extra);
 
 		root

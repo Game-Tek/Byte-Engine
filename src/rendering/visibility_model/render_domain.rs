@@ -241,10 +241,10 @@ impl VisibilityWorldRenderDomain {
 			let vertex_positions_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_uv_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex UV Buffer"), std::mem::size_of::<[[f32; 2]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-
 			// let triangle_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Triangle Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Index Buffer"), std::mem::size_of::<[[u8; 3]; MAX_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -253,7 +253,6 @@ impl VisibilityWorldRenderDomain {
 			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderMesh; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
 				CAMERA_DATA_BINDING,
@@ -582,7 +581,7 @@ impl VisibilityWorldRenderDomain {
 			}
 		}
 
-		let ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().unwrap();
 
 		let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 		let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
@@ -708,7 +707,7 @@ impl VisibilityWorldRenderDomain {
 			meshlets).into()
 		}).collect::<Vec<_>>();
 
-		let ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().unwrap();
 		
 		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
 
@@ -945,7 +944,7 @@ impl VisibilityWorldRenderDomain {
 
 	fn get_transform(&self) -> Mat4f { Mat4f::identity() }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().unwrap();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -960,7 +959,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn prepare(&mut self, ghi: &ghi::GHI, extent: Extent, modulo_frame_index: u32) -> Option<()> {
+	pub fn prepare(&mut self, ghi: &mut ghi::GHI, extent: Extent, modulo_frame_index: u32) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
@@ -1002,6 +1001,10 @@ impl VisibilityWorldRenderDomain {
 					m.model = mesh.get_transform();
 				});
 			}
+		}
+
+		{
+			let _ = ghi.get_mut_buffer_slice(self.light_data_buffer); // Keep this here to trigger a copy
 		}
 
 		{
@@ -1216,7 +1219,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> utils::BoxedFuture<()> {
-		let ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
@@ -1249,7 +1252,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> utils::BoxedFuture<()> {
-		let ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().unwrap();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 

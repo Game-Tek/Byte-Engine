@@ -63,7 +63,7 @@ bitflags::bitflags! {
 
 // HANDLES
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 pub struct BaseBufferHandle(pub(super) u64);
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
@@ -373,6 +373,7 @@ pub enum Descriptor {
 	Sampler(SamplerHandle),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum UseCases {
 	STATIC,
 	DYNAMIC
@@ -530,7 +531,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8];
 
 	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice<'a>(&'a self, buffer_handle: BaseBufferHandle) -> &'a mut [u8];
+	fn get_mut_buffer_slice<'a>(&'a mut self, buffer_handle: BaseBufferHandle) -> &'a mut [u8];
 
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
@@ -548,7 +549,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
 
-	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles) -> SwapchainHandle;
+	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: PresentationModes) -> SwapchainHandle;
 
 	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 
@@ -579,7 +580,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn end_frame_capture(&self);
 
-	fn get_splitter<'a>(&self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a>;
+	fn get_splitter<'a>(&mut self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -693,6 +694,19 @@ impl Size for Formats {
 pub enum CompressionSchemes {
 	BC5,
 	BC7,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PresentationModes {
+	Inmediate,
+	FIFO,
+	Mailbox,
+}
+
+impl Default for PresentationModes {
+	fn default() -> Self {
+		Self::FIFO
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -1568,7 +1582,7 @@ use super::*;
 
 		let os_handles = window.get_os_handles();
 
-		let swapchain = renderer.bind_to_window(&os_handles);
+		let swapchain = renderer.bind_to_window(&os_handles, Default::default());
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1694,7 +1708,7 @@ use super::*;
 
 		let os_handles = window.get_os_handles();
 
-		let swapchain = renderer.bind_to_window(&os_handles);
+		let swapchain = renderer.bind_to_window(&os_handles, Default::default());
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,

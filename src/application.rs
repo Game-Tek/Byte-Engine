@@ -142,6 +142,11 @@ pub struct GraphicsApplication {
 	tick_handle: EntityHandle<Property<Time>>,
 	root_space_handle: EntityHandle<Space>,
 	start_time: std::time::Instant,
+
+	#[cfg(debug_assertions)]
+	min_frame_time: std::time::Duration,
+	#[cfg(debug_assertions)]
+	max_frame_time: std::time::Duration,
 }
 
 impl Application for GraphicsApplication {
@@ -230,6 +235,11 @@ impl Application for GraphicsApplication {
 
 			tick_count: 0,
 			start_time: std::time::Instant::now(),
+
+			#[cfg(debug_assertions)]
+			min_frame_time: std::time::Duration::MAX,
+			#[cfg(debug_assertions)]
+			max_frame_time: std::time::Duration::ZERO,
 		}
 	}
 
@@ -306,10 +316,10 @@ impl Application for GraphicsApplication {
 			e.render();
 		});
 		
-		self.audio_system_handle.map(|handle| {
-			let mut e = handle.write_sync();
-			e.render();
-		});
+		// self.audio_system_handle.map(|handle| {
+		// 	let mut e = handle.write_sync();
+		// 	e.render();
+		// });
 
 		if close {
 			self.application.close();
@@ -317,9 +327,11 @@ impl Application for GraphicsApplication {
 
 		self.tick_count += 1;
 
-		// if self.tick_count == 2 {
-		// 	self.application.close();
-		// }
+		#[cfg(debug_assertions)]
+		{
+			self.min_frame_time = self.min_frame_time.min(dt);
+			self.max_frame_time = self.max_frame_time.max(dt);
+		}
 	}
 }
 
@@ -327,6 +339,8 @@ impl GraphicsApplication {
 	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.application.close();
+
+		log::debug!("Run stats:\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}", self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time);
 	}
 
 	pub fn get_orchestrator_handle(&self) -> orchestrator::OrchestratorHandle {

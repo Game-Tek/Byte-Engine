@@ -58,6 +58,8 @@ fn gallery_shooter() {
 	let mut player: EntityHandle<Player> = core::spawn_as_child(space_handle.clone(), Player::new(game_state, lookaround_action_handle, trigger_action, audio_system_handle));
 
 	app.do_loop();
+
+	app.close();
 }
 
 /// This struct represents the state of the game.

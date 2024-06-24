@@ -330,7 +330,7 @@ impl Window {
 			#[cfg(target_os = "linux")]
 			OSWindow::X11(ref mut window) => WindowIterator::X11(window.poll()),
 			#[cfg(target_os = "linux")]
-			OSWindow::Wayland(ref window) => WindowIterator::Wayland(window.poll()),
+			OSWindow::Wayland(ref mut window) => WindowIterator::Wayland(window.poll()),
 			#[cfg(target_os = "windows")]
 			OSWindow::Windows(ref mut window) => WindowIterator::Win32(window.poll()),
 		}

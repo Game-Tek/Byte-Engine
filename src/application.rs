@@ -316,10 +316,10 @@ impl Application for GraphicsApplication {
 			e.render();
 		});
 		
-		// self.audio_system_handle.map(|handle| {
-		// 	let mut e = handle.write_sync();
-		// 	e.render();
-		// });
+		self.audio_system_handle.map(|handle| {
+			let mut e = handle.write_sync();
+			e.render();
+		});
 
 		if close {
 			self.application.close();

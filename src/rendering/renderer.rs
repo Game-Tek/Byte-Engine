@@ -207,7 +207,7 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 
 		let mut ghi = self.ghi.write().unwrap();
 
-		let swapchain_handle = ghi.bind_to_window(&os_handles, ghi::PresentationModes::Mailbox);
+		let swapchain_handle = ghi.bind_to_window(&os_handles, ghi::PresentationModes::FIFO);
 
 		self.swapchain_handles.push(swapchain_handle);
 

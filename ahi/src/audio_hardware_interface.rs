@@ -1,3 +1,4 @@
+use windows::{core::GUID, Win32::{Media::{Audio::WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, KernelStreaming::{SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE}, Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT}, System::Com::CoTaskMemFree}};
 #[cfg(target_os = "windows")]
 use windows::{core::HRESULT, Win32::{Foundation::S_OK, Media::Audio::{eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX}, System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED}}};
 
@@ -73,6 +74,10 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 
 		let available_space = buffer_size - padding;
 
+		if available_space == 0 {
+			return;
+		}
+
 		let buffer = unsafe {
 			std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap(), available_space as usize)
 		};
@@ -81,7 +86,13 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 			std::slice::from_raw_parts(audio_data.as_ptr() as *const u8, audio_data.len() * std::mem::size_of::<i16>())
 		};
 
-		buffer.copy_from_slice(&audio_data[..buffer.len()])
+		let write_len = std::cmp::min(buffer.len(), audio_data.len());
+
+		buffer.copy_from_slice(&audio_data[..write_len]);
+
+		unsafe {
+			self.render_client.ReleaseBuffer(write_len as _, 0).unwrap();
+		}
 	}
 
 	fn pause(&self) {
@@ -103,15 +114,28 @@ impl WindowsAudioHardwareInterface {
 
 		let client: IAudioClient = unsafe {
 			let client: IAudioClient = device.Activate(CLSCTX_ALL, None).unwrap();
-			let format = WAVEFORMATEX {
-				cbSize: 22,
-				nChannels: 2,
-				nSamplesPerSec: 48000,
-				nBlockAlign: 4,
-				nAvgBytesPerSec: 48000 * 2 * 2,
-				..Default::default()
+
+			let bits_per_sample = 32;
+			let samples_per_second = 48000;
+			let channels = 2;
+
+			let m_format = WAVEFORMATEXTENSIBLE_t {
+				Format: WAVEFORMATEX {
+					nChannels: channels as _,
+					nSamplesPerSec: samples_per_second,
+					nBlockAlign: (channels * bits_per_sample / 8) as _,
+					nAvgBytesPerSec: samples_per_second * (channels * bits_per_sample / 8),
+					wBitsPerSample: bits_per_sample as _,
+					wFormatTag: WAVE_FORMAT_EXTENSIBLE as _,
+					cbSize: 22,
+				},
+				Samples: windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE_0 { wValidBitsPerSample: bits_per_sample as _ },
+				dwChannelMask: SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT,
+				SubFormat: KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
 			};
-			client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, &format, None).unwrap();
+
+			client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(&m_format), None).unwrap();
+
 			client
 		};
 

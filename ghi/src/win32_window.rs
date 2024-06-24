@@ -1,4 +1,4 @@
-use windows::{core::PCSTR, Win32::{Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::HBRUSH, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
+use windows::{core::PCSTR, Win32::{Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::HBRUSH, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
 
 use crate::{Keys, MouseKeys, WindowEvents};
 
@@ -117,6 +117,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 				x,
 				y,
 				time: 0,
+			});
+
+			LRESULT(0)
+		}
+		WM_MOUSEHWHEEL => {
+			let delta = (wparam.0 & 0xFFFF) as i16;
+
+			window_data.payload = Some(WindowEvents::Button { 
+				pressed: true,
+				button: if delta > 0 { MouseKeys::ScrollUp } else { MouseKeys::ScrollDown },
 			});
 
 			LRESULT(0)

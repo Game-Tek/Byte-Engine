@@ -1,3 +1,0 @@
-main: fn () -> void {
-	albedo = color;
-}

@@ -1,6 +1,0 @@
-main: fn () -> void {
-	albedo = sample(color);
-	normal = sample_normal(normalll);
-	roughness = sample(metallic_roughness).y;
-	metalness = sample(metallic_roughness).z;
-}

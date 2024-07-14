@@ -1,11 +1,13 @@
-workspace = { members = [ "beld","tests/gi"] }
+workspace = { members = ["beld", "tests/gi", "core", "utils", "ghi", "besl", "ahi", "resource_management"] }
+
+cargo-features = ["edition2024"]
 
 [package]
 name = "byte_engine"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
-rust-version = "1.73.0"
+rust-version = "1.81.0"
 
 [features]
 
@@ -27,21 +29,19 @@ serde = "1.0.187"
 log = "0.4.20"
 simple_logger = "4.2.0"
 colored = "2.0.4"
-gxhash = "3.0.0"
+gxhash = "3.4.1"
 machineid-rs = "1.2.4"
-tokio = "1.38.0"
 futures = "0.3.30"
-smol = "2.0.0"
 
 [profile.dev]
 incremental = true
-lto="off"
+lto = "off"
 
 [profile.bench]
 debug = true
 
 [profile.release]
-lto="fat"
-panic="abort"
+lto = "fat"
+panic = "abort"
 codegen-units = 1
 strip = true

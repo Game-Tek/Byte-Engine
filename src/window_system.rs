@@ -7,7 +7,7 @@ use crate::core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener},
 
 /// The window system.
 pub struct WindowSystem {
-	windows: gxhash::GxHashMap<EntityHandle<Window>, ghi::Window>,
+	windows: gxhash::HashMap<EntityHandle<Window>, ghi::Window>,
 }
 
 impl Entity for WindowSystem {}
@@ -47,7 +47,7 @@ impl WindowSystem {
 			}
 		}
 
-		WindowSystem { windows: gxhash::GxHashMap::default() }
+		WindowSystem { windows: gxhash::HashMap::default() }
 	}
 
 	pub fn new_as_system<'a>() -> EntityBuilder<'a, WindowSystem> {
@@ -78,7 +78,7 @@ impl WindowSystem {
 	}
 
 	/// Creates a new OS window.
-	/// 
+	///
 	/// # Arguments
 	/// - `name` - The name of the window.
 	/// - `extent` - The size of the window.
@@ -96,10 +96,10 @@ impl WindowSystem {
 	}
 
 	/// Gets the OS handles for a window.
-	/// 
+	///
 	/// # Arguments
 	/// - `window_handle` - The handle of the window to get the OS handles for.
-	/// 
+	///
 	/// # Returns
 	/// The operationg system handles for the window.
 	pub fn get_os_handles(&self, window_handle: &EntityHandle<Window>,) -> ghi::OSHandles {

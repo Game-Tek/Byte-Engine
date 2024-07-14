@@ -1,5 +1,6 @@
 use std::{future, sync::Arc};
 
+use utils::r#async::block_on;
 use clap::{Parser, Subcommand};
 use resource_management::{asset::{self, asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
 
@@ -48,7 +49,7 @@ fn main() -> Result<(), i32> {
 	let command = cli.command;
 
 	let path = cli.path;
-	
+
 	match command {
 		Commands::Wipe {} => {
 			std::fs::remove_dir_all(&path).map_err(|e| {
@@ -60,13 +61,13 @@ fn main() -> Result<(), i32> {
 				log::error!("Failed to create resources directory. Error: {}", e);
 				1
 			})?;
-			
+
 			Ok(())
 		}
 		Commands::List {} => {
 			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
 
-			match smol::block_on(storage_backend.list()) {
+			match block_on(storage_backend.list()) {
 				Ok(resources) => {
 					if resources.is_empty() {
 						log::info!("No resources found.");
@@ -110,13 +111,13 @@ fn main() -> Result<(), i32> {
 
 			if sync {
 				for id in ids {
-					println!("Baking resource '{}'", id);
-					match smol::block_on(asset_manager.bake(&id)) {
+					log::info!("Baking resource '{}'", id);
+					match block_on(asset_manager.bake(&id)) {
 						Ok(_) => {
-							println!("Baked resource '{}'", id);
+							log::info!("Baked resource '{}'", id);
 						}
 						Err(e) => {
-							println!("Failed to bake '{}'. Error: {:#?}", id, e);
+							log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
 						}
 					}
 				}
@@ -156,7 +157,7 @@ fn main() -> Result<(), i32> {
 			}
 
 			for id in ids {
-				match smol::block_on(storage_backend.delete(&id)) {
+				match block_on(storage_backend.delete(&id)) {
 					Ok(()) => {
 						log::info!("Deleted resource '{}'", id);
 					}

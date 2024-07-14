@@ -7,7 +7,6 @@ rust-version = "1.73.0"
 
 [dependencies]
 utils = { path = "../utils" }
-ghi = { path = "../ghi" }
 besl = { path = "../besl" }
 
 shaderc = "0.8.2"
@@ -21,7 +20,6 @@ libdeflater = "1.19.0"
 meshopt = "0.2.0"
 json = "0.12.4"
 serde = "1.0.187"
-smol = "2.0.0"
 log = "0.4.20"
 futures = "0.3.30"
 downcast-rs = "1.2.0"

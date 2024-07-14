@@ -1,8 +1,10 @@
 //! Mesh component module
 
 use core::{entity::EntityBuilder, listener::Listener};
+use std::future::join;
 
 use maths_rs::{mat::{MatRotate3D, MatScale, MatTranslate}, normalize};
+use utils::BoxedFuture;
 
 use crate::{core::{orchestrator, Entity}, math};
 
@@ -129,10 +131,11 @@ pub struct Mesh {
 }
 
 impl Entity for Mesh {
-	fn call_listeners(&self, listener: &core::listener::BasicListener, handle: core::EntityHandle<Self>) where Self: Sized {
-		listener.invoke_for(handle.clone(), self);
-		listener.invoke_for(handle.clone() as core::EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
-	}
+	fn call_listeners<'a>(&'a self, listener: &'a core::listener::BasicListener, handle: core::EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+		let se = listener.invoke_for(handle.clone(), self);
+		let re = listener.invoke_for(handle.clone() as core::EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
+		join!(se, re).await;
+	}) }
 }
 
 impl RenderEntity for Mesh {

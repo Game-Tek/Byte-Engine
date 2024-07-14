@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, shader_compilation, window, CompressionSchemes, Size};
+use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, window, Size};
 
 pub struct VulkanGHI {
 	entry: ash::Entry,
@@ -177,9 +177,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					Err(err) => {
 						let compiler_error_string = err.to_string();
 
-						let error_string = shader_compilation::format_glslang_error("shader_name:", &compiler_error_string, &source_code).unwrap_or(compiler_error_string);
-
-						println!("{}", error_string);
+						println!("{}", compiler_error_string);
 
 						return Err(());
 					}

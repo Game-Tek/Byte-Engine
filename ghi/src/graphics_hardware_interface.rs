@@ -307,9 +307,9 @@ pub trait CommandBufferRecording where Self: Sized {
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
 
 	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
-	
+
 	fn start_region(&self, name: &str);
-	
+
 	fn end_region(&self);
 
 	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
@@ -514,15 +514,15 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	/// Creates a new buffer.\
 	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\
 	/// Staging buffers MAY be created if there's is not sufficient CPU writable, fast GPU readable memory.\
-	/// 
+	///
 	/// # Arguments
-	/// 
+	///
 	/// * `size` - The size of the buffer in bytes.
 	/// * `resource_uses` - The uses of the buffer.
 	/// * `device_accesses` - The accesses of the buffer.
-	/// 
+	///
 	/// # Returns
-	/// 
+	///
 	/// The handle of the buffer.
 	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle;
 
@@ -558,9 +558,9 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
-	/// 
+	///
 	/// # Arguments
-	/// 
+	///
 	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
 	/// * `synchronizer_handle` - The synchronizer to wait for before acquiring the image. If `None` is passed, the image will be acquired immediately.
 	///
@@ -905,7 +905,7 @@ bitflags::bitflags! {
 		const ShaderBindingTable = 1 << 11;
 		/// Resource will be used as a acceleration structure build scratch buffer.
 		const AccelerationStructureBuildScratch = 1 << 12;
-		
+
 		const AccelerationStructureBuild = 1 << 13;
 
 		const Clear = 1 << 14;
@@ -952,7 +952,7 @@ pub enum DescriptorType {
 	AccelerationStructure,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Enumerates the available filtering modes, primarily used in samplers.
 pub enum FilteringModes {
 	/// Closest mode filtering. Rounds floating point coordinates to the nearest pixel.
@@ -961,7 +961,7 @@ pub enum FilteringModes {
 	Linear,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Enumerates the available sampling reduction modes.
 /// The sampling reduction mode is used to determine how to reduce/combine the samples of neighbouring texels when sampling an image.
 pub enum SamplingReductionModes {
@@ -973,7 +973,7 @@ pub enum SamplingReductionModes {
 	Max,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Enumerates the available sampler addressing modes.
 pub enum SamplerAddressingModes {
 	/// Repeat mode addressing.
@@ -1033,7 +1033,7 @@ impl DescriptorSetBindingTemplate {
 	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> ShaderBindingDescriptor {
 		ShaderBindingDescriptor::new(set, self.binding, access_policies)
 	}
-	
+
 	/// Returns the binding index of the descriptor set layout binding.
 	pub fn binding(&self) -> u32 {
 		self.binding
@@ -1117,7 +1117,7 @@ impl <'a> BindingConstructor<'a> {
 		// 	frame_offset: None,
 		// }
 	}
-	
+
 	fn acceleration_structure(bindings: &'a DescriptorSetBindingTemplate, top_level_acceleration_structure: TopLevelAccelerationStructureHandle) -> Self {
 		BindingConstructor {
 			descriptor_set_binding_template: bindings,
@@ -1301,7 +1301,7 @@ impl BufferDescriptor {
 }
 
 pub struct SpecializationMapEntry {
-	pub(super) r#type: String,	
+	pub(super) r#type: String,
 	pub(super) constant_id: u32,
 	pub(super) value: Box<[u8]>,
 }
@@ -1368,7 +1368,7 @@ pub enum PipelineConfigurationBlocks<'a> {
 		vertex_elements: &'a [VertexElement]
 	},
 	InputAssembly {
-	
+
 	},
 	RenderTargets {
 		targets: &'a [AttachmentInformation],
@@ -1432,16 +1432,16 @@ use super::*;
 			let pixel = pixels[(extent.width() / 2) as usize]; // middle top center
 			assert_eq!(pixel, RGBAu8 { r: 255, g: 0, b: 0, a: 255 });
 		}
-		
+
 		let pixel = pixels[(extent.width() - 1) as usize]; // top right
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 0, a: 255 });
-		
+
 		let pixel = pixels[(extent.width()  * (extent.height() - 1)) as usize]; // bottom left
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 255, a: 255 });
-		
+
 		let pixel = pixels[(extent.width() * extent.height() - (extent.width() / 2)) as usize]; // middle bottom center
 		assert!(pixel == RGBAu8 { r: 0, g: 127, b: 127, a: 255 } || pixel == RGBAu8 { r: 0, g: 128, b: 127, a: 255 }); // FIX: workaround for CI, TODO: make near equal function
-		
+
 		let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
 	}
@@ -1451,7 +1451,7 @@ use super::*;
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
@@ -1586,7 +1586,7 @@ use super::*;
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
@@ -1712,7 +1712,7 @@ use super::*;
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
@@ -1840,7 +1840,7 @@ use super::*;
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
@@ -2082,10 +2082,10 @@ use super::*;
 			let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
 			let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(&pipeline);
-			
+
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
-			let matrix: [f32; 16] = 
+			let matrix: [f32; 16] =
 				[
 					angle.cos(), -angle.sin(), 0f32, 0f32,
 					angle.sin(), angle.cos(), 0f32, 0f32,
@@ -2112,7 +2112,7 @@ use super::*;
 			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
-			
+
 			// Track green corner as it should move through screen
 
 			if i % 4 == 0 {
@@ -2250,7 +2250,7 @@ use super::*;
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
 		];
 
@@ -2423,7 +2423,7 @@ use super::*;
 
 		let colors: [f32; 4 * 3] = [
 			1.0, 0.0, 0.0, 1.0,
-			0.0, 1.0, 0.0, 1.0, 
+			0.0, 1.0, 0.0, 1.0,
 			0.0, 0.0, 1.0, 1.0,
 		];
 
@@ -2713,7 +2713,7 @@ void main() {
 			renderer.wait(modulo_frame_index, render_finished_synchronizer);
 
 			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
-			
+
 			check_triangle(pixels, extent);
 		}
 	}

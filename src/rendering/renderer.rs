@@ -1,8 +1,9 @@
-use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::RwLock};
+use core::entity::DomainType;
+use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
 use resource_management::resource::resource_manager::ResourceManager;
-use utils::Extent;
+use utils::{r#async::RwLock, Extent};
 
 use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
@@ -34,7 +35,7 @@ pub struct Renderer {
 
 impl Renderer {
 	pub fn new_as_system<'a>(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_closure_with_parent(move |parent| {
+		EntityBuilder::new_from_async_function_with_parent(async move |parent: DomainType| {
 			let enable_validation = std::env::vars().find(|(k, _)| k == "BE_RENDER_DEBUG").is_some() || true;
 
 			let ghi_instance = Rc::new(RwLock::new(ghi::create(ghi::Features::new().validation(enable_validation).api_dump(false).gpu_validation(false).debug_log_function(|message| {
@@ -45,26 +46,26 @@ impl Renderer {
 			// let extent = Extent::rectangle(1920, 1080);
 
 			let result = {
-				let mut ghi = ghi_instance.write().unwrap();
+				let mut ghi = ghi_instance.blocking_write();
 
 				ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
-			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle.clone()));
+			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle.clone())).await;
 
-			let ui_render_model = core::spawn(UIRenderModel::new_as_system());
-			
+			let ui_render_model = core::spawn(UIRenderModel::new_as_system()).await;
+
 			let render_command_buffer;
 			let render_finished_synchronizer;
 			let image_ready;
 			let tonemap_render_model;
 
 			{
-				let mut ghi = ghi_instance.write().unwrap();
+				let mut ghi = ghi_instance.blocking_write();
 
 				{
 					let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
-					tonemap_render_model = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result));
+					tonemap_render_model = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result)).await;
 				}
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
@@ -73,9 +74,9 @@ impl Renderer {
 			}
 
 			let ao_render_pass = {
-				let mut ghi = ghi_instance.write().unwrap();
+				let mut ghi = ghi_instance.blocking_write();
 				let vrm = visibility_render_model.read_sync();
-				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), resource_manager_handle, vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()))
+				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), resource_manager_handle, vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
 			};
 
 			Renderer {
@@ -110,7 +111,7 @@ impl Renderer {
 
 		let modulo_frame_index = (self.rendered_frame_count % self.frame_queue_depth) as u32;
 
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 
 		let swapchain_handle = self.swapchain_handles[0];
 
@@ -126,7 +127,7 @@ impl Renderer {
 
 		if extent != self.extent {
 			{
-				let mut ghi = self.ghi.write().unwrap();
+				let mut ghi = self.ghi.blocking_write();
 				ghi.resize_image(self.result, extent);
 			}
 
@@ -135,7 +136,7 @@ impl Renderer {
 			});
 
 			self.ao_render_pass.sync_get_mut(|e| {
-				let mut ghi = self.ghi.write().unwrap();
+				let mut ghi = self.ghi.blocking_write();
 				e.resize(ghi.deref_mut(), extent);
 			});
 
@@ -146,7 +147,7 @@ impl Renderer {
 			self.extent = extent;
 		}
 
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 
 		self.visibility_render_model.sync_get_mut(|vis_rp| {
 			if let Some(_) = vis_rp.prepare(&mut ghi, extent, modulo_frame_index) {
@@ -162,7 +163,7 @@ impl Renderer {
 					let ao_rp = ao_rp.write_sync();
 					ao_rp.render(&mut command_buffer_recording, extent);
 				});
-	
+
 				vis_rp.render_b(&mut command_buffer_recording);
 			}
 		});
@@ -170,7 +171,7 @@ impl Renderer {
 		self.tonemap_render_model.map(|e| {
 			let e = e.read_sync();
 			e.render(&mut command_buffer_recording, extent);
-		});			
+		});
 
 		// Copy to swapchain
 
@@ -205,7 +206,7 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 			e.get_os_handles(&handle)
 		});
 
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 
 		let swapchain_handle = ghi.bind_to_window(&os_handles, ghi::PresentationModes::FIFO);
 

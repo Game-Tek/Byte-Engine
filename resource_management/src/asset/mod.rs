@@ -1,7 +1,9 @@
 //! This module contains the asset management system.
 //! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
 
-use smol::io::AsyncReadExt;
+use std::fmt::Debug;
+
+use utils::{File, r#async::AsyncReadExt};
 
 pub mod asset_manager;
 pub mod asset_handler;
@@ -16,14 +18,15 @@ pub type BEADType = json::JsonValue;
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
-pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async move {
-	let resource_origin = if url.starts_with("http://") || url.starts_with("https://") { "network" } else { "local" };
+pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std::path::Path>) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async move {
+    let base = url.get_base();
+	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") { "network" } else { "local" };
 	let mut source_bytes;
 	let format;
 	let spec;
 	match resource_origin {
 		"network" => {
-			let request = if let Ok(request) = ureq::get(url).call() { request } else { return Err(()); };
+			let request = if let Ok(request) = ureq::get(base.as_ref()).call() { request } else { return Err(()); };
 			let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return Err(()); };
 			format = content_type;
 
@@ -36,15 +39,15 @@ pub fn read_asset_from_source<'a>(url: &'a str, base_path: Option<&'a std::path:
 		"local" => {
 			let path = base_path.unwrap_or(std::path::Path::new(""));
 
-			let path = path.join(url);
+			let path = path.join(base.as_ref());
 
-			let mut file = smol::fs::File::open(&path).await.or(Err(()))?;
+			let mut file = File::open(&path).await.or(Err(()))?;
 
 			spec = {
 				// Append ".bead" to the file name to check for a resource file
 				let mut spec_path = path.clone().as_os_str().to_os_string();
 				spec_path.push(".bead");
-				let file = smol::fs::File::open(spec_path).await.ok();
+				let file = File::open(spec_path).await.ok();
 				if let Some(mut file) = file {
 					let mut spec_bytes = Vec::with_capacity(file.metadata().await.unwrap().len() as usize);
 					if let Err(_) = file.read_to_end(&mut spec_bytes).await {
@@ -85,20 +88,120 @@ pub fn get_base<'a>(url: &'a str) -> Option<&'a str> {
 	let url = split.next()?;
 	if url.is_empty() {
 		return None;
-	} 
+	}
 	let path = std::path::Path::new(url);
 	Some(path.to_str()?)
 }
 
-fn get_fragment(url: &str) -> Option<String> {
+pub fn get_extension<'a>(url: &'a str) -> Option<&'a str> {
+    let mut split = url.split('#');
+	let url = split.next()?;
+	if url.is_empty() {
+		return None;
+	}
+	let path = std::path::Path::new(url);
+	Some(path.extension()?.to_str()?)
+}
+
+fn get_fragment(url: &str) -> Option<&str> {
 	let mut split = url.split('#');
 	let _ = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
 	let fragment = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;
 	if split.count() == 0 {
-		Some(fragment.to_string())
+		Some(fragment)
 	} else {
 		None
 	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ResourceId<'a> {
+    full: &'a str,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ResourceIdBase<'a> {
+    base: &'a str,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ResourceIdFragment<'a> {
+    fragment: &'a str,
+}
+
+impl<'a> ResourceId<'a> {
+    pub fn new(full: &'a str) -> Self {
+        Self { full }
+    }
+
+    pub fn get_base(&self) -> ResourceIdBase<'a> {
+        ResourceIdBase { base: get_base(self.full).unwrap() }
+    }
+
+    pub fn get_extension(&self) -> &'a str {
+        let mut split = self.full.split('#');
+    	let url = split.next().unwrap();
+    	let path = std::path::Path::new(url);
+    	path.extension().unwrap().to_str().unwrap()
+    }
+
+    pub fn get_fragment(&self) -> Option<ResourceIdFragment<'a>> {
+        get_fragment(self.full).map(|fragment| ResourceIdFragment { fragment })
+    }
+}
+
+impl Debug for ResourceId<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.full)
+    }
+}
+
+impl ToString for ResourceId<'_> {
+    fn to_string(&self) -> String {
+        self.full.to_string()
+    }
+}
+
+impl AsRef<str> for ResourceId<'_> {
+    fn as_ref(&self) -> &str {
+        self.full
+    }
+}
+
+impl Debug for ResourceIdBase<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.base)
+    }
+}
+
+impl ToString for ResourceIdBase<'_> {
+    fn to_string(&self) -> String {
+        self.base.to_string()
+    }
+}
+
+impl AsRef<str> for ResourceIdBase<'_> {
+    fn as_ref(&self) -> &str {
+        self.base
+    }
+}
+
+impl Debug for ResourceIdFragment<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.fragment)
+    }
+}
+
+impl ToString for ResourceIdFragment<'_> {
+    fn to_string(&self) -> String {
+        self.fragment.to_string()
+    }
+}
+
+impl AsRef<str> for ResourceIdFragment<'_> {
+    fn as_ref(&self) -> &str {
+        self.fragment
+    }
 }
 
 #[cfg(test)]

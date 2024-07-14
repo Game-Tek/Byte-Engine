@@ -1,6 +1,13 @@
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 pub type SendSyncBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
-pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
+pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+pub mod r#async;
+
+pub use r#async::spawn;
+pub use r#async::spawn_blocking;
+pub use r#async::remove_file;
+pub use r#async::File;
 
 pub struct BufferAllocator<'a> {
 	buffer: &'a mut [u8],
@@ -41,7 +48,7 @@ pub fn partition<T>(slice: &[T], key_fn: impl Fn(&T) -> usize) -> Vec<(usize, &[
 	partitions
 }
 
-#[derive(Debug, Clone, Copy, PartialEq,)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Extent {
 	width: u32,
 	height: u32,
@@ -124,7 +131,7 @@ pub struct RGBA {
 }
 
 impl RGBA {
-	pub fn black() -> Self { Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0, } }	
+	pub fn black() -> Self { Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0, } }
 	pub fn white() -> Self { Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0, } }
 }
 

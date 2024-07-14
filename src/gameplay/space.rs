@@ -1,3 +1,5 @@
+use utils::BoxedFuture;
+
 use crate::core::{domain::Domain, entity::EntityTrait, listener::{BasicListener, EntitySubscriber, Listener}, Entity, EntityHandle};
 
 pub struct Space {
@@ -17,8 +19,8 @@ impl Domain for Space {
 }
 
 impl Listener for Space {
-	fn invoke_for<T: ?Sized + 'static>(&self, handle: EntityHandle<T>, reference: &T) {
-		self.listener.invoke_for(handle, reference);
+	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> BoxedFuture<'a, ()> {
+		self.listener.invoke_for(handle, reference)
 	}
 
 	fn add_listener<T: Entity + ?Sized + 'static>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {

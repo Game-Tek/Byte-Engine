@@ -3,11 +3,11 @@ use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadRes
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
 /// It also handles caching of resources.
-/// 
+///
 /// Resource can be sourced from the local filesystem or from the network.
 /// When in a debug build it will lazily load resources from source and cache them.
 /// When in a release build it will exclusively load resources from cache.
-/// 
+///
 /// If accessing the filesystem paths will be relative to the assets directory, and assets should omit the extension.
 pub struct ResourceManager {
 	// #[cfg(debug_assertions)]
@@ -63,24 +63,20 @@ impl ResourceManager {
 	/// The result of this function can be later fed into `load()` which will load the binary data.
 	pub async fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Option<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, GenericResourceResponse: TryInto<ReferenceModel<T::Model>> {
 		// Try to load the resource from cache or source.
-		if let Some(asset_manager) = &self.asset_manager {
-			asset_manager.bake(id).await.ok()?;
-		}
-
-		let (resource, _) = if let Some(x) = self.get_storage_backend().read(id).await {
-			x	
+		let reference_model: ReferenceModel<T::Model> = if let Some(asset_manager) = &self.asset_manager {
+			asset_manager.load(id).await.ok()?
 		} else {
-			return None;
-		};
+            return None;
+        };
 
-		let reference_model: ReferenceModel<T::Model> = resource.try_into().ok()?;
-		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()).await.unwrap();
+		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()).await.ok()?;
+
 		reference.into()
 	}
 
 	// /// Tries to load a resource from cache or source.\
 	// /// This is a more advanced version of get() as it allows to load resources that depend on other resources.\
-	// /// 
+	// ///
 	// /// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
 	// /// If the resource is in cache but it's data cannot be parsed, it will return None.
 	// /// Return is a tuple containing the resource description and it's associated binary data.\

@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use smol::{fs::File, io::{AsyncReadExt, AsyncSeekExt}};
+use utils::{File, r#async::AsyncReadExt, r#async::AsyncWriteExt, r#async::AsyncSeekExt};
 
 use crate::{Reference, Resource, Stream, StreamDescription, StreamMut};
 
@@ -41,6 +41,12 @@ impl <'a> From<&'a mut [u8]> for ReadTargets<'a> {
 impl <'a> From<Vec<StreamMut<'a>>> for ReadTargets<'a> {
 	fn from(streams: Vec<StreamMut<'a>>) -> Self {
 		ReadTargets::Streams(streams)
+	}
+}
+
+impl <'a, T: Resource + 'a> From<Reference<T>> for ReadTargets<'a> {
+	fn from(reference: Reference<T>) -> Self {
+		ReadTargets::create_buffer(&reference)
 	}
 }
 

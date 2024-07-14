@@ -11,7 +11,6 @@ utils = { path = "../utils" }
 ash = { version = "0.38.0", features=['linked'] }
 shaderc = "0.8.2"
 bitflags = "2.4.0"
-colored = "2.0.4"
 renderdoc = "0.12.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]

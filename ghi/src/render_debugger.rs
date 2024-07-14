@@ -23,7 +23,7 @@ impl RenderDebugger {
 	/// Starts a frame capture on the render debugger.
 	pub fn start_frame_capture(&self) {
 		if let Some(renderdoc) = &self.renderdoc {
-			#[cfg(linux)]
+			#[cfg(target_os="linux")]
 			renderdoc.lock().unwrap().start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 			// #[cfg(windows)]
 			// renderdoc.lock().unwrap().start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
@@ -33,7 +33,7 @@ impl RenderDebugger {
 	/// Ends a frame capture on the render debugger.
 	pub fn end_frame_capture(&self) {
 		if let Some(renderdoc) = &self.renderdoc {
-			#[cfg(linux)]
+			#[cfg(target_os="linux")]
 			renderdoc.lock().unwrap().end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 			// #[cfg(windows)]
 			// renderdoc.lock().unwrap().end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());

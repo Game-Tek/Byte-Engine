@@ -17,21 +17,22 @@ fn revolver() {
 	println!("{}", std::env::current_dir().unwrap().display());
 
 	let space_handle = app.get_root_space_handle();
+	let runtime = app.get_runtime();
 
-	let lookaround_action_handle = core::spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[
+	let lookaround_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[
 		input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), Function::Sphere),
 		input::ActionBindingDescription::new("Gamepad.RightStick"),
-	],));
+	],)));
 
-	let zoom_action_handle = core::spawn_as_child(space_handle.clone(), Action::<f32>::new("Zoom", &[
+	let zoom_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), Action::<f32>::new("Zoom", &[
 		input::ActionBindingDescription::new("Mouse.Scroll"),
-	],));
+	],)));
 	
-	let camera: EntityHandle<Camera> = core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 0.0, -0.25),));
-	let _: EntityHandle<DirectionalLight> = core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 0.0, 1.0), 4000f32));
-	let _: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32));
-	let _: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32));
-	let mesh: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("Revolver.glb", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
+	let camera: EntityHandle<Camera> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 0.0, -0.25),)));
+	let _: EntityHandle<DirectionalLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 0.0, 1.0), 4000f32)));
+	let _: EntityHandle<PointLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32)));
+	let _: EntityHandle<PointLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32)));
+	let mesh: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Revolver.glb", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0)))));
 
 	struct Animation {
 		value: Vector3,

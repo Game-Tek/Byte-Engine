@@ -13,6 +13,7 @@ pub mod visibility_model;
 pub mod rendering_domain;
 
 pub mod renderer;
+pub mod texture_manager;
 
 pub mod tonemap_render_pass;
 

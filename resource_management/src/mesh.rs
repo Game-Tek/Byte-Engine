@@ -2,7 +2,7 @@ use futures::future::try_join_all;
 use polodb_core::bson;
 use serde::Deserialize;
 
-use crate::{material::{Variant, VariantModel}, types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, StorageBackend};
+use crate::{asset::ResourceId, material::{Variant, VariantModel}, types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, StorageBackend};
 
 #[derive(Debug, serde::Serialize)]
 pub struct Primitive {
@@ -117,11 +117,11 @@ impl Mesh {
 	pub fn meshlets_stream(&self) -> Option<Stream> {
 		self.streams.iter().find(|s| s.stream_type == Streams::Meshlets).cloned()
 	}
-	
+
 	pub fn vertex_count(&self) -> usize {
 		self.primitives.iter().map(|p| p.vertex_count as usize).sum()
 	}
-	
+
 	pub fn triangle_count(&self) -> usize {
 		self.meshlet_indices_stream().map(|s| s.count()).unwrap_or(0) / 3
 	}
@@ -152,7 +152,7 @@ impl super::Model for MeshModel {
 
 impl <'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
 	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Mesh>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
+		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
 		let MeshModel { vertex_components, streams, primitives } = MeshModel::deserialize(bson::Deserializer::new(gr.resource.into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Mesh {

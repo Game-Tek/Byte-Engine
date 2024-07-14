@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use core::listener::BasicListener;
+use std::{collections::HashMap, future::join};
 
 use maths_rs::{Vec3f, mag};
+use utils::BoxedFuture;
 
 use crate::{application::Time, core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, utils, Vector3};
 
@@ -65,10 +67,11 @@ impl Sphere {
 }
 
 impl Entity for Sphere {
-	fn call_listeners(&self, listener: &crate::core::listener::BasicListener, handle: EntityHandle<Self>) where Self: Sized {
-		listener.invoke_for(handle.clone(), self);
-		listener.invoke_for(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
-	}
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+		let se = listener.invoke_for(handle.clone(), self);
+		let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
+		join!(se, pe).await;
+	}) }
 }
 
 impl PhysicsEntity for Sphere {

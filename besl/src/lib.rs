@@ -6,6 +6,8 @@ mod tokenizer;
 pub mod parser;
 pub mod lexer;
 
+pub mod glsl;
+
 pub use lexer::Expressions;
 pub use lexer::Operators;
 pub use lexer::Node;

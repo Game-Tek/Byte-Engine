@@ -12,7 +12,6 @@ pub mod wayland_window;
 pub mod win32_window;
 
 pub mod graphics_hardware_interface;
-pub mod shader_compilation;
 pub mod vulkan;
 pub mod render_debugger;
 

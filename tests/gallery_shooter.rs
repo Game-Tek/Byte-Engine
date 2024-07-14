@@ -2,10 +2,11 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use core::{self, entity::{EntityBuilder, SelfDestroyingEntity, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
+use core::{self, entity::{DomainType, EntityBuilder, SelfDestroyingEntity, SpawnerEntity}, event::EventLike, property::{DerivedProperty, Property}, Entity, EntityHandle};
 use std::f32::consts::PI;
 use byte_engine::{application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{self, space::Space}, input, math::from_normal, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::{self, Transform}, point_light::PointLight}, Vector3};
 use maths_rs::{mat::{MatInverse, MatTranslate}, swizz::Vec3Swizzle, vec::Vec4};
+use utils::r#async::block_on;
 
 #[ignore]
 #[test]
@@ -16,26 +17,28 @@ fn gallery_shooter() {
 
 	app.initialize(std::env::args());
 
+	let runtime = app.get_runtime();
+
 	let space_handle = app.get_root_space_handle();
 
-	let lookaround_action_handle = core::spawn_as_child(space_handle.clone(), input::Action::new("Lookaround", &[
+	let lookaround_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), input::Action::new("Lookaround", &[
 		input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input::Function::Sphere),
 		input::ActionBindingDescription::new("Gamepad.RightStick"),
-	],));
+	],)));
 
-	let trigger_action = core::spawn_as_child(space_handle.clone(), input::Action::new("Trigger", &[
+	let trigger_action = runtime.block_on(core::spawn_as_child(space_handle.clone(), input::Action::new("Trigger", &[
 		input::ActionBindingDescription::new("Mouse.LeftButton"),
 		input::ActionBindingDescription::new("Gamepad.RightTrigger"),
-	],));
+	],)));
 
 	let scale = Vector3::new(0.1, 0.1, 0.1);
 	
-	let floor: EntityHandle<gameplay::object::Object> = core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, -1.25f32, 1.0)).scale(Vector3::new(10f32, 1f32, 10f32)), physics::BodyTypes::Static, Vector3::new(0f32, 0f32, 0f32)));
+	let floor: EntityHandle<gameplay::object::Object> = runtime.block_on(core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, -1.25f32, 1.0)).scale(Vector3::new(10f32, 1f32, 10f32)), physics::BodyTypes::Static, Vector3::new(0f32, 0f32, 0f32))));
 
-	let duck_1: EntityHandle<gameplay::object::Object> = core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
-	let duck_2: EntityHandle<gameplay::object::Object> = core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
-	let duck_3: EntityHandle<gameplay::object::Object> = core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
-	let duck_4: EntityHandle<gameplay::object::Object> = core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
+	let duck_1: EntityHandle<gameplay::object::Object> = runtime.block_on(core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
+	let duck_2: EntityHandle<gameplay::object::Object> = runtime.block_on(core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
+	let duck_3: EntityHandle<gameplay::object::Object> = runtime.block_on(core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
+	let duck_4: EntityHandle<gameplay::object::Object> = runtime.block_on(core::spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", mesh::Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
 
 	app.get_tick_handle().write_sync().add(move |v| {
 		let mut ducks = vec![duck_1.write_sync(), duck_2.write_sync(), duck_3.write_sync(), duck_4.write_sync(),];
@@ -51,11 +54,11 @@ fn gallery_shooter() {
 	});
 	
 	// let _sun: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 1.5, -0.5), 4500.0));
-	let _sun: EntityHandle<DirectionalLight> = core::spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0));
+	let _sun: EntityHandle<DirectionalLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0)));
 
-	let mut game_state = core::spawn_as_child(space_handle.clone(), GameState::new());
+	let mut game_state = runtime.block_on(core::spawn_as_child(space_handle.clone(), GameState::new()));
 
-	let mut player: EntityHandle<Player> = core::spawn_as_child(space_handle.clone(), Player::new(game_state, lookaround_action_handle, trigger_action, audio_system_handle));
+	let mut player: EntityHandle<Player> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Player::new(game_state, lookaround_action_handle, trigger_action, audio_system_handle)));
 
 	app.do_loop();
 
@@ -114,9 +117,9 @@ impl SpawnerEntity<Space> for Player {
 
 impl Player {
 	fn new(game_state: EntityHandle<GameState>, lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>,) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new_from_closure_with_parent(move |parent| {
+		EntityBuilder::new_from_async_function_with_parent(async move |parent: DomainType| {
 			let transform = mesh::Transform::default().position(Vector3::new(0.25, -0.15, 0.4f32)).scale(Vector3::new(0.05, 0.03, 0.2));
-			let camera_handle = core::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
+			let camera_handle = core::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0))).await;
 
 			let mut magazine_size = Property::new(5);
 			let magazine_as_string = DerivedProperty::new(&mut magazine_size, |magazine_size| { magazine_size.to_string() });
@@ -128,7 +131,7 @@ impl Player {
 				audio_system: audio_system,
 
 				camera: camera_handle,
-				mesh: core::spawn_as_child(parent, mesh::Mesh::new("Box.glb", transform)),
+				mesh: core::spawn_as_child(parent, mesh::Mesh::new("Box.glb", transform)).await,
 
 				magazine_size,
 				magazine_as_string,
@@ -157,7 +160,7 @@ impl Player {
 
 			{
 				let mut audio_system = self.audio_system.write_sync();
-				smol::block_on(audio_system.play("gun.wav"));
+				block_on(audio_system.play("gun.wav"));
 			}
 
 			let direction = {
@@ -210,8 +213,8 @@ impl SelfDestroyingEntity for Bullet {
 
 impl Bullet {
 	fn new<'a>(position: Vector3, direction: Vector3) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_closure_with_parent(move |parent| {
-			let bullet_object = core::spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,));
+		EntityBuilder::new_from_async_function_with_parent(async move |parent: DomainType| {
+			let bullet_object = core::spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,)).await;
 
 			Self {
 				bullet_object,

@@ -7,14 +7,16 @@
 #![feature(stmt_expr_attributes)]
 #![feature(path_file_prefix)]
 #![feature(trait_upcasting)]
+#![feature(map_try_insert)]
+#![feature(future_join)]
 
-use std::{any::Any, collections::HashMap, hash::Hasher, sync::{Arc, Mutex}};
+use std::{any::Any, collections::{HashMap}, hash::Hasher, sync::{Arc, Mutex}};
 use polodb_core::bson;
 use serde::{ser::SerializeStruct, Serialize};
-use smol::io::AsyncWriteExt;
 
 use resource::resource_handler::{FileResourceReader, LoadTargets, ReadTargets, ResourceReader};
-use asset::{get_base, read_asset_from_source, BEADType};
+use asset::{get_base, read_asset_from_source, BEADType, ResourceId};
+use utils::{r#async::{AsyncWriteExt, RwLock}, remove_file, File};
 
 pub mod asset;
 pub mod resource;
@@ -47,7 +49,7 @@ pub struct ProcessedAsset {
 }
 
 impl ProcessedAsset {
-    pub fn new<T: Model + serde::Serialize>(id: &str, resource: T) -> Self {
+    pub fn new<T: Model + serde::Serialize>(id: ResourceId<'_>, resource: T) -> Self {
         ProcessedAsset {
             id: id.to_string(),
             class: T::get_class().to_string(),
@@ -189,8 +191,8 @@ impl<T: Model> ReferenceModel<T> {
         }
     }
 
-	pub fn id(&self) -> &str {
-		&self.id
+	pub fn id(&self) -> ResourceId {
+		ResourceId::new(&self.id)
 	}
 }
 
@@ -341,6 +343,12 @@ pub trait Resource: Send + Sync {
     type Model: Model;
 }
 
+impl <T: Resource> std::hash::Hash for Reference<T> {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		self.id.hash(state); self.hash.hash(state); self.size.hash(state); self.resource.get_class().hash(state);
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct SerializedResourceDocument(polodb_core::bson::Document);
 
@@ -394,26 +402,25 @@ pub trait StorageBackend: Sync + Send + downcast_rs::Downcast {
     fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>>;
     fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>>;
     fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &'a [u8],) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse, ()>>;
-    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>>;
+    fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>>;
     fn sync<'s, 'a>(&'s self, _: &'a dyn StorageBackend) -> utils::BoxedFuture<'a, ()> {
         Box::pin(async move {})
     }
 
+    fn start(&self, name: ResourceId<'_>) {}
+
     /// Returns the type of the asset, if attainable from the url.
     /// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
-    fn get_type<'a>(&'a self, url: &'a str) -> Option<&str> {
-        let url = get_base(url)?;
-        let path = std::path::Path::new(url);
-        Some(path.extension()?.to_str()?)
+    fn get_type<'a>(&'a self, url: ResourceId<'a>) -> Option<&'a str> {
+        Some(url.get_extension())
     }
 
-    fn exists<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, bool> {
+    fn exists<'a>(&'a self, id: ResourceId<'a>) -> utils::BoxedFuture<'a, bool> {
         Box::pin(async move { self.read(id).await.is_some() })
     }
 
-    fn resolve<'a>(&'a self, url: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
+    fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
         Box::pin(async move {
-            let url = get_base(url).ok_or(())?;
             read_asset_from_source(url, None).await
         })
     }
@@ -495,8 +502,8 @@ impl DbStorageBackend {
 	}
 
 	#[cfg(test)]
-	pub fn get_resource_data_by_name(&self, name: &str) -> Option<Box<[u8]>> {
-		Some(self.resources.lock().unwrap().iter().find(|x| x.0.id == name)?.1.clone())
+	pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
+		Some(self.resources.lock().unwrap().iter().find(|x| x.0.id == name.as_ref())?.1.clone())
 	}
 }
 
@@ -519,10 +526,7 @@ impl StorageBackend for DbStorageBackend {
 
     fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            match self
-                .db
-                .collection::<bson::Document>("resources")
-                .find_one(bson::doc! { "id": id })
+            match self.db.collection::<bson::Document>("resources").find_one(bson::doc! { "id": id })
             {
                 Ok(o) => {
                     match o {
@@ -535,7 +539,7 @@ impl StorageBackend for DbStorageBackend {
                                 .base_path
                                 .join(std::path::Path::new(db_id.to_string().as_str()));
 
-                            let file_deletion_result = smol::fs::remove_file(&resource_path).await;
+                            let file_deletion_result = remove_file(&resource_path).await;
 
                             let doc_deletion_result = match self
                                 .db
@@ -571,11 +575,11 @@ impl StorageBackend for DbStorageBackend {
         })
     }
 
-    fn read<'s, 'a, 'b>(&'s self, id: &'b str,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
+    fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
         let resource_document = self
             .db
             .collection::<bson::Document>("resources")
-            .find_one(bson::doc! { "id": id })
+            .find_one(bson::doc! { "id": id.as_ref() })
             .ok();
         let id = id.to_string();
         let base_path = self.base_path.clone();
@@ -595,12 +599,12 @@ impl StorageBackend for DbStorageBackend {
 					}).collect::<Option<Vec<_>>>()
 				} else {
 					None
-				};				
+				};
                 GenericResourceResponse::new(id, hash, class, size, resource, streams)
             };
 
             let resource_reader = FileResourceReader::new(
-                smol::fs::File::open(base_path.join(std::path::Path::new(
+                File::open(base_path.join(std::path::Path::new(
                     &resource_document.get_object_id("_id").ok()?.to_string(),
                 )))
                 .await
@@ -664,7 +668,7 @@ impl StorageBackend for DbStorageBackend {
 
             let resource_path = self.base_path.join(std::path::Path::new(&resource_id.to_string()));
 
-            let mut file = smol::fs::File::create(resource_path).await.or(Err(()))?;
+            let mut file = File::create(resource_path).await.or(Err(()))?;
 
             file.write_all(data).await.or(Err(()))?;
             file.flush().await.or(Err(()))?; // Must flush to ensure the file is written to disk, or else reads can cause failures
@@ -694,12 +698,8 @@ impl StorageBackend for DbStorageBackend {
         Box::pin(async move {})
     }
 
-    fn resolve<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
+    fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
         Box::pin(async move {
-            let url = get_base(url).ok_or(())?;
             read_asset_from_source(url, Some(&std::path::Path::new("assets"))).await
         })
     }
@@ -740,7 +740,7 @@ impl StorageBackend for DbStorageBackend {
 			})
 		}
 	}
-	
+
 	fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &[u8]) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse, ()>> {
 		self.resources.lock().unwrap().push((resource.clone(), data.into()));
 
@@ -755,12 +755,12 @@ impl StorageBackend for DbStorageBackend {
 		})
 	}
 
-	fn read<'s, 'a, 'b>(&'s self, id: &'b str) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
+	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
 		let mut x = None;
 
 		let resources = self.resources.lock().unwrap();
 		for (resource, data) in resources.iter() {
-			if resource.id == id {
+			if resource.id == id.as_ref() {
 				// TODO: use actual hash
 				x = Some((GenericResourceResponse::new(id.to_string(), 0, resource.class.clone(), data.len(), resource.resource.clone(), resource.streams.clone()), FileResourceReader::new(data.clone())));
 				break;
@@ -772,14 +772,14 @@ impl StorageBackend for DbStorageBackend {
 		})
 	}
 
-	fn resolve<'a>(&'a self, url: &'a str) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async {
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async move {
 		// All of this weirdness is to avoid Send + Sync errors because of the locks
 
 		let r = {
 			let files = self.files.lock().unwrap();
-			if let Some(f) = files.get(url) {
+			if let Some(f) = files.get(url.as_ref()) {
 				let bead = {
-					let mut url = get_base(url).ok_or(())?.to_string();
+					let mut url = url.get_base().to_string();
 					url.push_str(".bead");
 					if let Some(spec) = files.get(url.as_str()) {
 						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
@@ -789,15 +789,15 @@ impl StorageBackend for DbStorageBackend {
 				};
 
 				// Extract extension from url
-				Ok((f.clone(), bead, url.split('.').last().unwrap().to_string()))
+				Ok((f.clone(), bead, url.get_extension().to_string()))
 			} else {
 				Err(())
 			}
 		};
-		
+
 		if let Err(_) = r {
 			let bead = {
-				let mut url = get_base(url).ok_or(())?.to_string();
+				let mut url = url.get_base().to_string();
 				url.push_str(".bead");
 				if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
 					Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
@@ -806,7 +806,7 @@ impl StorageBackend for DbStorageBackend {
 				}
 			};
 
-			if let Ok(x) = read_asset_from_source(get_base(url).ok_or(())?, Some(&std::path::Path::new("../assets"))).await {
+			if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
 				let bead = bead.or(x.1);
 				Ok((x.0, bead, x.2))
 			} else {

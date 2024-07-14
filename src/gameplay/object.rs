@@ -1,4 +1,7 @@
+use std::future::join;
+
 use maths_rs::mat::{MatScale, MatTranslate};
+use utils::BoxedFuture;
 
 use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, EntitySubscriber, Listener}, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh::{self, Transform}, Vector3};
 
@@ -31,13 +34,15 @@ impl Object {
 impl Entity for Object {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 
-	fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>,) where Self: Sized {
-		listener.invoke_for(handle.clone(), self);
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>,) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+		let same = listener.invoke_for(handle.clone(), self);
 		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
-		listener.invoke_for(s, self);
+		let pe = listener.invoke_for(s, self);
 		let s: EntityHandle<dyn mesh::RenderEntity> = handle.clone();
-		listener.invoke_for(s, self);
-	}
+		let re = listener.invoke_for(s, self);
+
+		join!(same, pe, re).await;
+	}) }
 }
 
 impl physics::PhysicsEntity for Object {

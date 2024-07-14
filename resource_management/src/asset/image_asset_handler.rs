@@ -5,7 +5,42 @@ use utils::Extent;
 
 use crate::{image::Image, types::{Formats, Gamma}, Description, ProcessedAsset, StorageBackend};
 
-use super::{asset_handler::AssetHandler, asset_manager::AssetManager};
+use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId, ResourceIdBase};
+
+pub struct ImageAsset {
+    id: String,
+    data: Box<[u8]>,
+    extent: Extent,
+    format: Formats,
+    gamma: Gamma,
+}
+
+impl Asset for ImageAsset {
+    fn requested_assets(&self) -> Vec<String> { vec![] }
+
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<'a, Result<(), String>> { Box::pin(async move {
+		let semantic = guess_semantic_from_name(url.get_base());
+
+		let format = self.format;
+		let extent = self.extent;
+		let gamma = self.gamma;
+
+		let buffer = self.data.clone();
+
+		let (image, data) = utils::r#async::spawn_blocking(move || { ImageAssetHandler::produce(&ImageDescription {
+			format,
+			extent,
+			semantic,
+			gamma,
+		}, buffer) }).await.unwrap();
+
+		let resource_document = ProcessedAsset::new(url, image);
+
+		storage_backend.store(&resource_document, &data).await;
+
+		Ok(())
+    }) }
+}
 
 pub struct ImageAssetHandler {
 }
@@ -21,96 +56,85 @@ impl AssetHandler for ImageAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: &'a str,) -> utils::SendSyncBoxedFuture<'a, Result<(), String>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "png" { return Err("Not my type".to_string()); }
-			}
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+		if let Some(dt) = storage_backend.get_type(url) {
+			if dt != "png" { return Err(LoadErrors::UnsupportedType); }
+		}
 
-			let (data, _, dt) = storage_backend.resolve(url).await.or(Err("Failed to resolve asset".to_string()))?;
+		let (data, _, dt) = storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			let extent;
-			let format;
-			let mut buffer;
-			let gamma;
+		let semantic = guess_semantic_from_name(url.get_base());
 
-			match dt.as_str() {
-				"png" | "image/png" => {
-					let decoder = png::Decoder::new(data.as_ref());
-					if true { // TODO: make this a setting
-						// decoder.set_transformations(png::Transformations::normalize_to_color8());
-					}
-					let mut reader = decoder.read_info().unwrap();
-					buffer = vec![0; reader.output_buffer_size()];
-					let info = reader.next_frame(&mut buffer).unwrap();
-		
-					extent = Extent::rectangle(info.width, info.height);
+		let mut buffer;
+		let extent;
+		let gamma;
+		let format;
 
-					gamma = reader.info().gama_chunk.map(|gamma| {
-						if gamma.into_scaled() == 45455 {
-							Gamma::SRGB
-						} else {
-							Gamma::Linear
-						}
-					});
-
-					match info.bit_depth {
-						png::BitDepth::Eight => {}
-						png::BitDepth::Sixteen => {
-							for i in 0..buffer.len() / 2 {
-								buffer.swap(i * 2, i * 2 + 1);
-							}							
-						}
-						_ => { panic!("Unsupported bit depth"); }
-					}
-
-					format = match info.color_type {
-						png::ColorType::Rgb => {
-							match info.bit_depth {
-								png::BitDepth::Eight => Formats::RGB8,
-								png::BitDepth::Sixteen => Formats::RGB16,
-								_ => { panic!("Unsupported bit depth") }
-							}
-						}
-						png::ColorType::Rgba => {
-							match info.bit_depth {
-								png::BitDepth::Eight => Formats::RGBA8,
-								png::BitDepth::Sixteen => Formats::RGBA16,
-								_ => { panic!("Unsupported bit depth") }
-							}
-						}
-						_ => { panic!("Unsupported color type") }
-					};
+		match dt.as_str() {
+			"png" | "image/png" => {
+				let decoder = png::Decoder::new(data.as_ref());
+				if true { // TODO: make this a setting
+					// decoder.set_transformations(png::Transformations::normalize_to_color8());
 				}
-				_ => { return Err("Not my type".to_string()); }
-			
+				let mut reader = decoder.read_info().unwrap();
+				buffer = vec![0; reader.output_buffer_size()];
+				let info = reader.next_frame(&mut buffer).unwrap();
+
+				extent = Extent::rectangle(info.width, info.height);
+
+				gamma = reader.info().gama_chunk.map(|gamma| {
+					if gamma.into_scaled() == 45455 {
+						Gamma::SRGB
+					} else {
+						Gamma::Linear
+					}
+				}).unwrap_or(gamma_from_semantic(semantic));
+
+				match info.bit_depth {
+					png::BitDepth::Eight => {}
+					png::BitDepth::Sixteen => {
+						for i in 0..buffer.len() / 2 {
+							buffer.swap(i * 2, i * 2 + 1);
+						}
+					}
+					_ => { panic!("Unsupported bit depth"); }
+				}
+
+				format = match info.color_type {
+					png::ColorType::Rgb => {
+						match info.bit_depth {
+							png::BitDepth::Eight => Formats::RGB8,
+							png::BitDepth::Sixteen => Formats::RGB16,
+							_ => { panic!("Unsupported bit depth") }
+						}
+					}
+					png::ColorType::Rgba => {
+						match info.bit_depth {
+							png::BitDepth::Eight => Formats::RGBA8,
+							png::BitDepth::Sixteen => Formats::RGBA16,
+							_ => { panic!("Unsupported bit depth") }
+						}
+					}
+					_ => { panic!("Unsupported color type") }
+				};
 			}
+			_ => { return Err(LoadErrors::UnsupportedType); }
+		}
 
-			assert_eq!(extent.depth(), 1); // TODO: support 3D textures
+		Ok(Box::new(ImageAsset {
+		    id: url.to_string(),
+			data,
+			gamma,
+			format,
+			extent,
+		}) as Box<dyn Asset>)
+	}) }
 
-			let semantic = guess_semantic_from_name(url);
-
-			let gamma = gamma.unwrap_or(if semantic == Semantic::Albedo { Gamma::SRGB } else { Gamma::Linear });
-
-			let (image, data) = self.produce(&ImageDescription {
-				format,
-				extent,
-				semantic,
-				gamma,
-			}, &buffer);
-
-			let resource_document = ProcessedAsset::new(url, image);
-
-			storage_backend.store(&resource_document, &data).await;
-
-			Ok(())
-		})
-	}
-
-	fn produce<'a>(&'a self, id: &'a str, description: &'a dyn Description, data: &'a [u8]) -> utils::SendSyncBoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), String>> {
+	fn produce<'a>(&'a self, id: ResourceId<'a>, description: &'a dyn Description, data: Box<[u8]>) -> utils::SendSyncBoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), String>> {
 		Box::pin(async move {
 			if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
-				let (resource, buffer) = self.produce(description, data);
+			    let description = description.clone();
+				let (resource, buffer) = utils::r#async::spawn_blocking(move || { Self::produce(&description, data) }).await.unwrap();
 				Ok((ProcessedAsset::new(id, resource), buffer))
 			} else {
 				Err("Invalid description".to_string())
@@ -119,7 +143,8 @@ impl AssetHandler for ImageAssetHandler {
 	}
 }
 
-pub fn guess_semantic_from_name(name: &str) -> Semantic {
+pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
+    let name = name.as_ref();
 	if name.contains("Base_color") || name.contains("Albedo") || name.contains("Diffuse") { Semantic::Albedo }
 	else if name.contains("Normal") { Semantic::Normal }
 	else if name.contains("Metallic") { Semantic::Metallic }
@@ -132,8 +157,15 @@ pub fn guess_semantic_from_name(name: &str) -> Semantic {
 	else { Semantic::Other }
 }
 
+pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
+	match semantic {
+		Semantic::Albedo | Semantic::Other => Gamma::SRGB,
+		Semantic::Normal | Semantic::Metallic | Semantic::Roughness | Semantic::Emissive | Semantic::Height | Semantic::Opacity | Semantic::Displacement | Semantic::AO => Gamma::Linear,
+	}
+}
+
 impl ImageAssetHandler {
-	fn produce(&self, description: &ImageDescription, buffer: &[u8]) -> (Image, Box<[u8]>) {
+	fn produce(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, Box<[u8]>) {
 		let ImageDescription { format, extent, semantic, gamma } = description;
 
 		let compress = match semantic {
@@ -270,7 +302,7 @@ impl ImageAssetHandler {
 					height: extent.height(),
 					stride: extent.width() * 4,
 				};
-	
+
 				let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
 				intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)
@@ -306,6 +338,7 @@ pub enum Semantic {
 	Other,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct ImageDescription {
 	pub format: Formats,
 	pub extent: Extent,
@@ -322,19 +355,21 @@ impl Description for ImageDescription {
 
 #[cfg(test)]
 mod tests {
+	use utils::r#async::block_on;
+
 	use super::ImageAssetHandler;
-	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager};
+	use crate::asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId};
 
 	#[test]
 	fn load_image() {
 		let asset_manager = AssetManager::new("../assets".into());
 		let asset_handler = ImageAssetHandler::new();
 
-		let url = "patterned_brick_floor_02_diff_2k.png";
+		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 
-		let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
+		let _ = block_on(asset_handler.load(&asset_manager, storage_backend, url,)).expect("Image asset handler did not handle asset");
 
 		let generated_resources = storage_backend.get_resources();
 

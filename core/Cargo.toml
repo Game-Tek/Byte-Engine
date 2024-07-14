@@ -9,5 +9,3 @@ rust-version = "1.73.0"
 utils = { path = "../utils" }
 
 downcast-rs = "1.2.0"
-intertrait = "0.2.2"
-smol = "2.0.0"

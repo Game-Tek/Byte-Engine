@@ -190,9 +190,11 @@ impl <T, F> Subscriber<T> for F where F: FnMut(&T) {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
+	use utils::r#async::block_on;
+
 	use crate::spawn;
 
-use super::*;
+	use super::*;
 	
 	#[test]
 	fn reactivity() {
@@ -213,8 +215,8 @@ use super::*;
 		let mut value = Property::new(1);
 		let derived = DerivedProperty::new(&mut value, |value| value.to_string());
 
-		let source_component_handle: EntityHandle<SourceComponent> = spawn(SourceComponent { value, derived });
-		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })});
+		let source_component_handle: EntityHandle<SourceComponent> = block_on(spawn(SourceComponent { value, derived }));
+		let receiver_component_handle: EntityHandle<ReceiverComponent> = block_on(spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })}));
 
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
 		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");

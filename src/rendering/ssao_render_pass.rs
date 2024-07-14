@@ -31,7 +31,7 @@ const RESULT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Descript
 const NOISE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 
 impl ScreenSpaceAmbientOcclusionPass {
-	pub fn new(ghi: &mut ghi::GHI, resource_manager: EntityHandle<ResourceManager>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, occlusion_target: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> ScreenSpaceAmbientOcclusionPass {
+	pub async fn new(ghi: &mut ghi::GHI, resource_manager: EntityHandle<ResourceManager>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, occlusion_target: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> ScreenSpaceAmbientOcclusionPass {
 		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("HBAO Pass Set Layout"), &[DEPTH_BINDING_TEMPLATE.clone(), SOURCE_BINDING_TEMPLATE.clone(), RESULT_BINDING_TEMPLATE.clone(), NOISE_BINDING_TEMPLATE.clone()]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[parent_descriptor_set_layout, descriptor_set_layout], &[]);
@@ -76,7 +76,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let resource_manager = resource_manager.read_sync();
 
-		let mut blue_noise = smol::block_on(resource_manager.request::<Image>("stbn_unitvec3_2Dx1D_128x128x64_0.png")).unwrap();
+		let mut blue_noise = resource_manager.request::<Image>("stbn_unitvec3_2Dx1D_128x128x64_0.png").await.unwrap();
 
 		let format = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
 
@@ -85,7 +85,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let buffer = ghi.get_texture_slice_mut(image);
 
-		smol::block_on(blue_noise.load(buffer.into()));
+		blue_noise.load(buffer.into()).await;
 
 		let noise_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&NOISE_BINDING_TEMPLATE, image, sampler, ghi::Layouts::Read));
 

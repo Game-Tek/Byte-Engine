@@ -1,8 +1,8 @@
 /// The Entity trait is the base trait for all entities in the engine.
-/// 
+///
 /// An entity is a type that can be spawned and managed by the engine.
 /// The trait provides some convenience methods to interact with the entity.
-pub trait Entity: intertrait::CastFrom + downcast_rs::Downcast + std::any::Any + 'static {
+pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 	/// Exposes an optional feature of the entity, which is the listener.
 	/// This is used to allow entities to listen to other entities.
 	fn get_listener(&self) -> Option<&BasicListener> {
@@ -17,9 +17,7 @@ pub trait Entity: intertrait::CastFrom + downcast_rs::Downcast + std::any::Any +
 
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
 
-	fn call_listeners(&self, listener: &BasicListener, handle: EntityHandle<Self>) where Self: Sized {
-		listener.invoke_for(handle, self);
-	}
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { listener.invoke_for(handle, self) }
 }
 
 pub unsafe fn get_entity_trait_for_type<T: ?Sized + 'static>() -> EntityTrait {
@@ -42,7 +40,7 @@ pub struct TraitObject {
 pub trait SpawnerEntity<P: Entity>: Entity {
 	fn get_parent(&self) -> EntityHandle<P>;
 
-	fn spawn<T: Entity>(&self, entity: impl SpawnHandler<T>) -> EntityHandle<T> where Self: Sized {
+	fn spawn<T: Entity>(&self, entity: impl SpawnHandler<T>) -> impl Future<Output = EntityHandle<T>> where Self: Sized {
 		crate::spawn_as_child(self.get_parent(), entity)
 	}
 }
@@ -53,7 +51,7 @@ pub trait SelfDestroyingEntity: Entity {
 
 downcast_rs::impl_downcast!(Entity);
 
-pub(super) type EntityWrapper<T> = std::sync::Arc<smol::lock::RwLock<T>>;
+pub type EntityWrapper<T: ?Sized> = std::sync::Arc<RwLock<T>>;
 
 #[derive(Debug,)]
 pub struct EntityHandle<T: ?Sized> {
@@ -62,17 +60,19 @@ pub struct EntityHandle<T: ?Sized> {
 }
 
 pub struct WeakEntityHandle<T: ?Sized> {
-	pub(super) container: std::sync::Weak<smol::lock::RwLock<T>>,
+	pub(super) container: std::sync::Weak<RwLock<T>>,
 	// pub(super) internal_id: u32,
 }
 
 impl <T: ?Sized> WeakEntityHandle<T> {
-	pub fn read_sync(&self) -> Option<smol::lock::RwLockReadGuardArc<T>> where T: Sized {
-		self.container.upgrade().map(|c| c.read_arc_blocking())
+	pub fn read_sync(&self) -> Option<RwLockReadGuard<T>> where T: Sized {
+		// self.container.upgrade().map(|c| c.blocking_read())
+		None
 	}
 
-	pub fn write_sync(&self) -> Option<smol::lock::RwLockWriteGuardArc<T>> {
-		self.container.upgrade().map(|c| c.write_arc_blocking())
+	pub fn write_sync(&self) -> Option<RwLockWriteGuard<T>> {
+		// self.container.upgrade().map(|c| c.blocking_write())
+		None
 	}
 }
 
@@ -136,9 +136,9 @@ impl <T: ?Sized> std::hash::Hash for EntityHandle<T> {
 }
 
 fn downcast_inner<F: ?Sized, T>(decoder: &EntityWrapper<F>) -> Option<EntityWrapper<T>> {
-	let raw: *const smol::lock::RwLock<F> = std::sync::Arc::into_raw(decoder.clone());
-	let raw: *const smol::lock::RwLock<T> = raw.cast();
-	
+	let raw: *const RwLock<F> = std::sync::Arc::into_raw(decoder.clone());
+	let raw: *const RwLock<T> = raw.cast();
+
 	// SAFETY: This is safe because the pointer orignally came from an Arc
 	// with the same size and alignment since we've checked (via Any) that
 	// the object within is the type being casted to.
@@ -154,8 +154,12 @@ impl <T: ?Sized> Clone for EntityHandle<T> {
 	}
 }
 
+use std::future::Future;
 use std::{marker::Unsize, ops::Deref};
 use std::ops::CoerceUnsized;
+
+use utils::r#async::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use utils::BoxedFuture;
 
 use super::{listener::{BasicListener, EntitySubscriber, Listener}, SpawnHandler};
 
@@ -171,7 +175,7 @@ impl <T: ?Sized> EntityHandle<T> {
 	// }
 
 	pub fn sync_get_mut<R>(&self, function: impl FnOnce(&mut T) -> R) -> R {
-		let mut lock = self.container.write_arc_blocking();
+		let mut lock = self.container.blocking_write();
 		function(std::ops::DerefMut::deref_mut(&mut lock))
 	}
 
@@ -179,20 +183,20 @@ impl <T: ?Sized> EntityHandle<T> {
 		self.container.clone()
 	}
 
-	pub fn read(&self) -> smol::lock::futures::ReadArc<'_, T> where T: Sized {
-		self.container.read_arc()
+	pub fn read(&self) -> impl Future<Output = RwLockReadGuard<'_, T>> where T: Sized {
+		self.container.read()
 	}
 
-	pub fn read_sync<'a>(&self) -> smol::lock::RwLockReadGuardArc<T> where T: Sized {
-		self.container.read_arc_blocking()
+	pub fn read_sync<'a>(&self) -> RwLockReadGuard<T> where T: Sized {
+		self.container.blocking_read()
 	}
 
-	pub fn write(&self) -> smol::lock::futures::WriteArc<'_, T> {
-		self.container.write_arc()
+	pub fn write(&self) -> impl Future<Output = RwLockWriteGuard<'_, T>> {
+		self.container.write()
 	}
 
-	pub fn write_sync<'a>(&self) -> smol::lock::RwLockWriteGuardArc<T> {
-		self.container.write_arc_blocking()
+	pub fn write_sync<'a>(&self) -> RwLockWriteGuard<T> {
+		self.container.blocking_write()
 	}
 
 	pub fn map<'a, R>(&self, function: impl FnOnce(&Self) -> R) -> R {
@@ -201,45 +205,46 @@ impl <T: ?Sized> EntityHandle<T> {
 }
 
 // pub type DomainType<'a> = &'a dyn Entity;
-pub type DomainType<'a> = EntityHandle<dyn Entity>;
-type CreateFunction<'c, T> = dyn FnOnce(Option<DomainType>) -> T + 'c;
+pub type DomainType = EntityHandle<dyn Entity>;
 
 /// Entity creation functions must return this type.
-pub struct EntityBuilder<'c, T> {
-	pub(super) create: std::boxed::Box<CreateFunction<'c, T>>,
+pub struct EntityBuilder<'c, T: 'c> {
+	pub(super) create: Box<dyn FnOnce(Option<DomainType>) -> BoxedFuture<'c, T> + 'c>,
 	pub(super) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
 	pub(super) listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
 }
 
-impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
-	fn default(create: std::boxed::Box<CreateFunction<'c, T>>) -> Self {
+impl <'c, T: Entity + 'c> EntityBuilder<'c, T> {
+	fn default(create: impl FnOnce(Option<DomainType>) -> BoxedFuture<'c, T> + 'c) -> Self {
 		Self {
-			create,
+			create: Box::new(create),
 			post_creation_functions: Vec::new(),
 			listens_to: Vec::new(),
 		}
 	}
 
 	pub fn new(entity: T) -> Self {
-		Self::default(std::boxed::Box::new(move |_| entity))
+		Self::default(move |_| Box::pin(async move { entity }))
 	}
 
 	pub fn new_from_function(function: impl FnOnce() -> T + 'c) -> Self {
-		Self::default(std::boxed::Box::new(move |_| {
-			function()
-		}))
+		Self::default(move |_| Box::pin(async move { function() }))
+	}
+
+	pub fn new_from_async_function<R>(function: impl FnOnce() -> R + 'c) -> Self where R: Future<Output = T> + 'c {
+		Self::default(move |_| Box::pin(async move { function().await }))
+	}
+
+	pub fn new_from_async_function_with_parent<R>(function: impl FnOnce(DomainType) -> R + 'c) -> Self where R: Future<Output = T> + 'c {
+		Self::default(move |parent| Box::pin(function(parent.unwrap())))
 	}
 
 	pub fn new_from_closure<'a, F>(function: F) -> Self where F: FnOnce() -> T + 'c {
-		Self::default(std::boxed::Box::new(move |_| {
-			function()
-		}))
+		Self::default(move |_| { Box::pin(async move { function() }) })
 	}
 
 	pub fn new_from_closure_with_parent<'a, F>(function: F) -> Self where F: FnOnce(DomainType) -> T + 'c {
-		Self::default(std::boxed::Box::new(move |parent| {
-			function(parent.unwrap())
-		}))
+		Self::default(move |parent| { Box::pin(async move { function(parent.unwrap()) }) })
 	}
 
 	pub fn then(mut self, function: impl Fn(&mut EntityHandle<T>,) + 'c) -> Self {
@@ -251,7 +256,7 @@ impl <'c, T: Entity + 'static> EntityBuilder<'c, T> {
 		self.listens_to.push(Box::new(move |domain_handle, e| {
 			let l = domain_handle.write_sync();
 			let l = l.deref();
-			
+
 			if let Some(l) = l.get_listener() {
 				l.add_listener(e);
 			} else {
@@ -271,7 +276,9 @@ impl <T: Entity> From<T> for EntityBuilder<'static, T> {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-	use super::*;
+	use utils::r#async::block_on;
+
+use super::*;
 	use crate::spawn;
 
 	#[test]
@@ -283,7 +290,7 @@ mod tests {
 
 		impl Entity for Component {}
 
-		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+		let _: EntityHandle<Component> = block_on(spawn(Component { name: "test".to_string(), value: 1 }));
 
 		struct System {
 
@@ -298,14 +305,14 @@ mod tests {
 		}
 
 		impl EntitySubscriber<Component> for System {
-			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, component: &Component) -> utils::BoxedFuture<'a, ()> {
+			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, component: &Component) -> utils::BoxedFuture<'a, ()> where Self: Sized + Send + Sync {
 				println!("Component created: {} {}", component.name, component.value);
 				Box::pin(async move {})
 			}
 		}
-		
-		let _: EntityHandle<System> = spawn(System::new());
 
-		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
+		let _: EntityHandle<System> = block_on(spawn(System::new()));
+
+		let _: EntityHandle<Component> = block_on(spawn(Component { name: "test".to_string(), value: 1 }));
 	}
 }

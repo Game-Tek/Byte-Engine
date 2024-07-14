@@ -37,7 +37,7 @@ impl Application for BaseApplication {
 
 	fn initialize(&mut self, arguments: std::env::Args) {
 		let _ = simple_logger::SimpleLogger::new().env().init();
-		
+
 		info!("Byte-Engine");
 		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", self.name, arguments.collect::<Vec<String>>().join(", "));
 
@@ -131,6 +131,7 @@ impl Time {
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
 pub struct GraphicsApplication {
 	application: OrchestratedApplication,
+	runtime: utils::r#async::Runtime,
 	tick_count: u64,
 	// file_tracker_handle: EntityHandle<file_tracker::FileTracker>,
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
@@ -153,11 +154,13 @@ impl Application for GraphicsApplication {
 	fn new(name: &str) -> Self {
 		let mut application = OrchestratedApplication::new(name);
 
-		let root_space_handle: EntityHandle<Space> = core::spawn(Space::new());
+		let runtime = utils::r#async::create_runtime();
+
+		let root_space_handle: EntityHandle<Space> = runtime.block_on(core::spawn(Space::new()));
 
 		application.initialize(std::env::args()); // TODO: take arguments
 
-		let resource_manager = core::spawn(ResourceManager::new());
+		let resource_manager = runtime.block_on(core::spawn(ResourceManager::new()));
 
 		{
 			let mut resource_manager = resource_manager.write_sync();
@@ -165,7 +168,7 @@ impl Application for GraphicsApplication {
 			let mut asset_manager = AssetManager::new("resources".into());
 
 			asset_manager.add_asset_handler(MeshAssetHandler::new());
-	
+
 			{
 				let mut material_asset_handler = MaterialAssetHandler::new();
 				let root_node = besl::Node::root();
@@ -177,50 +180,50 @@ impl Application for GraphicsApplication {
 				material_asset_handler.set_shader_generator(shader_generator);
 				asset_manager.add_asset_handler(material_asset_handler);
 			}
-	
+
 			asset_manager.add_asset_handler(ImageAssetHandler::new());
 			asset_manager.add_asset_handler(AudioAssetHandler::new());
 
 			resource_manager.set_asset_manager(asset_manager);
 		}
 
-		let window_system_handle = core::spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system());
-		let input_system_handle: EntityHandle<input::InputManager> = core::spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system());
+		let window_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system()));
+		let input_system_handle: EntityHandle<input::InputManager> = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system()));
 
 		let mouse_device_handle;
 
 		{
 			let input_system = input_system_handle.get_lock();
-			let mut input_system = input_system.write_arc_blocking();
+			let mut input_system = input_system.blocking_write();
 
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
-	
+
 			input_system.register_input_source(&mouse_device_class_handle, "Position", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 			input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&mouse_device_class_handle, "Scroll", input::input_manager::InputTypes::Float(input::input_manager::InputSourceDescription::new(0f32, 0f32, -1f32, 1f32)));
-	
+
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
-	
+
 			input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 			input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-	
+
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 		}
 
 		// let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
+		let renderer_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone())));
 
-		core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new());
+		runtime.block_on(core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new()));
 
-		core::spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,)));
+		runtime.block_on(core::spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,))));
 
-		let audio_system_handle = core::spawn_as_child(root_space_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager.clone()));
+		let audio_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), audio_system::DefaultAudioSystem::new_as_system(resource_manager.clone())));
 
-		let physics_system_handle = core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system());
+		let physics_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system()));
 
-		let tick_handle = core::spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }));
+		let tick_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) })));
 
 		GraphicsApplication {
 			application,
@@ -232,6 +235,7 @@ impl Application for GraphicsApplication {
 			physics_system_handle,
 			root_space_handle,
 			tick_handle,
+			runtime,
 
 			tick_count: 0,
 			start_time: std::time::Instant::now(),
@@ -258,12 +262,12 @@ impl Application for GraphicsApplication {
 
 		{
 			let window_system = self.window_system_handle.get_lock();
-			let mut window_system = window_system.write_arc_blocking();
+			let mut window_system = window_system.blocking_write();
 
 			{
 				let input_system = self.input_system_handle.get_lock();
-				let mut input_system = input_system.write_arc_blocking();
-				
+				let mut input_system = input_system.blocking_write();
+
 				window_system.update_windows(|_, event| {
 					match event {
 						ghi::WindowEvents::Close => { close = true },
@@ -307,7 +311,7 @@ impl Application for GraphicsApplication {
 			let mut e = handle.write_sync();
 			e.update();
 		});
-		
+
 		self.physics_system_handle.map(move |handle| {
 			let mut e = handle.write_sync();
 			e.update(time);
@@ -317,7 +321,7 @@ impl Application for GraphicsApplication {
 			let mut e = handle.write_sync();
 			e.render();
 		});
-		
+
 		self.audio_system_handle.map(|handle| {
 			let mut e = handle.write_sync();
 			e.render();
@@ -342,6 +346,7 @@ impl GraphicsApplication {
 	pub fn close(&mut self) {
 		self.application.close();
 
+		#[cfg(debug_assertions)]
 		log::debug!("Run stats:\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}", self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time);
 	}
 
@@ -352,6 +357,10 @@ impl GraphicsApplication {
 	/// Returns a reference to the orchestrator.
 	pub fn get_orchestrator(&self) -> std::cell::Ref<'_, orchestrator::Orchestrator> { self.application.get_orchestrator() }
 	pub fn get_mut_orchestrator(&mut self) -> std::cell::RefMut<'_, orchestrator::Orchestrator> { self.application.get_mut_orchestrator() }
+
+	pub fn get_runtime(&self) -> &utils::r#async::Runtime {
+		&self.runtime
+	}
 
 	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<input::InputManager> {
 		&self.input_system_handle

@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::rc::Rc;
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use futures::future::try_join_all;
 use futures::Future;
-use ghi::ImageHandle;
+use ghi::{graphics_hardware_interface, ImageHandle};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use json::object;
 use log::error;
@@ -19,8 +19,9 @@ use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::image::Image as ResourceImage;
 use resource_management::mesh::{Mesh as ResourceMesh, Primitive};
-use resource_management::material::{Material as ResourceMaterial, Value};
+use resource_management::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
 use resource_management::material::Variant as ResourceVariant;
+use utils::r#async::{join_all, RwLock};
 use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
@@ -28,6 +29,7 @@ use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{self, Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
+use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::Vector2;
@@ -133,6 +135,8 @@ pub struct VisibilityWorldRenderDomain {
 	meshes: HashMap<String, MeshData>,
 	images: HashMap<String, Image>,
 
+	texture_manager: Arc<RwLock<TextureManager>>,
+
 	mesh_resources: HashMap<String, u32>,
 
 	/// Maps resource ids to shaders
@@ -142,7 +146,7 @@ pub struct VisibilityWorldRenderDomain {
 	material_evaluation_materials: HashMap<String, Material>,
 
 	pending_texture_loads: Vec<ghi::ImageHandle>,
-	
+
 	occlusion_map: ghi::ImageHandle,
 
 	transfer_synchronizer: ghi::SynchronizerHandle,
@@ -232,12 +236,12 @@ pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorS
 
 impl VisibilityWorldRenderDomain {
 	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_function(move || {
-			let mut ghi_instance = ghi.write().unwrap();
+		EntityBuilder::new_from_async_function(async move || {
+			let mut ghi_instance = ghi.write().await;
 
 			let extent = Extent::square(0);
 			// let extent = Extent::rectangle(1920, 1080);
-			
+
 			let vertex_positions_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_uv_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex UV Buffer"), std::mem::size_of::<[[f32; 2]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -313,11 +317,11 @@ impl VisibilityWorldRenderDomain {
 			let instance_id_binding = ghi_instance.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id, ghi::Layouts::General));
 
 			let light_data_buffer = ghi_instance.create_buffer(Some("Light Data"), std::mem::size_of::<LightingData>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			
+
 			let lighting_data = unsafe { (ghi_instance.get_mut_buffer_slice(light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
-			
+
 			lighting_data.count = 0; // Initially, no lights
-			
+
 			let materials_data_buffer_handle = ghi_instance.create_buffer(Some("Materials Data"), std::mem::size_of::<[MaterialData; MAX_MATERIALS]>(), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
 			let bindings = [
@@ -331,7 +335,7 @@ impl VisibilityWorldRenderDomain {
 				ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
 			];
 
-			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
+			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target)).await;
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -381,12 +385,14 @@ impl VisibilityWorldRenderDomain {
 				meshes: HashMap::with_capacity(1024),
 				images: HashMap::with_capacity(1024),
 
+				texture_manager: Arc::new(RwLock::new(TextureManager::new())),
+
 				mesh_resources: HashMap::new(),
 
 				material_evaluation_materials: HashMap::new(),
 
 				pending_texture_loads: Vec::new(),
-				
+
 				occlusion_map,
 
 				transfer_synchronizer,
@@ -443,73 +449,6 @@ impl VisibilityWorldRenderDomain {
 			.listen_to::<dyn mesh::RenderEntity>()
 	}
 
-	async fn load_image<'a>(&mut self, mut resource: resource_management::Reference<ResourceImage>, ghi: &mut ghi::GHI,) -> Option<u32> {
-		if let Some(r) = self.images.get(resource.id()) {
-			return Some(r.index);
-		}
-
-		let texture = resource.resource();
-
-		let format = match texture.format {
-			resource_management::types::Formats::RG8 => ghi::Formats::RG8(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGB8 => ghi::Formats::RGB8(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGB16 => ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::BC5 => ghi::Formats::BC5,
-			resource_management::types::Formats::BC7 => ghi::Formats::BC7,
-		};
-
-		let extent = Extent::from(texture.extent);
-
-		let image = ghi.create_image(Some(&resource.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-		let target_buffer = ghi.get_texture_slice_mut(image);
-
-		let load_target = resource.load(target_buffer.into()).await.unwrap();
-
-		// let image = if let Some(b) = resource.get_buffer() {
-		// 	ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
-		// 	new_texture
-		// } else {
-		// 	let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
-		// 	log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
-		// 	let slice = ghi.get_texture_slice_mut(new_texture);
-
-		// 	// Generate checkboard pattern image
-		// 	for y in 0..extent.height() {
-		// 		for x in 0..extent.width() {
-		// 			let color = if (x / 32 + y / 32) % 2 == 0 {
-		// 				RGBA::white()
-		// 			} else {
-		// 				RGBA::black()
-		// 			};
-
-		// 			let index = ((y * extent.width() + x) * 4) as usize;
-		// 			slice[index + 0] = (color.r * 255.0) as u8;
-		// 			slice[index + 1] = (color.g * 255.0) as u8;
-		// 			slice[index + 2] = (color.b * 255.0) as u8;
-		// 			slice[index + 3] = (color.a * 255.0) as u8;
-		// 		}
-		// 	}
-
-		// 	new_texture
-		// };
-		
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32); // TODO: use actual sampler
-
-		let texture_index = self.images.len() as u32;
-
-		ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
-
-		self.images.insert(resource.id().to_string(), Image {
-			index: texture_index,
-		});
-
-		self.pending_texture_loads.push(image);
-
-		Some(texture_index)
-	}
-
 	/// Creates the needed GHI resource for the given mesh.
 	/// Does nothing if the mesh has already been loaded.
 	async fn create_mesh_resources<'a, 's: 'a>(&'s mut self, id: &'a str) -> Result<&'a str, ()> {
@@ -521,7 +460,7 @@ impl VisibilityWorldRenderDomain {
 
 		let mut resource_request: Reference<ResourceMesh> = {
 			let resource_manager = self.resource_manager.read().await;
-			let mut resource_request: Reference<ResourceMesh> = if let Some(resource_info) = resource_manager.request(id).await { resource_info } else {
+			let resource_request: Reference<ResourceMesh> = if let Some(resource_info) = resource_manager.request(id).await { resource_info } else {
 				log::error!("Failed to load mesh resource {}", id);
 				return Err(());
 			};
@@ -537,42 +476,42 @@ impl VisibilityWorldRenderDomain {
 
 		{
 			let mesh_resource = resource_request.resource();
-	
+
 			if let Some(stream) = mesh_resource.position_stream() {
 				vertex_positions_stream = stream;
 			} else {
 				log::error!("Mesh resource does not contain vertex position stream");
 				return Err(());
 			}
-	
+
 			if let Some(stream) = mesh_resource.normal_stream() {
 				vertex_normals_stream = stream;
 			} else {
 				log::error!("Mesh resource does not contain vertex normal stream");
 				return Err(());
 			}
-	
+
 			if let Some(stream) = mesh_resource.uv_stream() {
 				vertex_uv_stream = stream;
 			} else {
 				log::error!("Mesh resource does not contain vertex uv stream");
 				return Err(());
 			}
-	
+
 			if let Some(stream) = mesh_resource.vertex_indices_stream() {
 				vertex_indices_stream = stream;
 			} else {
 				log::error!("Mesh resource does not contain vertex index stream");
 				return Err(());
 			}
-	
+
 			if let Some(stream) = mesh_resource.meshlet_indices_stream() {
 				primitive_indices_stream = stream;
 			} else {
 				log::error!("Mesh resource does not contain meshlet index stream");
 				return Err(());
 			}
-	
+
 			if let Some(stream) = mesh_resource.meshlets_stream() {
 				meshlet_stream = stream;
 			} else {
@@ -581,7 +520,7 @@ impl VisibilityWorldRenderDomain {
 			}
 		}
 
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().await;
 
 		let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 		let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
@@ -609,7 +548,7 @@ impl VisibilityWorldRenderDomain {
 		let load_target = resource_request.load(streams.into()).await.unwrap();
 
 		let Reference { resource: ResourceMesh { vertex_components, streams, primitives }, .. } = resource_request;
-		
+
 		let vcps = primitives.iter().scan(0, |state, p| {
 			let offset = *state;
 			*state += p.vertex_count;
@@ -627,7 +566,7 @@ impl VisibilityWorldRenderDomain {
 				_ => panic!("Unsupported index format"),
 			};
 
-			let mut ghi = self.ghi.write().unwrap();
+			let mut ghi = self.ghi.write().await;
 
 			let bottom_level_acceleration_structure = ghi.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
 				description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
@@ -660,7 +599,7 @@ impl VisibilityWorldRenderDomain {
 			let triangle_offset = *mesh_triangle_counter;
 			let meshlet_offset = *mesh_meshlet_counter;
 
-			let meshlets = if let Some(stream) = primitive.meshlet_stream() {		
+			let meshlets = if let Some(stream) = primitive.meshlet_stream() {
 				let m = load_target.get_stream("Meshlets").unwrap();
 
 				let meshlet_stream = unsafe {
@@ -673,7 +612,7 @@ impl VisibilityWorldRenderDomain {
 
 					let primitive_offset = *primitive_primitive_counter as u16;
 					let triangle_offset = *primitive_triangle_counter as u16;
-					
+
 					// Update vertex and triangle offsets per meshlet, relative to the primitive
 					*primitive_primitive_counter += meshlet_primitive_count as u32;
 					*primitive_triangle_counter += meshlet_triangle_count as u32;
@@ -707,8 +646,8 @@ impl VisibilityWorldRenderDomain {
 			meshlets).into()
 		}).collect::<Vec<_>>();
 
-		let mut ghi = self.ghi.write().unwrap();
-		
+		let mut ghi = self.ghi.write().await;
+
 		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
 
 		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
@@ -737,24 +676,30 @@ impl VisibilityWorldRenderDomain {
 		return Ok(id);
 	}
 
-	fn create_material_resources<'a>(&'a mut self, resource: resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
+	async fn create_material_resources<'a>(&'a mut self, resource: resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
 		if let Some(material) = self.material_evaluation_materials.get(resource.id()) { // If the material has already been loaded, return the index
 			return Ok(material.index);
 		}
 
+		enum LoadState<L, P> {
+			Loaded(L),
+			Pending(P),
+		}
+
 		let ghi = self.ghi.clone();
-		let mut ghi = ghi.write().unwrap();
 
 		let material_id = resource.id().to_string();
 
-		let ResourceMaterial { model, parameters, mut shaders, .. } = resource.into_resource();
+		let ResourceMaterial { model, parameters, shaders, .. } = resource.into_resource();
 
-		let rndr_shaders = shaders.iter_mut().filter_map(|shader| {
+		let shader_names = shaders.iter().map(|shader| shader.id().to_string()).collect::<Vec<_>>();
+
+		let rndr_shaders = join_all(shaders.into_iter().map(async |mut shader: Reference<Shader>| { // All of this is done to get around compiler failures
 			let resource_id = shader.id().to_string();
 			let hash = shader.hash();
 
 			if let Some((old_hash, old_shader, old_shader_type)) = self.shaders.get(&resource_id) {
-				if *old_hash == hash { return Some((*old_shader, *old_shader_type)); } // If the shader has not changed, return the old shader
+				if *old_hash == hash { return Ok(LoadState::Loaded((*old_shader, *old_shader_type))); } // If the shader has not changed, return the old shader
 			}
 
 			let stage = match shader.resource().stage {
@@ -771,14 +716,16 @@ impl VisibilityWorldRenderDomain {
 				ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
 			};
 
-			let read_target = shader.into();
-			let load_request = smol::block_on(shader.load(read_target)).unwrap();
+			let read_target = (&shader).into();
+			let load_request = shader.load(read_target).await.unwrap();
 
 			let buffer = if let Some(b) = load_request.get_buffer() {
 				b
 			} else {
-				return None;
+				return Err(());
 			};
+
+			let mut ghi = ghi.write().await;
 
 			let new_shader = ghi.create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, &[
 				CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -802,24 +749,52 @@ impl VisibilityWorldRenderDomain {
 				DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
 			]).expect("Failed to create shader");
 
-			self.shaders.insert(resource_id.to_string(), (hash, new_shader, stage));
+			Ok(LoadState::Pending((shader, new_shader, stage)))
+		})).await.into_iter().map(|l| {
+			match l {
+				Ok(LoadState::Loaded((shader, shader_type))) => Some((shader, shader_type)),
+				Ok(LoadState::Pending((shader_resource, shader_handle, stage))) => {
+					self.shaders.insert(shader_resource.id().to_string(), (shader_resource.hash(), shader_handle, stage));
 
-			Some((self.shaders.get(&resource_id).unwrap().clone().1, stage))
+					Some((shader_handle, stage))
+				},
+				Err(_) => None,
+			}
 		}).collect::<Vec<_>>();
-		
-		if shaders.is_empty() {
+
+		if rndr_shaders.iter().any(Option::is_none) {
 			log::warn!("No shaders found for material: {}", &material_id);
 			return Err(());
 		}
 
-		let textures_indices = parameters.into_iter().map(|parameter| {
+		let rndr_shaders = rndr_shaders.into_iter().filter_map(|e| e).collect::<Vec<_>>();
+
+		let textures_indices = join_all(parameters.into_iter().map(|p| (ghi.clone(), p)).map(async |(ghi, parameter): (Rc<RwLock<ghi::GHI>>, Parameter)| { // All of this is done to get around compiler failures
 			match parameter.value {
 				Value::Image(image) => {
-					smol::block_on(self.load_image(image, ghi.deref_mut(),))
+					let mut ghi = ghi.write().await;
+					self.texture_manager.write().await.load(image, &mut ghi).await
 				}
 				_ => { None }
 			}
+		})).await;
+
+		let textures_indices = textures_indices.into_iter().map(|v| {
+			if let Some((_, image, sampler)) = v {
+				let texture_index = self.images.len() as u32;
+
+				let mut ghi = ghi.blocking_write();
+				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
+
+				self.pending_texture_loads.push(image);
+
+				Some(texture_index)
+			} else {
+				None
+			}
 		}).collect::<Vec<_>>();
+
+		let mut ghi = ghi.write().await;
 
 		let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
@@ -845,7 +820,7 @@ impl VisibilityWorldRenderDomain {
 							name: material_id,
 							index,
 							pipeline,
-							shaders: shaders.iter().map(|s| s.id().to_string()).collect(),
+							shaders: shader_names,
 						});
 
 						return Ok(index);
@@ -867,7 +842,7 @@ impl VisibilityWorldRenderDomain {
 	/// Does nothing if the material has already been loaded.
 	async fn create_variant_resources<'s, 'a>(&'s mut self, resource: resource_management::Reference<ResourceVariant>) -> Result<u32, ()> {
 		let entry = self.material_evaluation_materials.get(resource.id());
-		
+
 		if let Some(e) = entry {
 			return Ok(e.index);
 		}
@@ -877,7 +852,7 @@ impl VisibilityWorldRenderDomain {
 
 		let material_store = variant.material;
 		let material_id = material_store.id().to_string();
-		self.create_material_resources(material_store)?;
+		self.create_material_resources(material_store).await?;
 
 		let material = self.material_evaluation_materials.get(&material_id).unwrap();
 
@@ -896,10 +871,10 @@ impl VisibilityWorldRenderDomain {
 				Value::Scalar(scalar) => {
 					specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar));
 				}
-				Value::Vector3(value) => {		
+				Value::Vector3(value) => {
 					specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value));
 				}
-				Value::Vector4(value) => {		
+				Value::Vector4(value) => {
 					specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value));
 				}
 				Value::Image(image) => {}
@@ -907,16 +882,37 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		let ghi = self.ghi.clone();
-		let mut ghi = ghi.write().unwrap();
 
-		let textures_indices = variant.variables.into_iter().map(|parameter| {
-			match parameter.value {
-				Value::Image(image) => {
-					smol::block_on(self.load_image(image, ghi.deref_mut(),))
+		let textures_indices = {
+			let ghi = ghi.clone();
+			let texture_manager = self.texture_manager.clone();
+			join_all(variant.variables.into_iter().map(async |parameter: VariantVariable| {
+				match parameter.value {
+					Value::Image(image) => {
+						let mut ghi = ghi.write().await;
+						texture_manager.write().await.load(image, &mut ghi).await
+					}
+					_ => { None }
 				}
-				_ => { None }
+			})).await
+		};
+
+		let textures_indices = textures_indices.into_iter().map(|v| {
+			if let Some((_, image, sampler)) = v {
+				let texture_index = self.images.len() as u32;
+
+				let mut ghi = ghi.blocking_write();
+				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
+
+				self.pending_texture_loads.push(image);
+
+				Some(texture_index)
+			} else {
+				None
 			}
 		}).collect::<Vec<_>>();
+
+		let mut ghi = ghi.write().await;
 
 		let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
@@ -944,7 +940,7 @@ impl VisibilityWorldRenderDomain {
 
 	fn get_transform(&self) -> Mat4f { Mat4f::identity() }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -1009,7 +1005,7 @@ impl VisibilityWorldRenderDomain {
 
 		{
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
-			
+
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
@@ -1041,7 +1037,7 @@ impl VisibilityWorldRenderDomain {
 	pub fn render_b(&mut self, command_buffer_recording: &mut impl ghi::CommandBufferRecording) {
 		{
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
-			
+
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
 			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
 
@@ -1069,16 +1065,16 @@ impl VisibilityWorldRenderDomain {
 		}
 		command_buffer_recording.end_region();
 	}
-	
+
 	pub fn resize(&self, extent: Extent) {
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 		ghi.resize_image(self.albedo, extent);
 		ghi.resize_image(self.diffuse, extent);
 		ghi.resize_image(self.depth_target, extent);
 		ghi.resize_image(self.occlusion_map, extent);
 		ghi.resize_image(self.primitive_index, extent);
 		ghi.resize_image(self.instance_id, extent);
-		
+
 		self.pixel_mapping_pass.resize(extent, ghi.deref_mut());
 	}
 
@@ -1165,7 +1161,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		Box::pin(async move {
 		let mesh_id = self.create_mesh_resources(mesh.get_resource_id()).await.unwrap().to_string(); // I had to use to_string here because I couldn't solve the lifetime issue
 
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.write().await;
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -1187,8 +1183,8 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 				base_primitive_index: mesh_data.primitive_offset + p.primitive_offset, // Add the mesh relative primitive offset and the primitive relative primitive offset to get the absolute primitive offset
 				base_triangle_index: mesh_data.triangle_offset + p.triangle_offset, // Add the mesh relative triangle offset and the primitive relative triangle offset to get the absolute triangle offset
 				base_meshlet_index: mesh_data.meshlet_offset + p.meshlet_offset, // Add the mesh relative meshlet offset and the primitive relative meshlet offset to get the absolute meshlet offset
-			};	
-	
+			};
+
 			meshes_data_slice[instance_base_index as usize + i] = shader_mesh_data;
 		}
 
@@ -1219,12 +1215,12 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> utils::BoxedFuture<()> {
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
 		let light_index = lighting_data.count as usize;
-		
+
 		let x = 4f32;
 		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
@@ -1239,7 +1235,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 		lighting_data.lights[light_index].vp_matrix = vp_matrix;
 		lighting_data.lights[light_index].position = light.direction;
 		lighting_data.lights[light_index].color = light.color;
-		
+
 		lighting_data.count += 1;
 
 		self.lights.push(lighting_data.lights[light_index]);
@@ -1252,7 +1248,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> utils::BoxedFuture<()> {
-		let mut ghi = self.ghi.write().unwrap();
+		let mut ghi = self.ghi.blocking_write();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
@@ -1264,7 +1260,7 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 		lighting_data.lights[light_index].vp_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].position = light.position;
 		lighting_data.lights[light_index].color = light.color;
-		
+
 		lighting_data.count += 1;
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
@@ -1344,7 +1340,7 @@ impl VisibilityPass {
 			ghi::PipelineConfigurationBlocks::Shaders { shaders: visibility_pass_shaders },
 			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
-		
+
 		VisibilityPass {
 			pipeline_layout: pipeline_layout_handle,
 			descriptor_set,
@@ -1374,7 +1370,7 @@ impl VisibilityPass {
 
 		command_buffer_recording.end_region();
 	}
-	
+
 	fn resize(&self, _: Extent) {}
 }
 

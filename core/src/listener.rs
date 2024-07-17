@@ -1,6 +1,6 @@
 use std::ops::DerefMut;
 
-use utils::{r#async::{join_all, RwLock}, BoxedFuture};
+use utils::{r#async::{join_all, spawn_blocking_local, RwLock}, BoxedFuture};
 
 use super::{entity::{get_entity_trait_for_type, EntityTrait}, Entity, EntityHandle};
 
@@ -64,7 +64,7 @@ impl Listener for BasicListener  {
 	}) }
 
 	fn add_listener<T: Entity + ?Sized>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {
-		let mut listeners = self.listeners.blocking_write();
+		let mut listeners = spawn_blocking_local(|| self.listeners.blocking_write());
 
 		let listeners = listeners.entry(unsafe { get_entity_trait_for_type::<T>() }).or_insert_with(|| Box::new(List::<T>::new()));
 
@@ -88,16 +88,16 @@ mod tests {
 	use super::*;
 	use crate::entity::EntityBuilder;
 	use crate::{spawn, spawn_as_child};
-	
+
 	#[test]
 	fn listeners() {
 		struct Component {
 			name: String,
 			value: u32,
 		}
-		
+
 		impl Entity for Component {}
-		
+
 		let _: EntityHandle<Component> = block_on(spawn(Component { name: "test".to_string(), value: 1 }));
 
 		struct System {
@@ -123,11 +123,11 @@ mod tests {
 				})
 			}
 		}
-		
+
 		let listener_handle = block_on(spawn(BasicListener::new()));
 
 		let _: EntityHandle<System> = block_on(spawn_as_child(listener_handle.clone(), System::new()));
-		
+
 		assert_eq!(unsafe { COUNTER }, 0);
 
 		let _: EntityHandle<Component> = block_on(spawn_as_child(listener_handle.clone(), Component { name: "test".to_string(), value: 1 }));
@@ -184,11 +184,11 @@ mod tests {
 				Box::pin(async move { })
 			}
 		}
-		
+
 		let listener_handle = block_on(spawn(BasicListener::new()));
 
 		let _: EntityHandle<System> = block_on(spawn_as_child(listener_handle.clone(), System::new()));
-		
+
 		assert_eq!(unsafe { COUNTER }, 0);
 
 		let _: EntityHandle<Component> = block_on(spawn_as_child(listener_handle.clone(), EntityBuilder::new(Component { name: "test".to_string(), value: 1 })));

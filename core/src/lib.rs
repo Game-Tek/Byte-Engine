@@ -1,4 +1,4 @@
-#![feature(coerce_unsized, unsize, async_closure, trivial_bounds, impl_trait_in_fn_trait_return, type_alias_impl_trait, lazy_type_alias)]
+#![feature(coerce_unsized, unsize, async_closure, trivial_bounds,)]
 
 pub mod orchestrator;
 

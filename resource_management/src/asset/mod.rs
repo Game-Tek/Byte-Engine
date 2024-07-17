@@ -78,11 +78,6 @@ pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std
 	Ok((source_bytes.into(), spec, format))
 }) }
 
-enum ResolvedAsset {
-	Loaded((Vec<u8>, Option<BEADType>, String)),
-	AlreadyExists,
-}
-
 pub fn get_base<'a>(url: &'a str) -> Option<&'a str> {
 	let mut split = url.split('#');
 	let url = split.next()?;

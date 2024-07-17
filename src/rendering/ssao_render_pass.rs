@@ -85,7 +85,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let buffer = ghi.get_texture_slice_mut(image);
 
-		blue_noise.load(buffer.into()).await;
+		let _ = blue_noise.load(buffer.into()).await; // TODO: use texture loader
 
 		let noise_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&NOISE_BINDING_TEMPLATE, image, sampler, ghi::Layouts::Read));
 

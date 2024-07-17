@@ -136,7 +136,7 @@ impl ShadowRenderingPass {
 			light_type: 'D' as u8,
 		};
 
-		ghi.get_mut_buffer_slice(self.lighting_data).write(&1u32.to_le_bytes());
+		let _ = ghi.get_mut_buffer_slice(self.lighting_data).write(&1u32.to_le_bytes());
 		let lights: &mut [LightData] = unsafe { transmute(&mut ghi.get_mut_buffer_slice(self.lighting_data)[4..]) };
 		lights[0] = light;
 	}

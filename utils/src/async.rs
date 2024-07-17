@@ -1,6 +1,7 @@
 use std::future::Future;
 
 pub use futures::future::join_all;
+pub use futures::future::try_join_all;
 
 pub use tokio::spawn;
 pub use tokio::task::spawn_blocking;

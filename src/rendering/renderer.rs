@@ -3,7 +3,7 @@ use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
 use resource_management::resource::resource_manager::ResourceManager;
-use utils::{r#async::RwLock, Extent};
+use utils::{sync::RwLock, Extent};
 
 use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
@@ -42,11 +42,10 @@ impl Renderer {
 				log::error!("{}", message);
 			}))));
 
-			let extent = Extent::square(0);
-			// let extent = Extent::rectangle(1920, 1080);
+			let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
 			let result = {
-				let mut ghi = ghi_instance.blocking_write();
+				let mut ghi = ghi_instance.write();
 
 				ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
@@ -61,7 +60,7 @@ impl Renderer {
 			let tonemap_render_model;
 
 			{
-				let mut ghi = ghi_instance.blocking_write();
+				let mut ghi = ghi_instance.write();
 
 				{
 					let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
@@ -74,7 +73,7 @@ impl Renderer {
 			}
 
 			let ao_render_pass = {
-				let mut ghi = ghi_instance.blocking_write();
+				let mut ghi = ghi_instance.write();
 				let vrm = visibility_render_model.read_sync();
 				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), resource_manager_handle, vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
 			};
@@ -111,7 +110,7 @@ impl Renderer {
 
 		let modulo_frame_index = (self.rendered_frame_count % self.frame_queue_depth) as u32;
 
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 
 		let swapchain_handle = self.swapchain_handles[0];
 
@@ -127,7 +126,7 @@ impl Renderer {
 
 		if extent != self.extent {
 			{
-				let mut ghi = self.ghi.blocking_write();
+				let mut ghi = self.ghi.write();
 				ghi.resize_image(self.result, extent);
 			}
 
@@ -136,7 +135,7 @@ impl Renderer {
 			});
 
 			self.ao_render_pass.sync_get_mut(|e| {
-				let mut ghi = self.ghi.blocking_write();
+				let mut ghi = self.ghi.write();
 				e.resize(ghi.deref_mut(), extent);
 			});
 
@@ -147,7 +146,7 @@ impl Renderer {
 			self.extent = extent;
 		}
 
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 
 		self.visibility_render_model.sync_get_mut(|vis_rp| {
 			if let Some(_) = vis_rp.prepare(&mut ghi, extent, modulo_frame_index) {
@@ -206,7 +205,7 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 			e.get_os_handles(&handle)
 		});
 
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 
 		let swapchain_handle = ghi.bind_to_window(&os_handles, ghi::PresentationModes::FIFO);
 

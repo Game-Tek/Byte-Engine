@@ -18,7 +18,7 @@ pub use crate::lexer::BindingTypes;
 
 pub fn parse(source: &str) -> Result<parser::Node, CompilationError> {
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
-	let (parser_root_node, _) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
+	let parser_root_node = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
 
 	Ok(parser_root_node)
 }
@@ -41,7 +41,7 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 	}
 
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
-	let (parser_root_node, parser_program) = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
+	let parser_root_node = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
 
 	let besl = if let Some(parent)  = parent {
 		lexer::lex_with_root(parent, parser_root_node).map_err(|_e| CompilationError::Undefined)?

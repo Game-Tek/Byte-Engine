@@ -536,6 +536,11 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
 	/// Creates an image.
+	/// 
+	/// # Arguments
+	/// 
+	/// * `extent` - The size of the image. Can be 0 to skip eager allocation, such as for framebuffers.
+	/// * `format` - The format of the image.
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> ImageHandle;
 
 	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;

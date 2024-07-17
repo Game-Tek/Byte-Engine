@@ -211,12 +211,13 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	if (light_type == 68) { // Infinite
 		float c_occlusion_factor  = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.00,  0.00));
-		float lt_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01,  0.01));
-		float lr_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01,  0.01));
-		float bl_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01, -0.01));
-		float br_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01, -0.01));
+		/* float lt_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01,  0.01)); */
+		/* float lr_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01,  0.01)); */
+		/* float bl_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01, -0.01)); */
+		/* float br_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01, -0.01)); */
 
-		float occlusion_factor = (c_occlusion_factor + lt_occlusion_factor + lr_occlusion_factor + bl_occlusion_factor + br_occlusion_factor) / 5.0;
+		/* float occlusion_factor = (c_occlusion_factor + lt_occlusion_factor + lr_occlusion_factor + bl_occlusion_factor + br_occlusion_factor) / 5.0; */
+		float occlusion_factor = c_occlusion_factor;
 
 		if (occlusion_factor == 0.0) { continue; }
 

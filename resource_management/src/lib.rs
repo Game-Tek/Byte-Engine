@@ -242,6 +242,8 @@ impl<'a, T: Resource + 'a> Reference<T> {
         self.hash
     }
 
+	pub fn get_hash(&self) -> u64 { self.hash }
+
     pub fn resource(&self) -> &T {
         &self.resource
     }
@@ -348,9 +350,6 @@ impl <T: Resource> std::hash::Hash for Reference<T> {
 		self.id.hash(state); self.hash.hash(state); self.size.hash(state); self.resource.get_class().hash(state);
 	}
 }
-
-#[derive(Debug, Clone)]
-pub struct SerializedResourceDocument(polodb_core::bson::Document);
 
 /// Options for loading a resource.
 #[derive(Debug)]

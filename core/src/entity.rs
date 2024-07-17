@@ -51,7 +51,7 @@ pub trait SelfDestroyingEntity: Entity {
 
 downcast_rs::impl_downcast!(Entity);
 
-pub type EntityWrapper<T: ?Sized> = std::sync::Arc<RwLock<T>>;
+pub type EntityWrapper<T> = std::sync::Arc<RwLock<T>>;
 
 #[derive(Debug,)]
 pub struct EntityHandle<T: ?Sized> {
@@ -188,7 +188,9 @@ impl <T: ?Sized> EntityHandle<T> {
 	}
 
 	pub fn read_sync<'a>(&self) -> RwLockReadGuard<T> where T: Sized {
-		self.container.blocking_read()
+		utils::r#async::spawn_blocking_local(|| {
+			self.container.blocking_read()
+		})
 	}
 
 	pub fn write(&self) -> impl Future<Output = RwLockWriteGuard<'_, T>> {
@@ -196,7 +198,9 @@ impl <T: ?Sized> EntityHandle<T> {
 	}
 
 	pub fn write_sync<'a>(&self) -> RwLockWriteGuard<T> {
-		self.container.blocking_write()
+		utils::r#async::spawn_blocking_local(|| {
+			self.container.blocking_write()
+		})
 	}
 
 	pub fn map<'a, R>(&self, function: impl FnOnce(&Self) -> R) -> R {
@@ -232,7 +236,7 @@ impl <'c, T: Entity + 'c> EntityBuilder<'c, T> {
 	}
 
 	pub fn new_from_async_function<R>(function: impl FnOnce() -> R + 'c) -> Self where R: Future<Output = T> + 'c {
-		Self::default(move |_| Box::pin(async move { function().await }))
+		Self::default(move |_| Box::pin(function()))
 	}
 
 	pub fn new_from_async_function_with_parent<R>(function: impl FnOnce(DomainType) -> R + 'c) -> Self where R: Future<Output = T> + 'c {

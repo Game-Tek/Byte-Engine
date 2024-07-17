@@ -274,7 +274,6 @@ dependencies = [
  "component_derive",
  "core",
  "dual_quaternion",
- "futures",
  "ghi",
  "gxhash",
  "json",
@@ -2137,6 +2136,8 @@ name = "utils"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "gxhash",
+ "parking_lot",
  "tokio",
 ]
 

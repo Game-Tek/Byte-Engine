@@ -1,8 +1,8 @@
-use std::{future, sync::Arc};
+use std::sync::Arc;
 
 use utils::r#async::block_on;
 use clap::{Parser, Subcommand};
-use resource_management::{asset::{self, asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
+use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]

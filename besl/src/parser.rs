@@ -19,9 +19,7 @@
 //! Those relations are resolved later by the lexer which performs a grammar analysis.
 
 /// Parse consumes an stream of tokens and return a JSPD describing the shader.
-pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), ParsingFailReasons> {
-	let mut program_state = ProgramState{};
-
+pub(super) fn parse(tokens: Vec<String>) -> Result<Node, ParsingFailReasons> {
 	let mut iterator = tokens.iter();
 
 	let parsers = [
@@ -34,9 +32,7 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 	let mut children = vec![];
 
 	loop {
-		let ((expression, program), iter) = execute_parsers(parsers.as_slice(), iterator, &program_state)?;
-
-		program_state = program; // Update program state
+		let (expression, iter) = execute_parsers(parsers.as_slice(), iterator,)?;
 
 		children.push(expression);
 
@@ -47,7 +43,7 @@ pub(super) fn parse(tokens: Vec<String>) -> Result<(Node, ProgramState), Parsing
 		}
 	}
 
-	Ok((make_scope("root", children), program_state))
+	Ok(make_scope("root", children),)
 }
 
 use std::num::NonZeroUsize;
@@ -479,18 +475,18 @@ impl Precedence for Atoms {
 }
 
 /// Type of the result of a parser.
-type FeatureParserResult<'a> = Result<((Node, ProgramState), std::slice::Iter<'a, String>), ParsingFailReasons>;
+type FeatureParserResult<'a> = Result<(Node, std::slice::Iter<'a, String>), ParsingFailReasons>;
 
 /// A parser is a function that tries to parse a sequence of tokens.
-type FeatureParser<'a> = fn(std::slice::Iter<'a, String>, &ProgramState) -> FeatureParserResult<'a>;
+type FeatureParser<'a> = fn(std::slice::Iter<'a, String>) -> FeatureParserResult<'a>;
 
 type ExpressionParserResult<'a> = Result<(Vec<Atoms>, std::slice::Iter<'a, String>), ParsingFailReasons>;
-type ExpressionParser<'a> = fn(std::slice::Iter<'a, String>, &ProgramState, Vec<Atoms>) -> ExpressionParserResult<'a>;
+type ExpressionParser<'a> = fn(std::slice::Iter<'a, String>, Vec<Atoms>) -> ExpressionParserResult<'a>;
 
 /// Execute a list of parsers on a stream of tokens.
-fn execute_parsers<'a>(parsers: &[FeatureParser<'a>], mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
+fn execute_parsers<'a>(parsers: &[FeatureParser<'a>], mut iterator: std::slice::Iter<'a, String>) -> FeatureParserResult<'a> {
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(), program) {
+		if let Ok(r) = parser(iterator.clone(),) {
 			return Ok(r);
 		}
 	}
@@ -499,9 +495,9 @@ fn execute_parsers<'a>(parsers: &[FeatureParser<'a>], mut iterator: std::slice::
 }
 
 /// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
-fn try_execute_parsers<'a>(parsers: &[FeatureParser<'a>], iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> Option<FeatureParserResult<'a>> {
+fn try_execute_parsers<'a>(parsers: &[FeatureParser<'a>], iterator: std::slice::Iter<'a, String>,) -> Option<FeatureParserResult<'a>> {
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(), program) {
+		if let Ok(r) = parser(iterator.clone(),) {
 			return Some(Ok(r));
 		}
 	}
@@ -510,9 +506,9 @@ fn try_execute_parsers<'a>(parsers: &[FeatureParser<'a>], iterator: std::slice::
 }
 
 /// Execute a list of parsers on a stream of tokens.
-fn execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, expressions: Vec<Atoms>) -> ExpressionParserResult<'a> {
+fn execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], mut iterator: std::slice::Iter<'a, String>, expressions: Vec<Atoms>) -> ExpressionParserResult<'a> {
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(), program, expressions.clone()) {
+		if let Ok(r) = parser(iterator.clone(), expressions.clone()) {
 			return Ok(r);
 		}
 	}
@@ -521,9 +517,9 @@ fn execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], mut iterator
 }
 
 /// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
-fn try_execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], iterator: std::slice::Iter<'a, String>, program: &ProgramState, expressions: Vec<Atoms>,) -> Option<ExpressionParserResult<'a>> {
+fn try_execute_expression_parsers<'a>(parsers: &[ExpressionParser<'a>], iterator: std::slice::Iter<'a, String>, expressions: Vec<Atoms>,) -> Option<ExpressionParserResult<'a>> {
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(), program, expressions.clone()) {
+		if let Ok(r) = parser(iterator.clone(), expressions.clone()) {
 			return Some(Ok(r));
 		}
 	}
@@ -535,7 +531,7 @@ fn is_identifier(c: char) -> bool { // TODO: validate number at end of identifie
 	c.is_alphanumeric() || c == '_'
 }
 
-fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
+fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>,) -> FeatureParserResult<'a> {
 	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	let mut r#type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find type while parsing member {}.", name) })?.clone();
@@ -555,10 +551,10 @@ fn parse_member<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 	iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected semicolon") })?; // Skip semicolon
 
-	Ok(((node, program.clone()), iterator))
+	Ok(((node), iterator))
 }
 
-fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
+fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>,) -> FeatureParserResult<'a> {
 	let mut iter = iterator;
 
 	iter.next().and_then(|v| if v == "#" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
@@ -566,10 +562,10 @@ fn parse_macro<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramStat
 	iter.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find macro name.") })?;
 	iter.next().and_then(|v| if v == "]" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find ] after macro.") })?;
 
-	Ok(((make_scope("MACRO", vec![]).into(), program.clone()), iter))
+	Ok((make_scope("MACRO", vec![]).into(), iter))
 }
 
-fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
+fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>,) -> FeatureParserResult<'a> {
 	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 	iterator.next().and_then(|v| if v == "struct" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
@@ -607,14 +603,10 @@ fn parse_struct<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Progra
 
 	let node = Node::r#struct(name, fields);
 
-	let mut program = program.clone();
-
-	// program.types.insert(name.clone(), node.clone());
-
-	Ok(((node, program.clone()), iterator))
+	Ok((node, iterator))
 }
 
-fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let _ = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v == "let" { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
@@ -626,12 +618,12 @@ fn parse_var_decl<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		parse_operator,
 	];
 
-	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, program, expressions)?;
+	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, expressions)?;
 
 	Ok(expressions)
 }
 
-fn parse_keywords<'a>(mut iterator: std::slice::Iter<'a, String>, _: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_keywords<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v == "return" { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 
 	expressions.push(Atoms::Keyword);
@@ -641,12 +633,12 @@ fn parse_keywords<'a>(mut iterator: std::slice::Iter<'a, String>, _: &ProgramSta
 	// 	parse_accessor,
 	// ];
 
-	// try_execute_expression_parsers(&lexers, iterator.clone(), program, expressions.clone()).unwrap_or(Ok((expressions, iterator)));
+	// try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)));
 
 	Ok((expressions, iterator))
 }
 
-fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 
 	expressions.push(Atoms::Member{ name: name.clone() });
@@ -656,10 +648,10 @@ fn parse_variable<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		parse_accessor,
 	];
 
-	try_execute_expression_parsers(&lexers, iterator.clone(), program, expressions.clone()).unwrap_or(Ok((expressions, iterator)))
+	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
 
-fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let _ = iterator.next().and_then(|v| if v == "." { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
 	expressions.push(Atoms::Accessor);
@@ -668,10 +660,10 @@ fn parse_accessor<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		parse_variable,
 	];
 
-	execute_expression_parsers(&lexers, iterator, program, expressions)
+	execute_expression_parsers(&lexers, iterator, expressions)
 }
 
-fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, _: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let value = iterator.next().and_then(|v| if v == "0" || v == "2.0" || v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?; // TODO: do real literal parsing
 
 	expressions.push(Atoms::Literal{ value: value.clone() });
@@ -679,17 +671,17 @@ fn parse_literal<'a>(mut iterator: std::slice::Iter<'a, String>, _: &ProgramStat
 	Ok((expressions, iterator))
 }
 
-fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState, expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_rvalue<'a>(iterator: std::slice::Iter<'a, String>, expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let parsers = vec![
 		parse_function_call,
 		parse_literal,
 		parse_variable,
 	];
 
-	execute_expression_parsers(&parsers, iterator.clone(), program, expressions)
+	execute_expression_parsers(&parsers, iterator.clone(), expressions)
 }
 
-fn parse_operator<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_operator<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let operator = iterator.next().and_then(|v| if v == "*" || v == "+" || v == "-" || v == "/" || v == "=" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
 	expressions.push(Atoms::Operator{ name: operator.clone() });
@@ -698,17 +690,17 @@ fn parse_operator<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		parse_rvalue,
 	];
 
-	execute_expression_parsers(&possible_following_expressions, iterator, program, expressions)
+	execute_expression_parsers(&possible_following_expressions, iterator, expressions)
 }
 
-fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
+fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, mut expressions: Vec<Atoms>,) -> ExpressionParserResult<'a> {
 	let function_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 	iterator.next().and_then(|v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
 
 	let mut parameters = vec![];
 
 	loop {
-		if let Some(a) = try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), program, Vec::new()) {
+		if let Some(a) = try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), Vec::new()) {
 			let (expressions, new_iterator) = a?;
 			parameters.push(expressions);
 			iterator = new_iterator;
@@ -728,10 +720,10 @@ fn parse_function_call<'a>(mut iterator: std::slice::Iter<'a, String>, program: 
 		parse_accessor,
 	];
 
-	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), program, expressions.clone()).unwrap_or(Ok((expressions, iterator)))
+	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
 
-fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &ProgramState,) -> FeatureParserResult<'a> {
+fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>,) -> FeatureParserResult<'a> {
 	let parsers = vec![
 		parse_keywords,
 		parse_var_decl,
@@ -739,7 +731,7 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &Program
 		parse_variable,
 	];
 
-	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, program, Vec::new())?;
+	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
 
 	iterator.next().and_then(|v| if v == ";" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected semicolon") })?; // Skip semicolon
 
@@ -779,10 +771,10 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>, program: &Program
 		}
 	}
 
-	Ok(((dandc(&expressions), program.clone()), iterator))
+	Ok((dandc(&expressions), iterator))
 }
 
-fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &ProgramState) -> FeatureParserResult<'a> {
+fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>,) -> FeatureParserResult<'a> {
 	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
 
 	iterator.next().and_then(|v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
@@ -798,7 +790,7 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 	let mut statements = vec![];
 
 	loop {
-		if let Some(Ok(((expression, _), new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone(), program) {
+		if let Some(Ok((expression, new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone(),) {
 			iterator = new_iterator;
 	
 			statements.push(expression);
@@ -818,11 +810,9 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>, program: &Prog
 		}
 	}
 
-	let mut program = program.clone();
-
 	let node = Node::function(name, vec![], return_type, statements);
 
-	Ok(((node, program.clone()), iterator))
+	Ok((node, iterator))
 }
 
 use std::ops::Index;
@@ -919,7 +909,7 @@ Light: struct {
 }";
 
 		let tokens = tokenize(source).unwrap();
-		let (node, program) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		// program.types.get("Light").expect("Failed to get Light type");
 
@@ -969,7 +959,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).unwrap();
-		let (node, _program) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		if let Nodes::Scope{ name, .. } = &node.node {
 			assert_eq!(name, "root");
@@ -987,7 +977,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).unwrap();
-		let (node, _program) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		let main_node = &node["main"];
 
@@ -1032,7 +1022,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).unwrap();
-		let (node, _program) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		print_tree(&node);
 
@@ -1083,7 +1073,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
-		let (node, _) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { .. } = &node.node {
 			assert_struct(&node["Light"]);
@@ -1096,7 +1086,7 @@ main: fn () -> void {
 		let source = "color: In<vec4f>;";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
-		let (node, _) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { .. } = &node.node {
 			let member_node = &node["color"];
@@ -1119,7 +1109,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
-		let (node, _) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = &node.node {
 			assert_eq!(children.len(), 3);
@@ -1135,7 +1125,7 @@ main: fn () -> void {
 		"#;
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
-		let (node, _) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = &node.node {
 			assert_eq!(children.len(), 1);
@@ -1150,7 +1140,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
-		let (node, _) = parse(tokens).expect("Failed to parse");
+		let node = parse(tokens).expect("Failed to parse");
 
 		if let Nodes::Scope { children, .. } = &node.node {
 			assert_eq!(children.len(), 1);

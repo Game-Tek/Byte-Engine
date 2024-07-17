@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, num::NonZeroUsize, ops::Deref, rc::{Rc, Weak}};
+use std::{cell::RefCell, num::NonZeroUsize, ops::Deref, rc::{Rc, Weak}};
 use std::hash::Hash;
 
 use super::parser;
@@ -530,7 +530,7 @@ impl Node {
 		&mut self.node
 	}
 	
-	fn null() -> Node {
+	pub fn null() -> Node {
 		Self {
 			node: Nodes::Null,
 		}
@@ -624,7 +624,7 @@ impl std::fmt::Debug for Node {
 			Nodes::Scope { name, children } => { write!(f, "Scope {{ name: {}, children: {:#?} }}", name, children.iter().map(|c| c.0.borrow().get_name())) }
 			Nodes::Struct { name, fields, .. } => { write!(f, "Struct {{ name: {}, fields: {:?} }}", name, fields.iter().map(|c| c.0.borrow().get_name())) }
 			Nodes::Member { name, r#type, .. } => { write!(f, "Member {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name()) }
-			Nodes::Function { name, params, return_type, statements } => { write!(f, "Function {{ name: {}  }}", name) }
+			Nodes::Function { name, .. } => { write!(f, "Function {{ name: {}  }}", name) }
 			Nodes::Specialization { name, r#type } => { write!(f, "Specialization {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name()) }
 			Nodes::Expression(expression) => { write!(f, "Expression {{ {:?} }}", expression) }
 			Nodes::GLSL { code, input, output } => { write!(f, "GLSL {{ code: {}, input: {:?}, output: {:?} }}", code, input.iter().map(|c| c.0.borrow().get_name()), output.iter().map(|c| c.0.borrow().get_name())) }
@@ -1113,7 +1113,7 @@ Foo: struct {
 }";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		lex(node).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
@@ -1123,7 +1123,7 @@ Foo: struct {
 main: fn () -> NonExistantType {}";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		lex(node,).err().filter(|e| e == &LexError::ReferenceToUndefinedType{ type_name: "NonExistantType".to_string() }).expect("Expected error");
 	}
 
@@ -1136,7 +1136,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		lex(node,).err().filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters).expect("Expected error");
 	}
 
@@ -1149,7 +1149,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		let node = lex(node,).expect("Failed to lex");
 		let node = node.borrow();
 
@@ -1213,7 +1213,7 @@ color: In<vec4f>;
 ";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		let node = lex(node).expect("Failed to lex");
 		let node = node.borrow();
 
@@ -1252,7 +1252,7 @@ color: In<vec4f>;
 		"#;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		lex(node,).expect("Failed to lex");
 	}
 
@@ -1267,7 +1267,7 @@ color: In<vec4f>;
 		"#;
 
 		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		let node = lex(node).expect("Failed to lex");
 
 		let node = node.borrow();
@@ -1315,7 +1315,7 @@ color: In<vec4f>;
 		"#;
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (node, program) = parser::parse(tokens).expect("Failed to parse");
+		let node = parser::parse(tokens).expect("Failed to parse");
 		let node = lex(node).expect("Failed to lex");
 
 		let node = node.borrow();
@@ -1383,7 +1383,7 @@ main: fn () -> void {
 }";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let (mut node, _) = parser::parse(tokens).expect("Failed to parse");
+		let mut node = parser::parse(tokens).expect("Failed to parse");
 
 		let intrinsic = parser::Node::intrinsic("intrinsic", parser::Node::parameter("num", "u32"), parser::Node::sentence(vec![parser::Node::glsl("vec3(", &[], vec![]), parser::Node::member_expression("num"), parser::Node::glsl(")", &[], Vec::new())]), "vec3f");
 

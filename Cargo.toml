@@ -31,7 +31,6 @@ simple_logger = "4.2.0"
 colored = "2.0.4"
 gxhash = "3.4.1"
 machineid-rs = "1.2.4"
-futures = "0.3.30"
 
 [profile.dev]
 incremental = true

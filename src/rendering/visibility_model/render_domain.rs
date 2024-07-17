@@ -1,12 +1,10 @@
-use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use futures::future::try_join_all;
-use futures::Future;
 use ghi::{graphics_hardware_interface, ImageHandle};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
+use gxhash::{HashMap, HashMapExt};
 use json::object;
 use log::error;
 use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
@@ -21,13 +19,15 @@ use resource_management::image::Image as ResourceImage;
 use resource_management::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
 use resource_management::material::Variant as ResourceVariant;
-use utils::r#async::{join_all, RwLock};
+use utils::r#async::join_all;
+use utils::sync::RwLock;
 use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{self, Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
+use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
@@ -133,19 +133,14 @@ pub struct VisibilityWorldRenderDomain {
 	render_entities: Vec<((usize, usize), EntityHandle<dyn mesh::RenderEntity>)>,
 
 	meshes: HashMap<String, MeshData>,
-	images: HashMap<String, Image>,
+	images: RwLock<HashMap<String, Image>>,
 
-	texture_manager: Arc<RwLock<TextureManager>>,
+	texture_manager: Arc<utils::r#async::RwLock<TextureManager>>,
+	pipeline_manager: PipelineManager,
 
 	mesh_resources: HashMap<String, u32>,
 
-	/// Maps resource ids to shaders
-	/// The hash and the shader handle are stored to determine if the shader has changed
-	shaders: std::collections::HashMap<String, (u64, ghi::ShaderHandle, ghi::ShaderTypes)>,
-
-	material_evaluation_materials: HashMap<String, Material>,
-
-	pending_texture_loads: Vec<ghi::ImageHandle>,
+	material_evaluation_materials: RwLock<HashMap<String, Material>>,
 
 	occlusion_map: ghi::ImageHandle,
 
@@ -237,7 +232,7 @@ pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorS
 impl VisibilityWorldRenderDomain {
 	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_async_function(async move || {
-			let mut ghi_instance = ghi.write().await;
+			let mut ghi_instance = ghi.write();
 
 			let extent = Extent::square(0);
 			// let extent = Extent::rectangle(1920, 1080);
@@ -378,20 +373,17 @@ impl VisibilityWorldRenderDomain {
 
 				shadow_render_pass,
 
-				shaders: HashMap::with_capacity(1024),
-
 				camera: None,
 
 				meshes: HashMap::with_capacity(1024),
-				images: HashMap::with_capacity(1024),
+				images: RwLock::new(HashMap::with_capacity(1024)),
 
-				texture_manager: Arc::new(RwLock::new(TextureManager::new())),
+				texture_manager: Arc::new(utils::r#async::RwLock::new(TextureManager::new())),
+				pipeline_manager: PipelineManager::new(),
 
 				mesh_resources: HashMap::new(),
 
-				material_evaluation_materials: HashMap::new(),
-
-				pending_texture_loads: Vec::new(),
+				material_evaluation_materials: RwLock::new(HashMap::new()),
 
 				occlusion_map,
 
@@ -520,7 +512,7 @@ impl VisibilityWorldRenderDomain {
 			}
 		}
 
-		let mut ghi = self.ghi.write().await;
+		let mut ghi = self.ghi.write();
 
 		let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
 		let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
@@ -566,7 +558,7 @@ impl VisibilityWorldRenderDomain {
 				_ => panic!("Unsupported index format"),
 			};
 
-			let mut ghi = self.ghi.write().await;
+			let mut ghi = self.ghi.write();
 
 			let bottom_level_acceleration_structure = ghi.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
 				description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
@@ -593,7 +585,7 @@ impl VisibilityWorldRenderDomain {
 			triangle_count: u8,
 		}
 
-		let meshlets_per_primitive: Vec<(MeshPrimitive, Vec<ShaderMeshletData>)> = primitives.into_iter().zip(vcps.iter()).scan((0, 0, 0), |(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), (primitive, vcps)| {
+		let meshlets_per_primitive = primitives.into_iter().zip(vcps.iter()).scan((0, 0, 0), |(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), (primitive, vcps)| {
 			let vertex_offset = *vcps;
 			let primitive_offset = *mesh_primitive_counter;
 			let triangle_offset = *mesh_triangle_counter;
@@ -633,20 +625,29 @@ impl VisibilityWorldRenderDomain {
 				panic!();
 			};
 
-			let im = futures::executor::block_on(self.create_variant_resources(primitive.material,)).unwrap();
-
 			(MeshPrimitive {
-				material_index: im,
+				material_index: 0,
 				meshlet_count: meshlets.len() as u32,
 				meshlet_offset,
 				vertex_offset,
 				primitive_offset,
 				triangle_offset,
 			},
-			meshlets).into()
-		}).collect::<Vec<_>>();
+			meshlets, primitive).into()
+		});
 
-		let mut ghi = self.ghi.write().await;
+		let meshlets_per_primitive: Vec<(MeshPrimitive, Vec<ShaderMeshletData>)> = join_all(meshlets_per_primitive.map(async |(mp, meshlets, primitive): (MeshPrimitive, Vec<ShaderMeshletData>, Primitive)| {
+			let variant = self.create_variant_resources(primitive.material).await.unwrap();
+			(
+				MeshPrimitive {
+					material_index: variant,
+					..mp
+				},
+				meshlets,
+			)
+		})).await;
+
+		let mut ghi = self.ghi.write();
 
 		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
 
@@ -676,117 +677,48 @@ impl VisibilityWorldRenderDomain {
 		return Ok(id);
 	}
 
-	async fn create_material_resources<'a>(&'a mut self, resource: resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
-		if let Some(material) = self.material_evaluation_materials.get(resource.id()) { // If the material has already been loaded, return the index
+	async fn create_material_resources<'a>(&'a self, resource: &mut resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
+		if let Some(material) = self.material_evaluation_materials.read().get(resource.id()) { // If the material has already been loaded, return the index
 			return Ok(material.index);
-		}
-
-		enum LoadState<L, P> {
-			Loaded(L),
-			Pending(P),
 		}
 
 		let ghi = self.ghi.clone();
 
 		let material_id = resource.id().to_string();
 
-		let ResourceMaterial { model, parameters, shaders, .. } = resource.into_resource();
+		let shader_names = resource.resource().shaders().iter().map(|shader| shader.id().to_string()).collect::<Vec<_>>();
 
-		let shader_names = shaders.iter().map(|shader| shader.id().to_string()).collect::<Vec<_>>();
+		let parameters = &mut resource.resource_mut().parameters;
 
-		let rndr_shaders = join_all(shaders.into_iter().map(async |mut shader: Reference<Shader>| { // All of this is done to get around compiler failures
-			let resource_id = shader.id().to_string();
-			let hash = shader.hash();
-
-			if let Some((old_hash, old_shader, old_shader_type)) = self.shaders.get(&resource_id) {
-				if *old_hash == hash { return Ok(LoadState::Loaded((*old_shader, *old_shader_type))); } // If the shader has not changed, return the old shader
-			}
-
-			let stage = match shader.resource().stage {
-				ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-				ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-				ShaderTypes::Compute => ghi::ShaderTypes::Compute,
-				ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
-				ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-				ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
-				ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-				ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
-				ShaderTypes::Callable => ghi::ShaderTypes::Callable,
-				ShaderTypes::Task => ghi::ShaderTypes::Task,
-				ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
-			};
-
-			let read_target = (&shader).into();
-			let load_request = shader.load(read_target).await.unwrap();
-
-			let buffer = if let Some(b) = load_request.get_buffer() {
-				b
-			} else {
-				return Err(());
-			};
-
-			let mut ghi = ghi.write().await;
-
-			let new_shader = ghi.create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, &[
-				CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				TEXTURES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				OUT_ALBEDO.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
-				CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-			]).expect("Failed to create shader");
-
-			Ok(LoadState::Pending((shader, new_shader, stage)))
-		})).await.into_iter().map(|l| {
-			match l {
-				Ok(LoadState::Loaded((shader, shader_type))) => Some((shader, shader_type)),
-				Ok(LoadState::Pending((shader_resource, shader_handle, stage))) => {
-					self.shaders.insert(shader_resource.id().to_string(), (shader_resource.hash(), shader_handle, stage));
-
-					Some((shader_handle, stage))
-				},
-				Err(_) => None,
-			}
-		}).collect::<Vec<_>>();
-
-		if rndr_shaders.iter().any(Option::is_none) {
-			log::warn!("No shaders found for material: {}", &material_id);
-			return Err(());
-		}
-
-		let rndr_shaders = rndr_shaders.into_iter().filter_map(|e| e).collect::<Vec<_>>();
-
-		let textures_indices = join_all(parameters.into_iter().map(|p| (ghi.clone(), p)).map(async |(ghi, parameter): (Rc<RwLock<ghi::GHI>>, Parameter)| { // All of this is done to get around compiler failures
+		let textures_indices = join_all(parameters.iter_mut().map(async |parameter: &mut Parameter| {
 			match parameter.value {
-				Value::Image(image) => {
-					let mut ghi = ghi.write().await;
-					self.texture_manager.write().await.load(image, &mut ghi).await
+				Value::Image(ref mut image) => {
+					let texture_manager = self.texture_manager.clone();
+					let mut texture_manager = texture_manager.write().await;
+					texture_manager.load(image, ghi.clone()).await
 				}
 				_ => { None }
 			}
 		})).await;
 
 		let textures_indices = textures_indices.into_iter().map(|v| {
-			if let Some((_, image, sampler)) = v {
-				let texture_index = self.images.len() as u32;
+			if let Some((name, image, sampler)) = v {
+				let texture_index = {
+					let mut images = self.images.write();
+					let index = images.len() as u32;
+					match images.entry(name) {
+						std::collections::hash_map::Entry::Occupied(v) => {
+							v.get().index
+						}
+						std::collections::hash_map::Entry::Vacant(v) => {
+							v.insert(Image { index });
+							index
+						}
+					}
+				};
 
-				let mut ghi = ghi.blocking_write();
+				let mut ghi = ghi.write();
 				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
-
-				self.pending_texture_loads.push(image);
 
 				Some(texture_index)
 			} else {
@@ -794,39 +726,63 @@ impl VisibilityWorldRenderDomain {
 			}
 		}).collect::<Vec<_>>();
 
-		let mut ghi = ghi.write().await;
-
-		let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
-
-		let index = self.material_evaluation_materials.len() as u32;
-
-		let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
-
-		let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
-
-		for (i, e) in textures_indices.iter().enumerate() {
-			material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
-		}
-
-		let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = Vec::with_capacity(4);
-
-		match model.name.as_str() {
+		match resource.resource().model.name.as_str() {
 			"Visibility" => {
-				match model.pass.as_str() {
+				match resource.resource().model.pass.as_str() {
 					"MaterialEvaluation" => {
-						let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&rndr_shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
+						let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, &[
+							CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							TEXTURES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+							MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+							MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+							TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+							OUT_ALBEDO.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
+							CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+							LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+							MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+							AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+							DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+						], resource, ghi.clone()).await.unwrap();
 
-						self.material_evaluation_materials.insert(material_id.clone(), Material {
-							name: material_id,
-							index,
-							pipeline,
-							shaders: shader_names,
-						});
+						let index;
+
+						{
+							let mut ghi = ghi.write();
+	
+							let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+					
+							let mut material_evaluation_materials = self.material_evaluation_materials.write();
+
+							index = material_evaluation_materials.len() as u32;
+					
+							let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+					
+							let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+					
+							for (i, e) in textures_indices.iter().enumerate() {
+								material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
+							}
+
+							material_evaluation_materials.insert(material_id.clone(), Material {
+								name: material_id,
+								index,
+								pipeline: pipeline_handle,
+								shaders: shader_names,
+							});
+						}
 
 						return Ok(index);
 					}
 					_ => {
-						error!("Unknown material pass: {}", model.pass);
+						error!("Unknown material pass: {}", resource.resource().model.pass);
 					}
 				}
 			}
@@ -840,57 +796,72 @@ impl VisibilityWorldRenderDomain {
 
 	/// Creates the needed GHI resource for the given material.
 	/// Does nothing if the material has already been loaded.
-	async fn create_variant_resources<'s, 'a>(&'s mut self, resource: resource_management::Reference<ResourceVariant>) -> Result<u32, ()> {
-		let entry = self.material_evaluation_materials.get(resource.id());
-
-		if let Some(e) = entry {
-			return Ok(e.index);
-		}
+	async fn create_variant_resources<'s, 'a>(&'s self, mut resource: resource_management::Reference<ResourceVariant>) -> Result<u32, ()> {
+		let entry = {
+			let mem = self.material_evaluation_materials.read();
+			if let Some(e) = mem.get(resource.id()) {
+				return Ok(e.index);
+			}
+		};
 
 		let variant_id = resource.id().to_string();
-		let variant = resource.into_resource();
-
-		let material_store = variant.material;
-		let material_id = material_store.id().to_string();
-		self.create_material_resources(material_store).await?;
-
-		let material = self.material_evaluation_materials.get(&material_id).unwrap();
-
-		let shader_names = material.shaders.clone();
-
-		let shaders = material.shaders.iter().map(|s| {
-			let shader = self.shaders.get(s).unwrap();
-
-			(shader.1, shader.2)
-		}).collect::<Vec<_>>();
-
-		let mut specialization_constants: Vec<ghi::SpecializationMapEntry> = Vec::with_capacity(4);
-
-		for (i, variable) in variant.variables.iter().enumerate() {
-			match &variable.value {
-				Value::Scalar(scalar) => {
-					specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar));
-				}
-				Value::Vector3(value) => {
-					specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value));
-				}
-				Value::Vector4(value) => {
-					specialization_constants.push(ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value));
-				}
-				Value::Image(image) => {}
-			}
-		}
 
 		let ghi = self.ghi.clone();
+
+		let specialization_constants: Vec<ghi::SpecializationMapEntry> = resource.resource_mut().variables.iter().enumerate().filter_map(|(i, variable)| {
+			match &variable.value {
+				Value::Scalar(scalar) => {
+					ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into()
+				}
+				Value::Vector3(value) => {
+					ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into()
+				}
+				Value::Vector4(value) => {
+					ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into()
+				}
+				_ => { None }
+			}
+		}).collect();
+
+		let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &[
+			CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			TEXTURES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			OUT_ALBEDO.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
+			CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+			LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+			MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+			AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+			DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
+		], &specialization_constants, &mut resource, ghi.clone()).await;
+
+		let pipeline = pipeline.unwrap();
+
+		let variant = resource.resource_mut();
+
+		let material_id = variant.material.id().to_string();
+
+		self.create_material_resources(&mut variant.material).await?;
+
+		let shader_names = self.material_evaluation_materials.read().get(&material_id).unwrap().shaders.clone();		
 
 		let textures_indices = {
 			let ghi = ghi.clone();
 			let texture_manager = self.texture_manager.clone();
-			join_all(variant.variables.into_iter().map(async |parameter: VariantVariable| {
+			join_all(variant.variables.iter_mut().map(async |parameter: &mut VariantVariable| {
 				match parameter.value {
-					Value::Image(image) => {
-						let mut ghi = ghi.write().await;
-						texture_manager.write().await.load(image, &mut ghi).await
+					Value::Image(ref mut image) => {
+						texture_manager.write().await.load(image, ghi.clone()).await
 					}
 					_ => { None }
 				}
@@ -898,13 +869,23 @@ impl VisibilityWorldRenderDomain {
 		};
 
 		let textures_indices = textures_indices.into_iter().map(|v| {
-			if let Some((_, image, sampler)) = v {
-				let texture_index = self.images.len() as u32;
+			if let Some((name, image, sampler)) = v {
+				let texture_index = {
+					let mut images = self.images.write();
+					let index = images.len() as u32;
+					match images.entry(name) {
+						std::collections::hash_map::Entry::Occupied(v) => {
+							v.get().index
+						}
+						std::collections::hash_map::Entry::Vacant(v) => {
+							v.insert(Image { index });
+							index
+						}
+					}
+				};
 
-				let mut ghi = ghi.blocking_write();
+				let mut ghi = ghi.write();
 				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
-
-				self.pending_texture_loads.push(image);
 
 				Some(texture_index)
 			} else {
@@ -912,35 +893,39 @@ impl VisibilityWorldRenderDomain {
 			}
 		}).collect::<Vec<_>>();
 
-		let mut ghi = ghi.write().await;
+		let index;
 
-		let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+		{
+			let mut ghi = ghi.write();
+	
+			let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+	
+			let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+	
+			let mut material_evaluation_materials = self.material_evaluation_materials.write(); // Lock until insert to preserve indices
 
-		let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+			index = material_evaluation_materials.len() as u32;
+	
+			let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+	
+			for (i, e) in textures_indices.iter().enumerate() {
+				material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
+			}
 
-		let index = self.material_evaluation_materials.len() as u32;
-
-		let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
-
-		for (i, e) in textures_indices.iter().enumerate() {
-			material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
+			material_evaluation_materials.insert(variant_id.clone(), Material {
+				name: variant_id,
+				index,
+				pipeline,
+				shaders: shader_names,
+			});
 		}
-
-		let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute).with_specialization_map(&specialization_constants));
-
-		self.material_evaluation_materials.insert(variant_id.clone(), Material {
-			name: variant_id,
-			index,
-			pipeline,
-			shaders: shader_names,
-		});
 
 		return Ok(index);
 	}
 
 	fn get_transform(&self) -> Mat4f { Mat4f::identity() }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -1054,7 +1039,7 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_region("Material Evaluation");
 		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(RGBA::black())),]);
-		for (_, Material { name, index: i, pipeline, .. }) in self.material_evaluation_materials.iter() {
+		for (_, Material { name, index: i, pipeline, .. }) in self.material_evaluation_materials.read().iter() {
 			command_buffer_recording.start_region(&format!("Material: {}", name));
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
@@ -1067,7 +1052,7 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	pub fn resize(&self, extent: Extent) {
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 		ghi.resize_image(self.albedo, extent);
 		ghi.resize_image(self.diffuse, extent);
 		ghi.resize_image(self.depth_target, extent);
@@ -1161,7 +1146,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		Box::pin(async move {
 		let mesh_id = self.create_mesh_resources(mesh.get_resource_id()).await.unwrap().to_string(); // I had to use to_string here because I couldn't solve the lifetime issue
 
-		let mut ghi = self.ghi.write().await;
+		let mut ghi = self.ghi.write();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -1215,7 +1200,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> utils::BoxedFuture<()> {
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
@@ -1248,7 +1233,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> utils::BoxedFuture<()> {
-		let mut ghi = self.ghi.blocking_write();
+		let mut ghi = self.ghi.write();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 

@@ -10,61 +10,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-test-core:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rui314/setup-mold@v1
-      - name: Test Core
-        run: cd core && cargo test
-  build-test-utils:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rui314/setup-mold@v1
-      - name: Test Utils
-        run: cd utils && cargo test
-  build-test-besl:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v4
-        - uses: rui314/setup-mold@v1
-        - name: Test BESL
-          run: cd besl && cargo test
-  build-test-resource-management:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rui314/setup-mold@v1
-      - name: Install Vulkan SDK # Right now resource management needs GHI, and GHI needs Vulkan, so we need to install Vulkan here.
-        uses: humbletim/setup-vulkan-sdk@v1.2.0
-        with:
-          vulkan-query-version: 1.3.204.0
-          vulkan-components: Vulkan-Headers, Vulkan-Loader
-          vulkan-use-cache: true
-      - name: Test Resource Management
-        run: cd resource_management && cargo test
-  build-test-ghi:
+  build-test-debug:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - uses: rui314/setup-mold@v1
     - name: Install Vulkan runtime dependencies
       run: sudo add-apt-repository ppa:kisak/kisak-mesa && sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
+    - name: Install ALSA
+      run: sudo apt-get install libasound2-dev
     - name: Install Vulkan SDK
       uses: humbletim/setup-vulkan-sdk@v1.2.0
       with:
         vulkan-query-version: 1.3.204.0
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
-    - name: Test GHI
-      run: cd ghi && cargo test -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.
-  build-test-ahi:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rui314/setup-mold@v1
-      - name: Install ALSA
-        run: sudo apt-get install libasound2-dev
-      - name: Test AHI
-        run: cd ahi && cargo test
+    - name: Build & Test
+      run: cargo test --workspace -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.

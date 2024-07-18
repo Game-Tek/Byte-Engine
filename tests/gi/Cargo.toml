@@ -9,3 +9,6 @@ edition = "2021"
 byte_engine = { path = "../.." }
 log = "0.4.20"
 maths-rs = "0.2.6"
+
+[profile.release]
+debug = true

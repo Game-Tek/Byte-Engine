@@ -9,12 +9,8 @@ pub struct VulkanGHI {
 	entry: ash::Entry,
 	instance: ash::Instance,
 
-	#[cfg(debug_assertions)]
 	debug_utils: Option<ash::ext::debug_utils::Device>,
-	#[cfg(debug_assertions)]
 	debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
-
-	#[cfg(debug_assertions)]
 	debug_data: Box<DebugCallbackData>,
 
 	physical_device: vk::PhysicalDevice,
@@ -1629,8 +1625,17 @@ unsafe impl Send for Image {}
 // }
 
 unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::DebugUtilsMessageSeverityFlagsEXT, _message_type: vk::DebugUtilsMessageTypeFlagsEXT, p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT, p_user_data: *mut std::ffi::c_void,) -> vk::Bool32 {
-    let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
-	let user_data = (p_user_data as *mut DebugCallbackData).as_mut().unwrap();
+	let callback_data = if let Some(callback_data) = p_callback_data.as_ref() { callback_data } else { return vk::FALSE; };
+	
+	if callback_data.p_message.is_null() {
+		return vk::FALSE;
+	}
+
+    let message = std::ffi::CStr::from_ptr(callback_data.p_message);
+
+	let message = if let Some(message) = message.to_str().ok() { message } else { return vk::FALSE; };
+
+	let user_data = if let Some(p_user_data) = (p_user_data as *mut DebugCallbackData).as_mut() { p_user_data } else { return vk::FALSE; };
 
 	match message_severity {
 		vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
@@ -1640,7 +1645,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 			// warn!("{}", message.to_str().unwrap());
 		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
-			(user_data.error_log_function)(message.to_str().unwrap());
+			(user_data.error_log_function)(message);
 			user_data.error_count += 1;
 		}
 		_ => {}
@@ -2317,11 +2322,8 @@ impl VulkanGHI {
 			entry,
 			instance,
 
-			#[cfg(debug_assertions)]
 			debug_utils,
-			#[cfg(debug_assertions)]
 			debug_utils_messenger,
-			#[cfg(debug_assertions)]
 			debug_data,
 
 			physical_device,

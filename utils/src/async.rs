@@ -1,8 +1,11 @@
 use std::future::Future;
+use std::sync::Arc;
 
 pub use futures::future::join_all;
 pub use futures::future::try_join_all;
 
+use gxhash::HashMap;
+use gxhash::HashMapExt;
 pub use tokio::spawn;
 pub use tokio::task::spawn_blocking;
 pub use tokio::task::block_in_place as spawn_blocking_local;
@@ -33,4 +36,30 @@ pub fn create_runtime() -> tokio::runtime::Runtime {
 		.enable_all()
 		.build()
 		.unwrap()
+}
+
+pub struct AsyncCacheMap<K: Eq + std::hash::Hash, V> {
+	cache: RwLock<HashMap<K, Arc<OnceCell<V>>>>,
+}
+
+impl<K: Eq + std::hash::Hash, V> AsyncCacheMap<K, V> {
+	pub fn new() -> Self {
+		Self {
+			cache: RwLock::new(HashMap::new()),
+		}
+	}
+
+	pub fn with_capacity(capacity: usize) -> Self {
+		Self {
+			cache: RwLock::new(HashMap::with_capacity(capacity)),
+		}
+	}
+
+	pub async fn get_or_insert_with<F, R>(&self, key: K, f: F) -> () where F: FnOnce() -> R, R: Future<Output = V> {
+		let mut cache = self.cache.write().await;
+
+		let v = cache.entry(key).or_insert_with(|| Arc::new(OnceCell::new()));
+
+		let r = v.get_or_init(f).await;
+	}
 }

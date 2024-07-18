@@ -141,7 +141,8 @@ vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycent
 vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 vec3 N = world_space_vertex_normal;
-vec3 V = normalize(camera.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
+// vec3 V = normalize(camera.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
+vec3 V = normalize(-(camera.view[3].xyz - world_space_vertex_position));
 
 vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
 vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
@@ -207,6 +208,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	if (NdotL <= 0.0) { continue; }
 
+	float occlusion_factor = 1.0;
 	float attenuation = 1.0;
 
 	if (light_type == 68) { // Infinite
@@ -217,11 +219,12 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 		/* float br_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01, -0.01)); */
 
 		/* float occlusion_factor = (c_occlusion_factor + lt_occlusion_factor + lr_occlusion_factor + bl_occlusion_factor + br_occlusion_factor) / 5.0; */
-		float occlusion_factor = c_occlusion_factor;
+		occlusion_factor = c_occlusion_factor;
 
 		if (occlusion_factor == 0.0) { continue; }
 
-		attenuation = occlusion_factor;
+		// attenuation = occlusion_factor;
+		attenuation = 1.0;
 	} else {
 		float distance = length(light_pos - world_space_vertex_position);
 		attenuation = 1.0 / (distance * distance);
@@ -246,7 +249,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	vec3 local_diffuse = kD * albedo / PI;
 
-	lo += (local_diffuse + specular) * radiance * NdotL * attenuation;
+	lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
 	diffuse += local_diffuse;
 }
 

@@ -1,7 +1,7 @@
 use futures::future::join_all;
 use gltf::{mesh::Reader, Buffer};
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
-use utils::{r#async::spawn_blocking_local, spawn, Extent};
+use utils::{r#async::{spawn_blocking_local, try_join_all}, spawn, Extent};
 
 use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StorageBackend, StreamDescription};
 
@@ -271,9 +271,9 @@ impl Asset for MeshAsset {
 			material["asset"].as_str().unwrap().to_string()
 		}).collect::<Vec<String>>();
 
-		let materials_per_primitive = join_all(material_name_per_primitive.into_iter().map(|n| (n, asset_manager)).map(async |(name, asset_manager): (String, &'a AssetManager)| {
-			asset_manager.load::<VariantModel>(&name).await.unwrap()
-		})).await;
+		let materials_per_primitive = try_join_all(material_name_per_primitive.into_iter().map(|n| (n, asset_manager)).map(async |(name, asset_manager): (String, &'a AssetManager)| {
+			asset_manager.load::<VariantModel>(&name).await
+		})).await.map_err(|e| format!("{:#?}", e))?;
 
 		// let materials_per_primitive = Vec::new();
 

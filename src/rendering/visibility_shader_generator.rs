@@ -32,7 +32,7 @@ impl VisibilityShaderGenerator {
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 		
-		let sample_function = Node::intrinsic("sample", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).rgb", &[], Vec::new())]), "vec3f");
+		let sample_function = Node::intrinsic("sample", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv)", &[], Vec::new())]), "vec4f");
 
 		let sample_normal_function = if true {
 			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("unit_vector_from_xy(texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xy)", &["unit_vector_from_xy"], Vec::new())]), "vec3f")
@@ -155,7 +155,7 @@ vec3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
 vec3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
 mat3 TBN = mat3(T, B, N);
 
-vec3 albedo = vec3(1, 0, 0);
+vec4 albedo = vec4(1, 0, 0, 1);
 vec3 normal = vec3(0, 0, 1);
 float metalness = 0;
 float roughness = float(0.5);";
@@ -235,7 +235,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	vec3 radiance = light_color * attenuation;
 
 	vec3 F0 = vec3(0.04);
-	F0 = mix(F0, albedo, metalness);
+	F0 = mix(F0, albedo.xyz, metalness);
 	vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
 	float NDF = distribution_ggx(normal, H, roughness);
@@ -247,7 +247,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	kD *= 1.0 - metalness;
 
-	vec3 local_diffuse = kD * albedo / PI;
+	vec3 local_diffuse = kD * albedo.xyz / PI;
 
 	lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
 	diffuse += local_diffuse;
@@ -255,7 +255,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 lo *= ao_factor;
 
-imageStore(out_albedo, pixel_coordinates, vec4(lo, 1.0));";
+imageStore(out_albedo, pixel_coordinates, vec4(lo, albedo.a));";
 
 		let push_constant = self.push_constant.clone();
 

@@ -110,6 +110,7 @@ struct RenderDescription {
 	index: u32,
 	pipeline: ghi::PipelineHandle,
 	name: String,
+	alpha: bool,
 	variant: RenderDescriptionVariants,
 }
 
@@ -780,6 +781,7 @@ impl VisibilityWorldRenderDomain {
 								name: material_id,
 								index,
 								pipeline: pipeline_handle,
+								alpha: false,
 								variant: RenderDescriptionVariants::Material { shaders: shader_names },
 							})
 						}
@@ -896,6 +898,8 @@ impl VisibilityWorldRenderDomain {
 				}
 			}).collect::<Vec<_>>();
 
+			let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
+
 			{
 				let mut ghi = ghi.write();
 		
@@ -915,6 +919,7 @@ impl VisibilityWorldRenderDomain {
 					name: variant_id,
 					index,
 					pipeline,
+					alpha,
 					variant: RenderDescriptionVariants::Variant {  },
 				})
 			}
@@ -1039,7 +1044,12 @@ impl VisibilityWorldRenderDomain {
 
 		command_buffer_recording.start_region("Material Evaluation");
 		command_buffer_recording.clear_images(&[(self.albedo, ghi::ClearValue::Color(RGBA::black())),]);
-		for (name, index, pipeline) in self.material_evaluation_materials.read().values().filter_map(|v| v.get().map(|v| (v.name.clone(), v.index, v.pipeline))).collect::<Vec<_>>() {
+
+		command_buffer_recording.start_region("Opaque");
+
+		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
+
+		for (name, index, pipeline) in opaque_materials {
 			command_buffer_recording.start_region(&format!("Material: {}", name));
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
@@ -1048,6 +1058,25 @@ impl VisibilityWorldRenderDomain {
 			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, index as usize);
 			command_buffer_recording.end_region();
 		}
+
+		command_buffer_recording.end_region();
+
+		command_buffer_recording.start_region("Transparent");
+
+		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
+
+		for (name, index, pipeline) in transparent_materials { // TODO: sort by distance to camera
+			command_buffer_recording.start_region(&format!("Material: {}", name));
+			// No need for sync here, as each thread across all invocations will write to a different pixel
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
+			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 0, index);
+			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, index as usize);
+			command_buffer_recording.end_region();
+		}
+
+		command_buffer_recording.end_region();
+
 		command_buffer_recording.end_region();
 	}
 

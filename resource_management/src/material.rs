@@ -117,6 +117,7 @@ impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
 pub struct Variant {
 	pub material: Reference<Material>,
 	pub variables: Vec<VariantVariable>,
+	pub alpha_mode: AlphaMode,
 }
 
 impl Resource for Variant {
@@ -129,6 +130,7 @@ impl Resource for Variant {
 pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariableModel>,
+	pub alpha_mode: AlphaMode,
 }
 
 impl Model for VariantModel {
@@ -138,11 +140,12 @@ impl Model for VariantModel {
 impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Variant>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let VariantModel { material, variables } = VariantModel::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let VariantModel { material, variables, alpha_mode } = VariantModel::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Variant {
 			material: material.solve(storage_backend).await?,
 			variables: try_join_all(variables.into_iter().map(|v| v.solve(storage_backend))).await?,
+			alpha_mode,
 		}, reader))
 	}
 }

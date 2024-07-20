@@ -146,9 +146,24 @@ impl Asset for MaterialAsset {
 				}
 			}).collect();
 
+			let alpha_mode = match &asset["transparency"] {
+				json::JsonValue::Boolean(v) => {
+					if *v { AlphaMode::Blend } else { AlphaMode::Opaque }
+				}
+				json::JsonValue::String(s) => {
+					match s.as_str() {
+						"Opaque" => AlphaMode::Opaque,
+						"Blend" => AlphaMode::Blend,
+						_ => AlphaMode::Opaque
+					}
+				}
+				_ => { AlphaMode::Opaque }
+			};
+
 			let resource = ProcessedAsset::new(url, VariantModel {
 				material,
 				variables,
+				alpha_mode,
 			});
 
 			match storage_backend.store(&resource, &[]).await {
@@ -223,7 +238,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		return Err(());
 	};
 
-	let mut root = generator.transform(root_node, material);
+	let root = generator.transform(root_node, material);
 
 	let root_node = match besl::lex(root) {
 		Ok(e) => e,

@@ -3,6 +3,7 @@ use std::{cell::RefCell, ops::Deref, rc::Rc};
 use besl::{Node, NodeReference};
 use maths_rs::vec;
 use resource_management::asset::material_asset_handler::ProgramGenerator;
+use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use super::common_shader_generator::CommonShaderGenerator;
 
@@ -63,7 +64,7 @@ impl VisibilityShaderGenerator {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, mut root: besl::parser::Node, material: &json::JsonValue) -> besl::parser::Node {
+	fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
 		let set2_binding0 = self.out_albedo.clone();
 		let set2_binding1 = self.camera.clone();
 		let set2_binding4 = self.lighting_data.clone();
@@ -164,7 +165,7 @@ float roughness = float(0.5);";
 
 		let mut texture_count = 0;
 
-		for variable in material["variables"].members() {
+		for variable in material["variables"].as_array().unwrap().iter() {
 			let name = variable["name"].as_str().unwrap();
 			let data_type = variable["data_type"].as_str().unwrap();
 

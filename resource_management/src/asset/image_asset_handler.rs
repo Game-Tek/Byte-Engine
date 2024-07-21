@@ -77,7 +77,7 @@ impl AssetHandler for ImageAssetHandler {
 					// decoder.set_transformations(png::Transformations::normalize_to_color8());
 				}
 				let mut reader = decoder.read_info().unwrap();
-				buffer = vec![0; reader.output_buffer_size()];
+				buffer = vec![0u8; reader.output_buffer_size()];
 				let info = reader.next_frame(&mut buffer).unwrap();
 
 				extent = Extent::rectangle(info.width, info.height);
@@ -123,7 +123,7 @@ impl AssetHandler for ImageAssetHandler {
 
 		Ok(Box::new(ImageAsset {
 		    id: url.to_string(),
-			data,
+			data: buffer.into(),
 			gamma,
 			format,
 			extent,
@@ -175,15 +175,17 @@ impl ImageAssetHandler {
 
 		let (data, format) = match format {
 			Formats::RGB8 => {
-				let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
+				let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
 				for y in 0..extent.height() {
+					let source_row = &buffer[(y * extent.width() * 3) as usize..][..(extent.width() * 3) as usize];
+					let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
+
 					for x in 0..extent.width() {
-						let index = ((x + y * extent.width()) * 3) as usize;
-						buf.push(buffer[index + 0]);
-						buf.push(buffer[index + 1]);
-						buf.push(buffer[index + 2]);
-						buf.push(0xFF);
+						let source_pixel = &source_row[(x * 3) as usize..][..3];
+						let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
+						dest_pixel[..3].copy_from_slice(source_pixel);
+						dest_pixel[3] = 0xFF;
 					}
 				}
 
@@ -199,40 +201,29 @@ impl ImageAssetHandler {
 					}
 				}
 			}
-			Formats::RGBA8 => {
+			Formats::RGBA8 => {				
 				match (compress, semantic) {
 					(true, Semantic::Normal) => {
-						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
+						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
 						for y in 0..extent.height() {
+							let source_row = &buffer[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
+							let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
 							for x in 0..extent.width() {
-								let index = ((x + y * extent.width()) * 4) as usize;
-								buf.push(buffer[index + 0]);
-								buf.push(buffer[index + 1]);
-								buf.push(buffer[index + 2]);
-								buf.push(0xFF);
+								let source_pixel = &source_row[(x * 4) as usize..][..4];
+								let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
+								dest_pixel[..3].copy_from_slice(&source_pixel[..3]);
+								dest_pixel[3] = 0xFF;
 							}
 						}
 
 						(buf, Formats::BC5)
 					}
 					(compress, _) => {
-						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
-
-						for y in 0..extent.height() {
-							for x in 0..extent.width() {
-								let index = ((x + y * extent.width()) * 4) as usize;
-								buf.push(buffer[index + 0]);
-								buf.push(buffer[index + 1]);
-								buf.push(buffer[index + 2]);
-								buf.push(buffer[index + 3]);
-							}
-						}
-
 						if compress {
-							(buf, Formats::BC7)
+							(buffer, Formats::BC7)
 						} else {
-							(buf, Formats::RGBA8)
+							(buffer, Formats::RGBA8)
 						}
 					}
 				}
@@ -240,31 +231,36 @@ impl ImageAssetHandler {
 			Formats::RGB16 => {
 				match (compress, semantic) {
 					(true, Semantic::Normal) => {
-						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
+						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
 						for y in 0..extent.height() {
+							let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
+							let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
 							for x in 0..extent.width() {
-								let index = ((x + y * extent.width()) * 6) as usize;
-								let x = u16::from_le_bytes([buffer[index + 0], buffer[index + 1]]);
-								let y = u16::from_le_bytes([buffer[index + 2], buffer[index + 3]]);
+								let source_pixel = &source_row[(x * 6) as usize..][..6];
+								let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
+								let x = u16::from_le_bytes([source_pixel[0], source_pixel[1]]);
+								let y = u16::from_le_bytes([source_pixel[2], source_pixel[3]]);
 								let x: u8 = (x / 256) as u8;
 								let y: u8 = (y / 256) as u8;
-								buf.push(x); buf.push(y); buf.push(0x00); buf.push(0xFF);
+								dest_pixel[0] = x; dest_pixel[1] = y;
+								dest_pixel[2] = 0x00; dest_pixel[3] = 0xFF;
 							}
 						}
 
 						(buf, Formats::BC5)
 					}
 					(compress, _) => {
-						let mut buf: Vec<u8> = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
+						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 8].into();
 
 						for y in 0..extent.height() {
+							let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
+							let dest_row = &mut buf[(y * extent.width() * 8) as usize..][..(extent.width() * 8) as usize];
 							for x in 0..extent.width() {
-								let index = ((x + y * extent.width()) * 6) as usize;
-								buf.push(buffer[index + 0]); buf.push(buffer[index + 1]);
-								buf.push(buffer[index + 2]); buf.push(buffer[index + 3]);
-								buf.push(buffer[index + 4]); buf.push(buffer[index + 5]);
-								buf.push(0xFF); buf.push(0xFF);
+								let source_pixel = &source_row[(x * 6) as usize..][..6];
+								let dest_pixel = &mut dest_row[(x * 8) as usize..][..8];
+								dest_pixel[..6].copy_from_slice(&source_pixel);
+								dest_pixel[6] = 0xFF; dest_pixel[7] = 0xFF;
 							}
 						}
 
@@ -283,14 +279,14 @@ impl ImageAssetHandler {
 
 		let data = match format {
 			Formats::BC5 => {
-				let rgba_surface = intel_tex_2::RgbaSurface {
+				let rgba_surface = intel_tex_2::RgSurface {
 					data: &data,
 					width: extent.width(),
 					height: extent.height(),
 					stride: extent.width() * 4,
 				};
 
-				intel_tex_2::bc5::compress_blocks(&rgba_surface)
+				intel_tex_2::bc5::compress_blocks(&rgba_surface).into()
 			}
 			Formats::RGB8 | Formats::RGBA8 => {
 				data
@@ -305,7 +301,7 @@ impl ImageAssetHandler {
 
 				let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
-				intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface)
+				intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface).into()
 			}
 			Formats::RGB16 | Formats::RGBA16 => {
 				data
@@ -320,7 +316,7 @@ impl ImageAssetHandler {
 			extent: extent.as_array(),
 			gamma: *gamma,
 		},
-		data.into())
+		data)
 	}
 }
 
@@ -369,7 +365,9 @@ mod tests {
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 
-		let _ = block_on(asset_handler.load(&asset_manager, storage_backend, url,)).expect("Image asset handler did not handle asset");
+		let asset = block_on(asset_handler.load(&asset_manager, storage_backend, url,)).expect("Image asset handler did not handle asset");
+
+		let _ = block_on(asset.load(&asset_manager, storage_backend, url,)).expect("Image asset did not load");
 
 		let generated_resources = storage_backend.get_resources();
 

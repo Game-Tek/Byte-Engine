@@ -1,9 +1,8 @@
 use std::{io::Write, mem::transmute};
 
-use json::object;
 use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
-use utils::Extent;
+use utils::{json, Extent};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationPipelineMode, RasterizationRenderPassMode};
 
@@ -68,7 +67,7 @@ impl ShadowRenderingPass {
 
 			let root_node = besl::parser::Node::root();
 
-			let mut root = shader_generator.transform(root_node, &object! {});
+			let mut root = shader_generator.transform(root_node, &json::object!{});
 
 			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 

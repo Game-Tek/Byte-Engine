@@ -785,7 +785,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			let texture_handle = ImageHandle(self.images.len() as u64);
 
 			if extent.width != 0 && extent.height != 0 && extent.depth != 0 {
-				let m_device_accesses = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+				let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead) {
 					graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::GpuWrite
 				} else {
 					device_accesses
@@ -802,7 +802,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				let (staging_buffer, pointer) = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 					let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 	
-					let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, texture_creation_result.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::CpuRead);
+					let (allocation_handle, _) = self.create_allocation_internal(staging_buffer_creation_result.size, staging_buffer_creation_result.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::CpuRead);
 	
 					let (address, pointer) = self.bind_vulkan_buffer_memory(&staging_buffer_creation_result, allocation_handle, 0);
 	
@@ -944,7 +944,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		buffer_handle
 	}
 
-	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
+	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>, max_instance_count: u32) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
 		let geometry = vk::AccelerationStructureGeometryKHR::default()
 			.geometry_type(vk::GeometryTypeKHR::INSTANCES)
 			.geometry(vk::AccelerationStructureGeometryDataKHR { instances: vk::AccelerationStructureGeometryInstancesDataKHR::default() })
@@ -960,7 +960,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
 		unsafe {
-			self.acceleration_structure.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[0], &mut size_info);
+			self.acceleration_structure.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[max_instance_count], &mut size_info);
 		}
 
 		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
@@ -2717,14 +2717,23 @@ impl VulkanGHI {
 
 		let texture = self.images.get(texture.0 as usize).expect("No texture with that handle.");
 
-		let image_subresource_layout = unsafe { self.device.get_image_subresource_layout(texture.image, image_subresource) };
-
-		graphics_hardware_interface::ImageSubresourceLayout {
-			offset: image_subresource_layout.offset,
-			size: image_subresource_layout.size,
-			row_pitch: image_subresource_layout.row_pitch,
-			array_pitch: image_subresource_layout.array_pitch,
-			depth_pitch: image_subresource_layout.depth_pitch,
+		if true /* TILING_OPTIMAL */ {
+			graphics_hardware_interface::ImageSubresourceLayout {
+				offset: 0,
+				size: texture.size,
+				row_pitch: texture.extent.width as usize * texture.format_.size(),
+				array_pitch: texture.extent.width as usize * texture.extent.height as usize * texture.format_.size(),
+				depth_pitch: texture.extent.width as usize * texture.extent.height as usize * texture.extent.depth as usize * texture.format_.size(),
+			}
+		} else {
+			let image_subresource_layout = unsafe { self.device.get_image_subresource_layout(texture.image, image_subresource) };
+			graphics_hardware_interface::ImageSubresourceLayout {
+				offset: image_subresource_layout.offset as usize,
+				size: image_subresource_layout.size as usize,
+				row_pitch: image_subresource_layout.row_pitch as usize,
+				array_pitch: image_subresource_layout.array_pitch as usize,
+				depth_pitch: image_subresource_layout.depth_pitch as usize,
+			}
 		}
 	}
 
@@ -2863,18 +2872,22 @@ impl VulkanGHI {
 	fn create_allocation_internal(&mut self, size: usize, memory_bits: Option<u32>, device_accesses: graphics_hardware_interface::DeviceAccesses) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
 		let memory_properties = unsafe { self.instance.get_physical_device_memory_properties(self.physical_device) };
 
+		let memory_property_flags = {
+			let mut memory_property_flags = vk::MemoryPropertyFlags::empty();
+
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) { vk::MemoryPropertyFlags::HOST_VISIBLE } else { vk::MemoryPropertyFlags::empty() };
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) { vk::MemoryPropertyFlags::HOST_COHERENT } else { vk::MemoryPropertyFlags::empty() };
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuRead) { vk::MemoryPropertyFlags::DEVICE_LOCAL } else { vk::MemoryPropertyFlags::empty() };
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuWrite) { vk::MemoryPropertyFlags::DEVICE_LOCAL } else { vk::MemoryPropertyFlags::empty() };
+
+			memory_property_flags
+		};
+
 		let memory_type_index = memory_properties
 			.memory_types
 			.iter()
 			.enumerate()
 			.find_map(|(index, memory_type)| {
-				let mut memory_property_flags = vk::MemoryPropertyFlags::empty();
-
-				memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) { vk::MemoryPropertyFlags::HOST_VISIBLE } else { vk::MemoryPropertyFlags::empty() };
-				memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) { vk::MemoryPropertyFlags::HOST_COHERENT } else { vk::MemoryPropertyFlags::empty() };
-				memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuRead) { vk::MemoryPropertyFlags::DEVICE_LOCAL } else { vk::MemoryPropertyFlags::empty() };
-				memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuWrite) { vk::MemoryPropertyFlags::DEVICE_LOCAL } else { vk::MemoryPropertyFlags::empty() };
-
 				let memory_type = memory_type.property_flags.contains(memory_property_flags);
 
 				if (memory_bits.unwrap_or(0) & (1 << index)) != 0 && memory_type {
@@ -3085,6 +3098,7 @@ impl VulkanGHI {
 					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
 				}
 			},
+			graphics_hardware_interface::Descriptor::StaticSamplers => {}
 			graphics_hardware_interface::Descriptor::Swapchain(_) => {
 				unimplemented!()
 			}
@@ -4203,20 +4217,32 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 	}
 
 	fn sync_textures(&mut self, image_handles: &[graphics_hardware_interface::ImageHandle]) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
-		unsafe { self.consume_resources(&image_handles.iter().map(|image_handle| Consumption {
-			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
-			stages: graphics_hardware_interface::Stages::TRANSFER,
-			access: graphics_hardware_interface::AccessPolicies::READ,
-			layout: graphics_hardware_interface::Layouts::Transfer,
-		}).collect::<Vec<_>>()) };
+		unsafe {
+			self.consume_resources(&image_handles.iter().map(|image_handle| Consumption {
+				handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
+				stages: graphics_hardware_interface::Stages::TRANSFER,
+				access: graphics_hardware_interface::AccessPolicies::READ,
+				layout: graphics_hardware_interface::Layouts::Transfer,
+			}).collect::<Vec<_>>());
+
+			let buffer_handles = image_handles.iter().filter_map(|image_handle| self.get_image(self.get_internal_image_handle(*image_handle)).staging_buffer).collect::<Vec<_>>();
+
+			self.consume_resources(&buffer_handles.iter().map(|buffer_handle| Consumption {
+				handle: Handle::Buffer(*buffer_handle),
+				stages: graphics_hardware_interface::Stages::TRANSFER,
+				access: graphics_hardware_interface::AccessPolicies::WRITE,
+				layout: graphics_hardware_interface::Layouts::Transfer,
+			}).collect::<Vec<_>>());
+		};
 
 		let command_buffer = self.get_command_buffer();
+		let command_buffer = command_buffer.command_buffer;
 
 		for image_handle in image_handles {
 			let image = self.get_image(self.get_internal_image_handle(*image_handle));
 			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
 			if let Some(staging_buffer_handle) = image.staging_buffer {
-				let staging_buffer = &self.ghi.buffers[staging_buffer_handle.0 as usize];
+				let staging_buffer = self.get_buffer(staging_buffer_handle);
 
 				let regions = [vk::BufferImageCopy2KHR::default()
 					.buffer_offset(0)
@@ -4235,7 +4261,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 				;
 
 				unsafe {
-					self.ghi.device.cmd_copy_image_to_buffer2(command_buffer.command_buffer, &copy_image_to_buffer_info);
+					self.ghi.device.cmd_copy_image_to_buffer2(command_buffer, &copy_image_to_buffer_info);
 				}
 			}
 		}

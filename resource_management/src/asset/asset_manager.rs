@@ -243,7 +243,9 @@ fn assets_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 pub mod tests {
-	use crate::asset::asset_handler::Asset;
+	use utils::json;
+
+use crate::asset::asset_handler::Asset;
 
 	use super::*;
 
@@ -315,7 +317,7 @@ pub mod tests {
 
 		asset_manager.add_asset_handler(test_asset_handler);
 
-		let _ = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
+		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
 		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Ok(()));
 	}
@@ -325,7 +327,7 @@ pub mod tests {
 	fn test_load_no_asset_handler() {
 		let asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
 
-		let _ = json::parse(r#"{"url": "http://example.com"}"#).unwrap();
+		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
 		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoAssetHandler));
 	}
@@ -335,7 +337,7 @@ pub mod tests {
 	fn test_load_no_asset_url() {
 		let asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
 
-		let _ = json::parse(r#"{}"#).unwrap();
+		let _: json::Value = json::from_str(r#"{}"#).unwrap();
 
 		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoURL));
 	}

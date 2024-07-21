@@ -1,7 +1,7 @@
 use futures::future::join_all;
 use gltf::{mesh::Reader, Buffer};
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
-use utils::{r#async::{spawn_blocking_local, try_join_all}, spawn, Extent};
+use utils::{r#async::{spawn_blocking_local, try_join_all}, json::{self, JsonContainerTrait, JsonValueTrait}, spawn, Extent};
 
 use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StorageBackend, StreamDescription};
 
@@ -9,7 +9,7 @@ use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::Ass
 
 struct MeshAsset {
     id: String,
-    spec: Option<json::JsonValue>,
+    spec: Option<json::Value>,
     gltf: gltf::Gltf,
     buffers: Vec<gltf::buffer::Data>,
 }
@@ -17,10 +17,16 @@ struct MeshAsset {
 impl Asset for MeshAsset {
     fn requested_assets(&self) -> Vec<String> {
         if let Some(spec) = &self.spec {
-            let asset_key = &spec["asset"];
+            let asset_key = match spec["asset"].as_object() {
+				Some(asset_key) => asset_key,
+				None => return vec![],
+			};
 
-            asset_key.entries().filter_map(|(_, v)| { // Get all material asset ids
-                v["asset"].as_str().map(|s| s.to_string())
+            asset_key.iter().filter_map(|(_, v)| { // Get all material asset ids
+				match v["asset"].as_str() {
+					Some(s) => Some(s.to_string()),
+					None => None,
+				}
             }).collect()
         } else {
             vec![]

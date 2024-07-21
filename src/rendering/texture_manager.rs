@@ -2,10 +2,8 @@
 
 use std::{collections::hash_map::Entry, num::NonZeroU8, rc::Rc};
 
-use gxhash::{HashMap, HashMapExt};
-
 use resource_management::{image::Image, Reference};
-use utils::{sync::RwLock, Extent};
+use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
 use ghi::GraphicsHardwareInterface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

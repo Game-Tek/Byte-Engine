@@ -371,6 +371,7 @@ pub enum Descriptor {
 	},
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
+	StaticSamplers,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -547,7 +548,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle;
 
-	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>,) -> TopLevelAccelerationStructureHandle;
+	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>, max_instance_count: u32) -> TopLevelAccelerationStructureHandle;
 	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure) -> BottomLevelAccelerationStructureHandle;
 
 	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle);
@@ -1113,14 +1114,13 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn sampler_with_immutable_samplers(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, samplers: Option<Vec<SamplerHandle>>) -> Self {
-		todo!();
-		// Self {
-		// 	descriptor_set_binding_template,
-		// 	array_element: 0,
-		// 	descriptor: Descriptor::Sampler,
-		// 	frame_offset: None,
-		// }
+	pub fn sampler_with_immutable_samplers(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::StaticSamplers,
+			frame_offset: None,
+		}
 	}
 
 	fn acceleration_structure(bindings: &'a DescriptorSetBindingTemplate, top_level_acceleration_structure: TopLevelAccelerationStructureHandle) -> Self {
@@ -1259,15 +1259,15 @@ impl DescriptorWrite {
 /// Describes the details of the memory layout of a particular image.
 pub struct ImageSubresourceLayout {
 	/// The offset inside a memory region where the texture will read it's first texel from.
-	pub(super) offset: u64,
+	pub(super) offset: usize,
 	/// The size of the texture in bytes.
-	pub(super) size: u64,
+	pub(super) size: usize,
 	/// The row pitch of the texture.
-	pub(super) row_pitch: u64,
+	pub(super) row_pitch: usize,
 	/// The array pitch of the texture.
-	pub(super) array_pitch: u64,
+	pub(super) array_pitch: usize,
 	/// The depth pitch of the texture.
-	pub(super) depth_pitch: u64,
+	pub(super) depth_pitch: usize,
 }
 
 /// Describes the properties of a particular surface.
@@ -1822,8 +1822,6 @@ use super::*;
 
 			command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
 
-			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
-
 			command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
 
 			renderer.present(modulo_frame_index, image_index, &[swapchain], render_finished_synchronizer);
@@ -2330,7 +2328,7 @@ use super::*;
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle,);
 
-		let sampler_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler_with_immutable_samplers(&DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])), None)); // TODO: fix this
+		let sampler_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
 		let ubo_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer));
 		let tex_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
 
@@ -2527,7 +2525,7 @@ void main() {
 		let closest_hit_shader = renderer.create_shader(None, ShaderSource::GLSL(closest_hit_shader_code.to_string()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
 		let miss_shader = renderer.create_shader(None, ShaderSource::GLSL(miss_shader_code.to_string()), ShaderTypes::Miss, &[]).expect("Failed to create miss shader");
 
-		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"));
+		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"), 1);
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{
 			description: BottomLevelAccelerationStructureDescriptions::Mesh {
 				vertex_count: 3,
@@ -2564,7 +2562,6 @@ void main() {
 			&[ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen,), ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit,), ShaderParameter::new(&miss_shader, ShaderTypes::Miss,)],
 		);
 
-		let building_command_buffer_handle = renderer.create_command_buffer(None);
 		let rendering_command_buffer_handle = renderer.create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
@@ -2573,8 +2570,6 @@ void main() {
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
 		renderer.write_instance(instances_buffer, 0, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
-
-		let build_sync = renderer.create_synchronizer(None, true);
 
 		let scratch_buffer = renderer.create_buffer(None, 1024 * 1024, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
@@ -2588,47 +2583,12 @@ void main() {
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			let modulo_frame_index = (i % FRAMES_IN_FLIGHT) as u32;
-			// {
-			// 	renderer.wait(build_sync);
-
-			// 	let mut command_buffer_recording = renderer.create_command_buffer_recording(building_command_buffer_handle, Some(i as u32));
-
-			// 	command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
-			// 		acceleration_structure: bottom_level_acceleration_structure,
-			// 		description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-			// 			vertex_buffer: BufferStridedRange { buffer: vertex_positions_buffer, offset: 0, stride: 12, size: 12 * 3 },
-			// 			vertex_count: 3,
-			// 			index_buffer: BufferStridedRange { buffer: index_buffer, offset: 0, stride: 2, size: 2 * 3 },
-			// 			vertex_position_encoding: Encodings::IEEE754,
-			// 			index_format: DataTypes::U16,
-			// 			triangle_count: 1,
-			// 		},
-			// 		scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 0, range: 1024 * 512, slot: 0 },
-			// 	}]);
-
-			// 	command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
-			// 		acceleration_structure: top_level_acceleration_structure,
-			// 		description: TopLevelAccelerationStructureBuildDescriptions::Instance {
-			// 			instances_buffer,
-			// 			instance_count: 1,
-			// 		},
-			// 		scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 1024 * 512, range: 1024 * 512, slot: 0 },
-			// 	});
-
-			// 	command_buffer_recording.execute(&[], &[build_sync], build_sync);
-			// }
-
-			// renderer.wait(render_finished_synchronizer);
 
 			renderer.start_frame_capture();
 
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, Some(i as u32));
 
 			{
-				// renderer.wait(build_sync);
-
-				// let mut command_buffer_recording = renderer.create_command_buffer_recording(building_command_buffer_handle, Some(i as u32));
-
 				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
 					acceleration_structure: bottom_level_acceleration_structure,
 					description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
@@ -2659,8 +2619,6 @@ void main() {
 					},
 					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 1024 * 512, range: 1024 * 512, slot: 0 },
 				});
-
-				// command_buffer_recording.execute(&[], &[build_sync], build_sync);
 			}
 
 			let ray_tracing_pipeline_command = command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
@@ -2709,7 +2667,7 @@ void main() {
 
 			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-			command_buffer_recording.execute(&[/*build_sync,*/], &[], render_finished_synchronizer);
+			command_buffer_recording.execute(&[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 

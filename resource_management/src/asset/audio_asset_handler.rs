@@ -155,7 +155,9 @@ mod tests {
 
         let storage_backend = asset_manager.get_test_storage_backend();
 
-        block_on(audio_asset_handler.load(&asset_manager, storage_backend, url)).expect("Audio asset handler failed to load asset");
+        let asset = block_on(audio_asset_handler.load(&asset_manager, storage_backend, url)).expect("Audio asset handler failed to load asset");
+
+		let _ = block_on(asset.load(&asset_manager, storage_backend, url)).expect("Audio asset failed to load");
 
         let generated_resources = storage_backend.get_resources();
 

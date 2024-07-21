@@ -2,6 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use maths_rs::vec;
 use resource_management::asset::material_asset_handler::ProgramGenerator;
+use utils::json;
 
 use crate::besl::lexer;
 
@@ -55,7 +56,7 @@ pub struct CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform(&self, mut root: besl::parser::Node, _: &json::JsonValue) -> besl::parser::Node {
+	fn transform(&self, mut root: besl::parser::Node, _: &json::Object) -> besl::parser::Node {
 		let code = "vec4 colors[16] = vec4[16](
 	vec4(0.16863, 0.40392, 0.77647, 1),
 	vec4(0.32941, 0.76863, 0.21961, 1),

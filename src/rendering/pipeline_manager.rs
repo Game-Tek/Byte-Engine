@@ -1,10 +1,8 @@
 use std::{hash::Hash, rc::Rc};
 
-use gxhash::{HashMap, HashMapExt};
-
 use ghi::GraphicsHardwareInterface;
 use resource_management::{material::{Material, Shader, Variant, VariantVariable}, types::ShaderTypes, Reference};
-use utils::{r#async::{join_all, try_join_all, OnceCell}, stale_map::{Entry, StaleHashMap}, sync::{RwLock, RwLockUpgradableReadGuard}};
+use utils::{r#async::{join_all, try_join_all, OnceCell}, hash::{HashMap, HashMapExt}, stale_map::{Entry, StaleHashMap}, sync::{RwLock, RwLockUpgradableReadGuard}};
 
 pub struct PipelineManager {
 	pipelines: RwLock<HashMap<String, OnceCell<ghi::PipelineHandle>>>,

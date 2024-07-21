@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use ghi::{graphics_hardware_interface, ImageHandle};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
-use gxhash::{HashMap, HashMapExt};
-use json::object;
+use utils::hash::{HashMap, HashMapExt};
+use utils::json::object;
 use log::error;
 use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};

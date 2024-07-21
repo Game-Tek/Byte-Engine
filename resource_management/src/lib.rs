@@ -16,7 +16,7 @@ use serde::{ser::SerializeStruct, Serialize};
 
 use resource::resource_handler::{FileResourceReader, LoadTargets, ReadTargets, ResourceReader};
 use asset::{get_base, read_asset_from_source, BEADType, ResourceId};
-use utils::{r#async::{AsyncWriteExt, RwLock}, remove_file, File};
+use utils::{r#async::{AsyncWriteExt, RwLock}, json, remove_file, File};
 
 pub mod asset;
 pub mod resource;
@@ -781,7 +781,7 @@ impl StorageBackend for DbStorageBackend {
 					let mut url = url.get_base().to_string();
 					url.push_str(".bead");
 					if let Some(spec) = files.get(url.as_str()) {
-						Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+						Some(json::from_str(std::str::from_utf8(spec).unwrap()).unwrap())
 					} else {
 						None
 					}
@@ -799,7 +799,7 @@ impl StorageBackend for DbStorageBackend {
 				let mut url = url.get_base().to_string();
 				url.push_str(".bead");
 				if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
-					Some(json::parse(std::str::from_utf8(spec).unwrap()).unwrap())
+					Some(json::from_str(std::str::from_utf8(spec).unwrap()).unwrap())
 				} else {
 					None
 				}

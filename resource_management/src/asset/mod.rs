@@ -3,7 +3,7 @@
 
 use std::fmt::Debug;
 
-use utils::{File, r#async::AsyncReadExt};
+use utils::{r#async::AsyncReadExt, json, File};
 
 pub mod asset_manager;
 pub mod asset_handler;
@@ -13,7 +13,7 @@ pub mod material_asset_handler;
 pub mod image_asset_handler;
 pub mod mesh_asset_handler;
 
-pub type BEADType = json::JsonValue;
+pub type BEADType = json::Value;
 
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
@@ -54,7 +54,7 @@ pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std
 						return Err(());
 					}
 					let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-					let spec = json::parse(spec).or(Err(()))?;
+					let spec: json::Value = json::from_str(spec).or(Err(()))?;
 					Some(spec)
 				} else {
 					None

@@ -133,6 +133,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayref"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4930d2cb77ce62f89ee5d5289b4ac049559b1c45539271f5ed4fdc7db34545"
+
+[[package]]
 name = "ash"
 version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -275,8 +281,6 @@ dependencies = [
  "core",
  "dual_quaternion",
  "ghi",
- "gxhash",
- "json",
  "log",
  "machineid-rs",
  "maths-rs",
@@ -562,6 +566,17 @@ checksum = "a258e46cdc063eb8519c00b9fc845fc47bcfca4130e2f08e88665ceda8474245"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "faststr"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f375fcf41ec4dac873a8028fba4210dbda5c86bba13d2d741e651b474f7c05a4"
+dependencies = [
+ "bytes",
+ "serde",
+ "simdutf8",
 ]
 
 [[package]]
@@ -982,9 +997,9 @@ dependencies = [
 
 [[package]]
 name = "intel_tex_2"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "410e8e64fd296f11254dba8fccdc2ed35d8df41592fa96785ffc9877b6a9aaa5"
+checksum = "bd699c0e6adcac28c06db24a220c834c8ec811e0d2d80f0261bb14e01737b4dc"
 dependencies = [
  "ispc_rt",
 ]
@@ -1170,9 +1185,9 @@ dependencies = [
 
 [[package]]
 name = "meshopt"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa19b93af545a6bb30e8105b2a1450aa6b23e877f2131c9fb692dca6ec5bd80f"
+checksum = "a0cad96c96b1c198160517f5dc7c247ef36ebb9d49015c0cfca0c0ee8d7d1bbc"
 dependencies = [
  "bitflags 2.5.0",
  "cc",
@@ -1323,6 +1338,16 @@ name = "once_cell"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
+
+[[package]]
+name = "page_size"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30d5b2194ed13191c1999ae0704b7839fb18384fa22e49b57eeaa97d79ce40da"
+dependencies = [
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "parking_lot"
@@ -1612,7 +1637,6 @@ dependencies = [
  "gxhash",
  "half",
  "intel_tex_2",
- "json",
  "libdeflater",
  "log",
  "maths-rs",
@@ -1835,6 +1859,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
 
 [[package]]
+name = "simdutf8"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f27f6278552951f1f2b8cf9da965d10969b2efdea95a6ec47987ab46edfe263a"
+
+[[package]]
 name = "simple_logger"
 version = "4.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1872,6 +1902,27 @@ name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+
+[[package]]
+name = "sonic-rs"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e683c86e3ea4a72446733ca7f7dc5acadc70d5a37f272f32a87fe975e90afa9"
+dependencies = [
+ "arrayref",
+ "bumpalo",
+ "bytes",
+ "cfg-if",
+ "faststr",
+ "itoa",
+ "page_size",
+ "parking_lot",
+ "ryu",
+ "serde",
+ "simdutf8",
+ "smallvec",
+ "thiserror",
+]
 
 [[package]]
 name = "spin"
@@ -2138,6 +2189,7 @@ dependencies = [
  "futures",
  "gxhash",
  "parking_lot",
+ "sonic-rs",
  "tokio",
 ]
 

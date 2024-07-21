@@ -12,6 +12,9 @@ pub use r#async::spawn_blocking;
 pub use r#async::remove_file;
 pub use r#async::File;
 
+pub use sonic_rs as json;
+
+pub use gxhash as hash;
 pub struct BufferAllocator<'a> {
 	buffer: &'a mut [u8],
 	offset: usize,

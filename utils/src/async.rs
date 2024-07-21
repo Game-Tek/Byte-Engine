@@ -28,7 +28,8 @@ pub use tokio::sync::OnceCell;
 pub use tokio::runtime::Runtime;
 
 pub fn block_on<F>(future: F) -> F::Output where F: Future {
-	tokio::runtime::Handle::current().block_on(future)
+	let runtime = create_runtime();
+	runtime.block_on(future)
 }
 
 pub fn create_runtime() -> tokio::runtime::Runtime {

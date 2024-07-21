@@ -1,9 +1,9 @@
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use futures::future::{join, join_all, try_join_all};
 use log::debug;
 use polodb_core::bson::Bson;
-use utils::Extent;
+use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
 use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, GenericResourceResponse, ProcessedAsset, ReferenceModel, StorageBackend};
 
@@ -11,21 +11,21 @@ use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::Ass
 
 pub trait ProgramGenerator: Send + Sync {
 	/// Transforms a program.
-	fn transform(&self, node: besl::parser::Node, material: &json::JsonValue) -> besl::parser::Node;
+	fn transform(&self, node: besl::parser::Node, material: &json::Object) -> besl::parser::Node;
 }
 
 struct MaterialAsset {
     id: String,
-    asset: json::JsonValue,
+    asset: json::Object,
     generator: Arc<dyn ProgramGenerator>,
 }
 
 impl Asset for MaterialAsset {
     fn requested_assets(&self) -> Vec<String> {
         let asset = &self.asset;
-        let is_material = asset["parent"].is_null();
+        let is_material = asset.get(&"parent").is_none();
         if is_material {
-            asset["variables"].members().filter_map(|v|
+            asset["variables"].as_array().unwrap().iter().filter_map(|v|
                 if v["data_type"] == "Texture2D" {
                     Some(v["value"].as_str().unwrap().to_string())
                 } else {
@@ -40,7 +40,7 @@ impl Asset for MaterialAsset {
     fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
         let asset = &self.asset;
 
-        let is_material = asset["parent"].is_null();
+        let is_material = asset.get(&"parent").is_none();
 
 		let to_value = async |t: String, v: String| {
 			let to_color = |name: &str| {
@@ -80,22 +80,32 @@ impl Asset for MaterialAsset {
 
 			let generator = generator;
 
-			let shaders = try_join_all(asset["shaders"].entries().map(|(s_type, shader_json): (&str, &json::JsonValue)| {
+			let asset_shaders = match asset["shaders"].as_object() {
+				Some(v) => v,
+				None => { return Err("Shaders not found".to_string()); }
+			};
+
+			let shaders = try_join_all(asset_shaders.iter().map(|(s_type, shader_json): (&str, &json::Value)| {
 				transform_shader(generator, storage_backend, &material_domain, &asset, &shader_json, s_type)
 			}));
 
-			let values = join_all(asset["variables"].members().map(|v: &json::JsonValue| {
-				let data_type = v["data_type"].to_string();
-				let value = v["value"].to_string();
+			let asset_variables = match asset["variables"].as_array() {
+				Some(v) => v,
+				None => { return Err("Variables not found".to_string()); }
+			};
+
+			let values = join_all(asset_variables.iter().map(|v: &json::Value| {
+				let data_type = v["data_type"].as_str().unwrap().to_string();
+				let value = v["value"].as_str().unwrap().to_string();
 
 				to_value(data_type, value)
 			}));
 
 			let (shaders, values) = join(shaders, values).await;
 
-			let parameters = asset["variables"].members().zip(values.into_iter()).map(|(v, value)| {
-				let name = v["name"].to_string();
-				let data_type = v["data_type"].to_string();
+			let parameters = asset_variables.iter().zip(values.into_iter()).map(|(v, value)| {
+				let name = v["name"].as_str().unwrap().to_string();
+				let data_type = v["data_type"].as_str().unwrap().to_string();
 
 				ParameterModel {
 					name,
@@ -125,14 +135,22 @@ impl Asset for MaterialAsset {
 
 			let material = asset_manager.load(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
 
-			let values = join_all(material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().map(|v: &Bson| {
+			let values = try_join_all(material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().map(async |v: &Bson| {
 				let v = v.as_document().unwrap();
 				let name = v.get_str("name").unwrap().to_string();
 				let r#type = v.get_str("type").unwrap().to_string();
-				let value = asset["variables"].members().find(|v2| { v2["name"].to_string() == name }).unwrap()["value"].to_string();
+				let value = match asset["variables"].as_array() {
+					Some(v) => {
+						match v.iter().find(|v2| { v2["name"].as_str().unwrap() == name }) {
+							Some(v) => v["value"].as_str().unwrap().to_string(),
+							None => { return Err("Variable not found".to_string()); }
+						}
+					}
+					None => { return Err("Variable not found".to_string()); }
+				};
 
-				to_value(r#type, value)
-			})).await;
+				Ok(to_value(r#type, value).await)
+			})).await.or_else(|e| { debug!("{}", e); Err("Failed to load variant") })?;
 
 			let variables = material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().zip(values.into_iter()).map(|(v, value)| {
 				let v = v.as_document().unwrap();
@@ -146,12 +164,12 @@ impl Asset for MaterialAsset {
 				}
 			}).collect();
 
-			let alpha_mode = match &asset["transparency"] {
-				json::JsonValue::Boolean(v) => {
-					if *v { AlphaMode::Blend } else { AlphaMode::Opaque }
+			let alpha_mode = match asset.get(&"transparency").map(|e| e.as_ref()) {
+				Some(json::ValueRef::Bool(v)) => {
+					if v { AlphaMode::Blend } else { AlphaMode::Opaque }
 				}
-				json::JsonValue::String(s) => {
-					match s.as_str() {
+				Some(json::ValueRef::String(s)) => {
+					match s {
 						"Opaque" => AlphaMode::Opaque,
 						"Blend" => AlphaMode::Blend,
 						_ => AlphaMode::Opaque
@@ -212,7 +230,7 @@ impl AssetHandler for MaterialAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let asset_json = json::parse(std::str::from_utf8(&data).or_else(|_| { Err(LoadErrors::FailedToProcess) })?).or_else(|_| { Err(LoadErrors::FailedToProcess) })?;
+		let asset_json = json::from_str(std::str::from_utf8(&data).or_else(|_| { Err(LoadErrors::FailedToProcess) })?).or_else(|_| { Err(LoadErrors::FailedToProcess) })?;
 
 		Ok(Box::new(MaterialAsset {
 		    id: url.to_string(),
@@ -222,7 +240,7 @@ impl AssetHandler for MaterialAssetHandler {
 	}) }
 }
 
-fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &str, format: &str, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Result<(Shader, Box<[u8]>), ()> {
+fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &str, format: &str, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(Shader, Box<[u8]>), ()> {
 	let root_node = if format == "glsl" {
 		// besl::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
 		panic!()
@@ -312,7 +330,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 	Ok((shader, result_shader_bytes))
 }
 
-async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn StorageBackend, domain: &str, material: &json::JsonValue, shader_json: &json::JsonValue, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
+async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
 	let path = shader_json.as_str().ok_or(())?;
 	let path = ResourceId::new(path);
 	let (arlp, _, format) = storage_backend.resolve(path).await.or(Err(()))?;
@@ -329,7 +347,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 
 #[cfg(test)]
 pub mod tests {
-	use utils::r#async::block_on;
+	use utils::{r#async::{self, block_on}, json};
 
 	use super::{MaterialAssetHandler, ProgramGenerator};
 	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId,}, material::VariantModel, ReferenceModel};
@@ -345,7 +363,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform(&self, mut root: besl::parser::Node, material: &json::JsonValue) -> besl::parser::Node {
+		fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
 			let material_struct = besl::parser::Node::buffer("Material", vec![besl::parser::Node::member("color", "vec4f")]);
 
 			let sample_function = besl::parser::Node::function("sample_", vec![besl::parser::Node::member("t", "u32")], "void", vec![]);
@@ -367,7 +385,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform(&self, mut root: besl::parser::Node, material: &json::JsonValue) -> besl::parser::Node {
+		fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
 			let binding = besl::parser::Node::binding("materials", besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]), 0, 0, true, false);
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
@@ -387,7 +405,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for LeafTestShaderGenerator {
-		fn transform(&self, mut root: besl::parser::Node, _: &json::JsonValue) -> besl::parser::Node {
+		fn transform(&self, mut root: besl::parser::Node, _: &json::Object) -> besl::parser::Node {
 			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("material_index", "u32")]);
 
 			let main = besl::parser::Node::function("main", vec![], "void", vec![besl::parser::Node::glsl("push_constant;\nmaterials;\nsample_(0);\n", &["push_constant", "materials", "sample_"], Vec::new())]);
@@ -453,7 +471,9 @@ pub mod tests {
 
 		storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-		block_on(asset_handler.load(&asset_manager, storage_backend, ResourceId::new("material.bema"),)).expect("Failed to load material");
+		let asset = block_on(asset_handler.load(&asset_manager, storage_backend, ResourceId::new("material.bema"),)).expect("Failed to load material");
+
+		let _ = block_on(asset.load(&asset_manager, storage_backend, ResourceId::new("material.bema")));
 
 		let generated_resources = storage_backend.get_resources();
 

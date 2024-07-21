@@ -5,9 +5,8 @@ use core::{entity::EntityBuilder, Entity};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
 
-use json::object;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
-use utils::Extent;
+use utils::{json, Extent};
 
 use super::common_shader_generator::CommonShaderGenerator;
 
@@ -69,7 +68,7 @@ impl SSGIRenderPass {
 
 		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, &["make_normal_from_depth", "camera", "interleaved_gradient_noise", "get_cosine_hemisphere_sample"], vec![])]);
 
-		let mut root = shader_generator.transform(Node::root(), &object!{});
+		let mut root = shader_generator.transform(Node::root(), &json::object!{});
 
 		root.add(vec![main]);
 
@@ -113,7 +112,7 @@ impl SSGIRenderPass {
 
 		let main = Node::function("main", Vec::new(), "void", vec![Node::glsl(CODE, &["make_uv", "camera", "get_world_space_position_from_depth", "get_view_space_position_from_depth", "ray_march"], vec![])]);
 
-		let mut root = shader_generator.transform(Node::root(), &object!{});
+		let mut root = shader_generator.transform(Node::root(), &json::object!{});
 
 		root.add(vec![main]);
 

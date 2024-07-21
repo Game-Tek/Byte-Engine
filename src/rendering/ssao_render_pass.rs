@@ -3,7 +3,7 @@ use ghi::{BoundComputePipelineMode, CommandBufferRecording, DeviceAccesses, Grap
 use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, image::Image, resource::resource_manager::ResourceManager, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, Reference};
 use core::{Entity, EntityHandle};
 
-use utils::{Extent, RGBA};
+use utils::{json, Extent, RGBA};
 
 use super::common_shader_generator::CommonShaderGenerator;
 
@@ -273,9 +273,7 @@ pub fn get_source() -> String {
 
 	let root_node = besl::parser::Node::root();
 
-	use json::object;
-
-	let mut root = shader_generator.transform(root_node, &object! {});
+	let mut root = shader_generator.transform(root_node, &json::object!{});
 
 	root.add(vec![camera_binding, noise_texture_binding, depth, out_ao, biased_tangent, trace_settings_struct, compute_trace, compute_occlusion, main]);
 

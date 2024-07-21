@@ -1,13 +1,13 @@
 //! The window system module implements logic to handle creation and management of OS windows.
 
 use component_derive::component;
-use utils::Extent;
+use utils::{hash::HashMap, Extent};
 
 use crate::core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle};
 
 /// The window system.
 pub struct WindowSystem {
-	windows: gxhash::HashMap<EntityHandle<Window>, ghi::Window>,
+	windows: HashMap<EntityHandle<Window>, ghi::Window>,
 }
 
 impl Entity for WindowSystem {}
@@ -47,7 +47,7 @@ impl WindowSystem {
 			}
 		}
 
-		WindowSystem { windows: gxhash::HashMap::default() }
+		WindowSystem { windows: HashMap::default() }
 	}
 
 	pub fn new_as_system<'a>() -> EntityBuilder<'a, WindowSystem> {

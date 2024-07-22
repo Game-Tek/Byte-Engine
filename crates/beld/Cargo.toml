@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-byte_engine = { path = "../" }
+byte-engine = { path = "../byte-engine" }
 besl = { path = "../besl" }
 utils = { path = "../utils" }
-resource_management = { path = "../resource_management" }
+resource-management = { path = "../resource-management" }
 
 clap = { version = "4.5.4", features = ["derive"] }
 futures = "0.3.30"

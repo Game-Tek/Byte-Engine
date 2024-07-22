@@ -1,9 +1,8 @@
 //! The window system module implements logic to handle creation and management of OS windows.
 
-use component_derive::component;
 use utils::{hash::HashMap, Extent};
 
-use crate::core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle};
+use core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle};
 
 /// The window system.
 pub struct WindowSystem {

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use resource_management::{audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
 
-use crate::{ahi::{audio_hardware_interface::AudioHardwareInterface, self}, core::{Entity, EntityHandle, entity::EntityBuilder,}};
+use core::{Entity, EntityHandle, entity::EntityBuilder,};
+use ahi::{audio_hardware_interface::AudioHardwareInterface, self};
 
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.

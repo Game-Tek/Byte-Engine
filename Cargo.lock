@@ -191,11 +191,11 @@ name = "beld"
 version = "0.1.0"
 dependencies = [
  "besl",
- "byte_engine",
+ "byte-engine",
  "clap",
  "futures",
  "log",
- "resource_management",
+ "resource-management",
  "simple_logger 5.0.0",
  "tokio",
  "tokio-stream",
@@ -271,20 +271,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79296716171880943b8470b5f8d03aa55eb2e645a4874bdbb28adb49162e012c"
 
 [[package]]
-name = "byte_engine"
+name = "byte-engine"
 version = "0.1.0"
 dependencies = [
  "ahi",
  "besl",
  "colored",
- "component_derive",
  "core",
  "dual_quaternion",
  "ghi",
  "log",
  "machineid-rs",
  "maths-rs",
- "resource_management",
+ "resource-management",
  "serde",
  "serde_json",
  "simple_logger 4.3.3",
@@ -548,9 +547,9 @@ dependencies = [
 
 [[package]]
 name = "either"
-version = "1.11.0"
+version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a47c1c47d2f5964e29c61246e81db715514cd532db6b5116a25ea3c03d6780a2"
+checksum = "60b1af1c220855b6ceac025d3f6ecdd2b7c4894bfe9cd9bda4fbb4bc7c0d4cf0"
 
 [[package]]
 name = "equivalent"
@@ -778,15 +777,6 @@ dependencies = [
  "wayland-protocols",
  "windows 0.56.0",
  "xcb",
-]
-
-[[package]]
-name = "gi"
-version = "0.1.0"
-dependencies = [
- "byte_engine",
- "log",
- "maths-rs",
 ]
 
 [[package]]
@@ -1627,7 +1617,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "resource_management"
+name = "resource-management"
 version = "0.1.0"
 dependencies = [
  "besl",

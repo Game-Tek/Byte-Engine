@@ -438,7 +438,7 @@ pub mod tests {
 
 	#[test]
 	fn load_material() {
-		let asset_manager = AssetManager::new("../assets".into(),);
+		let asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
@@ -498,7 +498,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let mut asset_manager = AssetManager::new("../assets".into());
+		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();

@@ -4,17 +4,13 @@
 
 use core::{self, EntityHandle};
 use std::sync::{Arc, Mutex};
-use byte_engine::{application::Application, camera::Camera, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::{Mesh, Transform}, point_light::PointLight}, Vector3};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::{Mesh, Transform}, point_light::PointLight}, Vector3};
 use maths_rs::exp;
 
 #[ignore]
 #[test]
 fn revolver() {
-	let mut app = byte_engine::application::GraphicsApplication::new("Revolver");
-
-	app.initialize(std::env::args());
-
-	println!("{}", std::env::current_dir().unwrap().display());
+	let mut app = byte_engine::application::GraphicsApplication::new("Revolver", &[Parameter::new("resources-path", "../../resources"), Parameter::new("assets-path", "../../assets")]);
 
 	let space_handle = app.get_root_space_handle();
 	let runtime = app.get_runtime();

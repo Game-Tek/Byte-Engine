@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn load_gltf() {
-		let mut asset_manager = AssetManager::new("../assets".into(),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 
 		{
 			let storage_backend = asset_manager.get_test_storage_backend();
@@ -689,7 +689,7 @@ mod tests {
 
 	#[test]
     fn load_gltf_with_bin() {
-		let mut asset_manager = AssetManager::new("../assets".into(),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 		let storage_backend = asset_manager.get_test_storage_backend();
 
 		storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
-		let mut asset_manager = AssetManager::new("../assets".into(),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 
 		let storage_backend = asset_manager.get_test_storage_backend();
 
@@ -954,7 +954,7 @@ mod tests {
 	#[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb_image() {
-		let mut asset_manager = AssetManager::new("../assets".into(),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 
         let asset_handler = MeshAssetHandler::new();
 
@@ -980,7 +980,7 @@ mod tests {
 	#[test]
 	#[ignore]
 	fn load_16bit_normal_image() {
-		let mut asset_manager = AssetManager::new("../assets".into(),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 		asset_manager.add_asset_handler(ImageAssetHandler::new());
 		let asset_handler = MeshAssetHandler::new();
 

@@ -9,15 +9,22 @@
 /// It also contains the main loop of the engine.
 /// An application MUST be a singleton and created before any other engine functionality is used.\
 /// All state associated with the application/process should be stored in an application.
+/// 
+/// ## Features
+/// ### Arguments
+/// The application can take arguments during startup.
+/// The arguments can be passed as OS environment variables in the form of `BE_NAME=value`, as command line arguments in the form of `--name=value`, or as parameters in code during the creation of the application.
+/// 
+/// Parameters as command line arguments take precedence over environment variables which take precedence over parameters in code.
+/// Parameters < Environment variables < Command line arguments
 pub trait Application {
 	/// Creates a new application with the given name.
-	fn new(name: &str) -> Self;
-
-	/// Initializes the application with the given arguments.
-	fn initialize(&mut self, arguments: std::env::Args);
+	fn new(name: &str, parameters: &[Parameter],) -> Self;
 
 	/// Returns the name of the application.
 	fn get_name(&self) -> String;
+
+	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
 
 	/// Performs a tick of the application.
 	fn tick(&mut self);
@@ -28,25 +35,43 @@ pub trait Application {
 /// It just stores the name of the application.
 pub struct BaseApplication {
 	name: String,
+	parameters: HashSet<Parameter>,
 }
 
 impl Application for BaseApplication {
-	fn new(name: &str) -> BaseApplication {
-		BaseApplication { name: String::from(name) }
-	}
-
-	fn initialize(&mut self, arguments: std::env::Args) {
+	fn new(name: &str, parameters: &[Parameter],) -> BaseApplication {
 		let _ = simple_logger::SimpleLogger::new().env().init();
 
-		info!("Byte-Engine");
-		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", self.name, arguments.collect::<Vec<String>>().join(", "));
+		let parameters = parameters.to_vec();
+	
+		let environment_variables = std::env::vars().filter(|(k, v)| k.as_str().starts_with("BE_")).map(|(k, v)| Parameter::new_string(k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(), v.into())).collect::<Vec<Parameter>>();
+		// Take all arguments that have the form `--name=value` and convert them to parameters.
+		let arguments = std::env::args().filter(|a| a.starts_with("--")).map(|a| {
+			let mut split = a.split('=');
+			let name = split.next().unwrap().trim_start_matches("--");
+			let value = split.next().unwrap_or("");
+			Parameter::new(name, value)
+		}).collect::<Vec<Parameter>>();
 
+		let mut parameter_set: HashSet<Parameter> = parameters.into_iter().collect();
+		parameter_set.extend(environment_variables);
+		parameter_set.extend(arguments);
+
+		info!("Byte-Engine");
+		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", name, parameter_set.iter().map(|p| format!("{}={}", p.name, p.value)).collect::<Vec<String>>().join(", "));
+	
 		trace!("Initialized base Byte-Engine application!");
+
+		BaseApplication { name: String::from(name), parameters: parameter_set }
 	}
 
 	fn tick(&mut self) {}
 
 	fn get_name(&self) -> String { self.name.clone() }
+
+	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
+		self.parameters.iter().find(|p| p.name == name)
+	}
 }
 
 use core::{property::Property, Entity};
@@ -56,7 +81,7 @@ use log::{info, trace};
 use maths_rs::prelude::Base;
 
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, resource::resource_manager::ResourceManager};
-use utils::Extent;
+use utils::{hash::HashSet, Extent};
 use crate::{audio::audio_system::{self, AudioSystem}, core::{self, entity::EntityHandle, orchestrator}, gameplay::space::Space, input, physics, rendering::{self, common_shader_generator}, window_system::{self, Window}, Vector2};
 
 /// An orchestrated application is an application that uses the orchestrator to manage systems.
@@ -69,15 +94,15 @@ pub struct OrchestratedApplication {
 }
 
 impl Application for OrchestratedApplication {
-	fn new(name: &str) -> Self {
-		let application = Application::new(name);
+	fn new(name: &str, parameters: &[Parameter],) -> Self {
+		let application = Application::new(name, parameters);
 		let orchestrator = orchestrator::Orchestrator::new_handle();
 
 		OrchestratedApplication { application, orchestrator, last_tick_time: std::time::Instant::now(), close: false }
 	}
 
-	fn initialize(&mut self, arguments: std::env::Args) {
-		self.application.initialize(arguments);
+	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
+		self.application.get_parameter(name)
 	}
 
 	fn tick(&mut self) {
@@ -150,22 +175,42 @@ pub struct GraphicsApplication {
 	max_frame_time: std::time::Duration,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Parameter {
+	name: String, value: String,
+}
+
+impl Parameter {
+	pub fn new(name: &str, value: &str) -> Self {
+		Parameter { name: name.into(), value: value.into() }
+	}
+
+	pub fn new_string(name: String, value: String) -> Self {
+		Parameter { name, value }
+	}
+
+	pub fn is(&self, name: &str) -> bool {
+		self.name == name
+	}
+}
+
 impl Application for GraphicsApplication {
-	fn new(name: &str) -> Self {
-		let mut application = OrchestratedApplication::new(name);
+	fn new(name: &str, parameters: &[Parameter],) -> Self {
+		let application = OrchestratedApplication::new(name, parameters);
 
 		let runtime = utils::r#async::create_runtime();
 
 		let root_space_handle: EntityHandle<Space> = runtime.block_on(core::spawn(Space::new()));
 
-		application.initialize(std::env::args()); // TODO: take arguments
+		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
+		let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
 
-		let resource_manager = runtime.block_on(core::spawn(ResourceManager::new()));
+		let resource_manager = runtime.block_on(core::spawn(ResourceManager::new(resources_path.clone())));
 
 		{
 			let mut resource_manager = resource_manager.write_sync();
 
-			let mut asset_manager = AssetManager::new("resources".into());
+			let mut asset_manager = AssetManager::new(assets_path, resources_path);
 
 			asset_manager.add_asset_handler(MeshAssetHandler::new());
 
@@ -247,7 +292,8 @@ impl Application for GraphicsApplication {
 		}
 	}
 
-	fn initialize(&mut self, _arguments: std::env::Args) {
+	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
+		self.application.get_parameter(name)
 	}
 
 	fn get_name(&self) -> String { self.application.get_name() }
@@ -395,16 +441,14 @@ mod tests {
 
 	#[test]
 	fn create_base_application() {
-		let mut app = BaseApplication::new("Test");
-		app.initialize(std::env::args());
+		let mut app = BaseApplication::new("Test", &[]);
 
 		assert!(app.get_name() == "Test");
 	}
 
 	#[test]
 	fn create_orchestrated_application() {
-		let mut app = OrchestratedApplication::new("Test");
-		app.initialize(std::env::args());
+		let mut app = OrchestratedApplication::new("Test", &[]);
 
 		assert!(app.get_name() == "Test");
 	}
@@ -412,8 +456,7 @@ mod tests {
 	#[test]
 	#[ignore] // Renderer broken.
 	fn create_graphics_application() {
-		let mut app = GraphicsApplication::new("Test");
-		app.initialize(std::env::args());
+		let mut app = GraphicsApplication::new("Test", &[]);
 
 		assert!(app.get_name() == "Test");
 

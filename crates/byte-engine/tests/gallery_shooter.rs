@@ -11,11 +11,9 @@ use utils::r#async::block_on;
 #[ignore]
 #[test]
 fn gallery_shooter() {
-	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter");
+	let mut app = byte_engine::application::GraphicsApplication::new("Gallery Shooter", &[]);
 
 	let audio_system_handle = app.get_audio_system_handle().clone();
-
-	app.initialize(std::env::args());
 
 	let runtime = app.get_runtime();
 

@@ -7,10 +7,15 @@ use resource_management::{asset::{asset_manager, audio_asset_handler, image_asse
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// The full path to the resources directory.
-	/// Example: `beld --path resources`
-    #[arg(short, long, default_value = "resources")]
-    path: String,
+    /// The full path to the assets directory.
+	/// Example: `beld --source assets`
+    #[arg(short, long, default_value = "assets")]
+    source: String,
+
+	/// The full path to the resources directory.
+	/// Example: `beld --destination resources`
+	#[arg(short, long, default_value = "resources")]
+	destination: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -48,16 +53,17 @@ fn main() -> Result<(), i32> {
 
 	let command = cli.command;
 
-	let path = cli.path;
+	let source_path = cli.source;
+	let destination_path = cli.destination;
 
 	match command {
 		Commands::Wipe {} => {
-			std::fs::remove_dir_all(&path).map_err(|e| {
+			std::fs::remove_dir_all(&source_path).map_err(|e| {
 				log::error!("Failed to wipe resources. Error: {}", e);
 				1
 			})?;
 
-			std::fs::create_dir(&path).map_err(|e| {
+			std::fs::create_dir(&source_path).map_err(|e| {
 				log::error!("Failed to create resources directory. Error: {}", e);
 				1
 			})?;
@@ -65,7 +71,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::List {} => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&source_path));
 
 			match block_on(storage_backend.list()) {
 				Ok(resources) => {
@@ -86,7 +92,7 @@ fn main() -> Result<(), i32> {
 			}
 		}
 		Commands::Bake { ids, sync } => {
-			let mut asset_manager = asset_manager::AssetManager::new(path.into());
+			let mut asset_manager = asset_manager::AssetManager::new(source_path.into(), destination_path.into());
 
 			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
 			asset_manager.add_asset_handler(audio_asset_handler::AudioAssetHandler::new());
@@ -147,7 +153,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::Delete { ids } => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&path));
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&source_path));
 
 			let mut ok = true;
 

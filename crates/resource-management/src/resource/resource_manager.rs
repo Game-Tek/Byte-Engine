@@ -24,8 +24,8 @@ impl From<polodb_core::Error> for LoadResults {
 
 impl ResourceManager {
 	/// Creates a new resource manager.
-	pub fn new() -> Self {
-		if let Err(error) = std::fs::create_dir_all(std::path::Path::new("resources")) {
+	pub fn new(resources_path: std::path::PathBuf) -> Self {
+		if let Err(error) = std::fs::create_dir_all(&resources_path) {
 			match error.kind() {
 				std::io::ErrorKind::AlreadyExists => {},
 				_ => panic!("Could not create resources directory"),

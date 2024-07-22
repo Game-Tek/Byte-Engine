@@ -29,20 +29,20 @@ pub enum LoadMessages {
 }
 
 impl AssetManager {
-	pub fn new(read_base_path: std::path::PathBuf) -> AssetManager {
-		if let Err(error) = std::fs::create_dir_all(assets_path()) {
+	pub fn new(source_path: std::path::PathBuf, destination_path: std::path::PathBuf) -> AssetManager {
+		if let Err(error) = std::fs::create_dir_all(&source_path) {
 			match error.kind() {
 				std::io::ErrorKind::AlreadyExists => {},
 				_ => panic!("Could not create assets directory"),
 			}
 		}
 
-		Self::new_with_path_and_storage_backend("assets".into(), DbStorageBackend::new(&read_base_path))
+		Self::new_with_path_and_storage_backend(source_path.into(), DbStorageBackend::new(&destination_path))
 	}
 
-	pub fn new_with_path_and_storage_backend<SB: StorageBackend>(read_base_path: std::path::PathBuf, storage_backend: SB) -> AssetManager {
+	pub fn new_with_path_and_storage_backend<SB: StorageBackend>(assets_path: std::path::PathBuf, storage_backend: SB) -> AssetManager {
 		AssetManager {
-			read_base_path,
+			read_base_path: assets_path,
 			asset_handlers: Vec::new(),
 			storage_backend: Box::new(storage_backend),
 			asset_loaders: Mutex::new(HashMap::new()),
@@ -233,14 +233,6 @@ impl AssetManager {
 	}
 }
 
-fn assets_path() -> std::path::PathBuf {
-	if cfg!(test) {
-		std::path::PathBuf::from("../assets/")
-	} else {
-		std::path::PathBuf::from("assets/")
-	}
-}
-
 #[cfg(test)]
 pub mod tests {
 	use utils::json;
@@ -291,7 +283,7 @@ use crate::asset::asset_handler::Asset;
 	}
 
 	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new(std::path::PathBuf::from("../assets"),)
+		AssetManager::new("../assets".into(), "../assets".into())
 	}
 
 	#[test]
@@ -301,7 +293,7 @@ use crate::asset::asset_handler::Asset;
 
 	#[test]
 	fn test_add_asset_manager() {
-		let mut asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../assets".into());
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -311,7 +303,7 @@ use crate::asset::asset_handler::Asset;
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_with_asset_manager() {
-		let mut asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
+		let mut asset_manager = AssetManager::new("../assets".into(), "../assets".into());
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -325,7 +317,7 @@ use crate::asset::asset_handler::Asset;
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
-		let asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
+		let asset_manager = AssetManager::new("../assets".into(), "../assets".into());
 
 		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -335,7 +327,7 @@ use crate::asset::asset_handler::Asset;
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
-		let asset_manager = AssetManager::new(std::path::PathBuf::from("../assets"),);
+		let asset_manager = AssetManager::new("../assets".into(), "../assets".into());
 
 		let _: json::Value = json::from_str(r#"{}"#).unwrap();
 

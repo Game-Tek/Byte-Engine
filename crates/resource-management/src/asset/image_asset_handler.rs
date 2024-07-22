@@ -358,7 +358,7 @@ mod tests {
 
 	#[test]
 	fn load_image() {
-		let asset_manager = AssetManager::new("../assets".into());
+		let asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 		let asset_handler = ImageAssetHandler::new();
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");

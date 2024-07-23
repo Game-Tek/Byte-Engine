@@ -1,12 +1,13 @@
-use std::ffi::c_void;
+use std::{collections::VecDeque, ffi::c_void};
 
-use wayland_client::{protocol::{wl_callback, wl_compositor, wl_display, wl_output, wl_registry, wl_seat, wl_surface}, Proxy};
+use wayland_client::{protocol::{wl_callback, wl_compositor, wl_display, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_surface}, Proxy};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 use crate::WindowEvents;
 
 pub struct WaylandWindow {
 	connection: wayland_client::Connection,
+	event_queue: wayland_client::EventQueue<AppData>,
 	display: wl_display::WlDisplay,
 	registry: wl_registry::WlRegistry,
 	compositor: wl_compositor::WlCompositor,
@@ -40,6 +41,8 @@ impl WaylandWindow {
 
 			wl_surface: None,
 			wl_callback: None,
+
+			events: VecDeque::with_capacity(64),
 		};
 
 		event_queue.roundtrip(&mut app_data).unwrap();
@@ -71,6 +74,9 @@ impl WaylandWindow {
 
 		let wl_seat: wl_seat::WlSeat = registry.bind(wm_seat_name, wm_seat_version, &qh, ());
 
+		let pointer = wl_seat.get_pointer(&qh, ());
+		let keyboard = wl_seat.get_keyboard(&qh, ());
+
 		let toplevel = xdg_surface.get_toplevel(&qh, ());
 
 		toplevel.set_title("My Wayland Window".to_string());
@@ -85,6 +91,7 @@ impl WaylandWindow {
 
 		Ok(Self {
 			connection: conn,
+			event_queue,
 			display,
 			registry,
 			compositor,
@@ -115,33 +122,26 @@ impl WaylandWindow {
 	}
 	
 	pub fn poll(&mut self) -> WindowIterator {
-		print!("Polling\n");
-		let mut app_data = &mut self.app_data;
-		let mut event_queue = self.connection.new_event_queue();
+		let app_data = &mut self.app_data;
+		let event_queue = &mut self.event_queue;
 		event_queue.roundtrip(app_data).unwrap();
 		event_queue.blocking_dispatch(app_data).unwrap();
 		WindowIterator {
 			window: self,
-			event_queue,
 		}
 	}
 }
 
 pub struct WindowIterator<'a> {
-	window: &'a WaylandWindow,
-	event_queue: wayland_client::EventQueue<AppData>,
+	window: &'a mut WaylandWindow,
 }
 
 impl Iterator for WindowIterator<'_> {
 	type Item = WindowEvents;
 
 	fn next(&mut self) -> Option<WindowEvents> {	
-		let mut app_data = &self.window.app_data;
-		let connection = &self.window.connection;
-
-		loop {
-			return None;
-		}
+		let app_data = &mut self.window.app_data;
+		app_data.events.pop_front()
 	}
 }
 
@@ -170,27 +170,26 @@ struct AppData {
 
 	wl_surface: Option<wl_surface::WlSurface>,
 	wl_callback: Option<wl_callback::WlCallback>,
+
+	events: VecDeque<WindowEvents>,
 }
 
 impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry, ()> for AppData {
     fn event(this: &mut Self, _: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			wayland_client::protocol::wl_registry::Event::Global { name, interface, version } => {
+				println!("Global: {}, {}, {}", name, interface, version);
 				match interface.as_str() {
 					"wl_compositor" => {
-						println!("Global: {}, {}, {}", name, interface, version);
 						this.compositor = Some((name, version));
 					}
 					"xdg_wm_base" => {
-						println!("Global: {}, {}, {}", name, interface, version);
 						this.xdg_wm_base = Some((name, version));
 					}
 					"wl_seat" => {
-						println!("Global: {}, {}, {}", name, interface, version);
 						this.wl_seat = Some((name, version));
 					}
 					"wl_output" => {
-						println!("Global: {}, {}, {}", name, interface, version);
 						this.wl_output = Some((name, version));
 					}
 					_ => {}
@@ -232,20 +231,13 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_surface::WlSurface, (
     fn event(this: &mut Self, surface: &wl_surface::WlSurface, event: wl_surface::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
         match event {
 			wayland_client::protocol::wl_surface::Event::Enter { output } => {
-				println!("Enter: {:?}", output);
-
-				surface.set_buffer_scale(this.scale as _);
-
-				println!("Set buffer scale to {}", this.scale);
 			}
 			wayland_client::protocol::wl_surface::Event::Leave { .. } => {
-				println!("Leave");
 			}
 			wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } => {
-				println!("Preferred buffer scale: {}", factor);
+				this.scale = this.scale.max(factor as _);
 			}
 			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {
-				println!("Preferred buffer transform");
 			}
 			_ => {}
 		}
@@ -276,7 +268,7 @@ impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
 }
 
 impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
-    fn event(_: &mut Self, s: &xdg_toplevel::XdgToplevel, event: xdg_toplevel::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+    fn event(this: &mut Self, s: &xdg_toplevel::XdgToplevel, event: xdg_toplevel::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			xdg_toplevel::Event::WmCapabilities { capabilities } => {
 				println!("Capabilties:");
@@ -288,7 +280,7 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 				println!("Configure bounds: [{}, {}]", width, height);
 			}
 			xdg_toplevel::Event::Close => {
-				println!("Closed!");
+				this.events.push_back(WindowEvents::Close);
 			}
 			_ => {}
 		}
@@ -303,6 +295,33 @@ impl wayland_client::Dispatch<wl_seat::WlSeat, ()> for AppData {
 			}
 			wl_seat::Event::Name { name } => {
 				println!("Name: {:?}", name);
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
+	fn event(this: &mut Self, s: &wl_pointer::WlPointer, event: wl_pointer::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+		match event {
+			wl_pointer::Event::Button { serial, time, button, state } => {
+			}
+			wl_pointer::Event::Axis { time, axis, value } => {
+			}
+			wl_pointer::Event::Motion { time, surface_x, surface_y } => {
+				this.events.push_back(WindowEvents::MouseMove { x: surface_x as u32, y: surface_y as u32, time: time as u64 });
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
+	fn event(_: &mut Self, s: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+		match event {
+			wl_keyboard::Event::Key { serial, time, key, state } => {
+			}
+			wl_keyboard::Event::Keymap { format, fd, size } => {
 			}
 			_ => {}
 		}

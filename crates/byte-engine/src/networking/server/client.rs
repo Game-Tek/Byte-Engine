@@ -8,22 +8,20 @@ pub struct Client {
 	remote: Remote,
 	connection_state: ConnectionStates,
 	address: std::net::SocketAddr,
-	salt: u64,
+	client_salt: u64,
+	server_salt: u64,
 	last_time: std::time::Instant,
 }
 
 impl Client {
-	pub fn new(address: std::net::SocketAddr) -> Self {
-		let mut hasher = std::collections::hash_map::DefaultHasher::new();
-		address.hash(&mut hasher);
-		let salt = hasher.finish();
-		
+	pub fn new(address: std::net::SocketAddr, client_salt: u64, server_salt: u64) -> Self {
 		Self {
 			local: Local::new(),
 			remote: Remote::new(),
 			connection_state: ConnectionStates::Negotiating,
 			address,
-			salt,
+			client_salt,
+			server_salt,
 			last_time: std::time::Instant::now(),
 		}
 	}
@@ -47,6 +45,14 @@ impl Client {
 		self.last_time = std::time::Instant::now();
 	}
 
+	pub fn client_salt(&self) -> u64 {
+		self.client_salt
+	}
+
+	pub fn server_salt(&self) -> u64 {
+		self.server_salt
+	}
+
 	pub fn address(&self) -> std::net::SocketAddr {
 		self.address
 	}
@@ -63,7 +69,7 @@ mod tests {
 
 	#[test]
 	fn test_client_send() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669));
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
 
 		let header = client.send();
 
@@ -80,7 +86,7 @@ mod tests {
 
 	#[test]
 	fn test_client_receive() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669));
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
 
 		client.receive(ConnectionStatus::new(0, 0, 0));
 
@@ -89,7 +95,7 @@ mod tests {
 
 	#[test]
 	fn test_client_request_response() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669));
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
 
 		let header = client.send(); // sequence: 0
 
@@ -110,7 +116,7 @@ mod tests {
 
 	#[test]
 	fn test_dropped_packet() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669));
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
 
 		let header = client.send(); // sequence: 0
 

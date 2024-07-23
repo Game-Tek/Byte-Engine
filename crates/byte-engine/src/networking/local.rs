@@ -1,25 +1,30 @@
+use utils::bit_array::BitArray;
+
 use super::{sequence_greater_than, PacketInfo};
+
+/// The packet history is the number of (last) packets that we keep track of.
+const PACKET_HISTORY: usize = 1024;
 
 /// Local is a state tracking structure to keep track of the state of the communication with a remote.
 #[derive(Clone, Copy)]
 pub struct Local {
 	// The sequence is a 16-bit number that is incremented for each packet sent.
 	sequence: u16,
-	packet_data: BitArray<1024>,
-	sequence_buffer: [u16; 1024],
+	packet_data: BitArray<PACKET_HISTORY>,
+	sequence_buffer: [u16; PACKET_HISTORY],
 }
 
 impl Local {
 	pub fn new() -> Self {
 		Self {
 			sequence: 0,
-			sequence_buffer: [u16::MAX; 1024],
+			sequence_buffer: [u16::MAX; PACKET_HISTORY],
 			packet_data: BitArray::new(),
 		}
 	}
 
 	pub(crate) fn get_sequence_number(&mut self) -> u16 {
-		let index = (self.sequence % 1024) as usize;
+		let index = (self.sequence % PACKET_HISTORY as u16) as usize;
 		self.sequence_buffer[index] = self.sequence;
 		self.packet_data.set(index, false);
 		let sequence = self.sequence;
@@ -28,7 +33,7 @@ impl Local {
 	}
 
 	pub(crate) fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
-		let index = (sequence % 1024) as usize;
+		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.sequence_buffer[index] == sequence {
 			Some(PacketInfo { acked: self.packet_data.get(index) })
 		} else {
@@ -38,16 +43,16 @@ impl Local {
 
 	/// Acknowledges a packet with the given sequence number. This means that the remote has received the packet.
 	pub fn acknowledge_packet(&mut self, sequence: u16) {
-		let index = (sequence % 1024) as usize;
+		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.sequence_buffer[index] == sequence {
 			self.packet_data.set(index, true);
 		}
 	}
 
 	pub fn acknowledge_packets(&mut self, ack: u16, ack_bitfield: u32) {
-		for i in 0..32 {
+		for i in 0..u32::BITS {
 			if (ack_bitfield >> i) & 1 == 1 {
-				let sequence = ack - i;
+				let sequence = ack - i as u16;
 				self.acknowledge_packet(sequence);
 			}
 		}
@@ -56,37 +61,6 @@ impl Local {
 	/// Returns the unacknowledged packets of this [`Local`]. These are the packets that have been sent but have not been acknowledged by the remote.
 	pub fn unacknowledged_packets(&self) -> Vec<u16> {
 		self.sequence_buffer.iter().enumerate().filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i)).map(|(_, &e)| e).collect()
-	}
-}
-
-#[derive(Clone, Copy)]
-struct BitArray<const N: usize> where [u8; N / 8]: {
-	data: [u8; N / 8],
-}
-
-impl<const N: usize> BitArray<N> where [u8; N / 8]: {
-	fn new() -> Self {
-		Self {
-			data: [0; N / 8],
-		}
-	}
-
-	fn set(&mut self, index: usize, value: bool) {
-		let byte_index = index / 8;
-		let bit_index = index % 8;
-		let mask = 1 << bit_index;
-		if value {
-			self.data[byte_index] |= mask;
-		} else {
-			self.data[byte_index] &= !mask;
-		}
-	}
-
-	fn get(&self, index: usize) -> bool {
-		let byte_index = index / 8;
-		let bit_index = index % 8;
-		let mask = 1 << bit_index;
-		(self.data[byte_index] & mask) != 0
 	}
 }
 

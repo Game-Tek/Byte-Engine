@@ -1,3 +1,5 @@
+#![feature(generic_const_exprs)]
+
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 pub type SendSyncBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
 pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
@@ -6,6 +8,7 @@ pub mod sync;
 
 pub mod r#async;
 pub mod stale_map;
+pub mod bit_array;
 
 pub use r#async::spawn;
 pub use r#async::spawn_blocking;

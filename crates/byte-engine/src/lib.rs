@@ -11,7 +11,6 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 #![feature(ptr_metadata)]
-#![feature(buf_read_has_data_left)]
 #![feature(unchecked_shifts)]
 #![feature(duration_millis_float)]
 #![feature(const_trait_impl, future_join)]
@@ -34,7 +33,6 @@ pub mod application;
 pub mod audio;
 pub mod camera;
 pub mod input;
-pub mod networking;
 pub mod ui;
 pub mod window_system;
 

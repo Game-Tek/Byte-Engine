@@ -1,0 +1,11 @@
+[package]
+name = "betp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.81.0"
+
+[dependencies]
+utils = { path = "../utils" }
+
+machineid-rs = "1.2.4"

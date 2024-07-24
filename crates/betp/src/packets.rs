@@ -1,5 +1,13 @@
 //! This module contains the multiple representations of the packets used by the BETP.
 
+/// The trait that all `BETP` packets must implement.
+/// Provides methods to access common packet information.
+pub trait Packet: Sized {
+	/// Returns the type of the packet.
+	fn packet_type(&self) -> PacketType;
+	fn header(&self) -> PacketHeader;
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// The types of packet supported by the protocol.
@@ -17,7 +25,7 @@ pub enum PacketType {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// The header of a BETP packet.
 /// The header contains the protocol id and the type of the packet.
 pub struct PacketHeader {
@@ -34,6 +42,14 @@ impl PacketHeader {
 			protocol_id: [b'B', b'E', b'T', b'P'],
 			r#type,
 		}
+	}
+
+	pub fn get_protocol_id(&self) -> [u8; 4] {
+		self.protocol_id
+	}
+
+	pub fn get_type(&self) -> PacketType {
+		self.r#type
 	}
 }
 
@@ -55,6 +71,16 @@ impl ConnectionRequestPacket {
 
 	pub fn get_client_salt(&self) -> u64 {
 		self.client_salt
+	}
+}
+
+impl Packet for ConnectionRequestPacket {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
 	}
 }
 
@@ -85,6 +111,16 @@ impl ChallengePacket {
 	}
 }
 
+impl Packet for ChallengePacket {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
+	}
+}
+
 #[repr(C)]
 #[derive(PartialEq, Eq)]
 /// A challenge response packet.
@@ -102,8 +138,18 @@ impl ChallengeResponsePacket {
 	}
 }
 
+impl Packet for ChallengeResponsePacket {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// The status of a connection.
 pub struct ConnectionStatus {
 	/// The sequence number of the packet. An incrementing number that is used to order the packets.
@@ -127,7 +173,7 @@ impl ConnectionStatus {
 #[repr(C)]
 #[derive(PartialEq, Eq)]
 /// A data packet.
-pub(crate) struct DataPacket<const S: usize> {
+pub struct DataPacket<const S: usize> {
 	pub header: PacketHeader,
 	pub connection_id: u64,
 	pub connection_status: ConnectionStatus,
@@ -142,6 +188,24 @@ impl <const S: usize> DataPacket<S> {
 			connection_status,
 			data,
 		}
+	}
+
+	pub fn get_connection_id(&self) -> u64 {
+		self.connection_id
+	}
+
+	pub fn get_connection_status(&self) -> ConnectionStatus {
+		self.connection_status
+	}
+}
+
+impl <const S: usize> Packet for DataPacket<S> {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
 	}
 }
 
@@ -166,6 +230,16 @@ impl DisconnectPacket {
 	}
 }
 
+impl Packet for DisconnectPacket {
+	fn packet_type(&self) -> PacketType {
+		self.header.r#type
+	}
+
+	fn header(&self) -> PacketHeader {
+		self.header
+	}
+}
+
 #[repr(C)]
 #[derive(PartialEq, Eq)]
 /// Represents all the possible BETP packets.
@@ -173,5 +247,28 @@ pub enum Packets {
 	ConnectionRequest(ConnectionRequestPacket),
 	Challenge(ChallengePacket),
 	ChallengeResponse(ChallengeResponsePacket),
+	Data(DataPacket<1024>),
 	Disconnect(DisconnectPacket),
+}
+
+impl Packet for Packets {
+	fn packet_type(&self) -> PacketType {
+		match self {
+			Packets::ConnectionRequest(packet) => packet.packet_type(),
+			Packets::Challenge(packet) => packet.packet_type(),
+			Packets::ChallengeResponse(packet) => packet.packet_type(),
+			Packets::Data(packet) => packet.packet_type(),
+			Packets::Disconnect(packet) => packet.packet_type(),
+		}
+	}
+
+	fn header(&self) -> PacketHeader {
+		match self {
+			Packets::ConnectionRequest(packet) => packet.header(),
+			Packets::Challenge(packet) => packet.header(),
+			Packets::ChallengeResponse(packet) => packet.header(),
+			Packets::Data(packet) => packet.header(),
+			Packets::Disconnect(packet) => packet.header(),
+		}
+	}
 }

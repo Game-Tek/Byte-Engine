@@ -1,4 +1,4 @@
-//! This module contains the implementation of the Byte Engine Transport Protocol (BETP) protocol.
+//! This crate contains the implementation of the Byte Engine Transport Protocol (BETP) protocol.
 //! The implementation is designed _sans-io_ and can be used with any I/O implementation.
 //!
 //! # Module Structure
@@ -30,6 +30,8 @@
 //!
 //! The protocol is designed to be simple and easy to implement, making it suitable for use in real-time multiplayer games.
 
+#![feature(buf_read_has_data_left)]
+
 pub mod client;
 pub mod server;
 
@@ -37,9 +39,6 @@ mod local;
 mod remote;
 
 pub mod packets;
-
-use local::Local;
-use remote::Remote;
 
 use std::{
     hash::{Hash, Hasher},
@@ -104,7 +103,7 @@ fn write_packet<const N: usize>(buffer: &mut [u8], packet_header: DataPacket<N>)
 mod tests {
     use std::io::{BufRead, Read};
 
-    use packets::Packets;
+    use packets::{Packet, Packets};
     use tests::packets::{ConnectionStatus, PacketHeader, PacketType};
 
     use super::*;
@@ -173,18 +172,73 @@ mod tests {
 		let server_address: std::net::SocketAddr = std::net::SocketAddr::from(([210, 0, 0, 1], 6669));
 
     	let mut server = server::Server::new();
-		let mut client = client::Client::connect(server_address).unwrap();
+		let mut client = client::Client::new(server_address).unwrap();
 
-		let request_packet = client.request();
+		let request_packet = client.connect(std::time::Instant::now());
 
 		assert_ne!(request_packet.get_client_salt(), 0);
+		assert_eq!(request_packet.header().get_type(), PacketType::ConnectionRequest);
 
-		let challenge_packet = server.handle_packet((client_address, Packets::ConnectionRequest(request_packet))).unwrap().unwrap();
+		let challenge_packet = server.handle_packet((client_address, Packets::ConnectionRequest(request_packet)), std::time::Instant::now()).unwrap().unwrap();
 
 		assert!(matches!(challenge_packet, Packets::Challenge(_)));
+		assert_eq!(challenge_packet.header().get_type(), PacketType::Challenge);
 
-		let challenge_response_packet = client.handle_packet(challenge_packet).unwrap();
+		let challenge_response_packet = client.handle_packet(challenge_packet).unwrap().unwrap();
 
 		assert!(matches!(challenge_response_packet, Packets::ChallengeResponse(_)));
+		assert_eq!(challenge_response_packet.header().get_type(), PacketType::ChallengeResponse);
+
+		let data_packet = client.send([0; 1024]).unwrap();
+
+		assert_eq!(data_packet.header().get_type(), PacketType::Data);
+		assert_eq!(data_packet.get_connection_status().ack, 0);
+		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b0);
+		assert_eq!(data_packet.get_connection_status().sequence, 0);
+
+		let response = server.handle_packet((client_address, Packets::Data(data_packet)), std::time::Instant::now()).unwrap();
+
+		assert!(response.is_none());
+
+		let data_packet = server.send(client_address, [0; 1024]).unwrap();
+
+		assert_eq!(data_packet.header().get_type(), PacketType::Data);
+		assert_eq!(data_packet.get_connection_status().ack, 0);
+		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b1);
+		assert_eq!(data_packet.get_connection_status().sequence, 0);
+
+		let response = client.handle_packet(Packets::Data(data_packet)).unwrap();
+
+		assert!(response.is_none());
+
+		let data_packet = client.send([0; 1024]).unwrap();
+
+		assert_eq!(data_packet.header().get_type(), PacketType::Data);
+		assert_eq!(data_packet.get_connection_status().ack, 0);
+		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b1);
+		assert_eq!(data_packet.get_connection_status().sequence, 1);
+
+		let response = server.handle_packet((client_address, Packets::Data(data_packet)), std::time::Instant::now()).unwrap();
+
+		assert!(response.is_none());
+
+		let data_packet = server.send(client_address, [0; 1024]).unwrap();
+
+		assert_eq!(data_packet.header().get_type(), PacketType::Data);
+		assert_eq!(data_packet.get_connection_status().ack, 1);
+		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b11);
+		assert_eq!(data_packet.get_connection_status().sequence, 1);
+
+		let response = client.handle_packet(Packets::Data(data_packet)).unwrap();
+
+		assert!(response.is_none());
+
+		let disconnect = client.disconnect().unwrap();
+
+		assert_eq!(disconnect.header().get_type(), PacketType::Disconnect);
+
+		let response = server.handle_packet((client_address, Packets::Disconnect(disconnect)), std::time::Instant::now()).unwrap();
+
+		assert!(response.is_none());
     }
 }

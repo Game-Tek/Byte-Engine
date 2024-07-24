@@ -16,6 +16,7 @@ utils = { path = "./crates/utils" }
 ghi = { path = "./crates/ghi" }
 besl = { path = "./crates/besl" }
 ahi = { path = "./crates/ahi" }
+betp = { path = "./crates/betp" }
 resource-management = { path = "./crates/resource-management" }
 
 [profile.dev]

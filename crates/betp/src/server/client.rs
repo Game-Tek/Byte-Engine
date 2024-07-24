@@ -14,7 +14,7 @@ pub struct Client {
 }
 
 impl Client {
-	pub fn new(address: std::net::SocketAddr, client_salt: u64, server_salt: u64) -> Self {
+	pub fn new(address: std::net::SocketAddr, client_salt: u64, server_salt: u64, current_time: std::time::Instant) -> Self {
 		Self {
 			local: Local::new(),
 			remote: Remote::new(),
@@ -22,11 +22,11 @@ impl Client {
 			address,
 			client_salt,
 			server_salt,
-			last_time: std::time::Instant::now(),
+			last_time: current_time,
 		}
 	}
 
-	pub(crate) fn send(&mut self,) -> ConnectionStatus {
+	pub fn send(&mut self,) -> ConnectionStatus {
 		let sequence_number = self.local.get_sequence_number();
 		let ack = self.remote.get_ack();
 		let ack_bitfield = self.remote.get_ack_bitfield();
@@ -34,7 +34,8 @@ impl Client {
 		ConnectionStatus::new(sequence_number, ack, ack_bitfield,)
 	}
 
-	pub(crate) fn receive(&mut self, packet_header: ConnectionStatus) {
+	/// Receive a packet from the client.
+	pub fn receive(&mut self, packet_header: ConnectionStatus, current_time: std::time::Instant) {
 		let sequence = packet_header.sequence;
 		let ack = packet_header.ack;
 		let ack_bitfield = packet_header.ack_bitfield;
@@ -42,7 +43,7 @@ impl Client {
 		self.local.acknowledge_packets(ack, ack_bitfield);
 		self.remote.acknowledge_packet(sequence);
 
-		self.last_time = std::time::Instant::now();
+		self.last_time = current_time;
 	}
 
 	pub fn client_salt(&self) -> u64 {
@@ -51,6 +52,10 @@ impl Client {
 
 	pub fn server_salt(&self) -> u64 {
 		self.server_salt
+	}
+
+	pub fn connection_id(&self) -> u64 {
+		self.client_salt ^ self.server_salt
 	}
 
 	pub fn address(&self) -> std::net::SocketAddr {
@@ -69,7 +74,7 @@ mod tests {
 
 	#[test]
 	fn test_client_send() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1, std::time::Instant::now());
 
 		let header = client.send();
 
@@ -86,16 +91,16 @@ mod tests {
 
 	#[test]
 	fn test_client_receive() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1, std::time::Instant::now());
 
-		client.receive(ConnectionStatus::new(0, 0, 0));
+		client.receive(ConnectionStatus::new(0, 0, 0), std::time::Instant::now());
 
-		client.receive(ConnectionStatus::new(1, 0, 0));
+		client.receive(ConnectionStatus::new(1, 0, 0), std::time::Instant::now());
 	}
 
 	#[test]
 	fn test_client_request_response() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1, std::time::Instant::now());
 
 		let header = client.send(); // sequence: 0
 
@@ -103,7 +108,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 0);
 
-		client.receive(ConnectionStatus::new(0, 0, 1 << 0));
+		client.receive(ConnectionStatus::new(0, 0, 1 << 0), std::time::Instant::now());
 
 		let header = client.send(); // sequence: 1
 
@@ -111,12 +116,12 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 1 << 0);
 
-		client.receive(ConnectionStatus::new(1, 1, 1 << 0 | 1 << 1));
+		client.receive(ConnectionStatus::new(1, 1, 1 << 0 | 1 << 1), std::time::Instant::now());
 	}
 
 	#[test]
 	fn test_dropped_packet() {
-		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1);
+		let mut client = Client::new(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 6669), 1, 1, std::time::Instant::now());
 
 		let header = client.send(); // sequence: 0
 
@@ -124,7 +129,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 0);
 
-		client.receive(ConnectionStatus::new(0, 0, 1 << 0));
+		client.receive(ConnectionStatus::new(0, 0, 1 << 0), std::time::Instant::now());
 
 		let header = client.send(); // sequence: 1
 
@@ -132,7 +137,7 @@ mod tests {
 		assert_eq!(header.ack, 0);
 		assert_eq!(header.ack_bitfield, 1 << 0);
 
-		client.receive(ConnectionStatus::new(1, 1, 1 << 0 | 1 << 1));
+		client.receive(ConnectionStatus::new(1, 1, 1 << 0 | 1 << 1), std::time::Instant::now());
 
 		let header = client.send(); // sequence: 2
 
@@ -140,6 +145,6 @@ mod tests {
 		assert_eq!(header.ack, 1);
 		assert_eq!(header.ack_bitfield, 1 << 0 | 1 << 1);
 
-		client.receive(ConnectionStatus::new(2, 1, 1 << 0 | 1 << 1));
+		client.receive(ConnectionStatus::new(2, 1, 1 << 0 | 1 << 1), std::time::Instant::now());
 	}
 }

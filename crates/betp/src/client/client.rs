@@ -3,36 +3,30 @@
 
 use std::{hash::{Hash, Hasher}, net::ToSocketAddrs};
 
-use crate::{local::Local, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packet, Packets}, remote::Remote};
+use crate::{local::Local, packet_buffer::PacketBuffer, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packet, Packets}, remote::Remote};
 
 /// The client is the entity that connects to a server and participates in the game.
 pub struct Client {
 	local: Local,
 	remote: Remote,
-	client_id: u64,
 	/// The connection ID is a unique identifier for the client's connection/session to the server.
 	connection_id: Option<u64>,
 	salt: Option<u64>,
+	packet_buffer: PacketBuffer<16, 1024>,
 }
 
 impl Client {
 	/// Creates a client that will connect to the server at the specified address.
 	/// Must call `connect` to establish a connection.
 	pub fn new(address: std::net::SocketAddr) -> Result<Self, ()> {
-		let client_id = machineid_rs::IdBuilder::new(machineid_rs::Encryption::MD5).add_component(machineid_rs::HWIDComponent::MacAddress).build("Byte-Engine").ok().ok_or(())?;
-
-		let client_id = {
-			let mut hasher = std::collections::hash_map::DefaultHasher::new();
-			client_id.hash(&mut hasher);
-			hasher.finish()
-		};
+		let _ = machineid_rs::IdBuilder::new(machineid_rs::Encryption::MD5).add_component(machineid_rs::HWIDComponent::MacAddress).build("Byte-Engine").ok().ok_or(())?;
 
 		Ok(Self {
 			local: Local::new(),
 			remote: Remote::new(),
-			client_id,
 			connection_id: None,
 			salt: None,
+			packet_buffer: PacketBuffer::new(),
 		})
 	}
 
@@ -60,6 +54,7 @@ impl Client {
 			Packets::Data(data_packet) => {
 				if self.connection_id == Some(data_packet.get_connection_id()) { // Validate connection ID
 					self.remote.acknowledge_packet(data_packet.get_connection_status().sequence);
+					self.packet_buffer.remove(data_packet.get_connection_status().sequence);
 					Ok(None)
 				} else {
 					Err(())
@@ -78,12 +73,20 @@ impl Client {
 		}
 	}
 
+	/// Updates the client.
+	/// Returns a list of packets to send to the server.
+	pub fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Packets>, ()> {
+		Ok(self.packet_buffer.gather_unsent_packets().into_iter().map(|p| Packets::Data(p)).collect())
+	}
+
 	/// Returns a data packet to send to the server.
-	pub fn send<const S: usize>(&mut self, data: [u8; S]) -> Result<DataPacket<S>, ()> {
+	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<DataPacket<1024>, ()> {
 		let sequence_number = self.local.get_sequence_number();
 		let ack = self.remote.get_ack();
 		let ack_bitfield = self.remote.get_ack_bitfield();
-		Ok(DataPacket::<S>::new(self.connection_id.unwrap_or(0), ConnectionStatus::new(sequence_number, ack, ack_bitfield), data))
+		let packet = DataPacket::new(self.connection_id.unwrap_or(0), ConnectionStatus::new(sequence_number, ack, ack_bitfield), data);
+		self.packet_buffer.add(packet.clone(), self.connection_id.unwrap_or(0), reliable);
+		Ok(packet)
 	}
 
 	/// Returns a disconnect packet to send to the server.

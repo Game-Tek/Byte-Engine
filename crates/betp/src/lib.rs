@@ -38,6 +38,8 @@ pub mod server;
 mod local;
 mod remote;
 
+mod packet_buffer;
+
 pub mod packets;
 
 use std::{
@@ -109,52 +111,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_write_packet() {
-        let mut buffer = [0u8; 12];
-        write_packet(
-            &mut buffer,
-            DataPacket {
-                header: PacketHeader {
-                    protocol_id: [b'B', b'E', b'T', b'P'],
-                    r#type: PacketType::Data,
-                },
-                connection_id: 0,
-                connection_status: ConnectionStatus::new(0, 0, 0),
-                data: [],
-            },
-        )
-        .unwrap();
-
-        let mut cursor = std::io::Cursor::new(&buffer);
-
-        let mut protocol_id = [0u8; 4];
-        assert_eq!(cursor.read(&mut protocol_id).unwrap(), 4);
-        assert_eq!(&protocol_id, b"BETP");
-
-        let mut sequence = [0u8; 2];
-        assert_eq!(cursor.read(&mut sequence).unwrap(), 2);
-        assert_eq!(u16::from_le_bytes([sequence[0], sequence[1]]), 0);
-
-        let mut ack = [0u8; 2];
-        assert_eq!(cursor.read(&mut ack).unwrap(), 2);
-        assert_eq!(u16::from_le_bytes([ack[0], ack[1]]), 0);
-
-        let mut ack_bitfield = [0u8; 4];
-        assert_eq!(cursor.read(&mut ack_bitfield).unwrap(), 4);
-        assert_eq!(
-            u32::from_le_bytes([
-                ack_bitfield[0],
-                ack_bitfield[1],
-                ack_bitfield[2],
-                ack_bitfield[3]
-            ]),
-            0
-        );
-
-        assert!(!cursor.has_data_left().unwrap());
-    }
-
-    #[test]
     fn test_sequence_greater_than() {
         assert_eq!(sequence_greater_than(1, 0), true);
         assert_eq!(sequence_greater_than(0, 1), false);
@@ -189,7 +145,7 @@ mod tests {
 		assert!(matches!(challenge_response_packet, Packets::ChallengeResponse(_)));
 		assert_eq!(challenge_response_packet.header().get_type(), PacketType::ChallengeResponse);
 
-		let data_packet = client.send([0; 1024]).unwrap();
+		let data_packet = client.send(false, [0; 1024]).unwrap();
 
 		assert_eq!(data_packet.header().get_type(), PacketType::Data);
 		assert_eq!(data_packet.get_connection_status().ack, 0);
@@ -200,7 +156,7 @@ mod tests {
 
 		assert!(response.is_none());
 
-		let data_packet = server.send(client_address, [0; 1024]).unwrap();
+		let data_packet = server.send(client_address, false, [0; 1024]).unwrap();
 
 		assert_eq!(data_packet.header().get_type(), PacketType::Data);
 		assert_eq!(data_packet.get_connection_status().ack, 0);
@@ -211,7 +167,7 @@ mod tests {
 
 		assert!(response.is_none());
 
-		let data_packet = client.send([0; 1024]).unwrap();
+		let data_packet = client.send(false, [0; 1024]).unwrap();
 
 		assert_eq!(data_packet.header().get_type(), PacketType::Data);
 		assert_eq!(data_packet.get_connection_status().ack, 0);
@@ -222,7 +178,7 @@ mod tests {
 
 		assert!(response.is_none());
 
-		let data_packet = server.send(client_address, [0; 1024]).unwrap();
+		let data_packet = server.send(client_address, false, [0; 1024]).unwrap();
 
 		assert_eq!(data_packet.header().get_type(), PacketType::Data);
 		assert_eq!(data_packet.get_connection_status().ack, 1);

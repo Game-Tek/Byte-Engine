@@ -23,7 +23,7 @@ pub struct Settings {
 /// A BETP authoritative server.
 pub struct Server {
 	settings: Settings,
-	clients: [Option<Client>; 128],
+	clients: [Option<Client>; 64],
 }
 
 impl Server {
@@ -38,7 +38,7 @@ impl Server {
 				max_clients: 32,
 				timeout: std::time::Duration::from_secs(5),
 			},
-			clients: [None; 128],
+			clients: [None; 64],
 		}
 	}
 
@@ -61,6 +61,7 @@ impl Server {
 					Some(client) => {
 						if client.connection_id() == client_index { // Validate the connection id
 							client.receive(data_packet.get_connection_status(), current_time);
+
 							Ok(None)
 						} else {
 							Err(PacketHandlingResults::BadConnectionId)
@@ -82,22 +83,35 @@ impl Server {
 	/// Runs periodic updates on the server.
 	/// Performs the following tasks:
 	/// - Disconnects clients timed out clients.
+	/// - Gathers unacknowledged packets to retry. This will count as a retry attempt.
+	///
 	/// - `current_time`: The current time.
 	/// Returns a list of packets to send to the clients.
 	/// Returns an error if the server encountered an error.
 	///
 	/// This function should be called periodically.
 	pub fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Packets>, ConnectionResults> {
+		let mut packets = Vec::with_capacity(32);
+
+		// Disconnect timed out clients.
 		for client in self.clients.iter_mut() {
 			if let Some(c) = client {
 				if current_time.duration_since(c.last_seen()).as_secs() > 5 {
-					// TODO: Disconnect the client.
+					let packet = c.disconnect().unwrap();
 					*client = None;
+					packets.push(Packets::Disconnect(packet));
 				}
 			}
 		}
 
-		Ok(Vec::new())
+		// Gather packets to retry.
+		for client in self.clients.iter_mut() {
+			if let Some(c) = client {
+				packets.extend(c.gather_unsent_packets().into_iter().map(Packets::Data));
+			}
+		}
+
+		Ok(packets)
 	}
 
 	/// Tries to connect a client to the server.
@@ -133,9 +147,9 @@ impl Server {
 		}
 	}
 
-	pub fn send<const S: usize>(&mut self, client_address: std::net::SocketAddr, data: [u8; S]) -> Result<DataPacket<S>, ConnectionResults> {
+	pub fn send(&mut self, client_address: std::net::SocketAddr, reliable: bool, data: [u8; 1024]) -> Result<DataPacket<1024>, ConnectionResults> {
 		if let Some(client) = self.clients.iter_mut().filter_map(|c| c.as_mut()).find(|c| c.address() == client_address) {
-			Ok(DataPacket::new(client.connection_id(), client.send(), data))
+			Ok(client.send(data, reliable))
 		} else {
 			Err(ConnectionResults::ServerFull)
 		}
@@ -149,6 +163,11 @@ impl Server {
 
 	fn get_client(&self, address: std::net::SocketAddr) -> Option<&Client> {
 		self.clients.iter().filter_map(|c| c.as_ref()).find(|c| c.address() == address)
+	}
+
+	/// Returns the maximum number of clients that can be connected to the server.
+	pub fn max_client_count(&self) -> usize {
+		self.clients.len()
 	}
 }
 
@@ -164,7 +183,7 @@ mod tests {
 
 		let (client_index, _, _) = server.connect(client_address, 1, std::time::Instant::now()).unwrap();
 
-		let _ = server.send(client_address, [0; 1024]);
+		let _ = server.send(client_address, false, [0; 1024]);
 		server.receive(client_index, std::time::Instant::now());
 	}
 
@@ -195,10 +214,10 @@ mod tests {
 	fn test_exhaust_connections() {
 		let mut server = Server::new();
 
-		for i in 0..32 {
-			server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), i), 1, std::time::Instant::now()).unwrap();
+		for i in 0..server.max_client_count() {
+			server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), i as _), 1, std::time::Instant::now()).unwrap();
 		}
 
-		assert_eq!(server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), 32), 1, std::time::Instant::now()), Err(ConnectionResults::ServerFull));
+		assert_eq!(server.connect(std::net::SocketAddr::new(std::net::Ipv4Addr::new(127, 0, 0, 1).into(), server.max_client_count() as _), 1, std::time::Instant::now()), Err(ConnectionResults::ServerFull));
 	}
 }

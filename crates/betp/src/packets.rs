@@ -171,8 +171,10 @@ impl ConnectionStatus {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// A data packet.
+/// The data packet is used to send application data between the client and the server.
+/// The data packet can be reliable or unreliable. If the packet is reliable, the sender will retry to send the packet until it is acknowledged by the receiver. (Up to a certain number of retries.)
 pub struct DataPacket<const S: usize> {
 	pub header: PacketHeader,
 	pub connection_id: u64,

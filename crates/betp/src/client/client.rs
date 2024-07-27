@@ -108,6 +108,6 @@ mod tests {
 
 	#[test]
 	fn test_client_connect() {
-		let client = Client::new(std::net::SocketAddr::from_str("localhost:6669").unwrap()).expect("Failed to connect to server.");
+		let client = Client::new(std::net::SocketAddr::from_str("127.0.0.1:6669").unwrap()).expect("Failed to connect to server.");
 	}
 }

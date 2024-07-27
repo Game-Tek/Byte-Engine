@@ -1,7 +1,6 @@
 [workspace]
 members = ["crates/*"]
-
-cargo-features = ["edition2024"]
+resolver = "2"
 
 [workspace.package]
 name = "byte-engine"
@@ -11,6 +10,7 @@ license = "MIT"
 rust-version = "1.81.0"
 
 [workspace.dependencies]
+byte-engine = { path = "./crates/byte-engine" }
 core = { path = "./crates/core" }
 utils = { path = "./crates/utils" }
 ghi = { path = "./crates/ghi" }

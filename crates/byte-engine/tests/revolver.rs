@@ -4,7 +4,7 @@
 
 use core::{self, EntityHandle};
 use std::sync::{Arc, Mutex};
-use byte_engine::{application::{Application, Parameter}, camera::Camera, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::{Mesh, Transform}, point_light::PointLight}, Vector3};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::Transform, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::Mesh, point_light::PointLight}, Vector3};
 use maths_rs::exp;
 
 #[ignore]

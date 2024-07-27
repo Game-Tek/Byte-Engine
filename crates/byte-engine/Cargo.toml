@@ -3,12 +3,16 @@ name = "byte-engine"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+headless = []
+server = ["headless"]
+
 [dependencies]
 core = { path = "../core" }
 utils = { path = "../utils" }
 ghi = { path = "../ghi" }
-besl = { path = "../besl" }
 ahi = { path = "../ahi" }
+besl = { path = "../besl" }
 resource-management = { path = "../resource-management" }
 
 serde_json = "1.0.105"

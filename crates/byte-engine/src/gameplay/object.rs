@@ -8,7 +8,7 @@ use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrai
 #[cfg(not(feature = "headless"))]
 use crate::rendering::mesh::{self};
 
-use super::Transform;
+use super::{Positionable, Transform, Transformable};
 
 pub struct Object {
 	resource_id: &'static str,
@@ -57,6 +57,16 @@ impl Entity for Object {
 			join!(same, pe).await;
 		}
 	}) }
+}
+
+impl Positionable for Object {
+	fn get_position(&self) -> Vector3 { self.transform.position }
+	fn set_position(&mut self, position: Vector3) { self.transform.position = position; }
+}
+
+impl Transformable for Object {
+	fn get_transform(&self) -> &Transform { &self.transform }
+	fn get_transform_mut(&mut self) -> &mut Transform { &mut self.transform }
 }
 
 impl physics::PhysicsEntity for Object {

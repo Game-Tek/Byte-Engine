@@ -1,4 +1,5 @@
 use crate::core::Entity;
+use crate::gameplay::{Positionable, Transformable};
 use crate::Vec3f;
 
 pub struct Camera {
@@ -46,3 +47,8 @@ impl Camera {
 }
 
 impl Entity for Camera {}
+
+impl Positionable for Camera {
+	fn get_position(&self) -> Vec3f { self.position }
+	fn set_position(&mut self, position: Vec3f) { self.position = position; }
+}

@@ -4,6 +4,14 @@ use crate::math;
 
 pub mod space;
 pub mod object;
+pub mod positionable;
+pub mod transformable;
+pub mod anchor;
+
+pub use anchor::Anchor;
+pub use object::Object;
+pub use positionable::Positionable;
+pub use transformable::Transformable;
 
 pub struct Transform {
 	position: maths_rs::Vec3f,

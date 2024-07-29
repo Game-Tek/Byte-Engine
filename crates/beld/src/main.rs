@@ -58,12 +58,12 @@ fn main() -> Result<(), i32> {
 
 	match command {
 		Commands::Wipe {} => {
-			std::fs::remove_dir_all(&source_path).map_err(|e| {
+			std::fs::remove_dir_all(&destination_path).map_err(|e| {
 				log::error!("Failed to wipe resources. Error: {}", e);
 				1
 			})?;
 
-			std::fs::create_dir(&source_path).map_err(|e| {
+			std::fs::create_dir(&destination_path).map_err(|e| {
 				log::error!("Failed to create resources directory. Error: {}", e);
 				1
 			})?;
@@ -71,7 +71,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::List {} => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&source_path));
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&destination_path));
 
 			match block_on(storage_backend.list()) {
 				Ok(resources) => {
@@ -153,7 +153,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::Delete { ids } => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&source_path));
+			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&destination_path));
 
 			let mut ok = true;
 

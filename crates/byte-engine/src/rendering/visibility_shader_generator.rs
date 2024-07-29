@@ -170,7 +170,7 @@ float roughness = float(0.5);";
 			let data_type = variable["data_type"].as_str().unwrap();
 
 			match data_type {
-				"u32" | "f32" | "vec2f" | "vec3f" | "vec4" => {
+				"u32" | "f32" | "vec2f" | "vec3f" | "vec4f" => {
 					let x = besl::parser::Node::specialization(name, data_type);
 					extra.push(x);
 				}

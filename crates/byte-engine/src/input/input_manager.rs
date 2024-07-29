@@ -613,23 +613,25 @@ impl InputManager {
 	fn resolve_action_value_from_record(&self, action: &InputAction, record: &Record) -> Option<Value> {
 		let mapping = action.input_event_descriptions.iter().find(|ied| ied.input_source_handle == record.input_source_handle).unwrap();
 
-		let value = match action.type_ {
+		match action.type_ {
 			Types::Bool => {
-				match record.value {
+				let bool: Option<bool> = match record.value {
 					Value::Bool(record_value) => {
-						Value::Bool(record_value)
+						record_value.into()
 					}
 					Value::Float(record_value) => {
-						Value::Float(record_value)
+						(record_value != 0f32).into()
 					}
 					_ => {
 						log::error!("resolve_action_value_from_record not implemented for type!");
 						return None;
 					},
-				}
+				};
+
+				bool.map(|b| Value::Bool(b))
 			}
 			Types::Float => {
-				let float = match record.value {
+				let float: Option<f32> = match record.value {
 					Value::Bool(record_value) => {
 						if let Some(last) = action.stack.last() {
 							if let Value::Bool(_value) = last.value {
@@ -659,10 +661,10 @@ impl InputManager {
 								Value::Vector3(value) => value.x,
 								Value::Quaternion(value) => value[0],
 							}
-						}
+						}.into()
 					}
 					Value::Float(record_value) => {
-						record_value
+						record_value.into()
 					}
 					_ => {
 						log::error!("Not implemented!");
@@ -670,13 +672,15 @@ impl InputManager {
 					},
 				};
 
-				Value::Float(float)
+				float.map(|f| Value::Float(f))
 			}
 			Types::Vector3 => {
-				match record.value {
-					Value::Bool(_) => {
-						log::error!("Not implemented!");
-						return None;
+				let vector3: Option<Vector3> = match record.value {
+					Value::Bool(record_value) => {
+						match mapping.mapping {
+							Value::Vector3(mapping_value) => (record_value as u32 as f32 * mapping_value).into(),
+							_ => None,
+						}
 					},
 					Value::Unicode(_) => {
 						log::error!("Not implemented!");
@@ -708,29 +712,29 @@ impl InputManager {
 
 								let transformation = if let Value::Vector3(transformation) = mapping.mapping { transformation } else { log::error!("Not implemented!"); return None; };
 
-								Value::Vector3(Vector3 { x, y, z } * transformation)
+								(Vector3 { x, y, z } * transformation).into()
 							} else {
 								log::error!("Not implemented!");
 								return None;
 							}
 						} else {
-							Value::Vector3(Vector3 { x: record_value.x, y: record_value.y, z: 0f32 })
+							Vector3 { x: record_value.x, y: record_value.y, z: 0f32 }.into()
 						}
 					},
-					Value::Vector3(value) => Value::Vector3(value),
+					Value::Vector3(value) => value.into(),
 					Value::Quaternion(_) => {
 						log::error!("Not implemented!");
 						return None;
 					},
-				}
+				};
+
+				vector3.map(|v| Value::Vector3(v))
 			}
 			_ => {
 				log::error!("Not implemented!");
 				return None;
 			},
-		};
-
-		Some(value)
+		}
 	}
 
 	fn get_input_source_from_input_source_action(&self, input_source_action: &InputSourceAction) -> Option<&InputSource> {

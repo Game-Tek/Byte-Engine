@@ -22,8 +22,12 @@ pub struct GraphicsApplication {
 	close: bool,
 
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
-	mouse_device_handle: input::DeviceHandle,
+
 	input_system_handle: EntityHandle<input::InputManager>,
+	mouse_device_handle: input::DeviceHandle,
+	keyboard_device_handle: input::DeviceHandle,
+	gamepad_device_handle: input::DeviceHandle,
+
 	renderer_handle: EntityHandle<Renderer>,
 	audio_system_handle: EntityHandle<DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
@@ -78,6 +82,8 @@ impl Application for GraphicsApplication {
 		let input_system_handle: EntityHandle<input::InputManager> = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system()));
 
 		let mouse_device_handle;
+		let keyboard_device_handle;
+		let gamepad_device_handle;
 
 		{
 			let input_system = input_system_handle.get_lock();
@@ -90,12 +96,21 @@ impl Application for GraphicsApplication {
 			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&mouse_device_class_handle, "Scroll", input::input_manager::InputTypes::Float(input::input_manager::InputSourceDescription::new(0f32, 0f32, -1f32, 1f32)));
 
+			let keyboard_device_class_handle = input_system.register_device_class("Keyboard");
+
+			input_system.register_input_source(&keyboard_device_class_handle, "W", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&keyboard_device_class_handle, "S", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&keyboard_device_class_handle, "A", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&keyboard_device_class_handle, "D", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
 
 			input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 			input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
 
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
+			keyboard_device_handle = input_system.create_device(&keyboard_device_class_handle);
+			gamepad_device_handle = input_system.create_device(&gamepad_device_class_handle);
 		}
 
 		// let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
@@ -115,8 +130,12 @@ impl Application for GraphicsApplication {
 		GraphicsApplication {
 			application,
 			window_system_handle,
+
 			input_system_handle,
 			mouse_device_handle,
+			keyboard_device_handle,
+			gamepad_device_handle,
+
 			renderer_handle,
 			audio_system_handle,
 			physics_system_handle,
@@ -185,6 +204,25 @@ impl Application for GraphicsApplication {
 						ghi::WindowEvents::Resize { width, height } => {
 							log::debug!("Resizing window to {}x{}", width, height);
 						}
+						ghi::WindowEvents::Key { pressed, key } => {
+							let (device_handle, input_source_action, value) = match key {
+								ghi::Keys::W => {
+									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.W"), input::Value::Bool(pressed))
+								},
+								ghi::Keys::S => {
+									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.S"), input::Value::Bool(pressed))
+								},
+								ghi::Keys::A => {
+									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.A"), input::Value::Bool(pressed))
+								},
+								ghi::Keys::D => {
+									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.D"), input::Value::Bool(pressed))
+								},
+								_ => { return; }
+							};
+
+							input_system.record_input_source_action(&device_handle, input_source_action, value);
+						},
 						_ => { }
 					}
 				});

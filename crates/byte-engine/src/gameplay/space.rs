@@ -12,6 +12,9 @@ impl Space {
 			listener: BasicListener::new(),
 		}
 	}
+
+	pub fn spawn() {
+	}
 }
 
 impl Domain for Space {

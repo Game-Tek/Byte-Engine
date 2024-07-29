@@ -13,6 +13,7 @@ pub use object::Object;
 pub use positionable::Positionable;
 pub use transformable::Transformable;
 
+#[derive(Debug, Clone)]
 pub struct Transform {
 	position: maths_rs::Vec3f,
 	scale: maths_rs::Vec3f,

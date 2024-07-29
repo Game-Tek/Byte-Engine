@@ -954,7 +954,7 @@ impl VisibilityWorldRenderDomain {
 
 		let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 
-		let view_matrix = maths_rs::Mat4f::from_translation(-camera_position) * math::look_at(camera_orientation);
+		let view_matrix = math::look_at(camera_orientation) * maths_rs::Mat4f::from_translation(-camera_position);
 		let projection_matrix = math::projection_matrix(fov_y, aspect_ratio, 0.1f32, 100f32);
 		let view_projection_matrix = projection_matrix * view_matrix;
 		let fov = {
@@ -1029,7 +1029,7 @@ impl VisibilityWorldRenderDomain {
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
 
 			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
-			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
+			directional_lights.sort_by(|a, b| maths_rs::length(b.color).partial_cmp(&maths_rs::length(a.color)).unwrap()); // Sort by intensity
 
 			if true {
 				if let Some(most_significant_light) = directional_lights.get(0) {
@@ -1235,7 +1235,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 		let light_index = lighting_data.count as usize;
 
-		let x = 4f32;
+		let x = 8f32;
 		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
 		let direction = light.direction;

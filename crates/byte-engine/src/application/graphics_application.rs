@@ -5,7 +5,7 @@ use maths_rs::num::Base;
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, resource::resource_manager::ResourceManager};
 use utils::Extent;
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::space::Space, input, physics, rendering::{self, renderer::Renderer, common_shader_generator::CommonShaderGenerator, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
+use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
 
 use super::{application::{Application, BaseApplication}, Parameter, Time};
 
@@ -31,6 +31,7 @@ pub struct GraphicsApplication {
 	renderer_handle: EntityHandle<Renderer>,
 	audio_system_handle: EntityHandle<DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
+	anchor_system_handle: EntityHandle<AnchorSystem>,
 	tick_handle: EntityHandle<Property<Time>>,
 	root_space_handle: EntityHandle<Space>,
 
@@ -102,6 +103,7 @@ impl Application for GraphicsApplication {
 			input_system.register_input_source(&keyboard_device_class_handle, "S", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&keyboard_device_class_handle, "A", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 			input_system.register_input_source(&keyboard_device_class_handle, "D", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_input_source(&keyboard_device_class_handle, "Space", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
 
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
 
@@ -125,6 +127,8 @@ impl Application for GraphicsApplication {
 
 		let physics_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system()));
 
+		let anchor_system_handle: EntityHandle<AnchorSystem> = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), AnchorSystem::new()));
+
 		let tick_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) })));
 
 		GraphicsApplication {
@@ -139,7 +143,9 @@ impl Application for GraphicsApplication {
 			renderer_handle,
 			audio_system_handle,
 			physics_system_handle,
+			anchor_system_handle,
 			root_space_handle,
+
 			tick_handle,
 			runtime,
 
@@ -218,6 +224,9 @@ impl Application for GraphicsApplication {
 								ghi::Keys::D => {
 									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.D"), input::Value::Bool(pressed))
 								},
+								ghi::Keys::Space => {
+									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.Space"), input::Value::Bool(pressed))
+								},
 								_ => { return; }
 							};
 
@@ -237,6 +246,11 @@ impl Application for GraphicsApplication {
 
 		self.input_system_handle.map(|handle| {
 			let mut e = handle.write_sync();
+			e.update();
+		});
+
+		self.anchor_system_handle.map(|handle| {
+			let e = handle.write_sync();
 			e.update();
 		});
 

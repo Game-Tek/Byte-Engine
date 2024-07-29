@@ -123,7 +123,7 @@ impl ShadowRenderingPass {
 	}
 
 	pub fn prepare(&self,ghi: &mut ghi::GHI, normal: maths_rs::Mat4f) {		
-		let x = 4f32;
+		let x = 8f32;
 		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
 
 		let light = LightData {

@@ -1,5 +1,10 @@
 use crate::Vector3;
 
+/// Calculates the direction to move in a plane from a direction(absolute) vector and a head/camera relative direction vector
+pub fn plane_navigation(direction: Vector3, command: Vector3) -> Vector3 {
+	Vector3::new(direction.x, 0.0, direction.z) * command.z + Vector3::new(direction.z, 0.0, -direction.x) * command.x
+}
+
 pub fn look_at(direction: crate::Vector3) -> maths_rs::Mat4f {
 	let x_axis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(direction)));
 	let y_axis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(direction), x_axis));

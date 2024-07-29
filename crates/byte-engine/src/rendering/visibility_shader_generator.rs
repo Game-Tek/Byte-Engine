@@ -41,12 +41,13 @@ impl VisibilityShaderGenerator {
 			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("normalize(texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xyz * 2.0f - 1.0f)", &[], Vec::new())]), "vec3f")
 		};
 
+		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
 		let sample_shadow = Node::function("sample_shadow", vec![Node::parameter("shadow_map", "Texture2D"), Node::parameter("light_matrix", "mat4f"), Node::parameter("world_space_position", "vec3f"), Node::parameter("surface_normal", "vec3f"), Node::parameter("offset", "vec2f")], "f32", vec![Node::glsl("vec4 surface_light_clip_position = light_matrix * vec4(world_space_position + surface_normal * 0.001, 1.0);
-			vec3 surface_light_ndc_position = (surface_light_clip_position.xyz + vec3(offset, 0)) / surface_light_clip_position.w;
+			vec3 surface_light_ndc_position = (surface_light_clip_position.xyz + vec3(offset, 0));
 			vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
-			float z = surface_light_ndc_position.z;
-			float shadow_sample_depth = texture(shadow_map, shadow_uv).r;
-			return z < shadow_sample_depth ? 0.0 : 1.0", &[], Vec::new())]);
+			float surface_depth = surface_light_ndc_position.z;
+			float closest_depth = texture(shadow_map, shadow_uv).r;
+			return surface_depth < closest_depth ? 0.0 : 1.0", &[], Vec::new())]);
 
 		Self {
 			out_albedo: set2_binding0,

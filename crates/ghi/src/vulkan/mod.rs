@@ -907,6 +907,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			graphics_hardware_interface::SamplerAddressingModes::Repeat => { vk::SamplerAddressMode::REPEAT }
 			graphics_hardware_interface::SamplerAddressingModes::Mirror => { vk::SamplerAddressMode::MIRRORED_REPEAT }
 			graphics_hardware_interface::SamplerAddressingModes::Clamp => { vk::SamplerAddressMode::CLAMP_TO_EDGE }
+			graphics_hardware_interface::SamplerAddressingModes::Border{ .. } => { vk::SamplerAddressMode::CLAMP_TO_BORDER }
 		};
 
 		let reduction_mode = match reduction_mode {
@@ -2693,6 +2694,7 @@ impl VulkanGHI {
 			.address_mode_u(address_mode)
 			.address_mode_v(address_mode)
 			.address_mode_w(address_mode)
+			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
 			.anisotropy_enable(anisotropy.is_some())
 			.max_anisotropy(anisotropy.unwrap_or(0f32))
 			.compare_enable(false)

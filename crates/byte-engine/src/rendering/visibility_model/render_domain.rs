@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use ghi::{graphics_hardware_interface, ImageHandle};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
+use maths_rs::swizz::Vec2Swizzle;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::object;
 use log::error;
-use maths_rs::mat::{MatInverse, MatProjection, MatRotate3D};
+use maths_rs::mat::{MatInverse, MatProjection, MatRotate2D, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use resource_management::shader_generation::{ShaderGenerationSettings, ShaderGenerator};
@@ -27,6 +28,7 @@ use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
 use crate::core::{self, Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
+use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::texture_manager::TextureManager;
@@ -204,7 +206,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	shadow_map_binding: ghi::DescriptorSetBindingHandle,
 
-	lights: Vec<LightData>,
+	lights: Vec<EntityHandle<DirectionalLight>>,
 
 	render_info: RenderInfo,
 }
@@ -341,6 +343,7 @@ impl VisibilityWorldRenderDomain {
 			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target)).await;
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+			let depth_sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
 			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let shadow_map_image = {
@@ -356,7 +359,7 @@ impl VisibilityWorldRenderDomain {
 			let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], light_data_buffer));
 			let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], materials_data_buffer_handle));
 			let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[6], occlusion_map, sampler, ghi::Layouts::Read));
-			let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], shadow_map_image, sampler, ghi::Layouts::Read));
+			let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], shadow_map_image, depth_sampler, ghi::Layouts::Read));
 
 			let material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 }]);
 
@@ -996,14 +999,40 @@ impl VisibilityWorldRenderDomain {
 		{
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
 
-			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
-			directional_lights.sort_by(|a, b| maths_rs::length(a.color).partial_cmp(&maths_rs::length(b.color)).unwrap()); // Sort by intensity
+			let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
 
-			if let Some(most_significant_light) = directional_lights.get(0) {
-				let normal = most_significant_light.view_matrix;
+			
+			for (i, light) in self.lights.iter().enumerate() {
+				let light = light.read_sync();
+				
+				let x = 8f32;
+				let light_position = Vector3::new(camera_position.x, 0f32, camera_position.z) + Vector3::new(0f32, 0f32, x / 2f32);
 
-				shadow_render_pass.prepare(ghi, normal);
+				let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
+	
+				let direction = light.direction;
+				let direction_matrix = math::from_normal(direction) * math::from_normal(Vector3::new(camera_orientation.x, 0f32, camera_orientation.z));
+				let light_view_matrix = direction_matrix * maths_rs::Mat4f::from_translation(-light_position);
+	
+				let vp_matrix = light_projection_matrix * light_view_matrix;
+	
+				lighting_data.lights[i].light_type = 'D' as u8;
+				lighting_data.lights[i].view_matrix = light_view_matrix;
+				lighting_data.lights[i].projection_matrix = light_projection_matrix;
+				lighting_data.lights[i].vp_matrix = vp_matrix;
+				lighting_data.lights[i].position = direction;
+				lighting_data.lights[i].color = light.color;
+
+				if i == 0 {
+					if let Some(most_significant_light) = Some(lighting_data.lights[0]) {		
+						shadow_render_pass.prepare(ghi, most_significant_light);
+					}
+				}
 			}
+
+			lighting_data.count = self.lights.len() as u32;
+
+			assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 		}
 
 		Some(())
@@ -1028,11 +1057,10 @@ impl VisibilityWorldRenderDomain {
 		{
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
 
-			let mut directional_lights: Vec<&LightData> = self.lights.iter().filter(|l| l.light_type == 'D' as u8).collect();
-			directional_lights.sort_by(|a, b| maths_rs::length(b.color).partial_cmp(&maths_rs::length(a.color)).unwrap()); // Sort by intensity
+			// directional_lights.sort_by(|a, b| maths_rs::length(b.color).partial_cmp(&maths_rs::length(a.color)).unwrap()); // Sort by intensity
 
 			if true {
-				if let Some(most_significant_light) = directional_lights.get(0) {
+				if self.lights.len() > 0 {
 					shadow_render_pass.render(command_buffer_recording, self, &self.render_info.instances);
 				} else {
 					command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(1f32)),]);
@@ -1229,32 +1257,7 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> utils::BoxedFuture<()> {
-		let mut ghi = self.ghi.write();
-
-		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
-
-		let light_index = lighting_data.count as usize;
-
-		let x = 8f32;
-		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
-
-		let direction = light.direction;
-		let light_view_matrix = math::from_normal(direction);
-
-		let vp_matrix = light_projection_matrix * light_view_matrix;
-
-		lighting_data.lights[light_index].light_type = 'D' as u8;
-		lighting_data.lights[light_index].view_matrix = light_view_matrix;
-		lighting_data.lights[light_index].projection_matrix = light_projection_matrix;
-		lighting_data.lights[light_index].vp_matrix = vp_matrix;
-		lighting_data.lights[light_index].position = light.direction;
-		lighting_data.lights[light_index].color = light.color;
-
-		lighting_data.count += 1;
-
-		self.lights.push(lighting_data.lights[light_index]);
-
-		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
+		self.lights.push(handle);
 
 		Box::pin(async move { })
 	}

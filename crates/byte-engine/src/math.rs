@@ -1,3 +1,5 @@
+use maths_rs::mat::MatNew4;
+
 use crate::Vector3;
 
 /// Calculates the direction to move in a plane from a direction(absolute) vector and a head/camera relative direction vector
@@ -75,6 +77,22 @@ pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 		maths_rs::Vec4f::from((z_basis, 0f32)),
 		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 	))
+}
+
+pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
+	let c = theta.cos();
+	let s = -theta.sin();
+	let one_minus_c = 1.0 - c;
+	let x = axis.x;
+	let y = axis.y;
+	let z = axis.z;
+
+	maths_rs::Mat4f::new(
+		c + x * x * one_minus_c,    x * y * one_minus_c - z * s, x * z * one_minus_c + y * s, 0.0,
+		y * x * one_minus_c + z * s, c + y * y * one_minus_c,    y * z * one_minus_c - x * s, 0.0,
+		z * x * one_minus_c - y * s, z * y * one_minus_c + x * s, c + z * z * one_minus_c,    0.0,
+		0.0,                        0.0,                        0.0,                        1.0
+	)
 }
 
 /// Left handed row major 4x4 matrix inverse

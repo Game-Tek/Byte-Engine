@@ -1,8 +1,8 @@
 use std::{io::Write, mem::transmute};
 
-use maths_rs::mat::{MatProjection, MatTranslate, MatRotate3D};
+use maths_rs::{mat::{MatProjection, MatRotate3D, MatTranslate}, Mat4f};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
-use utils::{json, Extent};
+use utils::{json, Extent, RGBA};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationPipelineMode, RasterizationRenderPassMode};
 
@@ -41,7 +41,7 @@ impl ShadowRenderingPass {
 		let shadow_map_resolution = Extent::square(4096);
 		
 		let shadow_map = ghi.create_image(Some("Shadow Map"), shadow_map_resolution, ghi::Formats::Depth32, ghi::Uses::Image | ghi::Uses::Clear, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
+		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
 		let lighting_data_buffer = ghi.create_buffer(Some("Lighting Data"), 1024, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		
 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&light_depth_map, shadow_map, sampler, ghi::Layouts::Read));
@@ -122,22 +122,10 @@ impl ShadowRenderingPass {
 		command_buffer_recording.end_region();
 	}
 
-	pub fn prepare(&self,ghi: &mut ghi::GHI, normal: maths_rs::Mat4f) {		
-		let x = 8f32;
-		let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
-
-		let light = LightData {
-			view_matrix: normal,
-			projection_matrix: light_projection_matrix,
-			vp_matrix: light_projection_matrix * normal,
-			position: Vector3::new(0f32, 0f32, 0f32),
-			color: Vector3::new(1f32, 1f32, 1f32),
-			light_type: 'D' as u8,
-		};
-
+	pub fn prepare(&self,ghi: &mut ghi::GHI, light_data: LightData) {
 		let _ = ghi.get_mut_buffer_slice(self.lighting_data).write(&1u32.to_le_bytes());
 		let lights: &mut [LightData] = unsafe { transmute(&mut ghi.get_mut_buffer_slice(self.lighting_data)[4..]) };
-		lights[0] = light;
+		lights[0] = light_data;
 	}
 
 	pub fn get_shadow_map_image(&self) -> ghi::ImageHandle { self.shadow_map }

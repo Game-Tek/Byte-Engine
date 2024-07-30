@@ -139,6 +139,15 @@ pub struct RGBA {
 	pub a: f32,
 }
 
+impl std::hash::Hash for RGBA {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		self.r.to_bits().hash(state);
+		self.g.to_bits().hash(state);
+		self.b.to_bits().hash(state);
+		self.a.to_bits().hash(state);
+	}
+}
+
 impl RGBA {
 	pub fn black() -> Self { Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0, } }
 	pub fn white() -> Self { Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0, } }

@@ -988,6 +988,8 @@ pub enum SamplerAddressingModes {
 	Mirror,
 	/// Clamp mode addressing.
 	Clamp,
+	/// Border mode addressing.
+	Border {},
 }
 
 /// Stores the information of a descriptor set layout binding.

@@ -77,20 +77,20 @@ fn fps() {
 		});
 	}
 
-	// {
-	// 	let anchor = anchor.clone();
+	{
+		let anchor = anchor.clone();
 
-	// 	// Subscribe to the jump action
-	// 	jump_action_handle.write_sync().value_mut().add(move |v| {
-	// 		if *v {
-	// 			let mut anchor = anchor.write_sync();
+		// Subscribe to the jump action
+		jump_action_handle.write_sync().value_mut().add(move |v| {
+			if *v {
+				let mut anchor = anchor.write_sync();
 	
-	// 			let current_position = anchor.transform().get_position();
+				let current_position = anchor.transform().get_position();
 	
-	// 			anchor.transform_mut().set_position(current_position + Vector3::new(0.0, 1.0, 0.0));
-	// 		}
-	// 	});
-	// }
+				anchor.transform_mut().set_position(current_position + Vector3::new(0.0, 1.0, 0.0));
+			}
+		});
+	}
 
 	// Create the floor
 	let _floor: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", Transform::identity().position(Vector3::new(0.0, -0.5, 1.0)).scale(Vector3::new(15.0, 1.0, 15.0)))));

@@ -753,8 +753,10 @@ impl InputManager {
 
 				let input_device_class = self.device_classes.iter().enumerate().find(|(_, device_class)| device_class.name == tokens.clone().next().unwrap());
 
-				if let Some(_) = input_device_class {
-					let input_source = self.input_sources.iter().enumerate().find(|(_, input_source)| input_source.name == tokens.clone().last().unwrap());
+				if let Some((idc_index, _)) = input_device_class {
+					let input_device_class_handle = DeviceClassHandle(idc_index as u32);
+
+					let input_source = self.input_sources.iter().enumerate().find(|(_, input_source)| input_source.name == tokens.clone().last().unwrap() && input_source.device_class_handle == input_device_class_handle);
 
 					if let Some(input_source) = input_source {
 						Some(InputSourceHandle(input_source.0 as u32))
@@ -821,9 +823,15 @@ impl Entity for InputManager {}
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::prelude::Base; // TODO: remove, make own
+	use core::{spawn, spawn_as_child};
+use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
-	use super::*;
+use maths_rs::prelude::Base;
+use utils::r#async::block_on; // TODO: remove, make own
+
+	use crate::{gameplay::space::Space, input::ActionBindingDescription};
+
+use super::*;
 
 	fn declare_keyboard_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Keyboard");
@@ -1285,4 +1293,90 @@ mod tests {
 
 	// 	assert_eq!(value.value, Value::Float(1.0)); // Must be 1.0 after releasing down while up is still pressed.
 	// }
+
+	#[test]
+	fn test_system_fps_game() {
+		//! Test that the system integration is working and works correctly for a FPS game type setup.
+
+		let space = block_on(spawn(Space::new()));
+
+		let input_manager: EntityHandle<InputManager> = block_on(spawn_as_child(space.clone(), InputManager::new_as_system()));
+
+		let mouse_device_handle;
+		let keyboard_device_handle;
+		let gamepad_device_handle;
+
+		{
+			let mut input_manager = input_manager.write_sync();
+
+			let mouse_device_class_handle = input_manager.register_device_class("Mouse");
+
+			input_manager.register_input_source(&mouse_device_class_handle, "Position", InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+			input_manager.register_input_source(&mouse_device_class_handle, "LeftButton", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_input_source(&mouse_device_class_handle, "RightButton", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_input_source(&mouse_device_class_handle, "Scroll", InputTypes::Float(InputSourceDescription::new(0f32, 0f32, -1f32, 1f32)));
+
+			let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
+
+			input_manager.register_input_source(&keyboard_device_class_handle, "W", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_input_source(&keyboard_device_class_handle, "S", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_input_source(&keyboard_device_class_handle, "A", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_input_source(&keyboard_device_class_handle, "D", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_input_source(&keyboard_device_class_handle, "Space", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+
+			let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
+
+			input_manager.register_input_source(&gamepad_device_class_handle, "LeftStick", InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, })));
+			input_manager.register_input_source(&gamepad_device_class_handle, "RightStick", InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, })));
+
+			mouse_device_handle = input_manager.create_device(&mouse_device_class_handle);
+			keyboard_device_handle = input_manager.create_device(&keyboard_device_class_handle);
+			gamepad_device_handle = input_manager.create_device(&gamepad_device_class_handle);
+		}
+
+		// Create the move action
+		let move_action_handle = block_on(core::spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
+			ActionBindingDescription::new("Keyboard.W").mapped(Value::Vector3(Vector3::new(0f32, 0f32, 1f32)), Function::Linear),
+			ActionBindingDescription::new("Keyboard.S").mapped(Value::Vector3(Vector3::new(0f32, 0f32, -1f32)), Function::Linear),
+			ActionBindingDescription::new("Keyboard.A").mapped(Value::Vector3(Vector3::new(-1f32, 0f32, 0f32)), Function::Linear),
+			ActionBindingDescription::new("Keyboard.D").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 0f32)), Function::Linear),
+
+			ActionBindingDescription::new("Gamepad.LeftStick").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 1f32)), Function::Linear),
+		],)));
+
+		let input_queue = Rc::new(RefCell::new(Vec::new()));
+
+		{
+			let input_queue = input_queue.clone();
+
+			move_action_handle.write_sync().value_mut().add(move |v| {
+				input_queue.borrow_mut().push(*v);
+			});
+		}
+
+		// Create the jump action
+		let jump_action_handle = block_on(core::spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
+			ActionBindingDescription::new("Keyboard.Space").mapped(Value::Bool(true), Function::Linear),
+			ActionBindingDescription::new("Gamepad.A").mapped(Value::Bool(true), Function::Linear),
+		],)));
+
+		{
+			let input_queue = input_queue.clone();
+
+			jump_action_handle.write_sync().value_mut().add(move |v| {
+				input_queue.borrow_mut().push(Vector3::new(0f32, 1f32, 0f32));
+			});
+		}
+
+		{
+			let mut input_manager = input_manager.write_sync();
+
+			input_manager.record_input_source_action(&keyboard_device_handle, InputSourceAction::Name("Keyboard.A"), Value::Bool(true));
+
+			input_manager.update();
+		}
+
+		assert_eq!(input_queue.borrow().len(), 1);
+		assert_eq!(input_queue.borrow()[0], Vector3::new(-1f32, 0f32, 0f32));
+	}
 }

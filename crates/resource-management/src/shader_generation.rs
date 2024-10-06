@@ -186,6 +186,7 @@ impl ShaderCompilation {
 			"void" => "void",
 			"vec2f" => "vec2",
 			"vec2u" => "uvec2",
+			"vec2i" => "ivec2",
 			"vec2u16" => "u16vec2",
 			"vec3u" => "uvec3",
 			"vec3f" => "vec3",
@@ -390,7 +391,7 @@ impl ShaderCompilation {
 				if self.minified { string.push('}') } else { string.push_str("}\n"); }
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
-				if name == "void" || name == "vec2u16" || name == "vec2u" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" || name == "Texture2D" { return; }
+				if name == "void" || name == "vec2u16" || name == "vec2u" || name == "vec2i" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" || name == "Texture2D" { return; }
 
 				string.push_str("struct ");
 				string.push_str(name.as_str());

@@ -32,6 +32,9 @@ pub mod file_tracker;
 
 pub mod shader_generation;
 
+pub use resource::resource_manager::ResourceManager;
+pub use asset::asset_handler::AssetHandler;
+
 // https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
 
 /// This is the struct resource handlers should return when processing a resource.

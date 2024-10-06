@@ -309,8 +309,11 @@ pub trait CommandBufferRecording where Self: Sized {
 	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
 	fn start_region(&self, name: &str);
-
+	
 	fn end_region(&self);
+
+	/// Starts a debug region on the GPU and executes the closure.
+	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self));
 
 	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
 }
@@ -1082,18 +1085,6 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn image_with_frame(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, layout: Layouts, frame_offset: i32) -> Self {
-		Self {
-			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: Descriptor::Image {
-				handle: image_handle,
-				layout,
-			},
-			frame_offset: Some(frame_offset),
-		}
-	}
-
 	pub fn sampler(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, sampler_handle: SamplerHandle) -> Self {
 		Self {
 			descriptor_set_binding_template,
@@ -1134,6 +1125,11 @@ impl <'a> BindingConstructor<'a> {
 			},
 			frame_offset: None,
 		}
+	}
+
+	pub fn frame(mut self, frame_offset: i32) -> Self {
+		self.frame_offset = Some(frame_offset);
+		self
 	}
 }
 
@@ -2173,7 +2169,7 @@ use super::*;
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_template);
 
 		let image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
-		let last_frame_image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image_with_frame(&last_frame_image_binding_template, image, Layouts::General, -1));
+		let last_frame_image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
 
 		let command_buffer = renderer.create_command_buffer(None);
 

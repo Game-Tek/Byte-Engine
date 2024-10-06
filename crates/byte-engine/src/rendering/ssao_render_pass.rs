@@ -2,10 +2,11 @@ use besl::parser::Node;
 use ghi::{BoundComputePipelineMode, CommandBufferRecording, DeviceAccesses, GraphicsHardwareInterface, Uses};
 use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, image::Image, resource::resource_manager::ResourceManager, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, Reference};
 use core::{Entity, EntityHandle};
+use std::{rc::Rc, sync::Arc};
 
-use utils::{json, Extent, RGBA};
+use utils::{json, sync::RwLock, Extent, RGBA};
 
-use super::common_shader_generator::CommonShaderGenerator;
+use super::{common_shader_generator::CommonShaderGenerator, texture_manager::TextureManager};
 
 pub struct ScreenSpaceAmbientOcclusionPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
@@ -31,7 +32,15 @@ const RESULT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Descript
 const NOISE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 
 impl ScreenSpaceAmbientOcclusionPass {
-	pub async fn new(ghi: &mut ghi::GHI, resource_manager: EntityHandle<ResourceManager>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, occlusion_target: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> ScreenSpaceAmbientOcclusionPass {
+	pub async fn new(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, occlusion_target: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> ScreenSpaceAmbientOcclusionPass {
+		let resource_manager = resource_manager.read_sync();
+
+		let mut blue_noise = resource_manager.request::<Image>("stbn_unitvec3_2Dx1D_128x128x64_0.png").await.unwrap();
+
+		let (_, noise_texture, noise_sampler) = texture_manager.write().await.load(&mut blue_noise, ghi_lock.clone()).await.unwrap();
+
+		let mut ghi = ghi_lock.write();
+
 		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("HBAO Pass Set Layout"), &[DEPTH_BINDING_TEMPLATE.clone(), SOURCE_BINDING_TEMPLATE.clone(), RESULT_BINDING_TEMPLATE.clone(), NOISE_BINDING_TEMPLATE.clone()]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[parent_descriptor_set_layout, descriptor_set_layout], &[]);
@@ -74,20 +83,9 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let blur_x_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&blur_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [1f32, 0f32,])]));
 		let blur_y_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&blur_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), [0f32, 1f32,])]));
 
-		let resource_manager = resource_manager.read_sync();
-
-		let mut blue_noise = resource_manager.request::<Image>("stbn_unitvec3_2Dx1D_128x128x64_0.png").await.unwrap();
-
 		let format = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
 
-		let image = ghi.create_image(blue_noise.id().into(), blue_noise.resource().extent.into(), format, Uses::Image, DeviceAccesses::GpuRead | DeviceAccesses::CpuWrite, ghi::UseCases::STATIC);
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Closest, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Repeat, None, 0f32, 0f32);
-
-		let buffer = ghi.get_texture_slice_mut(image);
-
-		let _ = blue_noise.load(buffer.into()).await; // TODO: use texture loader
-
-		let noise_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&NOISE_BINDING_TEMPLATE, image, sampler, ghi::Layouts::Read));
+		let noise_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&NOISE_BINDING_TEMPLATE, noise_texture, sampler, ghi::Layouts::Read));
 
 		ScreenSpaceAmbientOcclusionPass {
 			pipeline_layout,

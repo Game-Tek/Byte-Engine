@@ -44,15 +44,21 @@ pub struct CommonShaderGenerator {
 	interpolate_vec3f_with_deriv: besl::parser::Node,
 	interpolate_vec2f_with_deriv: besl::parser::Node,
 	sin_from_tan: besl::parser::Node,
+	make_uv: besl::parser::Node,
 	snap_uv: besl::parser::Node,
 	tangent: besl::parser::Node,
 	min_diff: besl::parser::Node,
+	interleaved_gradient_noise: besl::parser::Node,
+	make_perpendicular_vector: besl::parser::Node,
+	make_cosine_hemisphere_sample: besl::parser::Node,
 	square_vec2: besl::parser::Node,
 	square_vec3: besl::parser::Node,
 	square_vec4: besl::parser::Node,
+	make_world_space_position_from_depth: besl::parser::Node,
 	get_world_space_position_from_depth: besl::parser::Node,
 	get_view_space_position_from_depth: besl::parser::Node,
 	rotate_directions: besl::parser::Node,
+	make_normal_from_positions: besl::parser::Node,
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
@@ -117,20 +123,26 @@ return colors[i % 16];";
 		let snap_uv = self.snap_uv.clone();
 		let tangent = self.tangent.clone();
 		let min_diff = self.min_diff.clone();
+		let interleaved_gradient_noise = self.interleaved_gradient_noise.clone();
+		let make_perpendicular_vector = self.make_perpendicular_vector.clone();
+		let make_cosine_hemisphere_sample = self.make_cosine_hemisphere_sample.clone();
+		let make_uv = self.make_uv.clone();
 		let square_vec2 = self.square_vec2.clone();
 		let square_vec3 = self.square_vec3.clone();
 		let square_vec4 = self.square_vec4.clone();
 
+		let make_world_space_position_from_depth = self.make_world_space_position_from_depth.clone();
 		let get_world_space_position_from_depth = self.get_world_space_position_from_depth.clone();
 		let get_view_space_position_from_depth = self.get_view_space_position_from_depth.clone();
 		let rotate_directions = self.rotate_directions.clone();
+		let make_normal_from_positions = self.make_normal_from_positions.clone();
 
 		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
 
 		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct, uv_derivatives_struct]);
 		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
 		root.add(vec![compute_vertex_index, process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff]);
-		root.add(vec![get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions]);
+		root.add(vec![make_uv, interleaved_gradient_noise, make_perpendicular_vector, make_cosine_hemisphere_sample, make_world_space_position_from_depth, get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions, make_normal_from_positions]);
 		root.add(vec![get_debug_color]);
 
 		root
@@ -203,24 +215,19 @@ impl CommonShaderGenerator {
 
 		let min_diff = Node::function("min_diff", vec![Node::parameter("p", "vec3f"), Node::parameter("a", "vec3f"), Node::parameter("b", "vec3f")], "vec3f", vec![Node::glsl("vec3 ap = a - p; vec3 bp = p - b; return (vec3f_squared_length(ap) < vec3f_squared_length(bp)) ? ap : bp;", &["vec3f_squared_length"], Vec::new())]);
 
-		let interleaved_gradient_noise = Node::function("interleaved_gradient_noise", vec![Node::parameter("pixel_x", "u32"), Node::parameter("pixel_y", "u32"), Node::parameter("frame", "u32")], "f32", vec![Node::glsl("frame = frame % 64; // need to periodically reset frame to avoid numerical issues float x = float(pixel_x) + 5.588238f * float(frame); float y = float(pixel_y) + 5.588238f * float(frame); return mod(52.9829189f * mod(0.06711056f * x + 0.00583715f * y, 1.0f), 1.0f);", &[], Vec::new())]);
+		let interleaved_gradient_noise = Node::function("interleaved_gradient_noise", vec![Node::parameter("pixel_x", "u32"), Node::parameter("pixel_y", "u32"), Node::parameter("frame", "u32")], "f32", vec![Node::glsl("frame = frame % 64; /* need to periodically reset frame to avoid numerical issues */ float x = float(pixel_x) + 5.588238f * float(frame); float y = float(pixel_y) + 5.588238f * float(frame); return mod(52.9829189f * mod(0.06711056f * x + 0.00583715f * y, 1.0f), 1.0f);", &[], Vec::new())]);
 
-		let get_world_space_position_from_depth = Node::function("get_world_space_position_from_depth", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coords", "vec2u"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
-		float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
-		vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
-		vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
+		let make_world_space_position_from_depth = Node::function("make_world_space_position_from_depth", vec![Node::parameter("depth", "f32"), Node::parameter("uv", "vec2f"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		vec4 clip_space = vec4(uv * 2.0 - 1.0, depth, 1.0);
 		vec4 view_space = inverse_projection_matrix * clip_space;
 		view_space /= view_space.w;
 		vec4 world_space = inverse_view_matrix * view_space;
 		return world_space.xyz;", &[], Vec::new())]);
 
-		// let get_view_space_position_from_depth = Node::function("get_view_space_position_from_depth", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coords", "vec2u"), Node::parameter("inverse_projection_matrix", "mat4f")], "vec3f", vec![Node::glsl("
-		// float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
-		// vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
-		// vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
-		// vec4 view_space = inverse_projection_matrix * clip_space;
-		// view_space /= view_space.w;
-		// return view_space.xyz;", &[], Vec::new())]);
+		let get_world_space_position_from_depth = Node::function("get_world_space_position_from_depth", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coords", "vec2u"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
+		vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
+		return make_world_space_position_from_depth(depth_value, uv, inverse_projection_matrix, inverse_view_matrix);", &["make_world_space_position_from_depth"], Vec::new())]);
 
 		let get_view_space_position_from_depth = Node::function("get_view_space_position_from_depth", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("uv", "vec2f"), Node::parameter("inverse_projection_matrix", "mat4f")], "vec3f", vec![Node::glsl("
 		float depth_value = texture(depth_map, uv).r;
@@ -232,27 +239,39 @@ impl CommonShaderGenerator {
 		let sin_from_tan = Node::function("sin_from_tan", vec![Node::parameter("x", "f32")], "f32", vec![Node::glsl("return x * inversesqrt(x*x + 1.0)", &[], Vec::new())]);
 		let tangent = Node::function("tangent", vec![Node::parameter("p", "vec3f"), Node::parameter("s", "vec3f")], "f32", vec![Node::glsl("return (p.z - s.z) * inversesqrt(dot(s.xy - p.xy, s.xy - p.xy))", &[], Vec::new())]);
 
-		let make_normal_from_neighbouring_depth_samples = Node::function("make_normal_from_neighbouring_depth_samples", vec![Node::parameter("p", "vec3"), Node::parameter("pr", "vec3"), Node::parameter("pl", "vec3"), Node::parameter("pt", "vec3"), Node::parameter("pb", "vec3")], "vec3f", vec![Node::glsl("return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))", &["min_diff"], Vec::new())]);
+		// Calculates an approximate normal from 5 positions.
+		let make_normal_from_positions = Node::function("make_normal_from_positions", vec![Node::parameter("p", "vec3f"), Node::parameter("pr", "vec3f"), Node::parameter("pl", "vec3f"), Node::parameter("pt", "vec3f"), Node::parameter("pb", "vec3f")], "vec3f", vec![Node::glsl("return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))", &["min_diff"], Vec::new())]);
 
-		let get_perpendicular_vector = Node::function("get_perpendicular_vector", vec![Node::parameter("v", "vec3f")], "vec3f", vec![Node::glsl("return normalize(abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0) : vec3(0.0, -v.z, v.y));", &[], Vec::new())]);
+		let make_perpendicular_vector = Node::function("make_perpendicular_vector", vec![Node::parameter("v", "vec3f")], "vec3f", vec![Node::glsl("return normalize(abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0) : vec3(0.0, -v.z, v.y));", &[], Vec::new())]);
 
 		// Should we add .5 to the coordinates before dividing by the extent?
 		let snap_uv = Node::function("snap_uv", vec![Node::parameter("uv", "vec2f"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return round(uv * vec2(extent)) * (1.0f / vec2(extent))", &[], Vec::new())]);
 
 		// Get a cosine-weighted random vector centered around a specified normal direction.
-		let get_cosine_hemisphere_sample = Node::function("get_cosine_hemisphere_sample", vec![Node::parameter("rand1", "float"), Node::parameter("rand2", "float"), Node::parameter("hit_norm", "vec3")], "vec3f", vec![Node::glsl("// Get 2 random numbers to select our sample with
-		vec2 randVal = vec2(rand1, rand2);
-	
-		// Cosine weighted hemisphere sample from RNG
-		vec3 bitangent = get_perpendicular_vector(hit_norm);
-		vec3 tangent = cross(bitangent, hit_norm);
+		let make_cosine_hemisphere_sample = Node::function("make_cosine_hemisphere_sample", vec![Node::parameter("rand_1", "f32"), Node::parameter("rand_2", "f32"), Node::parameter("hit_normal", "vec3f")], "vec3f", vec![Node::glsl("
+		vec2 randVal = vec2(rand_1, rand_2);
+		vec3 bitangent = make_perpendicular_vector(hit_normal);
+		vec3 tangent = cross(bitangent, hit_normal);
 		float r = sqrt(randVal.x);
 		float phi = 2.0f * PI * randVal.y;
-	
-		// Get our cosine-weighted hemisphere lobe sample direction
-		return normalize(tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hit_norm.xyz * sqrt(max(0.0, 1.0f - randVal.x)));", &["get_perpendicular_vector"], Vec::new())]);
+		return normalize(tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hit_normal.xyz * sqrt(max(0.0, 1.0f - randVal.x)));", &["make_perpendicular_vector"], Vec::new())]);
 
-		let make_uv = Node::function("make_uv", vec![Node::parameter("coordinates", "vec2u"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], Vec::new())]);
+		let make_normal_from_depth_map = Node::function("make_normal_from_depth_map", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coord", "vec2i"), Node::parameter("extent", "vec2u"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		float c_depth = texelFetch(depth_map, coord, 0).r;
+		float l_depth = texelFetch(depth_map, coord + ivec2(-1, 0), 0).r;
+		float r_depth = texelFetch(depth_map, coord + ivec2(1, 0), 0).r;
+		float t_depth = texelFetch(depth_map, coord + ivec2(0, -1), 0).r;
+		float b_depth = texelFetch(depth_map, coord + ivec2(0, 1), 0).r;
+
+		vec3 c_pos = make_world_space_position_from_depth(c_depth, make_uv(coord, extent), inverse_projection_matrix, inverse_view_matrix);
+		vec3 l_pos = make_world_space_position_from_depth(l_depth, make_uv(coord + ivec2(-1, 0), extent), inverse_projection_matrix, inverse_view_matrix);
+		vec3 r_pos = make_world_space_position_from_depth(r_depth, make_uv(coord + ivec2(1, 0), extent), inverse_projection_matrix, inverse_view_matrix);
+		vec3 t_pos = make_world_space_position_from_depth(t_depth, make_uv(coord + ivec2(0, -1), extent), inverse_projection_matrix, inverse_view_matrix);
+		vec3 b_pos = make_world_space_position_from_depth(b_depth, make_uv(coord + ivec2(0, 1), extent), inverse_projection_matrix, inverse_view_matrix);
+
+		return make_normal_from_positions(c_pos, r_pos, l_pos, t_pos, b_pos);", &["make_world_space_position_from_depth", "make_uv", "make_normal_from_positions"], Vec::new())]);
+
+		let make_uv = Node::function("make_uv", vec![Node::parameter("coordinates", "vec2i"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], Vec::new())]);
 		let rotate_directions = Node::function("rotate_directions", vec![Node::parameter("dir", "vec2f"), Node::parameter("cos_sin", "vec2f")], "vec2f", vec![Node::glsl("return vec2(dir.x*cos_sin.x - dir.y*cos_sin.y,dir.x*cos_sin.y + dir.y*cos_sin.x)", &[], Vec::new())]);
 
 		let distribution_ggx = Node::function("distribution_ggx", vec![Node::member("n", "vec3f"), Node::member("h", "vec3f"), Node::member("roughness", "f32")], "f32", vec![Node::glsl("float a = roughness*roughness; float a2 = a*a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h*n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;", &[], Vec::new())]);
@@ -308,11 +327,17 @@ impl CommonShaderGenerator {
 			snap_uv,
 			tangent,
 			min_diff,
+			interleaved_gradient_noise,
+			make_perpendicular_vector,
+			make_cosine_hemisphere_sample,
+			make_uv,
 			square_vec2,
 			square_vec3,
 			square_vec4,
+			make_world_space_position_from_depth,
 			get_world_space_position_from_depth,
 			get_view_space_position_from_depth,
+			make_normal_from_positions,
 			rotate_directions,
 		}
 	}

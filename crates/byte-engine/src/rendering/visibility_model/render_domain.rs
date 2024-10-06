@@ -240,12 +240,12 @@ pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTempl
 pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>) -> EntityBuilder<'a, Self> {
+	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_async_function(async move || {
 			let mut ghi_instance = ghi.write();
 
+			// Initialize the extent to 0 to allocate memory lazily.
 			let extent = Extent::square(0);
-			// let extent = Extent::rectangle(1920, 1080);
 
 			let vertex_positions_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Positions Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let vertex_normals_buffer_handle = ghi_instance.create_buffer(Some("Visibility Vertex Normals Buffer"), std::mem::size_of::<[[f32; 3]; MAX_VERTICES]>(), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
@@ -389,7 +389,7 @@ impl VisibilityWorldRenderDomain {
 				meshes: HashMap::with_capacity(1024),
 				images: RwLock::new(HashMap::with_capacity(1024)),
 
-				texture_manager: Arc::new(utils::r#async::RwLock::new(TextureManager::new())),
+				texture_manager,
 				pipeline_manager: PipelineManager::new(),
 
 				mesh_resources: HashMap::new(),

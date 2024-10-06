@@ -106,6 +106,7 @@ impl Node {
 		let u8_t: NodeReference = Node::r#struct("u8", Vec::new()).into();
 		let u16_t: NodeReference = Node::r#struct("u16", Vec::new()).into();
 		let u32_t: NodeReference = Node::r#struct("u32", Vec::new()).into();
+		let i32_t: NodeReference = Node::r#struct("i32", Vec::new()).into();
 		let f32_t: NodeReference = Node::r#struct("f32", Vec::new()).into();
 
 		let vec2u16: NodeReference = Node::r#struct("vec2u16", vec![
@@ -116,6 +117,11 @@ impl Node {
 		let vec2u32: NodeReference = Node::r#struct("vec2u", vec![
 			Node::member("x", u32_t.clone()).into(),
 			Node::member("y", u32_t.clone()).into(),
+		]).into();
+
+		let vec2i32: NodeReference = Node::r#struct("vec2i", vec![
+			Node::member("x", i32_t.clone()).into(),
+			Node::member("y", i32_t.clone()).into(),
 		]).into();
 
 		let vec2f32: NodeReference = Node::r#struct("vec2f", vec![
@@ -161,6 +167,7 @@ impl Node {
 			f32_t,
 			vec2u16,
 			vec2u32,
+			vec2i32,
 			vec2f32,
 			vec3u32,
 			vec3f32,

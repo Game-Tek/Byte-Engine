@@ -4338,6 +4338,12 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		}
 	}
 
+	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self)) {
+		self.start_region(name);
+		f(self);
+		self.end_region();
+	}
+
 	fn end_region(&self) {
 		let command_buffer = self.get_command_buffer();
 

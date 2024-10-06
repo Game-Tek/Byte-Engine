@@ -1,5 +1,5 @@
 use core::entity::DomainType;
-use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc};
+use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
 use resource_management::resource::resource_manager::ResourceManager;
@@ -7,7 +7,7 @@ use utils::{sync::RwLock, Extent};
 
 use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
-use super::{aces_tonemap_render_pass::AcesToneMapPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
+use super::{aces_tonemap_render_pass::AcesToneMapPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 
 pub struct Renderer {
 	ghi: Rc<RwLock<ghi::GHI>>,
@@ -50,7 +50,9 @@ impl Renderer {
 				ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC)
 			};
 
-			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle.clone())).await;
+			let texture_manager = Arc::new(utils::r#async::RwLock::new(TextureManager::new()));
+
+			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle.clone(), texture_manager.clone())).await;
 
 			let ui_render_model = core::spawn(UIRenderModel::new_as_system()).await;
 
@@ -73,9 +75,8 @@ impl Renderer {
 			}
 
 			let ao_render_pass = {
-				let mut ghi = ghi_instance.write();
 				let vrm = visibility_render_model.read_sync();
-				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi.deref_mut(), resource_manager_handle, vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
+				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi_instance.clone(), resource_manager_handle, texture_manager.clone(), vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
 			};
 
 			Renderer {

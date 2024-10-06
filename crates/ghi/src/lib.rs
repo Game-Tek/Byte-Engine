@@ -13,6 +13,7 @@ pub mod win32_window;
 
 pub mod graphics_hardware_interface;
 pub mod vulkan;
+pub mod glsl;
 pub mod render_debugger;
 
 pub use crate::graphics_hardware_interface::*;
@@ -55,5 +56,29 @@ impl<'a> std::ops::Deref for CBR<'a> {
 impl<'a> std::ops::DerefMut for CBR<'a> {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		&mut self.0
+	}
+}
+
+pub fn compile_glsl<'a>(name: &'a str, source: &'a str) -> Result<Box<[u8]>, String> {
+	let compiler = shaderc::Compiler::new().unwrap();
+	let mut options = shaderc::CompileOptions::new().unwrap();
+
+	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+	options.set_target_env(shaderc::TargetEnv::Vulkan, (1 << 22) | (3 << 12));
+
+	if cfg!(debug_assertions) {
+		options.set_generate_debug_info();
+	}
+
+	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
+	options.set_invert_y(true);
+
+	let binary = compiler.compile_into_spirv(&source, shaderc::ShaderKind::InferFromSource, name, "main", Some(&options));
+
+	match binary {
+		Ok(binary) => Ok(binary.as_binary_u8().into()),
+		Err(error) => {
+			Err(glsl::pretty_print(&glsl::process_glslc_error(name, source, &error.to_string())))
+		}
 	}
 }

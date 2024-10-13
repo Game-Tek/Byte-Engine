@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use futures::future::{join, join_all, try_join_all};
 use log::debug;
-use polodb_core::bson::Bson;
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, GenericResourceResponse, ProcessedAsset, ReferenceModel, StorageBackend};
+use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, resource, asset, Data, ProcessedAsset, ReferenceModel};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -37,7 +36,7 @@ impl Asset for MaterialAsset {
         }
     }
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
         let asset = &self.asset;
 
         let is_material = asset.get(&"parent").is_none();
@@ -86,7 +85,7 @@ impl Asset for MaterialAsset {
 			};
 
 			let shaders = try_join_all(asset_shaders.iter().map(|(s_type, shader_json): (&str, &json::Value)| {
-				transform_shader(generator, storage_backend, &material_domain, &asset, &shader_json, s_type)
+				transform_shader(generator, storage_backend, asset_storage_backend, &material_domain, &asset, &shader_json, s_type)
 			}));
 
 			let asset_variables = match asset["variables"].as_array() {
@@ -135,13 +134,24 @@ impl Asset for MaterialAsset {
 
 			let material = asset_manager.load(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
 
-			let values = try_join_all(material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().map(async |v: &Bson| {
-				let v = v.as_document().unwrap();
-				let name = v.get_str("name").unwrap().to_string();
-				let r#type = v.get_str("type").unwrap().to_string();
+			#[derive(Debug, serde::Deserialize)]
+			struct MaterialAssetParameter {
+				name: String,
+				r#type: String,
+			}
+
+			#[derive(Debug, serde::Deserialize)]
+			struct MaterialAssetRepresentation {
+				parameters: Vec<MaterialAssetParameter>,
+			}
+
+			let material_repr: pot::OwnedValue = pot::from_slice(&material.resource).unwrap();
+			let material_repr: MaterialAssetRepresentation = Data::deserialize_as(&material_repr).unwrap();
+
+			let values = try_join_all(material_repr.parameters.iter().map(async |v: &MaterialAssetParameter| {
 				let value = match asset["variables"].as_array() {
-					Some(v) => {
-						match v.iter().find(|v2| { v2["name"].as_str().unwrap() == name }) {
+					Some(variables) => {
+						match variables.iter().find(|v2| { v2["name"].as_str().unwrap() == v.name }) {
 							Some(v) => v["value"].as_str().unwrap().to_string(),
 							None => { return Err("Variable not found".to_string()); }
 						}
@@ -149,18 +159,14 @@ impl Asset for MaterialAsset {
 					None => { return Err("Variable not found".to_string()); }
 				};
 
-				Ok(to_value(r#type, value).await)
+				Ok(to_value(v.r#type.clone(), value).await)
 			})).await.or_else(|e| { debug!("{}", e); Err("Failed to load variant") })?;
 
-			let variables = material.resource.as_document().unwrap().get_array("parameters").unwrap().iter().zip(values.into_iter()).map(|(v, value)| {
-				let v = v.as_document().unwrap();
-				let name = v.get_str("name").unwrap().to_string();
-				let r#type = v.get_str("type").unwrap().to_string();
-
+			let variables = material_repr.parameters.iter().zip(values.into_iter()).map(|(v, value)| {
 				VariantVariableModel {
 					value,
-					name,
-					r#type,
+					name: v.name.clone(),
+					r#type: v.r#type.clone(),
 				}
 			}).collect();
 
@@ -219,12 +225,12 @@ impl AssetHandler for MaterialAssetHandler {
 		r#type == "bema"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
 		if let Some(dt) = storage_backend.get_type(url) {
 			if dt != "bema" { return Err(LoadErrors::UnsupportedType); }
 		}
 
-		let (data, _, at) = storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, at) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
 		if at != "bema" {
 			return Err(LoadErrors::UnsupportedType);
@@ -330,10 +336,10 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 	Ok((shader, result_shader_bytes))
 }
 
-async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
+async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn resource::StorageBackend, asset_storage_backend: &dyn asset::StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
 	let path = shader_json.as_str().ok_or(())?;
 	let path = ResourceId::new(path);
-	let (arlp, _, format) = storage_backend.resolve(path).await.or(Err(()))?;
+	let (arlp, _, format) = asset_storage_backend.resolve(path).await.or(Err(()))?;
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
@@ -350,7 +356,7 @@ pub mod tests {
 	use utils::{r#async::{self, block_on}, json};
 
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId,}, material::VariantModel, ReferenceModel};
+	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, material::VariantModel, resource, ReferenceModel};
 
 	pub struct RootTestShaderGenerator {
 
@@ -438,12 +444,7 @@ pub mod tests {
 
 	#[test]
 	fn load_material() {
-		let asset_manager = AssetManager::new("../assets".into(), "../resources".into());
-		let mut asset_handler = MaterialAssetHandler::new();
-
-		let shader_generator = RootTestShaderGenerator::new();
-
-		asset_handler.set_shader_generator(shader_generator);
+		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
 
 		let material_json = r#"{
 			"domain": "World",
@@ -461,21 +462,28 @@ pub mod tests {
 			]
 		}"#;
 
-		let storage_backend = asset_manager.get_test_storage_backend();
-
-		storage_backend.add_file("material.bema", material_json.as_bytes());
+		asset_storage_backend.add_file("material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
 		}";
 
-		storage_backend.add_file("fragment.besl", shader_file.as_bytes());
+		asset_storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-		let asset = block_on(asset_handler.load(&asset_manager, storage_backend, ResourceId::new("material.bema"),)).expect("Failed to load material");
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
 
-		let _ = block_on(asset.load(&asset_manager, storage_backend, ResourceId::new("material.bema")));
+		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend.clone(), resource_storage_backend.clone());
+		let mut asset_handler = MaterialAssetHandler::new();
 
-		let generated_resources = storage_backend.get_resources();
+		let shader_generator = RootTestShaderGenerator::new();
+
+		asset_handler.set_shader_generator(shader_generator);
+
+		let asset = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema"),)).expect("Failed to load material");
+
+		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema")));
+
+		let generated_resources = resource_storage_backend.get_resources();
 
 		assert_eq!(generated_resources.len(), 2);
 
@@ -484,7 +492,7 @@ pub mod tests {
 		assert_eq!(shader.id, "fragment.besl");
 		assert_eq!(shader.class, "Shader");
 
-		let shader_spirv = storage_backend.get_resource_data_by_name(ResourceId::new("fragment.besl")).expect("Expected shader data");
+		let shader_spirv = resource_storage_backend.get_resource_data_by_name(ResourceId::new("fragment.besl")).expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
 		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
@@ -498,12 +506,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
-		let mut asset_handler = MaterialAssetHandler::new();
-
-		let shader_generator = RootTestShaderGenerator::new();
-
-		asset_handler.set_shader_generator(shader_generator);
+		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
 
 		let material_json = r#"{
 			"domain": "World",
@@ -521,38 +524,40 @@ pub mod tests {
 			]
 		}"#;
 
-		{
-			let storage_backend = asset_manager.get_test_storage_backend();
+		asset_storage_backend.add_file("material.bema", material_json.as_bytes());
 
-			storage_backend.add_file("material.bema", material_json.as_bytes());
+		let shader_file = "main: fn () -> void {
+			materials;
+		}";
 
-			let shader_file = "main: fn () -> void {
-				materials;
-			}";
+		asset_storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-			storage_backend.add_file("fragment.besl", shader_file.as_bytes());
+		let variant_json = r#"{
+			"parent": "material.bema",
+			"variables": [
+				{
+					"name": "color",
+					"value": "White"
+				}
+			]
+		}"#;
 
-			let variant_json = r#"{
-				"parent": "material.bema",
-				"variables": [
-					{
-						"name": "color",
-						"value": "White"
-					}
-				]
-			}"#;
+		asset_storage_backend.add_file("variant.bema", variant_json.as_bytes());
 
-			storage_backend.add_file("variant.bema", variant_json.as_bytes());
-		}
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_handler = MaterialAssetHandler::new();
+
+		let shader_generator = RootTestShaderGenerator::new();
+
+		asset_handler.set_shader_generator(shader_generator);
 
 		asset_manager.add_asset_handler(asset_handler);
 
-		let storage_backend = asset_manager.get_test_storage_backend();
+		let _: ReferenceModel<VariantModel> = block_on(asset_manager.load("variant.bema")).expect("Failed to load material");
 
-		let variant: ReferenceModel<VariantModel> = block_on(asset_manager.load("variant.bema")).expect("Failed to load material");
-
-		let generated_resources = storage_backend.get_resources();
-
+		let generated_resources = resource_storage_backend.get_resources();
 		assert_eq!(generated_resources.len(), 3);
 
 		let shader = &generated_resources[0];
@@ -560,7 +565,7 @@ pub mod tests {
 		assert_eq!(shader.id, "fragment.besl");
 		assert_eq!(shader.class, "Shader");
 
-		let shader_spirv = storage_backend.get_resource_data_by_name(ResourceId::new("fragment.besl")).expect("Expected shader data");
+		let shader_spirv = resource_storage_backend.get_resource_data_by_name(ResourceId::new("fragment.besl")).expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
 		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));

@@ -1,8 +1,6 @@
 use futures::future::try_join_all;
-use polodb_core::bson;
-use serde::Deserialize;
 
-use crate::{asset::ResourceId, image::Image, types::{AlphaMode, ShaderTypes}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, StorageBackend};
+use crate::{asset::ResourceId, image::Image, types::{AlphaMode, ShaderTypes}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, resource};
 
 #[derive(Debug, serde::Serialize)]
 pub struct Material {
@@ -55,9 +53,9 @@ impl Model for MaterialModel {
 }
 
 impl <'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Material>, SolveErrors> {
+	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Material {
 			double_sided,
@@ -99,7 +97,7 @@ pub struct VariantVariableModel {
 }
 
 impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<VariantVariable, SolveErrors> {
+	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<VariantVariable, SolveErrors> {
 		Ok(VariantVariable {
 			name: self.name,
 			r#type: self.r#type,
@@ -138,9 +136,9 @@ impl Model for VariantModel {
 }
 
 impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Variant>, SolveErrors> {
+	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let VariantModel { material, variables, alpha_mode } = VariantModel::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let VariantModel { material, variables, alpha_mode } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Variant {
 			material: material.solve(storage_backend).await?,
@@ -173,9 +171,9 @@ impl super::Model for Shader {
 }
 
 impl <'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Shader>, SolveErrors> {
+	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let Shader { id, stage } = Shader::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let Shader { id, stage } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Shader {
 			id,
@@ -223,7 +221,7 @@ pub struct ParameterModel {
 }
 
 impl <'de> Solver<'de, Parameter> for ParameterModel {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Parameter, SolveErrors> {
+	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
 			r#type: self.r#type.clone(),
 			name: self.name.clone(),

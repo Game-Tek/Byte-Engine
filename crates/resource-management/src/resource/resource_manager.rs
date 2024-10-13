@@ -1,4 +1,6 @@
-use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadResults, Reference, ReferenceModel, Resource, Solver, StorageBackend};
+use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadResults, Reference, ReferenceModel, Resource, Solver};
+
+use super::StorageBackend;
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -12,14 +14,8 @@ use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadRes
 pub struct ResourceManager {
 	// #[cfg(debug_assertions)]
 	asset_manager: Option<AssetManager>,
-}
 
-impl From<polodb_core::Error> for LoadResults {
-	fn from(error: polodb_core::Error) -> Self {
-		match error {
-			_ => LoadResults::LoadFailed
-		}
-	}
+	storage_backend: Option<Box<dyn StorageBackend>>,
 }
 
 impl ResourceManager {
@@ -35,12 +31,13 @@ impl ResourceManager {
 		ResourceManager {
 			// storage_backend: Box::new(DbStorageBackend::new(std::path::Path::new("resources"))),
 			asset_manager: None,
+			storage_backend: None,
 		}
 	}
 
 	pub fn new_with_storage_backend<T: StorageBackend + 'static>(storage_backend: T) -> Self {
 		ResourceManager {
-			// storage_backend: Box::new(storage_backend),
+			storage_backend: Some(Box::new(storage_backend)),
 			asset_manager: None,
 		}
 	}
@@ -51,10 +48,9 @@ impl ResourceManager {
 
 	fn get_storage_backend(&self) -> &dyn StorageBackend {
 		if let Some(asset_manager) = &self.asset_manager {
-			asset_manager.get_storage_backend()
+			asset_manager.get_resource_storage_backend()
 		} else {
-			panic!("No asset manager set");
-			// self.storage_backend.deref()
+			self.storage_backend.as_ref().unwrap().as_ref()
 		}
 	}
 

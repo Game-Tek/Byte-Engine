@@ -59,6 +59,7 @@ pub struct CommonShaderGenerator {
 	get_view_space_position_from_depth: besl::parser::Node,
 	rotate_directions: besl::parser::Node,
 	make_normal_from_positions: besl::parser::Node,
+	make_normal_from_depth_map: besl::parser::Node,
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
@@ -136,13 +137,14 @@ return colors[i % 16];";
 		let get_view_space_position_from_depth = self.get_view_space_position_from_depth.clone();
 		let rotate_directions = self.rotate_directions.clone();
 		let make_normal_from_positions = self.make_normal_from_positions.clone();
+		let make_normal_from_depth_map = self.make_normal_from_depth_map.clone();
 
 		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
 
 		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct, uv_derivatives_struct]);
 		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
 		root.add(vec![compute_vertex_index, process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff]);
-		root.add(vec![make_uv, interleaved_gradient_noise, make_perpendicular_vector, make_cosine_hemisphere_sample, make_world_space_position_from_depth, get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions, make_normal_from_positions]);
+		root.add(vec![make_uv, interleaved_gradient_noise, make_perpendicular_vector, make_cosine_hemisphere_sample, make_world_space_position_from_depth, get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions, make_normal_from_positions, make_normal_from_depth_map]);
 		root.add(vec![get_debug_color]);
 
 		root
@@ -339,6 +341,8 @@ impl CommonShaderGenerator {
 			get_view_space_position_from_depth,
 			make_normal_from_positions,
 			rotate_directions,
+
+			make_normal_from_depth_map,
 		}
 	}
 }

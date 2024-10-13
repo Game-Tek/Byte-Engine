@@ -1,4 +1,4 @@
-use crate::{GenericResourceResponse, ProcessedAsset, StorageBackend};
+use crate::{resource, asset, ProcessedAsset};
 
 use super::{asset_manager::AssetManager, ResourceId};
 
@@ -14,7 +14,7 @@ pub enum LoadErrors {
 pub trait AssetHandler: Send + Sync {
 	fn can_handle(&self, r#type: &str) -> bool;
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>>;
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>>;
 
 	fn produce<'a>(&'a self, id: ResourceId<'a>, description: &'a dyn crate::Description, data: Box<[u8]>) -> utils::SendSyncBoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), String>> {
 		unimplemented!()
@@ -24,5 +24,5 @@ pub trait AssetHandler: Send + Sync {
 /// This trait represents an asset, and will exist during the processing of an asset.
 pub trait Asset: Send + Sync {
     fn requested_assets(&self) -> Vec<String>;
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>>;
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>>;
 }

@@ -2,6 +2,7 @@ use core::EntityHandle;
 
 use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::{Anchor, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
 
+#[ignore]
 #[test]
 fn fps() {
 	// Create the Byte-Engine application

@@ -1,4 +1,4 @@
-use crate::{audio::Audio, types::BitDepths, ProcessedAsset, StorageBackend};
+use crate::{audio::Audio, types::BitDepths, ProcessedAsset, asset, resource};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -10,7 +10,7 @@ pub struct AudioAsset {
 impl Asset for AudioAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, _: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async {
         let data = &self.data;
 
         let riff = &data[0..4];
@@ -118,14 +118,14 @@ impl AssetHandler for AudioAssetHandler {
         r#type == "wav"
     }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
         if let Some(dt) = storage_backend.get_type(url) {
             if dt != "wav" {
                 return Err(LoadErrors::UnsupportedType);
             }
         }
 
-        let (data, _, dt) = storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+        let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
         if dt != "wav" {
             return Err(LoadErrors::UnsupportedType);
@@ -144,6 +144,8 @@ struct AudioDescription {}
 mod tests {
     use utils::r#async::block_on;
 
+    use crate::{asset, Data};
+
     use super::*;
 
     #[test]
@@ -151,15 +153,16 @@ mod tests {
         let asset_manager = AssetManager::new("../assets".into(), "../resources".into());
         let audio_asset_handler = AudioAssetHandler::new();
 
+		let asset_storage_backend = asset::FileStorageBackend::new("../assets".into());
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+
         let url = ResourceId::new("gun.wav");
 
-        let storage_backend = asset_manager.get_test_storage_backend();
+        let asset = block_on(audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset handler failed to load asset");
 
-        let asset = block_on(audio_asset_handler.load(&asset_manager, storage_backend, url)).expect("Audio asset handler failed to load asset");
+		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset failed to load");
 
-		let _ = block_on(asset.load(&asset_manager, storage_backend, url)).expect("Audio asset failed to load");
-
-        let generated_resources = storage_backend.get_resources();
+		let generated_resources = resource_storage_backend.get_resources();
 
         assert_eq!(generated_resources.len(), 1);
 
@@ -167,16 +170,10 @@ mod tests {
 
         assert_eq!(resource.id, "gun.wav");
         assert_eq!(resource.class, "Audio");
-        let resource = resource
-            .resource
-            .as_document()
-            .expect("Resource is not a document");
-        assert_eq!(resource.get_str("bit_depth").unwrap(), "Sixteen");
-        assert_eq!(resource.get_i32("channel_count").unwrap(), 1);
-        assert_eq!(resource.get_i64("sample_rate").unwrap(), 48000);
-        assert_eq!(
-            resource.get_i64("sample_count").unwrap(),
-            152456 / 1 / (16 / 8)
-        );
+        let resource: Audio = pot::from_slice(&resource.resource).unwrap();
+        assert_eq!(resource.bit_depth, BitDepths::Sixteen);
+        assert_eq!(resource.channel_count, 1);
+        assert_eq!(resource.sample_rate, 48000);
+        assert_eq!(resource.sample_count, 152456 / 1 / (16 / 8));
     }
 }

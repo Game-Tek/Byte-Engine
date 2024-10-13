@@ -67,7 +67,7 @@ impl SSGIRenderPass {
 			float start_depth = texture(depth_buffer, uv).r;
 
 			for (uint i = 0; i < step_count; i++) {
-				uv += step_size * direction;
+				uv += step_size * (vec4(direction, 1.0f) * projection_matrix).xy;
 				
 				float depth = texture(depth_buffer, uv).r;
 
@@ -85,12 +85,12 @@ impl SSGIRenderPass {
 		vec2 uv = make_uv(coord, extent);
 		Camera camera = camera.camera;
 		float noise = interleaved_gradient_noise(coord.x, coord.y, 0);
-		vec3 normal = get_cosine_hemisphere_sample(noise, noise, make_normal_from_depth_map(depth, coord, extent, camera.inverse_projection_matrix, camera.inverse_view_matrix));
+		vec3 normal = make_cosine_hemisphere_sample(noise, noise, make_normal_from_depth_map(depth, coord, extent, camera.inverse_projection_matrix, camera.inverse_view_matrix));
 		vec2 jitter = vec2(0.0);
-		vec3 direction = normalize(vec4(normal, 0.0) * camera.view_matrix).xyz;
+		vec3 direction = normalize(vec4(normal, 0.0) * camera.view).xyz;
 		jitter += vec2(0.5);
-		float step_count = 10.0f;
-		float step_size = 1.0f / step_count;
+		uint step_count = 10;
+		float step_size = 1.0f / float(step_count);
 		step_size = step_size * ((jitter.x + jitter.y) + 1.0f);
 		vec4 ray_trace = ray_march(depth, camera.projection_matrix, direction, step_count, uv, step_size);
 		float ray_mask = ray_trace.w;
@@ -131,8 +131,6 @@ mod tests {
 	#[test]
 	fn test_make_ray_march_normals_shader() {
 		let shader = SSGIRenderPass::make_ray_march_normals_shader();
-
-		println!("{}", shader);
 
 		if let Err(e) = ghi::compile_glsl("SSGI Trace Shader", &shader) {
 			panic!("Failed to compile the shader\n{}", e);

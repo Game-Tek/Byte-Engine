@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use utils::r#async::block_on;
 use clap::{Parser, Subcommand};
-use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, StorageBackend};
+use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, resource::{ReadStorageBackend, WriteStorageBackend}};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -71,7 +71,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::List {} => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&destination_path));
+			let storage_backend = resource_management::resource::DbStorageBackend::new(destination_path.into());
 
 			match block_on(storage_backend.list()) {
 				Ok(resources) => {
@@ -153,7 +153,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::Delete { ids } => {
-			let storage_backend = resource_management::DbStorageBackend::new(std::path::Path::new(&destination_path));
+			let storage_backend = resource_management::resource::DbStorageBackend::new(destination_path.into());
 
 			let mut ok = true;
 
@@ -163,7 +163,7 @@ fn main() -> Result<(), i32> {
 			}
 
 			for id in ids {
-				match block_on(storage_backend.delete(&id)) {
+				match block_on(storage_backend.delete(resource_management::asset::ResourceId::new(&id))) {
 					Ok(()) => {
 						log::info!("Deleted resource '{}'", id);
 					}

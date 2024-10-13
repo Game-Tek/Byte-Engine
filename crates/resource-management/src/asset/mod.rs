@@ -15,6 +15,11 @@ pub mod mesh_asset_handler;
 
 pub type BEADType = json::Value;
 
+pub mod storage_backend;
+
+pub use storage_backend::StorageBackend;
+pub use storage_backend::FileStorageBackend;
+
 /// Loads an asset from source.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
@@ -41,7 +46,9 @@ pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std
 
 			let path = path.join(base.as_ref());
 
-			let mut file = File::open(&path).await.or(Err(()))?;
+			let mut file = File::open(&path).await;
+			log::debug!("Opening file: {:?}", path);
+			let mut file = file.or(Err(()))?;
 
 			spec = {
 				// Append ".bead" to the file name to check for a resource file
@@ -109,6 +116,17 @@ fn get_fragment(url: &str) -> Option<&str> {
 	}
 }
 
+/// A `ResourceId` encapsulates and provides methods for interacting with a full resource id.
+/// A resource id is composed of up to three parts.
+/// The base, the extension and the fragment.
+/// 
+/// "meshes/Box.gltf#texture"
+/// 
+/// "mehses/Box.gltf" is the base
+/// "gltf" is the extension
+/// "texture" is the fragment
+/// 
+/// Fragments like in HTTP urls, allow referencing subresources, they are useful to address elements in container formats.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ResourceId<'a> {
     full: &'a str,

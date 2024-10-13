@@ -3,7 +3,7 @@ use gltf::{mesh::Reader, Buffer};
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
 use utils::{r#async::{spawn_blocking_local, try_join_all}, json::{self, JsonContainerTrait, JsonValueTrait}, spawn, Extent};
 
-use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StorageBackend, StreamDescription};
+use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, resource, asset, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StreamDescription};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -33,7 +33,7 @@ impl Asset for MeshAsset {
         }
     }
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
         let gltf = &self.gltf;
         let buffers = &self.buffers;
 
@@ -568,14 +568,14 @@ impl AssetHandler for MeshAssetHandler {
 		r#type == "gltf" || r#type == "glb"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
         if let Some(dt) = storage_backend.get_type(url) {
             if dt != "gltf" && dt != "glb" {
                 return Err(LoadErrors::UnsupportedType);
             }
         }
 
-        let (data, spec, dt) = storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+        let (data, spec, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
         let (gltf, buffers) = if dt == "glb" {
 			let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -593,7 +593,7 @@ impl AssetHandler for MeshAssetHandler {
 
 			let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| if let gltf::buffer::Source::Uri(r) = b.source() { if r.ends_with(".bin") { Some(r) } else { None } } else { None }) {
 			    let bin_file = ResourceId::new(bin_file);
-				let (bin, _, _) = storage_backend.resolve(bin_file).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+				let (bin, _, _) = asset_storage_backend.resolve(bin_file).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 				gltf.buffers().map(|_| {
 					gltf::buffer::Data(bin.clone().into())
 				}).collect::<Vec<_>>()
@@ -636,30 +636,30 @@ mod tests {
     use utils::r#async::block_on;
 
     use super::MeshAssetHandler;
-    use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, ResourceId,}, mesh::MeshModel, ReferenceModel};
+    use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, ResourceId}, mesh::MeshModel, resource, ReferenceModel};
 
     #[test]
     fn load_gltf() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
+		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
 
-		{
-			let storage_backend = asset_manager.get_test_storage_backend();
+		asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
+		asset_storage_backend.add_file("Box.bema", r#"{
+			"domain": "World",
+			"type": "Surface",
+			"shaders": {
+				"Compute": "shader.besl"
+			},
+			"variables": []
+		}"#.as_bytes());
+		asset_storage_backend.add_file("Texture.bema", r#"{
+			"parent": "Box.bema",
+			"variables": []
+		}"#.as_bytes());
+		asset_storage_backend.add_file("Box.glb.bead", r#"{"asset": {"Texture": {"asset": "Texture.bema" }}}"#.as_bytes());
 
-			storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
-			storage_backend.add_file("Box.bema", r#"{
-				"domain": "World",
-				"type": "Surface",
-				"shaders": {
-					"Compute": "shader.besl"
-				},
-				"variables": []
-			}"#.as_bytes());
-			storage_backend.add_file("Texture.bema", r#"{
-				"parent": "Box.bema",
-				"variables": []
-			}"#.as_bytes());
-			storage_backend.add_file("Box.glb.bead", r#"{"asset": {"Texture": {"asset": "Texture.bema" }}}"#.as_bytes());
-		}
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 
         let asset_handler = MeshAssetHandler::new();
 		asset_manager.add_asset_handler({
@@ -671,13 +671,11 @@ mod tests {
 
 		asset_manager.add_asset_handler(asset_handler);
 
-		let storage_backend = asset_manager.get_test_storage_backend();
-
         let url = "Box.glb";
 
         let mesh: ReferenceModel<MeshModel> = block_on(asset_manager.load(url)).expect("Failed to parse asset");
 
-        let generated_resources = storage_backend.get_resources();
+        let generated_resources = resource_storage_backend.get_resources();
 
         assert_eq!(generated_resources.len(), 4);
 
@@ -689,11 +687,10 @@ mod tests {
 
 	#[test]
     fn load_gltf_with_bin() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
-		let storage_backend = asset_manager.get_test_storage_backend();
+		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
 
-		storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
-		storage_backend.add_file("Material.bema", r#"{
+		asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
+		asset_storage_backend.add_file("Material.bema", r#"{
 			"domain": "World",
 			"type": "Surface",
 			"shaders": {
@@ -701,11 +698,15 @@ mod tests {
 			},
 			"variables": []
 		}"#.as_bytes());
-		storage_backend.add_file("Suzanne.bema", r#"{
+		asset_storage_backend.add_file("Suzanne.bema", r#"{
 			"parent": "Material.bema",
 			"variables": []
 		}"#.as_bytes());
-		storage_backend.add_file("Suzanne.gltf.bead", r#"{"asset": {"Suzanne": {"asset": "Suzanne.bema" }}}"#.as_bytes());
+		asset_storage_backend.add_file("Suzanne.gltf.bead", r#"{"asset": {"Suzanne": {"asset": "Suzanne.bema" }}}"#.as_bytes());
+
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager.add_asset_handler({
 			let mut material_asset_handler = MaterialAssetHandler::new();
@@ -720,11 +721,9 @@ mod tests {
 
         let url = "Suzanne.gltf";
 
-		let storage_backend = asset_manager.get_test_storage_backend();
-
         let mesh: ReferenceModel<MeshModel> = block_on(asset_manager.load(url,)).expect("Failed to parse asset");
 
-        let generated_resources = storage_backend.get_resources();
+        let generated_resources = resource_storage_backend.get_resources();
 
         assert_eq!(generated_resources.len(), 4);
 
@@ -740,7 +739,7 @@ mod tests {
 		// assert_eq!(vertex_count, 11808);
 		let vertex_count = 11808;
 
-		let buffer = storage_backend.get_resource_data_by_name(url).unwrap();
+		let buffer = resource_storage_backend.get_resource_data_by_name(url).unwrap();
 
 		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], vertex_count) };
 
@@ -767,11 +766,14 @@ mod tests {
     #[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
+		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
 
-		let storage_backend = asset_manager.get_test_storage_backend();
+		asset_storage_backend.add_file("shaders/pbr.besl", "main: fn () -> void {}".as_bytes());
 
-		storage_backend.add_file("shaders/pbr.besl", "main: fn () -> void {}".as_bytes());
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+
 		// storage_backend.add_file("PBR.bema", r#"{
 		// 	"domain": "World",
 		// 	"type": "Surface",
@@ -929,9 +931,7 @@ mod tests {
 
         let url = ResourceId::new(url);
 
-		let storage_backend = asset_manager.get_test_storage_backend();
-
-		let buffer = storage_backend.get_resource_data_by_name(url).unwrap();
+		let buffer = resource_storage_backend.get_resource_data_by_name(url).unwrap();
 
 		// let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
 		let vertex_count = 27022;
@@ -954,9 +954,13 @@ mod tests {
 	#[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb_image() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
+		let asset_storage_backend = asset::storage_backend::FileStorageBackend::new("../assets".into());
+		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 
         let asset_handler = MeshAssetHandler::new();
+		let asset_storage_backend = asset::FileStorageBackend::new("../assets".into());
 
 		let image_asset_handler = ImageAssetHandler::new();
 
@@ -964,39 +968,39 @@ mod tests {
 
         let url = ResourceId::new("Revolver.glb#Revolver_Metallic-Revolver_Roughness");
 
-		let storage_backend = asset_manager.get_test_storage_backend();
+        let _ = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,));
 
-        let _ = block_on(asset_handler.load(&asset_manager, storage_backend, url,));
+		let _ = resource_storage_backend.get_resource_data_by_name(url).unwrap();
 
-		let _ = storage_backend.get_resource_data_by_name(url).unwrap();
-
-		let generated_resources = storage_backend.get_resources();
+		let generated_resources = resource_storage_backend.get_resources();
 
 		let resource = &generated_resources[0];
 
 		assert_eq!(resource.class, "Image");
     }
 
-	#[test]
-	#[ignore]
-	fn load_16bit_normal_image() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../resources".into());
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
-		let asset_handler = MeshAssetHandler::new();
+	// #[test]
+	// #[ignore]
+	// fn load_16bit_normal_image() {
+	// 	let asset_storage_backend = asset::storage_backend::FileStorageBackend::new("../assets".into());
+	// 	let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
 
-		let url = ResourceId::new("Revolver.glb#Revolver_Normal_OpenGL");
+	// 	let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 
-		let storage_backend = asset_manager.get_test_storage_backend();
+	// 	asset_manager.add_asset_handler(ImageAssetHandler::new());
+	// 	let asset_handler = MeshAssetHandler::new();
 
-		let _ = block_on(asset_handler.load(&asset_manager, storage_backend, url,)).expect("Image asset handler did not handle asset");
+	// 	let url = ResourceId::new("Revolver.glb#Revolver_Normal_OpenGL");
 
-		// let generated_resources = asset_manager.get_storage_backend().get_resources();
+	// 	let _ = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset handler did not handle asset");
 
-		// assert_eq!(generated_resources.len(), 1);
+	// 	// let generated_resources = asset_manager.get_storage_backend().get_resources();
 
-		// let resource = &generated_resources[0];
+	// 	// assert_eq!(generated_resources.len(), 1);
 
-		// assert_eq!(resource.id, url);
-		// assert_eq!(resource.class, "Image");
-	}
+	// 	// let resource = &generated_resources[0];
+
+	// 	// assert_eq!(resource.id, url);
+	// 	// assert_eq!(resource.class, "Image");
+	// }
 }

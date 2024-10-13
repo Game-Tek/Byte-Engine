@@ -8,6 +8,13 @@ pub mod mesh_resource_handler;
 pub mod material_resource_handler;
 pub mod audio_resource_handler;
 
+pub mod storage_backend;
+
+pub use storage_backend::DbStorageBackend;
+pub use storage_backend::ReadStorageBackend;
+pub use storage_backend::WriteStorageBackend;
+pub use storage_backend::StorageBackend;
+
 #[cfg(test)]
 pub mod tests {
     use crate::StreamDescription;

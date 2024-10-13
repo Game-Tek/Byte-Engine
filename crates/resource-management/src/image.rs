@@ -1,7 +1,4 @@
-use polodb_core::bson;
-use serde::Deserialize;
-
-use crate::{asset::ResourceId, types::{Formats, Gamma}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, StorageBackend};
+use crate::{asset::ResourceId, types::{Formats, Gamma}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, resource};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Image {
@@ -22,9 +19,9 @@ impl Model for Image {
 }
 
 impl <'de> Solver<'de, Reference<Image>> for ReferenceModel<Image> {
-	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<Image>, SolveErrors> {
+	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Image>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let Image { format, extent, gamma } = Image::deserialize(bson::Deserializer::new(gr.resource)).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let Image { format, extent, gamma } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Image {
 			format,

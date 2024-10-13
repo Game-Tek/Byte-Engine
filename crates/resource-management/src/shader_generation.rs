@@ -548,8 +548,10 @@ impl ShaderCompilation {
 						string.push_str(",scalar");
 					}
 					besl::BindingTypes::Image { format } => {
-						string.push(',');
-						string.push_str(&format);
+						if !(*write && !*read) {
+							string.push(',');
+							string.push_str(&format);
+						}
 					}
 					besl::BindingTypes::CombinedImageSampler => {}
 				}
@@ -700,7 +702,7 @@ mod tests {
 
 		// We have to split the assertions because the order of the bindings is not guaranteed.
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
-		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
+		assert_string_contains!(shader, "layout(set=0,binding=1) writeonly uniform image2D image;");
 		assert_string_contains!(shader, "layout(set=1,binding=0) uniform sampler2D texture;");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
 

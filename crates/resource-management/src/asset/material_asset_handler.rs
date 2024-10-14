@@ -115,7 +115,7 @@ impl Asset for MaterialAsset {
 
 			let shaders = shaders.or(Err("Failed to build shader(s)".to_string()))?;
 
-			let resource = ProcessedAsset::new(url, MaterialModel {
+			let resource = MaterialModel {
 				double_sided: false,
 				alpha_mode: AlphaMode::Opaque,
 				model: RenderModel {
@@ -124,7 +124,12 @@ impl Asset for MaterialAsset {
 				},
 				shaders: shaders.into_iter().map(|(s, _)| s).collect(),
 				parameters,
-			});
+			};
+
+			let bytes = pot::to_vec(&resource).unwrap();
+			let reconstructed: MaterialModel = pot::from_slice(&bytes).unwrap();
+
+			let resource = ProcessedAsset::new(url, resource);
 
 			storage_backend.store(&resource, &[]).await;
 
@@ -134,21 +139,20 @@ impl Asset for MaterialAsset {
 
 			let material = asset_manager.load(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
 
-			#[derive(Debug, serde::Deserialize)]
-			struct MaterialAssetParameter {
-				name: String,
-				r#type: String,
-			}
+			// #[derive(Debug, serde::Deserialize)]
+			// struct MaterialAssetParameter {
+			// 	name: String,
+			// 	r#type: String,
+			// }
 
-			#[derive(Debug, serde::Deserialize)]
-			struct MaterialAssetRepresentation {
-				parameters: Vec<MaterialAssetParameter>,
-			}
+			// #[derive(Debug, serde::Deserialize)]
+			// struct MaterialAssetRepresentation {
+			// 	parameters: Vec<MaterialAssetParameter>,
+			// }
 
-			let material_repr: pot::OwnedValue = pot::from_slice(&material.resource).unwrap();
-			let material_repr: MaterialAssetRepresentation = Data::deserialize_as(&material_repr).unwrap();
+			let material_repr: MaterialModel = pot::from_slice(&material.resource).unwrap();
 
-			let values = try_join_all(material_repr.parameters.iter().map(async |v: &MaterialAssetParameter| {
+			let values = try_join_all(material_repr.parameters.iter().map(async |v: &ParameterModel| {
 				let value = match asset["variables"].as_array() {
 					Some(variables) => {
 						match variables.iter().find(|v2| { v2["name"].as_str().unwrap() == v.name }) {
@@ -487,7 +491,7 @@ pub mod tests {
 
 		assert_eq!(generated_resources.len(), 2);
 
-		let shader = &generated_resources[0];
+		let shader = resource_storage_backend.get_resource(ResourceId::new("fragment.besl")).expect("Expected shader");
 
 		assert_eq!(shader.id, "fragment.besl");
 		assert_eq!(shader.class, "Shader");
@@ -498,7 +502,7 @@ pub mod tests {
 		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
 		assert!(shader_spirv.contains("void main()"));
 
-		let material = &generated_resources[1];
+		let material = resource_storage_backend.get_resource(ResourceId::new("material.bema")).expect("Expected material");
 
 		assert_eq!(material.id, "material.bema");
 		assert_eq!(material.class, "Material");
@@ -560,7 +564,7 @@ pub mod tests {
 		let generated_resources = resource_storage_backend.get_resources();
 		assert_eq!(generated_resources.len(), 3);
 
-		let shader = &generated_resources[0];
+		let shader = resource_storage_backend.get_resource(ResourceId::new("fragment.besl")).expect("Expected shader");
 
 		assert_eq!(shader.id, "fragment.besl");
 		assert_eq!(shader.class, "Shader");
@@ -571,12 +575,12 @@ pub mod tests {
 		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
 		assert!(shader_spirv.contains("void main()"));
 
-		let material = &generated_resources[1];
+		let material = resource_storage_backend.get_resource(ResourceId::new("material.bema")).expect("Expected material");
 
 		assert_eq!(material.id, "material.bema");
 		assert_eq!(material.class, "Material");
 
-		let variant = &generated_resources[2];
+		let variant = resource_storage_backend.get_resource(ResourceId::new("variant.bema")).expect("Expected variant");
 
 		assert_eq!(variant.id, "variant.bema");
 		assert_eq!(variant.class, "Variant");

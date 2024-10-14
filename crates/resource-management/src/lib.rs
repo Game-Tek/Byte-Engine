@@ -5,7 +5,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 #![feature(stmt_expr_attributes)]
-#![feature(path_file_prefix)]
+#![feature(path_file_prefix, path_add_extension)]
 #![feature(trait_upcasting)]
 #![feature(map_try_insert)]
 #![feature(future_join)]
@@ -62,7 +62,7 @@ impl ProcessedAsset {
         ProcessedAsset {
             id: id.to_string(),
             class: T::get_class().to_string(),
-            resource: pot::to_vec(&Data::from_serialize(resource).unwrap()).unwrap(),
+            resource: pot::to_vec(&resource).unwrap(),
             streams: None,
         }
     }
@@ -124,7 +124,7 @@ impl StreamDescription {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BaseResource {
     /// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
     id: String,
@@ -164,7 +164,7 @@ impl GenericResourceResponse {
 
 impl <M: Model> Into<ReferenceModel<M>> for GenericResourceResponse {
 	fn into(self) -> ReferenceModel<M> {
-		ReferenceModel::new_serialized(&self.id, self.hash, self.size, Data::from(self.resource), self.streams)
+		ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
 	}
 }
 
@@ -197,13 +197,13 @@ impl<T: Model> ReferenceModel<T> {
         }
     }
 
-    pub fn new_serialized(id: &str, hash: u64, size: usize, resource: Data, streams: Option<Vec<StreamDescription>>) -> Self {
+    pub fn new_serialized(id: &str, hash: u64, size: usize, resource: DataStorage, streams: Option<Vec<StreamDescription>>) -> Self {
         ReferenceModel {
             id: id.to_string(),
             hash,
 			size,
             class: T::get_class().to_string(),
-            resource: pot::to_vec(&resource).unwrap(),
+            resource,
             phantom: std::marker::PhantomData,
 			streams,
         }

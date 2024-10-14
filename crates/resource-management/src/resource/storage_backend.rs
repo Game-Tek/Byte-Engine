@@ -62,8 +62,7 @@ impl DbStorageBackend {
             redb::Database::create(base_path.join("resources.db"))
         } else {
             log::info!("Using memory database instead of file database.");
-			panic!();
-            // polodb_core::Database::
+			redb::Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())
         };
 
         let db = match db_res {
@@ -125,7 +124,6 @@ impl DbStorageBackend {
 	// }
 }
 
-// #[cfg(not(test))]
 impl ReadStorageBackend for DbStorageBackend {
     fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>> {
         Box::pin(async move {
@@ -170,11 +168,19 @@ impl ReadStorageBackend for DbStorageBackend {
 					GenericResourceResponse::new(id, hash, class, size, resource, streams)
 				};			
 	
-				let resource_reader = FileResourceReader::new(
-					File::open(base_path.join(&uid)).await.ok()?,
-				);
-	
-				Some((resource, resource_reader))
+				#[cfg(not(test))]
+				{
+					let resource_reader = FileResourceReader::new(
+						File::open(base_path.join(&uid)).await.ok()?,
+					);
+		
+					Some((resource, resource_reader))
+				}
+
+				#[cfg(test)]
+				{
+					unreachable!();
+				}
 			})
 		} else {
 			Box::pin(async move { None })
@@ -293,10 +299,25 @@ impl TestStorageBackend {
 			ProcessedAsset {
 				id: resource.id,
 				class: resource.class,
-				resource: pot::from_slice(&resource.resource).unwrap(),
+				resource: resource.resource,
 				streams: resource.streams,
 			}
 		}).collect()
+	}
+
+	pub fn get_resource(&self, name: ResourceId<'_>) -> Option<ProcessedAsset> {
+		self.0.lock().unwrap().iter().find(|x| {
+			let resource: BaseResource = pot::from_slice(&x.1.0).unwrap();
+			resource.id == name.as_ref()
+		}).map(|x| {
+			let resource: BaseResource = pot::from_slice(&x.1.0).unwrap();
+			ProcessedAsset {
+				id: resource.id,
+				class: resource.class,
+				resource: resource.resource,
+				streams: resource.streams,
+			}
+		})
 	}
 
 	pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
@@ -316,38 +337,35 @@ impl ReadStorageBackend for TestStorageBackend {
 	}
 
 	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
-		// if let Some((resource, data)) = self.0.lock().unwrap().get(id.as_ref()) {
-		// 	Box::pin(async move {
-		// 		let resource: BaseResource = pot::from_slice(&resource).unwrap();
-		// 		let base_path = std::path::PathBuf::new();
-		// 		let uid = {
-		// 			base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.get_base().as_ref().as_bytes())
-		// 		};
-		// 		let id = id.to_string();
+		let (resource, data) = if let Some(e) = self.0.lock().unwrap().get(id.as_ref()) {
+			(e.0.clone(), e.1.clone())
+		} else {
+			return Box::pin(async move { None });
+		};
+
+		let id = id.get_base().to_string();
+
+		Box::pin(async move {
+			let resource: BaseResource = pot::from_slice(&resource).unwrap();
+	
+			let resource = {
+				let hash = resource.hash;
+				let class = resource.class;
+				let size = resource.size;
+				let streams: Option<Vec<StreamDescription>> = if let Some(arr) = resource.streams {
+					arr.iter().map(|v| {
+						Some(StreamDescription::new(&v.name, v.size as usize, v.offset as usize))
+					}).collect::<Option<Vec<_>>>()
+				} else {
+					None
+				};
+				GenericResourceResponse::new(id, hash, class, size, resource.resource, streams)
+			};			
 		
-		// 		let resource = {
-		// 			let hash = resource.hash;
-		// 			let class = resource.class;
-		// 			let size = resource.size;
-		// 			let streams: Option<Vec<StreamDescription>> = if let Some(arr) = resource.streams {
-		// 				arr.iter().map(|v| {
-		// 					Some(StreamDescription::new(&v.name, v.size as usize, v.offset as usize))
-		// 				}).collect::<Option<Vec<_>>>()
-		// 			} else {
-		// 				None
-		// 			};
-		// 			GenericResourceResponse::new(id, hash, class, size, resource.resource, streams)
-		// 		};			
-			
-		// 		let resource_reader = FileResourceReader::new(
-		// 			File::open(base_path.join(&uid)).await.ok()?,
-		// 		);
-		
-		// 		Some((resource, resource_reader))
-		// 	})
-		// } else {
-		// }
-		Box::pin(async move { None })
+			let resource_reader = FileResourceReader::new(data);
+	
+			Some((resource, resource_reader))
+		})		
 	}
 }
 
@@ -375,14 +393,15 @@ impl WriteStorageBackend for TestStorageBackend {
 				hasher.finish()
 			};
 
-			let serialized_resource = Data::from_serialize(&resource.resource).unwrap();
-			let serialized_resource_bytes = pot::to_vec(&serialized_resource).unwrap();
+			let serialized_resource_bytes = resource.resource.clone();
 
-			let resource = BaseResource { id: id.clone(), hash, class, size, streams, resource: pot::to_vec(&resource.resource).unwrap() };
+			let container = BaseResource { id: id.clone(), hash, class, size, streams, resource: resource.resource.clone() };
+			
+			let serialized_container = pot::to_vec(&container).unwrap();
 
-			self.0.lock().unwrap().insert(id.clone(), (serialized_resource_bytes.clone().into(), data.into()));
+			self.0.lock().unwrap().insert(id.clone(), (serialized_container.into(), data.into()));
 
-			Ok(GenericResourceResponse::new(id, hash, resource.class.clone(), size, serialized_resource_bytes, resource.streams.clone()))
+			Ok(GenericResourceResponse::new(id, hash, container.class.clone(), size, serialized_resource_bytes, container.streams.clone()))
 		})
 	}
 

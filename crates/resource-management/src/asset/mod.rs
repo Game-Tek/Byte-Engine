@@ -46,14 +46,12 @@ pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std
 
 			let path = path.join(base.as_ref());
 
-			let mut file = File::open(&path).await;
-			log::debug!("Opening file: {:?}", path);
+			let file = File::open(&path).await;
 			let mut file = file.or(Err(()))?;
 
 			spec = {
 				// Append ".bead" to the file name to check for a resource file
-				let mut spec_path = path.clone().as_os_str().to_os_string();
-				spec_path.push(".bead");
+				let spec_path = path.with_added_extension("bead");
 				let file = File::open(spec_path).await.ok();
 				if let Some(mut file) = file {
 					let mut spec_bytes = Vec::with_capacity(file.metadata().await.unwrap().len() as usize);

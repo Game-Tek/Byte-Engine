@@ -358,11 +358,12 @@ mod tests {
 
 	#[test]
 	fn load_image() {
-		let asset_manager = AssetManager::new("../assets".into(), "../resources".into());
 		let asset_handler = ImageAssetHandler::new();
-
-		let asset_storage_backend = asset::FileStorageBackend::new("../assets".into());
+		
+		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
 		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 

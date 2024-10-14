@@ -583,13 +583,7 @@ impl AssetHandler for MeshAssetHandler {
 			let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect())).map_err(|e| LoadErrors::FailedToProcess)?;
 			(gltf, buffers)
 		} else {
-		  let path: String = if cfg!(test) {
-				"../assets/".to_string() + url.get_base().as_ref()
-			} else {
-				"assets/".to_string() + url.get_base().as_ref()
-			};
-
-			let gltf = gltf::Gltf::open(path).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
+			let gltf = gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
 
 			let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| if let gltf::buffer::Source::Uri(r) = b.source() { if r.ends_with(".bin") { Some(r) } else { None } } else { None }) {
 			    let bin_file = ResourceId::new(bin_file);

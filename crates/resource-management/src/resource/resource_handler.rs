@@ -103,29 +103,29 @@ pub trait ResourceReader: Send + Sync + Debug {
 
 #[derive(Debug)]
 pub struct FileResourceReader {
-	// #[cfg(not(test))]
+	#[cfg(not(test))]
 	file: File,
-	// #[cfg(test)]
-	// data: Box<[u8]>,
+	#[cfg(test)]
+	data: Box<[u8]>,
 }
 
 impl FileResourceReader {
-	// #[cfg(not(test))]
+	#[cfg(not(test))]
 	pub fn new(file: File) -> Self {
 		Self {
 			file,
 		}
 	}
 
-	// #[cfg(test)]
-	// pub fn new(data: Box<[u8]>) -> Self {
-	// 	Self {
-	// 		data,
-	// 	}
-	// }
+	#[cfg(test)]
+	pub fn new(data: Box<[u8]>) -> Self {
+		Self {
+			data,
+		}
+	}
 }
 
-// #[cfg(not(test))]
+#[cfg(not(test))]
 impl ResourceReader for FileResourceReader {
 	fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> utils::BoxedFuture<'b, Result<LoadTargets<'a>, ()>> {
 		Box::pin(async move {
@@ -164,38 +164,38 @@ impl ResourceReader for FileResourceReader {
 	}
 }
 
-// #[cfg(test)]
-// impl ResourceReader for FileResourceReader {
-// 	fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> utils::BoxedFuture<'b, Result<LoadTargets<'a>, ()>> {
-// 		Box::pin(async move {
-// 			match read_target {
-// 				ReadTargets::Buffer(buffer) => {
-// 					buffer.copy_from_slice(&self.data[..buffer.len()]);
-// 					Ok(LoadTargets::Buffer(buffer))
-// 				}
-// 				ReadTargets::Box(mut buffer) => {
-// 					buffer.copy_from_slice(&self.data[..buffer.len()]);
-// 					Ok(LoadTargets::Box(buffer))
-// 				}
-// 				ReadTargets::Streams(mut streams) => {
-// 					if let Some(stream_descriptions) = stream_descriptions{
-// 						for sd in stream_descriptions {
-// 							let offset = sd.offset;
-// 							if let Some(s) = streams.iter_mut().find(|s| s.name == sd.name) {
-// 								s.buffer.copy_from_slice(&self.data[offset..][..s.buffer.len()]);
-// 							}
-// 						}
-// 						Ok(LoadTargets::Streams(streams.into_iter().map(|stream| {
-// 							Stream {
-// 								name: stream.name,
-// 								buffer: stream.buffer,
-// 							}
-// 						}).collect()))
-// 					} else {
-// 						Err(())
-// 					}
-// 				}
-// 			}
-// 		})
-// 	}
-// }
+#[cfg(test)]
+impl ResourceReader for FileResourceReader {
+	fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> utils::BoxedFuture<'b, Result<LoadTargets<'a>, ()>> {
+		Box::pin(async move {
+			match read_target {
+				ReadTargets::Buffer(buffer) => {
+					buffer.copy_from_slice(&self.data[..buffer.len()]);
+					Ok(LoadTargets::Buffer(buffer))
+				}
+				ReadTargets::Box(mut buffer) => {
+					buffer.copy_from_slice(&self.data[..buffer.len()]);
+					Ok(LoadTargets::Box(buffer))
+				}
+				ReadTargets::Streams(mut streams) => {
+					if let Some(stream_descriptions) = stream_descriptions{
+						for sd in stream_descriptions {
+							let offset = sd.offset;
+							if let Some(s) = streams.iter_mut().find(|s| s.name == sd.name) {
+								s.buffer.copy_from_slice(&self.data[offset..][..s.buffer.len()]);
+							}
+						}
+						Ok(LoadTargets::Streams(streams.into_iter().map(|stream| {
+							Stream {
+								name: stream.name,
+								buffer: stream.buffer,
+							}
+						}).collect()))
+					} else {
+						Err(())
+					}
+				}
+			}
+		})
+	}
+}

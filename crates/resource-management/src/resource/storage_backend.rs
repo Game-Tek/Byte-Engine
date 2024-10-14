@@ -40,11 +40,6 @@ downcast_rs::impl_downcast!(WriteStorageBackend);
 pub struct DbStorageBackend {
     db: redb::Database,
     base_path: std::path::PathBuf,
-
-	// #[cfg(test)]
-	// resources: Arc<Mutex<Vec<(ProcessedAsset, Box<[u8]>)>>>,
-	// #[cfg(test)]
-	// files: Arc<Mutex<HashMap<&'static str, Box<[u8]>>>>,
 }
 
 const TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("resources");
@@ -68,28 +63,9 @@ impl DbStorageBackend {
         let db = match db_res {
             Ok(db) => db,
             Err(_) => {
-                // // Delete file and try again
-                // std::fs::remove_file(path).unwrap();
-
-                // log::warn!("Database file was corrupted, deleting and trying again.");
-
-                // let db_res = polodb_core::Database::open_file(path);
-
-                // match db_res {
-                // 	Ok(db) => db,
-                // 	Err(_) => match polodb_core::Database::open_memory() { // If we can't create a file database, create a memory database. This way we can still run the application.
-                // 		Ok(db) => {
-                // 			log::error!("Could not create database file, using memory database instead.");
-                // 			db
-                // 		},
-                // 		Err(_) => panic!("Could not create database"),
-                // 	}
-                // }
                 panic!("Could not create database")
             }
         };
-
-        // db.collection::<bson::Document>("resources").create_index(polodb_core::IndexModel{ keys: bson::doc! { "id": 1 }, options: Some(polodb_core::IndexOptions{ name: None, unique: Some(true) }) });
 
 		{
 			let write = db.begin_write().unwrap();
@@ -100,28 +76,8 @@ impl DbStorageBackend {
         DbStorageBackend {
             db,
             base_path,
-
-			// #[cfg(test)]
-			// resources: Arc::new(Mutex::new(Vec::new())),
-			// #[cfg(test)]
-			// files: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-
-	// #[cfg(test)]
-	// pub fn add_file(&self, name: &'static str, data: &[u8]) {
-	// 	self.files.lock().unwrap().insert(name, data.into());
-	// }
-
-	// #[cfg(test)]
-	// pub fn get_resources(&self) -> Vec<ProcessedAsset> {
-	// 	self.resources.lock().unwrap().iter().map(|x| x.0.clone()).collect()
-	// }
-
-	// #[cfg(test)]
-	// pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
-	// 	Some(self.resources.lock().unwrap().iter().find(|x| x.0.id == name.as_ref())?.1.clone())
-	// }
 }
 
 impl ReadStorageBackend for DbStorageBackend {
@@ -221,28 +177,29 @@ impl WriteStorageBackend for DbStorageBackend {
 
 				hasher.finish()
             };
-
-			let serialized_resource = Data::from_serialize(&resource.resource).unwrap();
-			let serialized_resource_bytes = pot::to_vec(&serialized_resource).unwrap();
 			
             {
-				let resource = BaseResource { id, hash, class, size, streams, resource: pot::to_vec(&resource.resource).unwrap() };
+				let resource = BaseResource { id, hash, class, size, streams, resource: resource.resource.clone() };
 				let write = self.db.begin_write().unwrap();
 				{
 					let mut table = write.open_table(TABLE).unwrap();
-					table.insert(resource.id.as_str(), serialized_resource_bytes.as_slice()).unwrap();
+					table.insert(resource.id.as_str(), pot::to_vec(&resource).unwrap().as_slice()).unwrap();
 				}
 				write.commit();
 			}
 
-            let resource_path = self.base_path.join(std::path::Path::new(&resource.id));
+			let uid = {
+				base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&resource.id)
+			};
+
+            let resource_path = self.base_path.join(std::path::Path::new(&uid));
 
             let mut file = File::create(resource_path).await.or(Err(()))?;
 
             file.write_all(data).await.or(Err(()))?;
             file.flush().await.or(Err(()))?; // Must flush to ensure the file is written to disk, or else reads can cause failures
 
-            Ok(GenericResourceResponse::new(resource.id.clone(), hash, resource.class.clone(), size, serialized_resource_bytes, resource.streams.clone()))
+            Ok(GenericResourceResponse::new(resource.id.clone(), hash, resource.class.clone(), size, resource.resource.clone(), resource.streams.clone()))
         })
     }
 

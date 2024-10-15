@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, render_debugger::RenderDebugger, window, Size};
+use crate::{graphics_hardware_interface, image::ImageBuilder, render_debugger::RenderDebugger, window, Size};
 
 pub struct VulkanGHI {
 	entry: ash::Entry,
@@ -770,7 +770,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::ImageHandle {
+	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases, array_layers: u32) -> graphics_hardware_interface::ImageHandle {
 		let size = (extent.width() * extent.height() * extent.depth()) as usize * format.size();
 
 		let texture_handle = graphics_hardware_interface::ImageHandle(self.images.len() as u64);
@@ -791,7 +791,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					device_accesses
 				};
 
-				let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, m_device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+				let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, m_device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1, array_layers);
 	
 				let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, texture_creation_result.memory_flags.into(), m_device_accesses);
 	
@@ -862,6 +862,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					format_: format,
 					layout: vk::ImageLayout::UNDEFINED,
 					uses: resource_uses,
+					layers: array_layers,
 				});
 			} else {
 				self.images.push(Image {
@@ -879,6 +880,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					format_: format,
 					layout: vk::ImageLayout::UNDEFINED,
 					uses: resource_uses,
+					layers: array_layers,
 				});
 			}
 
@@ -890,6 +892,10 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 
 		texture_handle
+	}
+
+	fn build_image(&mut self, builder: ImageBuilder) -> graphics_hardware_interface::ImageHandle {
+		self.create_image(builder.name, builder.extent, builder.format, builder.resource_uses, builder.device_accesses, builder.use_case, builder.array_layers)
 	}
 
 	fn create_sampler(&mut self, filtering_mode: graphics_hardware_interface::FilteringModes, reduction_mode: graphics_hardware_interface::SamplingReductionModes, mip_map_filter: graphics_hardware_interface::FilteringModes, address_mode: graphics_hardware_interface::SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> graphics_hardware_interface::SamplerHandle {
@@ -1124,7 +1130,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		for image_handle in &image_handles {
 			#[cfg(debug_assertions)]
-			let Image { ref name, image: vk_image, image_view, format_, uses, .. } = self.images[image_handle.0 as usize];
+			let Image { ref name, image: vk_image, image_view, format_, uses, layers, .. } = self.images[image_handle.0 as usize];
 			#[cfg(not(debug_assertions))]
 			let Image { image: vk_image, image_view, format_, uses, .. } = self.images[image_handle.0 as usize];
 	
@@ -1138,9 +1144,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
 	
 			#[cfg(debug_assertions)]
-			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1, layers);
 			#[cfg(not(debug_assertions))]
-			let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1);
+			let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1, layers);
 	
 			let (allocation_handle, _) = self.create_allocation_internal(r.size, r.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 	
@@ -1616,6 +1622,7 @@ pub(crate) struct Image {
 	layout: vk::ImageLayout,
 	size: usize,
 	uses: graphics_hardware_interface::Uses,
+	layers: u32,
 }
 
 unsafe impl Send for Image {}
@@ -2655,13 +2662,13 @@ impl VulkanGHI {
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
 
-	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, _access_policies: graphics_hardware_interface::AccessPolicies, mip_levels: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
+	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, _access_policies: graphics_hardware_interface::AccessPolicies, mip_levels: u32, array_layers: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_create_info = vk::ImageCreateInfo::default()
 			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format))
 			.extent(extent)
 			.mip_levels(mip_levels)
-			.array_layers(1)
+			.array_layers(array_layers)
 			.samples(vk::SampleCountFlags::TYPE_1)
 			.tiling(vk::ImageTiling::OPTIMAL)
 			.usage(into_vk_image_usage_flags(resource_uses, format))

@@ -1,3 +1,4 @@
+use std::mem::transmute;
 use std::ops::DerefMut;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,7 +33,8 @@ use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::texture_manager::TextureManager;
-use crate::rendering::{directional_light, mesh, point_light, world_render_domain};
+use crate::rendering::view::View;
+use crate::rendering::{csm, directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::Vector2;
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
@@ -174,7 +176,7 @@ pub struct VisibilityWorldRenderDomain {
 	diffuse: ghi::ImageHandle,
 	depth_target: ghi::ImageHandle,
 
-	camera_data_buffer_handle: ghi::BaseBufferHandle,
+	views_data_buffer_handle: ghi::BaseBufferHandle,
 	materials_data_buffer_handle: ghi::BaseBufferHandle,
 
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
@@ -212,7 +214,8 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 /* BASE */
-pub const CAMERA_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::RAYGEN).union(ghi::Stages::COMPUTE));
+/// Binding to access the views which may be used to render the scene.
+pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::RAYGEN).union(ghi::Stages::COMPUTE));
 pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE));
 pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
 pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
@@ -255,16 +258,16 @@ impl VisibilityWorldRenderDomain {
 			let primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), std::mem::size_of::<[[u16; 3]; MAX_PRIMITIVE_TRIANGLES]>(), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 			let meshlets_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshlets Data"), std::mem::size_of::<[ShaderMeshletData; MAX_MESHLETS]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
 
-			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let albedo = ghi_instance.create_image(Some("albedo"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+			let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+			let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 
-			let camera_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Camera Data"), std::mem::size_of::<[ShaderCameraData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let views_data_buffer_handle = ghi_instance.create_buffer(Some("Visibility Views Data"), std::mem::size_of::<[ShaderViewData; 8]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let meshes_data_buffer = ghi_instance.create_buffer(Some("Visibility Meshes Data"), std::mem::size_of::<[ShaderMesh; MAX_INSTANCES]>(), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 			let bindings = [
-				CAMERA_DATA_BINDING,
+				VIEWS_DATA_BINDING,
 				MESH_DATA_BINDING,
 				VERTEX_POSITIONS_BINDING,
 				VERTEX_NORMALS_BINDING,
@@ -277,11 +280,14 @@ impl VisibilityWorldRenderDomain {
 
 			let descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
 
-			let pipeline_layout_handle = ghi_instance.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4)]);
+			// Push constant:
+			// 4 bytes for the view index
+			// 4 bytes for the mesh index
+			let pipeline_layout_handle = ghi_instance.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4 + 4)]);
 
 			let descriptor_set = ghi_instance.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
-			let camera_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&CAMERA_DATA_BINDING, camera_data_buffer_handle));
+			let views_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle));
 			let meshes_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer));
 			let vertex_positions_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer_handle));
 			let vertex_normals_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer_handle));
@@ -291,8 +297,8 @@ impl VisibilityWorldRenderDomain {
 			let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer));
 			let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &TEXTURES_BINDING);
 
-			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+			let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 
 			let bindings = [
 				MATERIAL_COUNT_BINDING,
@@ -344,7 +350,7 @@ impl VisibilityWorldRenderDomain {
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 			let depth_sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
-			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 
 			let shadow_map_image = {
 				shadow_render_pass.read_sync().get_shadow_map_image()
@@ -354,14 +360,14 @@ impl VisibilityWorldRenderDomain {
 			let material_evaluation_descriptor_set = ghi_instance.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
 
 			let albedo_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::image(&bindings[0], albedo, ghi::Layouts::General));
-			let camera_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[1], camera_data_buffer_handle));
+			let camera_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[1], views_data_buffer_handle));
 			let diffuse_target_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::image(&bindings[2], diffuse, ghi::Layouts::General));
 			let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], light_data_buffer));
 			let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], materials_data_buffer_handle));
 			let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[6], occlusion_map, sampler, ghi::Layouts::Read));
 			let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], shadow_map_image, depth_sampler, ghi::Layouts::Read));
 
-			let material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 }]);
+			let material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 + 4 }]);
 
 			let transfer_synchronizer = ghi_instance.create_synchronizer(Some("Transfer Synchronizer"), false);
 			let transfer_command_buffer = ghi_instance.create_command_buffer(Some("Transfer"));
@@ -421,7 +427,7 @@ impl VisibilityWorldRenderDomain {
 				diffuse,
 				depth_target,
 
-				camera_data_buffer_handle,
+				views_data_buffer_handle,
 
 				meshes_data_buffer,
 				meshlets_data_buffer,
@@ -745,7 +751,7 @@ impl VisibilityWorldRenderDomain {
 					match resource.resource().model.pass.as_str() {
 						"MaterialEvaluation" => {
 							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, &[
-								CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+								VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 								MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 								VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 								VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -769,8 +775,6 @@ impl VisibilityWorldRenderDomain {
 							let mut ghi = ghi.write();
 	
 							let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
-
-							println!("Index {} for material {}", index, resource.id());
 					
 							let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 					
@@ -834,7 +838,7 @@ impl VisibilityWorldRenderDomain {
 			}).collect();
 
 			let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &[
-				CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -909,8 +913,6 @@ impl VisibilityWorldRenderDomain {
 				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 		
 				let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
-
-				println!("Index {} for material variant {}", index, resource.id());
 		
 				let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
 		
@@ -951,34 +953,33 @@ impl VisibilityWorldRenderDomain {
 	pub fn prepare(&mut self, ghi: &mut ghi::GHI, extent: Extent, modulo_frame_index: u32) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
-		let camera_data_buffer = ghi.get_mut_buffer_slice(self.camera_data_buffer_handle);
+		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
 
 		let (camera_position, camera_orientation, fov_y) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
 
 		let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 
-		let view_matrix = math::look_at(camera_orientation) * maths_rs::Mat4f::from_translation(-camera_position);
-		let projection_matrix = math::projection_matrix(fov_y, aspect_ratio, 0.1f32, 100f32);
-		let view_projection_matrix = projection_matrix * view_matrix;
+		let view = View::new_perspective(fov_y, aspect_ratio, 0.1f32, 100f32, camera_position, camera_orientation);
+
 		let fov = {
-			let fov_x = 2f32 * ((fov_y / 2f32).to_radians().tan() * aspect_ratio).atan();
+			let fov_x = 2f32 * ((fov_y / 2f32).to_radians().tan() * aspect_ratio).atan(); // Is this correct?
 			let fov_y = fov_y.to_radians();
 			[fov_x, fov_y]
 		};
 
-		let camera_data_reference = unsafe { (camera_data_buffer.as_mut_ptr() as *mut ShaderCameraData).as_mut().unwrap() };
+		let views_data_reference: &mut [ShaderViewData] = unsafe { transmute(views_data_buffer) };
 
-		let camera = ShaderCameraData {
-			view_matrix,
-			projection_matrix,
-			view_projection_matrix,
-			inverse_view_matrix: math::inverse(view_matrix),
-			inverse_projection_matrix: math::inverse(projection_matrix),
-			inverse_view_projection_matrix: math::inverse(view_projection_matrix),
+		let camera = ShaderViewData {
+			view_matrix: view.view(),
+			projection_matrix: view.projection(),
+			view_projection_matrix: view.view_projection(),
+			inverse_view_matrix: math::inverse(view.view()),
+			inverse_projection_matrix: math::inverse(view.projection_view()),
+			inverse_view_projection_matrix: math::inverse(view.projection_view()),
 			fov,
 		};
 
-		*camera_data_reference = camera;
+		views_data_reference[0] = camera;
 
 		{
 			let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
@@ -997,42 +998,11 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		{
+			let lights_data_buffer = ghi.get_mut_buffer_slice(self.light_data_buffer);
+			let lights_data_reference: &mut LightingData = unsafe { lights_data_buffer.as_mut_ptr().cast::<LightingData>().as_mut().unwrap() };
+
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
-
-			let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
-
-			
-			for (i, light) in self.lights.iter().enumerate() {
-				let light = light.read_sync();
-				
-				let x = 8f32;
-				let light_position = Vector3::new(camera_position.x, 0f32, camera_position.z) + Vector3::new(0f32, 0f32, x / 2f32);
-
-				let light_projection_matrix = math::orthographic_matrix(x, x, -5f32, 5f32);
-	
-				let direction = light.direction;
-				let direction_matrix = math::from_normal(direction) * math::from_normal(Vector3::new(camera_orientation.x, 0f32, camera_orientation.z));
-				let light_view_matrix = direction_matrix * maths_rs::Mat4f::from_translation(-light_position);
-	
-				let vp_matrix = light_projection_matrix * light_view_matrix;
-	
-				lighting_data.lights[i].light_type = 'D' as u8;
-				lighting_data.lights[i].view_matrix = light_view_matrix;
-				lighting_data.lights[i].projection_matrix = light_projection_matrix;
-				lighting_data.lights[i].vp_matrix = vp_matrix;
-				lighting_data.lights[i].position = direction;
-				lighting_data.lights[i].color = light.color;
-
-				if i == 0 {
-					if let Some(most_significant_light) = Some(lighting_data.lights[0]) {		
-						shadow_render_pass.prepare(ghi, most_significant_light);
-					}
-				}
-			}
-
-			lighting_data.count = self.lights.len() as u32;
-
-			assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
+			shadow_render_pass.prepare(ghi, &self.lights, views_data_reference, lights_data_reference, &view);
 		}
 
 		Some(())
@@ -1077,12 +1047,14 @@ impl VisibilityWorldRenderDomain {
 
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 
+		command_buffer_recording.write_push_constant(&self.material_evaluation_pipeline_layout, 0, 0); // Set view index to 0 (camera)
+
 		for (name, index, pipeline) in opaque_materials {
 			command_buffer_recording.start_region(&format!("Material: {}", name));
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
 			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
-			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 0, index);
+			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 4, index); // Set material index
 			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, index as usize);
 			command_buffer_recording.end_region();
 		}
@@ -1098,7 +1070,7 @@ impl VisibilityWorldRenderDomain {
 			// No need for sync here, as each thread across all invocations will write to a different pixel
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
 			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
-			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 0, index);
+			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 4, index); // Set material index
 			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, index as usize);
 			command_buffer_recording.end_region();
 		}
@@ -1172,22 +1144,19 @@ pub struct LightingData {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-struct ShaderCameraData {
-	view_matrix: maths_rs::Mat4f,
-	projection_matrix: maths_rs::Mat4f,
-	view_projection_matrix: maths_rs::Mat4f,
-	inverse_view_matrix: maths_rs::Mat4f,
-	inverse_projection_matrix: maths_rs::Mat4f,
-	inverse_view_projection_matrix: maths_rs::Mat4f,
-	fov: [f32; 2],
+pub(crate) struct ShaderViewData {
+	pub(crate) view_matrix: maths_rs::Mat4f,
+	pub(crate) projection_matrix: maths_rs::Mat4f,
+	pub(crate) view_projection_matrix: maths_rs::Mat4f,
+	pub(crate) inverse_view_matrix: maths_rs::Mat4f,
+	pub(crate) inverse_projection_matrix: maths_rs::Mat4f,
+	pub(crate) inverse_view_projection_matrix: maths_rs::Mat4f,
+	pub(crate) fov: [f32; 2],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct LightData {
-	pub view_matrix: Mat4f,
-	pub projection_matrix: Mat4f,
-	pub vp_matrix: Mat4f,
 	pub position: Vector3,
 	pub color: Vector3,
 	pub light_type: u8,
@@ -1272,9 +1241,6 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 		let light_index = lighting_data.count as usize;
 
 		lighting_data.lights[light_index].light_type = 'P' as u8;
-		lighting_data.lights[light_index].view_matrix = maths_rs::Mat4f::identity();
-		lighting_data.lights[light_index].projection_matrix = maths_rs::Mat4f::identity();
-		lighting_data.lights[light_index].vp_matrix = maths_rs::Mat4f::identity();
 		lighting_data.lights[light_index].position = light.position;
 		lighting_data.lights[light_index].color = light.color;
 
@@ -1324,7 +1290,7 @@ impl VisibilityPass {
 	pub fn new(ghi_instance: &mut ghi::GHI, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
 		let visibility_pass_mesh_shader = ghi_instance.create_shader(Some("Visibility Pass Mesh Shader"), ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
 			&[
-				CAMERA_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -1589,11 +1555,11 @@ pub fn get_visibility_pass_mesh_source() -> String {
 	};
 
 	let main_code = r#"
-	Camera camera = camera.camera;
-	process_meshlet(push_constant.instance_index, camera.view_projection);
+	View view = views.views[0];
+	process_meshlet(push_constant.instance_index, view.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["camera", "push_constant", "process_meshlet"], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["views", "push_constant", "process_meshlet"], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 

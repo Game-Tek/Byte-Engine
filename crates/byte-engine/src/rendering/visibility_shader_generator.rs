@@ -9,7 +9,6 @@ use super::common_shader_generator::CommonShaderGenerator;
 
 pub struct VisibilityShaderGenerator {
 	out_albedo: besl::parser::Node,
-	camera: besl::parser::Node,
 	lighting_data: besl::parser::Node,
 	materials: besl::parser::Node,
 	ao: besl::parser::Node,
@@ -25,7 +24,6 @@ impl VisibilityShaderGenerator {
 		use besl::parser::Node;
 
 		let set2_binding0 = Node::binding("out_albedo", Node::image("rgba16"), 2, 0, false, true);
-		let set2_binding1 = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 2, 1, true, false);
 		let set2_binding4 = Node::binding("lighting_data", Node::buffer("LightingBuffer", vec![Node::member("light_count", "u32"), Node::member("lights", "Light[16]")]), 2, 4, true, false);
 		let set2_binding5 = Node::binding("materials", Node::buffer("MaterialBuffer", vec![Node::member("materials", "Material[16]")]), 2, 5, true, false);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
@@ -51,7 +49,6 @@ impl VisibilityShaderGenerator {
 
 		Self {
 			out_albedo: set2_binding0,
-			camera: set2_binding1,
 			lighting_data: set2_binding4,
 			materials: set2_binding5,
 			ao: set2_binding10,
@@ -67,7 +64,6 @@ impl VisibilityShaderGenerator {
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
 		let set2_binding0 = self.out_albedo.clone();
-		let set2_binding1 = self.camera.clone();
 		let set2_binding4 = self.lighting_data.clone();
 		let set2_binding5 = self.materials.clone();
 		let set2_binding10 = self.ao.clone();
@@ -125,10 +121,10 @@ vec2 normalized_xy = pixel_coordinates / image_extent;
 
 vec2 nc = normalized_xy * 2 - 1;
 
-Camera camera = camera.camera;
+View view = views.views[0];
 
 vec4 world_space_vertex_positions[3] = vec4[3](mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]);
-vec4 clip_space_vertex_positions[3] = vec4[3](camera.view_projection * world_space_vertex_positions[0], camera.view_projection * world_space_vertex_positions[1], camera.view_projection * world_space_vertex_positions[2]);
+vec4 clip_space_vertex_positions[3] = vec4[3](view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]);
 
 vec4 world_space_vertex_normals[3] = vec4[3](normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2]));
 
@@ -143,8 +139,8 @@ vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycent
 vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 vec3 N = world_space_vertex_normal;
-// vec3 V = normalize(camera.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
-vec3 V = normalize(-(camera.view[3].xyz - world_space_vertex_position));
+// vec3 V = normalize(view.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
+vec3 V = normalize(-(view.view[3].xyz - world_space_vertex_position));
 
 vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
 vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
@@ -195,7 +191,7 @@ normal = normalize(TBN * normal);
 for (uint i = 0; i < lighting_data.light_count; ++i) {
 	vec3 light_pos = lighting_data.lights[i].position;
 	vec3 light_color = lighting_data.lights[i].color;
-	mat4 light_matrix = lighting_data.lights[i].view_projection;
+	mat4 light_matrix = views.views[1].view_projection;
 	uint8_t light_type = lighting_data.lights[i].light_type;
 
 	vec3 L = vec3(0.0);
@@ -272,13 +268,13 @@ imageStore(out_albedo, pixel_coordinates, vec4(lo, albedo.a));";
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "camera", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
+				statements.insert(0, besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "views", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
 				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "out_albedo", "sample_shadow"], Vec::new()));
 			}
 			_ => {}
 		}
 
-		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding1, set2_binding5, set2_binding10, lighting_data, out_albedo, self.sample_function.clone(), self.sample_normal_function.clone(), self.sample_shadow.clone()]);
+		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding5, set2_binding10, lighting_data, out_albedo, self.sample_function.clone(), self.sample_normal_function.clone(), self.sample_shadow.clone()]);
 		root.add(extra);
 
 		root

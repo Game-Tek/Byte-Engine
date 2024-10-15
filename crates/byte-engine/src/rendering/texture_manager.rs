@@ -55,7 +55,7 @@ impl TextureManager {
 		
 		{
 			let mut ghi = ghi.write();
-			image = ghi.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+			image = ghi.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC, 1);
 			target_buffer = ghi.get_texture_slice_mut(image);
 		}
 

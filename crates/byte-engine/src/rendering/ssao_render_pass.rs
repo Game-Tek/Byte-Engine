@@ -25,7 +25,7 @@ pub struct ScreenSpaceAmbientOcclusionPass {
 	depth_target: ghi::ImageHandle,
 }
 
-const CAMERA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+const VIEWS_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 const DEPTH_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 const RESULT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
@@ -54,7 +54,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let depth_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&DEPTH_BINDING_TEMPLATE, depth_target, sampler, ghi::Layouts::Read));
 		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&RESULT_BINDING_TEMPLATE, occlusion_target, ghi::Layouts::General));
 
-		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let x_blur_target = ghi.create_image(Some("X Blur"), Extent::new(1920, 1080, 1), ghi::Formats::R8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 
 		let blur_x_depth_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&DEPTH_BINDING_TEMPLATE, depth_target, sampler, ghi::Layouts::Read));
 		let blur_x_source_binding = ghi.create_descriptor_binding(blur_x_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&SOURCE_BINDING_TEMPLATE, occlusion_target, sampler, ghi::Layouts::Read));
@@ -65,7 +65,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::image(&RESULT_BINDING_TEMPLATE, occlusion_target, ghi::Layouts::General));
 
 		let shader = ghi.create_shader(Some("HBAO Shader"), ghi::ShaderSource::GLSL(get_source()), ghi::ShaderTypes::Compute, &[
-			CAMERA_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VIEWS_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DEPTH_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 			RESULT_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 			NOISE_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
@@ -74,7 +74,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
 
 		let blur_shader = ghi.create_shader(Some("SSAO Blur Shader"), ghi::ShaderSource::GLSL(BLUR_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
-			CAMERA_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			VIEWS_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DEPTH_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 			RESULT_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
@@ -131,16 +131,6 @@ const BLUR_SHADER: &'static str = r#"
 
 layout(row_major) uniform; layout(row_major) buffer;
 
-struct Camera {
-	mat4 view_matrix;
-	mat4 projection_matrix;
-	mat4 view_projection;
-};
-
-layout(set=0,binding=0,scalar) buffer readonly CameraBuffer {
-	Camera camera;
-};
-
 layout(set=1, binding=0) uniform sampler2D depth;
 layout(set=1, binding=1) uniform sampler2D source;
 layout(set=1, binding=2) uniform writeonly image2D result;
@@ -148,15 +138,6 @@ layout(set=1, binding=2) uniform writeonly image2D result;
 layout(constant_id=0) const float DIRECTION_X = 1;
 layout(constant_id=1) const float DIRECTION_Y = 0;
 const vec2 DIRECTION = vec2(DIRECTION_X, DIRECTION_Y);
-
-vec3 get_view_position(uvec2 coords) {
-	float depth_value = texelFetch(depth, ivec2(coords), 0).r;
-	vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth, 0).xy);
-	vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
-	vec4 view_space = inverse(camera.projection_matrix) * clip_space;
-	view_space /= view_space.w;
-	return view_space.xyz;
-}
 
 const uint32_t M = 16;
 const uint32_t SAMPLE_COUNT = M + 1;
@@ -245,15 +226,15 @@ pub fn get_source() -> String {
 
 	uvec2 texel = uvec2(gl_GlobalInvocationID.xy);
 	vec2 uv = (vec2(texel) + vec2(0.5f)) / vec2(1920, 1080);
-	Camera camera = camera.camera;
+	View view = views.views[0];
 
-	vec3 p = get_view_space_position_from_depth(depth_map, uv, camera.inverse_projection_matrix);
+	vec3 p = get_view_space_position_from_depth(depth_map, uv, view.inverse_projection_matrix);
 
 	/* Sample neighboring pixels */
-    vec3 pr = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 1, 0)), camera.inverse_projection_matrix);
-    vec3 pl = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2(-1, 0)), camera.inverse_projection_matrix);
-    vec3 pt = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0, 1)), camera.inverse_projection_matrix);
-    vec3 pb = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0,-1)), camera.inverse_projection_matrix);
+    vec3 pr = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 1, 0)), view.inverse_projection_matrix);
+    vec3 pl = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2(-1, 0)), view.inverse_projection_matrix);
+    vec3 pt = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0, 1)), view.inverse_projection_matrix);
+    vec3 pb = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0,-1)), view.inverse_projection_matrix);
 
     /* Calculate tangent basis vectors using the minimu difference */
     vec3 dPdu = min_diff(p, pr, pl);
@@ -264,7 +245,7 @@ pub fn get_source() -> String {
 	vec3 random = texture(noise_texture, uv * noise_scale).rgb;
 
 	/* Calculate the projected size of the hemisphere */
-    vec2 uv_ray_radius = 0.5 * R * camera.fov / p.z;
+    vec2 uv_ray_radius = 0.5 * R * view.fov / p.z;
     float pixel_ray_radius = uv_ray_radius.x * render_target_extent.x;
 
     float ao = 1.0;
@@ -323,7 +304,7 @@ pub fn get_source() -> String {
 		/* Sample to find the maximum angle */
 		for(uint32_t s = 1; s <= step_count; ++s) {
 			uv += delta_uv;
-			S = get_view_space_position_from_depth(depth_map, uv, camera.camera.inverse_projection_matrix);
+			S = get_view_space_position_from_depth(depth_map, uv, views.views[0].inverse_projection_matrix);
 			tanS = tangent(p, S);
 			d2 = vec3f_squared_length(S - p);
 
@@ -339,7 +320,7 @@ pub fn get_source() -> String {
 		}
 		
 		return ao;
-	"#, &["out_ao", "depth_map", "camera", "get_view_space_position_from_depth", "biased_tangent", "sin_from_tan", "snap_uv", "tangent", "vec3f_squared_length"], Vec::new())]);
+	"#, &["out_ao", "depth_map", "views", "get_view_space_position_from_depth", "biased_tangent", "sin_from_tan", "snap_uv", "tangent", "vec3f_squared_length"], Vec::new())]);
 
 	// Compute the step size (in uv space) from the number of steps
 	let compute_trace = besl::parser::Node::function("compute_trace", vec![besl::parser::Node::member("pixel_ray_radius", "f32"), besl::parser::Node::member("rand", "f32")], "TraceSettings", vec![Node::glsl(r#"
@@ -366,17 +347,17 @@ pub fn get_source() -> String {
 
 	let biased_tangent = Node::function("biased_tangent", vec![Node::parameter("v", "vec3f")], "f32", vec![Node::glsl("return -v.z * inversesqrt(dot(v,v)) + tan(30.0 * PI / 180.0)", &[], Vec::new())]);
 
-	let camera_binding = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 0, CAMERA_BINDING_TEMPLATE.binding(), true, false);
+	let views_binding = Node::binding("views", Node::buffer("ViewsBuffer", vec![Node::member("views", "View[8]")]), 0, VIEWS_BINDING_TEMPLATE.binding(), true, false);
 	let out_ao = Node::binding("out_ao", Node::image("r8"), 1, RESULT_BINDING_TEMPLATE.binding(), false, true);
 	let depth = Node::binding("depth_map",besl::parser::Node::combined_image_sampler(), 1, DEPTH_BINDING_TEMPLATE.binding(), true, false);
 	let noise_texture_binding = besl::parser::Node::binding("noise_texture", besl::parser::Node::combined_image_sampler(), 1, NOISE_BINDING_TEMPLATE.binding(), true, false);
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["noise_texture", "out_ao", "depth_map", "camera", "compute_trace", "min_diff", "get_view_space_position_from_depth", "compute_occlusion", "UVDerivatives", "rotate_directions"], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["noise_texture", "out_ao", "depth_map", "views", "compute_trace", "min_diff", "get_view_space_position_from_depth", "compute_occlusion", "UVDerivatives", "rotate_directions"], Vec::new())]);
 
 	let root_node = besl::parser::Node::root();
 
 	let mut root = shader_generator.transform(root_node, &json::object!{});
 
-	root.add(vec![camera_binding, noise_texture_binding, depth, out_ao, biased_tangent, trace_settings_struct, compute_trace, compute_occlusion, main]);
+	root.add(vec![views_binding, noise_texture_binding, depth, out_ao, biased_tangent, trace_settings_struct, compute_trace, compute_occlusion, main]);
 
 	let root_node = besl::lex(root).unwrap();
 

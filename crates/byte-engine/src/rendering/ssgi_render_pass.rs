@@ -32,7 +32,7 @@ impl SSGIRenderPass {
 
 		let mut ghi = ghi_lock.write();
 
-		let trace = ghi.create_image(Some("Trace"), Extent::rectangle(1920, 1080), ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image, ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite, ghi::UseCases::DYNAMIC);
+		let trace = ghi.create_image(Some("Trace"), Extent::rectangle(1920, 1080), ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image, ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite, ghi::UseCases::DYNAMIC, 1);
 
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("SSGI"), &[DEPTH_BINDING, DIFFUSE_BINDING, TRACE_BINDING]);
 

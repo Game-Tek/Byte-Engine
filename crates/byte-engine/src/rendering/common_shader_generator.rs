@@ -10,9 +10,9 @@ use crate::besl::lexer;
 /// # Functions
 /// - `get_view_space_position_from_depth(depth_map: Texture2D, coords: vec2u, inverse_projection_matrix: mat4f) -> vec3f`
 pub struct CommonShaderGenerator {
-	camera_binding: besl::parser::Node,
+	views_binding: besl::parser::Node,
 	mesh_struct: besl::parser::Node,
-	camera_struct: besl::parser::Node,
+	view_struct: besl::parser::Node,
 	meshlet_struct: besl::parser::Node,
 	light_struct: besl::parser::Node,
 	material_struct: besl::parser::Node,
@@ -86,14 +86,14 @@ impl ProgramGenerator for CommonShaderGenerator {
 return colors[i % 16];";
 
 		let mesh_struct = self.mesh_struct.clone();
-		let camera_struct = self.camera_struct.clone();
+		let view_struct = self.view_struct.clone();
 		let meshlet_struct = self.meshlet_struct.clone();
 		let light_struct = self.light_struct.clone();
 		let material_struct = self.material_struct.clone();
 		let barycentric_deriv = self.barycentric_deriv.clone();
 		let uv_derivatives_struct = self.uv_derivatives_struct.clone();
 
-		let camera_binding = self.camera_binding.clone();
+		let camera_binding = self.views_binding.clone();
 		let material_offset = self.material_offset.clone();
 		let material_offset_scratch = self.material_offset_scratch.clone();
 		let material_evaluation_dispatches = self.material_evaluation_dispatches.clone();
@@ -141,7 +141,7 @@ return colors[i % 16];";
 
 		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
 
-		root.add(vec![mesh_struct, camera_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct, uv_derivatives_struct]);
+		root.add(vec![mesh_struct, view_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct, uv_derivatives_struct]);
 		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
 		root.add(vec![compute_vertex_index, process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff]);
 		root.add(vec![make_uv, interleaved_gradient_noise, make_perpendicular_vector, make_cosine_hemisphere_sample, make_world_space_position_from_depth, get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions, make_normal_from_positions, make_normal_from_depth_map]);
@@ -162,13 +162,13 @@ impl CommonShaderGenerator {
 		use besl::parser::Node;
 
 		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_primitive_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
-		let camera_struct = Node::r#struct("Camera", vec![Node::member("view", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view_matrix", "mat4f"), Node::member("inverse_projection_matrix", "mat4f"), Node::member("inverse_view_projection_matrix", "mat4f"), Node::member("fov", "vec2f")]);
+		let view_struct = Node::r#struct("View", vec![Node::member("view", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view_matrix", "mat4f"), Node::member("inverse_projection_matrix", "mat4f"), Node::member("inverse_view_projection_matrix", "mat4f"), Node::member("fov", "vec2f")]);
 		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("primitive_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("primitive_count", "u8"), Node::member("triangle_count", "u8")]);
-		let light_struct = Node::r#struct("Light", vec![Node::member("view_matrix", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
+		let light_struct = Node::r#struct("Light", vec![Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
 		let uv_derivatives_struct = Node::r#struct("UVDerivatives", vec![Node::member("du", "vec3f"), Node::member("dv", "vec3f")]);
 
-		let camera_binding = Node::binding("camera", Node::buffer("CameraBuffer", vec![Node::member("camera", "Camera")]), 0, 0, true, false);
+		let views_binding = Node::binding("views", Node::buffer("ViewsBuffer", vec![Node::member("views", "View[8]")]), 0, 0, true, false);
 		let meshes = Node::binding("meshes", Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[64]")]), 0, 1, true, false);
 		let positions = Node::binding("vertex_positions", Node::buffer("Positions", vec![Node::member("positions", "vec3f[8192]")]), 0, 2, true, false);
 		let normals = Node::binding("vertex_normals", Node::buffer("Normals", vec![Node::member("normals", "vec3f[8192]")]), 0, 3, true, false);
@@ -291,13 +291,13 @@ impl CommonShaderGenerator {
 
 		Self {
 			mesh_struct,
-			camera_struct,
+			view_struct,
 			meshlet_struct,
 			light_struct,
 			material_struct,
 			uv_derivatives_struct,
 
-			camera_binding,
+			views_binding,
 			meshes,
 			positions,
 			normals,

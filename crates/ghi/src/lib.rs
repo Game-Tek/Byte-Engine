@@ -19,6 +19,8 @@ pub mod render_debugger;
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
+pub mod image;
+
 pub fn create(settings: graphics_hardware_interface::Features) -> GHI {
 	GHI(vulkan::VulkanGHI::new(settings).expect("Failed to create VulkanGHI"))
 }

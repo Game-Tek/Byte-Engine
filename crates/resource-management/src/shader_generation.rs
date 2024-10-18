@@ -200,6 +200,7 @@ impl ShaderCompilation {
 			"u32" => "uint32_t",
 			"i32" => "int32_t",
 			"Texture2D" => "in sampler2D",
+			"ArrayTexture2D" => "in sampler2DArray",
 			_ => source,
 		}
 	}
@@ -343,7 +344,7 @@ impl ShaderCompilation {
 						}
 					}
 					besl::BindingTypes::Image { .. } => {}
-					besl::BindingTypes::CombinedImageSampler => {}
+					besl::BindingTypes::CombinedImageSampler { .. } => {}
 				}
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
@@ -391,7 +392,7 @@ impl ShaderCompilation {
 				if self.minified { string.push('}') } else { string.push_str("}\n"); }
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
-				if name == "void" || name == "vec2u16" || name == "vec2u" || name == "vec2i" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" || name == "Texture2D" { return; }
+				if name == "void" || name == "vec2u16" || name == "vec2u" || name == "vec2i" || name == "vec2f" || name == "vec3f" || name == "vec4f" || name == "mat2f" || name == "mat3f" || name == "mat4f" || name == "f32" || name == "u8" || name == "u16" || name == "u32" || name == "i32" || name == "Texture2D" || name == "ArrayTexture2D" { return; }
 
 				string.push_str("struct ");
 				string.push_str(name.as_str());
@@ -538,7 +539,12 @@ impl ShaderCompilation {
 							_ => "uniform image2D"
 						}
 					},
-					besl::BindingTypes::CombinedImageSampler => "uniform sampler2D",
+					besl::BindingTypes::CombinedImageSampler { format } => {
+						match format.as_str() {
+							"ArrayTexture2D" => "uniform sampler2DArray",
+							_ => "uniform sampler2D"
+						}
+					},
 				};
 
 				string.push_str(&format!("layout(set={},binding={}", set, binding));
@@ -553,14 +559,14 @@ impl ShaderCompilation {
 							string.push_str(&format);
 						}
 					}
-					besl::BindingTypes::CombinedImageSampler => {}
+					besl::BindingTypes::CombinedImageSampler{ .. } => {}
 				}
 
 				match r#type {
 					besl::BindingTypes::Buffer{ .. } | besl::BindingTypes::Image { .. } => {
 						string.push_str(&format!(") {}{} ", if *read && !*write { "readonly " } else if *write && !*read { "writeonly " } else { "" }, binding_type));
 					}
-					besl::BindingTypes::CombinedImageSampler => {
+					besl::BindingTypes::CombinedImageSampler{ .. } => {
 						string.push_str(&format!(") {} ", binding_type));
 					}
 				}
@@ -689,7 +695,7 @@ mod tests {
 		root_node.add_children(vec![
 			besl::Node::binding("buff", besl::BindingTypes::Buffer{ members: vec![besl::Node::member("member", float_type).into()] }, 0, 0, true, true).into(),
 			besl::Node::binding("image", besl::BindingTypes::Image{ format: "r8".to_string() }, 0, 1, false, true).into(),
-			besl::Node::binding("texture", besl::BindingTypes::CombinedImageSampler, 1, 0, true, false).into(),
+			besl::Node::binding("texture", besl::BindingTypes::CombinedImageSampler{ format: "".to_string() }, 1, 0, true, false).into(),
 		]);
 
 		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();

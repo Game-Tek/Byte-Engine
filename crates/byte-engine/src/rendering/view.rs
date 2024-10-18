@@ -28,10 +28,10 @@ impl View {
 		}
 	}
 
-	pub fn new_orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32, rotation: Vec3f) -> Self {
+	pub fn new_orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32, position: Vec3f, rotation: Vec3f) -> Self {
 		Self {
-			projection: Mat4f::create_ortho_matrix(left, right, bottom, top, near, far),
-			view: math::look_down(rotation),
+			projection: math::orthographic_matrix(left, right, bottom, top, near, far),
+			view: math::look_down(rotation) * maths_rs::Mat4f::from_translation(-position),
 			near,
 			far,
 			y_fov: 0.0,
@@ -108,20 +108,17 @@ impl View {
 
 	/// Returns the frustum corners of the view, in world space.
 	pub fn get_frustum_corners(&self) -> [Vec4f; 8] {
-		let inv = (self.projection * self.view).inverse();
+		let inv = self.view_projection().inverse();
     
 		let mut corners = [Vec4f::zero(); 8];
 
-		for i in 0..2 {
-			let x = i as f32;
-			for j in 0..2 {
-				let y = j as f32;
-				for k in 0..2 {
-					let z = k as f32;
-					let pt = inv * Vec4f::new(2.0f32 * x - 1.0f32, 2.0f32 * y - 1.0f32, 2.0f32 * z - 1.0f32, 1.0f32);
-					corners[i + j * 2 + k * 4] = pt / pt.w;
-				}
-			}
+		for i in 0..8 {
+			let x = if i & 1 == 0 { -1.0 } else { 1.0 };
+			let y = if i & 2 == 0 { -1.0 } else { 1.0 };
+			let z = if i & 4 == 0 { 0f32 } else { 1f32 };
+
+			let corner = inv * Vec4f::new(x, y, z, 1.0);
+			corners[i] = corner / corner.w;
 		}
 		
 		return corners;

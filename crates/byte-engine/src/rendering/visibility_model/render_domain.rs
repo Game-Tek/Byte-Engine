@@ -1160,6 +1160,7 @@ pub struct LightData {
 	pub position: Vector3,
 	pub color: Vector3,
 	pub light_type: u8,
+	pub cascades: [u32; 8],
 }
 
 #[repr(C)]

@@ -7,18 +7,6 @@ pub fn plane_navigation(direction: Vector3, command: Vector3) -> Vector3 {
 	Vector3::new(direction.x, 0.0, direction.z) * command.z + Vector3::new(direction.z, 0.0, -direction.x) * command.x
 }
 
-pub fn look_down(direction: crate::Vector3) -> maths_rs::Mat4f {
-	let x_axis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(direction)));
-	let y_axis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(direction), x_axis));
-
-	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((x_axis, 0f32)),
-		maths_rs::Vec4f::from((y_axis, 0f32)),
-		maths_rs::Vec4f::from((direction, 0f32)),
-		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-	))
-}
-
 /// Calculates a left handed perspective projection matrix for 0 to 1 depth range
 /// 
 /// # Arguments
@@ -44,13 +32,23 @@ pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane
 	))
 }
 
-pub fn orthographic_matrix(width: f32, height: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
+pub fn orthographic_matrix_centered(width: f32, height: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
 	let near_minus_far = near_plane - far_plane;
 	maths_rs::Mat4f::from((
 		maths_rs::Vec4f::from((2f32 / width, 	0f32, 			0f32,					0f32					   )),
 		maths_rs::Vec4f::from((0f32, 			2f32 / height,	0f32,					0f32					   )),
 		maths_rs::Vec4f::from((0f32, 			0f32, 			1f32 / near_minus_far,  near_plane / near_minus_far)),
 		maths_rs::Vec4f::from((0f32,			0f32, 			0f32,					1f32					   )),
+	))
+}
+
+pub fn orthographic_matrix(left: f32, right: f32, bottom: f32, top: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
+	let near_minus_far = near_plane - far_plane;
+	maths_rs::Mat4f::from((
+		maths_rs::Vec4f::from((2f32 / (right - left), 	0f32, 					0f32,					-(right + left) / (right - left)	)),
+		maths_rs::Vec4f::from((0f32, 					2f32 / (top - bottom),	0f32,					-(top + bottom) / (top - bottom)	)),
+		maths_rs::Vec4f::from((0f32, 					0f32, 					1f32 / near_minus_far,  near_plane / near_minus_far		)),
+		maths_rs::Vec4f::from((0f32,					0f32, 					0f32,					1f32							)),
 	))
 }
 
@@ -64,7 +62,7 @@ pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 	let z_basis = normal;
 
 	if are_colinear(normal, Vector3::new(0f32, 1f32, 0f32)) {
-		x_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), crate::Vector3::new(0f32, 0f32, 1f32)));
+		x_basis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 0f32, 1f32), maths_rs::normalize(normal)));
 		y_basis = maths_rs::normalize(maths_rs::cross(x_basis, maths_rs::normalize(normal)));
 	} else {
 		x_basis = maths_rs::normalize(maths_rs::cross(Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));
@@ -78,6 +76,8 @@ pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 	))
 }
+
+pub use from_normal as look_down;
 
 pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
 	let c = theta.cos();

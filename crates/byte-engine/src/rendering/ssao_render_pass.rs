@@ -64,7 +64,11 @@ impl ScreenSpaceAmbientOcclusionPass {
 		let blur_y_source_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&SOURCE_BINDING_TEMPLATE, x_blur_target, sampler, ghi::Layouts::Read));
 		let blur_y_result_binding = ghi.create_descriptor_binding(blur_y_descriptor_set, ghi::BindingConstructor::image(&RESULT_BINDING_TEMPLATE, occlusion_target, ghi::Layouts::General));
 
-		let shader = ghi.create_shader(Some("HBAO Shader"), ghi::ShaderSource::GLSL(get_source()), ghi::ShaderTypes::Compute, &[
+		let source = get_source();
+
+		print!("{}", &source);
+
+		let shader = ghi.create_shader(Some("HBAO Shader"), ghi::ShaderSource::GLSL(source), ghi::ShaderTypes::Compute, &[
 			VIEWS_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DEPTH_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 			RESULT_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),

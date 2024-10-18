@@ -4,7 +4,7 @@
 
 use utils::{Extent, RGBA};
 
-use crate::{image::ImageBuilder, window};
+use crate::{image::ImageBuilder, sampler, window};
 
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
@@ -368,6 +368,7 @@ pub enum Descriptor {
 		image_handle: ImageHandle,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
+		layer: Option<u32>,
 	},
 	AccelerationStructure {
 		handle: TopLevelAccelerationStructureHandle,
@@ -550,6 +551,8 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn build_image(&mut self, builder: ImageBuilder) -> ImageHandle;
 
 	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
+
+	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle;
 
 	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle;
 
@@ -754,6 +757,8 @@ pub struct AttachmentInformation {
 	pub(crate) load: bool,
 	/// Whether to store the contents of the attachment when ending a render pass.
 	pub(crate) store: bool,
+	/// The image layer index for the attachment.
+	pub(crate) layer: Option<u32>,
 }
 
 impl AttachmentInformation {
@@ -765,9 +770,14 @@ impl AttachmentInformation {
 			clear,
 			load,
 			store,
+			layer: None,
 		}
 	}
 
+	pub fn layer(mut self, layer: u32) -> Self {
+		self.layer = Some(layer);
+		self
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -1104,6 +1114,21 @@ impl <'a> BindingConstructor<'a> {
 				image_handle,
 				sampler_handle,
 				layout,
+				layer: None,
+			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn combined_image_sampler_layer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts, layer_index: u32) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+				layer: Some(layer_index),
 			},
 			frame_offset: None,
 		}
@@ -1226,6 +1251,7 @@ impl DescriptorWrite {
 				image_handle: image_handle,
 				sampler_handle,
 				layout,
+				layer: None,
 			},
 			frame_offset: None,
 		}
@@ -1239,6 +1265,7 @@ impl DescriptorWrite {
 				image_handle: image_handle,
 				sampler_handle,
 				layout,
+				layer: None,
 			},
 			frame_offset: None,
 		}
@@ -1511,14 +1538,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1535,14 +1555,7 @@ use super::*;
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1643,14 +1656,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::None,
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1672,14 +1678,7 @@ use super::*;
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1769,14 +1768,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::None,
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1802,14 +1794,7 @@ use super::*;
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
 
 			let attachments = [
-				AttachmentInformation {
-					image: render_target,
-					layout: Layouts::RenderTarget,
-					format: Formats::RGBA8(Encodings::UnsignedNormalized),
-					clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-					load: false,
-					store: true,
-				}
+				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1898,14 +1883,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1928,14 +1906,7 @@ use super::*;
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
 
 			let attachments = [
-				AttachmentInformation {
-					image: render_target,
-					layout: Layouts::RenderTarget,
-					format: Formats::RGBA8(Encodings::UnsignedNormalized),
-					clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-					load: false,
-					store: true,
-				}
+				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -2036,14 +2007,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -2072,14 +2036,7 @@ use super::*;
 			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
 
 			let attachments = [
-				AttachmentInformation {
-					image: render_target,
-					layout: Layouts::RenderTarget,
-					format: Formats::RGBA8(Encodings::UnsignedNormalized),
-					clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-					load: false,
-					store: true,
-				}
+				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 			];
 
 			let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -2342,14 +2299,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -2368,14 +2318,7 @@ use super::*;
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
 		let attachments = [
-			AttachmentInformation {
-				image: render_target,
-				layout: Layouts::RenderTarget,
-				format: Formats::RGBA8(Encodings::UnsignedNormalized),
-				clear: ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-				load: false,
-				store: true,
-			}
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);

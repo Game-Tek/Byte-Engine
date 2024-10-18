@@ -156,6 +156,7 @@ impl Node {
 		]).into();
 
 		let texture_2d: NodeReference = Node::r#struct("Texture2D", vec![]).into();
+		let array_texture_2d: NodeReference = Node::r#struct("ArrayTexture2D", vec![]).into();
 	
 		let mut root = Node::scope("root".to_string());
 		
@@ -174,6 +175,7 @@ impl Node {
 			vec4f32,
 			mat4f32,
 			texture_2d,
+			array_texture_2d,
 		]);
 
 		root
@@ -557,7 +559,9 @@ pub enum BindingTypes {
 	Buffer {
 		members: Vec<NodeReference>,
 	},
-	CombinedImageSampler,
+	CombinedImageSampler{
+		format: String,
+	},
 	Image {
 		format: String,
 	},
@@ -882,8 +886,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node) -> Resu
 				parser::Nodes::Image { format } => {
 					BindingTypes::Image { format: format.clone() }
 				}
-				parser::Nodes::CombinedImageSampler { .. } => {
-					BindingTypes::CombinedImageSampler
+				parser::Nodes::CombinedImageSampler { format } => {
+					BindingTypes::CombinedImageSampler { format: format.clone() }
 				}
 				_ => { return Err(LexError::Undefined{ message: Some("Invalid binding type".to_string()) }); }
 			};
@@ -911,8 +915,8 @@ fn lex_parsed_node<'a>(chain: Vec<&'a Node>, parser_node: &parser::Node) -> Resu
 
 			this
 		}
-		parser::Nodes::CombinedImageSampler { .. } => {
-			let this = Node::binding("combined_image_sampler", BindingTypes::CombinedImageSampler, 0, 0, false, false);
+		parser::Nodes::CombinedImageSampler { format } => {
+			let this = Node::binding("combined_image_sampler", BindingTypes::CombinedImageSampler{ format: format.clone() }, 0, 0, false, false);
 
 			this
 		}

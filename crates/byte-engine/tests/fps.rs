@@ -42,7 +42,7 @@ fn fps() {
 	let camera = runtime.block_on(core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 1.0, 0.0),)));
 
 	// Create the directional light
-	let _ = runtime.block_on(core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, -1.0, -1.0), 4000f32)));
+	let _ = runtime.block_on(core::spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(0.0, -1.0, 0.0)), 4000f32)));
 
 	let anchor = runtime.block_on(core::spawn_as_child(space_handle.clone(), Anchor::new(Transform::identity())));
 

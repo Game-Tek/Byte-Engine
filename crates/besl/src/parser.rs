@@ -168,6 +168,14 @@ impl Node {
 		}
 	}
 
+	pub fn combined_array_image_sampler() -> Node {
+		Node {
+			node: Nodes::CombinedImageSampler {
+				format: "ArrayTexture2D".to_string(),
+			},
+		}
+	}
+
 	pub fn r#macro(name: &str, body: Node) -> Node {
 		Node {
 			node: Nodes::Expression(Expressions::Macro {

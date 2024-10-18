@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, image::ImageBuilder, render_debugger::RenderDebugger, window, Size};
+use crate::{graphics_hardware_interface, image::ImageBuilder, render_debugger::RenderDebugger, sampler, window, Size};
 
 pub struct VulkanGHI {
 	entry: ash::Entry,
@@ -797,7 +797,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	
 				let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 	
-				let image_view = self.create_vulkan_texture_view(name, &texture_creation_result.resource, format, 0);
+				let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
 	
 				let (staging_buffer, pointer) = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 					let staging_buffer_creation_result = self.create_vulkan_buffer(name, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
@@ -847,6 +847,16 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					(None, std::ptr::null_mut())
 				};
 
+				let image_views = {
+					let mut image_views = [vk::ImageView::null(); 8];
+
+					for i in 0..array_layers {
+						image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, 1);
+					}
+
+					image_views
+				};
+
 				self.images.push(Image {
 					#[cfg(debug_assertions)]
 					name: name.map(|name| name.to_string()),
@@ -856,6 +866,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					allocation_handle,
 					image: texture_creation_result.resource,
 					image_view,
+					image_views,
 					pointer,
 					extent,
 					format: to_format(format),
@@ -874,6 +885,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					allocation_handle: crate::AllocationHandle(!0u64),
 					image: vk::Image::null(),
 					image_view: vk::ImageView::null(),
+					image_views: [vk::ImageView::null(); 8],
 					pointer: std::ptr::null_mut(),
 					extent,
 					format: to_format(format),
@@ -923,6 +935,10 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		};
 
 		graphics_hardware_interface::SamplerHandle(self.create_vulkan_sampler(filtering_mode, reduction_mode, mip_map_filter, address_mode, anisotropy, min_lod, max_lod).as_raw())
+	}
+
+	fn build_sampler(&mut self, builder: sampler::Builder) -> crate::SamplerHandle {
+		self.create_sampler(builder.filtering_mode, builder.reduction_mode, builder.mip_map_mode, builder.addressing_mode, builder.anisotropy, builder.min_lod, builder.max_lod)
 	}
 
 	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> graphics_hardware_interface::BaseBufferHandle {
@@ -1152,7 +1168,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 	
 			let (_, pointer) = self.bind_vulkan_texture_memory(&r, allocation_handle, 0);
 	
-			let image_view = self.create_vulkan_texture_view(None, &r.resource, format_, 0);
+			let image_view = self.create_vulkan_image_view(None, &r.resource, format_, 0, 0, layers);
 	
 			let image = &mut self.images[image_handle.0 as usize];
 			image.pointer = pointer;
@@ -1615,6 +1631,7 @@ pub(crate) struct Image {
 	allocation_handle: graphics_hardware_interface::AllocationHandle,
 	image: vk::Image,
 	image_view: vk::ImageView,
+	image_views: [vk::ImageView; 8],
 	pointer: *const u8,
 	extent: vk::Extent3D,
 	format: vk::Format,
@@ -2793,10 +2810,10 @@ impl VulkanGHI {
 		handle
 	}
 
-	fn create_vulkan_texture_view(&self, name: Option<&str>, texture: &vk::Image, format: graphics_hardware_interface::Formats, _mip_levels: u32) -> vk::ImageView {
+	fn create_vulkan_image_view(&self, name: Option<&str>, texture: &vk::Image, format: graphics_hardware_interface::Formats, _mip_levels: u32, base_layer: u32, layer_count: u32) -> vk::ImageView {
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
-			.view_type(vk::ImageViewType::TYPE_2D)
+			.view_type(if layer_count == 1 { vk::ImageViewType::TYPE_2D } else { vk::ImageViewType::TYPE_2D_ARRAY })
 			.format(to_format(format))
 			.components(vk::ComponentMapping {
 				r: vk::ComponentSwizzle::IDENTITY,
@@ -2808,8 +2825,8 @@ impl VulkanGHI {
 				aspect_mask: if format != graphics_hardware_interface::Formats::Depth32 { vk::ImageAspectFlags::COLOR } else { vk::ImageAspectFlags::DEPTH },
 				base_mip_level: 0,
 				level_count: 1,
-				base_array_layer: 0,
-				layer_count: 1,
+				base_array_layer: base_layer,
+				layer_count: layer_count,
 			})
 		;
 
@@ -3045,7 +3062,7 @@ impl VulkanGHI {
 					self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Image(image_handle));
 				}
 			},
-			graphics_hardware_interface::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout } => {
+			graphics_hardware_interface::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout, layer } => {
 				let image_handles = {
 					let mut image_handles = Vec::with_capacity(3);
 					let mut image_handle_option = Some(ImageHandle(image_handle.0));
@@ -3067,11 +3084,17 @@ impl VulkanGHI {
 
 					let image = &self.images[image_handle.0 as usize];
 
-					if !image.image.is_null() && !image.image_view.is_null() {
+					if !image.image.is_null() {
+						let image_view = if let Some(layer) = layer { // If the descriptor asks for a subresource, we need to create a new image view
+							image.image_views[layer as usize]
+						} else {
+							image.image_view
+						};
+
 						let images = [
 							vk::DescriptorImageInfo::default()
 							.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
-							.image_view(image.image_view)
+							.image_view(image_view)
 							.sampler(vk::Sampler::from_raw(sampler_handle.0))
 						];
 
@@ -3603,7 +3626,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		let color_attchments = attachments.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|attachment| {
 			let image = self.get_image(self.get_internal_image_handle(attachment.image));
 			vk::RenderingAttachmentInfo::default()
-				.image_view(image.image_view)
+				.image_view(if let Some(index) = attachment.layer { image.image_views[index as usize] } else { image.image_view })
 				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))
@@ -3611,9 +3634,9 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		}).collect::<Vec<_>>();
 
 		let depth_attachment = attachments.iter().find(|attachment| attachment.format == graphics_hardware_interface::Formats::Depth32).map(|attachment| {
-			let texture = self.get_image(self.get_internal_image_handle(attachment.image));
+			let image = self.get_image(self.get_internal_image_handle(attachment.image));
 			vk::RenderingAttachmentInfo::default()
-				.image_view(texture.image_view)
+				.image_view(if let Some(index) = attachment.layer { image.image_views[index as usize] } else { image.image_view })
 				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))

@@ -164,7 +164,7 @@ impl CommonShaderGenerator {
 		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_primitive_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
 		let view_struct = Node::r#struct("View", vec![Node::member("view", "mat4f"), Node::member("projection_matrix", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view_matrix", "mat4f"), Node::member("inverse_projection_matrix", "mat4f"), Node::member("inverse_view_projection_matrix", "mat4f"), Node::member("fov", "vec2f")]);
 		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("primitive_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("primitive_count", "u8"), Node::member("triangle_count", "u8")]);
-		let light_struct = Node::r#struct("Light", vec![Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("light_type", "u8")]);
+		let light_struct = Node::r#struct("Light", vec![Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("type", "u8"), Node::member("cascades", "u32[8]")]);
 		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
 		let uv_derivatives_struct = Node::r#struct("UVDerivatives", vec![Node::member("du", "vec3f"), Node::member("dv", "vec3f")]);
 

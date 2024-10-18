@@ -27,7 +27,7 @@ impl VisibilityShaderGenerator {
 		let set2_binding4 = Node::binding("lighting_data", Node::buffer("LightingBuffer", vec![Node::member("light_count", "u32"), Node::member("lights", "Light[16]")]), 2, 4, true, false);
 		let set2_binding5 = Node::binding("materials", Node::buffer("MaterialBuffer", vec![Node::member("materials", "Material[16]")]), 2, 5, true, false);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
-		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_image_sampler(), 2, 11, true, false);
+		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 2, 11, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 		
@@ -40,12 +40,24 @@ impl VisibilityShaderGenerator {
 		};
 
 		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
-		let sample_shadow = Node::function("sample_shadow", vec![Node::parameter("shadow_map", "Texture2D"), Node::parameter("light_matrix", "mat4f"), Node::parameter("world_space_position", "vec3f"), Node::parameter("surface_normal", "vec3f"), Node::parameter("offset", "vec2f")], "f32", vec![Node::glsl("vec4 surface_light_clip_position = light_matrix * vec4(world_space_position + surface_normal * 0.001, 1.0);
-			vec3 surface_light_ndc_position = (surface_light_clip_position.xyz + vec3(offset, 0));
-			vec2 shadow_uv = surface_light_ndc_position.xy * 0.5 + 0.5;
+		let sample_shadow = Node::function("sample_shadow", vec![Node::parameter("shadow_map", "ArrayTexture2D"), Node::parameter("light", "Light"), Node::parameter("world_space_position", "vec3f"), Node::parameter("view_space_position", "vec3f"), Node::parameter("surface_normal", "vec3f"), Node::parameter("offset", "vec2f")], "f32", vec![Node::glsl("
+			float depth_value = abs(view_space_position.z);
+			float cascade_index = depth_value / 4.0f;
+
+			View view = views.views[light.cascades[uint(cascade_index)]];
+
+			vec4 surface_light_clip_position = view.view_projection * vec4(world_space_position + surface_normal * 0.001, 1.0);
+			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
+
+			vec2 shadow_uv = surface_light_ndc_position.xy * 0.5f + 0.5f;
+
 			float surface_depth = surface_light_ndc_position.z;
-			float closest_depth = texture(shadow_map, shadow_uv).r;
-			return surface_depth < closest_depth ? 0.0 : 1.0", &[], Vec::new())]);
+
+			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
+
+			float closest_depth = texture(shadow_map, vec3(shadow_uv, cascade_index)).r;
+
+			return surface_depth < closest_depth ? 0.0 : 1.0", &["views"], Vec::new())]);
 
 		Self {
 			out_albedo: set2_binding0,
@@ -189,17 +201,14 @@ float ao_factor = texture(ao, normalized_xy).r;
 normal = normalize(TBN * normal);
 
 for (uint i = 0; i < lighting_data.light_count; ++i) {
-	vec3 light_pos = lighting_data.lights[i].position;
-	vec3 light_color = lighting_data.lights[i].color;
-	mat4 light_matrix = views.views[1].view_projection;
-	uint8_t light_type = lighting_data.lights[i].light_type;
+	Light light = lighting_data.lights[i];
 
 	vec3 L = vec3(0.0);
 
-	if (light_type == 68) { // Infinite
-		L = normalize(-light_pos);
+	if (light.type == 68) { // Infinite
+		L = normalize(-light.position);
 	} else {
-		L = normalize(light_pos - world_space_vertex_position);
+		L = normalize(light.position - world_space_vertex_position);
 	}
 
 	float NdotL = max(dot(normal, L), 0.0);
@@ -209,14 +218,10 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 	float occlusion_factor = 1.0;
 	float attenuation = 1.0;
 
-	if (light_type == 68) { // Infinite
-		float c_occlusion_factor  = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.00,  0.00));
-		/* float lt_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01,  0.01)); */
-		/* float lr_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01,  0.01)); */
-		/* float bl_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2(-0.01, -0.01)); */
-		/* float br_occlusion_factor = sample_shadow(depth_shadow_map, light_matrix, world_space_vertex_position, normal, vec2( 0.01, -0.01)); */
+	if (light.type == 68) { // Infinite
+		vec4 view_space_vertex_position = view.view * vec4(world_space_vertex_position, 1.0);
+		float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_vertex_position.xyz, normal, vec2( 0.00,  0.00));
 
-		/* float occlusion_factor = (c_occlusion_factor + lt_occlusion_factor + lr_occlusion_factor + bl_occlusion_factor + br_occlusion_factor) / 5.0; */
 		occlusion_factor = c_occlusion_factor;
 
 		if (occlusion_factor == 0.0) { continue; }
@@ -224,13 +229,13 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 		// attenuation = occlusion_factor;
 		attenuation = 1.0;
 	} else {
-		float distance = length(light_pos - world_space_vertex_position);
+		float distance = length(light.position - world_space_vertex_position);
 		attenuation = 1.0 / (distance * distance);
 	}
 
 	vec3 H = normalize(V + L);
 
-	vec3 radiance = light_color * attenuation;
+	vec3 radiance = light.color * attenuation;
 
 	vec3 F0 = vec3(0.04);
 	F0 = mix(F0, albedo.xyz, metalness);

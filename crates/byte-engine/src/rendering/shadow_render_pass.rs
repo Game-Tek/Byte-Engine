@@ -42,7 +42,7 @@ impl ShadowRenderingPass {
 		let shadow_map_resolution = Extent::square(4096);
 		
 		let shadow_map = ghi.build_image(ghi::image::ImageBuilder::new(shadow_map_resolution, ghi::Formats::Depth32, ghi::Uses::Image | ghi::Uses::Clear).name("Shadow Map").use_case(ghi::UseCases::DYNAMIC).array_layers(4));
-		let sampler = ghi.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
+		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
 		let lighting_data_buffer = ghi.create_buffer(Some("Lighting Data"), 1024, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		
 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&light_depth_map, shadow_map, sampler, ghi::Layouts::Read));
@@ -105,14 +105,14 @@ impl ShadowRenderingPass {
 
 		let visibility_info = render_domain.get_visibility_info();
 
-		let binding = [ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)];
-  		let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &binding);
-		render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
-
-		let pipeline_bind = render_pass.bind_raster_pipeline(&self.pipeline);
-
 		for view in 0..4 {
-			pipeline_bind.start_region(&format!("Cascade {}", view));
+			command_buffer_recording.start_region(&format!("Cascade {}", view));
+			
+			let binding = [ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true).layer(view)];
+			let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &binding);
+			render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
+
+			let pipeline_bind = render_pass.bind_raster_pipeline(&self.pipeline);
 
 			for (i, instance) in instances.iter().enumerate() {
 				pipeline_bind.write_push_constant(&self.pipeline_layout, 0, 1 + view as u32); // Write view index
@@ -120,10 +120,10 @@ impl ShadowRenderingPass {
 				pipeline_bind.dispatch_meshes(instance.meshlet_count, 1, 1);
 			}
 
-			pipeline_bind.end_region();
-		}
+			render_pass.end_render_pass();
 
-		render_pass.end_render_pass();
+			command_buffer_recording.end_region();
+		}
 
 		command_buffer_recording.end_region();
 	}
@@ -132,11 +132,14 @@ impl ShadowRenderingPass {
 		for (i, light) in lights.iter().enumerate() {
 			let light = light.read_sync();
 			
-			lighting_data.lights[i].light_type = 'D' as u8;
-			lighting_data.lights[i].position = light.direction;
-			lighting_data.lights[i].color = light.color;
-
 			let views = csm::make_csm_views(*primary_view, light.direction, 4);
+
+			lighting_data.lights[i] = LightData {
+				light_type: 'D' as u8,
+				position: light.direction,
+				color: light.color,
+				cascades: [1, 2, 3, 4, 0, 0, 0, 0], // Hardcoded for now
+			};
 
 			for (j, view) in views.iter().enumerate() {
 				views_data[1 + j] = ShaderViewData {

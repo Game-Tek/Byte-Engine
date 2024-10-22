@@ -9,7 +9,7 @@ use super::view::View;
 /// Returns the views for cascaded shadow mapping.
 pub fn make_csm_views(camera_view: View, light_direction: Vec3f, num_cascades: usize) -> Vec<View> {
     (0..num_cascades).map(|i| {
-		let near_distance = 0.001 + (i as f32) * 4f32;
+		let near_distance = 0.01f32.max((i as f32) * 4f32);
 		let far_distance = ((i + 1) as f32) * 4f32;
 
 		let camera_view = camera_view.from_from_z_planes(near_distance, far_distance);
@@ -26,19 +26,32 @@ fn make_light_view(camera_view: View, light_direction: Vec3f) -> View {
 
 	let light_view = look_down(light_direction.into()) * Mat4f::from_translation(-Into::<Vec3f>::into(center));
 
-	let mut min = [f32::MAX; 3];
-	let mut max = [f32::MIN; 3];
+	let transformed_corners = camera_frustum_corners.iter().map(|x| light_view * x);
 
-	for corner in camera_frustum_corners {
-		let corner = light_view * corner;
-		min[0] = min[0].min(corner.x);
-		min[1] = min[1].min(corner.y);
-		min[2] = min[2].min(corner.z);
+	let min = [
+		transformed_corners.clone().map(|x| x.x).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+		transformed_corners.clone().map(|x| x.y).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+		transformed_corners.clone().map(|x| x.z).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap()
+	];
+	let max = [
+		transformed_corners.clone().map(|x| x.x).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+		transformed_corners.clone().map(|x| x.y).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+		transformed_corners.clone().map(|x| x.z).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap()
+	];
 
-		max[0] = max[0].max(corner.x);
-		max[1] = max[1].max(corner.y);
-		max[2] = max[2].max(corner.z);
-	}
+	const zMult: f32 = 10f32;
+
+    // if min[2] < 0f32 {
+    //     min[2] *= zMult;
+    // } else {
+    //     min[2] /= zMult;
+    // }
+
+    // if max[2] < 0f32 {
+    //     max[2] /= zMult;
+    // } else {
+    //     max[2] *= zMult;
+    // }
 
 	View::new_orthographic(min[0], max[0], min[1], max[1], min[2], max[2], center.into(), light_direction)
 }

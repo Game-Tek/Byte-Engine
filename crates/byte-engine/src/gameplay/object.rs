@@ -70,11 +70,16 @@ impl Transformable for Object {
 }
 
 impl physics::PhysicsEntity for Object {
-	fn on_collision(&mut self) -> &mut Event<EntityHandle<dyn physics::PhysicsEntity>> { &mut self.collision }
+	fn on_collision(&mut self) -> Option<&mut Event<EntityHandle<dyn physics::PhysicsEntity>>> { Some(&mut self.collision) }
 	fn get_position(&self) -> maths_rs::Vec3f { self.transform.get_position() }
 	fn set_position(&mut self, position: maths_rs::Vec3f) { self.transform.set_position(position); }
 	fn get_velocity(&self) -> maths_rs::Vec3f { self.velocity }
 	fn get_body_type(&self) -> physics::BodyTypes { self.body_type }
+	fn get_collision_shape(&self) -> physics::CollisionShapes {
+		physics::CollisionShapes::Sphere {
+			radius: 0.1,
+		}
+	}
 }
 
 #[cfg(not(feature = "headless"))]

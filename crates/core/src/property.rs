@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use super::{Entity, EntityHandle,};
 
 /// A property-like object is an object that can be subscribed to and that has a value.
@@ -54,9 +56,15 @@ impl <T: Clone + 'static> Property<T> {
 		}
 	}
 	
-	pub fn add<F>(&self, get: F) where F: FnMut(&T) + Subscriber<T> + 'static {
+	pub fn add<F>(&self, get: F) where F: FnMut(&T) + 'static {
 		self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(get)));
+		// self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(async move |e| { get(e) })));
 	}
+
+	// pub fn add_async<R>(&self, get: impl FnMut(&T) -> R + 'static) where R: Future<Output = ()> {
+	// 	// self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(Box::new(get))));
+	// 	self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(get)));
+	// }
 }
 
 impl <T: 'static> Entity for Property<T> {}
@@ -181,11 +189,23 @@ impl <E, T> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
 	}
 }
 
-impl <T, F> Subscriber<T> for F where F: FnMut(&T) {
+impl <T, F> Subscriber<T> for F where F: FnMut(&T) + 'static {
 	fn update(&mut self, value: &T) {
 		(self)(value);
 	}
 }
+
+// impl <T, F, R> Subscriber<T> for F where F: FnMut(&T) -> R + 'static, R: Future<Output = ()> {
+// 	fn update(&mut self, value: &T) {
+// 		(self)(value);
+// 	}
+// }
+
+// impl <T, R> Subscriber<T> for Box<dyn FnMut(&T) -> R> where R: Future<Output = ()> + 'static {
+// 	fn update(&mut self, value: &T) {
+// 		(self)(value);
+// 	}
+// }
 
 #[cfg(test)]
 #[allow(dead_code)]

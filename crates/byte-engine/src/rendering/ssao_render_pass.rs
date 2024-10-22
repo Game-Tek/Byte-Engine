@@ -66,8 +66,6 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let source = get_source();
 
-		print!("{}", &source);
-
 		let shader = ghi.create_shader(Some("HBAO Shader"), ghi::ShaderSource::GLSL(source), ghi::ShaderTypes::Compute, &[
 			VIEWS_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DEPTH_BINDING_TEMPLATE.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),

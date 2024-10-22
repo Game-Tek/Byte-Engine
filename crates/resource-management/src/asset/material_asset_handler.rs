@@ -438,8 +438,6 @@ pub mod tests {
 
 		let glsl = crate::shader_generation::ShaderGenerator::new().minified(true).compilation().generate_glsl_shader(&crate::shader_generation::ShaderGenerationSettings::fragment(), &main_node);
 
-		dbg!(&glsl);
-
 		assert!(glsl.contains("layout(push_constant"));
 		assert!(glsl.contains("uint32_t material_index"));
 		assert!(glsl.contains("materials[16]"));

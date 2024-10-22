@@ -7,6 +7,7 @@ pub mod object;
 pub mod positionable;
 pub mod transformable;
 pub mod anchor;
+pub mod collider;
 
 pub use anchor::Anchor;
 pub use object::Object;

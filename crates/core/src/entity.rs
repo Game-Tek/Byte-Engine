@@ -213,9 +213,9 @@ pub type DomainType = EntityHandle<dyn Entity>;
 
 /// Entity creation functions must return this type.
 pub struct EntityBuilder<'c, T: 'c> {
-	pub(super) create: Box<dyn FnOnce(Option<DomainType>) -> BoxedFuture<'c, T> + 'c>,
-	pub(super) post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
-	pub(super) listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
+	pub create: Box<dyn FnOnce(Option<DomainType>) -> BoxedFuture<'c, T> + 'c>,
+	pub post_creation_functions: Vec<std::boxed::Box<dyn Fn(&mut EntityHandle<T>,) + 'c>>,
+	pub listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
 }
 
 impl <'c, T: Entity + 'c> EntityBuilder<'c, T> {

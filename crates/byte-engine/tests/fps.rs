@@ -1,12 +1,13 @@
 use core::EntityHandle;
+use std::ops::Deref;
 
-use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::{Anchor, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, core::domain::Domain, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, physics, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
 
 #[ignore]
 #[test]
 fn fps() {
 	// Create the Byte-Engine application
-	let mut app = byte_engine::application::GraphicsApplication::new("Third Person Shooter", &[Parameter::new("resources-path", "../../resources"), Parameter::new("assets-path", "../../assets")]);
+	let mut app = byte_engine::application::GraphicsApplication::new("Third Person Shooter", &[Parameter::new("resources-path", "../../resources"), Parameter::new("assets-path", "../../assets"), Parameter::new("csm-extent", "2048")]);
 
 	// Get the root space handle
 	let space_handle = app.get_root_space_handle();
@@ -36,6 +37,12 @@ fn fps() {
 	let jump_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), Action::<bool>::new("Jump", &[
 		ActionBindingDescription::new("Keyboard.Space"),
 		ActionBindingDescription::new("Gamepad.A"),
+	],)));
+
+	// Create the fire action
+	let fire_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), Action::<bool>::new("Fire", &[
+		ActionBindingDescription::new("Mouse.LeftButton"),
+		ActionBindingDescription::new("Gamepad.RightTrigger"),
 	],)));
 
 	// Create the camera
@@ -94,12 +101,26 @@ fn fps() {
 	}
 
 	// Create the floor
-	let _floor: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Box.glb", Transform::identity().position(Vector3::new(0.0, -0.5, 1.0)).scale(Vector3::new(15.0, 1.0, 15.0)))));
+	let _floor: EntityHandle<Object> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Object::new("Box.glb", Transform::identity().position(Vector3::new(0.0, -0.5, 1.0)).scale(Vector3::new(15.0, 1.0, 15.0)), byte_engine::physics::BodyTypes::Static, Vector3::new(0.0, 0.0, 0.0))));
+	let _: EntityHandle<gameplay::collider::Cube> = runtime.block_on(core::spawn_as_child(space_handle.clone(), gameplay::collider::Cube::new(Vector3::new(15.0, 1.0, 15.0))));
 
 	let _a: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Suzanne.gltf", Transform::default().position(Vector3::new(0.0, 0.5, 1.0)).scale(Vector3::new(0.4, 0.4, 0.4)))));
 	let _a: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Suzanne.gltf", Transform::default().position(Vector3::new(-3.5, 0.5, 4.0)).scale(Vector3::new(0.4, 0.4, 0.4)))));
 	let _a: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Suzanne.gltf", Transform::default().position(Vector3::new(3.0, 0.5, 7.5)).scale(Vector3::new(0.4, 0.4, 0.4)))));
 	let _a: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Suzanne.gltf", Transform::default().position(Vector3::new(2.75, 0.5, -3.0)).scale(Vector3::new(0.4, 0.4, 0.4)))));
+
+	{
+		let fire = fire_action_handle.clone();
+
+		let space_handle = space_handle.clone();
+
+		// Subscribe to the fire action
+		fire.write_sync().value_mut().add(move |v: &bool| {
+			if *v {
+				utils::r#async::block_on(core::spawn_as_child::<Object>(space_handle.clone(), Object::new("Sphere.gltf", Transform::identity().position(Vector3::new(0.0, 1.0, 0.0)).scale(Vector3::new(0.1, 0.1, 0.1)), byte_engine::physics::BodyTypes::Dynamic, Vector3::new(0.0, 0.0, 1.0))));
+			}
+		});
+	}
 
 	app.do_loop()
 }

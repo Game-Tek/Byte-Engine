@@ -150,6 +150,7 @@ impl ShadowRenderingPass {
 					inverse_view_matrix: view.view().inverse(),
 					inverse_projection_matrix: view.projection().inverse(),
 					inverse_view_projection_matrix: view.projection_view().inverse(),
+					near: view.near(), far: view.far(),
 				};
 			}
 		}

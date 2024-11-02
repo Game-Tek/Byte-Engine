@@ -42,9 +42,17 @@ impl VisibilityShaderGenerator {
 		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
 		let sample_shadow = Node::function("sample_shadow", vec![Node::parameter("shadow_map", "ArrayTexture2D"), Node::parameter("light", "Light"), Node::parameter("world_space_position", "vec3f"), Node::parameter("view_space_position", "vec3f"), Node::parameter("surface_normal", "vec3f"), Node::parameter("offset", "vec2f")], "f32", vec![Node::glsl("
 			float depth_value = abs(view_space_position.z);
-			float cascade_index = depth_value / 4.0f;
 
-			View view = views.views[light.cascades[uint(cascade_index)]];
+			uint cascade_index = -1;
+
+			for (uint i = 0; i < 4; ++i) {
+				if (depth_value < views.views[light.cascades[i]].far) {
+					cascade_index = light.cascades[i];
+					break;
+				}
+			}
+
+			View view = views.views[light.cascades[cascade_index]];
 
 			vec4 surface_light_clip_position = view.view_projection * vec4(world_space_position + surface_normal * 0.001, 1.0);
 			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
@@ -55,7 +63,7 @@ impl VisibilityShaderGenerator {
 
 			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
 
-			float closest_depth = texture(shadow_map, vec3(shadow_uv, cascade_index)).r;
+			float closest_depth = texture(shadow_map, vec3(shadow_uv, float(cascade_index))).r;
 
 			return surface_depth < closest_depth ? 0.0 : 1.0", &["views"], Vec::new())]);
 

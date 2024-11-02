@@ -977,6 +977,7 @@ impl VisibilityWorldRenderDomain {
 			inverse_projection_matrix: math::inverse(view.projection_view()),
 			inverse_view_projection_matrix: math::inverse(view.projection_view()),
 			fov,
+			near: view.near(), far: view.far(),
 		};
 
 		views_data_reference[0] = camera;
@@ -1152,6 +1153,8 @@ pub(crate) struct ShaderViewData {
 	pub(crate) inverse_projection_matrix: maths_rs::Mat4f,
 	pub(crate) inverse_view_projection_matrix: maths_rs::Mat4f,
 	pub(crate) fov: [f32; 2],
+	pub(crate) near: f32,
+	pub(crate) far: f32,
 }
 
 #[repr(C)]

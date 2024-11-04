@@ -7,7 +7,7 @@ use utils::{sync::RwLock, Extent};
 
 use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
-use super::{aces_tonemap_render_pass::AcesToneMapPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
+use super::{aces_tonemap_render_pass::AcesToneMapPass, background_render_pass::BackgroundRenderingPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 
 pub struct Renderer {
 	ghi: Rc<RwLock<ghi::GHI>>,
@@ -27,6 +27,7 @@ pub struct Renderer {
 
 	visibility_render_model: EntityHandle<VisibilityWorldRenderDomain>,
 	ao_render_pass: EntityHandle<ScreenSpaceAmbientOcclusionPass>,
+	background_render_pass: EntityHandle<BackgroundRenderingPass>,
 	ui_render_model: EntityHandle<UIRenderModel>,
 	tonemap_render_model: EntityHandle<AcesToneMapPass>,
 
@@ -79,6 +80,13 @@ impl Renderer {
 				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi_instance.clone(), resource_manager_handle, texture_manager.clone(), vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
 			};
 
+			let background_render_pass = {
+				let vrm = visibility_render_model.read_sync();
+				let result_image = vrm.get_result_image();
+				let mut ghi = ghi_instance.write();
+				core::spawn(BackgroundRenderingPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), result_image)).await
+			};
+
 			Renderer {
 				ghi: ghi_instance,
 
@@ -97,6 +105,7 @@ impl Renderer {
 
 				ao_render_pass,
 
+				background_render_pass,
 				visibility_render_model,
 				ui_render_model,
 				tonemap_render_model,
@@ -166,6 +175,10 @@ impl Renderer {
 
 				vis_rp.render_b(&mut command_buffer_recording);
 			}
+		});
+
+		self.background_render_pass.sync_get_mut(|e| {
+			e.render(&mut command_buffer_recording, extent);
 		});
 
 		self.tonemap_render_model.map(|e| {

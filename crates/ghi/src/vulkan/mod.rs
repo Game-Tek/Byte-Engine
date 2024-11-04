@@ -173,6 +173,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 					Err(err) => {
 						let compiler_error_string = err.to_string();
 
+						println!("{}", source_code.as_str());
+						println!("------");
 						println!("{}", compiler_error_string);
 
 						return Err(());

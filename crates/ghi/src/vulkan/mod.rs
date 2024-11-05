@@ -621,8 +621,8 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		command_buffer_handle
 	}
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frmae_index: Option<u32>) -> impl graphics_hardware_interface::CommandBufferRecording + '_ {
-		use graphics_hardware_interface::CommandBufferRecording;
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frmae_index: Option<u32>) -> crate::CommandBufferRecording {
+		use graphics_hardware_interface::CommandBufferRecordable;
 		let pending_images = self.pending_images.clone();
 		self.pending_images.clear();
 		let mut recording = VulkanCommandBufferRecording::new(self, command_buffer_handle, frmae_index);
@@ -3547,7 +3547,7 @@ impl VulkanCommandBufferRecording<'_> {
 	}
 }
 
-impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBufferRecording<'_> {
+impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBufferRecording<'_> {
 	fn begin(&mut self) {
 		let command_buffer = self.get_command_buffer();
 
@@ -3873,6 +3873,8 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 
 		for (image_handle, clear_value) in textures {
 			let image = self.get_image(self.get_internal_image_handle(*image_handle));
+
+			if image.image.is_null() { continue; } // Skip unset textures
 			
 			if image.format_ != graphics_hardware_interface::Formats::Depth32 {
 				let clear_value = match clear_value {
@@ -4203,7 +4205,7 @@ impl graphics_hardware_interface::CommandBufferRecording for VulkanCommandBuffer
 		}
 	}
 
-	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut impl graphics_hardware_interface::CommandBufferRecording {
+	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut impl graphics_hardware_interface::CommandBufferRecordable {
 		if sets.is_empty() { return self; }
 
 		let command_buffer = self.get_command_buffer();

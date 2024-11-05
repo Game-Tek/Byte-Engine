@@ -119,8 +119,6 @@ impl Application for GraphicsApplication {
 
 		let renderer_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone())));
 
-		runtime.block_on(core::spawn_as_child::<rendering::render_orchestrator::RenderOrchestrator>(root_space_handle.clone(), rendering::render_orchestrator::RenderOrchestrator::new()));
-
 		runtime.block_on(core::spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,))));
 
 		let audio_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), DefaultAudioSystem::new_as_system(resource_manager.clone())));

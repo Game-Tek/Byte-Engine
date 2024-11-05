@@ -1,12 +1,12 @@
 use besl::parser::Node;
-use ghi::{BoundComputePipelineMode, CommandBufferRecording, DeviceAccesses, GraphicsHardwareInterface, Uses};
+use ghi::{BoundComputePipelineMode, CommandBufferRecordable, DeviceAccesses, GraphicsHardwareInterface, Uses};
 use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, image::Image, resource::resource_manager::ResourceManager, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, Reference};
 use core::{Entity, EntityHandle};
 use std::{rc::Rc, sync::Arc};
 
 use utils::{json, sync::RwLock, Extent, RGBA};
 
-use super::{common_shader_generator::CommonShaderGenerator, texture_manager::TextureManager};
+use super::{common_shader_generator::CommonShaderGenerator, render_pass::RenderPass, texture_manager::TextureManager};
 
 pub struct ScreenSpaceAmbientOcclusionPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
@@ -105,8 +105,16 @@ impl ScreenSpaceAmbientOcclusionPass {
 			depth_target,
 		}
 	}
+}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
+impl Entity for ScreenSpaceAmbientOcclusionPass {}
+
+impl RenderPass for ScreenSpaceAmbientOcclusionPass {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
+		unimplemented!()
+	}
+
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer_recording.start_region("SSAO");
 		command_buffer_recording.clear_images(&[(self.result, ghi::ClearValue::Color(RGBA::white())),]);
 		if true {
@@ -117,12 +125,10 @@ impl ScreenSpaceAmbientOcclusionPass {
 		command_buffer_recording.end_region();
 	}
 
-	pub fn resize(&mut self, ghi: &mut ghi::GHI, extent: Extent) {
+	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
 		ghi.resize_image(self.x_blur_target, extent);
 	}
 }
-
-impl Entity for ScreenSpaceAmbientOcclusionPass {}
 
 const BLUR_SHADER: &'static str = r#"
 #version 460 core

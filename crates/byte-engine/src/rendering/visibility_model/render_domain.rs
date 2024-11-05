@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use ghi::{graphics_hardware_interface, ImageHandle};
-use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
+use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::object;
@@ -31,6 +31,7 @@ use crate::core::{self, Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
+use crate::rendering::render_pass::RenderPass;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
@@ -211,6 +212,8 @@ pub struct VisibilityWorldRenderDomain {
 	lights: Vec<EntityHandle<DirectionalLight>>,
 
 	render_info: RenderInfo,
+
+	render_passes: Vec<EntityHandle<dyn RenderPass>>,
 }
 
 /* BASE */
@@ -449,7 +452,9 @@ impl VisibilityWorldRenderDomain {
 
 				lights: Vec::new(),
 
-				render_info: RenderInfo { instances: Vec::with_capacity(4096) }
+				render_info: RenderInfo { instances: Vec::with_capacity(4096) },
+
+				render_passes: Vec::with_capacity(4),
 			}
 		})
 			.listen_to::<camera::Camera>()
@@ -950,7 +955,7 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	pub fn prepare(&mut self, ghi: &mut ghi::GHI, extent: Extent, modulo_frame_index: u32) -> Option<()> {
+	pub fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent,) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
@@ -1009,8 +1014,31 @@ impl VisibilityWorldRenderDomain {
 		Some(())
 	}
 
-	pub fn render_a(&mut self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent, modulo_frame_index: u32) -> Option<()> {
-		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
+	pub fn get_transfer_synchronizer(&self) -> ghi::SynchronizerHandle {
+		self.transfer_synchronizer
+	}
+}
+
+impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) -> utils::BoxedFuture<()> {
+		self.camera = Some(handle);
+		Box::pin(async move {})
+	}
+}
+
+impl Entity for VisibilityWorldRenderDomain {}
+
+impl RenderPass for VisibilityWorldRenderDomain {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
+		self.render_passes.push(render_pass);
+	}
+
+	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
+		VisibilityWorldRenderDomain::prepare(&self, ghi, extent);
+	}
+
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
 
 		command_buffer_recording.start_region("Visibility Render Model");
 
@@ -1019,12 +1047,14 @@ impl VisibilityWorldRenderDomain {
 		self.material_offset_pass.render(command_buffer_recording);
 		self.pixel_mapping_pass.render(command_buffer_recording, extent);
 
-		command_buffer_recording.end_region();
+		command_buffer_recording.end_region();		
 
-		Some(())
-	}
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
 
-	pub fn render_b(&mut self, command_buffer_recording: &mut impl ghi::CommandBufferRecording) {
+		for render_pass in self.render_passes.iter() {
+			render_pass.write_sync().record(command_buffer_recording, extent);
+		}
+
 		{
 			let shadow_render_pass = self.shadow_render_pass.read_sync();
 
@@ -1081,8 +1111,7 @@ impl VisibilityWorldRenderDomain {
 		command_buffer_recording.end_region();
 	}
 
-	pub fn resize(&self, extent: Extent) {
-		let mut ghi = self.ghi.write();
+	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
 		ghi.resize_image(self.albedo, extent);
 		ghi.resize_image(self.diffuse, extent);
 		ghi.resize_image(self.depth_target, extent);
@@ -1090,18 +1119,11 @@ impl VisibilityWorldRenderDomain {
 		ghi.resize_image(self.primitive_index, extent);
 		ghi.resize_image(self.instance_id, extent);
 
-		self.pixel_mapping_pass.resize(extent, ghi.deref_mut());
-	}
+		self.pixel_mapping_pass.resize(extent, ghi);
 
-	pub fn get_transfer_synchronizer(&self) -> ghi::SynchronizerHandle {
-		self.transfer_synchronizer
-	}
-}
-
-impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) -> utils::BoxedFuture<()> {
-		self.camera = Some(handle);
-		Box::pin(async move {})
+		for render_pass in self.render_passes.iter() {
+			render_pass.write_sync().resize(ghi, extent);
+		}
 	}
 }
 
@@ -1256,8 +1278,6 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	}
 }
 
-impl Entity for VisibilityWorldRenderDomain {}
-
 impl WorldRenderDomain for VisibilityWorldRenderDomain {
 	fn get_descriptor_set_template(&self) -> ghi::DescriptorSetTemplateHandle {
 		self.descriptor_set_layout
@@ -1335,7 +1355,7 @@ impl VisibilityPass {
 		}
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, visibility_info: &VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) {
+	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, visibility_info: &VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) {
 		command_buffer_recording.start_region("Visibility Buffer");
 
 		let attachments = [
@@ -1392,7 +1412,7 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
+	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, extent: Extent) {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
@@ -1452,7 +1472,7 @@ impl MaterialOffsetPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording) {
+	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable) {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
@@ -1510,7 +1530,7 @@ impl PixelMappingPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
+	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, extent: Extent) {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;

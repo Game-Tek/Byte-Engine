@@ -1,8 +1,8 @@
-use ghi::{BoundComputePipelineMode, GraphicsHardwareInterface};
+use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::{json, Extent};
 
-use super::{common_shader_generator::CommonShaderGenerator, world_render_domain::WorldRenderDomain};
+use super::{common_shader_generator::CommonShaderGenerator, render_pass::RenderPass, world_render_domain::WorldRenderDomain};
 
 pub struct BackgroundRenderingPass {
 	pipeline: ghi::PipelineHandle,
@@ -34,18 +34,6 @@ impl BackgroundRenderingPass {
 			pipeline_layout,
 			descriptor_set,
 		}
-	}
-
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, extent: Extent) {
-		command_buffer_recording.start_region("Sky Rendering");
-
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-
-		let pipeline_bind = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
-
-		pipeline_bind.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-
-		command_buffer_recording.end_region();
 	}
 
 	fn make_shader() -> String {
@@ -154,4 +142,24 @@ impl BackgroundRenderingPass {
 
 		glsl
 	}
+}
+
+impl RenderPass for BackgroundRenderingPass {
+	fn add_render_pass(&mut self, render_pass: core::EntityHandle<dyn RenderPass>) {
+		unimplemented!()
+	}
+
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+		command_buffer_recording.start_region("Sky Rendering");
+
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
+
+		let pipeline_bind = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
+
+		pipeline_bind.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+
+		command_buffer_recording.end_region();
+	}
+
+	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 }

@@ -265,7 +265,7 @@ pub struct BottomLevelAccelerationStructure {
 	pub description: BottomLevelAccelerationStructureDescriptions,
 }
 
-pub trait CommandBufferRecording where Self: Sized {
+pub trait CommandBufferRecordable where Self: Sized {
 	/// Enables recording on the command buffer.
 	fn begin(&mut self);
 
@@ -302,7 +302,7 @@ pub trait CommandBufferRecording where Self: Sized {
 	fn end(&mut self);
 
 	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut impl CommandBufferRecording;
+	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut impl CommandBufferRecordable;
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
 
@@ -318,7 +318,7 @@ pub trait CommandBufferRecording where Self: Sized {
 	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
 }
 
-pub trait RasterizationRenderPassMode: CommandBufferRecording {
+pub trait RasterizationRenderPassMode: CommandBufferRecordable {
 	/// Binds a pipeline to the GPU.
 	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
 
@@ -339,13 +339,13 @@ pub trait BoundRasterizationPipelineMode: RasterizationRenderPassMode {
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 }
 
-pub trait BoundComputePipelineMode: CommandBufferRecording {
+pub trait BoundComputePipelineMode: CommandBufferRecordable {
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
 	fn indirect_dispatch(&mut self, buffer: &BaseBufferHandle, entry_index: usize);
 }
 
-pub trait BoundRayTracingPipelineMode: CommandBufferRecording {
+pub trait BoundRayTracingPipelineMode: CommandBufferRecordable {
 	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 }
 
@@ -514,7 +514,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_index: Option<u32>) -> impl CommandBufferRecording + '_;
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_index: Option<u32>) -> crate::CommandBufferRecording;
 
 	/// Creates a new buffer.\
 	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\

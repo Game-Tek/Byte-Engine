@@ -1,13 +1,13 @@
 use core::entity::DomainType;
 use std::{io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc};
 
-use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
+use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
 use resource_management::resource::resource_manager::ResourceManager;
 use utils::{sync::RwLock, Extent};
 
 use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
-use super::{aces_tonemap_render_pass::AcesToneMapPass, background_render_pass::BackgroundRenderingPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
+use super::{aces_tonemap_render_pass::AcesToneMapPass, background_render_pass::BackgroundRenderingPass, render_pass::RenderPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 
 pub struct Renderer {
 	ghi: Rc<RwLock<ghi::GHI>>,
@@ -25,11 +25,7 @@ pub struct Renderer {
 
 	window_system: EntityHandle<window_system::WindowSystem>,
 
-	visibility_render_model: EntityHandle<VisibilityWorldRenderDomain>,
-	ao_render_pass: EntityHandle<ScreenSpaceAmbientOcclusionPass>,
-	background_render_pass: EntityHandle<BackgroundRenderingPass>,
-	ui_render_model: EntityHandle<UIRenderModel>,
-	tonemap_render_model: EntityHandle<AcesToneMapPass>,
+	root_render_pass: RootRenderPass,
 
 	extent: Extent,
 }
@@ -55,25 +51,22 @@ impl Renderer {
 
 			let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> = core::spawn_as_child(parent.clone(), VisibilityWorldRenderDomain::new(ghi_instance.clone(), resource_manager_handle.clone(), texture_manager.clone())).await;
 
-			let ui_render_model = core::spawn(UIRenderModel::new_as_system()).await;
-
 			let render_command_buffer;
 			let render_finished_synchronizer;
 			let image_ready;
-			let tonemap_render_model;
 
-			{
+			let tonemap_render_model = {
 				let mut ghi = ghi_instance.write();
 
-				{
-					let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
-					tonemap_render_model = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result)).await;
-				}
+				let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
+				let tonemap_render_model: EntityHandle<AcesToneMapPass> = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result)).await;
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
 				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
 				image_ready = ghi.create_synchronizer(Some("Swapchain Available"), false);
-			}
+
+				tonemap_render_model
+			};
 
 			let ao_render_pass = {
 				let vrm = visibility_render_model.read_sync();
@@ -86,6 +79,15 @@ impl Renderer {
 				let mut ghi = ghi_instance.write();
 				core::spawn(BackgroundRenderingPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), result_image)).await
 			};
+
+			let mut root_render_pass = RootRenderPass::new();
+
+			visibility_render_model.write_sync().add_render_pass(ao_render_pass);
+
+			root_render_pass.add_render_pass(visibility_render_model);
+			root_render_pass.add_render_pass(background_render_pass);
+			root_render_pass.add_render_pass(tonemap_render_model);
+
 
 			Renderer {
 				ghi: ghi_instance,
@@ -103,12 +105,7 @@ impl Renderer {
 
 				window_system: window_system_handle,
 
-				ao_render_pass,
-
-				background_render_pass,
-				visibility_render_model,
-				ui_render_model,
-				tonemap_render_model,
+				root_render_pass,
 
 				extent,
 			}
@@ -135,56 +132,22 @@ impl Renderer {
 		drop(ghi);
 
 		if extent != self.extent {
-			{
-				let mut ghi = self.ghi.write();
-				ghi.resize_image(self.result, extent);
-			}
+			let mut ghi = self.ghi.write();
 
-			self.visibility_render_model.sync_get_mut(|e| {
-				e.resize(extent);
-			});
+			ghi.resize_image(self.result, extent);
 
-			self.ao_render_pass.sync_get_mut(|e| {
-				let mut ghi = self.ghi.write();
-				e.resize(ghi.deref_mut(), extent);
-			});
-
-			self.tonemap_render_model.sync_get_mut(|e| {
-				e.resize(extent);
-			});
+			self.root_render_pass.resize(&mut ghi, extent);
 
 			self.extent = extent;
 		}
 
 		let mut ghi = self.ghi.write();
 
-		self.visibility_render_model.sync_get_mut(|vis_rp| {
-			if let Some(_) = vis_rp.prepare(&mut ghi, extent, modulo_frame_index) {
-
-			}
-		});
+		self.root_render_pass.prepare(&mut ghi, extent);
 
 		let mut command_buffer_recording = ghi.create_command_buffer_recording(self.render_command_buffer, Some(self.rendered_frame_count as u32));
 
-		self.visibility_render_model.sync_get_mut(|vis_rp| {
-			if let Some(_) = vis_rp.render_a(&mut command_buffer_recording, extent, modulo_frame_index) {
-				self.ao_render_pass.map(|ao_rp| {
-					let ao_rp = ao_rp.write_sync();
-					ao_rp.render(&mut command_buffer_recording, extent);
-				});
-
-				vis_rp.render_b(&mut command_buffer_recording);
-			}
-		});
-
-		self.background_render_pass.sync_get_mut(|e| {
-			e.render(&mut command_buffer_recording, extent);
-		});
-
-		self.tonemap_render_model.map(|e| {
-			let e = e.read_sync();
-			e.render(&mut command_buffer_recording, extent);
-		});
+		self.root_render_pass.record(&mut command_buffer_recording, extent);
 
 		// Copy to swapchain
 
@@ -197,18 +160,6 @@ impl Renderer {
 		ghi.present(modulo_frame_index, present_key, &[swapchain_handle], self.render_finished_synchronizer);
 
 		self.rendered_frame_count += 1;
-	}
-
-	pub fn resize(&mut self, extent: Extent) {
-		self.extent = extent;
-
-		self.visibility_render_model.sync_get_mut(|e| {
-			e.resize(extent);
-		});
-
-		self.tonemap_render_model.sync_get_mut(|e| {
-			e.resize(extent);
-		});
 	}
 }
 
@@ -230,3 +181,46 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 }
 
 impl Entity for Renderer {}
+
+struct RootRenderPass {
+	render_passes: Vec<EntityHandle<dyn RenderPass>>,
+}
+
+impl RootRenderPass {
+	pub fn new() -> Self {
+		Self {
+			render_passes: vec![],
+		}
+	}
+}
+
+
+impl RenderPass for RootRenderPass {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
+		self.render_passes.push(render_pass);
+	}
+
+	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
+		for render_pass in &self.render_passes {
+			render_pass.sync_get_mut(|e| {
+				e.prepare(ghi, extent);
+			});
+		}
+	}
+
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+		for render_pass in &self.render_passes {
+			render_pass.sync_get_mut(|e| {
+				e.record(command_buffer_recording, extent);
+			});
+		}
+	}
+
+	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
+		for render_pass in &self.render_passes {
+			render_pass.sync_get_mut(|e| {
+				e.resize(ghi, extent);
+			});
+		}
+	}
+}

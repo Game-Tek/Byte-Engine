@@ -1,4 +1,3 @@
-pub mod render_orchestrator;
 pub mod common_shader_generator;
 pub mod visibility_shader_generator;
 
@@ -14,6 +13,8 @@ pub mod rendering_domain;
 
 pub mod renderer;
 pub mod texture_manager;
+
+pub mod render_pass;
 
 pub mod tonemap_render_pass;
 

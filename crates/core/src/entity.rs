@@ -163,7 +163,7 @@ use utils::BoxedFuture;
 
 use super::{listener::{BasicListener, EntitySubscriber, Listener}, SpawnHandler};
 
-impl<T: Entity, U: Entity> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
+impl<T, U> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where
     T: Unsize<U> + ?Sized,
     U: ?Sized {}
@@ -282,7 +282,7 @@ impl <T: Entity> From<T> for EntityBuilder<'static, T> {
 mod tests {
 	use utils::r#async::block_on;
 
-use super::*;
+	use super::*;
 	use crate::spawn;
 
 	#[test]

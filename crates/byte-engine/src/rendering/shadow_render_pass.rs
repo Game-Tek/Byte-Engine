@@ -5,7 +5,7 @@ use maths_rs::{mat::{MatInverse, MatProjection, MatRotate3D, MatTranslate}, Mat4
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::{json, Extent, RGBA};
 
-use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundRasterizationPipelineMode, RasterizationRenderPassMode};
+use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundRasterizationPipelineMode, RasterizationRenderPassMode};
 
 use crate::{core::Entity, ghi, math, Vector3};
 
@@ -100,7 +100,7 @@ impl ShadowRenderingPass {
 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, }
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecording, render_domain: &impl WorldRenderDomain, instances: &[Instance]) {
+	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, render_domain: &impl WorldRenderDomain, instances: &[Instance]) {
 		command_buffer_recording.start_region("Shadow Rendering");
 
 		let visibility_info = render_domain.get_visibility_info();

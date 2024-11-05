@@ -19,6 +19,8 @@ pub mod render_debugger;
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
+pub use crate::vulkan::VulkanCommandBufferRecording as CommandBufferRecording;
+
 pub mod image;
 pub mod sampler;
 

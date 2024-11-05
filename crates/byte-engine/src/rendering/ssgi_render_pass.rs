@@ -4,7 +4,7 @@
 use core::{entity::EntityBuilder, Entity, EntityHandle};
 use std::rc::Rc;
 
-use ghi::{GraphicsHardwareInterface, CommandBufferRecording, BoundComputePipelineMode};
+use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
 
 use resource_management::{asset::material_asset_handler::ProgramGenerator, image::Image, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, ResourceManager};
 use utils::{json, sync::RwLock, Extent};
@@ -113,7 +113,7 @@ impl SSGIRenderPass {
 		glsl
 	}
 
-	fn render(&self, command_buffer: &mut impl ghi::CommandBufferRecording) {
+	fn render(&self, command_buffer: &mut impl ghi::CommandBufferRecordable) {
 		command_buffer.region("SSGI", |command_buffer| {
 			command_buffer.region("Ray March", |command_buffer| {
 				let command_buffer = command_buffer.bind_compute_pipeline(&self.ray_march);

@@ -230,13 +230,13 @@ pub fn get_source() -> String {
 	vec2 uv = (vec2(texel) + vec2(0.5f)) / vec2(1920, 1080);
 	View view = views.views[0];
 
-	vec3 p = get_view_space_position_from_depth(depth_map, uv, view.inverse_projection_matrix);
+	vec3 p = get_view_space_position_from_depth(depth_map, uv, view.inverse_projection);
 
 	/* Sample neighboring pixels */
-    vec3 pr = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 1, 0)), view.inverse_projection_matrix);
-    vec3 pl = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2(-1, 0)), view.inverse_projection_matrix);
-    vec3 pt = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0, 1)), view.inverse_projection_matrix);
-    vec3 pb = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0,-1)), view.inverse_projection_matrix);
+    vec3 pr = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 1, 0)), view.inverse_projection);
+    vec3 pl = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2(-1, 0)), view.inverse_projection);
+    vec3 pt = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0, 1)), view.inverse_projection);
+    vec3 pb = get_view_space_position_from_depth(depth_map, uv + (render_target_pixel_size * vec2( 0,-1)), view.inverse_projection);
 
     /* Calculate tangent basis vectors using the minimu difference */
     vec3 dPdu = min_diff(p, pr, pl);
@@ -306,7 +306,7 @@ pub fn get_source() -> String {
 		/* Sample to find the maximum angle */
 		for(uint32_t s = 1; s <= step_count; ++s) {
 			uv += delta_uv;
-			S = get_view_space_position_from_depth(depth_map, uv, views.views[0].inverse_projection_matrix);
+			S = get_view_space_position_from_depth(depth_map, uv, views.views[0].inverse_projection);
 			tanS = tangent(p, S);
 			d2 = vec3f_squared_length(S - p);
 

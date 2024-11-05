@@ -88,7 +88,7 @@ impl BackgroundRenderingPass {
 		View view = views.views[0];
 		vec2 nc = uv * 2.0 - 1.0;
 		nc.y = -nc.y;
-		vec3 viewDir = normalize(view.inverse_view_matrix * vec4(nc, 1.0, 0.0)).xyz;
+		vec3 viewDir = normalize(view.inverse_view * vec4(nc, 1.0, 0.0)).xyz;
 		
 		float zenithAngle = acos(max(0.0, dot(vec3(0, 1, 0), viewDir)));
 		float denom = cos(zenithAngle) + 0.15 * pow(93.885 - ((zenithAngle * 180.0) / PI), -1.253);

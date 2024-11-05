@@ -85,14 +85,14 @@ impl SSGIRenderPass {
 		vec2 uv = make_uv(coord, extent);
 		Camera camera = camera.camera;
 		float noise = interleaved_gradient_noise(coord.x, coord.y, 0);
-		vec3 normal = make_cosine_hemisphere_sample(noise, noise, make_normal_from_depth_map(depth, coord, extent, camera.inverse_projection_matrix, camera.inverse_view_matrix));
+		vec3 normal = make_cosine_hemisphere_sample(noise, noise, make_normal_from_depth_map(depth, coord, extent, camera.inverse_projection, camera.inverse_view));
 		vec2 jitter = vec2(0.0);
 		vec3 direction = normalize(vec4(normal, 0.0) * camera.view).xyz;
 		jitter += vec2(0.5);
 		uint step_count = 10;
 		float step_size = 1.0f / float(step_count);
 		step_size = step_size * ((jitter.x + jitter.y) + 1.0f);
-		vec4 ray_trace = ray_march(depth, camera.projection_matrix, direction, step_count, uv, step_size);
+		vec4 ray_trace = ray_march(depth, camera.projection, direction, step_count, uv, step_size);
 		float ray_mask = ray_trace.w;
 		vec2 hit_uv = ray_trace.xy;
 		vec4 result = vec4(texture(diffuse, hit_uv).xyz, 1.0);

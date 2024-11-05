@@ -970,12 +970,12 @@ impl VisibilityWorldRenderDomain {
 		let views_data_reference: &mut [ShaderViewData] = unsafe { transmute(views_data_buffer) };
 
 		let camera = ShaderViewData {
-			view_matrix: view.view(),
-			projection_matrix: view.projection(),
-			view_projection_matrix: view.view_projection(),
-			inverse_view_matrix: math::inverse(view.view()),
-			inverse_projection_matrix: math::inverse(view.projection_view()),
-			inverse_view_projection_matrix: math::inverse(view.projection_view()),
+			view: view.view(),
+			projection: view.projection(),
+			view_projection: view.view_projection(),
+			inverse_view: math::inverse(view.view()),
+			inverse_projection: math::inverse(view.projection_view()),
+			inverse_view_projection: math::inverse(view.projection_view()),
 			fov,
 			near: view.near(), far: view.far(),
 		};
@@ -1146,12 +1146,12 @@ pub struct LightingData {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct ShaderViewData {
-	pub(crate) view_matrix: maths_rs::Mat4f,
-	pub(crate) projection_matrix: maths_rs::Mat4f,
-	pub(crate) view_projection_matrix: maths_rs::Mat4f,
-	pub(crate) inverse_view_matrix: maths_rs::Mat4f,
-	pub(crate) inverse_projection_matrix: maths_rs::Mat4f,
-	pub(crate) inverse_view_projection_matrix: maths_rs::Mat4f,
+	pub(crate) view: maths_rs::Mat4f,
+	pub(crate) projection: maths_rs::Mat4f,
+	pub(crate) view_projection: maths_rs::Mat4f,
+	pub(crate) inverse_view: maths_rs::Mat4f,
+	pub(crate) inverse_projection: maths_rs::Mat4f,
+	pub(crate) inverse_view_projection: maths_rs::Mat4f,
 	pub(crate) fov: [f32; 2],
 	pub(crate) near: f32,
 	pub(crate) far: f32,

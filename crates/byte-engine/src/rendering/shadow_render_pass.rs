@@ -144,12 +144,12 @@ impl ShadowRenderingPass {
 			for (j, view) in views.iter().enumerate() {
 				views_data[1 + j] = ShaderViewData {
 					fov: view.fov(),
-					view_matrix: view.view(),
-					projection_matrix: view.projection(),
-					view_projection_matrix: view.projection_view(),
-					inverse_view_matrix: view.view().inverse(),
-					inverse_projection_matrix: view.projection().inverse(),
-					inverse_view_projection_matrix: view.projection_view().inverse(),
+					view: view.view(),
+					projection: view.projection(),
+					view_projection: view.projection_view(),
+					inverse_view: view.view().inverse(),
+					inverse_projection: view.projection().inverse(),
+					inverse_view_projection: view.projection_view().inverse(),
 					near: view.near(), far: view.far(),
 				};
 			}

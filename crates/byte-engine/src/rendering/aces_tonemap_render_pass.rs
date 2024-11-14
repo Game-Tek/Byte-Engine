@@ -62,9 +62,11 @@ impl RenderPass for AcesToneMapPass {
 	}
 
 	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+		command_buffer_recording.start_region("Tonemap");
 		let r = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		r.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
 		r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+		command_buffer_recording.end_region();
 	}
 
 	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}

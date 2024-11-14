@@ -256,22 +256,25 @@ impl CommonShaderGenerator {
 		vec3 tangent = cross(bitangent, hit_normal);
 		float r = sqrt(randVal.x);
 		float phi = 2.0f * PI * randVal.y;
-		return normalize(tangent * (r * cos(phi).x) + bitangent * (r * sin(phi)) + hit_normal.xyz * sqrt(max(0.0, 1.0f - randVal.x)));", &["make_perpendicular_vector"], Vec::new())]);
+		return normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + hit_normal.xyz * sqrt(max(0.0, 1.0f - randVal.x)));", &["make_perpendicular_vector"], Vec::new())]);
 
-		let make_normal_from_depth_map = Node::function("make_normal_from_depth_map", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coord", "vec2i"), Node::parameter("extent", "vec2u"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		let make_normal_from_depth_map = Node::function("make_normal_from_depth_map", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coord", "vec2i"), Node::parameter("extent", "vec2u"), Node::parameter("inverse_projection", "mat4f"), Node::parameter("inverse_view", "mat4f")], "vec3f", vec![Node::glsl("
 		float c_depth = texelFetch(depth_map, coord, 0).r;
+
+		if (c_depth == 0.0) { return vec3(0.0); }
+
 		float l_depth = texelFetch(depth_map, coord + ivec2(-1, 0), 0).r;
 		float r_depth = texelFetch(depth_map, coord + ivec2(1, 0), 0).r;
 		float t_depth = texelFetch(depth_map, coord + ivec2(0, -1), 0).r;
 		float b_depth = texelFetch(depth_map, coord + ivec2(0, 1), 0).r;
 
-		vec3 c_pos = make_world_space_position_from_depth(c_depth, make_uv(coord, extent), inverse_projection_matrix, inverse_view_matrix);
-		vec3 l_pos = make_world_space_position_from_depth(l_depth, make_uv(coord + ivec2(-1, 0), extent), inverse_projection_matrix, inverse_view_matrix);
-		vec3 r_pos = make_world_space_position_from_depth(r_depth, make_uv(coord + ivec2(1, 0), extent), inverse_projection_matrix, inverse_view_matrix);
-		vec3 t_pos = make_world_space_position_from_depth(t_depth, make_uv(coord + ivec2(0, -1), extent), inverse_projection_matrix, inverse_view_matrix);
-		vec3 b_pos = make_world_space_position_from_depth(b_depth, make_uv(coord + ivec2(0, 1), extent), inverse_projection_matrix, inverse_view_matrix);
+		vec3 c_pos = make_world_space_position_from_depth(c_depth, make_uv(coord, extent), inverse_projection, inverse_view);
+		vec3 l_pos = make_world_space_position_from_depth(l_depth, make_uv(coord + ivec2(-1, 0), extent), inverse_projection, inverse_view);
+		vec3 r_pos = make_world_space_position_from_depth(r_depth, make_uv(coord + ivec2(1, 0), extent), inverse_projection, inverse_view);
+		vec3 t_pos = make_world_space_position_from_depth(t_depth, make_uv(coord + ivec2(0, -1), extent), inverse_projection, inverse_view);
+		vec3 b_pos = make_world_space_position_from_depth(b_depth, make_uv(coord + ivec2(0, 1), extent), inverse_projection, inverse_view);
 
-		return make_normal_from_positions(c_pos, r_pos, l_pos, t_pos, b_pos);", &["make_world_space_position_from_depth", "make_uv", "make_normal_from_positions"], Vec::new())]);
+		return make_normal_from_positions(c_pos, l_pos, r_pos, t_pos, b_pos);", &["make_world_space_position_from_depth", "make_uv", "make_normal_from_positions"], Vec::new())]);
 
 		let make_uv = Node::function("make_uv", vec![Node::parameter("coordinates", "vec2i"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], Vec::new())]);
 		let rotate_directions = Node::function("rotate_directions", vec![Node::parameter("dir", "vec2f"), Node::parameter("cos_sin", "vec2f")], "vec2f", vec![Node::glsl("return vec2(dir.x*cos_sin.x - dir.y*cos_sin.y,dir.x*cos_sin.y + dir.y*cos_sin.x)", &[], Vec::new())]);

@@ -19,6 +19,7 @@ pub mod render_pass;
 pub mod tonemap_render_pass;
 
 pub mod shadow_render_pass;
+pub mod fog_render_pass;
 pub mod background_render_pass;
 pub mod ssao_render_pass;
 pub mod ssgi_render_pass;

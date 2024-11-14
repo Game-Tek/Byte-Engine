@@ -7,7 +7,7 @@ use utils::{sync::RwLock, Extent};
 
 use crate::{core::{self, entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem},};
 
-use super::{aces_tonemap_render_pass::AcesToneMapPass, background_render_pass::BackgroundRenderingPass, render_pass::RenderPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
+use super::{aces_tonemap_render_pass::AcesToneMapPass, background_render_pass::BackgroundRenderingPass, fog_render_pass::FogRenderPass, render_pass::RenderPass, shadow_render_pass::ShadowRenderingPass, ssao_render_pass::ScreenSpaceAmbientOcclusionPass, ssgi_render_pass::SSGIRenderPass, texture_manager::TextureManager, tonemap_render_pass::ToneMapRenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain, world_render_domain::WorldRenderDomain};
 
 pub struct Renderer {
 	ghi: Rc<RwLock<ghi::GHI>>,
@@ -54,6 +54,7 @@ impl Renderer {
 			let render_command_buffer;
 			let render_finished_synchronizer;
 			let image_ready;
+			let depth_sampler;
 
 			let tonemap_render_model = {
 				let mut ghi = ghi_instance.write();
@@ -64,13 +65,19 @@ impl Renderer {
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
 				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
 				image_ready = ghi.create_synchronizer(Some("Swapchain Available"), false);
+				depth_sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
 
 				tonemap_render_model
 			};
 
 			let ao_render_pass = {
 				let vrm = visibility_render_model.read_sync();
-				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi_instance.clone(), resource_manager_handle, texture_manager.clone(), vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
+				core::spawn(ScreenSpaceAmbientOcclusionPass::new(ghi_instance.clone(), resource_manager_handle.clone(), texture_manager.clone(), vrm.get_descriptor_set_template(), vrm.get_view_occlusion_image(), vrm.get_view_depth_image()).await).await
+			};
+
+			let ssgi_render_pass = {
+				let vrm = visibility_render_model.read_sync();
+				core::spawn(SSGIRenderPass::new(ghi_instance.clone(), resource_manager_handle.clone(), texture_manager.clone(), vrm.get_descriptor_set_template(), (vrm.get_view_depth_image(), depth_sampler), vrm.get_result_image()).await).await
 			};
 
 			let background_render_pass = {
@@ -80,14 +87,22 @@ impl Renderer {
 				core::spawn(BackgroundRenderingPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), result_image)).await
 			};
 
+			let fog_render_pass = {
+				let vrm = visibility_render_model.read_sync();
+				let result_image = vrm.get_result_image();
+				let mut ghi = ghi_instance.write();
+				core::spawn(FogRenderPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), result_image)).await
+			};
+
 			let mut root_render_pass = RootRenderPass::new();
 
 			visibility_render_model.write_sync().add_render_pass(ao_render_pass);
 
 			root_render_pass.add_render_pass(visibility_render_model);
-			root_render_pass.add_render_pass(background_render_pass);
+			root_render_pass.add_render_pass(ssgi_render_pass);
+			// root_render_pass.add_render_pass(background_render_pass);
+			// root_render_pass.add_render_pass(fog_render_pass);
 			root_render_pass.add_render_pass(tonemap_render_model);
-
 
 			Renderer {
 				ghi: ghi_instance,

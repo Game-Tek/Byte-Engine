@@ -22,6 +22,7 @@ pub struct Renderer {
 	image_ready: ghi::SynchronizerHandle,
 
 	result: ghi::ImageHandle,
+	accumulation_map: ghi::ImageHandle,
 
 	window_system: EntityHandle<window_system::WindowSystem>,
 
@@ -41,10 +42,16 @@ impl Renderer {
 
 			let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
-			let result = {
+			let result;
+			let accumulation_map;
+			let depth_sampler;
+			
+			{
 				let mut ghi = ghi_instance.write();
 
-				ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1)
+				result = ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+				accumulation_map = ghi.create_image(Some("accumulate_map"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferSource, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+				depth_sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
 			};
 
 			let texture_manager = Arc::new(utils::r#async::RwLock::new(TextureManager::new()));
@@ -54,21 +61,6 @@ impl Renderer {
 			let render_command_buffer;
 			let render_finished_synchronizer;
 			let image_ready;
-			let depth_sampler;
-
-			let tonemap_render_model = {
-				let mut ghi = ghi_instance.write();
-
-				let result_image = visibility_render_model.map(|e| { let e = e.read_sync(); e.get_result_image() });
-				let tonemap_render_model: EntityHandle<AcesToneMapPass> = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), result_image, result)).await;
-
-				render_command_buffer = ghi.create_command_buffer(Some("Render"));
-				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
-				image_ready = ghi.create_synchronizer(Some("Swapchain Available"), false);
-				depth_sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
-
-				tonemap_render_model
-			};
 
 			let ao_render_pass = {
 				let vrm = visibility_render_model.read_sync();
@@ -77,21 +69,33 @@ impl Renderer {
 
 			let ssgi_render_pass = {
 				let vrm = visibility_render_model.read_sync();
-				core::spawn(SSGIRenderPass::new(ghi_instance.clone(), resource_manager_handle.clone(), texture_manager.clone(), vrm.get_descriptor_set_template(), (vrm.get_view_depth_image(), depth_sampler), vrm.get_result_image()).await).await
+				core::spawn(SSGIRenderPass::new(ghi_instance.clone(), resource_manager_handle.clone(), texture_manager.clone(), vrm.get_descriptor_set_template(), (vrm.get_view_depth_image(), depth_sampler), vrm.get_diffuse(), accumulation_map).await).await
 			};
 
 			let background_render_pass = {
 				let vrm = visibility_render_model.read_sync();
-				let result_image = vrm.get_result_image();
+				let result_image = vrm.get_diffuse();
 				let mut ghi = ghi_instance.write();
 				core::spawn(BackgroundRenderingPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), result_image)).await
 			};
 
 			let fog_render_pass = {
 				let vrm = visibility_render_model.read_sync();
-				let result_image = vrm.get_result_image();
+				let result_image = vrm.get_diffuse();
 				let mut ghi = ghi_instance.write();
 				core::spawn(FogRenderPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), result_image)).await
+			};
+
+			let tonemap_render_model = {
+				let mut ghi = ghi_instance.write();
+
+				let tonemap_render_model: EntityHandle<AcesToneMapPass> = core::spawn(AcesToneMapPass::new_as_system(ghi.deref_mut(), accumulation_map, result)).await;
+
+				render_command_buffer = ghi.create_command_buffer(Some("Render"));
+				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
+				image_ready = ghi.create_synchronizer(Some("Swapchain Available"), false);
+
+				tonemap_render_model
 			};
 
 			let mut root_render_pass = RootRenderPass::new();
@@ -117,6 +121,7 @@ impl Renderer {
 				image_ready,
 
 				result,
+				accumulation_map,
 
 				window_system: window_system_handle,
 
@@ -150,6 +155,7 @@ impl Renderer {
 			let mut ghi = self.ghi.write();
 
 			ghi.resize_image(self.result, extent);
+			ghi.resize_image(self.accumulation_map, extent);
 
 			self.root_render_pass.resize(&mut ghi, extent);
 

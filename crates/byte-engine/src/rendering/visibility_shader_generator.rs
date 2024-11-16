@@ -8,7 +8,8 @@ use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 use super::common_shader_generator::CommonShaderGenerator;
 
 pub struct VisibilityShaderGenerator {
-	out_albedo: besl::parser::Node,
+	diffuse_map: besl::parser::Node,
+	specular_map: besl::parser::Node,
 	lighting_data: besl::parser::Node,
 	materials: besl::parser::Node,
 	ao: besl::parser::Node,
@@ -23,7 +24,8 @@ impl VisibilityShaderGenerator {
 	pub fn new(scope: Node) -> Self {
 		use besl::parser::Node;
 
-		let set2_binding0 = Node::binding("out_albedo", Node::image("rgba16"), 2, 0, false, true);
+		let set2_binding0 = Node::binding("diffuse_map", Node::image("rgba16"), 2, 0, false, true);
+		let set2_binding2 = Node::binding("specular_map", Node::image("rgba16"), 2, 2, false, true);
 		let set2_binding4 = Node::binding("lighting_data", Node::buffer("LightingBuffer", vec![Node::member("light_count", "u32"), Node::member("lights", "Light[16]")]), 2, 4, true, false);
 		let set2_binding5 = Node::binding("materials", Node::buffer("MaterialBuffer", vec![Node::member("materials", "Material[16]")]), 2, 5, true, false);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
@@ -68,7 +70,8 @@ impl VisibilityShaderGenerator {
 			return surface_depth < closest_depth ? 0.0 : 1.0", &["views"], Vec::new())]);
 
 		Self {
-			out_albedo: set2_binding0,
+			diffuse_map: set2_binding0,
+			specular_map: set2_binding2,
 			lighting_data: set2_binding4,
 			materials: set2_binding5,
 			ao: set2_binding10,
@@ -83,7 +86,6 @@ impl VisibilityShaderGenerator {
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
-		let set2_binding0 = self.out_albedo.clone();
 		let set2_binding4 = self.lighting_data.clone();
 		let set2_binding5 = self.materials.clone();
 		let set2_binding10 = self.ao.clone();
@@ -201,8 +203,8 @@ float roughness = float(0.5);";
 		}
 
 		let b = "
-vec3 lo = vec3(0.0);
 vec3 diffuse = vec3(0.0);
+vec3 specular = vec3(0.0);
 
 float ao_factor = texture(ao, normalized_xy).r;
 
@@ -251,7 +253,7 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	float NDF = distribution_ggx(normal, H, roughness);
 	float G = geometry_smith(normal, V, L, roughness);
-	vec3 specular = (NDF * G * F) / (4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.000001);
+	vec3 local_specular = (NDF * G * F) / (4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.000001);
 
 	vec3 kS = F;
 	vec3 kD = vec3(1.0) - kS;
@@ -260,18 +262,22 @@ for (uint i = 0; i < lighting_data.light_count; ++i) {
 
 	vec3 local_diffuse = kD * albedo.xyz / PI;
 
-	lo += (local_diffuse + specular) * radiance * NdotL * occlusion_factor;
-	diffuse += local_diffuse;
+	diffuse += local_diffuse * radiance * NdotL * occlusion_factor;
+	specular += local_specular * radiance * NdotL * occlusion_factor;
 }
 
-lo *= ao_factor;
+diffuse *= ao_factor;
 
-imageStore(out_albedo, pixel_coordinates, vec4(lo, albedo.a));";
+imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
+imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0));
+";
 
 		let push_constant = self.push_constant.clone();
 
 		let lighting_data = self.lighting_data.clone();
-		let out_albedo = self.out_albedo.clone();
+
+		let diffuse_map = self.diffuse_map.clone();
+		let specular_map = self.specular_map.clone();
 
 		let common_shader_generator = CommonShaderGenerator::new();
 
@@ -282,12 +288,12 @@ imageStore(out_albedo, pixel_coordinates, vec4(lo, albedo.a));";
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
 				statements.insert(0, besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "views", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
-				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "out_albedo", "sample_shadow"], Vec::new()));
+				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "diffuse_map", "specular_map", "sample_shadow"], Vec::new()));
 			}
 			_ => {}
 		}
 
-		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding5, set2_binding10, lighting_data, out_albedo, self.sample_function.clone(), self.sample_normal_function.clone(), self.sample_shadow.clone()]);
+		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding5, set2_binding10, lighting_data, diffuse_map, specular_map, self.sample_function.clone(), self.sample_normal_function.clone(), self.sample_shadow.clone()]);
 		root.add(extra);
 
 		root

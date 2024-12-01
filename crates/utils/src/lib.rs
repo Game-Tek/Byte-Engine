@@ -10,6 +10,8 @@ pub mod r#async;
 pub mod stale_map;
 pub mod bit_array;
 
+use std::ops::Div;
+
 pub use r#async::spawn;
 pub use r#async::spawn_blocking;
 pub use r#async::remove_file;
@@ -127,6 +129,18 @@ impl From<[u32; 3]> for Extent {
 			width: array[0],
 			height: array[1],
 			depth: array[2],
+		}
+	}
+}
+
+impl Div<u32> for Extent {
+	type Output = Self;
+
+	fn div(self, rhs: u32) -> Self::Output {
+		Self {
+			width: if self.width == 1 { 1 } else { self.width / rhs },
+			height: if self.height == 1 { 1 } else { self.height / rhs },
+			depth: if self.depth == 1 { 1 } else { self.depth / rhs },
 		}
 	}
 }

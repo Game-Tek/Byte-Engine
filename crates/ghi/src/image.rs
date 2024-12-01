@@ -2,7 +2,7 @@ use utils::Extent;
 
 use crate::{DeviceAccesses, Formats, UseCases, Uses};
 
-pub struct ImageBuilder<'a> {
+pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
 	pub(crate) extent: Extent,
 	pub(crate) format: Formats,
@@ -13,7 +13,7 @@ pub struct ImageBuilder<'a> {
 	pub(crate) array_layers: u32,
 }
 
-impl<'a> ImageBuilder<'a> {
+impl<'a> Builder<'a> {
 	/// Creates a new image builder with the given extent, format, and resource uses.
 	/// The default device accesses are GPU read and write.
 	/// The default use case is static.

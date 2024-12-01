@@ -39,6 +39,9 @@ pub struct GraphicsApplication {
 	min_frame_time: std::time::Duration,
 	#[cfg(debug_assertions)]
 	max_frame_time: std::time::Duration,
+
+	#[cfg(debug_assertions)]
+	kill_after: Option<u64>,
 }
 
 impl Application for GraphicsApplication {
@@ -129,6 +132,9 @@ impl Application for GraphicsApplication {
 
 		let tick_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) })));
 
+		#[cfg(debug_assertions)]
+		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
+
 		GraphicsApplication {
 			application,
 			window_system_handle,
@@ -157,6 +163,9 @@ impl Application for GraphicsApplication {
 			min_frame_time: std::time::Duration::MAX,
 			#[cfg(debug_assertions)]
 			max_frame_time: std::time::Duration::ZERO,
+
+			#[cfg(debug_assertions)]
+			kill_after,
 		}
 	}
 
@@ -266,6 +275,13 @@ impl Application for GraphicsApplication {
 			let mut e = handle.write_sync();
 			e.render();
 		});
+
+		#[cfg(debug_assertions)]
+		if let Some(kill_after) = self.kill_after {
+			if self.tick_count >= kill_after {
+				close = true;
+			}
+		}
 
 		if close {
 			self.close();

@@ -41,7 +41,7 @@ impl ShadowRenderingPass {
 		
 		let shadow_map_resolution = Extent::square(4096);
 		
-		let shadow_map = ghi.build_image(ghi::image::ImageBuilder::new(shadow_map_resolution, ghi::Formats::Depth32, ghi::Uses::Image | ghi::Uses::Clear).name("Shadow Map").use_case(ghi::UseCases::DYNAMIC).array_layers(4));
+		let shadow_map = ghi.build_image(ghi::image::Builder::new(shadow_map_resolution, ghi::Formats::Depth32, ghi::Uses::Image | ghi::Uses::Clear).name("Shadow Map").use_case(ghi::UseCases::DYNAMIC).array_layers(4));
 		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
 		let lighting_data_buffer = ghi.create_buffer(Some("Lighting Data"), 1024, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		

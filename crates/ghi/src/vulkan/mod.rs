@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, image::ImageBuilder, render_debugger::RenderDebugger, sampler, window, Size};
+use crate::{graphics_hardware_interface, image::Builder, render_debugger::RenderDebugger, sampler, window, Size};
 
 pub struct VulkanGHI {
 	entry: ash::Entry,
@@ -908,7 +908,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		texture_handle
 	}
 
-	fn build_image(&mut self, builder: ImageBuilder) -> graphics_hardware_interface::ImageHandle {
+	fn build_image(&mut self, builder: Builder) -> graphics_hardware_interface::ImageHandle {
 		self.create_image(builder.name, builder.extent, builder.format, builder.resource_uses, builder.device_accesses, builder.use_case, builder.array_layers)
 	}
 
@@ -1803,7 +1803,7 @@ fn to_format(format: graphics_hardware_interface::Formats) -> vk::Format {
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16B16A16_SNORM }
 			}
 		}
-		graphics_hardware_interface::Formats::RGBu10u10u11 => vk::Format::R16G16_S10_5_NV,
+		graphics_hardware_interface::Formats::RGBu10u10u11 => vk::Format::B10G11R11_UFLOAT_PACK32,
 		graphics_hardware_interface::Formats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
 		graphics_hardware_interface::Formats::Depth32 => vk::Format::D32_SFLOAT,
 		graphics_hardware_interface::Formats::U32 => vk::Format::R32_UINT,
@@ -3362,10 +3362,7 @@ impl VulkanCommandBufferRecording<'_> {
 			let resources = match self.ghi.descriptors.get(&set_handle).map(|d| d.get(&binding_index)) {
 				Some(Some(b)) => b.values(),
 				_ => {
-					if !(set_index == 0 && binding_index == 9) { // TODO: pipelines for generated declare a fixed set of bindin accesses, but actual materials may not consume from that, not populating the binding with resources and triggering a false positive. TODO: export pipeline accesses from generated resources.
-						println!("Pipeline '{}' requires binding with '{}' index for set with '{}' index, but no such descriptor(s) exist.", bound_pipeline_handle.0, binding_index, set_index);
-					}
-
+					println!("Pipeline '{}' requires binding with '{}' index for set with '{}' index, but no such descriptor(s) exist.", bound_pipeline_handle.0, binding_index, set_index);
 					continue;
 				}
 			};
@@ -3849,6 +3846,61 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		self.bound_pipeline = Some(*pipeline_handle);
 
 		self
+	}
+
+	fn blit_image(&mut self, source_image: crate::ImageHandle, source_layout: crate::Layouts, destination_image: crate::ImageHandle, destination_layout: crate::Layouts) {
+		unsafe {
+			self.consume_resources(&[
+				Consumption {
+					handle: Handle::Image(self.get_internal_image_handle(source_image)),
+					stages: graphics_hardware_interface::Stages::TRANSFER,
+					access: graphics_hardware_interface::AccessPolicies::READ,
+					layout: source_layout,
+				},
+				Consumption {
+					handle: Handle::Image(self.get_internal_image_handle(destination_image)),
+					stages: graphics_hardware_interface::Stages::TRANSFER,
+					access: graphics_hardware_interface::AccessPolicies::WRITE,
+					layout: destination_layout,
+				}
+			]);
+		}
+
+		let command_buffer = self.get_command_buffer();
+		let source_image = self.get_image(self.get_internal_image_handle(source_image));
+		let destination_image = self.get_image(self.get_internal_image_handle(destination_image));
+		unsafe {
+			let blit = vk::ImageBlit2::default()
+			.src_subresource(vk::ImageSubresourceLayers {
+				aspect_mask: vk::ImageAspectFlags::COLOR,
+				mip_level: 0,
+				base_array_layer: 0,
+				layer_count: 1,
+			})
+			.src_offsets([
+				vk::Offset3D { x: 0, y: 0, z: 0 },
+				vk::Offset3D { x: source_image.extent.width as i32, y: source_image.extent.height as i32, z: 1 },
+			])
+			.dst_subresource(vk::ImageSubresourceLayers {
+				aspect_mask: vk::ImageAspectFlags::COLOR,
+				mip_level: 0,
+				base_array_layer: 0,
+				layer_count: 1,
+			})
+			.dst_offsets([
+				vk::Offset3D { x: 0, y: 0, z: 0 },
+				vk::Offset3D { x: destination_image.extent.width as i32, y: destination_image.extent.height as i32, z: 1 },
+			]);
+
+			let blits = [blit];
+
+			let blit_info = vk::BlitImageInfo2::default()
+				.src_image(source_image.image).src_image_layout(texture_format_and_resource_use_to_image_layout(source_image.format_, source_layout, Some(crate::AccessPolicies::READ)))
+				.dst_image(destination_image.image).dst_image_layout(texture_format_and_resource_use_to_image_layout(destination_image.format_, destination_layout, Some(crate::AccessPolicies::WRITE)))
+				.regions(&blits)
+				.filter(vk::Filter::LINEAR);
+			self.ghi.device.cmd_blit_image2(command_buffer.command_buffer, &blit_info);
+		}
 	}
 
 	fn write_to_push_constant(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, offset: u32, data: &[u8]) {
@@ -4367,6 +4419,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.ghi.debug_utils {
+				println!("Starting region: {}", name.to_str().unwrap());
 				debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
 			}
 		}
@@ -4384,6 +4437,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.ghi.debug_utils {
+				println!("Ending region");
 				debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
 			}
 		}	

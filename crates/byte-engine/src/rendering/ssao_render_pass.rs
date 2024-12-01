@@ -117,11 +117,9 @@ impl RenderPass for ScreenSpaceAmbientOcclusionPass {
 	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer_recording.start_region("SSAO");
 		command_buffer_recording.clear_images(&[(self.result, ghi::ClearValue::Color(RGBA::white())),]);
-		if true {
-			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]).bind_compute_pipeline(&self.pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-		}
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]).bind_compute_pipeline(&self.pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_x_descriptor_set]).bind_compute_pipeline(&self.blur_x_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.blur_y_descriptor_set]).bind_compute_pipeline(&self.blur_y_pipeline).dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
 		command_buffer_recording.end_region();
 	}
 
@@ -197,9 +195,11 @@ const float WEIGHTS[17] = float[17](
 vec4 blur(in sampler2D sourceTexture, vec2 blurDirection, vec2 uv)
 {
     vec4 result = vec4(0.0);
+	float center_depth = texture(depth, uv).r;
     for (int i = 0; i < SAMPLE_COUNT; ++i) {
         vec2 offset = blurDirection * OFFSETS[i] / vec2(textureSize(sourceTexture, 0));
-        result += texture(sourceTexture, uv + offset) * WEIGHTS[i];
+		float depth_sample = texture(depth, uv + offset).r;
+        result += texture(sourceTexture, uv + offset) * WEIGHTS[i] * exp(-abs(center_depth - depth_sample) * 10.0);
     }
     return result;
 }

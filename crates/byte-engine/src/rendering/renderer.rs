@@ -51,7 +51,7 @@ impl Renderer {
 
 				result = ghi.create_image(Some("result"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 				accumulation_map = ghi.create_image(Some("accumulate_map"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferSource, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
-				depth_sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
+				depth_sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}).reduction_mode(ghi::SamplingReductionModes::Min).filtering_mode(ghi::FilteringModes::Closest));
 			};
 
 			let texture_manager = Arc::new(utils::r#async::RwLock::new(TextureManager::new()));

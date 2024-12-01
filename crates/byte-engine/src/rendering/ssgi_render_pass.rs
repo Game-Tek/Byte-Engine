@@ -6,15 +6,32 @@ use std::{rc::Rc, sync::Arc};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
 
+use maths_rs::Vec2f;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, image::Image, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, ResourceManager};
 use utils::{json, sync::RwLock, Extent};
 
-use super::{common_shader_generator::CommonShaderGenerator, render_pass::RenderPass, texture_manager::TextureManager};
+use super::{common_shader_generator::CommonShaderGenerator, render_pass::{BilateralBlurPass, FullScreenRenderPass, RenderPass}, texture_manager::TextureManager};
 
 /// The SSGI render pass.
 pub struct SSGIRenderPass {
 	trace: TracePass,
+	downsample: FullScreenRenderPass,
+	quarter_blur: BilateralBlurPass,
+	quarter_to_half_upsample: UpsamplePass,
+	half_blur: BilateralBlurPass,
+	half_to_full_upsample: UpsamplePass,
+	full_blur: BilateralBlurPass,
 	apply: ApplyPass,
+
+	trace_map: ghi::ImageHandle,
+	downsample_map: ghi::ImageHandle,
+	x_quarter_blur_map: ghi::ImageHandle,
+	y_quarter_blur_map: ghi::ImageHandle,
+	upsample_map: ghi::ImageHandle,
+	x_half_blur_map: ghi::ImageHandle,
+	y_half_blur_map: ghi::ImageHandle,
+	x_full_blur_map: ghi::ImageHandle,
+	y_full_blur_map: ghi::ImageHandle,
 }
 
 pub const DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
@@ -24,15 +41,53 @@ pub const TRACE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetB
 impl SSGIRenderPass {
 	pub async fn new<'c>(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), diffuse_image: ghi::ImageHandle, result_map: ghi::ImageHandle) -> Self {
 		let mut ghi = ghi_lock.write();
-		let trace_map = ghi.build_image(ghi::image::ImageBuilder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Trace").device_accesses(ghi::DeviceAccesses::GpuRead | ghi::DeviceAccesses::GpuWrite).use_case(ghi::UseCases::DYNAMIC));
+		let trace_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Trace").use_case(ghi::UseCases::DYNAMIC));
+
+		let downsample_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Downsample").use_case(ghi::UseCases::DYNAMIC));
+		
+		let x_quarter_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let y_quarter_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Y SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		
+		let x_half_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let y_half_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Y SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+
+		let x_full_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let y_full_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Y SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+
+		let upsample_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Upsample").use_case(ghi::UseCases::DYNAMIC));
+		
+		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Mirror));
+		let downsample = FullScreenRenderPass::new(&mut ghi, &DOWNSAMPLE_SHADER, &[DOWNSAMPLE_SOURCE_BINDING, DOWNSAMPLE_DESTINATION_BINDING], &(trace_map, sampler), downsample_map);
+
+		let quarter_blur = BilateralBlurPass::new(&mut ghi, (depth_image, depth_sampler), downsample_map, x_quarter_blur_map, y_quarter_blur_map).await;
+		let quarter_to_half_upsample = UpsamplePass::new(y_quarter_blur_map, upsample_map);
+		let half_blur = BilateralBlurPass::new(&mut ghi, (depth_image, depth_sampler), upsample_map, x_half_blur_map, y_half_blur_map).await;
+		let half_to_full_upsample = UpsamplePass::new(y_half_blur_map, trace_map);
+		let full_blur = BilateralBlurPass::new(&mut ghi, (depth_image, depth_sampler), trace_map, x_full_blur_map, y_full_blur_map).await;
 		drop(ghi);
 
 		let trace = TracePass::new(ghi_lock.clone(), resource_manager.clone(), texture_manager.clone(), parent_descriptor_set_layout, (depth_image, depth_sampler), diffuse_image, trace_map).await;
-		let apply = ApplyPass::new(ghi_lock.clone(), resource_manager.clone(), texture_manager.clone(), diffuse_image, trace_map, result_map).await;
+		let apply = ApplyPass::new(ghi_lock.clone(), resource_manager.clone(), texture_manager.clone(), diffuse_image, y_full_blur_map, result_map).await;
 
 		SSGIRenderPass {
 			trace,
+			downsample,
+			quarter_blur,
+			quarter_to_half_upsample,
+			half_blur,
+			half_to_full_upsample,
+			full_blur,
 			apply,
+
+			trace_map,
+			downsample_map,
+			x_quarter_blur_map,
+			y_quarter_blur_map,
+			upsample_map,
+			x_half_blur_map,
+			y_half_blur_map,
+			x_full_blur_map,
+			y_full_blur_map,
 		}
 	}
 }
@@ -47,22 +102,41 @@ impl RenderPass for SSGIRenderPass {
 	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer_recording.region("SSGI", |command_buffer| {
 			self.trace.record(command_buffer, extent);
+			self.downsample.record(command_buffer, extent / 4);
+			self.quarter_blur.record(command_buffer, extent / 4);
+			self.quarter_to_half_upsample.record(command_buffer, extent);
+			self.half_blur.record(command_buffer, extent / 2);
+			self.half_to_full_upsample.record(command_buffer, extent);
+			self.full_blur.record(command_buffer, extent);
 			self.apply.record(command_buffer, extent);
 		});
 	}
 
 	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
+		ghi.resize_image(self.trace_map, extent);
+
+		ghi.resize_image(self.downsample_map, extent / 4);
+		ghi.resize_image(self.x_quarter_blur_map, extent / 4);
+		ghi.resize_image(self.y_quarter_blur_map, extent / 4);
+		ghi.resize_image(self.upsample_map, extent / 2);
+		ghi.resize_image(self.x_half_blur_map, extent / 2);
+		ghi.resize_image(self.y_half_blur_map, extent / 2);
+		ghi.resize_image(self.x_full_blur_map, extent);
+		ghi.resize_image(self.y_full_blur_map, extent);
+
 		self.trace.resize(ghi, extent);
+		self.downsample.resize(ghi, extent);
+		self.quarter_blur.resize(ghi, extent / 4);
+		self.quarter_to_half_upsample.resize(ghi, extent / 2);
+		self.half_blur.resize(ghi, extent / 2);
+		self.half_to_full_upsample.resize(ghi, extent);
+		self.full_blur.resize(ghi, extent);
 		self.apply.resize(ghi, extent);
 	}
 }
 
 /// This render pass traces ray against the scene to calculate the global illumination.
 struct TracePass {
-	// depth: ghi::ImageHandle,
-	// diffuse: ghi::ImageHandle,
-	trace: ghi::ImageHandle,
-
 	ray_march: ghi::PipelineHandle,
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
@@ -93,7 +167,6 @@ impl TracePass {
 		let ray_march = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&ray_march_shader, ghi::ShaderTypes::Compute));
 
 		TracePass {
-			trace: trace_map,
 			pipeline_layout,
 			descriptor_set,
 			ray_march,
@@ -182,8 +255,72 @@ impl RenderPass for TracePass {
 	}
 
 	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
-		ghi.resize_image(self.trace, extent);
 	}
+}
+
+pub const DOWNSAMPLE_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+pub const DOWNSAMPLE_DESTINATION_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+
+const DOWNSAMPLE_SHADER: &'static str = r#"
+#version 460 core
+#pragma shader_stage(compute)
+
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_shader_explicit_arithmetic_types: enable
+
+layout(row_major) uniform; layout(row_major) buffer;
+
+layout(set=0, binding=0) uniform sampler2D source;
+layout(set=0, binding=1) uniform writeonly image2D result;
+
+vec2 make_uv(ivec2 coord, uvec2 extent) {
+	return vec2(coord) / vec2(extent);
+}
+
+layout(local_size_x=16, local_size_y=16) in;
+void main() {
+	if (gl_GlobalInvocationID.x >= imageSize(result).x || gl_GlobalInvocationID.y >= imageSize(result).y) { return; }
+
+	uvec2 texel = uvec2(gl_GlobalInvocationID.xy);
+
+	vec4 lu_quad = texture(source, make_uv(ivec2(texel) * 4 + ivec2(-1, 1), textureSize(source, 0)));
+	vec4 ru_quad = texture(source, make_uv(ivec2(texel) * 4 + ivec2(1, 1), textureSize(source, 0)));
+	vec4 ld_quad = texture(source, make_uv(ivec2(texel) * 4 + ivec2(-1, -1), textureSize(source, 0)));
+	vec4 rd_quad = texture(source, make_uv(ivec2(texel) * 4 + ivec2(1, -1), textureSize(source, 0)));
+
+	vec4 value = (lu_quad + ru_quad + ld_quad + rd_quad) / 4.0;
+
+	imageStore(result, ivec2(gl_GlobalInvocationID.xy), value);
+}"#;
+
+struct UpsamplePass {
+	source: ghi::ImageHandle,
+	destination: ghi::ImageHandle,
+}
+
+impl UpsamplePass {
+	pub fn new(source_image: ghi::ImageHandle, destination_image: ghi::ImageHandle) -> Self {
+		UpsamplePass {
+			source: source_image,
+			destination: destination_image,
+		}
+	}
+}
+
+impl RenderPass for UpsamplePass {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
+		unimplemented!()
+	}
+	
+	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+
+	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {
+		command_buffer.region("Upsample", |command_buffer| {
+			command_buffer.blit_image(self.source, ghi::Layouts::Read, self.destination, ghi::Layouts::General);
+		});
+	}
+
+	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 }
 
 pub const APPLY_DIFFUSE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);

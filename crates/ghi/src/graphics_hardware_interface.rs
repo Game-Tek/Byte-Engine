@@ -4,7 +4,7 @@
 
 use utils::{Extent, RGBA};
 
-use crate::{image::ImageBuilder, sampler, window};
+use crate::{image::Builder, sampler, window};
 
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
@@ -298,6 +298,8 @@ pub trait CommandBufferRecordable where Self: Sized {
 
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
+	fn blit_image(&mut self, source_image: ImageHandle, source_layout: Layouts, destination_image: ImageHandle, destination_layout: Layouts);
+
 	/// Ends recording on the command buffer.
 	fn end(&mut self);
 
@@ -548,7 +550,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	/// * `format` - The format of the image.
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases, array_layers: u32) -> ImageHandle;
 
-	fn build_image(&mut self, builder: ImageBuilder) -> ImageHandle;
+	fn build_image(&mut self, builder: Builder) -> ImageHandle;
 
 	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
 

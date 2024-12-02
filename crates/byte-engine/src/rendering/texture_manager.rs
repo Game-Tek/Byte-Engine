@@ -108,7 +108,7 @@ impl TextureManager {
 			filtering_mode: ghi::FilteringModes::Linear,
 			reduction_mode: ghi::SamplingReductionModes::WeightedAverage,
 			mip_map_mode: ghi::FilteringModes::Linear,
-			addressing_mode: ghi::SamplerAddressingModes::Clamp,
+			addressing_mode: ghi::SamplerAddressingModes::Repeat,
 			anisotropy: None,
 			min_lod: 0,
 			max_lod: 0,

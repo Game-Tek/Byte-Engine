@@ -4419,7 +4419,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.ghi.debug_utils {
-				println!("Starting region: {}", name.to_str().unwrap());
+				// println!("Starting region: {}", name.to_str().unwrap());
 				debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
 			}
 		}
@@ -4437,7 +4437,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.ghi.debug_utils {
-				println!("Ending region");
+				// println!("Ending region");
 				debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
 			}
 		}	

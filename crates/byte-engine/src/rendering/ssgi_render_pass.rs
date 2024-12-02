@@ -41,20 +41,20 @@ pub const TRACE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetB
 impl SSGIRenderPass {
 	pub async fn new<'c>(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), diffuse_image: ghi::ImageHandle, result_map: ghi::ImageHandle) -> Self {
 		let mut ghi = ghi_lock.write();
-		let trace_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Trace").use_case(ghi::UseCases::DYNAMIC));
+		let trace_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::BlitDestination).name("Trace").use_case(ghi::UseCases::DYNAMIC));
 
 		let downsample_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Downsample").use_case(ghi::UseCases::DYNAMIC));
 		
-		let x_quarter_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
-		let y_quarter_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Y SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let x_quarter_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X Quarter SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let y_quarter_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferSource).name("Y Quarter SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
 		
-		let x_half_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
-		let y_half_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Y SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let x_half_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X Half SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let y_half_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferSource).name("Y Half SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
 
-		let x_full_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
-		let y_full_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Y SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let x_full_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("X Full SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
+		let y_full_blur_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferSource).name("Y Full SSGI Blur").use_case(ghi::UseCases::DYNAMIC));
 
-		let upsample_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image).name("Upsample").use_case(ghi::UseCases::DYNAMIC));
+		let upsample_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination).name("Upsample").use_case(ghi::UseCases::DYNAMIC));
 		
 		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Mirror));
 		let downsample = FullScreenRenderPass::new(&mut ghi, &DOWNSAMPLE_SHADER, &[DOWNSAMPLE_SOURCE_BINDING, DOWNSAMPLE_DESTINATION_BINDING], &(trace_map, sampler), downsample_map);
@@ -316,7 +316,7 @@ impl RenderPass for UpsamplePass {
 
 	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer.region("Upsample", |command_buffer| {
-			command_buffer.blit_image(self.source, ghi::Layouts::Read, self.destination, ghi::Layouts::General);
+			command_buffer.blit_image(self.source, ghi::Layouts::Transfer, self.destination, ghi::Layouts::Transfer);
 		});
 	}
 

@@ -191,6 +191,7 @@ float linearize_depth(float reversedDepth) {
 
 float gaussian_depth(float centerDepth, float sampleDepth) {
     float depthDiff = linearize_depth(centerDepth) - linearize_depth(sampleDepth);
+	if (abs(depthDiff) > 0.001) { return 0.0; } else { return 1.0; }
     float adjustedDepthDiff = abs(depthDiff);
     
     return exp(-adjustedDepthDiff * adjustedDepthDiff / (2.0 * 0.0005 * 0.0005));

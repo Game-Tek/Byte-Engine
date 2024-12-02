@@ -932,6 +932,11 @@ bitflags::bitflags! {
 		const AccelerationStructureBuild = 1 << 13;
 
 		const Clear = 1 << 14;
+
+		/// Resource will be used as a source for a blit operation.
+		const BlitSource = 1 << 9;
+		/// Resource will be used as a destination for a blit operation.
+		const BlitDestination = 1 << 10;
 	}
 }
 

@@ -1,39 +1,53 @@
+use core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, Entity};
+
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::{json, Extent};
 
-use super::{common_shader_generator::CommonShaderGenerator, render_pass::RenderPass, world_render_domain::WorldRenderDomain};
+use crate::Vector3;
+
+use super::{common_shader_generator::CommonShaderGenerator, directional_light::DirectionalLight, render_pass::RenderPass, world_render_domain::WorldRenderDomain};
 
 pub struct BackgroundRenderingPass {
 	pipeline: ghi::PipelineHandle,
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
+	buffer: ghi::BaseBufferHandle,
+
+	sun_direction: Vector3,
 }
 
 impl BackgroundRenderingPass {
-	pub fn new(ghi: &mut ghi::GHI, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, depth_target: ghi::ImageHandle, out_target: ghi::ImageHandle) -> Self {
+	pub fn new<'c>(ghi: &mut ghi::GHI, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, depth_target: ghi::ImageHandle, out_target: ghi::ImageHandle) -> EntityBuilder<'c, Self> {
 		let depth_map_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 		let out_map_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+		let light_binding_template = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 
-		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Sky Rendering Set Layout"), &[depth_map_binding_template.clone(), out_map_binding_template.clone()]);
+		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Sky Rendering Set Layout"), &[depth_map_binding_template.clone(), out_map_binding_template.clone(), light_binding_template.clone()]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[visibility_descriptor_set_template.clone(), descriptor_set_template], &[]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Sky Rendering Descriptor Set"), &descriptor_set_template);
 
+		let buffer = ghi.create_buffer(Some("Sky Rendering Buffer"), 3 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+
 		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
 		let depth_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&depth_map_binding_template, depth_target, sampler, ghi::Layouts::Read));
 		let out_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&out_map_binding_template, out_target, ghi::Layouts::General));
+		let light_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&light_binding_template, buffer));
 
-		let shader = ghi.create_shader(Some("Sky Rendering Shader"), ghi::ShaderSource::GLSL(Self::make_shader()), ghi::ShaderTypes::Compute, &[depth_map_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ), out_map_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE)]).unwrap();
+		let shader = ghi.create_shader(Some("Sky Rendering Shader"), ghi::ShaderSource::GLSL(Self::make_shader()), ghi::ShaderTypes::Compute, &[depth_map_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ), out_map_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE), light_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ)]).unwrap();
 
 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute));
 
-		Self {
+		EntityBuilder::new(Self {
 			pipeline,
 			pipeline_layout,
 			descriptor_set,
-		}
+			buffer,
+
+			sun_direction: Vector3::new(0.0, -1.0, 0.0),
+		}).listen_to::<DirectionalLight>()
 	}
 
 	fn make_shader() -> String {
@@ -47,11 +61,7 @@ impl BackgroundRenderingPass {
 
 		if (depth != 0.0) { return; }
 
-		float inclination = 0.4987;
-		float azimuth = 0.2268;
-		float theta = PI * (inclination - 0.5);
-		float phi = 2.0 * PI * (azimuth - 0.5);
-		vec3 sunPosition = vec3(cos(phi), sin(phi) * sin(theta), -sin(phi) * cos(theta)) * 400000;
+		vec3 sunPosition = -light.direction * 400000;
 		float rayleigh = 2.295;
 		vec3 primaries = vec3(6.8e-7, 5.5e-7, 4.5e-7);
 		float refractive_index = 1.0003;
@@ -105,7 +115,7 @@ impl BackgroundRenderingPass {
 		"#;
 
 		let main = besl::parser::Node::function("main", Vec::new(), "void", vec![
-			besl::parser::Node::glsl(main_code, &["make_uv", "views", "total_rayleigh", "total_mie", "rayleigh_phase", "henyey_greenstein_phase", "out_target", "depth_target"], Vec::new())
+			besl::parser::Node::glsl(main_code, &["make_uv", "light", "views", "total_rayleigh", "total_mie", "rayleigh_phase", "henyey_greenstein_phase", "out_target", "depth_target"], Vec::new())
 		]);
 
 		let root_node = besl::parser::Node::root();
@@ -117,6 +127,7 @@ impl BackgroundRenderingPass {
 		root.add(vec![
 			besl::parser::Node::binding("depth_target", besl::parser::Node::combined_image_sampler(), 1, 0, true, false),
 			besl::parser::Node::binding("out_target", besl::parser::Node::image("rgba16"), 1, 1, false, true),
+			besl::parser::Node::binding("light", besl::parser::Node::buffer("LightData", vec![besl::parser::Node::member("direction", "vec3f")]), 1, 2, true, false),
 			besl::parser::Node::function("total_rayleigh", vec![besl::parser::Node::parameter("lambda", "vec3f"), besl::parser::Node::parameter("refractive_index", "f32"), besl::parser::Node::parameter("depolarization_factor", "f32"), besl::parser::Node::parameter("num_molecules", "f32")], "vec3f", vec![
 				besl::parser::Node::glsl("return (8.0 * pow(PI, 3.0) * pow(pow(refractive_index, 2.0) - 1.0, 2.0) * (6.0 + 3.0 * depolarization_factor)) / (3.0 * num_molecules * pow(lambda, vec3(4.0)) * (6.0 - 7.0 * depolarization_factor))", &[], vec![]),
 			]),
@@ -161,5 +172,27 @@ impl RenderPass for BackgroundRenderingPass {
 		command_buffer_recording.end_region();
 	}
 
+	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
+		let buffer = ghi.get_mut_buffer_slice(self.buffer);
+
+		let sun_direction = self.sun_direction;
+
+		unsafe {
+			let buffer = buffer.as_mut_ptr() as *mut Vector3;
+
+			std::ptr::copy_nonoverlapping(&sun_direction, buffer, 1);
+		}
+	}
+
 	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 }
+
+impl EntitySubscriber<DirectionalLight> for BackgroundRenderingPass {
+	fn on_create<'a>(&'a mut self, handle: core::EntityHandle<DirectionalLight>, params: &'a DirectionalLight) -> utils::BoxedFuture<'a, ()> {
+		self.sun_direction = params.direction;
+
+		Box::pin(async move {})
+	}
+}
+
+impl Entity for BackgroundRenderingPass {}

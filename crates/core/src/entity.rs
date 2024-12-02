@@ -218,7 +218,7 @@ pub struct EntityBuilder<'c, T: 'c> {
 	pub listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
 }
 
-impl <'c, T: Entity + 'c> EntityBuilder<'c, T> {
+impl <'c, T: 'c> EntityBuilder<'c, T> {
 	fn default(create: impl FnOnce(Option<DomainType>) -> BoxedFuture<'c, T> + 'c) -> Self {
 		Self {
 			create: Box::new(create),
@@ -256,7 +256,7 @@ impl <'c, T: Entity + 'c> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn listen_to<C: Entity + ?Sized + 'static>(mut self,) -> Self where T: EntitySubscriber<C> {
+	pub fn listen_to<C: Entity + ?Sized + 'static>(mut self,) -> Self where T: EntitySubscriber<C> + 'static {
 		self.listens_to.push(Box::new(move |domain_handle, e| {
 			let l = domain_handle.write_sync();
 			let l = l.deref();
@@ -271,7 +271,7 @@ impl <'c, T: Entity + 'c> EntityBuilder<'c, T> {
 	}
 }
 
-impl <T: Entity> From<T> for EntityBuilder<'static, T> {
+impl <'c, T> From<T> for EntityBuilder<'c, T> {
 	fn from(entity: T) -> Self {
 		Self::new(entity)
 	}

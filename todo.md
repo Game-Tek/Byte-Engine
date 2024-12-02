@@ -1,0 +1,1 @@
+- Make BESL output shader metadata (workgroup size, bindings used, etc)

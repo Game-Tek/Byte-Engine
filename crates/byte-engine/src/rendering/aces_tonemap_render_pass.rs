@@ -19,7 +19,7 @@ const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Descript
 const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl AcesToneMapPass {
-    fn new(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
+    pub fn new(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
 		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
@@ -46,12 +46,6 @@ impl AcesToneMapPass {
 			result_image_handle: result_image,
 		}
     }
-
-	pub fn new_as_system(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> EntityBuilder<Self> {
-		EntityBuilder::new_from_function(move || {
-			AcesToneMapPass::new(ghi, source_image, result_image)
-		})
-	}
 }
 
 impl Entity for AcesToneMapPass {}

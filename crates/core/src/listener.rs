@@ -12,7 +12,7 @@ pub trait Listener: Entity {
 	fn add_listener<T: Entity + ?Sized>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>);
 }
 
-pub trait EntitySubscriber<T: ?Sized>: Entity {
+pub trait EntitySubscriber<T: ?Sized> {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &'a T) -> utils::BoxedFuture<'a, ()>;
 }
 

@@ -554,10 +554,8 @@ impl ShaderCompilation {
 						string.push_str(",scalar");
 					}
 					besl::BindingTypes::Image { format } => {
-						if !(*write && !*read) {
-							string.push(',');
-							string.push_str(&format);
-						}
+						string.push(',');
+						string.push_str(&format);
 					}
 					besl::BindingTypes::CombinedImageSampler{ .. } => {}
 				}

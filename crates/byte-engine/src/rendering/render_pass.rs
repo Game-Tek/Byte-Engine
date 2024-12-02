@@ -222,3 +222,33 @@ void main() {
 
 	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(value), 1.0));
 }"#;
+
+pub struct BlitPass {
+	source: ghi::ImageHandle,
+	destination: ghi::ImageHandle,
+}
+
+impl BlitPass {
+	pub fn new(source_image: ghi::ImageHandle, destination_image: ghi::ImageHandle) -> Self {
+		BlitPass {
+			source: source_image,
+			destination: destination_image,
+		}
+	}
+}
+
+impl RenderPass for BlitPass {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
+		unimplemented!()
+	}
+	
+	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+
+	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {
+		command_buffer.region("Blit", |command_buffer| {
+			command_buffer.blit_image(self.source, ghi::Layouts::Transfer, self.destination, ghi::Layouts::Transfer);
+		});
+	}
+
+	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+}

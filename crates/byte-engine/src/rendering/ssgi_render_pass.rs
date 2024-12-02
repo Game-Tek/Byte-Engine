@@ -21,7 +21,7 @@ pub struct SSGIRenderPass {
 	half_blur: BilateralBlurPass,
 	half_to_full_upsample: UpsamplePass,
 	full_blur: BilateralBlurPass,
-	apply: ApplyPass,
+	// apply: ApplyPass,
 
 	trace_map: ghi::ImageHandle,
 	downsample_map: ghi::ImageHandle,
@@ -39,7 +39,7 @@ pub const DIFFUSE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSe
 pub const TRACE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl SSGIRenderPass {
-	pub async fn new<'c>(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), diffuse_image: ghi::ImageHandle, result_map: ghi::ImageHandle) -> Self {
+	pub async fn new<'c>(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), diffuse_image: ghi::ImageHandle,) -> Self {
 		let mut ghi = ghi_lock.write();
 		let trace_map = ghi.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::BlitDestination).name("Trace").use_case(ghi::UseCases::DYNAMIC));
 
@@ -67,7 +67,7 @@ impl SSGIRenderPass {
 		drop(ghi);
 
 		let trace = TracePass::new(ghi_lock.clone(), resource_manager.clone(), texture_manager.clone(), parent_descriptor_set_layout, (depth_image, depth_sampler), diffuse_image, trace_map).await;
-		let apply = ApplyPass::new(ghi_lock.clone(), resource_manager.clone(), texture_manager.clone(), diffuse_image, y_full_blur_map, result_map).await;
+		// let apply = ApplyPass::new(ghi_lock.clone(), resource_manager.clone(), texture_manager.clone(), diffuse_image, y_full_blur_map, result_map).await;
 
 		SSGIRenderPass {
 			trace,
@@ -77,7 +77,7 @@ impl SSGIRenderPass {
 			half_blur,
 			half_to_full_upsample,
 			full_blur,
-			apply,
+			// apply,
 
 			trace_map,
 			downsample_map,
@@ -89,6 +89,10 @@ impl SSGIRenderPass {
 			x_full_blur_map,
 			y_full_blur_map,
 		}
+	}
+
+	pub fn get_gi_map(&self) -> ghi::ImageHandle {
+		self.y_full_blur_map
 	}
 }
 
@@ -108,7 +112,7 @@ impl RenderPass for SSGIRenderPass {
 			self.half_blur.record(command_buffer, extent / 2);
 			self.half_to_full_upsample.record(command_buffer, extent);
 			self.full_blur.record(command_buffer, extent);
-			self.apply.record(command_buffer, extent);
+			// self.apply.record(command_buffer, extent);
 		});
 	}
 
@@ -131,7 +135,7 @@ impl RenderPass for SSGIRenderPass {
 		self.half_blur.resize(ghi, extent / 2);
 		self.half_to_full_upsample.resize(ghi, extent);
 		self.full_blur.resize(ghi, extent);
-		self.apply.resize(ghi, extent);
+		// self.apply.resize(ghi, extent);
 	}
 }
 

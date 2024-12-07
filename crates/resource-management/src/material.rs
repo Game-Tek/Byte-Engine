@@ -1,4 +1,5 @@
 use futures::future::try_join_all;
+use utils::Extent;
 
 use crate::{asset::ResourceId, image::Image, types::{AlphaMode, ShaderTypes}, Model, Reference, ReferenceModel, Resource, SolveErrors, Solver, resource};
 
@@ -149,9 +150,35 @@ impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Binding {
+	pub set: u32,
+	pub binding: u32,
+	pub read: bool,
+	pub write: bool,
+}
+
+impl Binding {
+	pub fn new(set: u32, binding: u32, read: bool, write: bool) -> Self {
+		Self {
+			set,
+			binding,
+			read,
+			write,
+		}
+	}
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShaderInterface {
+	pub workgroup_size: Option<(u32, u32, u32)>,
+	pub bindings: Vec<Binding>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Shader {
 	pub id: String,
 	pub stage: ShaderTypes,
+	pub interface: ShaderInterface,
 }
 
 impl Shader {
@@ -173,11 +200,12 @@ impl super::Model for Shader {
 impl <'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
 	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
-		let Shader { id, stage } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let Shader { id, stage, interface } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Shader {
 			id,
 			stage,
+			interface,
 		}, reader))
 	}
 }

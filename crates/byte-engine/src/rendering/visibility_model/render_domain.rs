@@ -756,28 +756,7 @@ impl VisibilityWorldRenderDomain {
 				"Visibility" => {
 					match resource.resource().model.pass.as_str() {
 						"MaterialEvaluation" => {
-							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, &[
-								VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								TEXTURES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-								MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-								MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-								MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-								TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-								OUT_DIFFUSE.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
-								OUT_SPECULAR.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
-								CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-								LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-								MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-								AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-								DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-							], resource, ghi.clone()).await.unwrap();
+							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, resource, ghi.clone()).await.unwrap();
 	
 							let mut ghi = ghi.write();
 	
@@ -844,28 +823,7 @@ impl VisibilityWorldRenderDomain {
 				}
 			}).collect();
 
-			let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &[
-				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				TEXTURES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				TRIANGLE_INDEX_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				OUT_DIFFUSE.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
-				OUT_SPECULAR.into_shader_binding_descriptor(2, ghi::AccessPolicies::WRITE),
-				CAMERA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				LIGHTING_DATA.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				MATERIALS.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				AO.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-				DEPTH_SHADOW_MAP.into_shader_binding_descriptor(2, ghi::AccessPolicies::READ),
-			], &specialization_constants, &mut resource, ghi.clone()).await;
+			let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &specialization_constants, &mut resource, ghi.clone()).await;
 
 			let pipeline = pipeline.unwrap();
 
@@ -1019,6 +977,10 @@ impl VisibilityWorldRenderDomain {
 
 	pub fn get_transfer_synchronizer(&self) -> ghi::SynchronizerHandle {
 		self.transfer_synchronizer
+	}
+
+	pub fn get_views_buffer(&self) -> ghi::BaseBufferHandle {
+		self.views_data_buffer_handle
 	}
 }
 

@@ -276,6 +276,8 @@ impl Application for GraphicsApplication {
 			e.render();
 		});
 
+		self.tick_count += 1;
+
 		#[cfg(debug_assertions)]
 		if let Some(kill_after) = self.kill_after {
 			if self.tick_count >= kill_after {
@@ -286,8 +288,6 @@ impl Application for GraphicsApplication {
 		if close {
 			self.close();
 		}
-
-		self.tick_count += 1;
 
 		#[cfg(debug_assertions)]
 		{

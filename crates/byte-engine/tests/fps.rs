@@ -1,7 +1,7 @@
-use core::EntityHandle;
+use core::{event::EventLike, EntityHandle};
 use std::ops::Deref;
 
-use byte_engine::{application::{Application, Parameter}, camera::Camera, core::domain::Domain, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, physics, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, core::domain::Domain, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
 
 #[ignore]
 #[test]
@@ -117,7 +117,10 @@ fn fps() {
 		// Subscribe to the fire action
 		fire.write_sync().value_mut().add(move |v: &bool| {
 			if *v {
-				utils::r#async::block_on(core::spawn_as_child::<Object>(space_handle.clone(), Object::new("Sphere.gltf", Transform::identity().position(Vector3::new(0.0, 1.0, 0.0)).scale(Vector3::new(0.1, 0.1, 0.1)), byte_engine::physics::BodyTypes::Dynamic, Vector3::new(0.0, 0.0, 1.0))));
+				let c = utils::r#async::block_on(core::spawn_as_child::<Object>(space_handle.clone(), Object::new("Sphere.gltf", Transform::identity().position(Vector3::new(0.0, 1.0, 0.0)).scale(Vector3::new(0.1, 0.1, 0.1)), byte_engine::physics::BodyTypes::Dynamic, Vector3::new(0.0, 0.0, 10.0))));
+				c.write_sync().on_collision().unwrap().on(move |e| {
+					log::info!("Collision: {:?}", "hehehj");
+				});
 			}
 		});
 	}

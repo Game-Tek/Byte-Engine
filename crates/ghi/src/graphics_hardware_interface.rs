@@ -394,7 +394,7 @@ pub struct ShaderBindingDescriptor {
 }
 
 impl ShaderBindingDescriptor {
-	pub(crate) fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
+	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
 		Self {
 			set,
 			binding,

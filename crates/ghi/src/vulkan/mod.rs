@@ -3263,7 +3263,7 @@ pub struct VulkanCommandBufferRecording<'a> {
 	stages: vk::PipelineStageFlags2,
 
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<DescriptorSetHandle>,
+	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 }
 
 impl VulkanCommandBufferRecording<'_> {
@@ -3354,8 +3354,8 @@ impl VulkanCommandBufferRecording<'_> {
 		let pipeline = &self.ghi.pipelines[bound_pipeline_handle.0 as usize];
 
 		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
-			let set_handle = if let Some(&h) = self.bound_descriptor_set_handles.get(set_index as usize) { h } else {
-				// log::error!("No bound descriptor set found for index {}", set_index);
+			let set_handle = if let Some(&h) = self.bound_descriptor_set_handles.get(set_index as usize) { h.1 } else {
+				println!("No bound descriptor set found for index {}", set_index);
 				continue;
 			};
 
@@ -4259,8 +4259,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 
 	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut impl graphics_hardware_interface::CommandBufferRecordable {
 		if sets.is_empty() { return self; }
-
-		let command_buffer = self.get_command_buffer();
 		
 		let pipeline_layout = &self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
@@ -4273,12 +4271,25 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 
 		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
 
-		let partitions = partition(&s, |e| e.0 as usize);
+		for (descriptor_set_index, descriptor_set_handle, _) in s {
+			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
+				self.bound_descriptor_set_handles[descriptor_set_index as usize] = (descriptor_set_index, descriptor_set_handle);
+				self.bound_descriptor_set_handles.truncate(descriptor_set_index as usize + 1);
+			} else {
+				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
+				self.bound_descriptor_set_handles.push((descriptor_set_index, descriptor_set_handle));
+			}
+		}
 
+		let command_buffer = self.get_command_buffer();
+
+		let partitions = partition(&self.bound_descriptor_set_handles, |e| e.0 as usize);
+
+		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change
 		for (base_index, descriptor_sets) in partitions {
 			let base_index = base_index as u32;
 
-			let descriptor_sets = descriptor_sets.iter().map(|(_, _, descriptor_set)| *descriptor_set).collect::<Vec<_>>();
+			let descriptor_sets = descriptor_sets.iter().map(|(_, descriptor_set)| self.get_descriptor_set(descriptor_set).descriptor_set).collect::<Vec<_>>();
 
 			unsafe {
 				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] { // TODO: do this for all needed bind points
@@ -4288,16 +4299,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
 					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, vulkan_pipeline_layout_handle, base_index, &descriptor_sets, &[]);
 				}
-			}
-		}
-
-		for (descriptor_set_index, descriptor_set_handle, _) in s {
-			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
-				self.bound_descriptor_set_handles[descriptor_set_index as usize] = descriptor_set_handle;
-				self.bound_descriptor_set_handles.truncate(descriptor_set_index as usize + 1);
-			} else {
-				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
-				self.bound_descriptor_set_handles.push(descriptor_set_handle);
 			}
 		}
 

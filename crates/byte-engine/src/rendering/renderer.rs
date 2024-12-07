@@ -80,7 +80,7 @@ impl Renderer {
 			let background_render_pass: EntityHandle<BackgroundRenderingPass> = {
 				let vrm = visibility_render_model.read_sync();
 				let mut ghi = ghi_instance.write();
-				core::spawn(BackgroundRenderingPass::new(&mut ghi, &vrm.get_descriptor_set_template(), vrm.get_view_depth_image(), accumulation_map)).await
+				core::spawn(BackgroundRenderingPass::new(&mut ghi, vrm.get_views_buffer(), vrm.get_view_depth_image(), accumulation_map)).await
 			};
 
 			let fog_render_pass = {

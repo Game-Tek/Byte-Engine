@@ -18,25 +18,27 @@ pub struct BackgroundRenderingPass {
 }
 
 impl BackgroundRenderingPass {
-	pub fn new<'c>(ghi: &mut ghi::GHI, visibility_descriptor_set_template: &ghi::DescriptorSetTemplateHandle, depth_target: ghi::ImageHandle, out_target: ghi::ImageHandle) -> EntityBuilder<'c, Self> {
-		let depth_map_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
-		let out_map_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-		let light_binding_template = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	pub fn new<'c>(ghi: &mut ghi::GHI, views_buffer: ghi::BaseBufferHandle, depth_target: ghi::ImageHandle, out_target: ghi::ImageHandle) -> EntityBuilder<'c, Self> {
+		let views_buffer_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+		let depth_map_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+		let out_map_binding_template = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+		let light_binding_template = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 
-		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Sky Rendering Set Layout"), &[depth_map_binding_template.clone(), out_map_binding_template.clone(), light_binding_template.clone()]);
+		let descriptor_set_template = ghi.create_descriptor_set_template(Some("Sky Rendering Set Layout"), &[views_buffer_binding_template.clone(), depth_map_binding_template.clone(), out_map_binding_template.clone(), light_binding_template.clone(),]);
 
-		let pipeline_layout = ghi.create_pipeline_layout(&[visibility_descriptor_set_template.clone(), descriptor_set_template], &[]);
+		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Sky Rendering Descriptor Set"), &descriptor_set_template);
 
 		let buffer = ghi.create_buffer(Some("Sky Rendering Buffer"), 3 * 4, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
+		let views_buffer_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&views_buffer_binding_template, views_buffer));
 		let depth_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&depth_map_binding_template, depth_target, sampler, ghi::Layouts::Read));
 		let out_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&out_map_binding_template, out_target, ghi::Layouts::General));
 		let light_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&light_binding_template, buffer));
 
-		let shader = ghi.create_shader(Some("Sky Rendering Shader"), ghi::ShaderSource::GLSL(Self::make_shader()), ghi::ShaderTypes::Compute, &[depth_map_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ), out_map_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE), light_binding_template.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ)]).unwrap();
+		let shader = ghi.create_shader(Some("Sky Rendering Shader"), ghi::ShaderSource::GLSL(Self::make_shader()), ghi::ShaderTypes::Compute, &[views_buffer_binding_template.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ,), depth_map_binding_template.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), out_map_binding_template.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE), light_binding_template.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),]).unwrap();
 
 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute));
 
@@ -125,9 +127,9 @@ impl BackgroundRenderingPass {
 		let push_constant = besl::parser::Node::push_constant(vec![]);
 
 		root.add(vec![
-			besl::parser::Node::binding("depth_target", besl::parser::Node::combined_image_sampler(), 1, 0, true, false),
-			besl::parser::Node::binding("out_target", besl::parser::Node::image("rgba16"), 1, 1, false, true),
-			besl::parser::Node::binding("light", besl::parser::Node::buffer("LightData", vec![besl::parser::Node::member("direction", "vec3f")]), 1, 2, true, false),
+			besl::parser::Node::binding("depth_target", besl::parser::Node::combined_image_sampler(), 0, 1, true, false),
+			besl::parser::Node::binding("out_target", besl::parser::Node::image("rgba16"), 0, 2, false, true),
+			besl::parser::Node::binding("light", besl::parser::Node::buffer("LightData", vec![besl::parser::Node::member("direction", "vec3f")]), 0, 3, true, false),
 			besl::parser::Node::function("total_rayleigh", vec![besl::parser::Node::parameter("lambda", "vec3f"), besl::parser::Node::parameter("refractive_index", "f32"), besl::parser::Node::parameter("depolarization_factor", "f32"), besl::parser::Node::parameter("num_molecules", "f32")], "vec3f", vec![
 				besl::parser::Node::glsl("return (8.0 * pow(PI, 3.0) * pow(pow(refractive_index, 2.0) - 1.0, 2.0) * (6.0 + 3.0 * depolarization_factor)) / (3.0 * num_molecules * pow(lambda, vec3(4.0)) * (6.0 - 7.0 * depolarization_factor))", &[], vec![]),
 			]),

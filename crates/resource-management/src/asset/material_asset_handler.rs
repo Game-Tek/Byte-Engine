@@ -4,7 +4,7 @@ use futures::future::{join, join_all, try_join_all};
 use log::debug;
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{material::{MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel}, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, resource, asset, Data, ProcessedAsset, ReferenceModel};
+use crate::{asset, material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, Data, ProcessedAsset, ReferenceModel};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -332,9 +332,36 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		_ => { panic!("Invalid shader stage") }
 	};
 
+	let interface = ShaderInterface {
+		workgroup_size: if stage == ShaderTypes::Compute { Some((128, 1, 1)) } else { None },
+		bindings: vec![
+			Binding::new(0, 0, true, false,),
+			Binding::new(0, 1, true, false,),
+			Binding::new(0, 2, true, false,),
+			Binding::new(0, 3, true, false,),
+			Binding::new(0, 5, true, false,),
+			Binding::new(0, 6, true, false,),
+			Binding::new(0, 7, true, false,),
+			Binding::new(0, 8, true, false,),
+			Binding::new(0, 9, true, false,),
+			Binding::new(1, 0, true, false,),
+			Binding::new(1, 1, true, false,),
+			Binding::new(1, 4, true, false,),
+			Binding::new(1, 6, true, false,),
+			Binding::new(2, 0, false, true,),
+			Binding::new(2, 1, true, false,),
+			Binding::new(2, 2, false, true,),
+			Binding::new(2, 4, true, false,),
+			Binding::new(2, 5, true, false,),
+			Binding::new(2, 10, true, false,),
+			Binding::new(2, 11, true, false,),
+		]
+	};
+
 	let shader = Shader {
 		id: name.to_string(),
 		stage,
+		interface,
 	};
 
 	Ok((shader, result_shader_bytes))

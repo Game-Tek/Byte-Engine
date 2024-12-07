@@ -17,7 +17,7 @@ impl PipelineManager {
 		}
 	}
 
-	pub async fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, shader_binding_descriptors: &[ghi::ShaderBindingDescriptor], reference: &mut Reference<Material>, ghi: Rc<RwLock<ghi::GHI>>) -> Option<ghi::PipelineHandle> {
+	pub async fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, ghi: Rc<RwLock<ghi::GHI>>) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
@@ -34,6 +34,10 @@ impl PipelineManager {
 				if let Entry::Fresh((old_shader, old_shader_type)) = self.shaders.read().entry(&shader.id, shader.get_hash()) {
 					return Ok((*old_shader, *old_shader_type)); // If the shader has not changed, return the old shader
 				}
+
+				let shader_binding_descriptors = shader.resource().interface.bindings.iter().map(|binding| {
+					ghi::ShaderBindingDescriptor::new(binding.set, binding.binding, if binding.read { ghi::AccessPolicies::READ } else { ghi::AccessPolicies::empty() } | if binding.write { ghi::AccessPolicies::WRITE } else { ghi::AccessPolicies::empty() })
+				}).collect::<Vec<_>>();
 	
 				let stage = match shader.resource().stage {
 					ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
@@ -57,8 +61,9 @@ impl PipelineManager {
 				} else {
 					return Err(());
 				};
+
 	
-				let new_shader = ghi.write().create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, shader_binding_descriptors).unwrap();
+				let new_shader = ghi.write().create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, &shader_binding_descriptors).unwrap();
 	
 				self.shaders.write().insert(shader.id().to_string(), shader.get_hash(), (new_shader, stage));
 	
@@ -73,7 +78,7 @@ impl PipelineManager {
 		r.ok().map(|v| *v)
 	}
 
-	pub async fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, shader_binding_descriptors: &[ghi::ShaderBindingDescriptor], specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Rc<RwLock<ghi::GHI>>,) -> Option<ghi::PipelineHandle> {
+	pub async fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Rc<RwLock<ghi::GHI>>,) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
@@ -82,7 +87,7 @@ impl PipelineManager {
 		};
 		
 		let r = v.get_or_try_init::<(), _, _>(async || {
-			self.load_material(pipeline_layout_handle, shader_binding_descriptors, &mut reference.resource_mut().material, ghi.clone()).await.unwrap();
+			self.load_material(pipeline_layout_handle, &mut reference.resource_mut().material, ghi.clone()).await.unwrap();
 
 			let variant = reference.resource_mut();
 

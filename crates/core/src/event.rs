@@ -10,6 +10,8 @@ pub trait EventLike<T> {
 	/// * `endpoint` - The function to be called when the event is triggered.
 	fn subscribe<C: 'static>(&mut self, consumer: EntityHandle<C>, endpoint: fn(&mut C, &T));
 
+	fn on(&mut self, endpoint: fn(&T));
+
 	/// Triggers the event.
 	/// Most implmentations will call the endpoint function for each of the consumers.
 	/// 
@@ -25,6 +27,10 @@ pub struct Event<T> {
 impl <T: 'static> EventLike<T> for Event<T> {
 	fn subscribe<C: 'static>(&mut self, consumer: EntityHandle<C>, endpoint: fn(&mut C, &T)) {
 		self.subscribers.push(std::rc::Rc::new(std::sync::RwLock::new((consumer, endpoint))));
+	}
+
+	fn on(&mut self, endpoint: fn(&T)) {
+		self.subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(endpoint)));
 	}
 
 	fn ocurred(&self, value: &T) {

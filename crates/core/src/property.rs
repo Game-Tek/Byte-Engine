@@ -182,7 +182,7 @@ impl <F: Clone + 'static, T: Clone + 'static> PropertyLike<T> for DerivedPropert
 	}
 }
 
-impl <E, T> Subscriber<T> for (EntityHandle<E>, fn(&mut E, &T)) {
+impl <E, T, F> Subscriber<T> for (EntityHandle<E>, F) where F: FnMut(&mut E, &T) {
 	fn update(&mut self, value: &T) {
 		let mut entity = self.0.write_sync();
 		(self.1)(&mut entity, value);

@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use resource_management::{audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
 
-use core::{Entity, EntityHandle, entity::EntityBuilder,};
+use core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
 use ahi::{audio_hardware_interface::AudioHardwareInterface, self};
+
+use super::sound::Sound;
 
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
-	fn play(&mut self, audio_asset_url: &'static str) -> impl std::future::Future<Output = ()>;
+	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> impl std::future::Future<Output = ()> + 'a;
 
 	/// Processes audio data and sends it to the audio hardware interface.
 	fn render(&mut self);
@@ -36,14 +38,14 @@ impl DefaultAudioSystem {
 	}
 
 	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(resource_manager))
+		EntityBuilder::new(Self::new(resource_manager)).listen_to::<Sound>()
 	}
 }
 
 impl Entity for DefaultAudioSystem {}
 
 impl AudioSystem for DefaultAudioSystem {
-	async fn play(&mut self, audio_asset_url: &'static str) {
+	async fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
 		let data = if let Some(a) = self.audio_resources.get(audio_asset_url) {
 			Some(a)
 		} else {
@@ -127,4 +129,12 @@ struct Channel {
 struct PlayingSound {
 	audio_asset_url: String,
 	current_sample: u32,
+}
+
+impl EntitySubscriber<Sound> for DefaultAudioSystem {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Sound>, sound: &'a Sound) -> utils::BoxedFuture<'a, ()> {
+		Box::pin(async move {
+			self.play(&sound.asset).await;
+		})
+	}
 }

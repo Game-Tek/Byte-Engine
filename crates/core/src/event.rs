@@ -6,11 +6,8 @@ pub trait EventLike<T> {
 	/// Subscribes a consumer to the event.
 	///	
 	/// # Arguments
-	/// * `consumer` - The consumer to be subscribed.
-	/// * `endpoint` - The function to be called when the event is triggered.
-	fn subscribe<C: 'static>(&mut self, consumer: EntityHandle<C>, endpoint: fn(&mut C, &T));
-
-	fn on(&mut self, endpoint: fn(&T));
+	/// * `endpoint` - The Subscriber to be called when the event is triggered.
+	fn trigger(&mut self, endpoint: impl Subscriber<T> + 'static);
 
 	/// Triggers the event.
 	/// Most implmentations will call the endpoint function for each of the consumers.
@@ -25,11 +22,7 @@ pub struct Event<T> {
 }
 
 impl <T: 'static> EventLike<T> for Event<T> {
-	fn subscribe<C: 'static>(&mut self, consumer: EntityHandle<C>, endpoint: fn(&mut C, &T)) {
-		self.subscribers.push(std::rc::Rc::new(std::sync::RwLock::new((consumer, endpoint))));
-	}
-
-	fn on(&mut self, endpoint: fn(&T)) {
+	fn trigger(&mut self, endpoint: impl Subscriber<T> + 'static) {
 		self.subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(endpoint)));
 	}
 
@@ -106,7 +99,7 @@ use crate::{entity::EntityBuilder, spawn, Entity};
 
 		component_handle.map(|c| {
 			let mut c = c.write_sync();
-			c.click().subscribe(system_handle.clone(), MySystem::on_event);
+			c.click().trigger((system_handle.clone(), MySystem::on_event));
 		});
 
 		assert_eq!(unsafe { COUNTER }, 0);

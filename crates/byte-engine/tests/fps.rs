@@ -1,7 +1,6 @@
 use core::{event::EventLike, EntityHandle};
-use std::ops::Deref;
 
-use byte_engine::{application::{Application, Parameter}, camera::Camera, core::domain::Domain, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
+use byte_engine::{application::{Application, Parameter}, audio::sound::Sound, camera::Camera, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function, Value}, math, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
 
 #[ignore]
 #[test]
@@ -117,8 +116,23 @@ fn fps() {
 		// Subscribe to the fire action
 		fire.write_sync().value_mut().add(move |v: &bool| {
 			if *v {
-				let c = utils::r#async::block_on(core::spawn_as_child::<Object>(space_handle.clone(), Object::new("Sphere.gltf", Transform::identity().position(Vector3::new(0.0, 1.0, 0.0)).scale(Vector3::new(0.1, 0.1, 0.1)), byte_engine::physics::BodyTypes::Dynamic, Vector3::new(0.0, 0.0, 10.0))));
-				c.write_sync().on_collision().unwrap().on(move |e| {
+				let position; let direction;
+
+				{
+					let anchor = anchor.read_sync();
+					position = anchor.transform().get_position() + Vector3::new(0.0, 1.0, 0.0);
+				}
+				{
+					let camera = camera.read_sync();
+					direction = camera.get_orientation();
+				} 
+
+				let c = utils::r#async::block_on(core::spawn_as_child::<Object>(space_handle.clone(), Object::new("Sphere.gltf", Transform::identity().position(position).scale(Vector3::new(0.05, 0.05, 0.05)), byte_engine::physics::BodyTypes::Dynamic, direction * 25.0)));
+				let _ = utils::r#async::block_on(core::spawn_as_child::<Sound>(space_handle.clone(), Sound::new("gun.wav".to_string(),)));
+
+				let space_handle = space_handle.clone();
+				
+				c.write_sync().on_collision().unwrap().trigger(move |_: &EntityHandle<dyn PhysicsEntity>| {
 					log::info!("Collision: {:?}", "hehehj");
 				});
 			}

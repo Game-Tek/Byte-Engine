@@ -31,6 +31,7 @@
 //! The protocol is designed to be simple and easy to implement, making it suitable for use in real-time multiplayer games.
 
 #![feature(buf_read_has_data_left)]
+#![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 
 pub mod client;
 pub mod server;

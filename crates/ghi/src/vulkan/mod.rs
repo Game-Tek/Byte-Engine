@@ -1340,7 +1340,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: graphics_hardware_interface::PresentationModes) -> graphics_hardware_interface::SwapchainHandle {
+	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent) -> graphics_hardware_interface::SwapchainHandle {
 		let surface = self.create_vulkan_surface(window_os_handles); 
 
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, surface).expect("No surface capabilities") };
@@ -1348,7 +1348,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let extent = if surface_capabilities.current_extent.width != u32::MAX && surface_capabilities.current_extent.height != u32::MAX {
 			surface_capabilities.current_extent
 		} else {
-			vk::Extent2D::default().width(1920).height(1080) // TODO: get window size
+			vk::Extent2D::default().width(fallback_extent.width()).height(fallback_extent.height())
 		};
 
 		let presentation_mode = match presentation_mode {
@@ -1420,7 +1420,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		synchronizer_handle
 	}
 
-	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> (graphics_hardware_interface::PresentKey, Extent) {
+	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: graphics_hardware_interface::SwapchainHandle, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> (graphics_hardware_interface::PresentKey, Option<Extent>) {
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
 
 		let synchronizer = &self.synchronizers[synchronizer_handles[frame_index as usize].0 as usize];
@@ -1476,9 +1476,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 
 		let extent = if surface_capabilities.current_extent.width != u32::MAX && surface_capabilities.current_extent.height != u32::MAX {
-			Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height)
+			Some(Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height))
 		} else {
-			Extent::rectangle(1920, 1080) // TODO: get window size
+			None
 		};
 
 		(graphics_hardware_interface::PresentKey(index), extent)

@@ -157,6 +157,8 @@ impl Renderer {
 
 		let (present_key, extent) = ghi.acquire_swapchain_image(modulo_frame_index, swapchain_handle, self.image_ready);
 
+		let extent = extent.unwrap_or(Extent::rectangle(1920, 1080));
+
 		assert!(extent.width() <= 65535 && extent.height() <= 65535, "The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits.", extent);
 
 		drop(ghi);
@@ -203,7 +205,7 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 
 		let mut ghi = self.ghi.write();
 
-		let swapchain_handle = ghi.bind_to_window(&os_handles, ghi::PresentationModes::FIFO);
+		let swapchain_handle = ghi.bind_to_window(&os_handles, ghi::PresentationModes::FIFO, Extent::rectangle(1920, 1080));
 
 		self.swapchain_handles.push(swapchain_handle);
 

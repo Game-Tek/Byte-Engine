@@ -1,36 +1,114 @@
 use std::{collections::VecDeque, ffi::c_void};
 
-use wayland_client::{protocol::{wl_callback, wl_compositor, wl_display, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_surface}, Proxy};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use utils::Extent;
+use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}};
 
 use crate::WindowEvents;
 
 pub struct WaylandWindow {
 	connection: wayland_client::Connection,
 	event_queue: wayland_client::EventQueue<AppData>,
-	display: wl_display::WlDisplay,
-	registry: wl_registry::WlRegistry,
 	compositor: wl_compositor::WlCompositor,
-	wl_output: wl_output::WlOutput,
 	xdg_wm_base: xdg_wm_base::XdgWmBase,
 	surface: wl_surface::WlSurface,
 	xdg_surface: xdg_surface::XdgSurface,
-	wl_seat: wl_seat::WlSeat,
 	xdg_toplevel: xdg_toplevel::XdgToplevel,
-	app_data: AppData,
 }
 
 impl WaylandWindow {
-	pub fn try_new() -> Result<Self, String> {
+	pub fn try_new(name: &str, extent: Extent, id_name: &str) -> Result<Self, String> {
 		let conn = wayland_client::Connection::connect_to_env().map_err(|e| e.to_string())?;
-
-		let display = conn.display();
 
 		let mut event_queue = conn.new_event_queue();
 		let qh = event_queue.handle();
 
-		let registry = display.get_registry(&qh, ());
+		let display = conn.display();
+		let _ = display.get_registry(&qh, ());
 
+		// Get globals
+		let (compositor, wm_base) = {
+			let mut app_data = AppData {
+				compositor: None,
+				xdg_wm_base: None,
+				wl_seat: None,
+				wl_output: None,
+	
+				scale: 1,
+	
+				wl_surface: None,
+				wl_callback: None,
+	
+				events: VecDeque::with_capacity(64),
+			};
+
+			event_queue.roundtrip(&mut app_data).unwrap();
+	
+			if let (Some(compositor), Some(wm_base)) = (app_data.compositor, app_data.xdg_wm_base) {
+				Ok((compositor, wm_base))
+			} else {
+				Err("Failed to acquire all required globals".to_string())
+			}
+		}?;
+
+		let surface = compositor.create_surface(&qh, ());
+
+		let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+
+		let toplevel = xdg_surface.get_toplevel(&qh, ());
+
+		toplevel.set_title(name.to_string());
+		toplevel.set_app_id(id_name.to_string());
+
+		{
+			let mut app_data = AppData {
+				compositor: None,
+				xdg_wm_base: None,
+				wl_seat: None,
+				wl_output: None,
+	
+				scale: 1,
+	
+				wl_surface: None,
+				wl_callback: None,
+	
+				events: VecDeque::with_capacity(64),
+			};
+			
+			event_queue.roundtrip(&mut app_data).unwrap();
+
+			surface.set_buffer_scale(app_data.scale as _);
+		}
+
+		surface.commit();
+
+		Ok(Self {
+			connection: conn,
+			event_queue,
+			compositor,
+			xdg_wm_base: wm_base,
+			surface,
+			xdg_surface,
+			xdg_toplevel: toplevel,
+		})
+	}
+
+	pub fn display(&self) -> wl_display::WlDisplay {
+		self.connection.display()
+	}
+
+	pub fn surface(&self) -> wl_surface::WlSurface {
+		self.surface.clone()
+	}
+
+	pub fn get_os_handles(&self) -> OSHandles {
+		OSHandles {
+			display: self.display().id().as_ptr() as *mut c_void,
+			surface: self.surface().id().as_ptr() as *mut c_void,
+		}
+	}
+	
+	pub fn poll(&mut self) -> WindowIterator {
 		let mut app_data = AppData {
 			compositor: None,
 			xdg_wm_base: None,
@@ -45,103 +123,24 @@ impl WaylandWindow {
 			events: VecDeque::with_capacity(64),
 		};
 
-		event_queue.roundtrip(&mut app_data).unwrap();
-
-		let (compositor_name, compositor_version) = app_data.compositor.ok_or("Compositor not found")?;
-
-		let compositor: wl_compositor::WlCompositor = registry.bind(compositor_name, compositor_version, &qh, ());
-
-		let (wl_output_name, wl_output_version) = app_data.wl_output.ok_or("WlOutput not found")?;
-
-		let wl_output: wl_output::WlOutput = registry.bind(wl_output_name, wl_output_version, &qh, ());
-
-		let surface = compositor.create_surface(&qh, ());
-
-		surface.set_buffer_scale(app_data.scale as _);
-
-		surface.commit();
-
-		app_data.wl_surface = Some(surface.clone());
-		app_data.wl_callback = Some(surface.frame(&qh, ()));
-
-		let (xdg_wm_base_name, xdg_wm_base_version) = app_data.xdg_wm_base.ok_or("XdgWmBase not found")?;
-
-		let wm_base: xdg_wm_base::XdgWmBase = registry.bind(xdg_wm_base_name, xdg_wm_base_version, &qh, ());
-
-		let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-
-		let (wm_seat_name, wm_seat_version) = app_data.wl_seat.ok_or("WlSeat not found")?;
-
-		let wl_seat: wl_seat::WlSeat = registry.bind(wm_seat_name, wm_seat_version, &qh, ());
-
-		let pointer = wl_seat.get_pointer(&qh, ());
-		let keyboard = wl_seat.get_keyboard(&qh, ());
-
-		let toplevel = xdg_surface.get_toplevel(&qh, ());
-
-		toplevel.set_title("My Wayland Window".to_string());
-
-		toplevel.set_maximized();
-
-		surface.commit();
-		display.sync(&qh, ());
-		surface.commit();
-
-		event_queue.roundtrip(&mut app_data).unwrap();
-
-		Ok(Self {
-			connection: conn,
-			event_queue,
-			display,
-			registry,
-			compositor,
-			wl_output,
-			xdg_wm_base: wm_base,
-			surface,
-			xdg_surface,
-			wl_seat,
-			xdg_toplevel: toplevel,
-
-			app_data,
-		})
-	}
-
-	pub fn display(&self) -> &wl_display::WlDisplay {
-		&self.display
-	}
-
-	pub fn surface(&self) -> &wl_surface::WlSurface {
-		&self.surface
-	}
-
-	pub fn get_os_handles(&self) -> OSHandles {
-		OSHandles {
-			display: self.display.id().as_ptr() as *mut c_void,
-			surface: self.surface.id().as_ptr() as *mut c_void,
-		}
-	}
-	
-	pub fn poll(&mut self) -> WindowIterator {
-		let app_data = &mut self.app_data;
 		let event_queue = &mut self.event_queue;
-		event_queue.roundtrip(app_data).unwrap();
-		event_queue.blocking_dispatch(app_data).unwrap();
+		event_queue.blocking_dispatch(&mut app_data).unwrap();
+
 		WindowIterator {
-			window: self,
+			events: app_data.events,
 		}
 	}
 }
 
-pub struct WindowIterator<'a> {
-	window: &'a mut WaylandWindow,
+pub struct WindowIterator {
+	events: VecDeque<WindowEvents>,
 }
 
-impl Iterator for WindowIterator<'_> {
+impl Iterator for WindowIterator {
 	type Item = WindowEvents;
 
-	fn next(&mut self) -> Option<WindowEvents> {	
-		let app_data = &mut self.window.app_data;
-		app_data.events.pop_front()
+	fn next(&mut self) -> Option<WindowEvents> {
+		self.events.pop_front()
 	}
 }
 
@@ -161,10 +160,10 @@ pub struct OSHandles {
 
 #[derive(Debug, Clone)]
 struct AppData {
-	compositor: Option<(u32, u32)>,
-	xdg_wm_base: Option<(u32, u32)>,
-	wl_seat: Option<(u32, u32)>,
-	wl_output: Option<(u32, u32)>,
+	compositor: Option<WlCompositor>,
+	xdg_wm_base: Option<XdgWmBase>,
+	wl_seat: Option<WlSeat>,
+	wl_output: Option<WlOutput>,
 
 	scale: u32,
 
@@ -175,22 +174,21 @@ struct AppData {
 }
 
 impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry, ()> for AppData {
-    fn event(this: &mut Self, _: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+    fn event(this: &mut Self, registry: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &wayland_client::Connection, qh: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			wayland_client::protocol::wl_registry::Event::Global { name, interface, version } => {
-				println!("Global: {}, {}, {}", name, interface, version);
 				match interface.as_str() {
 					"wl_compositor" => {
-						this.compositor = Some((name, version));
+						this.compositor = Some(registry.bind(name, version, qh, ()));
 					}
 					"xdg_wm_base" => {
-						this.xdg_wm_base = Some((name, version));
+						this.xdg_wm_base = Some(registry.bind(name, version, qh, ()));
 					}
 					"wl_seat" => {
-						this.wl_seat = Some((name, version));
+						this.wl_seat = Some(registry.bind(name, version, qh, ()));
 					}
 					"wl_output" => {
-						this.wl_output = Some((name, version));
+						this.wl_output = Some(registry.bind(name, version, qh, ()));
 					}
 					_ => {}
 				}
@@ -236,6 +234,9 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_surface::WlSurface, (
 			}
 			wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } => {
 				this.scale = this.scale.max(factor as _);
+				surface.set_buffer_scale(factor);
+				surface.commit();
+				println!("Factor: {}", factor);
 			}
 			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {
 			}
@@ -259,8 +260,8 @@ impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
     fn event(_: &mut Self, s: &xdg_surface::XdgSurface, event: xdg_surface::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			xdg_surface::Event::Configure { serial } => {
+				// s.set_window_geometry(0, 0, 1920, 1080);
 				s.ack_configure(serial);
-				println!("Configure: {}", serial);
 			}
 			_ => {}
 		}
@@ -332,7 +333,6 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 	fn event(this: &mut Self, s: &wl_output::WlOutput, event: wl_output::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			wl_output::Event::Scale { factor } => {
-				println!("Scale: {}", factor);
 				this.scale = this.scale.max(factor as _);
 			}
 			wl_output::Event::Geometry { x, y, physical_width, physical_height, subpixel, make, model, transform } => {
@@ -363,7 +363,7 @@ mod tests {
 	fn test_wayland_window() {
 		// Only run this test if we are on a Wayland session
 		if std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY").is_some() && std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland").is_some() {
-			let window = WaylandWindow::try_new().unwrap();
+			let window = WaylandWindow::try_new("My Test Wayland Window", Extent::rectangle(1920, 1080), "my_test_wayland_window.byte_engine").unwrap();
 		}
 	}
 }

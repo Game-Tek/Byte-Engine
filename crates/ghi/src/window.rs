@@ -306,7 +306,7 @@ impl Window {
 		#[cfg(target_os = "linux")]
 		let window_impl = if let Some(_) = std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY") {
 			if let Some(_) = std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland") {
-				OSWindow::Wayland(WaylandWindow::try_new().ok()?)
+				OSWindow::Wayland(WaylandWindow::try_new(name, extent, id_name).ok()?)
 			} else {
 				OSWindow::X11(X11Window::try_new(name, extent, id_name)?)
 			}
@@ -352,7 +352,7 @@ pub enum WindowIterator<'a> {
 	#[cfg(target_os = "linux")]
 	X11(x11_window::WindowIterator<'a>),
 	#[cfg(target_os = "linux")]
-	Wayland(wayland_window::WindowIterator<'a>),
+	Wayland(wayland_window::WindowIterator),
 	#[cfg(target_os = "windows")]
 	Win32(win32_window::WindowIterator<'a>),
 }

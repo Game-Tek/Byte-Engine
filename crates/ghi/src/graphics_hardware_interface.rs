@@ -565,7 +565,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
 
-	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: PresentationModes) -> SwapchainHandle;
+	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: PresentationModes, fallback_extent: Extent) -> SwapchainHandle;
 
 	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 
@@ -579,11 +579,11 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	///
 	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
 	/// * `synchronizer_handle` - The synchronizer to wait for before acquiring the image. If `None` is passed, the image will be acquired immediately.
-	///
-	/// # Panics
-	///
-	/// Panics if .
-	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> (PresentKey, Extent);
+	/// 
+	/// # Returns
+	/// A present key for future presentation and, if defined, the extent of the image.
+	/// # Errors
+	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> (PresentKey, Option<Extent>);
 
 	fn present(&self, frame_index: u32, present_key: PresentKey, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle);
 
@@ -1607,7 +1607,7 @@ use super::*;
 
 		let os_handles = window.get_os_handles();
 
-		let swapchain = renderer.bind_to_window(&os_handles, Default::default());
+		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1719,7 +1719,7 @@ use super::*;
 
 		let os_handles = window.get_os_handles();
 
-		let swapchain = renderer.bind_to_window(&os_handles, Default::default());
+		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,

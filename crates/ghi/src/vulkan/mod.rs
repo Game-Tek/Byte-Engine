@@ -159,7 +159,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 				let mut options = shaderc::CompileOptions::new().unwrap();
 
 				options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-				options.set_target_env(shaderc::TargetEnv::Vulkan, (1 << 22) | (3 << 12));
+				options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
 				options.set_generate_debug_info();
 				options.set_target_spirv(shaderc::SpirvVersion::V1_6);
 				options.set_invert_y(true);

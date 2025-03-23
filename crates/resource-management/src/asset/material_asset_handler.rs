@@ -291,7 +291,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 	let mut options = shaderc::CompileOptions::new().unwrap();
 
 	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-	options.set_target_env(shaderc::TargetEnv::Vulkan, (1 << 22) | (3 << 12));
+	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
 
 	if cfg!(debug_assertions) {
 		options.set_generate_debug_info();

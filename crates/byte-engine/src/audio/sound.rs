@@ -1,4 +1,4 @@
-use core::Entity;
+use crate::core::Entity;
 
 /// A sound object you can spawn to play a sound.
 pub struct Sound {

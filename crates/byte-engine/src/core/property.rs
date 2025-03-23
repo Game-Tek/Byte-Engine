@@ -55,7 +55,7 @@ impl <T: Clone + 'static> Property<T> {
 			subscriber.update(&self.value);
 		}
 	}
-	
+
 	pub fn add<F>(&self, get: F) where F: FnMut(&T) + 'static {
 		self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(get)));
 		// self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(async move |e| { get(e) })));
@@ -212,10 +212,10 @@ impl <T, F> Subscriber<T> for F where F: FnMut(&T) + 'static {
 mod tests {
 	use utils::r#async::block_on;
 
-	use crate::spawn;
+	use crate::core::spawn;
 
 	use super::*;
-	
+
 	#[test]
 	fn reactivity() {
 		struct SourceComponent {

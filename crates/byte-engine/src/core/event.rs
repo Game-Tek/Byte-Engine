@@ -4,14 +4,14 @@ use super::{property::Subscriber, EntityHandle};
 /// Allows an event object to be subscribed to and to be triggered.
 pub trait EventLike<T> {
 	/// Subscribes a consumer to the event.
-	///	
+	///
 	/// # Arguments
 	/// * `endpoint` - The Subscriber to be called when the event is triggered.
 	fn trigger(&mut self, endpoint: impl Subscriber<T> + 'static);
 
 	/// Triggers the event.
 	/// Most implmentations will call the endpoint function for each of the consumers.
-	/// 
+	///
 	/// # Arguments
 	/// * `value` - The value to be passed to the consumers.
 	fn ocurred<'a>(&self, value: &'a T);
@@ -47,7 +47,7 @@ impl <T> Default for Event<T> {
 mod tests {
 	use utils::r#async::block_on;
 
-use crate::{entity::EntityBuilder, spawn, Entity};
+	use crate::core::{entity::EntityBuilder, spawn, Entity};
 
 	use super::*;
 

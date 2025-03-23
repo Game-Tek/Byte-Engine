@@ -1,1 +1,3 @@
 - Make BESL output shader metadata (workgroup size, bindings used, etc)
+- Test render frame with renderer but no elements
+- Test asset path

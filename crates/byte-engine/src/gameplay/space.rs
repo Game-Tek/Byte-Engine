@@ -1,4 +1,4 @@
-use core::entity::EntityBuilder;
+use crate::core::entity::EntityBuilder;
 
 use utils::BoxedFuture;
 

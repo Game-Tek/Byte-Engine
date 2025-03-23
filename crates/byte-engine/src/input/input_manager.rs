@@ -1,5 +1,5 @@
 //! The input manager is responsible for managing HID devices and their events and properties.
-//! 
+//!
 //! # Concepts
 //! ## Device Class
 //! A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
@@ -10,7 +10,7 @@
 //! ## Action
 //! An action is an application specific event that is triggered by a combination of input sources.
 //! For example move sideways is triggered by the left and right keys being pressed.
-//! 
+//!
 //! # TODO
 //! - [ ] Clamp input source values to their min and max values.
 //! - [ ] Add deadzone support.
@@ -209,15 +209,15 @@ impl InputManager {
 	}
 
 	/// Registers a device class/type.
-	/// 
+	///
 	/// One example is a keyboard.
-	/// 
+	///
 	/// # Arguments
-	/// 	
+	///
 	/// * `name` - The name of the device type. **Should be pascalcase.**
-	/// 
+	///
 	/// # Example
-	/// 
+	///
 	/// ```
 	/// # use byte_engine::input::InputManager;
 	/// # let mut input_manager = InputManager::new();
@@ -232,20 +232,20 @@ impl InputManager {
 	}
 
 	/// Registers an input source on a device class.
-	/// 
+	///
 	/// One example is the UP key on a keyboard.
-	/// 
+	///
 	/// The input source is associated with a device class/type.
 	/// The input source has a default value assigned from the `value_type` param.
-	/// 
+	///
 	/// # Arguments
-	/// 
+	///
 	/// * `device_handle` - The handle of the device.
 	/// * `name` - The name of the input source.
 	/// * `value_type` - The type of the value of the input source.
-	/// 
+	///
 	/// # Example
-	/// 
+	///
 	/// ```rust
 	/// # use byte_engine::input::{InputManager, input_manager::{InputTypes, InputSourceDescription}};
 	/// # let mut input_manager = InputManager::new();
@@ -263,16 +263,16 @@ impl InputManager {
 	}
 
 	/// Registers an input destination on a device.
-	/// 
+	///
 	/// One example is the rumble motors on a gamepad.
-	/// 
+	///
 	/// The input destination is associated with a device.
-	/// 
+	///
 	/// # Arguments
 	/// * `device_handle` - The handle of the device.
 	/// * `name` - The name of the input destination.
 	/// * `value_type` - The type of the value of the input destination.
-	/// 
+	///
 	/// # Example
 	/// ```rust
 	/// # use byte_engine::input::{InputManager, input_manager::{InputTypes, InputSourceDescription}};
@@ -286,13 +286,13 @@ impl InputManager {
 
 	/// Creates an instance of a device class.
 	/// This represents a particular device of a device class. Such as a single controller or a keyboard.
-	/// 
+	///
 	/// # Arguments
-	/// 
+	///
 	/// * `device_class_handle` - The handle of the device class.
-	/// 
+	///
 	/// # Example
-	/// 
+	///
 	/// ```rust
 	/// # use byte_engine::input::InputManager;
 	/// # let mut input_manager = InputManager::new();
@@ -316,7 +316,7 @@ impl InputManager {
 		for input_source_handle in input_source_handles {
 			let input_source = &self.input_sources[input_source_handle.0 as usize];
 
-			let input_source_state = InputSourceState { 
+			let input_source_state = InputSourceState {
 				value: match input_source.type_ {
 					InputTypes::Bool(description) => Value::Bool(description.default),
 					InputTypes::Unicode(description) => Value::Unicode(description.default),
@@ -343,9 +343,9 @@ impl InputManager {
 	}
 
 	/// Registers an input event.
-	/// 
+	///
 	/// One example is a "move forward" being pressed.
-	/// 	
+	///
 	/// - Action:
 	/// 	- Action: Returns the action value.
 	/// 	- Character: Returns a character when the action is pressed.
@@ -404,7 +404,7 @@ impl InputManager {
 	/// 	- RGBA: Returns the RGBA color.
 
 	/// Records an input source action.
-	/// 
+	///
 	/// One example is the UP key on a keyboard being pressed.
 	pub fn record_input_source_action(&mut self, device_handle: &DeviceHandle, input_source_action: InputSourceAction, value: Value) {
 		let input_source = if let Some(input_source) = self.get_input_source_from_input_source_action(&input_source_action) {
@@ -474,7 +474,7 @@ impl InputManager {
 
 		if let Value::Bool(boo) = value {
 			let input_events = self.actions.iter_mut().filter(|ia| ia.input_event_descriptions.iter().any(|ied| ied.input_source_handle == input_source_handle));
-	
+
 			if boo {
 				for input_event in input_events {
 					input_event.stack.push(record);
@@ -578,7 +578,7 @@ impl InputManager {
 
 		if let Some(record) = self.records.iter().filter(|r| input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time) {
 			let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
-	
+
 			InputEventState {
 				device_handle: device_handle.clone(),
 				input_event_handle,
@@ -636,7 +636,7 @@ impl InputManager {
 						if let Some(last) = action.stack.last() {
 							if let Value::Bool(_value) = last.value {
 								let event_description_for_input_source = action.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
-		
+
 								match event_description_for_input_source.mapping {
 									Value::Bool(value) => if value { 1f32 } else { 0f32 },
 									Value::Unicode(_) => 0f32,
@@ -823,15 +823,15 @@ impl Entity for InputManager {}
 
 #[cfg(test)]
 mod tests {
-	use core::{spawn, spawn_as_child};
-use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
+	use crate::core::{spawn, spawn_as_child};
+	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
-use maths_rs::prelude::Base;
-use utils::r#async::block_on; // TODO: remove, make own
+	use maths_rs::prelude::Base;
+	use utils::r#async::block_on; // TODO: remove, make own
 
 	use crate::{gameplay::space::Space, input::ActionBindingDescription};
 
-use super::*;
+	use super::*;
 
 	fn declare_keyboard_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Keyboard");
@@ -1335,7 +1335,7 @@ use super::*;
 		}
 
 		// Create the move action
-		let move_action_handle = block_on(core::spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
+		let move_action_handle = block_on(spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
 			ActionBindingDescription::new("Keyboard.W").mapped(Value::Vector3(Vector3::new(0f32, 0f32, 1f32)), Function::Linear),
 			ActionBindingDescription::new("Keyboard.S").mapped(Value::Vector3(Vector3::new(0f32, 0f32, -1f32)), Function::Linear),
 			ActionBindingDescription::new("Keyboard.A").mapped(Value::Vector3(Vector3::new(-1f32, 0f32, 0f32)), Function::Linear),
@@ -1355,7 +1355,7 @@ use super::*;
 		}
 
 		// Create the jump action
-		let jump_action_handle = block_on(core::spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
+		let jump_action_handle = block_on(spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
 			ActionBindingDescription::new("Keyboard.Space").mapped(Value::Bool(true), Function::Linear),
 			ActionBindingDescription::new("Gamepad.A").mapped(Value::Bool(true), Function::Linear),
 		],)));

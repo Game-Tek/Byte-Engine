@@ -8,17 +8,17 @@ headless = []
 server = ["headless"]
 
 [dependencies]
-core = { path = "../core" }
 utils = { path = "../utils" }
 ghi = { path = "../ghi" }
 ahi = { path = "../ahi" }
 besl = { path = "../besl" }
 resource-management = { path = "../resource-management" }
 
-serde_json = "1.0.105"
+serde_json = "1.0.140"
 dual_quaternion = "0.2.0"
-maths-rs = "0.2.4"
-serde = "1.0.187"
-log = "0.4.20"
+maths-rs = "0.2.6"
+serde = "1.0.219"
+log = "0.4.26"
 simple_logger = "5.0.0"
-colored = "2.0.4"
+colored = "3.0.0"
+downcast-rs = "2.0.1"

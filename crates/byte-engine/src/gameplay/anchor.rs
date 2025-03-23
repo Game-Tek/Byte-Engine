@@ -1,6 +1,6 @@
 //! An [`Anchor`] is a object that holds a transformation and can have other objects attached to it.
 
-use core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
 
 use crate::Vector3;
 

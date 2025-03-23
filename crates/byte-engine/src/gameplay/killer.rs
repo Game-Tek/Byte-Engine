@@ -1,4 +1,4 @@
-use core::{Entity, EntityHandle};
+use crate::core::{Entity, EntityHandle};
 
 struct Killer {
 	entities: Vec<Data>,

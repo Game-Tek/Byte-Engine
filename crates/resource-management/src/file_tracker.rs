@@ -3,13 +3,13 @@
 
 use std::path::Path;
 
-use notify_debouncer_full::{notify::{*}, new_debouncer, DebounceEventResult, FileIdMap, DebouncedEvent};
+use notify_debouncer_full::{new_debouncer, notify::*, DebounceEventResult, DebouncedEvent, FileIdMap, NoCache};
 use redb::ReadableTable;
 
 pub struct FileTracker {
 	db: redb::Database,
 	#[cfg(unix)]
-	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, FileIdMap>,
+	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, NoCache>,
 	#[cfg(windows)]
 	debouncer: notify_debouncer_full::Debouncer<ReadDirectoryChangesWatcher, FileIdMap>,
 	rx: std::sync::mpsc::Receiver<notify_debouncer_full::DebouncedEvent>,
@@ -38,7 +38,7 @@ impl FileTracker {
 			}
 		}).unwrap();
 
-		let watcher = debouncer.watcher();
+		// let watcher = debouncer.watcher();
 
 		// let col = db.begin_read().unwrap();
 
@@ -48,7 +48,7 @@ impl FileTracker {
 		// 	let d = doc.unwrap();
 		// 	let path = d.get_str("path").unwrap();
 		// 	let path = Path::new(path);
-			
+
 		// 	if !path.exists() {
 		// 		// TODO: emit delete event
 		// 		// TODO: Delete document
@@ -85,7 +85,7 @@ impl FileTracker {
 	}
 
 	pub fn watch(&mut self, path: &Path) -> bool {
-		let result = self.debouncer.watcher().watch(path, RecursiveMode::Recursive);
+		let result = self.debouncer.watch(path, RecursiveMode::Recursive);
 
 		if result.is_err() {
 			log::warn!("Failed to watch path: {:?}", path);
@@ -106,12 +106,12 @@ impl FileTracker {
 		// 		}).unwrap();
 		// 	}
 		// }
-		
+
 		true
 	}
 
 	pub fn unwatch(&mut self, path: &Path) -> bool {
-		let result = self.debouncer.watcher().unwatch(path);
+		let result = self.debouncer.unwatch(path);
 
 		if result.is_err() {
 			return false;

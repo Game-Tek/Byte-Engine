@@ -1,7 +1,7 @@
 //! SSGI Render Pass
 //! This module contains the implementation of the Screen Space Global Illumination (SSGI) render pass.
 
-use core::{entity::EntityBuilder, Entity, EntityHandle};
+use crate::core::entity::{Entity, EntityBuilder, EntityHandle};
 use std::{rc::Rc, sync::Arc};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};

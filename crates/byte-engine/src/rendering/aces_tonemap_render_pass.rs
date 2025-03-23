@@ -1,3 +1,5 @@
+use crate::core::EntityHandle;
+
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
 use utils::Extent;
 
@@ -33,7 +35,7 @@ impl AcesToneMapPass {
 			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create tone mapping shader");
-			
+
 		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
 
 		AcesToneMapPass {
@@ -51,7 +53,7 @@ impl AcesToneMapPass {
 impl Entity for AcesToneMapPass {}
 
 impl RenderPass for AcesToneMapPass {
-	fn add_render_pass(&mut self, render_pass: core::EntityHandle<dyn RenderPass>) {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
 

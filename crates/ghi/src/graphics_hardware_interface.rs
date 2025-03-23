@@ -311,13 +311,13 @@ pub trait CommandBufferRecordable where Self: Sized {
 	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
 	fn start_region(&self, name: &str);
-	
+
 	fn end_region(&self);
 
 	/// Starts a debug region on the GPU and executes the closure.
 	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self));
 
-	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], execution_synchronizer_handle: SynchronizerHandle);
+	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], presentations: &[PresentKey], execution_synchronizer_handle: SynchronizerHandle);
 }
 
 pub trait RasterizationRenderPassMode: CommandBufferRecordable {
@@ -411,6 +411,7 @@ pub struct Features {
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
 	pub(crate) debug_log_function: Option<fn(&str)>,
+	pub(crate) gpu: Option<&'static str>,
 }
 
 impl Features {
@@ -421,6 +422,7 @@ impl Features {
 			api_dump: false,
 			ray_tracing: false,
 			debug_log_function: None,
+			gpu: None,
 		}
 	}
 
@@ -448,6 +450,11 @@ impl Features {
 		self.debug_log_function = Some(value);
 		self
 	}
+
+	pub fn gpu(mut self, value: &'static str) -> Self {
+		self.gpu = Some(value);
+		self
+	}
 }
 
 pub struct BufferSplitter<'a> {
@@ -472,7 +479,12 @@ impl<'a> BufferSplitter<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct PresentKey(pub u32);
+pub struct PresentKey {
+	/// The index corresponding to the frame index.
+	pub(crate) frame_index: u8,
+	/// The swapchain handle corresponding to the presentation request that this key is associated with.
+	pub(crate) swapchain: SwapchainHandle,
+}
 
 pub trait GraphicsHardwareInterface where Self: Sized {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
@@ -543,9 +555,9 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
 	/// Creates an image.
-	/// 
+	///
 	/// # Arguments
-	/// 
+	///
 	/// * `extent` - The size of the image. Can be 0 to skip eager allocation, such as for framebuffers.
 	/// * `format` - The format of the image.
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases, array_layers: u32) -> ImageHandle;
@@ -578,14 +590,11 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	/// # Arguments
 	///
 	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
-	/// * `synchronizer_handle` - The synchronizer to wait for before acquiring the image. If `None` is passed, the image will be acquired immediately.
-	/// 
+	///
 	/// # Returns
 	/// A present key for future presentation and, if defined, the extent of the image.
 	/// # Errors
-	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: SwapchainHandle, synchronizer_handle: SynchronizerHandle) -> (PresentKey, Option<Extent>);
-
-	fn present(&self, frame_index: u32, present_key: PresentKey, swapchains: &[SwapchainHandle], synchronizer_handle: SynchronizerHandle);
+	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: SwapchainHandle) -> (PresentKey, Option<Extent>);
 
 	fn wait(&self, frame_index: u32, synchronizer_handle: SynchronizerHandle);
 
@@ -767,6 +776,41 @@ impl AttachmentInformation {
 	pub fn new(image: ImageHandle, format: Formats, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
 		Self {
 			image,
+			format,
+			layout,
+			clear,
+			load,
+			store,
+			layer: None,
+		}
+	}
+
+	pub fn layer(mut self, layer: u32) -> Self {
+		self.layer = Some(layer);
+		self
+	}
+}
+
+#[derive(Clone, Copy)]
+/// Stores the information of an attachment.
+pub struct PipelineAttachmentInformation {
+	/// The format of the attachment.
+	pub(crate) format: Formats,
+	/// The layout of the attachment.
+	pub(crate) layout: Layouts,
+	/// The clear color of the attachment.
+	pub(crate) clear: ClearValue,
+	/// Whether to load the contents of the attchment when starting a render pass.
+	pub(crate) load: bool,
+	/// Whether to store the contents of the attachment when ending a render pass.
+	pub(crate) store: bool,
+	/// The image layer index for the attachment.
+	pub(crate) layer: Option<u32>,
+}
+
+impl PipelineAttachmentInformation {
+	pub fn new(format: Formats, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
+		Self {
 			format,
 			layout,
 			clear,
@@ -1310,7 +1354,7 @@ pub struct SurfaceProperties {
 	pub(super) extent: Extent,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Enumerates the states of a swapchain's validity for presentation.
 pub enum SwapchainStates {
 	/// The swapchain is valid for presentation.
@@ -1410,7 +1454,7 @@ pub enum PipelineConfigurationBlocks<'a> {
 
 	},
 	RenderTargets {
-		targets: &'a [AttachmentInformation],
+		targets: &'a [PipelineAttachmentInformation],
 	},
 	Shaders {
 		shaders: &'a [ShaderParameter<'a>],
@@ -1545,7 +1589,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1575,7 +1619,7 @@ use super::*;
 
 		let texture_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-		command_buffer_recording.execute(&[], &[], signal);
+		command_buffer_recording.execute(&[], &[], &[], signal);
 
 		renderer.end_frame_capture();
 
@@ -1663,7 +1707,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1676,9 +1720,8 @@ use super::*;
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
-		let image_ready = renderer.create_synchronizer(None, false);
 
-		let (image_index, _) = renderer.acquire_swapchain_image(0, swapchain, image_ready);
+		let (present_key, _) = renderer.acquire_swapchain_image(0, swapchain,);
 
 		renderer.start_frame_capture();
 
@@ -1696,11 +1739,9 @@ use super::*;
 
 		render_pass_command.end_render_pass();
 
-		command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
+		command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
-		command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
-
-		renderer.present(0, image_index, &[swapchain], render_finished_synchronizer);
+		command_buffer_recording.execute(&[], &[render_finished_synchronizer], &[present_key], render_finished_synchronizer);
 
 		renderer.end_frame_capture();
 
@@ -1775,7 +1816,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1788,13 +1829,12 @@ use super::*;
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
-		let image_ready = renderer.create_synchronizer(None, true);
 
 		for i in 0..2*64 {
 			let modulo_frame_index = i % 2;
 			renderer.wait(modulo_frame_index, render_finished_synchronizer);
 
-			let (image_index, _) = renderer.acquire_swapchain_image(modulo_frame_index, swapchain, image_ready);
+			let (present_key, _) = renderer.acquire_swapchain_image(modulo_frame_index, swapchain,);
 
 			renderer.start_frame_capture();
 
@@ -1812,11 +1852,9 @@ use super::*;
 
 			raster_pipeline_command.end_render_pass();
 
-			command_buffer_recording.copy_to_swapchain(render_target, image_index, swapchain);
+			command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
-			command_buffer_recording.execute(&[image_ready], &[render_finished_synchronizer], render_finished_synchronizer);
-
-			renderer.present(modulo_frame_index, image_index, &[swapchain], render_finished_synchronizer);
+			command_buffer_recording.execute(&[], &[render_finished_synchronizer], &[present_key], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
@@ -1890,7 +1928,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -1926,7 +1964,7 @@ use super::*;
 
 			let texture_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-			command_buffer_recording.execute(&[], &[], render_finished_synchronizer);
+			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
@@ -2014,7 +2052,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -2068,7 +2106,7 @@ use super::*;
 
 			let copy_texture_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-			command_buffer_recording.execute(&[], &[], render_finished_synchronizer);
+			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
@@ -2150,7 +2188,7 @@ use super::*;
 
 		let copy_handles = command_buffer_recording.sync_textures(&[image]);
 
-		command_buffer_recording.execute(&[], &[], signal);
+		command_buffer_recording.execute(&[], &[], &[], signal);
 
 		renderer.wait(0, signal);
 
@@ -2170,7 +2208,7 @@ use super::*;
 
 		let copy_handles = command_buffer_recording.sync_textures(&[image]);
 
-		command_buffer_recording.execute(&[], &[], signal);
+		command_buffer_recording.execute(&[], &[], &[], signal);
 
 		renderer.wait(1, signal);
 
@@ -2185,7 +2223,7 @@ use super::*;
 
 		let copy_handles = command_buffer_recording.sync_textures(&[image]);
 
-		command_buffer_recording.execute(&[], &[], signal);
+		command_buffer_recording.execute(&[], &[], &[], signal);
 
 		renderer.wait(0, signal);
 
@@ -2200,7 +2238,7 @@ use super::*;
 
 		let copy_handles = command_buffer_recording.sync_textures(&[image]);
 
-		command_buffer_recording.execute(&[], &[], signal);
+		command_buffer_recording.execute(&[], &[], &[], signal);
 
 		renderer.wait(1, signal);
 
@@ -2306,7 +2344,7 @@ use super::*;
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(&[
@@ -2340,7 +2378,7 @@ use super::*;
 
 		let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-		command_buffer_recording.execute(&[], &[], signal);
+		command_buffer_recording.execute(&[], &[], &[], signal);
 
 		renderer.end_frame_capture();
 
@@ -2515,7 +2553,6 @@ void main() {
 		let rendering_command_buffer_handle = renderer.create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
-		// let image_ready = renderer.create_synchronizer(true);
 
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
@@ -2617,7 +2654,7 @@ void main() {
 
 			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
 
-			command_buffer_recording.execute(&[], &[], render_finished_synchronizer);
+			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 

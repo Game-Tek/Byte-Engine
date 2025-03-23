@@ -1,4 +1,4 @@
-use core::Entity;
+use crate::core::Entity;
 
 use super::{Positionable, Transform};
 

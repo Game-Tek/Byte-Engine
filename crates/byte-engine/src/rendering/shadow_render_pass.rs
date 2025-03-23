@@ -1,4 +1,4 @@
-use core::EntityHandle;
+use crate::core::EntityHandle;
 use std::{io::Write, mem::transmute};
 
 use maths_rs::{mat::{MatInverse, MatProjection, MatRotate3D, MatTranslate}, Mat4f};
@@ -36,15 +36,15 @@ impl ShadowRenderingPass {
 		let pipeline_layout = ghi.create_pipeline_layout(&[visibility_descriptor_set_template.clone(), descriptor_set_template], &[ghi::PushConstantRange::new(0, 8)]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Shadow Rendering Descriptor Set"), &descriptor_set_template);
-		
+
 		let colored_shadow: bool = false;
-		
+
 		let shadow_map_resolution = Extent::square(4096);
-		
+
 		let shadow_map = ghi.build_image(ghi::image::Builder::new(shadow_map_resolution, ghi::Formats::Depth32, ghi::Uses::Image | ghi::Uses::Clear).name("Shadow Map").use_case(ghi::UseCases::DYNAMIC).array_layers(4));
 		let sampler = ghi.build_sampler(ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Border {}));
 		let lighting_data_buffer = ghi.create_buffer(Some("Lighting Data"), 1024, ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-		
+
 		let shadow_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&light_depth_map, shadow_map, sampler, ghi::Layouts::Read));
 		let view_depth_map_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&view_depth_map, view_depth_image.clone(), sampler, ghi::Layouts::Read));
 
@@ -56,7 +56,7 @@ impl ShadowRenderingPass {
 
 			let main_code = r#"
 			View view = views.views[push_constant.view_index];
-			
+
 			process_meshlet(push_constant.instance_index, view.view_projection);
 			"#;
 
@@ -94,7 +94,7 @@ impl ShadowRenderingPass {
 		let pipeline = ghi.create_raster_pipeline(&[
 			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
 			ghi::PipelineConfigurationBlocks::Shaders { shaders: &[ghi::ShaderParameter::new(&mesh_shader, ghi::ShaderTypes::Mesh)], },
-			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::AttachmentInformation::new(shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
+			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &[ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true)] },
 		]);
 
 		ShadowRenderingPass { pipeline, pipeline_layout, descriptor_set, shadow_map, }
@@ -107,7 +107,7 @@ impl ShadowRenderingPass {
 
 		for view in 0..4 {
 			command_buffer_recording.start_region(&format!("Cascade {}", view));
-			
+
 			let binding = [ghi::AttachmentInformation::new(self.shadow_map, ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0f32), false, true).layer(view)];
 			let render_pass = command_buffer_recording.start_render_pass(Extent::square(4096), &binding);
 			render_pass.bind_descriptor_sets(&self.pipeline_layout, &[render_domain.get_descriptor_set(), self.descriptor_set]);
@@ -131,7 +131,7 @@ impl ShadowRenderingPass {
 	pub fn prepare(&self, ghi: &mut ghi::GHI, lights: &[EntityHandle<DirectionalLight>], views_data: &mut [ShaderViewData], lighting_data: &mut LightingData, primary_view: &View) {
 		for (i, light) in lights.iter().enumerate() {
 			let light = light.read_sync();
-			
+
 			let views = csm::make_csm_views(*primary_view, light.direction, 4);
 
 			lighting_data.lights[i] = LightData {
@@ -445,7 +445,7 @@ impl Entity for ShadowRenderingPass {}
 // 	vec2 shadow_d = position.xz / vec2(4.0); // Assuming overhead light, map 8 x 8 area to shadow map
 // 	vec2 shadow_uv = shadow_d * 0.5 + 0.5;
 // 	ivec2 shadow_texel_coord = ivec2(shadow_uv * textureSize(shadow_map, 0));
-	
+
 // 	float shadow = texelFetch(shadow_map, shadow_texel_coord, 0).r;
 
 // 	imageStore(occlusion_map, ivec2(gl_GlobalInvocationID.xy), vec4(shadow, shadow, shadow, 1.0));

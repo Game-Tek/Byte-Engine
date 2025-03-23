@@ -1,12 +1,12 @@
 //! Mesh component module
 
-use core::{entity::EntityBuilder, listener::Listener};
+use crate::core::{entity::EntityBuilder, listener::{BasicListener, Listener}, Entity, EntityHandle};
+use crate::{core::orchestrator, gameplay::Transform, math};
+
 use std::future::join;
 
 use maths_rs::{mat::{MatRotate3D, MatScale, MatTranslate}, normalize};
 use utils::BoxedFuture;
-
-use crate::{core::{orchestrator, Entity}, gameplay::Transform, math};
 
 pub trait RenderEntity: Entity {
 	fn get_transform(&self) -> maths_rs::Mat4f;
@@ -19,9 +19,9 @@ pub struct Mesh {
 }
 
 impl Entity for Mesh {
-	fn call_listeners<'a>(&'a self, listener: &'a core::listener::BasicListener, handle: core::EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
 		let se = listener.invoke_for(handle.clone(), self);
-		let re = listener.invoke_for(handle.clone() as core::EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
+		let re = listener.invoke_for(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
 		join!(se, re).await;
 	}) }
 }

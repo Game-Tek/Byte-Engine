@@ -27,7 +27,7 @@ use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{Listener, EntitySubscriber};
-use crate::core::{self, Entity, EntityHandle};
+use crate::core::{self, spawn, Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
@@ -350,7 +350,7 @@ impl VisibilityWorldRenderDomain {
 				ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
 			];
 
-			let shadow_render_pass = core::spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target)).await;
+			let shadow_render_pass = spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target)).await;
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 			let depth_sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
@@ -709,13 +709,13 @@ impl VisibilityWorldRenderDomain {
 
 		let material = v.get_or_try_init(async || {
 			let ghi = self.ghi.clone();
-	
+
 			let material_id = resource.id().to_string();
-	
+
 			let shader_names = resource.resource().shaders().iter().map(|shader| shader.id().to_string()).collect::<Vec<_>>();
-	
+
 			let parameters = &mut resource.resource_mut().parameters;
-	
+
 			let textures_indices = join_all(parameters.iter_mut().map(async |parameter: &mut Parameter| {
 				match parameter.value {
 					Value::Image(ref mut image) => {
@@ -726,7 +726,7 @@ impl VisibilityWorldRenderDomain {
 					_ => { None }
 				}
 			})).await;
-	
+
 			let textures_indices = textures_indices.into_iter().map(|v| {
 				if let Some((name, image, sampler)) = v {
 					let texture_index = {
@@ -742,30 +742,30 @@ impl VisibilityWorldRenderDomain {
 							}
 						}
 					};
-	
+
 					let mut ghi = ghi.write();
 					ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
-	
+
 					Some(texture_index)
 				} else {
 					None
 				}
 			}).collect::<Vec<_>>();
-	
+
 			match resource.resource().model.name.as_str() {
 				"Visibility" => {
 					match resource.resource().model.pass.as_str() {
 						"MaterialEvaluation" => {
 							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, resource, ghi.clone()).await.unwrap();
-	
+
 							let mut ghi = ghi.write();
-	
+
 							let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
-					
+
 							let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
-					
+
 							let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
-					
+
 							for (i, e) in textures_indices.iter().enumerate() {
 								material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 							}
@@ -831,7 +831,7 @@ impl VisibilityWorldRenderDomain {
 
 			let material_id = variant.material.id().to_string();
 
-			self.create_material_resources(&mut variant.material).await?;	
+			self.create_material_resources(&mut variant.material).await?;
 
 			let textures_indices = {
 				let ghi = ghi.clone();
@@ -875,13 +875,13 @@ impl VisibilityWorldRenderDomain {
 
 			{
 				let mut ghi = ghi.write();
-		
+
 				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
-		
+
 				let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
-		
+
 				let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
-		
+
 				for (i, e) in textures_indices.iter().enumerate() {
 					material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 				}
@@ -1012,7 +1012,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 		self.material_offset_pass.render(command_buffer_recording);
 		self.pixel_mapping_pass.render(command_buffer_recording, extent);
 
-		command_buffer_recording.end_region();		
+		command_buffer_recording.end_region();
 
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
 
@@ -1297,9 +1297,9 @@ impl VisibilityPass {
 		];
 
 		let attachments = [
-			ghi::AttachmentInformation::new(primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::AttachmentInformation::new(instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::AttachmentInformation::new(depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
+			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+			ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
 		];
 
 		let vertex_layout = [

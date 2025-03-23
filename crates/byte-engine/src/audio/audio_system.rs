@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use resource_management::{audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
 
-use core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
 use ahi::{audio_hardware_interface::AudioHardwareInterface, self};
 
 use super::sound::Sound;

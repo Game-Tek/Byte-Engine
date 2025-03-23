@@ -1,4 +1,4 @@
-use core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::Listener, Entity, EntityHandle};
+use crate::core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, Listener}, Entity, EntityHandle};
 use std::future::join;
 
 use maths_rs::Vec3f;
@@ -37,7 +37,7 @@ impl Cube {
 }
 
 impl Entity for Sphere {
-	fn call_listeners<'a>(&'a self, listener: &'a core::listener::BasicListener, handle: EntityHandle<Self>) -> utils::BoxedFuture<'a, ()> where Self: Sized {
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> utils::BoxedFuture<'a, ()> where Self: Sized {
 		Box::pin(async move {
 			let se = listener.invoke_for(handle.clone(), self);
 			let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
@@ -58,7 +58,7 @@ impl physics::PhysicsEntity for Sphere {
 impl Entity for Cube {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 	
-	fn call_listeners<'a>(&'a self, listener: &'a core::listener::BasicListener, handle: EntityHandle<Self>) -> utils::BoxedFuture<'a, ()> where Self: Sized {
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> utils::BoxedFuture<'a, ()> where Self: Sized {
 		Box::pin(async move {
 			let se = listener.invoke_for(handle.clone(), self);
 			let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);

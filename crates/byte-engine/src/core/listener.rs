@@ -86,8 +86,7 @@ mod tests {
 	use utils::r#async::block_on;
 
 	use super::*;
-	use crate::entity::EntityBuilder;
-	use crate::{spawn, spawn_as_child};
+	use crate::core::{spawn, spawn_as_child, entity::EntityBuilder};
 
 	#[test]
 	fn listeners() {

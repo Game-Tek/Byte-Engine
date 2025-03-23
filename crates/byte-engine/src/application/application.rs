@@ -5,7 +5,8 @@
 //! All state associated with the application/process should be stored in an application.
 
 use log::{info, trace};
-use utils::hash::HashSet;
+//use utils::hash::HashSet; // Triggers address sanitation error
+use std::collections::HashSet;
 
 use super::Parameter;
 

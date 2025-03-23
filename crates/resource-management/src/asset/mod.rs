@@ -30,17 +30,17 @@ pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std
 	let format;
 	let spec;
 	match resource_origin {
-		"network" => {
-			let request = if let Ok(request) = ureq::get(base.as_ref()).call() { request } else { return Err(()); };
-			let content_type = if let Some(e) = request.header("content-type") { e.to_string() } else { return Err(()); };
-			format = content_type;
+		// "network" => {
+		// 	let request = if let Ok(request) = ureq::get(base.as_ref()).call() { request } else { return Err(()); };
+		// 	let content_type = if let Some(e) = request.headers().get("content-type") { e.to_str().unwrap().to_string() } else { return Err(()); };
+		// 	format = content_type;
 
-			source_bytes = Vec::new();
+		// 	source_bytes = Vec::new();
 
-			spec = None;
+		// 	spec = None;
 
-			request.into_reader().read_to_end(&mut source_bytes).or(Err(()))?;
-		},
+		// 	request.body().read_to_end(&mut source_bytes).or(Err(()))?;
+		// },
 		"local" => {
 			let path = base_path.unwrap_or(std::path::Path::new(""));
 
@@ -117,13 +117,13 @@ fn get_fragment(url: &str) -> Option<&str> {
 /// A `ResourceId` encapsulates and provides methods for interacting with a full resource id.
 /// A resource id is composed of up to three parts.
 /// The base, the extension and the fragment.
-/// 
+///
 /// "meshes/Box.gltf#texture"
-/// 
+///
 /// "mehses/Box.gltf" is the base
 /// "gltf" is the extension
 /// "texture" is the fragment
-/// 
+///
 /// Fragments like in HTTP urls, allow referencing subresources, they are useful to address elements in container formats.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ResourceId<'a> {

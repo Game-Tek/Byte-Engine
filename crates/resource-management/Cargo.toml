@@ -9,22 +9,22 @@ rust-version = "1.73.0"
 utils = { path = "../utils" }
 besl = { path = "../besl" }
 
-shaderc = "0.8.2"
-png = "0.17.10"
+shaderc = "0.9.1"
+png = "0.17.16"
 pot = { version = "3.0.1" }
-serde_json = { version = "1.0.128" }
+serde_json = { version = "1.0.140" }
 base64 = { version = "0.22.1" }
-redb = { version = "2.1.3" }
-notify-debouncer-full = { version = "0.3.1", default-features = false }
+redb = { version = "2.4.0" }
+notify-debouncer-full = { version = "0.5.0", default-features = false }
 intel_tex_2 = "0.4.0"
-gltf = { version = "1.3.0", features = ["image"] }
-ureq = "2.7.1"
-libdeflater = "1.19.0"
-meshopt = "0.3.0"
-serde = "1.0.187"
-log = "0.4.20"
-futures = "0.3.30"
-downcast-rs = "1.2.0"
-maths-rs = "0.2.4"
-half = "2.4.1"
-gxhash = "3.0.0"
+gltf = { version = "1.4.1", features = ["image"] }
+ureq = "3.0.10"
+libdeflater = "1.23.1"
+meshopt = "0.4.1"
+serde = "1.0.219"
+log = "0.4.26"
+futures = "0.3.31"
+downcast-rs = "2.0.1"
+maths-rs = "0.2.6"
+half = "2.5.0"
+gxhash = "3.5.0"

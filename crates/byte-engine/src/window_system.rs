@@ -2,7 +2,7 @@
 
 use utils::{hash::HashMap, Extent};
 
-use core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle};
 
 /// The window system.
 pub struct WindowSystem {

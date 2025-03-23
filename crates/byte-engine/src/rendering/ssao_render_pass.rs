@@ -1,7 +1,7 @@
 use besl::parser::Node;
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, DeviceAccesses, GraphicsHardwareInterface, Uses};
 use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, image::Image, resource::resource_manager::ResourceManager, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, Reference};
-use core::{Entity, EntityHandle};
+use crate::core::entity::{Entity, EntityHandle};
 use std::{rc::Rc, sync::Arc};
 
 use utils::{json, sync::RwLock, Extent, RGBA};

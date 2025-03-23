@@ -2,7 +2,7 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use core::{self, EntityHandle};
+use crate::core::{self, EntityHandle};
 use std::sync::{Arc, Mutex};
 use byte_engine::{application::Application, camera::Camera, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::{Mesh, Transform}, point_light::PointLight}, Vector3};
 use maths_rs::exp;
@@ -16,20 +16,20 @@ fn sponza() {
 
 	let space_handle = app.get_root_space_handle();
 
-	// let lookaround_action_handle = core::spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[
+	// let lookaround_action_handle = crate::core::spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[
 	// 	input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), Function::Sphere),
 	// 	input::ActionBindingDescription::new("Gamepad.RightStick"),
 	// ],));
 
-	// let zoom_action_handle = core::spawn_as_child(space_handle.clone(), Action::<f32>::new("Zoom", &[
+	// let zoom_action_handle = crate::core::spawn_as_child(space_handle.clone(), Action::<f32>::new("Zoom", &[
 	// 	input::ActionBindingDescription::new("Mouse.Scroll"),
 	// ],));
 	
-	let camera: EntityHandle<Camera> = core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 5.0, 0.0),));
-	let _: EntityHandle<DirectionalLight> = core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 1.0, 0.0), 4000f32));
-	let _: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32));
-	let _: EntityHandle<PointLight> = core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32));
-	let mesh: EntityHandle<Mesh> = core::spawn_as_child(space_handle.clone(), Mesh::new("sponza/Sponza.gltf", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
+	let camera: EntityHandle<Camera> = crate::core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 5.0, 0.0),));
+	let _: EntityHandle<DirectionalLight> = crate::core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 1.0, 0.0), 4000f32));
+	let _: EntityHandle<PointLight> = crate::core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32));
+	let _: EntityHandle<PointLight> = crate::core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32));
+	let mesh: EntityHandle<Mesh> = crate::core::spawn_as_child(space_handle.clone(), Mesh::new("sponza/Sponza.gltf", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
 
 	struct Animation {
 		value: Vector3,

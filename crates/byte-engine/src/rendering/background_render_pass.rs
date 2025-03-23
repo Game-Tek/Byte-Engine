@@ -1,4 +1,4 @@
-use core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, Entity};
+use crate::core::{entity::{EntityHandle, EntityBuilder}, listener::{EntitySubscriber, Listener}, Entity};
 
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
@@ -158,7 +158,7 @@ impl BackgroundRenderingPass {
 }
 
 impl RenderPass for BackgroundRenderingPass {
-	fn add_render_pass(&mut self, render_pass: core::EntityHandle<dyn RenderPass>) {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
 
@@ -190,7 +190,7 @@ impl RenderPass for BackgroundRenderingPass {
 }
 
 impl EntitySubscriber<DirectionalLight> for BackgroundRenderingPass {
-	fn on_create<'a>(&'a mut self, handle: core::EntityHandle<DirectionalLight>, params: &'a DirectionalLight) -> utils::BoxedFuture<'a, ()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<DirectionalLight>, params: &'a DirectionalLight) -> utils::BoxedFuture<'a, ()> {
 		self.sun_direction = params.direction;
 
 		Box::pin(async move {})

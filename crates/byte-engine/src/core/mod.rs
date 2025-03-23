@@ -1,5 +1,3 @@
-#![feature(coerce_unsized, unsize, async_closure, trivial_bounds,)]
-
 pub mod orchestrator;
 
 pub mod entity;

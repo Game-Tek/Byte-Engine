@@ -1,4 +1,4 @@
-use core::{property::Property, Entity, EntityHandle};
+use crate::core::{property::Property, Entity, EntityHandle};
 
 use crate::{Vector2, Vector3};
 

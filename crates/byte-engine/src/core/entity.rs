@@ -1,3 +1,5 @@
+use crate::core::spawn_as_child;
+
 /// The Entity trait is the base trait for all entities in the engine.
 ///
 /// An entity is a type that can be spawned and managed by the engine.
@@ -41,7 +43,7 @@ pub trait SpawnerEntity<P: Entity>: Entity {
 	fn get_parent(&self) -> EntityHandle<P>;
 
 	fn spawn<T: Entity>(&self, entity: impl SpawnHandler<T>) -> impl Future<Output = EntityHandle<T>> where Self: Sized {
-		crate::spawn_as_child(self.get_parent(), entity)
+		spawn_as_child(self.get_parent(), entity)
 	}
 }
 
@@ -283,7 +285,7 @@ mod tests {
 	use utils::r#async::block_on;
 
 	use super::*;
-	use crate::spawn;
+	use crate::core::spawn;
 
 	#[test]
 	fn spawn_entities() {

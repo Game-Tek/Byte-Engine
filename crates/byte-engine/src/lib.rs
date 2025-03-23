@@ -1,7 +1,7 @@
 //! # Byte-Engine
 //! Byte-Engine is a Rust powered game engine. It is designed to be efficient, fast and easy to use; with simple, composable patterns
 
-#![feature(const_trait_impl, future_join, async_closure)]
+#![feature(const_trait_impl, future_join, coerce_unsized, unsize)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -16,10 +16,10 @@ extern crate ahi;
 #[cfg(not(feature = "headless"))]
 extern crate ghi;
 extern crate besl;
-pub extern crate core;
 extern crate resource_management;
 extern crate utils;
 
+pub mod core;
 pub mod application;
 #[cfg(not(feature = "headless"))]
 pub mod audio;

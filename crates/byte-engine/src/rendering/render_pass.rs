@@ -1,4 +1,4 @@
-use core::EntityHandle;
+use crate::core::EntityHandle;
 
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use maths_rs::Vec2f;
@@ -25,10 +25,10 @@ impl FullScreenRenderPass {
 		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Fullscreen Pass Descriptor Set"), &descriptor_set_layout);
-		
+
 		let source_image_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[0], *source_image, *source_sampler, ghi::Layouts::Read));
 		let destination_image_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[1], destination_image, ghi::Layouts::General));
-		
+
 		ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(source_image_binding, *source_image, *source_sampler, ghi::Layouts::Read), ghi::DescriptorWrite::image(destination_image_binding, destination_image, ghi::Layouts::General)]);
 
 		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::GLSL(shader.to_string()), ghi::ShaderTypes::Compute, &[bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
@@ -108,7 +108,7 @@ impl RenderPass for BilateralBlurPass {
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
-	
+
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 
 	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {
@@ -193,7 +193,7 @@ float gaussian_depth(float centerDepth, float sampleDepth) {
     float depthDiff = linearize_depth(centerDepth) - linearize_depth(sampleDepth);
 	if (abs(depthDiff) > 0.001) { return 0.0; } else { return 1.0; }
     float adjustedDepthDiff = abs(depthDiff);
-    
+
     return exp(-adjustedDepthDiff * adjustedDepthDiff / (2.0 * 0.0005 * 0.0005));
 }
 
@@ -241,7 +241,7 @@ impl RenderPass for BlitPass {
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
-	
+
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 
 	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {

@@ -1,4 +1,4 @@
-use core::{property::Property, EntityHandle};
+use crate::core::{property::Property, EntityHandle, spawn, spawn_as_child};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -36,6 +36,8 @@ pub struct GraphicsApplication {
 	root_space_handle: EntityHandle<Space>,
 
 	#[cfg(debug_assertions)]
+	ttff: std::time::Duration,
+	#[cfg(debug_assertions)]
 	min_frame_time: std::time::Duration,
 	#[cfg(debug_assertions)]
 	max_frame_time: std::time::Duration,
@@ -46,16 +48,18 @@ pub struct GraphicsApplication {
 
 impl Application for GraphicsApplication {
 	fn new(name: &str, parameters: &[Parameter],) -> Self {
+		let start_time = std::time::Instant::now();
+
 		let application = BaseApplication::new(name, parameters);
 
 		let runtime = utils::r#async::create_runtime();
 
-		let root_space_handle: EntityHandle<Space> = runtime.block_on(core::spawn(Space::new()));
+		let root_space_handle: EntityHandle<Space> = runtime.block_on(spawn(Space::new()));
 
 		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 		let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
 
-		let resource_manager = runtime.block_on(core::spawn(ResourceManager::new(resources_path.clone())));
+		let resource_manager = runtime.block_on(spawn(ResourceManager::new(resources_path.clone())));
 
 		{
 			let mut resource_manager = resource_manager.write_sync();
@@ -82,8 +86,8 @@ impl Application for GraphicsApplication {
 			resource_manager.set_asset_manager(asset_manager);
 		}
 
-		let window_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system()));
-		let input_system_handle: EntityHandle<input::InputManager> = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system()));
+		let window_system_handle = runtime.block_on(spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system()));
+		let input_system_handle: EntityHandle<input::InputManager> = runtime.block_on(spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system()));
 
 		let mouse_device_handle;
 		let keyboard_device_handle;
@@ -118,19 +122,19 @@ impl Application for GraphicsApplication {
 			gamepad_device_handle = input_system.create_device(&gamepad_device_class_handle);
 		}
 
-		// let file_tracker_handle = core::spawn(file_tracker::FileTracker::new());
+		// let file_tracker_handle = crate::core::spawn(file_tracker::FileTracker::new());
 
-		let renderer_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone())));
+		let renderer_handle = runtime.block_on(spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone())));
 
-		runtime.block_on(core::spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,))));
+		runtime.block_on(spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,))));
 
-		let audio_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), DefaultAudioSystem::new_as_system(resource_manager.clone())));
+		let audio_system_handle = runtime.block_on(spawn_as_child(root_space_handle.clone(), DefaultAudioSystem::new_as_system(resource_manager.clone())));
 
-		let physics_system_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system()));
+		let physics_system_handle = runtime.block_on(spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system()));
 
-		let anchor_system_handle: EntityHandle<AnchorSystem> = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), AnchorSystem::new()));
+		let anchor_system_handle: EntityHandle<AnchorSystem> = runtime.block_on(spawn_as_child(root_space_handle.clone(), AnchorSystem::new()));
 
-		let tick_handle = runtime.block_on(core::spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) })));
+		let tick_handle = runtime.block_on(spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) })));
 
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
@@ -156,9 +160,11 @@ impl Application for GraphicsApplication {
 			close: false,
 
 			tick_count: 0,
-			start_time: std::time::Instant::now(),
+			start_time,
 			last_tick_time: std::time::Instant::now(),
 
+			#[cfg(debug_assertions)]
+			ttff: std::time::Duration::ZERO,
 			#[cfg(debug_assertions)]
 			min_frame_time: std::time::Duration::MAX,
 			#[cfg(debug_assertions)]
@@ -278,6 +284,10 @@ impl Application for GraphicsApplication {
 
 		self.tick_count += 1;
 
+		if self.tick_count == 1 {
+			self.ttff = self.start_time.elapsed();
+		}
+
 		#[cfg(debug_assertions)]
 		if let Some(kill_after) = self.kill_after {
 			if self.tick_count >= kill_after {
@@ -285,14 +295,14 @@ impl Application for GraphicsApplication {
 			}
 		}
 
-		if close {
-			self.close();
-		}
-
 		#[cfg(debug_assertions)]
 		{
 			self.min_frame_time = self.min_frame_time.min(dt);
 			self.max_frame_time = self.max_frame_time.max(dt);
+		}
+
+		if close {
+			self.close();
 		}
 	}
 }
@@ -303,7 +313,7 @@ impl GraphicsApplication {
 		self.close = true;
 
 		#[cfg(debug_assertions)]
-		log::debug!("Run stats:\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}", self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time);
+		log::debug!("Run stats:\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);
 	}
 
 	pub fn get_runtime(&self) -> &utils::r#async::Runtime {

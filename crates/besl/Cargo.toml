@@ -6,4 +6,4 @@ license = "MIT"
 rust-version = "1.73.0"
 
 [dependencies]
-colored = "2.0.4"
+colored = "3.0.0"

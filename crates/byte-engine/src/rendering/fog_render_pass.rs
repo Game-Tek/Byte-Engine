@@ -1,3 +1,5 @@
+use crate::core::EntityHandle;
+
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::{json, Extent};
@@ -130,7 +132,7 @@ impl FogRenderPass {
 }
 
 impl RenderPass for FogRenderPass {
-	fn add_render_pass(&mut self, render_pass: core::EntityHandle<dyn RenderPass>) {
+	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
 

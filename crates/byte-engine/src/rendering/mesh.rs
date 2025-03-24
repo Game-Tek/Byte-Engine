@@ -19,11 +19,10 @@ pub struct Mesh {
 }
 
 impl Entity for Mesh {
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
 		let se = listener.invoke_for(handle.clone(), self);
 		let re = listener.invoke_for(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
-		join!(se, re).await;
-	}) }
+	}
 }
 
 impl RenderEntity for Mesh {

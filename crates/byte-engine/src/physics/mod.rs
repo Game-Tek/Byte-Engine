@@ -14,7 +14,7 @@ pub trait PhysicsEntity: Entity {
 
 	fn get_position(&self) -> Vec3f;
 	fn set_position(&mut self, position: Vec3f);
-	
+
 	fn get_velocity(&self) -> Vec3f;
 }
 
@@ -70,11 +70,10 @@ impl Sphere {
 }
 
 impl Entity for Sphere {
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
 		let se = listener.invoke_for(handle.clone(), self);
 		let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
-		join!(se, pe).await;
-	}) }
+	}
 }
 
 impl PhysicsEntity for Sphere {
@@ -120,14 +119,14 @@ impl PhysicsWorld {
 			match body.body_type {
 				BodyTypes::Static => continue,
 				BodyTypes::Kinematic => {
-					body.position = body.handle.write_sync().get_position();
+					body.position = body.handle.write().get_position();
 				},
 				BodyTypes::Dynamic => {
 					let forces = Vector3::new(0f32, -9.81f32, 0f32);
 					body.acceleration = forces;
 					body.velocity += body.acceleration * dt;
 					body.position += body.velocity * dt;
-					body.handle.write_sync().set_position(body.position);
+					body.handle.write().set_position(body.position);
 				}
 			}
 		}
@@ -177,11 +176,11 @@ impl PhysicsWorld {
 
 		for &(i, j) in &collisions {
 			if self.ongoing_collisions.contains(&(i, j)) { continue; }
-			
+
 			self.ongoing_collisions.push((i, j));
 
 			self.bodies[j].handle.map(|e| {
-				let mut e = e.write_sync();
+				let mut e = e.write();
 				if let Some(collision_event) = e.on_collision() {
 					collision_event.ocurred(&self.bodies[i].handle);
 				}
@@ -199,10 +198,8 @@ impl PhysicsWorld {
 impl Entity for PhysicsWorld {}
 
 impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> utils::BoxedFuture<()> {
-		Box::pin(async move {
-			log::info!("{:#?}", params.get_collision_shape());
-			let index = self.add_body(Body{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: params.get_collision_shape(), handle: handle.clone() });
-		})
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> () {
+		log::info!("{:#?}", params.get_collision_shape());
+		let index = self.add_body(Body{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: params.get_collision_shape(), handle: handle.clone() });
 	}
 }

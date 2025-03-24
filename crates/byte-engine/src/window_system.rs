@@ -108,9 +108,8 @@ impl WindowSystem {
 }
 
 impl EntitySubscriber<Window> for WindowSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, window: &Window) -> utils::BoxedFuture<()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, window: &Window) -> () {
 		let h = self.create_window(handle, "Main Window", window.extent, "main_window");
-		Box::pin(async move { })
 	}
 }
 

@@ -54,16 +54,16 @@ impl Model for MaterialModel {
 }
 
 impl <'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Material {
 			double_sided,
 			alpha_mode,
-			shaders: try_join_all(shaders.into_iter().map(|s| s.solve(storage_backend))).await?,
+			shaders: shaders.into_iter().map(|s| s.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
 			model,
-			parameters: try_join_all(parameters.into_iter().map(|p| p.solve(storage_backend))).await?,
+			parameters: parameters.into_iter().map(|p| p.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
 		}, reader))
 	}
 }
@@ -98,7 +98,7 @@ pub struct VariantVariableModel {
 }
 
 impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<VariantVariable, SolveErrors> {
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<VariantVariable, SolveErrors> {
 		Ok(VariantVariable {
 			name: self.name,
 			r#type: self.r#type,
@@ -106,7 +106,7 @@ impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
 				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
 				ValueModel::Vector3(vector) => Value::Vector3(vector),
 				ValueModel::Vector4(vector) => Value::Vector4(vector),
-				ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
+				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
 			},
 		})
 	}
@@ -137,13 +137,13 @@ impl Model for VariantModel {
 }
 
 impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let VariantModel { material, variables, alpha_mode } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Variant {
-			material: material.solve(storage_backend).await?,
-			variables: try_join_all(variables.into_iter().map(|v| v.solve(storage_backend))).await?,
+			material: material.solve(storage_backend)?,
+			variables: variables.into_iter().map(|v| v.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
 			alpha_mode,
 		}, reader))
 	}
@@ -198,8 +198,8 @@ impl super::Model for Shader {
 }
 
 impl <'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Shader { id, stage, interface } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Shader {
@@ -249,7 +249,7 @@ pub struct ParameterModel {
 }
 
 impl <'de> Solver<'de, Parameter> for ParameterModel {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
 			r#type: self.r#type.clone(),
 			name: self.name.clone(),
@@ -257,7 +257,7 @@ impl <'de> Solver<'de, Parameter> for ParameterModel {
 				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
 				ValueModel::Vector3(vector) => Value::Vector3(vector),
 				ValueModel::Vector4(vector) => Value::Vector4(vector),
-				ValueModel::Image(image) => Value::Image(image.solve(storage_backend).await?),
+				ValueModel::Image(image) => Value::Image(image.solve(storage_backend)?),
 			},
 		})
 	}

@@ -503,25 +503,25 @@ impl InputManager {
 				match value {
 					Value::Bool(v) => {
 						match &action.handle {
-							TypedHandle::Bool(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
+							TypedHandle::Bool(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
 					Value::Float(v) => {
 						match &action.handle {
-							TypedHandle::Float(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
+							TypedHandle::Float(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
 					Value::Vector2(v) => {
 						match &action.handle {
-							TypedHandle::Vector2(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
+							TypedHandle::Vector2(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
 					Value::Vector3(v) => {
 						match &action.handle {
-							TypedHandle::Vector3(handle) => { handle.map(|a| { let mut a = a.write_sync(); a.value_mut().set(|_| { v }); }) }
+							TypedHandle::Vector3(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
 							_ => {}
 						}
 					}
@@ -796,7 +796,7 @@ impl Into<TypedHandle> for EntityHandle<Action<Vector3>> {
 }
 
 impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHandle<Action<T>>: Into<TypedHandle> {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<T>>, action: &Action<T>) -> utils::BoxedFuture<()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<T>>, action: &Action<T>) -> () {
 		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
 
 		let input_event = InputAction {
@@ -814,8 +814,6 @@ impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHa
 		};
 
 		self.actions.push(input_event);
-
-		Box::pin(async {})
 	}
 }
 
@@ -1298,16 +1296,16 @@ mod tests {
 	fn test_system_fps_game() {
 		//! Test that the system integration is working and works correctly for a FPS game type setup.
 
-		let space = block_on(spawn(Space::new()));
+		let space = spawn(Space::new());
 
-		let input_manager: EntityHandle<InputManager> = block_on(spawn_as_child(space.clone(), InputManager::new_as_system()));
+		let input_manager: EntityHandle<InputManager> = spawn_as_child(space.clone(), InputManager::new_as_system());
 
 		let mouse_device_handle;
 		let keyboard_device_handle;
 		let gamepad_device_handle;
 
 		{
-			let mut input_manager = input_manager.write_sync();
+			let mut input_manager = input_manager.write();
 
 			let mouse_device_class_handle = input_manager.register_device_class("Mouse");
 
@@ -1335,41 +1333,41 @@ mod tests {
 		}
 
 		// Create the move action
-		let move_action_handle = block_on(spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
+		let move_action_handle = spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
 			ActionBindingDescription::new("Keyboard.W").mapped(Value::Vector3(Vector3::new(0f32, 0f32, 1f32)), Function::Linear),
 			ActionBindingDescription::new("Keyboard.S").mapped(Value::Vector3(Vector3::new(0f32, 0f32, -1f32)), Function::Linear),
 			ActionBindingDescription::new("Keyboard.A").mapped(Value::Vector3(Vector3::new(-1f32, 0f32, 0f32)), Function::Linear),
 			ActionBindingDescription::new("Keyboard.D").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 0f32)), Function::Linear),
 
 			ActionBindingDescription::new("Gamepad.LeftStick").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 1f32)), Function::Linear),
-		],)));
+		],));
 
 		let input_queue = Rc::new(RefCell::new(Vec::new()));
 
 		{
 			let input_queue = input_queue.clone();
 
-			move_action_handle.write_sync().value_mut().add(move |v| {
+			move_action_handle.write().value_mut().add(move |v| {
 				input_queue.borrow_mut().push(*v);
 			});
 		}
 
 		// Create the jump action
-		let jump_action_handle = block_on(spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
+		let jump_action_handle = spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
 			ActionBindingDescription::new("Keyboard.Space").mapped(Value::Bool(true), Function::Linear),
 			ActionBindingDescription::new("Gamepad.A").mapped(Value::Bool(true), Function::Linear),
-		],)));
+		],));
 
 		{
 			let input_queue = input_queue.clone();
 
-			jump_action_handle.write_sync().value_mut().add(move |v| {
+			jump_action_handle.write().value_mut().add(move |v| {
 				input_queue.borrow_mut().push(Vector3::new(0f32, 1f32, 0f32));
 			});
 		}
 
 		{
-			let mut input_manager = input_manager.write_sync();
+			let mut input_manager = input_manager.write();
 
 			input_manager.record_input_source_action(&keyboard_device_handle, InputSourceAction::Name("Keyboard.A"), Value::Bool(true));
 

@@ -19,8 +19,8 @@ impl Model for Image {
 }
 
 impl <'de> Solver<'de, Reference<Image>> for ReferenceModel<Image> {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Image>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Image>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let Image { format, extent, gamma } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Image {

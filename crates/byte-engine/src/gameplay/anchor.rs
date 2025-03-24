@@ -74,10 +74,10 @@ impl AnchorSystem {
 
 	pub fn update(&self,) {
 		for anchor in &self.anchors {
-			let anchor = anchor.read_sync();
+			let anchor = anchor.read();
 
 			for (child, anchorage) in &anchor.children {
-				let mut child = child.write_sync();
+				let mut child = child.write();
 
 				match anchorage {
 					Anchorage::Default => {},
@@ -91,8 +91,7 @@ impl AnchorSystem {
 }
 
 impl EntitySubscriber<Anchor> for AnchorSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Anchor>, params: &'a Anchor) -> utils::BoxedFuture<'a, ()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Anchor>, params: &'a Anchor) -> () {
 		self.anchors.push(handle);
-		Box::pin(async move {})
 	}
 }

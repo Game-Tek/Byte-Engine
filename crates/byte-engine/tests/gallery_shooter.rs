@@ -13,31 +13,29 @@ fn gallery_shooter() {
 
 	let audio_system_handle = app.get_audio_system_handle().clone();
 
-	let runtime = app.get_runtime();
-
 	let space_handle = app.get_root_space_handle();
 
-	let lookaround_action_handle = runtime.block_on(spawn_as_child(space_handle.clone(), input::Action::new("Lookaround", &[
+	let lookaround_action_handle = spawn_as_child(space_handle.clone(), input::Action::new("Lookaround", &[
 		input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input::Function::Sphere),
 		input::ActionBindingDescription::new("Gamepad.RightStick"),
-	],)));
+	],));
 
-	let trigger_action = runtime.block_on(spawn_as_child(space_handle.clone(), input::Action::new("Trigger", &[
+	let trigger_action = spawn_as_child(space_handle.clone(), input::Action::new("Trigger", &[
 		input::ActionBindingDescription::new("Mouse.LeftButton"),
 		input::ActionBindingDescription::new("Gamepad.RightTrigger"),
-	],)));
+	],));
 
 	let scale = Vector3::new(0.1, 0.1, 0.1);
 
-	let floor: EntityHandle<gameplay::object::Object> = runtime.block_on(spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(0.0, -1.25f32, 1.0)).scale(Vector3::new(10f32, 1f32, 10f32)), physics::BodyTypes::Static, Vector3::new(0f32, 0f32, 0f32))));
+	let floor: EntityHandle<gameplay::object::Object> = spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(0.0, -1.25f32, 1.0)).scale(Vector3::new(10f32, 1f32, 10f32)), physics::BodyTypes::Static, Vector3::new(0f32, 0f32, 0f32)));
 
-	let duck_1: EntityHandle<gameplay::object::Object> = runtime.block_on(spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
-	let duck_2: EntityHandle<gameplay::object::Object> = runtime.block_on(spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
-	let duck_3: EntityHandle<gameplay::object::Object> = runtime.block_on(spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
-	let duck_4: EntityHandle<gameplay::object::Object> = runtime.block_on(spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32))));
+	let duck_1: EntityHandle<gameplay::object::Object> = spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(0.0, 0.0, 2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
+	let duck_2: EntityHandle<gameplay::object::Object> = spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
+	let duck_3: EntityHandle<gameplay::object::Object> = spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(-2.0, 0.0, 0.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
+	let duck_4: EntityHandle<gameplay::object::Object> = spawn_as_child(space_handle.clone(), gameplay::object::Object::new("Box.glb", Transform::default().position(Vector3::new(0.0, 0.0, -2.0)).scale(scale), physics::BodyTypes::Kinematic, Vector3::new(0f32, 0f32, 0f32)));
 
-	app.get_tick_handle().write_sync().add(move |v| {
-		let mut ducks = vec![duck_1.write_sync(), duck_2.write_sync(), duck_3.write_sync(), duck_4.write_sync(),];
+	app.get_tick_handle().write().add(move |v| {
+		let mut ducks = vec![duck_1.write(), duck_2.write(), duck_3.write(), duck_4.write(),];
 
 		let alpha = 2.0f32 * PI / ducks.len() as f32;
 
@@ -50,11 +48,11 @@ fn gallery_shooter() {
 	});
 
 	// let _sun: EntityHandle<PointLight> = crate::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 1.5, -0.5), 4500.0));
-	let _sun: EntityHandle<DirectionalLight> = runtime.block_on(spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0)));
+	let _sun: EntityHandle<DirectionalLight> = spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0));
 
-	let mut game_state = runtime.block_on(spawn_as_child(space_handle.clone(), GameState::new()));
+	let mut game_state = spawn_as_child(space_handle.clone(), GameState::new());
 
-	let mut player: EntityHandle<Player> = runtime.block_on(spawn_as_child(space_handle.clone(), Player::new(game_state, lookaround_action_handle, trigger_action, audio_system_handle)));
+	let mut player: EntityHandle<Player> = spawn_as_child(space_handle.clone(), Player::new(game_state, lookaround_action_handle, trigger_action, audio_system_handle));
 
 	app.do_loop();
 
@@ -113,9 +111,9 @@ impl SpawnerEntity<Space> for Player {
 
 impl Player {
 	fn new(game_state: EntityHandle<GameState>, lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>,) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new_from_async_function_with_parent(async move |parent: DomainType| {
+		EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
 			let transform = Transform::default().position(Vector3::new(0.25, -0.15, 0.4f32)).scale(Vector3::new(0.05, 0.03, 0.2));
-			let camera_handle = crate::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0))).await;
+			let camera_handle = crate::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
 
 			let mut magazine_size = Property::new(5);
 			let magazine_as_string = DerivedProperty::new(&mut magazine_size, |magazine_size| { magazine_size.to_string() });
@@ -127,24 +125,24 @@ impl Player {
 				audio_system: audio_system,
 
 				camera: camera_handle,
-				mesh: crate::spawn_as_child(parent, mesh::Mesh::new("Box.glb", transform)).await,
+				mesh: crate::spawn_as_child(parent, mesh::Mesh::new("Box.glb", transform)),
 
 				magazine_size,
 				magazine_as_string,
 				magazine_capacity: 5,
 			}
 		}).then(move |this| {
-			lookaround.write_sync().value_mut().link_to(this.clone(), Player::lookaround);
-			click.write_sync().value_mut().link_to(this.clone(), Player::shoot);
+			lookaround.write().value_mut().link_to(this.clone(), Player::lookaround);
+			click.write().value_mut().link_to(this.clone(), Player::shoot);
 		})
 	}
 }
 
 impl Player {
 	fn lookaround(&mut self, value: &Vector3) {
-		let mut camera = self.camera.write_sync();
+		let mut camera = self.camera.write();
 		camera.set_orientation(*value);
-		let mut mesh = self.mesh.write_sync();
+		let mut mesh = self.mesh.write();
 		mesh.transform_mut().set_orientation(*value);
 		let nmatrix = from_normal(*value);
 		mesh.transform_mut().set_position((nmatrix.inverse() * Vec4::new(0.25, -0.15, 0.4, 1f32)).xyz());
@@ -155,16 +153,16 @@ impl Player {
 			log::info!("Shooting!");
 
 			{
-				let mut audio_system = self.audio_system.write_sync();
-				block_on(audio_system.play("gun.wav"));
+				let mut audio_system = self.audio_system.write();
+				audio_system.play("gun.wav");
 			}
 
 			let direction = {
-				let mesh = self.mesh.read_sync();
+				let mesh = self.mesh.read();
 				mesh.transform().get_orientation()
 			};
 
-			self.spawn::<Bullet>(Bullet::new(Vector3::new(0.0, 0.0, 0.0),direction,).then(|s| { s.read_sync().bullet_object.write_sync().on_collision().subscribe(self.game_state.clone(), GameState::on_duck_hit) }));
+			self.spawn::<Bullet>(Bullet::new(Vector3::new(0.0, 0.0, 0.0),direction,).then(|s| { s.read().bullet_object.write().on_collision().subscribe(self.game_state.clone(), GameState::on_duck_hit) }));
 
 			self.magazine_size.set(|value| {
 				if value - 1 == 0 {
@@ -179,7 +177,7 @@ impl Player {
 	async fn async_shoot(&mut self, value: &bool) {
 		if *value {
 			{
-				let mut audio_system = self.audio_system.write_sync();
+				let mut audio_system = self.audio_system.write();
 				// audio_system.play("gun").await;
 			}
 
@@ -209,8 +207,8 @@ impl SelfDestroyingEntity for Bullet {
 
 impl Bullet {
 	fn new<'a>(position: Vector3, direction: Vector3) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_async_function_with_parent(async move |parent: DomainType| {
-			let bullet_object = crate::spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,)).await;
+		EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
+			let bullet_object = spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,));
 
 			Self {
 				bullet_object,
@@ -219,9 +217,9 @@ impl Bullet {
 			let me = s.clone();
 
 			{
-				let se = s.write_sync();
-				let mut co = se.bullet_object.write_sync();
-				co.on_collision().subscribe(me, Self::on_collision);
+				let se = s.write();
+				let mut co = se.bullet_object.write();
+				co.on_collision().map(|e| e.subscribe(me, Self::on_collision));
 			}
 		})
 	}

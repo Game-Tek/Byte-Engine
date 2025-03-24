@@ -6,7 +6,6 @@ pub mod property;
 pub mod event;
 pub mod listener;
 
-use std::future::Future;
 use std::ops::Deref;
 
 pub use entity::Entity;
@@ -18,26 +17,27 @@ use listener::Listener;
 
 use entity::DomainType;
 use entity::EntityBuilder;
-use utils::r#async::RwLock;
+
+use utils::sync::{Arc, RwLock};
 
 struct NoneListener {}
 impl Listener for NoneListener {
-	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>, _: &'a T) -> utils::BoxedFuture<'a, ()> { Box::pin(async move {}) }
+	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>, _: &'a T) -> () {}
 	fn add_listener<T: ?Sized + 'static>(&self, _: EntityHandle<dyn EntitySubscriber<T>>) {}
 }
 
 impl Entity for NoneListener {}
 
-pub async fn spawn<E>(entity: impl SpawnHandler<E>) -> EntityHandle<E> {
+pub fn spawn<E>(entity: impl SpawnHandler<E>) -> EntityHandle<E> {
 	static mut COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-	let e = entity.call(Option::None, unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).await.unwrap();
+	let e = entity.call(Option::None, unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).unwrap();
 	e
 }
 
-pub async fn spawn_as_child<'a, E>(parent: DomainType, entity: impl SpawnHandler<E>) -> EntityHandle<E> {
+pub fn spawn_as_child<'a, E>(parent: DomainType, entity: impl SpawnHandler<E>) -> EntityHandle<E> {
 	static mut COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-	let e = entity.call(Some(parent), unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).await.unwrap();
+	let e = entity.call(Some(parent), unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).unwrap();
 	e
 }
 
@@ -45,20 +45,20 @@ pub async fn spawn_as_child<'a, E>(parent: DomainType, entity: impl SpawnHandler
 
 /// Handles extractor pattern for most functions passed to the orchestrator.
 pub trait SpawnHandler<R> {
-	fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> impl Future<Output = Option<EntityHandle<R>>> where Self: Sized;
+	fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> where Self: Sized;
 }
 
 impl <R: 'static> SpawnHandler<R> for R {
-    async fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
 		let internal_id = cid;
 
-		let obj = std::sync::Arc::new(RwLock::new(self));
+		let obj = Arc::new(RwLock::new(self));
 
 		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
 		if let Some(domain) = domain {
-			if let Some(listener) = domain.write_sync().deref().get_listener() {
-				listener.invoke_for(handle.clone(), handle.read_sync().deref()).await;
+			if let Some(listener) = domain.write().deref().get_listener() {
+				listener.invoke_for(handle.clone(), handle.read().deref());
 			}
 		}
 
@@ -67,10 +67,10 @@ impl <R: 'static> SpawnHandler<R> for R {
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
-    async fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
 		let internal_id = cid;
 
-		let entity = (self.create)(domain.clone()).await;
+		let entity = (self.create)(domain.clone());
 
 		let obj = std::sync::Arc::new(RwLock::new(entity));
 
@@ -87,8 +87,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		}
 
 		if let Some(domain) = domain {
-			if let Some(listener) = domain.write_sync().deref().get_listener() {
-				handle.read_sync().deref().call_listeners(listener, handle.clone()).await;
+			if let Some(listener) = domain.write().deref().get_listener() {
+				handle.read().deref().call_listeners(listener, handle.clone());
 			}
 		}
 

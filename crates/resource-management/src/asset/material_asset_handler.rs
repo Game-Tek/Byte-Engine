@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use futures::future::{join, join_all, try_join_all};
 use log::debug;
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
@@ -36,12 +35,12 @@ impl Asset for MaterialAsset {
         }
     }
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
         let asset = &self.asset;
 
         let is_material = asset.get(&"parent").is_none();
 
-		let to_value = async |t: String, v: String| {
+		let to_value = |t: String, v: String| {
 			let to_color = |name: &str| {
 				match name {
 					"Red" => [1f32, 0f32, 0f32, 1f32],
@@ -67,7 +66,7 @@ impl Asset for MaterialAsset {
 					ValueModel::Vector3([value[0], value[1], value[2]])
 				}
 				"float" => ValueModel::Scalar(0f32),
-				"Texture2D" => ValueModel::Image(asset_manager.load(v).await.unwrap()),
+				"Texture2D" => ValueModel::Image(asset_manager.load(v).unwrap()),
 				_ => panic!("Unknown data type")
 			}
 		};
@@ -84,23 +83,21 @@ impl Asset for MaterialAsset {
 				None => { return Err("Shaders not found".to_string()); }
 			};
 
-			let shaders = try_join_all(asset_shaders.iter().map(|(s_type, shader_json): (&str, &json::Value)| {
+			let shaders = asset_shaders.iter().map(|(s_type, shader_json): (&str, &json::Value)| {
 				transform_shader(generator, storage_backend, asset_storage_backend, &material_domain, &asset, &shader_json, s_type)
-			}));
+			}).collect::<Result<Vec<_>, _>>().or(Err("Failed to build shader(s)".to_string()))?;
 
 			let asset_variables = match asset["variables"].as_array() {
 				Some(v) => v,
 				None => { return Err("Variables not found".to_string()); }
 			};
 
-			let values = join_all(asset_variables.iter().map(|v: &json::Value| {
+			let values = asset_variables.iter().map(|v: &json::Value| {
 				let data_type = v["data_type"].as_str().unwrap().to_string();
 				let value = v["value"].as_str().unwrap().to_string();
 
 				to_value(data_type, value)
-			}));
-
-			let (shaders, values) = join(shaders, values).await;
+			});
 
 			let parameters = asset_variables.iter().zip(values.into_iter()).map(|(v, value)| {
 				let name = v["name"].as_str().unwrap().to_string();
@@ -112,8 +109,6 @@ impl Asset for MaterialAsset {
 					value,
 				}
 			}).collect();
-
-			let shaders = shaders.or(Err("Failed to build shader(s)".to_string()))?;
 
 			let resource = MaterialModel {
 				double_sided: false,
@@ -131,13 +126,13 @@ impl Asset for MaterialAsset {
 
 			let resource = ProcessedAsset::new(url, resource);
 
-			storage_backend.store(&resource, &[]).await;
+			storage_backend.store(&resource, &[]);
 
 			resource
 		} else {
 			let parent_material_url = asset["parent"].as_str().unwrap();
 
-			let material = asset_manager.load(parent_material_url).await.or_else(|_| { Err("Failed to load parent material") })?;
+			let material = asset_manager.load(parent_material_url).or_else(|_| { Err("Failed to load parent material") })?;
 
 			// #[derive(Debug, serde::Deserialize)]
 			// struct MaterialAssetParameter {
@@ -152,7 +147,7 @@ impl Asset for MaterialAsset {
 
 			let material_repr: MaterialModel = pot::from_slice(&material.resource).unwrap();
 
-			let values = try_join_all(material_repr.parameters.iter().map(async |v: &ParameterModel| {
+			let values = material_repr.parameters.iter().map(|v: &ParameterModel| {
 				let value = match asset["variables"].as_array() {
 					Some(variables) => {
 						match variables.iter().find(|v2| { v2["name"].as_str().unwrap() == v.name }) {
@@ -163,8 +158,8 @@ impl Asset for MaterialAsset {
 					None => { return Err("Variable not found".to_string()); }
 				};
 
-				Ok(to_value(v.r#type.clone(), value).await)
-			})).await.or_else(|e| { debug!("{}", e); Err("Failed to load variant") })?;
+				Ok(to_value(v.r#type.clone(), value))
+			}).collect::<Result<Vec<_>, _>>()?;
 
 			let variables = material_repr.parameters.iter().zip(values.into_iter()).map(|(v, value)| {
 				VariantVariableModel {
@@ -194,7 +189,7 @@ impl Asset for MaterialAsset {
 				alpha_mode,
 			});
 
-			match storage_backend.store(&resource, &[]).await {
+			match storage_backend.store(&resource, &[]) {
 				Ok(_) => {}
 				Err(_) => {
 					log::error!("Failed to store resource {:#?}", url);
@@ -205,7 +200,7 @@ impl Asset for MaterialAsset {
 		};
 
 		Ok(())
-    }) }
+    }
 }
 
 pub struct MaterialAssetHandler {
@@ -229,12 +224,12 @@ impl AssetHandler for MaterialAssetHandler {
 		r#type == "bema"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
 		if let Some(dt) = storage_backend.get_type(url) {
 			if dt != "bema" { return Err(LoadErrors::UnsupportedType); }
 		}
 
-		let (data, _, at) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, at) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
 		if at != "bema" {
 			return Err(LoadErrors::UnsupportedType);
@@ -247,7 +242,7 @@ impl AssetHandler for MaterialAssetHandler {
 			asset: asset_json,
 			generator: self.generator.clone().ok_or(LoadErrors::FailedToProcess)?,
 		}) as Box<dyn Asset>)
-	}) }
+	}
 }
 
 fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &str, format: &str, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(Shader, Box<[u8]>), ()> {
@@ -367,16 +362,16 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 	Ok((shader, result_shader_bytes))
 }
 
-async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn resource::StorageBackend, asset_storage_backend: &dyn asset::StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
+fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn resource::StorageBackend, asset_storage_backend: &dyn asset::StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
 	let path = shader_json.as_str().ok_or(())?;
 	let path = ResourceId::new(path);
-	let (arlp, _, format) = asset_storage_backend.resolve(path).await.or(Err(()))?;
+	let (arlp, _, format) = asset_storage_backend.resolve(path).or(Err(()))?;
 
 	let shader_code = std::str::from_utf8(&arlp).unwrap().to_string();
 
 	let (shader, result_shader_bytes) = compile_shader(generator, path.get_base().as_ref(), &shader_code, &format, domain, material, shader_json, stage).or(Err(()))?;
 
-	let r = storage_backend.store(&ProcessedAsset::new(path, shader), &result_shader_bytes).await.or(Err(()))?;
+	let r = storage_backend.store(&ProcessedAsset::new(path, shader), &result_shader_bytes).or(Err(()))?;
 
 	Ok((r.into(), result_shader_bytes))
 }
@@ -384,7 +379,7 @@ async fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dy
 
 #[cfg(test)]
 pub mod tests {
-	use utils::{r#async::{self, block_on}, json};
+	use utils::json;
 
 	use super::{MaterialAssetHandler, ProgramGenerator};
 	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, material::VariantModel, resource, ReferenceModel};
@@ -508,9 +503,9 @@ pub mod tests {
 
 		asset_handler.set_shader_generator(shader_generator);
 
-		let asset = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema"),)).expect("Failed to load material");
+		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema"),).expect("Failed to load material");
 
-		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema")));
+		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema"));
 
 		let generated_resources = resource_storage_backend.get_resources();
 
@@ -584,7 +579,7 @@ pub mod tests {
 
 		asset_manager.add_asset_handler(asset_handler);
 
-		let _: ReferenceModel<VariantModel> = block_on(asset_manager.load("variant.bema")).expect("Failed to load material");
+		let _: ReferenceModel<VariantModel> = asset_manager.load("variant.bema").expect("Failed to load material");
 
 		let generated_resources = resource_storage_backend.get_resources();
 		assert_eq!(generated_resources.len(), 3);

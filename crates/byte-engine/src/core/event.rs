@@ -45,8 +45,6 @@ impl <T> Default for Event<T> {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-	use utils::r#async::block_on;
-
 	use crate::core::{entity::EntityBuilder, spawn, Entity};
 
 	use super::*;
@@ -93,19 +91,19 @@ mod tests {
 			}
 		}
 
-		let component_handle: EntityHandle<MyComponent> = block_on(spawn(MyComponent { name: "test".to_string(), value: 1, click: false, event: Default::default() }));
+		let component_handle: EntityHandle<MyComponent> = spawn(MyComponent { name: "test".to_string(), value: 1, click: false, event: Default::default() });
 
-		let system_handle: EntityHandle<MySystem> = block_on(spawn(MySystem::new(&component_handle)));
+		let system_handle: EntityHandle<MySystem> = spawn(MySystem::new(&component_handle));
 
 		component_handle.map(|c| {
-			let mut c = c.write_sync();
+			let mut c = c.write();
 			c.click().trigger((system_handle.clone(), MySystem::on_event));
 		});
 
 		assert_eq!(unsafe { COUNTER }, 0);
 
 		component_handle.map(|c| {
-			let mut c = c.write_sync();
+			let mut c = c.write();
 			c.set_click(true);
 		});
 

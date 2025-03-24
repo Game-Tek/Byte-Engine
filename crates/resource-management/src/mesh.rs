@@ -39,11 +39,11 @@ impl Model for PrimitiveModel {
 }
 
 impl <'de> Solver<'de, Primitive> for PrimitiveModel {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Primitive, SolveErrors> {
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Primitive, SolveErrors> {
 		let PrimitiveModel { material, streams, quantization, bounding_box, vertex_count } = self;
 
 		Ok(Primitive {
-			material: material.solve(storage_backend).await?,
+			material: material.solve(storage_backend)?,
 			streams,
 			quantization,
 			bounding_box,
@@ -149,14 +149,14 @@ impl super::Model for MeshModel {
 }
 
 impl <'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
-	async fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Mesh>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).await.ok_or_else(|| SolveErrors::StorageError)?;
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Mesh>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(ResourceId::new(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
 		let MeshModel { vertex_components, streams, primitives } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, Mesh {
 			vertex_components,
 			streams,
-			primitives: try_join_all(primitives.into_iter().map(|p| p.solve(storage_backend))).await?,
+			primitives: primitives.into_iter().map(|p| p.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
 		}, reader))
 	}
 }

@@ -1,7 +1,6 @@
+use std::cell::OnceCell;
 use std::mem::transmute;
 use std::ops::DerefMut;
-use std::rc::Rc;
-use std::sync::Arc;
 
 use ghi::{graphics_hardware_interface, ImageHandle};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
@@ -21,8 +20,7 @@ use resource_management::image::Image as ResourceImage;
 use resource_management::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
 use resource_management::material::Variant as ResourceVariant;
-use utils::r#async::{join_all, OnceCell};
-use utils::sync::RwLock;
+use utils::sync::{Rc, Arc, RwLock};
 use utils::{Extent, RGBA};
 
 use crate::core::entity::EntityBuilder;
@@ -148,7 +146,7 @@ pub struct VisibilityWorldRenderDomain {
 	meshes: HashMap<String, MeshData>,
 	images: RwLock<HashMap<String, Image>>,
 
-	texture_manager: Arc<utils::r#async::RwLock<TextureManager>>,
+	texture_manager: Arc<RwLock<TextureManager>>,
 	pipeline_manager: PipelineManager,
 
 	mesh_resources: HashMap<String, u32>,
@@ -247,8 +245,8 @@ pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTempl
 pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_async_function(async move || {
+	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> EntityBuilder<'a, Self> {
+		EntityBuilder::new_from_function(move || {
 			let mut ghi_instance = ghi.write();
 
 			// Initialize the extent to 0 to allocate memory lazily.
@@ -350,14 +348,14 @@ impl VisibilityWorldRenderDomain {
 				ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
 			];
 
-			let shadow_render_pass = spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target)).await;
+			let shadow_render_pass = spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
 
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 			let depth_sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
 			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 
 			let shadow_map_image = {
-				shadow_render_pass.read_sync().get_shadow_map_image()
+				shadow_render_pass.read().get_shadow_map_image()
 			};
 
 			let material_evaluation_descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
@@ -466,7 +464,7 @@ impl VisibilityWorldRenderDomain {
 
 	/// Creates the needed GHI resource for the given mesh.
 	/// Does nothing if the mesh has already been loaded.
-	async fn create_mesh_resources<'a, 's: 'a>(&'s mut self, id: &'a str) -> Result<&'a str, ()> {
+	fn create_mesh_resources<'a, 's: 'a>(&'s mut self, id: &'a str) -> Result<&'a str, ()> {
 		if let Some(entry) = self.meshes.get(id) {
 			return Ok(id);
 		}
@@ -474,8 +472,8 @@ impl VisibilityWorldRenderDomain {
 		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
 		let mut resource_request: Reference<ResourceMesh> = {
-			let resource_manager = self.resource_manager.read().await;
-			let resource_request: Reference<ResourceMesh> = if let Some(resource_info) = resource_manager.request(id).await { resource_info } else {
+			let resource_manager = self.resource_manager.read();
+			let resource_request: Reference<ResourceMesh> = if let Some(resource_info) = resource_manager.request(id) { resource_info } else {
 				log::error!("Failed to load mesh resource {}", id);
 				return Err(());
 			};
@@ -560,7 +558,7 @@ impl VisibilityWorldRenderDomain {
 			resource_management::StreamMut::new("Meshlets", buffer_allocator.take(meshlet_stream.size)),
 		];
 
-		let load_target = resource_request.load(streams.into()).await.unwrap();
+		let load_target = resource_request.load(streams.into()).unwrap();
 
 		let Reference { resource: ResourceMesh { vertex_components, streams, primitives }, .. } = resource_request;
 
@@ -659,8 +657,8 @@ impl VisibilityWorldRenderDomain {
 			meshlets, primitive).into()
 		});
 
-		let meshlets_per_primitive: Vec<(MeshPrimitive, Vec<ShaderMeshletData>)> = join_all(meshlets_per_primitive.map(async |(mp, meshlets, primitive): (MeshPrimitive, Vec<ShaderMeshletData>, Primitive)| {
-			let variant = self.create_variant_resources(primitive.material).await.unwrap();
+		let meshlets_per_primitive: Vec<(MeshPrimitive, Vec<ShaderMeshletData>)> = meshlets_per_primitive.map(|(mp, meshlets, primitive): (MeshPrimitive, Vec<ShaderMeshletData>, Primitive)| {
+			let variant = self.create_variant_resources(primitive.material).unwrap();
 			(
 				MeshPrimitive {
 					material_index: variant,
@@ -668,7 +666,7 @@ impl VisibilityWorldRenderDomain {
 				},
 				meshlets,
 			)
-		})).await;
+		}).collect();
 
 		let mut ghi = self.ghi.write();
 
@@ -700,14 +698,14 @@ impl VisibilityWorldRenderDomain {
 		return Ok(id);
 	}
 
-	async fn create_material_resources<'a>(&'a self, resource: &mut resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
+	fn create_material_resources<'a>(&'a self, resource: &mut resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
 		let (index, v) = {
 			let mut material_evaluation_materials = self.material_evaluation_materials.write();
 			let i = material_evaluation_materials.len() as u32;
 			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone())
 		};
 
-		let material = v.get_or_try_init(async || {
+		let material = v.get_or_try_init(|| {
 			let ghi = self.ghi.clone();
 
 			let material_id = resource.id().to_string();
@@ -716,16 +714,16 @@ impl VisibilityWorldRenderDomain {
 
 			let parameters = &mut resource.resource_mut().parameters;
 
-			let textures_indices = join_all(parameters.iter_mut().map(async |parameter: &mut Parameter| {
+			let textures_indices = parameters.iter_mut().map(|parameter: &mut Parameter| {
 				match parameter.value {
 					Value::Image(ref mut image) => {
 						let texture_manager = self.texture_manager.clone();
-						let mut texture_manager = texture_manager.write().await;
-						texture_manager.load(image, ghi.clone()).await
+						let mut texture_manager = texture_manager.write();
+						texture_manager.load(image, ghi.clone())
 					}
 					_ => { None }
 				}
-			})).await;
+			});
 
 			let textures_indices = textures_indices.into_iter().map(|v| {
 				if let Some((name, image, sampler)) = v {
@@ -756,7 +754,7 @@ impl VisibilityWorldRenderDomain {
 				"Visibility" => {
 					match resource.resource().model.pass.as_str() {
 						"MaterialEvaluation" => {
-							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, resource, ghi.clone()).await.unwrap();
+							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, resource, ghi.clone()).unwrap();
 
 							let mut ghi = ghi.write();
 
@@ -789,21 +787,21 @@ impl VisibilityWorldRenderDomain {
 					Err(())
 				}
 			}
-		}).await?;
+		})?;
 
 		return Ok(material.index);
 	}
 
 	/// Creates the needed GHI resource for the given material.
 	/// Does nothing if the material has already been loaded.
-	async fn create_variant_resources<'s, 'a>(&'s self, mut resource: resource_management::Reference<ResourceVariant>) -> Result<u32, ()> {
+	fn create_variant_resources<'s, 'a>(&'s self, mut resource: resource_management::Reference<ResourceVariant>) -> Result<u32, ()> {
 		let (index, v) = {
 			let mut material_evaluation_materials = self.material_evaluation_materials.write();
 			let i = material_evaluation_materials.len() as u32;
 			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone())
 		};
 
-		let material = v.get_or_try_init(async || {
+		let material = v.get_or_try_init(|| {
 			let variant_id = resource.id().to_string();
 
 			let ghi = self.ghi.clone();
@@ -823,7 +821,7 @@ impl VisibilityWorldRenderDomain {
 				}
 			}).collect();
 
-			let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &specialization_constants, &mut resource, ghi.clone()).await;
+			let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &specialization_constants, &mut resource, ghi.clone());
 
 			let pipeline = pipeline.unwrap();
 
@@ -831,19 +829,20 @@ impl VisibilityWorldRenderDomain {
 
 			let material_id = variant.material.id().to_string();
 
-			self.create_material_resources(&mut variant.material).await?;
+			self.create_material_resources(&mut variant.material)?;
 
 			let textures_indices = {
 				let ghi = ghi.clone();
 				let texture_manager = self.texture_manager.clone();
-				join_all(variant.variables.iter_mut().map(async |parameter: &mut VariantVariable| {
+				variant.variables.iter_mut().map(move |parameter: &mut VariantVariable| {
 					match parameter.value {
 						Value::Image(ref mut image) => {
-							texture_manager.write().await.load(image, ghi.clone()).await
+							let mut texture_manager = texture_manager.write();
+							texture_manager.load(image, ghi.clone())
 						}
 						_ => { None }
 					}
-				})).await
+				})
 			};
 
 			let textures_indices = textures_indices.into_iter().map(|v| {
@@ -894,7 +893,7 @@ impl VisibilityWorldRenderDomain {
 					variant: RenderDescriptionVariants::Variant {  },
 				})
 			}
-		}).await?;
+		})?;
 
 		return Ok(material.index);
 	}
@@ -921,7 +920,7 @@ impl VisibilityWorldRenderDomain {
 
 		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
 
-		let (camera_position, camera_orientation, fov_y) = camera_handle.map(|camera| { let camera = camera.read_sync(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
+		let (camera_position, camera_orientation, fov_y) = camera_handle.map(|camera| { let camera = camera.read(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
 
 		let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 
@@ -953,7 +952,7 @@ impl VisibilityWorldRenderDomain {
 			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
 			for ((b, e), m) in self.render_entities.iter() {
-				let mesh = m.write_sync();
+				let mesh = m.write();
 				meshes_data_slice[*b..*e].iter_mut().for_each(|m| {
 					m.model = mesh.get_transform();
 				});
@@ -968,7 +967,7 @@ impl VisibilityWorldRenderDomain {
 			let lights_data_buffer = ghi.get_mut_buffer_slice(self.light_data_buffer);
 			let lights_data_reference: &mut LightingData = unsafe { lights_data_buffer.as_mut_ptr().cast::<LightingData>().as_mut().unwrap() };
 
-			let shadow_render_pass = self.shadow_render_pass.read_sync();
+			let shadow_render_pass = self.shadow_render_pass.read();
 			shadow_render_pass.prepare(ghi, &self.lights, views_data_reference, lights_data_reference, &view);
 		}
 
@@ -985,9 +984,8 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) -> utils::BoxedFuture<()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) -> () {
 		self.camera = Some(handle);
-		Box::pin(async move {})
 	}
 }
 
@@ -1017,11 +1015,11 @@ impl RenderPass for VisibilityWorldRenderDomain {
 		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
 
 		for render_pass in self.render_passes.iter() {
-			render_pass.write_sync().record(command_buffer_recording, extent);
+			render_pass.write().record(command_buffer_recording, extent);
 		}
 
 		{
-			let shadow_render_pass = self.shadow_render_pass.read_sync();
+			let shadow_render_pass = self.shadow_render_pass.read();
 
 			// directional_lights.sort_by(|a, b| maths_rs::length(b.color).partial_cmp(&maths_rs::length(a.color)).unwrap()); // Sort by intensity
 
@@ -1087,7 +1085,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 		self.pixel_mapping_pass.resize(extent, ghi);
 
 		for render_pass in self.render_passes.iter() {
-			render_pass.write_sync().resize(ghi, extent);
+			render_pass.write().resize(ghi, extent);
 		}
 	}
 }
@@ -1159,9 +1157,8 @@ struct MaterialData {
 }
 
 impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>, mesh: &'a dyn mesh::RenderEntity) -> utils::BoxedFuture<'a, ()> {
-		Box::pin(async move {
-		let mesh_id = self.create_mesh_resources(mesh.get_resource_id()).await.unwrap().to_string(); // I had to use to_string here because I couldn't solve the lifetime issue
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>, mesh: &'a dyn mesh::RenderEntity) -> () {
+		let mesh_id = self.create_mesh_resources(mesh.get_resource_id()).unwrap().to_string(); // I had to use to_string here because I couldn't solve the lifetime issue
 
 		let mut ghi = self.ghi.write();
 
@@ -1211,20 +1208,17 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		assert!((self.visibility_info.vertex_count as usize) < MAX_VERTICES, "Vertex count exceeded");
 		assert!((self.visibility_info.vertex_count as usize) < MAX_PRIMITIVE_TRIANGLES, "Primitive triangle count exceeded");
 		assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
-		})
 	}
 }
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> utils::BoxedFuture<()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> () {
 		self.lights.push(handle);
-
-		Box::pin(async move { })
 	}
 }
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> utils::BoxedFuture<()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> () {
 		let mut ghi = self.ghi.write();
 
 		let lighting_data = unsafe { (ghi.get_mut_buffer_slice(self.light_data_buffer).as_mut_ptr() as *mut LightingData).as_mut().unwrap() };
@@ -1238,8 +1232,6 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 		lighting_data.count += 1;
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
-
-		Box::pin(async move { })
 	}
 }
 

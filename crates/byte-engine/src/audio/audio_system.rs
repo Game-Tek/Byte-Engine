@@ -8,7 +8,7 @@ use super::sound::Sound;
 
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
-	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> impl std::future::Future<Output = ()> + 'a;
+	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
 
 	/// Processes audio data and sends it to the audio hardware interface.
 	fn render(&mut self);
@@ -45,13 +45,13 @@ impl DefaultAudioSystem {
 impl Entity for DefaultAudioSystem {}
 
 impl AudioSystem for DefaultAudioSystem {
-	async fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
+	fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
 		let data = if let Some(a) = self.audio_resources.get(audio_asset_url) {
 			Some(a)
 		} else {
-			let resource_manager = self.resource_manager.read().await;
-			let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).await.unwrap();
-			let load_target = audio_resource_reference.load(ReadTargets::create_buffer(&audio_resource_reference)).await.unwrap(); // Request resource be written into a managed buffer.
+			let resource_manager = self.resource_manager.read();
+			let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).unwrap();
+			let load_target = audio_resource_reference.load(ReadTargets::create_buffer(&audio_resource_reference)).unwrap(); // Request resource be written into a managed buffer.
 
 			let bytes = match load_target.get_buffer() {
 				Some(b) => {
@@ -85,7 +85,7 @@ impl AudioSystem for DefaultAudioSystem {
 
 		// let non_master_channels = self.channels.iter_mut().filter(|(name, _)| name.as_str() != "master");
 
-		{	
+		{
 			let audio_buffer = master_channel.samples.as_mut();
 			let channel_gain = master_channel.gain;
 
@@ -132,9 +132,7 @@ struct PlayingSound {
 }
 
 impl EntitySubscriber<Sound> for DefaultAudioSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Sound>, sound: &'a Sound) -> utils::BoxedFuture<'a, ()> {
-		Box::pin(async move {
-			self.play(&sound.asset).await;
-		})
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Sound>, sound: &'a Sound) -> () {
+		self.play(&sound.asset);
 	}
 }

@@ -18,7 +18,7 @@ pub struct ImageAsset {
 impl Asset for ImageAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<'a, Result<(), String>> { Box::pin(async move {
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
 		let semantic = guess_semantic_from_name(url.get_base());
 
 		let format = self.format;
@@ -27,19 +27,19 @@ impl Asset for ImageAsset {
 
 		let buffer = self.data.clone();
 
-		let (image, data) = utils::r#async::spawn_blocking(move || { ImageAssetHandler::produce(&ImageDescription {
+		let (image, data) = ImageAssetHandler::produce(&ImageDescription {
 			format,
 			extent,
 			semantic,
 			gamma,
-		}, buffer) }).await.unwrap();
+		}, buffer);
 
 		let resource_document = ProcessedAsset::new(url, image);
 
-		storage_backend.store(&resource_document, &data).await;
+		storage_backend.store(&resource_document, &data);
 
 		Ok(())
-    }) }
+    }
 }
 
 pub struct ImageAssetHandler {
@@ -56,12 +56,12 @@ impl AssetHandler for ImageAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
 		if let Some(dt) = storage_backend.get_type(url) {
 			if dt != "png" { return Err(LoadErrors::UnsupportedType); }
 		}
 
-		let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, dt) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
 		let semantic = guess_semantic_from_name(url.get_base());
 
@@ -128,18 +128,16 @@ impl AssetHandler for ImageAssetHandler {
 			format,
 			extent,
 		}) as Box<dyn Asset>)
-	}) }
+	}
 
-	fn produce<'a>(&'a self, id: ResourceId<'a>, description: &'a dyn Description, data: Box<[u8]>) -> utils::SendSyncBoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), String>> {
-		Box::pin(async move {
-			if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
-			    let description = description.clone();
-				let (resource, buffer) = utils::r#async::spawn_blocking(move || { Self::produce(&description, data) }).await.unwrap();
-				Ok((ProcessedAsset::new(id, resource), buffer))
-			} else {
-				Err("Invalid description".to_string())
-			}
-		})
+	fn produce<'a>(&'a self, id: ResourceId<'a>, description: &'a dyn Description, data: Box<[u8]>) -> Result<(ProcessedAsset, Box<[u8]>), String> {
+		if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
+		    let description = description.clone();
+			let (resource, buffer) = Self::produce(&description, data);
+			Ok((ProcessedAsset::new(id, resource), buffer))
+		} else {
+			Err("Invalid description".to_string())
+		}
 	}
 }
 
@@ -201,7 +199,7 @@ impl ImageAssetHandler {
 					}
 				}
 			}
-			Formats::RGBA8 => {				
+			Formats::RGBA8 => {
 				match (compress, semantic) {
 					(true, Semantic::Normal) => {
 						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
@@ -351,15 +349,13 @@ impl Description for ImageDescription {
 
 #[cfg(test)]
 mod tests {
-	use utils::r#async::block_on;
-
 	use super::ImageAssetHandler;
 	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, resource};
 
 	#[test]
 	fn load_image() {
 		let asset_handler = ImageAssetHandler::new();
-		
+
 		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
 		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
 		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
@@ -367,9 +363,9 @@ mod tests {
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
-		let asset = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset handler did not handle asset");
+		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).expect("Image asset handler did not handle asset");
 
-		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset did not load");
+		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).expect("Image asset did not load");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

@@ -72,7 +72,7 @@ pub struct BilateralBlurPass {
 }
 
 impl BilateralBlurPass {
-	pub async fn new<'c>(ghi: &mut ghi::GHI, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), source_map: ghi::ImageHandle, x_blur_map: ghi::ImageHandle, y_blur_map: ghi::ImageHandle) -> Self {
+	pub fn new<'c>(ghi: &mut ghi::GHI, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), source_map: ghi::ImageHandle, x_blur_map: ghi::ImageHandle, y_blur_map: ghi::ImageHandle) -> Self {
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("SSGI Blur"), &[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);

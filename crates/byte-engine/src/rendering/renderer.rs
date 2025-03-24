@@ -59,7 +59,7 @@ impl Renderer {
         window_system_handle: EntityHandle<WindowSystem>,
         resource_manager_handle: EntityHandle<ResourceManager>,
     ) -> EntityBuilder<'a, Self> {
-        EntityBuilder::new_from_async_function_with_parent(async move |parent: DomainType| {
+        EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
             let enable_validation = std::env::vars()
                 .find(|(k, _)| k == "BE_RENDER_DEBUG")
                 .is_some()
@@ -195,8 +195,7 @@ impl Renderer {
 
                 let tonemap_render_model: EntityHandle<AcesToneMapPass> = spawn(
                     AcesToneMapPass::new(ghi.deref_mut(), accumulation_map, result),
-                )
-                .await;
+                );
 
                 render_command_buffer = ghi.create_command_buffer(Some("Render"));
                 render_finished_synchronizer =
@@ -226,7 +225,7 @@ impl Renderer {
 
             let screen_render_pass = {
                 let mut ghi = ghi_instance.write();
-                let screen_render_pass: EntityHandle<ScreenRenderPass> = spawn_as_child(parent, ScreenRenderPass::new(ghi.deref_mut(), accumulation_map)).await;
+                let screen_render_pass: EntityHandle<ScreenRenderPass> = spawn_as_child(parent, ScreenRenderPass::new(ghi.deref_mut(), accumulation_map));
                 screen_render_pass
             };
 
@@ -325,9 +324,9 @@ impl EntitySubscriber<window_system::Window> for Renderer {
         &'a mut self,
         handle: EntityHandle<window_system::Window>,
         window: &window_system::Window,
-    ) -> utils::BoxedFuture<()> {
+    ) -> () {
         let os_handles = self.window_system.map(|e| {
-            let e = e.read_sync();
+            let e = e.read();
             e.get_os_handles(&handle)
         });
 
@@ -340,8 +339,6 @@ impl EntitySubscriber<window_system::Window> for Renderer {
         );
 
         self.swapchain_handles.push(swapchain_handle);
-
-        Box::pin(async move {})
     }
 }
 
@@ -366,7 +363,7 @@ impl RenderPass for RootRenderPass {
 
     fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
         for render_pass in &self.render_passes {
-            render_pass.sync_get_mut(|e| {
+            render_pass.get_mut(|e| {
                 e.prepare(ghi, extent);
             });
         }
@@ -374,7 +371,7 @@ impl RenderPass for RootRenderPass {
 
     fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
         for render_pass in &self.render_passes {
-            render_pass.sync_get_mut(|e| {
+            render_pass.get_mut(|e| {
                 e.record(command_buffer_recording, extent);
             });
         }
@@ -382,7 +379,7 @@ impl RenderPass for RootRenderPass {
 
     fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
         for render_pass in &self.render_passes {
-            render_pass.sync_get_mut(|e| {
+            render_pass.get_mut(|e| {
                 e.resize(ghi, extent);
             });
         }
@@ -472,9 +469,8 @@ impl EntitySubscriber<Triangle> for ScreenRenderPass {
         &'a mut self,
         handle: EntityHandle<Triangle>,
         params: &'a Triangle,
-    ) -> utils::BoxedFuture<'a, ()> {
+    ) -> () {
         self.triangles.push(handle);
-        Box::pin(async {})
     }
 }
 

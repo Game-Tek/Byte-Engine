@@ -2,9 +2,8 @@
 #![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
-use crate::core::{self, EntityHandle};
 use std::sync::{Arc, Mutex};
-use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::Transform, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::Mesh, point_light::PointLight}, Vector3};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, core::{spawn_as_child, EntityHandle}, gameplay::Transform, input::{self, Action, Function}, rendering::{directional_light::DirectionalLight, mesh::Mesh, point_light::PointLight}, Vector3};
 use maths_rs::exp;
 
 #[ignore]
@@ -13,22 +12,21 @@ fn revolver() {
 	let mut app = byte_engine::application::GraphicsApplication::new("Revolver", &[Parameter::new("resources-path", "../../resources"), Parameter::new("assets-path", "../../assets")]);
 
 	let space_handle = app.get_root_space_handle();
-	let runtime = app.get_runtime();
 
-	let lookaround_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[
+	let lookaround_action_handle = spawn_as_child(space_handle.clone(), Action::<Vector3>::new("Lookaround", &[
 		input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), Function::Sphere),
 		input::ActionBindingDescription::new("Gamepad.RightStick"),
-	],)));
+	],));
 
-	let zoom_action_handle = runtime.block_on(core::spawn_as_child(space_handle.clone(), Action::<f32>::new("Zoom", &[
+	let zoom_action_handle = spawn_as_child(space_handle.clone(), Action::<f32>::new("Zoom", &[
 		input::ActionBindingDescription::new("Mouse.Scroll"),
-	],)));
-	
-	let camera: EntityHandle<Camera> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 0.0, -0.25),)));
-	let _: EntityHandle<DirectionalLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 0.0, 1.0), 4000f32)));
-	let _: EntityHandle<PointLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32)));
-	let _: EntityHandle<PointLight> = runtime.block_on(core::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32)));
-	let mesh: EntityHandle<Mesh> = runtime.block_on(core::spawn_as_child(space_handle.clone(), Mesh::new("Revolver.glb", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0)))));
+	],));
+
+	let camera: EntityHandle<Camera> = spawn_as_child(space_handle.clone(), Camera::new(Vector3::new(0.0, 0.0, -0.25),));
+	let _: EntityHandle<DirectionalLight> = spawn_as_child(space_handle.clone(), DirectionalLight::new(Vector3::new(0.0, 0.0, 1.0), 4000f32));
+	let _: EntityHandle<PointLight> = spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.3, 0.3, 0.25), 2500f32));
+	let _: EntityHandle<PointLight> = spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(-0.3, 0.3, 0.45), 6500f32));
+	let mesh: EntityHandle<Mesh> = spawn_as_child(space_handle.clone(), Mesh::new("Revolver.glb", Transform::default().position(Vector3::new(0.018, 0.0275, 0.0))));
 
 	struct Animation {
 		value: Vector3,
@@ -55,10 +53,10 @@ fn revolver() {
 	{
 		let target = Arc::clone(&target);
 
-		app.get_tick_handle().sync_get_mut(|tick| {
+		app.get_tick_handle().get_mut(|tick| {
 			tick.add(move |time| {
 				let value = animation.evaluate(*target.lock().unwrap(), time.delta().as_secs_f32());
-				mesh.sync_get_mut(move |mesh| {
+				mesh.get_mut(move |mesh| {
 					mesh.set_orientation(value);
 				});
 			});
@@ -68,7 +66,7 @@ fn revolver() {
 	{
 		let target = Arc::clone(&target);
 
-		lookaround_action_handle.sync_get_mut(move |action| {
+		lookaround_action_handle.get_mut(move |action| {
 			action.value_mut().add(move |r| {
 				*target.lock().unwrap() = *r;
 			});
@@ -76,9 +74,9 @@ fn revolver() {
 	}
 
 
-	zoom_action_handle.sync_get_mut(|action| {
+	zoom_action_handle.get_mut(|action| {
 		action.value_mut().add(move |r| {
-			camera.sync_get_mut(|camera| {
+			camera.get_mut(|camera| {
 				camera.set_fov(camera.get_fov() + -r * 2f32);
 			});
 		});

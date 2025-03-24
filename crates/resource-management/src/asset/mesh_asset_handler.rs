@@ -1,7 +1,7 @@
 use futures::future::join_all;
 use gltf::{mesh::Reader, Buffer};
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
-use utils::{r#async::{spawn_blocking_local, try_join_all}, json::{self, JsonContainerTrait, JsonValueTrait}, spawn, Extent};
+use utils::{r#async::{spawn_blocking_local, try_join_all}, json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
 use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, resource, asset, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StreamDescription};
 
@@ -33,7 +33,7 @@ impl Asset for MeshAsset {
         }
     }
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async move {
+    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
         let gltf = &self.gltf;
         let buffers = &self.buffers;
 
@@ -58,7 +58,7 @@ impl Asset for MeshAsset {
 				gamma: if semantic == Semantic::Albedo { Gamma::SRGB } else { Gamma::Linear },
 			};
 
-			let resource = asset_manager.produce(url, "image/png", &image_description, image.pixels.into_boxed_slice()).await;
+			let resource = asset_manager.produce(url, "image/png", &image_description, image.pixels.into_boxed_slice());
 
 			return Ok(());
 		}
@@ -277,11 +277,9 @@ impl Asset for MeshAsset {
 			material["asset"].as_str().unwrap().to_string()
 		}).collect::<Vec<String>>();
 
-		let materials_per_primitive = try_join_all(material_name_per_primitive.into_iter().map(|n| (n, asset_manager)).map(async |(name, asset_manager): (String, &'a AssetManager)| {
-			asset_manager.load::<VariantModel>(&name).await
-		})).await.map_err(|e| format!("{:#?}", e))?;
-
-		// let materials_per_primitive = Vec::new();
+		let materials_per_primitive = material_name_per_primitive.into_iter().map(|n| (n, asset_manager)).map(|(name, asset_manager): (String, &'a AssetManager)| {
+			asset_manager.load::<VariantModel>(&name)
+		}).collect::<Result<Vec<_>, _>>().or(Err("Failed to load materials"))?;
 
 		let vertex_counts = flat_mesh_tree.clone().map(|(_, reader, _)| {
 			if let Some(positions) = reader.read_positions() {
@@ -549,10 +547,10 @@ impl Asset for MeshAsset {
 		};
 
         let resource_document = ProcessedAsset::new(url, mesh).with_streams(streams);
-        storage_backend.store(&resource_document, &buffer).await;
+        storage_backend.store(&resource_document, &buffer);
 
         Ok(())
-    }) }
+    }
 }
 
 pub struct MeshAssetHandler {}
@@ -568,14 +566,14 @@ impl AssetHandler for MeshAssetHandler {
 		r#type == "gltf" || r#type == "glb"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
         if let Some(dt) = storage_backend.get_type(url) {
             if dt != "gltf" && dt != "glb" {
                 return Err(LoadErrors::UnsupportedType);
             }
         }
 
-        let (data, spec, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+        let (data, spec, dt) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
         let (gltf, buffers) = if dt == "glb" {
 			let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -587,7 +585,7 @@ impl AssetHandler for MeshAssetHandler {
 
 			let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| if let gltf::buffer::Source::Uri(r) = b.source() { if r.ends_with(".bin") { Some(r) } else { None } } else { None }) {
 			    let bin_file = ResourceId::new(bin_file);
-				let (bin, _, _) = asset_storage_backend.resolve(bin_file).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+				let (bin, _, _) = asset_storage_backend.resolve(bin_file).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 				gltf.buffers().map(|_| {
 					gltf::buffer::Data(bin.clone().into())
 				}).collect::<Vec<_>>()
@@ -604,7 +602,7 @@ impl AssetHandler for MeshAssetHandler {
             gltf,
             buffers,
         }) as _)
-	}) }
+	}
 }
 
 struct MeshDescription {
@@ -627,8 +625,6 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
-    use utils::r#async::block_on;
-
     use super::MeshAssetHandler;
     use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, ResourceId}, mesh::MeshModel, resource, ReferenceModel};
 
@@ -667,7 +663,7 @@ mod tests {
 
         let url = "Box.glb";
 
-        let mesh: ReferenceModel<MeshModel> = block_on(asset_manager.load(url)).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = asset_manager.load(url).expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();
 
@@ -715,7 +711,7 @@ mod tests {
 
         let url = "Suzanne.gltf";
 
-        let mesh: ReferenceModel<MeshModel> = block_on(asset_manager.load(url,)).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = asset_manager.load(url,).expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();
 
@@ -921,7 +917,7 @@ mod tests {
 
         let url = "Revolver.glb";
 
-        let mesh: ReferenceModel<MeshModel> = block_on(asset_manager.load(&url,)).unwrap();
+        let mesh: ReferenceModel<MeshModel> = asset_manager.load(&url,).unwrap();
 
         let url = ResourceId::new(url);
 
@@ -962,7 +958,7 @@ mod tests {
 
         let url = ResourceId::new("Revolver.glb#Revolver_Metallic-Revolver_Roughness");
 
-        let _ = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,));
+        let _ = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,);
 
 		let _ = resource_storage_backend.get_resource_data_by_name(url).unwrap();
 

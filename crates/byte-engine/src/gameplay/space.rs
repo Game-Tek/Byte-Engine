@@ -48,7 +48,7 @@ impl Domain for Space {
 }
 
 impl Listener for Space {
-	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> BoxedFuture<'a, ()> {
+	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> () {
 		self.listener.invoke_for(handle, reference)
 	}
 

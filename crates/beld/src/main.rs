@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
-use utils::r#async::block_on;
 use clap::{Parser, Subcommand};
+
+use utils::sync::Arc;
 use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, resource::{ReadStorageBackend, WriteStorageBackend}};
 
 #[derive(Parser)]
@@ -73,7 +72,7 @@ fn main() -> Result<(), i32> {
 		Commands::List {} => {
 			let storage_backend = resource_management::resource::DbStorageBackend::new(destination_path.into());
 
-			match block_on(storage_backend.list()) {
+			match storage_backend.list() {
 				Ok(resources) => {
 					if resources.is_empty() {
 						log::info!("No resources found.");
@@ -118,7 +117,7 @@ fn main() -> Result<(), i32> {
 			if sync {
 				for id in ids {
 					log::info!("Baking resource '{}'", id);
-					match block_on(asset_manager.bake(&id)) {
+					match asset_manager.bake(&id) {
 						Ok(_) => {
 							log::info!("Baked resource '{}'", id);
 						}
@@ -130,23 +129,17 @@ fn main() -> Result<(), i32> {
 			} else {
 				let asset_manager = Arc::new(asset_manager);
 
-				tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
-					let tasks = ids.into_iter().map(|id| {
-						let asset_manager = asset_manager.clone();
-						tokio::spawn(async move {
-							log::info!("Baking resource '{}'", id);
-							match asset_manager.bake(&id).await {
-								Ok(_) => {
-									log::info!("Baked resource '{}'", id);
-								}
-								Err(e) => {
-									log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
-								}
-							}
+				ids.into_iter().for_each(|id| {
+					let asset_manager = asset_manager.clone();
+					log::info!("Baking resource '{}'", id);
+					match asset_manager.bake(&id) {
+						Ok(_) => {
+							log::info!("Baked resource '{}'", id);
 						}
-					)}).collect::<Vec<_>>();
-
-					futures::future::join_all(tasks).await
+						Err(e) => {
+							log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
+						}
+					}
 				});
 			}
 
@@ -163,7 +156,7 @@ fn main() -> Result<(), i32> {
 			}
 
 			for id in ids {
-				match block_on(storage_backend.delete(resource_management::asset::ResourceId::new(&id))) {
+				match storage_backend.delete(resource_management::asset::ResourceId::new(&id)) {
 					Ok(()) => {
 						log::info!("Deleted resource '{}'", id);
 					}

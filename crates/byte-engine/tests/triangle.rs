@@ -6,9 +6,8 @@ fn triangle() {
     let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[Parameter::new("kill-after", "60")]);
 
     let space_handle = app.get_root_space_handle();
-    let runtime = app.get_runtime();
 
-    runtime.block_on(spawn_as_child(space_handle.clone(), Triangle::new()));
+    spawn_as_child(space_handle.clone(), Triangle::new());
 
 	app.do_loop();
 }

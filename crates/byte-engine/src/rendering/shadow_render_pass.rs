@@ -130,7 +130,7 @@ impl ShadowRenderingPass {
 
 	pub fn prepare(&self, ghi: &mut ghi::GHI, lights: &[EntityHandle<DirectionalLight>], views_data: &mut [ShaderViewData], lighting_data: &mut LightingData, primary_view: &View) {
 		for (i, light) in lights.iter().enumerate() {
-			let light = light.read_sync();
+			let light = light.read();
 
 			let views = csm::make_csm_views(*primary_view, light.direction, 4);
 

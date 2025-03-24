@@ -32,12 +32,12 @@ const RESULT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Descript
 const NOISE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 
 impl ScreenSpaceAmbientOcclusionPass {
-	pub async fn new(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<utils::r#async::RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, occlusion_target: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> ScreenSpaceAmbientOcclusionPass {
-		let resource_manager = resource_manager.read_sync();
+	pub fn new(ghi_lock: Rc<RwLock<ghi::GHI>>, resource_manager: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>, parent_descriptor_set_layout: ghi::DescriptorSetTemplateHandle, occlusion_target: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> ScreenSpaceAmbientOcclusionPass {
+		let resource_manager = resource_manager.read();
 
-		let mut blue_noise = resource_manager.request::<Image>("stbn_unitvec3_2Dx1D_128x128x64_0.png").await.unwrap();
+		let mut blue_noise = resource_manager.request::<Image>("stbn_unitvec3_2Dx1D_128x128x64_0.png").unwrap();
 
-		let (_, noise_texture, noise_sampler) = texture_manager.write().await.load(&mut blue_noise, ghi_lock.clone()).await.unwrap();
+		let (_, noise_texture, noise_sampler) = texture_manager.write().load(&mut blue_noise, ghi_lock.clone()).unwrap();
 
 		let mut ghi = ghi_lock.write();
 
@@ -70,7 +70,7 @@ impl ScreenSpaceAmbientOcclusionPass {
 
 		let noise_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&NOISE_BINDING_TEMPLATE, noise_texture, noise_sampler, ghi::Layouts::Read));
 
-		let blur = BilateralBlurPass::new(&mut ghi, (depth_target, depth_sampler), occlusion_target, x_blur_map, occlusion_target).await;
+		let blur = BilateralBlurPass::new(&mut ghi, (depth_target, depth_sampler), occlusion_target, x_blur_map, occlusion_target);
 
 		ScreenSpaceAmbientOcclusionPass {
 			pipeline_layout,
@@ -149,13 +149,13 @@ pub fn get_source() -> String {
     vec2 uv_ray_radius = 0.5 * R * view.fov / p.z;
     float pixel_ray_radius = uv_ray_radius.x * vec2(imageSize(out_ao)).x;
 
-	
+
     /* Make sure the radius of the evaluated hemisphere is more than a pixel */
     if(pixel_ray_radius <= 1.0) {
 		imageStore(out_ao, ivec2(texel), vec4(1.0));
 		return;
 	}
-		
+
 	float ao = 0.0;
 
 	TraceSettings trace = compute_trace(pixel_ray_radius, random.z);
@@ -218,7 +218,7 @@ pub fn get_source() -> String {
 				sinH = sinS;
 			}
 		}
-		
+
 		return ao;
 	"#, &["out_ao", "depth_map", "views", "get_view_space_position_from_depth", "biased_tangent", "sin_from_tan", "snap_uv", "tangent", "vec3f_squared_length"], Vec::new())]);
 

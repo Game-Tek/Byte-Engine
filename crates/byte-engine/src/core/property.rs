@@ -184,7 +184,7 @@ impl <F: Clone + 'static, T: Clone + 'static> PropertyLike<T> for DerivedPropert
 
 impl <E, T, F> Subscriber<T> for (EntityHandle<E>, F) where F: FnMut(&mut E, &T) {
 	fn update(&mut self, value: &T) {
-		let mut entity = self.0.write_sync();
+		let mut entity = self.0.write();
 		(self.1)(&mut entity, value);
 	}
 }
@@ -210,8 +210,6 @@ impl <T, F> Subscriber<T> for F where F: FnMut(&T) + 'static {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-	use utils::r#async::block_on;
-
 	use crate::core::spawn;
 
 	use super::*;
@@ -235,19 +233,19 @@ mod tests {
 		let mut value = Property::new(1);
 		let derived = DerivedProperty::new(&mut value, |value| value.to_string());
 
-		let source_component_handle: EntityHandle<SourceComponent> = block_on(spawn(SourceComponent { value, derived }));
-		let receiver_component_handle: EntityHandle<ReceiverComponent> = block_on(spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write_sync(); SinkProperty::from_derived(&mut c.derived) })}));
+		let source_component_handle: EntityHandle<SourceComponent> = spawn(SourceComponent { value, derived });
+		let receiver_component_handle: EntityHandle<ReceiverComponent> = spawn(ReceiverComponent { value: source_component_handle.map(|c| { let mut c = c.write(); SinkProperty::new(&mut c.value) }), derived: source_component_handle.map(|c| { let mut c = c.write(); SinkProperty::from_derived(&mut c.derived) })});
 
-		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
-		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");
-		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 1);
-		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "1");
+		assert_eq!(source_component_handle.map(|c| { let c = c.read(); c.value.get() }), 1);
+		assert_eq!(source_component_handle.map(|c| { let c = c.read(); c.derived.get() }), "1");
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read(); c.value.get() }), 1);
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read(); c.derived.get() }), "1");
 
-		source_component_handle.map(|c| { let mut c = c.write_sync(); c.value.set(|_| 2) });
+		source_component_handle.map(|c| { let mut c = c.write(); c.value.set(|_| 2) });
 
-		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 2);
-		assert_eq!(source_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "2");
-		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.value.get() }), 2);
-		assert_eq!(receiver_component_handle.map(|c| { let c = c.read_sync(); c.derived.get() }), "2");
+		assert_eq!(source_component_handle.map(|c| { let c = c.read(); c.value.get() }), 2);
+		assert_eq!(source_component_handle.map(|c| { let c = c.read(); c.derived.get() }), "2");
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read(); c.value.get() }), 2);
+		assert_eq!(receiver_component_handle.map(|c| { let c = c.read(); c.derived.get() }), "2");
 	}
 }

@@ -2,13 +2,12 @@
 //! Handles loading assets or resources from different origins (network, local, etc.).
 //! It also handles caching of resources.
 
-#![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 #![feature(stmt_expr_attributes)]
 #![feature(path_file_prefix, path_add_extension)]
-#![feature(trait_upcasting)]
 #![feature(map_try_insert)]
 #![feature(future_join)]
+#![feature(once_cell_try)]
 
 use std::{any::Any, collections::{HashMap}, hash::Hasher, sync::{Arc, Mutex}};
 use base64::Engine;
@@ -17,7 +16,7 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
 use resource::{resource_handler::{FileResourceReader, LoadTargets, ReadTargets, ResourceReader}, storage_backend::ReadStorageBackend};
 use asset::{get_base, read_asset_from_source, BEADType, ResourceId};
-use utils::{r#async::{AsyncWriteExt, RwLock}, json, remove_file, File};
+use utils::{json, sync::File};
 
 pub mod asset;
 pub mod resource;
@@ -286,9 +285,9 @@ impl<'a, T: Resource + 'a> Reference<T> {
     }
 
 	/// Loads the resource's binary data into memory from the storage backend.
-	pub async fn load<'s>(&'s mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults> {
+	pub fn load<'s>(&'s mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults> {
 		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
-		reader.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target).await.map_err(|_| LoadResults::LoadFailed)
+		reader.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target).map_err(|_| LoadResults::LoadFailed)
 	}
 }
 
@@ -405,7 +404,7 @@ pub trait Solver<'de, T>
 where
     Self: serde::Deserialize<'de>,
 {
-    async fn solve(self, storage_backend: &dyn ReadStorageBackend) -> Result<T, SolveErrors>;
+    fn solve(self, storage_backend: &dyn ReadStorageBackend) -> Result<T, SolveErrors>;
 }
 
 // #[cfg(test)]

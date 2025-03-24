@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 
-use utils::{r#async::AsyncReadExt, json, File};
+use utils::{json, sync::{File, Read}};
 
 use super::{read_asset_from_source, BEADType, ResourceId};
 
 pub trait StorageBackend: Send + Sync {
-	fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
-        Box::pin(async move {
-            read_asset_from_source(url, None).await
-        })
+	fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> Result<(Box<[u8]>, Option<BEADType>, String), ()> {
+		read_asset_from_source(url, None)
     }
 }
 
@@ -25,10 +23,8 @@ impl FileStorageBackend {
 }
 
 impl StorageBackend for FileStorageBackend {
-    fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
-        Box::pin(async move {
-            read_asset_from_source(url, Some(&self.base_path)).await
-        })
+    fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> Result<(Box<[u8]>, Option<BEADType>, String), ()> {
+		read_asset_from_source(url, Some(&self.base_path))
     }
 }
 
@@ -55,12 +51,10 @@ impl TestStorageBackend {
 
 #[cfg(test)]
 impl StorageBackend for TestStorageBackend {
-	fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
+	fn resolve<'a>(&'a self, url: ResourceId<'a>,) -> Result<(Box<[u8]>, Option<BEADType>, String), ()> {
 		if let Some(data) = self.0.lock().unwrap().get(url.as_ref()) {
 			let data = data.clone();
-			return Box::pin(async move {
-				Ok((data.clone(), None, url.get_extension().to_string()))
-			});
+			return Ok((data.clone(), None, url.get_extension().to_string()));
 		}
 
 		// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -76,39 +70,37 @@ impl StorageBackend for TestStorageBackend {
 		// If case file needs to be looked for in the fs use the real path
 		let spec_path = path.with_added_extension("bead");
 
-		Box::pin(async move {	
-			let file = File::open(&path).await;
-			let mut file = file.or(Err(()))?;
+		let file = File::open(&path);
+		let mut file = file.or(Err(()))?;
 
-			let spec = if let Some(data) = spec_data {
-				let spec = std::str::from_utf8(&data).or(Err(()))?;
+		let spec = if let Some(data) = spec_data {
+			let spec = std::str::from_utf8(&data).or(Err(()))?;
+			let spec: json::Value = json::from_str(spec).or(Err(()))?;
+			Some(spec)
+		} else {
+			let file = File::open(&spec_path).ok();
+
+			if let Some(mut file) = file {
+				let mut spec_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
+				if let Err(_) = file.read_to_end(&mut spec_bytes) {
+					return Err(());
+				}
+				let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
 				let spec: json::Value = json::from_str(spec).or(Err(()))?;
 				Some(spec)
 			} else {
-				let file = File::open(&spec_path).await.ok();
-
-				if let Some(mut file) = file {
-					let mut spec_bytes = Vec::with_capacity(file.metadata().await.unwrap().len() as usize);
-					if let Err(_) = file.read_to_end(&mut spec_bytes).await {
-						return Err(());
-					}
-					let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
-					Some(spec)
-				} else {
-					None
-				}
-			};
-
-			let format = path.extension().unwrap().to_str().unwrap().to_string();
-
-			let mut source_bytes = Vec::with_capacity(file.metadata().await.unwrap().len() as usize);
-
-			if let Err(_) = file.read_to_end(&mut source_bytes).await {
-				return Err(());
-			} else {
-				Ok((source_bytes.into(), spec, format))
+				None
 			}
-		})
+		};
+
+		let format = path.extension().unwrap().to_str().unwrap().to_string();
+
+		let mut source_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
+
+		if let Err(_) = file.read_to_end(&mut source_bytes) {
+			return Err(());
+		} else {
+			Ok((source_bytes.into(), spec, format))
+		}
 	}
 }

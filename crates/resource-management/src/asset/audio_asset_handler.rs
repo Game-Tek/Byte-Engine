@@ -10,7 +10,7 @@ pub struct AudioAsset {
 impl Asset for AudioAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> utils::SendBoxedFuture<Result<(), String>> { Box::pin(async {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> Result<(), String> {
         let data = &self.data;
 
         let riff = &data[0..4];
@@ -99,10 +99,10 @@ impl Asset for AudioAsset {
 
         let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
 
-        storage_backend.store(&resource, data.into()).await.map_err(|_| "Failed to store audio resource".to_string())?;
+        storage_backend.store(&resource, data.into()).map_err(|_| "Failed to store audio resource".to_string())?;
 
         Ok(())
-    }) }
+    }
 }
 
 pub struct AudioAssetHandler {}
@@ -118,14 +118,14 @@ impl AssetHandler for AudioAssetHandler {
         r#type == "wav"
     }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> utils::SendBoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> { Box::pin(async move {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
         if let Some(dt) = storage_backend.get_type(url) {
             if dt != "wav" {
                 return Err(LoadErrors::UnsupportedType);
             }
         }
 
-        let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+        let (data, _, dt) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
         if dt != "wav" {
             return Err(LoadErrors::UnsupportedType);
@@ -135,15 +135,13 @@ impl AssetHandler for AudioAssetHandler {
             id: url.to_string(),
             data,
         }) as Box<dyn Asset>)
-    }) }
+    }
 }
 
 struct AudioDescription {}
 
 #[cfg(test)]
 mod tests {
-    use utils::r#async::block_on;
-
     use crate::{asset, Data};
 
     use super::*;
@@ -151,7 +149,7 @@ mod tests {
     #[test]
     fn test_audio_asset_handler() {
 		let audio_asset_handler = AudioAssetHandler::new();
-		
+
 		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
 		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
         let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
@@ -159,9 +157,9 @@ mod tests {
 
         let url = ResourceId::new("gun.wav");
 
-        let asset = block_on(audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset handler failed to load asset");
+        let asset = audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).expect("Audio asset handler failed to load asset");
 
-		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset failed to load");
+		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).expect("Audio asset failed to load");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

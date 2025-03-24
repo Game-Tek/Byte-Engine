@@ -12,11 +12,6 @@ pub mod bit_array;
 
 use std::ops::Div;
 
-pub use r#async::spawn;
-pub use r#async::spawn_blocking;
-pub use r#async::remove_file;
-pub use r#async::File;
-
 pub use sonic_rs as json;
 
 pub use gxhash as hash;

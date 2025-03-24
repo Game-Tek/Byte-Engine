@@ -39,7 +39,7 @@ impl Object {
 impl Entity for Object {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>,) -> BoxedFuture<'a, ()> where Self: Sized { Box::pin(async move {
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>,) -> () where Self: Sized {
 		let same = listener.invoke_for(handle.clone(), self);
 		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
 		let pe = listener.invoke_for(s, self);
@@ -48,15 +48,8 @@ impl Entity for Object {
 		{
 			let s: EntityHandle<dyn mesh::RenderEntity> = handle.clone();
 			let re = listener.invoke_for(s, self);
-	
-			join!(same, pe, re).await;
 		}
-
-		#[cfg(feature = "headless")]
-		{
-			join!(same, pe).await;
-		}
-	}) }
+	}
 }
 
 impl Positionable for Object {

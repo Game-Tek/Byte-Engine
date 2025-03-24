@@ -1,9 +1,9 @@
 //! This modules contains code for the `TextureManager` struct, which is responsible for loading and managing textures.
 
-use std::{collections::hash_map::Entry, num::NonZeroU8, rc::Rc};
+use std::{collections::hash_map::Entry, num::NonZeroU8};
 
 use resource_management::{image::Image, Reference};
-use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
+use utils::{hash::{HashMap, HashMapExt}, sync::{Rc, RwLock}, Extent};
 use ghi::GraphicsHardwareInterface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,7 +31,7 @@ impl TextureManager {
 		}
 	}
 
-	pub async fn load(&mut self, reference: &mut Reference<Image>, ghi: Rc<RwLock<ghi::GHI>>) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
+	pub fn load(&mut self, reference: &mut Reference<Image>, ghi: Rc<RwLock<ghi::GHI>>) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
 		if let Some(r) = self.textures.get(reference.id()) {
 			return Some((reference.id().to_string(), r.0, r.1));
 		}
@@ -52,14 +52,14 @@ impl TextureManager {
 
 		let image;
 		let target_buffer;
-		
+
 		{
 			let mut ghi = ghi.write();
 			image = ghi.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC, 1);
 			target_buffer = ghi.get_texture_slice_mut(image);
 		}
 
-		let load_target = reference.load(target_buffer.into()).await.unwrap();
+		let load_target = reference.load(target_buffer.into()).unwrap();
 
 		// let image = if let Some(b) = resource.get_buffer() {
 		// 	ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);

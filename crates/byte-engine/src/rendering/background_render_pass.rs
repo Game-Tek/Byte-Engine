@@ -190,10 +190,8 @@ impl RenderPass for BackgroundRenderingPass {
 }
 
 impl EntitySubscriber<DirectionalLight> for BackgroundRenderingPass {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<DirectionalLight>, params: &'a DirectionalLight) -> utils::BoxedFuture<'a, ()> {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<DirectionalLight>, params: &'a DirectionalLight) -> () {
 		self.sun_direction = params.direction;
-
-		Box::pin(async move {})
 	}
 }
 

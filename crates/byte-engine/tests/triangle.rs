@@ -1,13 +1,17 @@
-use byte_engine::{application::{Application, Parameter}, core::spawn_as_child, rendering::triangle::Triangle};
+//! This is a smoke test that tries to render a 2D triangle to a window.
+//! It's purpose is to check if an entire application can be created and run.
+//! It does not check if the triangle is rendered correctly, or if the application
+//! is working correctly.
+
+use byte_engine::{application::{Application, Parameter}, rendering::triangle::Triangle, gameplay::space::Spawn};
 
 #[test]
 fn triangle() {
-    // let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[Parameter::new("resources-path", "../../resources"), Parameter::new("assets-path", "../../assets"), Parameter::new("kill-after", "60")]);
     let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[Parameter::new("kill-after", "60")]);
 
     let space_handle = app.get_root_space_handle();
 
-    spawn_as_child(space_handle.clone(), Triangle::new());
+    space_handle.spawn(Triangle::new());
 
 	app.do_loop();
 }

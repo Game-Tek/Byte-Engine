@@ -7,7 +7,7 @@ use std::{rc::Rc, sync::Arc};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
 
 use maths_rs::Vec2f;
-use resource_management::{asset::material_asset_handler::ProgramGenerator, image::Image, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, ResourceManager};
+use resource_management::{asset::material_asset_handler::ProgramGenerator, glsl_shader_generator::GLSLShaderGenerator, image::Image, shader_generator::{ShaderGenerationSettings, ShaderGenerator}, ResourceManager};
 use utils::{json, sync::RwLock, Extent};
 
 use super::{common_shader_generator::CommonShaderGenerator, render_pass::{BilateralBlurPass, FullScreenRenderPass, RenderPass}, texture_manager::TextureManager};
@@ -237,7 +237,7 @@ impl TracePass {
 
 		let main = root.borrow().get_main().unwrap();
 
-		let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main);
+		let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main).unwrap();
 
 		glsl
 	}
@@ -398,7 +398,7 @@ impl ApplyPass {
 
 		let main = root.borrow().get_main().unwrap();
 
-		let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main);
+		let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main).unwrap();
 
 		glsl
 	}

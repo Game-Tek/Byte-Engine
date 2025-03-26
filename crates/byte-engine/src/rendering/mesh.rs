@@ -3,14 +3,30 @@
 use crate::core::{entity::EntityBuilder, listener::{BasicListener, Listener}, Entity, EntityHandle};
 use crate::{core::orchestrator, gameplay::Transform, math};
 
-use std::future::join;
+use std::{borrow::Cow, future::join};
 
 use maths_rs::{mat::{MatRotate3D, MatScale, MatTranslate}, normalize};
 use utils::BoxedFuture;
 
+pub trait MeshGenerator {
+	fn vertices(&self) -> Cow<[maths_rs::Vec3f]>;
+	fn normals(&self) -> Cow<[maths_rs::Vec3f]>;
+	fn uvs(&self) -> Cow<[maths_rs::Vec2f]>;
+	fn indices(&self) -> Cow<[u32]>;
+	fn colors(&self) -> Cow<[maths_rs::Vec4f]>;
+	fn tangents(&self) -> Cow<[maths_rs::Vec3f]>;
+	fn bitangents(&self) -> Cow<[maths_rs::Vec3f]>;
+	fn meshlet_indices(&self) -> Cow<[u8]>;
+}
+
+pub enum MeshSource {
+	Resource(&'static str),
+	Generated(Box<dyn MeshGenerator>),
+}
+
 pub trait RenderEntity: Entity {
 	fn get_transform(&self) -> maths_rs::Mat4f;
-	fn get_resource_id(&self) -> &'static str;
+	fn get_mesh(&self) -> MeshSource;
 }
 
 pub struct Mesh {
@@ -27,7 +43,9 @@ impl Entity for Mesh {
 
 impl RenderEntity for Mesh {
 	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_matrix() }
-	fn get_resource_id(&self) -> &'static str { self.resource_id }
+	fn get_mesh(&self) -> MeshSource {
+		MeshSource::Resource(self.resource_id)
+	}
 }
 
 impl Mesh {

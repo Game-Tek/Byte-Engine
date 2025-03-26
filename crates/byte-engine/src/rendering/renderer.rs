@@ -112,26 +112,25 @@ impl Renderer {
                 );
             };
 
-            let texture_manager = Arc::new(utils::r#async::RwLock::new(TextureManager::new()));
+            let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
-            // let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> =
-            //     crate::core::spawn_as_child(
-            //         parent.clone(),
-            //         VisibilityWorldRenderDomain::new(
-            //             ghi_instance.clone(),
-            //             resource_manager_handle.clone(),
-            //             texture_manager.clone(),
-            //         ),
-            //     )
-            //     .await;
+            let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> =
+                spawn_as_child(
+                    parent.clone(),
+                    VisibilityWorldRenderDomain::new(
+                        ghi_instance.clone(),
+                        resource_manager_handle.clone(),
+                        texture_manager.clone(),
+                    ),
+                );
 
             let render_command_buffer;
             let render_finished_synchronizer;
 
-            // let diffuse = {
-            //     let vrm = visibility_render_model.read_sync();
-            //     vrm.get_diffuse()
-            // };
+            let diffuse = {
+                let vrm = visibility_render_model.read();
+                vrm.get_diffuse()
+            };
 
             // let ao_render_pass = {
             //     let vrm = visibility_render_model.read_sync();
@@ -210,7 +209,7 @@ impl Renderer {
             //     .write_sync()
             //     .add_render_pass(ao_render_pass);
 
-            // root_render_pass.add_render_pass(visibility_render_model);
+            root_render_pass.add_render_pass(visibility_render_model);
 
             // root_render_pass
             //     .add_render_pass(core::spawn(BlitPass::new(diffuse, accumulation_map)).await);

@@ -2,7 +2,7 @@ use crate::core::EntityHandle;
 use std::{io::Write, mem::transmute};
 
 use maths_rs::{mat::{MatInverse, MatProjection, MatRotate3D, MatTranslate}, Mat4f};
-use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generation::{ShaderGenerationSettings, ShaderGenerator}};
+use resource_management::{asset::material_asset_handler::ProgramGenerator, glsl_shader_generator::GLSLShaderGenerator, shader_generator::{ShaderGenerationSettings, ShaderGenerator}};
 use utils::{json, Extent, RGBA};
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundRasterizationPipelineMode, RasterizationRenderPassMode};
@@ -75,7 +75,7 @@ impl ShadowRenderingPass {
 
 			let main_node = root_node.borrow().get_main().unwrap();
 
-			let glsl = ShaderGenerator::new().minified(!cfg!(debug_assertions)).compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node);
+			let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node).unwrap();
 
 			glsl
 		};

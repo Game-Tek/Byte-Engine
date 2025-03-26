@@ -1,17 +1,20 @@
-use std::cell::OnceCell;
+use std::borrow::Borrow;
+use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
 use std::ops::DerefMut;
 
 use ghi::{graphics_hardware_interface, ImageHandle};
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
+use resource_management::glsl_shader_generator::GLSLShaderGenerator;
+use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
 use utils::hash::{HashMap, HashMapExt};
-use utils::json::object;
+use utils::json::{self, object};
 use log::error;
 use maths_rs::mat::{MatInverse, MatProjection, MatRotate2D, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
-use resource_management::shader_generation::{ShaderGenerationSettings, ShaderGenerator};
+use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::Reference;
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
@@ -33,6 +36,7 @@ use crate::rendering::render_pass::RenderPass;
 use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
+use crate::rendering::visibility_shader_generator::VisibilityShaderGenerator;
 use crate::rendering::{csm, directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::Vector2;
@@ -143,7 +147,8 @@ pub struct VisibilityWorldRenderDomain {
 
 	render_entities: Vec<((usize, usize), EntityHandle<dyn mesh::RenderEntity>)>,
 
-	meshes: HashMap<String, MeshData>,
+	meshes: Vec<MeshData>,
+	meshes_by_resource: HashMap<String, usize>,
 	images: RwLock<HashMap<String, Image>>,
 
 	texture_manager: Arc<RwLock<TextureManager>>,
@@ -394,7 +399,9 @@ impl VisibilityWorldRenderDomain {
 
 				camera: None,
 
-				meshes: HashMap::with_capacity(1024),
+				meshes: Vec::with_capacity(1024),
+				meshes_by_resource: HashMap::with_capacity(1024),
+
 				images: RwLock::new(HashMap::with_capacity(1024)),
 
 				texture_manager,
@@ -464,9 +471,9 @@ impl VisibilityWorldRenderDomain {
 
 	/// Creates the needed GHI resource for the given mesh.
 	/// Does nothing if the mesh has already been loaded.
-	fn create_mesh_resources<'a, 's: 'a>(&'s mut self, id: &'a str) -> Result<&'a str, ()> {
-		if let Some(entry) = self.meshes.get(id) {
-			return Ok(id);
+	fn create_mesh_resources<'a, 's: 'a>(&'s mut self, id: &'a str) -> Result<usize, ()> {
+		if let Some(entry) = self.meshes_by_resource.get(id) {
+			return Ok(*entry);
 		}
 
 		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
@@ -597,8 +604,6 @@ impl VisibilityWorldRenderDomain {
 			None
 		};
 
-		let acceleration_structure = None;
-
 		let total_meshlet_count = meshlet_stream.count();
 
 		struct Meshlet {
@@ -684,7 +689,9 @@ impl VisibilityWorldRenderDomain {
 
 		let meshlet_offset = self.visibility_info.meshlet_count;
 
-		self.meshes.insert(id.to_string(), MeshData { vertex_offset: self.visibility_info.vertex_count, primitive_offset: self.visibility_info.primitives_count, triangle_offset: self.visibility_info.triangle_count, meshlet_offset, acceleration_structure, primitives });
+		let mesh_id = self.meshes.len();
+		self.meshes.push(MeshData { vertex_offset: self.visibility_info.vertex_count, primitive_offset: self.visibility_info.primitives_count, triangle_offset: self.visibility_info.triangle_count, meshlet_offset, acceleration_structure, primitives });
+		self.meshes_by_resource.insert(id.to_string(), mesh_id);
 
 		let vertex_count = vertex_positions_stream.count();
 		let primitive_count = vertex_indices_stream.count();
@@ -695,7 +702,174 @@ impl VisibilityWorldRenderDomain {
 		self.visibility_info.triangle_count += triangle_count as u32;
 		self.visibility_info.meshlet_count += total_meshlet_count as u32;
 
-		return Ok(id);
+		return Ok(mesh_id);
+	}
+
+	fn create_mesh_from_generator<'a>(&'a mut self, generator: &dyn mesh::MeshGenerator) -> Result<usize, ()> {
+		let vertices = generator.vertices();
+		let normals = generator.normals();
+		let uvs = generator.uvs();
+		let indices = generator.indices();
+		let meshlet_indices = generator.meshlet_indices();
+
+		let mut ghi = self.ghi.write();
+
+		let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
+		let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
+		let mut vertex_uv_buffer = ghi.get_splitter(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector2>());
+		let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.primitives_count as usize * std::mem::size_of::<u16>());
+		let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
+
+		drop(ghi);
+
+		let vertices_buffer = vertex_positions_buffer.take(size_of::<Vector3>() * vertices.len());
+		let normals_buffer = vertex_normals_buffer.take(size_of::<Vector3>() * vertices.len());
+		let uvs_buffer = vertex_uv_buffer.take(size_of::<Vector2>() * vertices.len());
+		let indices_buffer = vertex_indices_buffer.take(size_of::<u16>() * indices.len());
+		let primitive_indices_buffer = primitive_indices_buffer.take(size_of::<u8>() * meshlet_indices.len());
+
+		vertices_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * size_of::<Vector3>()) });
+		normals_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * size_of::<Vector3>()) });
+		uvs_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * size_of::<Vector2>()) });
+		indices_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * size_of::<u16>()) });
+		primitive_indices_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(meshlet_indices.as_ptr() as *const u8, meshlet_indices.len() * size_of::<u8>()) });
+
+		let mut ghi = self.ghi.write();
+
+		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
+
+		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
+
+		let meshlets = [
+			ShaderMeshletData {
+				primitive_offset: 0,
+				triangle_offset: 0,
+				primitive_count: indices.len() as u8,
+				triangle_count: (indices.len() / 3) as u8,
+			}
+		];
+
+		meshlets_data_slice[self.visibility_info.meshlet_count as usize + 0] = meshlets[0];
+
+		drop(ghi);
+
+		{
+			let (index, v) = {
+				let mut material_evaluation_materials = self.material_evaluation_materials.write();
+				let i = material_evaluation_materials.len() as u32;
+				(i, material_evaluation_materials.entry("heyyy".to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone())
+			};
+
+			let material = v.get_or_try_init(|| {
+				let mut ghi = self.ghi.write();
+
+				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
+
+				let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+
+				let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+
+				let root_node = besl::Node::root();
+				let shader_generator = {
+					let common_shader_generator = CommonShaderGenerator::new();
+					let visibility_shader_generation = VisibilityShaderGenerator::new(root_node.into());
+					visibility_shader_generation
+				};
+
+				let root_node = besl::parse(&"",/*Some(parent_scope.clone())*/).unwrap();
+
+				let root = shader_generator.transform(root_node, &json::Object::new());
+
+				let root = besl::lex(root).unwrap();
+
+				let main_node = RefCell::borrow(&root).get_main().ok_or(())?;
+			
+				let vertex_spirv = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::vertex(), &main_node).map_err(|_| ())?;
+
+				let fragment_spirv = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::fragment(), &main_node).map_err(|_| ())?;
+
+				let vshader = ghi.create_shader(
+					None,
+					ghi::ShaderSource::GLSL(r#"#version 450 core
+		#pragma shader_stage(vertex)
+		layout(location = 0) in vec3 position;
+		void main() {
+			gl_Position = vec4(position, 1.0);
+		}"#.to_owned()),
+					ghi::ShaderTypes::Vertex,
+					&[],
+				).unwrap();
+		
+				let fshader = ghi.create_shader(
+					None,
+					ghi::ShaderSource::GLSL(r#"#version 450 core
+		#pragma shader_stage(fragment)
+		layout(location = 0) out vec4 color;
+		void main() {
+			color = vec4(1.0, 1.0, 1.0, 1.0);
+		}"#.to_owned()),
+					ghi::ShaderTypes::Fragment,
+					&[],
+				).unwrap();
+		
+				let pipeline = ghi.create_raster_pipeline(&[
+					ghi::PipelineConfigurationBlocks::Shaders {
+						shaders: &[ghi::ShaderParameter::new(&vshader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Fragment)],
+					},
+					ghi::PipelineConfigurationBlocks::Layout { layout: &self.material_evaluation_pipeline_layout },
+					ghi::PipelineConfigurationBlocks::InputAssembly {  },
+					ghi::PipelineConfigurationBlocks::VertexInput {
+						vertex_elements: &[
+							ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
+						],
+					},
+					ghi::PipelineConfigurationBlocks::RenderTargets {
+						targets: &[ghi::PipelineAttachmentInformation::new(
+							ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true,
+						)],
+					},
+				]);
+
+				Ok(RenderDescription {
+					name: "heyyy".to_string(),
+					index,
+					pipeline,
+					alpha: false,
+					variant: RenderDescriptionVariants::Material { shaders: vec![] },
+				})
+			})?;
+		}
+
+		let mesh_id = self.meshes.len();
+		self.meshes.push(MeshData {
+			vertex_offset: self.visibility_info.vertex_count,
+			primitive_offset: self.visibility_info.primitives_count,
+			triangle_offset: self.visibility_info.triangle_count,
+			meshlet_offset: self.visibility_info.meshlet_count,
+			acceleration_structure: None,
+			primitives: vec![
+				MeshPrimitive {
+					material_index: 0,
+					meshlet_count: 1,
+					meshlet_offset: self.visibility_info.meshlet_count,
+					vertex_offset: self.visibility_info.vertex_count,
+					primitive_offset: self.visibility_info.primitives_count,
+					triangle_offset: self.visibility_info.triangle_count,
+				}
+			]
+		});
+
+		let vertex_count = vertices.len();
+		let primitive_count = indices.len();
+		let triangle_count = primitive_count / 3;
+		let total_meshlet_count = 1;
+
+		self.visibility_info.vertex_count += vertex_count as u32;
+		self.visibility_info.primitives_count += primitive_count as u32;
+		self.visibility_info.triangle_count += triangle_count as u32;
+		self.visibility_info.meshlet_count += total_meshlet_count as u32;
+
+		Ok(mesh_id)
 	}
 
 	fn create_material_resources<'a>(&'a self, resource: &mut resource_management::Reference<ResourceMaterial>) -> Result<u32, ()> {
@@ -1104,7 +1278,8 @@ struct ShaderMeshletData {
 	/// triangle_index = primitive_indices.primitive_indices[(meshlet.triangle_offset + gl_LocalInvocationID.x) * 3 + 0..2]
 	/// ```
 	triangle_offset: u16,
-	// The number of primitives in the meshlet
+	/// The number of primitives in the meshlet
+	/// Primitives are meshlet local indices
 	primitive_count: u8,
 	// The number of triangles in the meshlet
 	triangle_count: u8,
@@ -1158,13 +1333,16 @@ struct MaterialData {
 
 impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>, mesh: &'a dyn mesh::RenderEntity) -> () {
-		let mesh_id = self.create_mesh_resources(mesh.get_resource_id()).unwrap().to_string(); // I had to use to_string here because I couldn't solve the lifetime issue
+		let mesh_id = match mesh.get_mesh() {
+			mesh::MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id).unwrap(), // I had to use to_string here because I couldn't solve the lifetime issue
+			mesh::MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref()).unwrap(),
+		};
 
 		let mut ghi = self.ghi.write();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
-		let mesh_data = self.meshes.get(&mesh_id).expect("Mesh not loaded");
+		let mesh_data = self.meshes.get(mesh_id).expect("Mesh not loaded");
 
 		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
@@ -1552,9 +1730,9 @@ pub fn get_visibility_pass_mesh_source() -> String {
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = root_node.borrow().get_main().unwrap();
+	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node);
+	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node).unwrap();
 
 	glsl
 }
@@ -1611,9 +1789,9 @@ pub fn get_material_count_source() -> String {
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = root_node.borrow().get_main().unwrap();
+	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
 
 	glsl
 }
@@ -1645,9 +1823,9 @@ pub fn get_material_offset_source() -> String {
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = root_node.borrow().get_main().unwrap();
+	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node);
+	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node).unwrap();
 
 	glsl
 }
@@ -1684,9 +1862,9 @@ pub fn get_pixel_mapping_source() -> String {
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = root_node.borrow().get_main().unwrap();
+	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
 
 	glsl
 }

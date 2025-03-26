@@ -1,4 +1,4 @@
-use crate::core::entity::EntityBuilder;
+use crate::core::{entity::EntityBuilder, spawn_as_child, SpawnHandler};
 
 use utils::BoxedFuture;
 
@@ -42,6 +42,16 @@ impl Space {
 		
 	// 	Some(handle)
 	// }
+}
+
+pub trait Spawn {
+	fn spawn<E>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E>;
+}
+
+impl Spawn for EntityHandle<Space> {
+	fn spawn<E>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
+		spawn_as_child(self.clone(), spawner)
+	}
 }
 
 impl Domain for Space {

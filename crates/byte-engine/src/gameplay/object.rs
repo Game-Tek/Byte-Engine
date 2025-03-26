@@ -78,5 +78,7 @@ impl physics::PhysicsEntity for Object {
 #[cfg(not(feature = "headless"))]
 impl mesh::RenderEntity for Object {
 	fn get_transform(&self) -> maths_rs::Mat4f { (&self.transform).into() }
-	fn get_resource_id(&self) -> &'static str { self.resource_id }
+	fn get_mesh(&self) -> mesh::MeshSource {
+		mesh::MeshSource::Resource(self.resource_id)
+	}
 }

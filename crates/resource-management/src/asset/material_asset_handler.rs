@@ -3,7 +3,7 @@ use std::sync::Arc;
 use log::debug;
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{asset, material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, types::{AlphaMode, ShaderTypes}, Data, ProcessedAsset, ReferenceModel};
+use crate::{asset, material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generator::{ShaderGenerationSettings}, spirv_shader_generator::SPIRVShaderGenerator, types::{AlphaMode, ShaderTypes}, Data, ProcessedAsset, ReferenceModel};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -134,17 +134,6 @@ impl Asset for MaterialAsset {
 
 			let material = asset_manager.load(parent_material_url).or_else(|_| { Err("Failed to load parent material") })?;
 
-			// #[derive(Debug, serde::Deserialize)]
-			// struct MaterialAssetParameter {
-			// 	name: String,
-			// 	r#type: String,
-			// }
-
-			// #[derive(Debug, serde::Deserialize)]
-			// struct MaterialAssetRepresentation {
-			// 	parameters: Vec<MaterialAssetParameter>,
-			// }
-
 			let material_repr: MaterialModel = pot::from_slice(&material.resource).unwrap();
 
 			let values = material_repr.parameters.iter().map(|v: &ParameterModel| {
@@ -250,7 +239,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		// besl::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
 		panic!()
 	} else if format == "besl" {
-		if let Ok(e) = besl::parse(&shader_code,/*Some(parent_scope.clone())*/) {
+		if let Ok(e) = besl::parse(&shader_code) {
 			e
 		} else {
 			log::error!("Error compiling shader");
@@ -280,45 +269,9 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		_ => { panic!("Invalid shader stage") }
 	};
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&settings, &main_node);
-
-	let compiler = shaderc::Compiler::new().unwrap();
-	let mut options = shaderc::CompileOptions::new().unwrap();
-
-	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
-
-	if cfg!(debug_assertions) {
-		options.set_generate_debug_info();
-	}
-
-	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-	options.set_invert_y(true);
-
-	let binary = compiler.compile_into_spirv(&glsl, shaderc::ShaderKind::InferFromSource, name, "main", Some(&options));
-
-	// TODO: if shader fails to compile try to generate a failsafe shader
-
-	let compilation_artifact = match binary {
-		Ok(binary) => { binary }
-		Err(err) => {
-			let error_string = err.to_string();
-			log::debug!("{}", &glsl);
-			log::error!("Error compiling shader:\n{}", error_string);
-			let error_string = besl::glsl::format_glslang_error(name, &error_string, &glsl).unwrap_or(error_string);
-			log::error!("Error compiling shader:\n{}", error_string);
-			if cfg!(test) {
-				println!("{}", error_string);
-			}
-			return Err(());
-		}
-	};
-
-	if compilation_artifact.get_num_warnings() > 0 {
-		log::warn!("Shader warnings: {}", compilation_artifact.get_warning_messages());
-	}
-
-	let result_shader_bytes: Box<[u8]> = Box::from(compilation_artifact.as_binary_u8());
+	let spirv = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
+		log::error!("Error compiling shader: {:#?}", e);
+	})?;
 
 	let stage = match stage {
 		"Vertex" => ShaderTypes::Vertex,
@@ -359,7 +312,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		interface,
 	};
 
-	Ok((shader, result_shader_bytes))
+	Ok((shader, spirv))
 }
 
 fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn resource::StorageBackend, asset_storage_backend: &dyn asset::StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {
@@ -382,7 +335,7 @@ pub mod tests {
 	use utils::json;
 
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, material::VariantModel, resource, ReferenceModel};
+	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, glsl_shader_generator::GLSLShaderGenerator, material::VariantModel, resource, shader_generator::ShaderGenerationSettings, ReferenceModel};
 
 	pub struct RootTestShaderGenerator {
 
@@ -458,7 +411,7 @@ pub mod tests {
 
 		let main_node = root.borrow().get_main().unwrap();
 
-		let glsl = crate::shader_generation::ShaderGenerator::new().minified(true).compilation().generate_glsl_shader(&crate::shader_generation::ShaderGenerationSettings::fragment(), &main_node);
+		let glsl = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::fragment(), &main_node).expect("Failed to generate GLSL");
 
 		assert!(glsl.contains("layout(push_constant"));
 		assert!(glsl.contains("uint32_t material_index"));

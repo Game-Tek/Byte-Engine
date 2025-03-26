@@ -9,6 +9,7 @@ pub mod transformable;
 pub mod anchor;
 pub mod collider;
 pub mod killer;
+pub mod timer;
 
 pub use anchor::Anchor;
 pub use object::Object;

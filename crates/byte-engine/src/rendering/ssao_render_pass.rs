@@ -1,6 +1,6 @@
 use besl::parser::Node;
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, DeviceAccesses, GraphicsHardwareInterface, Uses};
-use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, image::Image, resource::resource_manager::ResourceManager, shader_generation::{ShaderGenerationSettings, ShaderGenerator}, Reference};
+use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, glsl_shader_generator::GLSLShaderGenerator, image::Image, resource::resource_manager::ResourceManager, shader_generator::{ShaderGenerationSettings, ShaderGenerator}, Reference};
 use crate::core::entity::{Entity, EntityHandle};
 use std::{rc::Rc, sync::Arc};
 
@@ -263,7 +263,7 @@ pub fn get_source() -> String {
 
 	let main_node = root_node.borrow().get_main().unwrap();
 
-	let glsl = ShaderGenerator::new().compilation().generate_glsl_shader(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node);
+	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
 
 	glsl
 }

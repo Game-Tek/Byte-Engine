@@ -1,20 +1,22 @@
 use std::{cell::RefCell, collections::{HashMap, HashSet}};
 
-use utils::Extent;
+use crate::shader_generator::{MatrixLayouts, ShaderGenerationSettings, ShaderGenerator, Stages};
 
 /// Shader generator.
-/// 
+///
 /// # Parameters
-/// 
+///
 /// - *minified*: Controls wheter the shader string output is minified. Is `true` by default in release builds.
-pub struct ShaderGenerator {
+pub struct GLSLShaderGenerator {
 	minified: bool,
 }
 
-impl ShaderGenerator {
+impl ShaderGenerator for GLSLShaderGenerator {}
+
+impl GLSLShaderGenerator {
 	/// Creates a new ShaderGenerator.
 	pub fn new() -> Self {
-		ShaderGenerator {
+		GLSLShaderGenerator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 		}
 	}
@@ -23,79 +25,6 @@ impl ShaderGenerator {
 		self.minified = minified;
 		self
 	}
-
-	pub fn compilation(&self) -> ShaderCompilation {
-		ShaderCompilation {
-			minified: self.minified,
-		}
-	}
-}
-
-pub struct GLSLSettings {
-	version: String,
-}
-
-impl Default for GLSLSettings {
-	fn default() -> Self {
-		Self {
-			version: "450".to_string(),
-		}
-	}
-}
-
-enum Stages {
-	Vertex,
-	Compute {
-		local_size: Extent,
-	},
-	Task,
-	Mesh {
-		maximum_vertices: u32,
-		maximum_primitives: u32,
-		local_size: Extent,
-	},
-	Fragment,
-}
-
-pub enum MatrixLayouts {
-	RowMajor,
-	ColumnMajor,
-}
-
-pub struct ShaderGenerationSettings {
-	glsl: GLSLSettings,
-	stage: Stages,
-	matrix_layout: MatrixLayouts,
-}
-
-impl ShaderGenerationSettings {
-	pub fn compute(extent: Extent) -> ShaderGenerationSettings {
-		Self::from_stage(Stages::Compute { local_size: extent })
-	}
-
-	pub fn task() -> ShaderGenerationSettings {
-		Self::from_stage(Stages::Task)
-	}
-
-	pub fn mesh(maximum_vertices: u32, maximum_primitives: u32, local_size: Extent) -> ShaderGenerationSettings {
-		Self::from_stage(Stages::Mesh{ maximum_vertices, maximum_primitives, local_size })
-	}
-
-	pub fn fragment() -> ShaderGenerationSettings {
-		Self::from_stage(Stages::Fragment)
-	}
-	
-	pub fn vertex() -> ShaderGenerationSettings {
-		Self::from_stage(Stages::Vertex)
-	}
-
-	fn from_stage(stage: Stages) -> Self {
-		ShaderGenerationSettings { glsl: GLSLSettings::default(), stage, matrix_layout: MatrixLayouts::RowMajor }
-	}
-}
-
-pub struct ShaderCompilation {
-	minified: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -127,7 +56,7 @@ fn topological_sort(graph: &Graph) -> Vec<besl::NodeReference> {
 
 	fn topological_sort_util(node: besl::NodeReference, graph: &Graph, visited: &mut HashSet<besl::NodeReference>, stack: &mut Vec<besl::NodeReference>) {
 		visited.insert(node.clone());
-	
+
 		if let Some(neighbours) = graph.set.get(&node) {
 			for neighbour in neighbours {
 				if !visited.contains(neighbour) {
@@ -135,31 +64,31 @@ fn topological_sort(graph: &Graph) -> Vec<besl::NodeReference> {
 				}
 			}
 		}
-	
+
 		stack.push(node);
 	}
 
 	stack
 }
 
-impl ShaderCompilation {
+impl GLSLShaderGenerator {
 	/// Generates a GLSL shader from a BESL AST.
-	/// 
+	///
 	/// # Arguments
-	/// 
+	///
 	/// * `shader_compilation_settings` - The settings for the shader compilation.
 	/// * `main_function_node` - The main function node of the shader.
-	/// 
+	///
 	/// # Returns
-	/// 
+	///
 	/// The GLSL shader as a string.
-	/// 
+	///
 	/// # Panics
-	/// 
+	///
 	/// Panics if the main function node is not a function node.
-	pub fn generate_glsl_shader(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &besl::NodeReference) -> String {
+	pub fn generate(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &besl::NodeReference) -> Result<String, ()> {
 		let mut string = String::with_capacity(2048);
-		
+
 		if !matches!(main_function_node.borrow().node(), besl::Nodes::Function { .. }) {
 			panic!("GLSL shader generation requires a function node as the main function.");
 		}
@@ -171,12 +100,12 @@ impl ShaderCompilation {
 		let order = order.into_iter().filter(|n| matches!(n.borrow().node(), besl::Nodes::Function { .. }) || matches!(n.borrow().node(), besl::Nodes::Struct { .. }) || matches!(n.borrow().node(), besl::Nodes::Binding { .. }) || matches!(n.borrow().node(), besl::Nodes::PushConstant { .. }) || matches!(n.borrow().node(), besl::Nodes::Specialization { .. }));
 
 		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
-		
+
 		for node in order {
 			self.emit_node_string(&mut string, &node);
 		}
-	
-		string
+
+		Ok(string)
 	}
 
 	/// Translates BESL intrinsic type names to GLSL type names.
@@ -360,7 +289,7 @@ impl ShaderCompilation {
 
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(&this_node);
-	
+
 		match node.node() {
 			besl::Nodes::Null => {}
 			besl::Nodes::Scope { .. } => {}
@@ -382,13 +311,13 @@ impl ShaderCompilation {
 				}
 
 				if self.minified { string.push_str("){"); } else { string.push_str(") {\n"); }
-	
+
 				for statement in statements {
 					if !self.minified { string.push('\t'); }
 					self.emit_node_string(string, &statement);
 					if !self.minified { string.push_str(";\n"); } else { string.push(';'); }
 				}
-				
+
 				if self.minified { string.push('}') } else { string.push_str("}\n"); }
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
@@ -512,7 +441,7 @@ impl ShaderCompilation {
 							_ => {
 								string.push_str(name);
 							}
-						}						
+						}
 					}
 					besl::Expressions::VariableDeclaration { name, r#type } => {
 						string.push_str(&format!("{} {}", Self::translate_type(&r#type.borrow().get_name().unwrap()), name));
@@ -606,11 +535,11 @@ impl ShaderCompilation {
 
 	fn generate_glsl_header_block(&self, glsl_block: &mut String, compilation_settings: &ShaderGenerationSettings) {
 		let glsl_version = &compilation_settings.glsl.version;
-	
+
 		glsl_block.push_str(&format!("#version {glsl_version} core\n"));
-	
+
 		// shader type
-	
+
 		match compilation_settings.stage {
 			Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
 			Stages::Fragment => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
@@ -618,9 +547,9 @@ impl ShaderCompilation {
 			Stages::Task => glsl_block.push_str("#pragma shader_stage(task)\n"),
 			Stages::Mesh{ .. } => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
 		}
-	
+
 		// extensions
-	
+
 		glsl_block.push_str("#extension GL_EXT_shader_16bit_storage:require\n");
 		glsl_block.push_str("#extension GL_EXT_shader_explicit_arithmetic_types:require\n");
 		glsl_block.push_str("#extension GL_EXT_nonuniform_qualifier:require\n");
@@ -628,7 +557,7 @@ impl ShaderCompilation {
 		glsl_block.push_str("#extension GL_EXT_buffer_reference:enable\n");
 		glsl_block.push_str("#extension GL_EXT_buffer_reference2:enable\n");
 		glsl_block.push_str("#extension GL_EXT_shader_image_load_formatted:enable\n");
-	
+
 		match compilation_settings.stage {
 			Stages::Compute { .. } => {
 				glsl_block.push_str("#extension GL_KHR_shader_subgroup_basic:enable\n");
@@ -666,9 +595,10 @@ impl ShaderCompilation {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use super::*;
 
-    use crate::shader_generation::{ShaderGenerationSettings, ShaderGenerator};
+    use std::cell::RefCell;
+    use crate::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
@@ -687,7 +617,7 @@ mod tests {
 		"#;
 
 		let mut root_node = besl::Node::root();
-		
+
 		let float_type = root_node.get_child("f32").unwrap();
 
 		root_node.add_children(vec![
@@ -700,9 +630,7 @@ mod tests {
 
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new().minified(true);
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		// We have to split the assertions because the order of the bindings is not guaranteed.
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
@@ -723,7 +651,7 @@ mod tests {
 		"#;
 
 		let mut root_node = besl::Node::root();
-		
+
 		let vec3f_type = root_node.get_child("vec3f").unwrap();
 
 		root_node.add_children(vec![
@@ -734,9 +662,7 @@ mod tests {
 
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new().minified(true);
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "layout(constant_id=0)const float color_x=1.0f;layout(constant_id=1)const float color_y=1.0f;layout(constant_id=2)const float color_z=1.0f;const vec3 color=vec3(color_x,color_y,color_z);void main(){color;}");
 	}
@@ -753,9 +679,7 @@ mod tests {
 
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new().minified(true);
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::fragment(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::fragment(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);}");
 	}
@@ -778,9 +702,7 @@ mod tests {
 
 		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new();
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void used_by_used() {\n}\nvoid used() {\n\tused_by_used();\n}\nvoid main() {\n\tused();\n}\n");
 	}
@@ -804,9 +726,7 @@ mod tests {
 
 		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new();
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "struct Vertex {\n\tvec3 position;\n\tvec3 normal;\n};\nVertex use_vertex() {\n}\nvoid main() {\n\tuse_vertex();\n}\n");
 	}
@@ -828,9 +748,7 @@ mod tests {
 
 		let main_node = RefCell::borrow(&program_node).get_child("main").unwrap();
 
-		let shader_generator = ShaderGenerator::new();
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main_node);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main_node).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "layout(push_constant) uniform PushConstant {\n\tuint32_t material_id;\n} push_constant;\nvoid main() {\n\tpush_constant;\n}\n");
 	}
@@ -851,18 +769,16 @@ mod tests {
 		let root = besl::compile_to_besl(&script, None).unwrap();
 
 		let main = RefCell::borrow(&root).get_child("main").unwrap();
-		
+
 		let vertex_struct = RefCell::borrow(&root).get_child("Vertex").unwrap();
 		let used_function = RefCell::borrow(&root).get_child("used").unwrap();
-		
+
 		{
 			let mut main = main.borrow_mut();
 			main.add_child(besl::Node::glsl("gl_Position = vec4(0)".to_string(), vec![vertex_struct, used_function], vec![]).into());
 		}
 
-		let shader_generator = ShaderGenerator::new().minified(true);
-
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};");
 		assert_string_contains!(shader, "void used(){}");
@@ -888,11 +804,9 @@ mod tests {
 
 		let root = besl::lex(root).unwrap();
 
-		let shader_generator = ShaderGenerator::new().minified(true);
-
 		let main = RefCell::borrow(&root).get_child("main").unwrap();
 
-		let shader = shader_generator.compilation().generate_glsl_shader(&ShaderGenerationSettings::vertex(), &main);
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){0 + 1.0 * 2;}");
 	}

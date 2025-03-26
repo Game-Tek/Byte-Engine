@@ -6,6 +6,7 @@ pub mod point_light;
 
 pub mod mesh;
 pub mod triangle;
+pub mod cube;
 
 pub mod cct;
 

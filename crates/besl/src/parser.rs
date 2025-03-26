@@ -18,9 +18,13 @@
 //! All nodes which have cross references only do so by name.
 //! Those relations are resolved later by the lexer which performs a grammar analysis.
 
-/// Parse consumes an stream of tokens and return a JSPD describing the shader.
-pub(super) fn parse(tokens: Vec<String>) -> Result<Node, ParsingFailReasons> {
-	let mut iterator = tokens.iter();
+use crate::tokenizer;
+
+/// Generates a syntax tree from BESL source code tokens.
+/// The syntax tree is just another representation of the source code.
+/// It is missing the final transformation step, which is the lexing step.
+pub(super) fn parse(tokens: tokenizer::Tokens) -> Result<Node, ParsingFailReasons> {
+	let mut iterator = tokens.tokens.iter();
 
 	let parsers = [
 		parse_struct,
@@ -299,25 +303,32 @@ impl Node {
 
 #[derive(Clone, Debug)]
 pub enum Nodes {
+	/// A special kind of node. Mostly used for partially implemented features.
 	Null,
+	/// Like a Rust module. A logical division/grouping of code.
 	Scope {
+		/// The scope's name. Used in code when importing or declaring namespaces.
 		name: String,
 		children: Vec<Node>,
 	},
+	/// A struct declaration. A struct is a collection of fields.
 	Struct {
 		name: String,
 		fields: Vec<Node>
 	},
+	/// A member field. Usually used inside a struct.
 	Member {
 		name: String,
 		r#type: String,
 	},
+	/// A funcion declaration and definition node.
 	Function {
 		name: String,
 		params: Vec<Node>,
 		return_type: String,
 		statements: Vec<Node>,
 	},
+	/// A binding declaration. A binding is a resource that can be used in the shader.
 	Binding {
 		name: String,
 		r#type: Box<Node>,
@@ -327,13 +338,16 @@ pub enum Nodes {
 		write: bool,
 		count: Option<NonZeroUsize>,
 	},
+	/// A specialization constant. A specialization constant is a constant that can be set when creating a pipeline at runtime.
 	Specialization {
 		name: String,
 		r#type: String,
 	},
+	/// A push constant block. A push constant is a small buffer that can have values pushed during rendering.
 	PushConstant {
 		members: Vec<Node>,
 	},
+	/// An abstract type. Usually used to define primitive types such as `f32`.
 	Type {
 		name: String,
 		members: Vec<Node>,
@@ -429,10 +443,6 @@ fn make_member(name: &str, r#type: &str) -> Node {
 			r#type: r#type.to_string(),
 		},
 	}
-}
-
-fn make_no_member_struct(name: &str) -> Node {
-	make_struct(name, vec![])
 }
 
 fn make_struct(name: &str, children: Vec<Node>) -> Node {

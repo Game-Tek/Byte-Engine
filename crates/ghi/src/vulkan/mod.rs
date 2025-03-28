@@ -2193,7 +2193,7 @@ impl VulkanGHI {
 				};
 
 				unsafe {
-					instance.get_physical_device_tool_properties(*physical_device, &mut tools)
+					instance.get_physical_device_tool_properties(*physical_device, &mut tools[0..tool_count])
 				};
 
 				let buffer_device_address_capture_replay = tools.iter().take(tool_count as usize).any(|tool| {
@@ -2344,7 +2344,7 @@ impl VulkanGHI {
 			.shader_image_float32_atomics(true)
 		;
 
-		// device_extension_names.push(ash::ext::shader_atomic_float::NAME.as_ptr());
+		device_extension_names.push(ash::ext::shader_atomic_float::NAME.as_ptr());
 
 		let device_create_info = vk::DeviceCreateInfo::default();
 
@@ -2352,8 +2352,7 @@ impl VulkanGHI {
 			device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
 			device_create_info.push_next(&mut physical_device_mesh_shading_features)
 		} else {
-			println!("Mesh shader extension not available.");
-			device_create_info
+			return Err("Mesh shader extension not available");
 		};
 
 		let device_create_info = device_create_info

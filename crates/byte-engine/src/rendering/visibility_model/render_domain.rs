@@ -776,59 +776,47 @@ impl VisibilityWorldRenderDomain {
 					visibility_shader_generation
 				};
 
-				let root_node = besl::parse(&"",/*Some(parent_scope.clone())*/).unwrap();
+				let root_node = besl::parse(&"main: fn () -> void {
+	albedo = vec4f(1.0, 1.0, 1.0, 1.0);
+}").unwrap();
 
-				let root = shader_generator.transform(root_node, &json::Object::new());
+				let root = shader_generator.transform(root_node, &json::object!{ "variables": [] });
 
 				let root = besl::lex(root).unwrap();
 
 				let main_node = RefCell::borrow(&root).get_main().ok_or(())?;
-			
-				let vertex_spirv = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::vertex(), &main_node).map_err(|_| ())?;
 
-				let fragment_spirv = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::fragment(), &main_node).map_err(|_| ())?;
-
-				let vshader = ghi.create_shader(
-					None,
-					ghi::ShaderSource::GLSL(r#"#version 450 core
-		#pragma shader_stage(vertex)
-		layout(location = 0) in vec3 position;
-		void main() {
-			gl_Position = vec4(position, 1.0);
-		}"#.to_owned()),
-					ghi::ShaderTypes::Vertex,
-					&[],
-				).unwrap();
+				let fragment_spirv = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|_| ())?;
 		
 				let fshader = ghi.create_shader(
 					None,
-					ghi::ShaderSource::GLSL(r#"#version 450 core
-		#pragma shader_stage(fragment)
-		layout(location = 0) out vec4 color;
-		void main() {
-			color = vec4(1.0, 1.0, 1.0, 1.0);
-		}"#.to_owned()),
-					ghi::ShaderTypes::Fragment,
-					&[],
+					ghi::ShaderSource::SPIRV(&fragment_spirv),
+					ghi::ShaderTypes::Compute,
+					&[
+						ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 8, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(0, 9, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(1, 6, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
+						ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
+						ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
+						ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
+					],
 				).unwrap();
 		
-				let pipeline = ghi.create_raster_pipeline(&[
-					ghi::PipelineConfigurationBlocks::Shaders {
-						shaders: &[ghi::ShaderParameter::new(&vshader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Fragment)],
-					},
-					ghi::PipelineConfigurationBlocks::Layout { layout: &self.material_evaluation_pipeline_layout },
-					ghi::PipelineConfigurationBlocks::InputAssembly {  },
-					ghi::PipelineConfigurationBlocks::VertexInput {
-						vertex_elements: &[
-							ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
-						],
-					},
-					ghi::PipelineConfigurationBlocks::RenderTargets {
-						targets: &[ghi::PipelineAttachmentInformation::new(
-							ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true,
-						)],
-					},
-				]);
+				let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute));
 
 				Ok(RenderDescription {
 					name: "heyyy".to_string(),

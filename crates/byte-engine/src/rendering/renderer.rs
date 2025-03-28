@@ -73,7 +73,7 @@ impl Renderer {
                     .debug_log_function(|message| {
                         log::error!("{}", message);
                     })
-					.gpu("llvmpipe (LLVM 15.0.7, 256 bits)")
+					// .gpu("llvmpipe (LLVM 15.0.7, 256 bits)")
 					// .gpu("AMD Radeon Graphics (RADV RENOIR)")
             )));
 

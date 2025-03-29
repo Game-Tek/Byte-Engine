@@ -14,7 +14,7 @@ fn cube() {
 
 	space_handle.spawn(Camera::new(Vec3::new(0.0, 0.0, -2.0)));
 	space_handle.spawn(PointLight::new(Vec3::new(0f32, 0f32, -2f32), 4500f32));
-    space_handle.spawn::<Cube>(Cube::new()); // TODO: fix listeners not being called when entity is not built from an entity builder
+    space_handle.spawn::<Cube>(Cube::new());
 
 	app.do_loop();
 }

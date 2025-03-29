@@ -154,7 +154,7 @@ mod tests {
 			fn get_value(&self) -> u32 { self.value }
 		}
 
-		let _: EntityHandle<Component> = spawn(EntityBuilder::new(Component { name: "test".to_string(), value: 1 }));
+		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
 
 		struct System {
 

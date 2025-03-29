@@ -281,8 +281,8 @@ mod tests {
 		impl Entity for System {}
 
 		impl System {
-			fn new<'c>() -> EntityBuilder<'c, System> {
-				EntityBuilder::new(System {})
+			fn new<'c>() -> System {
+				System {}
 			}
 		}
 

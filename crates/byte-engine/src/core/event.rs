@@ -80,8 +80,8 @@ mod tests {
 		static mut COUNTER: u32 = 0;
 
 		impl MySystem {
-			fn new<'c>(_: &EntityHandle<MyComponent>) -> EntityBuilder<'c, MySystem> {
-				EntityBuilder::new(MySystem {})
+			fn new<'c>(_: &EntityHandle<MyComponent>) -> MySystem {
+				MySystem {}
 			}
 
 			fn on_event(&mut self, _: &bool) {

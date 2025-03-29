@@ -45,11 +45,11 @@ impl Space {
 }
 
 pub trait Spawn {
-	fn spawn<E>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E>;
+	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E>;
 }
 
 impl Spawn for EntityHandle<Space> {
-	fn spawn<E>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
+	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
 		spawn_as_child(self.clone(), spawner)
 	}
 }

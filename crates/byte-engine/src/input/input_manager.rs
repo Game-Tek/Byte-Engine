@@ -921,6 +921,35 @@ mod tests {
 		let _trigger_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftTrigger", trigger_source_description);
 	}
 
+	fn record_and_assert_input_source_action_sequence<A, Z>(input_manager: &mut InputManager, device: &DeviceHandle, handle: InputSourceAction, a: A, b: A, z: Z) where A: Into<Value>, Z: Into<Value> {
+		let a: Value = a.into();
+		let b: Value = b.into();
+		let z: Value = z.into();
+
+		assert_eq!(input_manager.get_input_source_value(&device, handle), a); // Assert default value
+
+		input_manager.record_input_source_action(&device, handle, b); // Record alternate value.
+
+		assert_eq!(input_manager.get_input_source_value(&device, handle), b); // Assert alternate value after recording.
+
+		input_manager.record_input_source_action(&device, handle, a); // Record default value.
+
+		assert_eq!(input_manager.get_input_source_value(&device, handle), a); // Assert default value after recording.
+
+		input_manager.record_input_source_action(&device, handle, a); // Record default value again.
+
+		assert_eq!(input_manager.get_input_source_value(&device, handle), a); // Assert default value after recording.
+
+		input_manager.record_input_source_action(&device, handle, a); // Record default value.
+		input_manager.record_input_source_action(&device, handle, b); // Record alternate value after recording default value.
+
+		assert_eq!(input_manager.get_input_source_value(&device, handle), b); // Assert value is last value recorded.
+
+		input_manager.record_input_source_action(&device, handle, z); // Record a different type.
+
+		assert_eq!(input_manager.get_input_source_value(&device, handle), b); // Assert last value is kept after recording a different type.
+	}
+
 	#[test]
 	fn record_bool_input_source_actions() {
 		let mut input_manager = InputManager::new();
@@ -931,28 +960,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Keyboard.Up");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Bool(false)); // Must be false by default(declared in "declare_keyboard_input_device_class").
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Bool(true)); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(false));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Bool(false)); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(false));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Bool(false)); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(false));
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Bool(true)); // Must be true after recording multiple times without querying the value.
-
-		input_manager.record_input_source_action(&device, handle, Value::Float(98f32));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Bool(true)); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, false, true, 961f32);
 	}
 
 	#[test]
@@ -965,28 +973,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Keyboard.Character");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Unicode('\0')); // Must be false by default(declared in "declare_keyboard_input_device_class").
-
-		input_manager.record_input_source_action(&device, handle, Value::Unicode('a'));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Unicode('a')); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Unicode('\0'));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Unicode('\0')); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Unicode('\0'));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Unicode('\0')); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Unicode('\0'));
-		input_manager.record_input_source_action(&device, handle, Value::Unicode('a'));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Unicode('a')); // Must be true after recording multiple times without querying the value.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Unicode('a')); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, '\0', 'a', true);
 	}
 
 	#[test]
@@ -999,28 +986,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Funky.Int");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Int(0)); // Must be false by default(declared in "declare_keyboard_input_device_class").
-
-		input_manager.record_input_source_action(&device, handle, Value::Int(1));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Int(1)); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Int(0));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Int(0)); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Int(0));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Int(0)); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Int(0));
-		input_manager.record_input_source_action(&device, handle, Value::Int(1));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Int(1)); // Must be true after recording multiple times without querying the value.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Int(1)); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, 0, 1, true);
 	}
 
 	#[test]
@@ -1033,28 +999,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Gamepad.LeftTrigger");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Float(0.0f32)); // Must be false by default(declared in "declare_gamepad_input_device_class").
-
-		input_manager.record_input_source_action(&device, handle, Value::Float(1f32));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Float(1f32)); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Float(0f32));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Float(0f32)); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Float(0f32));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Float(0f32)); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Float(0f32));
-		input_manager.record_input_source_action(&device, handle, Value::Float(1f32));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Float(1f32)); // Must be true after recording multiple times without querying the value.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Float(1f32)); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, 0.0f32, 1f32, true);
 	}
 
 	#[test]
@@ -1067,28 +1012,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Gamepad.LeftStick");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector2(Vector2 { x: 0f32, y: 0f32, })); // Must be false by default(declared in "declare_gamepad_input_device_class").
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector2(Vector2 { x: 1f32, y: 1f32, }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector2(Vector2 { x: 1f32, y: 1f32, })); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector2(Vector2 { x: 0f32, y: 0f32, }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector2(Vector2 { x: 0f32, y: 0f32, })); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector2(Vector2 { x: 0f32, y: 0f32, }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector2(Vector2 { x: 0f32, y: 0f32, })); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector2(Vector2 { x: 0f32, y: 0f32, }));
-		input_manager.record_input_source_action(&device, handle, Value::Vector2(Vector2 { x: 1f32, y: 1f32, }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector2(Vector2 { x: 1f32, y: 1f32, })); // Must be true after recording multiple times without querying the value.
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector2(Vector2 { x: 1f32, y: 1f32, })); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, Vector2 { x: 0f32, y: 0f32, }, Vector2 { x: 1f32, y: 1f32, }, true);
 	}
 
 	#[test]
@@ -1101,28 +1025,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Headset.Position");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector3(Vector3 { x: 0f32, y: 1.8f32, z: 0f32 }));
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector3(Vector3 { x: 1f32, y: 1f32, z: 1f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector3(Vector3 { x: 1f32, y: 1f32, z: 1f32 })); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 })); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 })); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 }));
-		input_manager.record_input_source_action(&device, handle, Value::Vector3(Vector3 { x: 1f32, y: 1f32, z: 1f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector3(Vector3 { x: 1f32, y: 1f32, z: 1f32 })); // Must be true
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Vector3(Vector3 { x: 1f32, y: 1f32, z: 1f32 })); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, Vector3 { x: 0f32, y: 1.8f32, z: 0f32 }, Vector3 { x: 1f32, y: 1f32, z: 1f32 }, true);
 	}
 
 	#[test]
@@ -1135,28 +1038,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Headset.Orientation");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Quaternion(Quaternion::from_euler_angles(0f32, 0f32, 0f32)));
-
-		input_manager.record_input_source_action(&device, handle, Value::Quaternion(Quaternion::from_euler_angles(1f32, 1f32, 1f32)));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Quaternion(Quaternion::from_euler_angles(1f32, 1f32, 1f32))); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Quaternion(Quaternion::from_euler_angles(0f32, 0f32, 0f32)));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Quaternion(Quaternion::from_euler_angles(0f32, 0f32, 0f32))); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Quaternion(Quaternion::from_euler_angles(0f32, 0f32, 0f32)));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Quaternion(Quaternion::from_euler_angles(0f32, 0f32, 0f32))); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Quaternion(Quaternion::from_euler_angles(0f32, 0f32, 0f32)));
-		input_manager.record_input_source_action(&device, handle, Value::Quaternion(Quaternion::from_euler_angles(1f32, 1f32, 1f32)));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Quaternion(Quaternion::from_euler_angles(1f32, 1f32, 1f32))); // Must be true
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Quaternion(Quaternion::from_euler_angles(1f32, 1f32, 1f32))); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, Quaternion::from_euler_angles(0f32, 0f32, 0f32), Quaternion::from_euler_angles(1f32, 1f32, 1f32), true);
 	}
 
 	#[test]
@@ -1169,28 +1051,7 @@ mod tests {
 
 		let handle = InputSourceAction::Name("Funky.Rgba");
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }));
-
-		input_manager.record_input_source_action(&device, handle, Value::Rgba(RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 })); // Must be true after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 })); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 })); // Must be false after recording.
-
-		input_manager.record_input_source_action(&device, handle, Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }));
-		input_manager.record_input_source_action(&device, handle, Value::Rgba(RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 }));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 })); // Must be true
-
-		input_manager.record_input_source_action(&device, handle, Value::Bool(true));
-
-		assert_eq!(input_manager.get_input_source_value(&device, handle), Value::Rgba(RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 })); // Must keep the previous value if the type is different.
+		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }, RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 }, true);
 	}
 
 	// #[test]

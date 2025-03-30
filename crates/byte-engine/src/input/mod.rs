@@ -55,6 +55,54 @@ pub enum Value {
 	Quaternion(Quaternion),
 }
 
+impl Into<Value> for bool {
+	fn into(self) -> Value {
+		Value::Bool(self)
+	}
+}
+
+impl Into<Value> for char {
+	fn into(self) -> Value {
+		Value::Unicode(self)
+	}
+}
+
+impl Into<Value> for f32 {
+	fn into(self) -> Value {
+		Value::Float(self)
+	}
+}
+
+impl Into<Value> for i32 {
+	fn into(self) -> Value {
+		Value::Int(self)
+	}
+}
+
+impl Into<Value> for RGBA {
+	fn into(self) -> Value {
+		Value::Rgba(self)
+	}
+}
+
+impl Into<Value> for Vector2 {
+	fn into(self) -> Value {
+		Value::Vector2(self)
+	}
+}
+
+impl Into<Value> for Vector3 {
+	fn into(self) -> Value {
+		Value::Vector3(self)
+	}
+}
+
+impl Into<Value> for Quaternion {
+	fn into(self) -> Value {
+		Value::Quaternion(self)
+	}
+}
+
 #[derive(Copy, Clone, Debug)]
 /// Enumerates the different functions that can be applied to an input event.
 pub enum Function {

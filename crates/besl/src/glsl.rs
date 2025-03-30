@@ -34,13 +34,21 @@ pub fn format_glslang_error(shader_name: &str, error_string: &str, source_code: 
 	for (error_line_index, line_errors) in errors {
 		let error = line_errors.join(", ");
 
-		let previous_previous_line = format!("{}| {}", error_line_index - 2 + 1, source_code.lines().nth(error_line_index - 2).unwrap_or("").dimmed());
-		let previous_line = format!("{}| {}", error_line_index - 1 + 1, source_code.lines().nth(error_line_index - 1).unwrap_or("").dimmed());
-		let current_line = format!("{}| {} {} {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").bold(), "←".red().bold(), error.red());
-		let next_line = format!("{}| {}", error_line_index + 1 + 1, source_code.lines().nth(error_line_index + 1).unwrap_or("").dimmed());
-		let next_next_line = format!("{}| {}", error_line_index + 2 + 1, source_code.lines().nth(error_line_index + 2).unwrap_or("").dimmed());
+		// How many lines to show before and after the error line
+		let window_size = 2i32;
 
-		error_string.push_str(&format!("{}\n{}\n{}\n{}\n{}\n", previous_previous_line, previous_line, current_line, next_line, next_next_line));
+		let lines = (-window_size..window_size).filter_map(|delta| {
+			let line_index = error_line_index as i32 + delta;
+			if line_index < 0 { None } else { Some(line_index as usize) }
+		}).map(|line_index| {
+			if line_index == error_line_index {
+				format!("{}| {} {} {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").bold(), "←".red().bold(), error.red())
+			} else {
+				format!("{}| {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").dimmed())
+			}
+		});
+
+		error_string.push_str(&format!("{}\n", lines.collect::<Vec<_>>().join("\n")));
 	}
 
 	Some(error_string)

@@ -1452,8 +1452,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			(0, graphics_hardware_interface::SwapchainStates::Invalid)
 		};
 
-		println!("Swapchain image acquired: {index} {swapchain_state:?}");
-
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities") };
 
 		// if swapchain_state == graphics_hardware_interface::SwapchainStates::Suboptimal || swapchain_state == graphics_hardware_interface::SwapchainStates::Invalid {

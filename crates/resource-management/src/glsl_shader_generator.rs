@@ -598,7 +598,7 @@ mod tests {
     use super::*;
 
     use std::cell::RefCell;
-    use crate::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
+    use crate::shader_generator::{self, ShaderGenerationSettings, ShaderGenerator};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
@@ -608,27 +608,7 @@ mod tests {
 
 	#[test]
 	fn bindings() {
-		let script = r#"
-		main: fn () -> void {
-			buff;
-			image;
-			texture;
-		}
-		"#;
-
-		let mut root_node = besl::Node::root();
-
-		let float_type = root_node.get_child("f32").unwrap();
-
-		root_node.add_children(vec![
-			besl::Node::binding("buff", besl::BindingTypes::Buffer{ members: vec![besl::Node::member("member", float_type).into()] }, 0, 0, true, true).into(),
-			besl::Node::binding("image", besl::BindingTypes::Image{ format: "r8".to_string() }, 0, 1, false, true).into(),
-			besl::Node::binding("texture", besl::BindingTypes::CombinedImageSampler{ format: "".to_string() }, 1, 0, true, false).into(),
-		]);
-
-		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
-
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+		let main = shader_generator::tests::bindings();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
@@ -644,23 +624,7 @@ mod tests {
 
 	#[test]
 	fn test_specializtions() {
-		let script = r#"
-		main: fn () -> void {
-			color;
-		}
-		"#;
-
-		let mut root_node = besl::Node::root();
-
-		let vec3f_type = root_node.get_child("vec3f").unwrap();
-
-		root_node.add_children(vec![
-			besl::Node::specialization("color", vec3f_type).into(),
-		]);
-
-		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
-
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+		let main = shader_generator::tests::bindings();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
@@ -669,15 +633,7 @@ mod tests {
 
 	#[test]
 	fn fragment_shader() {
-		let script = r#"
-		main: fn () -> void {
-			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
-		}
-		"#;
-
-		let script_node = besl::compile_to_besl(&script, None).unwrap();
-
-		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+		let main = shader_generator::tests::bindings();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::fragment(), &main).expect("Failed to generate shader");
 
@@ -686,21 +642,7 @@ mod tests {
 
 	#[test]
 	fn cull_unused_functions() {
-		let script = r#"
-		used_by_used: fn () -> void {}
-		used: fn() -> void {
-			used_by_used();
-		}
-		not_used: fn() -> void {}
-
-		main: fn () -> void {
-			used();
-		}
-		"#;
-
-		let main_function_node = besl::compile_to_besl(&script, None).unwrap();
-
-		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
+		let main = shader_generator::tests::cull_unused_functions();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
@@ -709,22 +651,7 @@ mod tests {
 
 	#[test]
 	fn structure() {
-		let script = r#"
-		Vertex: struct {
-			position: vec3f,
-			normal: vec3f,
-		}
-
-		use_vertex: fn () -> Vertex {}
-
-		main: fn () -> void {
-			use_vertex();
-		}
-		"#;
-
-		let main_function_node = besl::compile_to_besl(&script, None).unwrap();
-
-		let main = RefCell::borrow(&main_function_node).get_child("main").unwrap();
+		let main = shader_generator::tests::structure();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
@@ -733,22 +660,9 @@ mod tests {
 
 	#[test]
 	fn push_constant() {
-		let script = r#"
-		main: fn () -> void {
-			push_constant;
-		}
-		"#;
+		let main = shader_generator::tests::push_constant();
 
-		let mut root_node = besl::Node::root();
-
-		let u32_t = root_node.get_child("u32").unwrap();
-		root_node.add_child(besl::Node::push_constant(vec![besl::Node::member("material_id", u32_t.clone()).into()]).into());
-
-		let program_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
-
-		let main_node = RefCell::borrow(&program_node).get_child("main").unwrap();
-
-		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main_node).expect("Failed to generate shader");
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "layout(push_constant) uniform PushConstant {\n\tuint32_t material_id;\n} push_constant;\nvoid main() {\n\tpush_constant;\n}\n");
 	}
@@ -787,24 +701,7 @@ mod tests {
 
 	#[test]
 	fn test_instrinsic() {
-		let script = r#"
-		main: fn () -> void {
-			sample(number);
-		}
-		"#;
-
-		use besl::parser::Node;
-
-		let number_literal = Node::literal("number", Node::glsl("1.0", &[], Vec::new()));
-		let sample_function = Node::intrinsic("sample", Node::parameter("num", "f32"), Node::sentence(vec![Node::glsl("0 + ", &[], Vec::new()), Node::member_expression("num"), Node::glsl(" * 2", &[], Vec::new())]), "f32");
-
-		let mut root = besl::parse(&script).unwrap();
-
-		root.add(vec![sample_function.clone(), number_literal.clone(),]);
-
-		let root = besl::lex(root).unwrap();
-
-		let main = RefCell::borrow(&root).get_child("main").unwrap();
+		let main = shader_generator::tests::intrinsic();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 

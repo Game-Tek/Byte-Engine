@@ -269,7 +269,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		_ => { panic!("Invalid shader stage") }
 	};
 
-	let spirv = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
+	let shader_program = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
 		log::error!("Error compiling shader: {:#?}", e);
 	})?;
 
@@ -281,29 +281,8 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 	};
 
 	let interface = ShaderInterface {
-		workgroup_size: if stage == ShaderTypes::Compute { Some((128, 1, 1)) } else { None },
-		bindings: vec![
-			Binding::new(0, 0, true, false,),
-			Binding::new(0, 1, true, false,),
-			Binding::new(0, 2, true, false,),
-			Binding::new(0, 3, true, false,),
-			Binding::new(0, 5, true, false,),
-			Binding::new(0, 6, true, false,),
-			Binding::new(0, 7, true, false,),
-			Binding::new(0, 8, true, false,),
-			Binding::new(0, 9, true, false,),
-			Binding::new(1, 0, true, false,),
-			Binding::new(1, 1, true, false,),
-			Binding::new(1, 4, true, false,),
-			Binding::new(1, 6, true, false,),
-			Binding::new(2, 0, false, true,),
-			Binding::new(2, 1, true, false,),
-			Binding::new(2, 2, false, true,),
-			Binding::new(2, 4, true, false,),
-			Binding::new(2, 5, true, false,),
-			Binding::new(2, 10, true, false,),
-			Binding::new(2, 11, true, false,),
-		]
+		workgroup_size: shader_program.extent().map(|e| (e.width(), e.height(), e.depth())),
+		bindings: shader_program.bindings().iter().map(|b| Binding::new(b.set, b.binding, b.read, b.write)).collect(),
 	};
 
 	let shader = Shader {
@@ -312,7 +291,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		interface,
 	};
 
-	Ok((shader, spirv))
+	Ok((shader, shader_program.into_binary()))
 }
 
 fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn resource::StorageBackend, asset_storage_backend: &dyn asset::StorageBackend, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(ReferenceModel<Shader>, Box<[u8]>), ()> {

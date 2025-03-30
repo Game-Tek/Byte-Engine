@@ -786,34 +786,17 @@ impl VisibilityWorldRenderDomain {
 
 				let main_node = RefCell::borrow(&root).get_main().ok_or(())?;
 
-				let fragment_spirv = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|_| ())?;
+				let shader = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|_| ())?;
 		
+				let bindings = shader.bindings().iter().map(|b| {
+					ghi::ShaderBindingDescriptor::new(b.set, b.binding, if b.read { ghi::AccessPolicies::READ } else { ghi::AccessPolicies::empty() } | if b.write { ghi::AccessPolicies::WRITE } else { ghi::AccessPolicies::empty() })
+				}).collect::<Vec<_>>();
+
 				let fshader = ghi.create_shader(
 					None,
-					ghi::ShaderSource::SPIRV(&fragment_spirv),
+					ghi::ShaderSource::SPIRV(&shader.binary()),
 					ghi::ShaderTypes::Compute,
-					&[
-						ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 2, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 3, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 5, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 6, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 7, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 8, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(0, 9, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(1, 0, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(1, 1, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(1, 4, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(1, 6, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(2, 0, ghi::AccessPolicies::WRITE),
-						ghi::ShaderBindingDescriptor::new(2, 1, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(2, 2, ghi::AccessPolicies::WRITE),
-						ghi::ShaderBindingDescriptor::new(2, 4, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(2, 5, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(2, 10, ghi::AccessPolicies::READ),
-						ghi::ShaderBindingDescriptor::new(2, 11, ghi::AccessPolicies::READ),
-					],
+					&bindings,
 				).unwrap();
 		
 				let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute));
@@ -1322,7 +1305,7 @@ struct MaterialData {
 impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>, mesh: &'a dyn mesh::RenderEntity) -> () {
 		let mesh_id = match mesh.get_mesh() {
-			mesh::MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id).unwrap(), // I had to use to_string here because I couldn't solve the lifetime issue
+			mesh::MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id).unwrap(),
 			mesh::MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref()).unwrap(),
 		};
 

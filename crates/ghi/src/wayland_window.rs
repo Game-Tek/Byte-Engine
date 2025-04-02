@@ -4,7 +4,7 @@ use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}};
 
-use crate::WindowEvents;
+use crate::{MouseKeys, WindowEvents};
 
 pub struct WaylandWindow {
 	connection: wayland_client::Connection,
@@ -142,6 +142,8 @@ impl WaylandWindow {
 
 		let event_queue = &mut self.event_queue;
 		event_queue.blocking_dispatch(&mut app_data).unwrap();
+
+		self.extent = app_data.extent;
 
 		WindowIterator {
 			events: app_data.events,
@@ -304,15 +306,13 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 				// Suggested size
 			}
 			xdg_toplevel::Event::Configure { width, height, states } => {
-				this.extent = if width == 0 || height == 0 {
-					None
-				} else {
+				if width != 0 && height != 0 {
 					let extent = Extent::rectangle((width * (this.scale as i32)) as u32, (height * (this.scale as i32)) as u32);
 					if this.extent != Some(extent) {
 						this.events.push_back(WindowEvents::Resize{ width: extent.width(), height: extent.height() });
 					}
-					Some(extent)
-				};
+					this.extent = Some(extent);
+				}
 			}
 			xdg_toplevel::Event::Close => {
 				this.events.push_back(WindowEvents::Close);
@@ -323,13 +323,20 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 }
 
 impl wayland_client::Dispatch<wl_seat::WlSeat, ()> for AppData {
-	fn event(_: &mut Self, s: &wl_seat::WlSeat, event: wl_seat::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+	fn event(_: &mut Self, s: &wl_seat::WlSeat, event: wl_seat::Event, _: &(), _: &wayland_client::Connection, qh: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			wl_seat::Event::Capabilities { capabilities } => {
-				println!("Capabilities: {:?}", capabilities);
+				let capabilities = capabilities.into_result().unwrap();
+
+				if capabilities.contains(wl_seat::Capability::Pointer) {
+					let _ = s.get_pointer(qh, ());
+				}
+
+				if capabilities.contains(wl_seat::Capability::Keyboard) {
+					let _ = s.get_keyboard(qh, ());
+				}
 			}
 			wl_seat::Event::Name { name } => {
-				println!("Name: {:?}", name);
 			}
 			_ => {}
 		}
@@ -340,22 +347,41 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 	fn event(this: &mut Self, s: &wl_pointer::WlPointer, event: wl_pointer::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			wl_pointer::Event::Button { serial, time, button, state } => {
+				let pressed = state.into_result().unwrap() == wl_pointer::ButtonState::Pressed;
+
+				let button = match button {
+					1 => MouseKeys::Left,
+					2 => MouseKeys::Middle,
+					3 => MouseKeys::Right,
+					4 => MouseKeys::ScrollUp,
+					5 => MouseKeys::ScrollDown,
+					_ => return,
+				};
+
+				this.events.push_back(WindowEvents::Button { pressed, button });
 			}
 			wl_pointer::Event::Axis { time, axis, value } => {
+				let axis = match axis.into_result().unwrap() {
+					wl_pointer::Axis::VerticalScroll => MouseKeys::ScrollUp,
+					wl_pointer::Axis::HorizontalScroll => MouseKeys::ScrollDown,
+					_ => return,
+				};
+
+				let pressed = value > 0.0;
 			}
 			wl_pointer::Event::Motion { time, surface_x, surface_y } => {
 				if let Some(extent) = this.extent {
-					let x = surface_x as f32;
-					let y = surface_y as f32;
+					let x = surface_x as f32 * this.scale as f32;
+					let y = surface_y as f32 * this.scale as f32;
 
 					let width = extent.width() as f32;
 					let height = extent.height() as f32;
 
-					let x = x - width / 2.0;
-					let y = y - height / 2.0;
+					let half_width = width / 2.0;
+					let half_height = height / 2.0;
 
-					let x = x / width;
-					let y = y / height;
+					let x = (x - half_width) / half_width;
+					let y = (half_height - y) / half_height;
 
 					this.events.push_back(WindowEvents::MouseMove { x, y, time: time as u64 });
 				}

@@ -479,9 +479,17 @@ impl<'a> BufferSplitter<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FrameKey {
+	/// The index of the frame.
+	pub(crate) frame_index: u32,
+	pub(crate) sequence_index: u8,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PresentKey {
 	/// The index corresponding to the frame index.
-	pub(crate) frame_index: u8,
+	pub(crate) image_index: u8,
+	pub(crate) sequence_index: u8,
 	/// The swapchain handle corresponding to the presentation request that this key is associated with.
 	pub(crate) swapchain: SwapchainHandle,
 }
@@ -528,7 +536,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_index: Option<u32>) -> crate::CommandBufferRecording;
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording;
 
 	/// Creates a new buffer.\
 	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\
@@ -585,6 +593,8 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	/// Multiple underlying synchronization primitives are created, one for each frame
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
 
+	fn start_frame(&self, index: u32) -> FrameKey;
+
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///
 	/// # Arguments
@@ -594,9 +604,9 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	/// # Returns
 	/// A present key for future presentation and, if defined, the extent of the image.
 	/// # Errors
-	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: SwapchainHandle) -> (PresentKey, Option<Extent>);
+	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: SwapchainHandle) -> (PresentKey, Option<Extent>);
 
-	fn wait(&self, frame_index: u32, synchronizer_handle: SynchronizerHandle);
+	fn wait(&self, frame_key: FrameKey, synchronizer_handle: SynchronizerHandle);
 
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
 	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
@@ -1603,6 +1613,8 @@ use super::*;
 
 		renderer.start_frame_capture();
 
+		let frame_key = renderer.start_frame(0);
+
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
 
 		let attachments = [
@@ -1623,7 +1635,7 @@ use super::*;
 
 		renderer.end_frame_capture();
 
-		renderer.wait(0, signal); // Wait for the render to finish before accessing the image data
+		renderer.wait(frame_key, signal); // Wait for the render to finish before accessing the image data
 
 		assert!(!renderer.has_errors());
 
@@ -1721,7 +1733,9 @@ use super::*;
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
-		let (present_key, _) = renderer.acquire_swapchain_image(0, swapchain,);
+		let frame_key = renderer.start_frame(0);
+
+		let (present_key, _) = renderer.acquire_swapchain_image(frame_key, swapchain,);
 
 		renderer.start_frame_capture();
 
@@ -1745,7 +1759,7 @@ use super::*;
 
 		renderer.end_frame_capture();
 
-		renderer.wait(0, render_finished_synchronizer);
+		renderer.wait(frame_key, render_finished_synchronizer);
 
 		// TODO: assert rendering results
 
@@ -1831,14 +1845,15 @@ use super::*;
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
 		for i in 0..2*64 {
-			let modulo_frame_index = i % 2;
-			renderer.wait(modulo_frame_index, render_finished_synchronizer);
+			let frame_key = renderer.start_frame(i);
 
-			let (present_key, _) = renderer.acquire_swapchain_image(modulo_frame_index, swapchain,);
+			renderer.wait(frame_key, render_finished_synchronizer);
+
+			let (present_key, _) = renderer.acquire_swapchain_image(frame_key, swapchain,);
 
 			renderer.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 			let attachments = [
 				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
@@ -1943,12 +1958,11 @@ use super::*;
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let modulo_frame_index = i as u32 % FRAMES_IN_FLIGHT as u32;
-			// renderer.wait(render_finished_synchronizer);
+			let frame_key = renderer.start_frame(i as u32);
 
 			renderer.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 			let attachments = [
 				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
@@ -1968,7 +1982,7 @@ use super::*;
 
 			renderer.end_frame_capture();
 
-			renderer.wait(modulo_frame_index, render_finished_synchronizer);
+			renderer.wait(frame_key, render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
@@ -2076,9 +2090,11 @@ use super::*;
 
 			//unsafe { std::ptr::copy_nonoverlapping(matrix.as_ptr(), pointer as *mut f32, 16); }
 
+			let frame_key = renderer.start_frame(i as u32);
+
 			renderer.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, Some(i as u32));
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 			let attachments = [
 				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
@@ -2110,7 +2126,7 @@ use super::*;
 
 			renderer.end_frame_capture();
 
-			renderer.wait(modulo_frame_index, render_finished_synchronizer);
+			renderer.wait(frame_key, render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
@@ -2179,7 +2195,9 @@ use super::*;
 
 		let signal = renderer.create_synchronizer(None, false);
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(0));
+		let frame_key = renderer.start_frame(0);
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let data = [0.5f32];
 
@@ -2190,7 +2208,7 @@ use super::*;
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(0, signal);
+		renderer.wait(frame_key, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2199,7 +2217,9 @@ use super::*;
 
 		assert!(!renderer.has_errors());
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(1));
+		let frame_key = renderer.start_frame(1);
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let data = [1.0f32];
 
@@ -2210,7 +2230,7 @@ use super::*;
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(1, signal);
+		renderer.wait(frame_key, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2219,13 +2239,15 @@ use super::*;
 
 		assert!(!renderer.has_errors());
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(2));
+		let frame_key = renderer.start_frame(2);
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let copy_handles = command_buffer_recording.sync_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(0, signal);
+		renderer.wait(frame_key, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2234,13 +2256,15 @@ use super::*;
 
 		assert!(!renderer.has_errors());
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, Some(3));
+		let frame_key = renderer.start_frame(3);
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let copy_handles = command_buffer_recording.sync_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(1, signal);
+		renderer.wait(frame_key, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2358,7 +2382,9 @@ use super::*;
 
 		renderer.start_frame_capture();
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
+		let frame_key = renderer.start_frame(0);
+
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
@@ -2382,7 +2408,7 @@ use super::*;
 
 		renderer.end_frame_capture();
 
-		renderer.wait(0, signal); // Wait for the render to finish before accessing the texture data
+		renderer.wait(frame_key, signal); // Wait for the render to finish before accessing the texture data
 
 		// assert colored triangle was drawn to texture
 		let _pixels = renderer.get_image_data(texure_copy_handles[0]);
@@ -2569,11 +2595,11 @@ void main() {
 		renderer.write_sbt_entry(hit_sbt_buffer, 0, pipeline, closest_hit_shader);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let modulo_frame_index = (i % FRAMES_IN_FLIGHT) as u32;
+			let frame_key = renderer.start_frame(i as u32);
 
 			renderer.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, Some(i as u32));
+			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, frame_key.into());
 
 			{
 				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
@@ -2660,7 +2686,7 @@ void main() {
 
 			assert!(!renderer.has_errors());
 
-			renderer.wait(modulo_frame_index, render_finished_synchronizer);
+			renderer.wait(frame_key, render_finished_synchronizer);
 
 			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 

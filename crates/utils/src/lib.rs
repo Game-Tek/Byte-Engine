@@ -165,6 +165,12 @@ impl RGBA {
 	pub fn white() -> Self { Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0, } }
 }
 
+impl Default for RGBA {
+	fn default() -> Self {
+		Self::black()
+	}
+}
+
 pub fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {
 	let length = collection.len();
 	collection.push(value);

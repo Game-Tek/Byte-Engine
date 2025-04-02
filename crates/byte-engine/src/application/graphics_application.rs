@@ -1,4 +1,4 @@
-use crate::core::{property::Property, EntityHandle, spawn, spawn_as_child};
+use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, input::input_trigger};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -96,23 +96,23 @@ impl Application for GraphicsApplication {
 
 			let mouse_device_class_handle = input_system.register_device_class("Mouse");
 
-			input_system.register_input_source(&mouse_device_class_handle, "Position", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-			input_system.register_input_source(&mouse_device_class_handle, "LeftButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&mouse_device_class_handle, "RightButton", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&mouse_device_class_handle, "Scroll", input::input_manager::InputTypes::Float(input::input_manager::InputSourceDescription::new(0f32, 0f32, -1f32, 1f32)));
+			input_system.register_trigger(&mouse_device_class_handle, "Position", input_trigger::TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
+			input_system.register_trigger(&mouse_device_class_handle, "LeftButton", input_trigger::TriggerDescription::new(false, false, false, true));
+			input_system.register_trigger(&mouse_device_class_handle, "RightButton", input_trigger::TriggerDescription::new(false, false, false, true));
+			input_system.register_trigger(&mouse_device_class_handle, "Scroll", input_trigger::TriggerDescription::new(0f32, 0f32, -1f32, 1f32));
 
 			let keyboard_device_class_handle = input_system.register_device_class("Keyboard");
 
-			input_system.register_input_source(&keyboard_device_class_handle, "W", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&keyboard_device_class_handle, "S", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&keyboard_device_class_handle, "A", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&keyboard_device_class_handle, "D", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
-			input_system.register_input_source(&keyboard_device_class_handle, "Space", input::input_manager::InputTypes::Bool(input::input_manager::InputSourceDescription::new(false, false, false, true)));
+			input_system.register_trigger(&keyboard_device_class_handle, "W", input_trigger::TriggerDescription::new(false, false, false, true));
+			input_system.register_trigger(&keyboard_device_class_handle, "S", input_trigger::TriggerDescription::new(false, false, false, true));
+			input_system.register_trigger(&keyboard_device_class_handle, "A", input_trigger::TriggerDescription::new(false, false, false, true));
+			input_system.register_trigger(&keyboard_device_class_handle, "D", input_trigger::TriggerDescription::new(false, false, false, true));
+			input_system.register_trigger(&keyboard_device_class_handle, "Space", input_trigger::TriggerDescription::new(false, false, false, true));
 
 			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
 
-			input_system.register_input_source(&gamepad_device_class_handle, "LeftStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-			input_system.register_input_source(&gamepad_device_class_handle, "RightStick", input::input_manager::InputTypes::Vector2(input::input_manager::InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
+			input_system.register_trigger(&gamepad_device_class_handle, "LeftStick", input_trigger::TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
+			input_system.register_trigger(&gamepad_device_class_handle, "RightStick", input_trigger::TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
 
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 			keyboard_device_handle = input_system.create_device(&keyboard_device_class_handle);
@@ -189,8 +189,7 @@ impl Application for GraphicsApplication {
 			let mut window_system = window_system.write();
 
 			{
-				let input_system = self.input_system_handle.get_lock();
-				let mut input_system = input_system.write();
+				let mut input_system = self.input_system_handle.write();
 
 				window_system.update_windows(|_, event| {
 					match event {
@@ -198,23 +197,23 @@ impl Application for GraphicsApplication {
 						ghi::WindowEvents::Button { pressed, button } => {
 							match button {
 								ghi::MouseKeys::Left => {
-									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.LeftButton"), input::Value::Bool(pressed));
+									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed));
 								},
 								ghi::MouseKeys::Right => {
-									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.RightButton"), input::Value::Bool(pressed));
+									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed));
 								},
 								ghi::MouseKeys::ScrollUp => {
-									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Scroll"), input::Value::Float(1f32));
+									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32));
 								},
 								ghi::MouseKeys::ScrollDown => {
-									input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Scroll"), input::Value::Float(-1f32));
+									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32));
 								},
 								_ => { }
 							}
 						},
 						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
 							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
-							input_system.record_input_source_action(&self.mouse_device_handle, input::input_manager::InputSourceAction::Name("Mouse.Position"), input::Value::Vector2(vec));
+							input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec));
 						},
 						ghi::WindowEvents::Resize { width, height } => {
 							log::debug!("Resizing window to {}x{}", width, height);
@@ -222,24 +221,24 @@ impl Application for GraphicsApplication {
 						ghi::WindowEvents::Key { pressed, key } => {
 							let (device_handle, input_source_action, value) = match key {
 								ghi::Keys::W => {
-									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.W"), input::Value::Bool(pressed))
+									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::S => {
-									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.S"), input::Value::Bool(pressed))
+									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::A => {
-									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.A"), input::Value::Bool(pressed))
+									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::D => {
-									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.D"), input::Value::Bool(pressed))
+									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::Space => {
-									(self.keyboard_device_handle.clone(), input::input_manager::InputSourceAction::Name("Keyboard.Space"), input::Value::Bool(pressed))
+									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
 								},
 								_ => { return; }
 							};
 
-							input_system.record_input_source_action(&device_handle, input_source_action, value);
+							input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
 						},
 						_ => { }
 					}

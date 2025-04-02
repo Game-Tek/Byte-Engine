@@ -2,18 +2,24 @@ use utils::RGBA;
 use crate::{Quaternion, Vector2, Vector3};
 
 pub mod input_manager;
+
+pub mod device_class;
+pub mod device;
+pub mod input_trigger;
 pub mod action;
 
 pub use action::Action;
 pub use action::ActionBindingDescription;
 
 pub use input_manager::InputManager;
-pub use input_manager::DeviceHandle;
+pub use input_trigger::TriggerHandle;
+pub use device::DeviceHandle;
+pub use action::ActionHandle;
 
 use self::action::InputValue;
 
 /// Enumerates the different types of types of values the input manager can handle.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Types {
 	/// A boolean value.
 	Bool,
@@ -100,6 +106,36 @@ impl Into<Value> for Vector3 {
 impl Into<Value> for Quaternion {
 	fn into(self) -> Value {
 		Value::Quaternion(self)
+	}
+}
+
+impl Into<Types> for Value {
+	fn into(self) -> Types {
+		match self {
+			Value::Bool(_) => Types::Bool,
+			Value::Unicode(_) => Types::Unicode,
+			Value::Float(_) => Types::Float,
+			Value::Int(_) => Types::Int,
+			Value::Rgba(_) => Types::Rgba,
+			Value::Vector2(_) => Types::Vector2,
+			Value::Vector3(_) => Types::Vector3,
+			Value::Quaternion(_) => Types::Quaternion,
+		}
+	}
+}
+
+impl Types {
+	pub fn default_value(&self) -> Value {
+		match self {
+			Types::Bool => Value::Bool(false),
+			Types::Unicode => Value::Unicode('\0'),
+			Types::Float => Value::Float(0.0),
+			Types::Int => Value::Int(0),
+			Types::Rgba => Value::Rgba(RGBA::new(0.0, 0.0, 0.0, 1.0)),
+			Types::Vector2 => Value::Vector2(Vector2::new(0.0, 0.0)),
+			Types::Vector3 => Value::Vector3(Vector3::new(0.0, 0.0, 0.0)),
+			Types::Quaternion => Value::Quaternion(Quaternion::identity()),
+		}
 	}
 }
 

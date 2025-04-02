@@ -261,18 +261,18 @@ impl Renderer {
             return;
         }
 
-        let modulo_frame_index = (self.rendered_frame_count % self.frame_queue_depth) as u32;
-
         let mut ghi = self.ghi.write();
 
         let swapchain_handle = self.swapchain_handles[0];
 
-        ghi.wait(modulo_frame_index, self.render_finished_synchronizer);
+		let frame_key = ghi.start_frame(self.rendered_frame_count as u32);
+
+        ghi.wait(frame_key, self.render_finished_synchronizer);
 
         ghi.start_frame_capture();
 
         let (present_key, extent) =
-            ghi.acquire_swapchain_image(self.rendered_frame_count as u32, swapchain_handle,);
+            ghi.acquire_swapchain_image(frame_key, swapchain_handle,);
 
         let extent = extent.unwrap_or(Extent::rectangle(1920, 1080));
 
@@ -297,7 +297,7 @@ impl Renderer {
 
         let mut command_buffer_recording = ghi.create_command_buffer_recording(
             self.render_command_buffer,
-            Some(self.rendered_frame_count as u32),
+            frame_key.into(),
         );
 
         self.root_render_pass

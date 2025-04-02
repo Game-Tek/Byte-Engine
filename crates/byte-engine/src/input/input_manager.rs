@@ -17,129 +17,31 @@
 //! - [ ] Remove panics.
 //! - [ ] Add device class and device grouping.
 
-use std::{f32::consts::PI, collections::HashMap};
+use std::{collections::HashMap, default, f32::consts::PI};
 
 use log::warn;
+use serde::de;
 use utils::{insert_return_length, RGBA};
 
 use crate::{core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, Quaternion, Vector2, Vector3};
 
-use super::{action::{InputSourceMapping, InputValue}, Action, ActionBindingDescription, Function, Types, Value};
-
-/// A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
-/// It can have associated input sources, such as the UP key on a keyboard or the left trigger on a gamepad.
-struct DeviceClass {
-	/// The name of the device class.
-	name: String,
-}
-
-#[derive(Copy, Clone)]
-pub struct InputSourceDescription<T> {
-	/// The value the input source will have when it's first registered and no events have been recorded for it.
-	default: T,
-	/// The value the input source will have when it's released.
-	rest: T,
-	/// The minimum value the input source can have.
-	min: T,
-	/// The maximum value the input source can have.
-	max: T,
-}
-
-impl <T> InputSourceDescription<T> {
-	pub fn new(default: T, rest: T, min: T, max: T) -> Self {
-		InputSourceDescription {
-			default,
-			rest,
-			min,
-			max,
-		}
-	}
-}
-
-impl Default for InputSourceDescription<bool> {
-	fn default() -> Self {
-		InputSourceDescription::new(false, false, false, true)
-	}
-}
-
-impl Default for InputSourceDescription<char> {
-	fn default() -> Self {
-		InputSourceDescription::new('\0', '\0', '\0', '\u{10FFFF}')
-	}
-}
-
-impl Default for InputSourceDescription<f32> {
-	fn default() -> Self {
-		InputSourceDescription::new(0f32, 0f32, 0f32, 1f32)
-	}
-}
-
-impl Default for InputSourceDescription<i32> {
-	fn default() -> Self {
-		InputSourceDescription::new(0, 0, i32::MIN, i32::MAX)
-	}
-}
-
-impl Default for InputSourceDescription<RGBA> {
-	fn default() -> Self {
-		InputSourceDescription::new(RGBA::new(0f32, 0f32, 0f32, 1f32), RGBA::new(0f32, 0f32, 0f32, 1f32), RGBA::new(0f32, 0f32, 0f32, 1f32), RGBA::new(1f32, 1f32, 1f32, 1f32))
-	}
-}
-
-impl Default for InputSourceDescription<Vector2> {
-	fn default() -> Self {
-		InputSourceDescription::new(Vector2::new(0f32, 0f32), Vector2::new(0f32, 0f32), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))
-	}
-}
-
-impl Default for InputSourceDescription<Vector3> {
-	fn default() -> Self {
-		InputSourceDescription::new(Vector3::new(0f32, 0f32, 0f32), Vector3::new(0f32, 0f32, 0f32), Vector3::new(-1f32, -1f32, -1f32), Vector3::new(1f32, 1f32, 1f32))
-	}
-}
-
-impl Default for InputSourceDescription<Quaternion> {
-	fn default() -> Self {
-		InputSourceDescription::new(Quaternion::identity(), Quaternion::identity(), Quaternion::identity(), Quaternion::identity())
-	}
-}
-
-/// An input source is a source of input on a device class/type. Such as the UP key on a keyboard or the left trigger on a gamepad.
-struct InputSource {
-	/// The device class the input source is associated with.
-	device_class_handle: DeviceClassHandle,
-	/// The name of the input source.
-	name: String,
-	/// The type of the input source.
-	r#type: InputTypes,
-}
+use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TriggerHandle, Types, Value};
 
 #[derive(Copy, Clone, Debug)]
-/// An input source action is a way to reference an input source.
+/// A trigger reference is a way to reference an input trigger.
 /// It can be referenced by it's name or by it's handle.
 /// It's provided as a convenience to the developer.
-pub enum InputSourceAction {
-	/// Refer to the input source by it's handle.
-	Handle(InputSourceHandle),
-	/// Refer to the input source by it's name.
+pub enum TriggerReference {
+	/// Refer to the input trigger by it's handle.
+	Handle(TriggerHandle),
+	/// Refer to the input trigger by it's name.
 	Name(&'static str)
 }
 
-#[derive(Copy, Clone)]
-pub enum InputTypes {
-	Bool(InputSourceDescription<bool>),
-	Unicode(InputSourceDescription<char>),
-	Float(InputSourceDescription<f32>),
-	Int(InputSourceDescription<i32>),
-	Rgba(InputSourceDescription<RGBA>),
-	Vector2(InputSourceDescription<Vector2>),
-	Vector3(InputSourceDescription<Vector3>),
-	Quaternion(InputSourceDescription<Quaternion>),
-}
-
 #[derive(Copy, Clone, PartialEq)]
-pub struct Record {
-	input_source_handle: InputSourceHandle,
+struct Record {
+	device_handle: DeviceHandle,
+	trigger_handle: TriggerHandle,
 	value: Value,
 	time: std::time::SystemTime,
 }
@@ -166,7 +68,7 @@ enum TypedHandle {
 struct InputAction {
 	name: String,
 	r#type: Types,
-	input_event_descriptions: Vec<InputSourceMapping>,
+	trigger_mappings: Vec<TriggerMapping>,
 	/// The stack is a list of input source records that simultaneous, connected, and currently active.
 	/// The stack is used to determine the value of the input event.
 	/// The stack is ordered by the time the input source was first pressed.
@@ -188,14 +90,6 @@ struct InputAction {
 	handle: Option<TypedHandle>,
 }
 
-/// A device represents a particular instance of a device class. Such as the current keyboard, or a specific gamepad.
-/// This is useful for when you want to have multiple devices of the same type. Such as multiple gamepads(player 0, player 1, etc).
-struct Device {
-	device_class_handle: DeviceClassHandle,
-	index: u32,
-	input_source_states: std::collections::HashMap<InputSourceHandle, InputSourceState>,
-}
-
 pub struct InputSourceEventState {
 	device_handle: DeviceHandle,
 	value: Value,
@@ -211,29 +105,17 @@ pub struct InputEventState {
 	value: Value,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-/// Handle to an input device class.
-pub struct DeviceClassHandle(u32);
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-/// Handle to an input source.
-pub struct InputSourceHandle(u32);
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-/// Handle to an device.
-pub struct DeviceHandle(u32);
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-/// Handle to an input event.
-pub struct ActionHandle(u32);
-
 /// The input manager is responsible for managing input devices and input events.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
-	input_sources: Vec<InputSource>,
+	triggers: Vec<Trigger>,
 	devices: Vec<Device>,
 	records: Vec<Record>,
 	actions: Vec<InputAction>,
+	/// Stores the last value of a trigger relative to the device it belongs to.
+	trigger_values: HashMap<(DeviceHandle, TriggerHandle), Record>,
+	/// Stores the last value of an action relative to the device it belongs to.
+	action_values: HashMap<(DeviceHandle, ActionHandle), Value>,
 }
 
 impl InputManager {
@@ -241,10 +123,12 @@ impl InputManager {
 	pub fn new() -> Self {
 		InputManager {
 			device_classes: Vec::new(),
-			input_sources: Vec::new(),
+			triggers: Vec::new(),
 			devices: Vec::new(),
 			records: Vec::new(),
 			actions: Vec::new(),
+			trigger_values: HashMap::with_capacity(512),
+			action_values: HashMap::with_capacity(64),
 		}
 	}
 
@@ -300,14 +184,22 @@ impl InputManager {
 	/// # let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
 	/// input_manager.register_input_source(&keyboard_device_class_handle, "Up", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
 	/// ```
-	pub fn register_input_source(&mut self, device_handle: &DeviceClassHandle, name: &str, value_type: InputTypes) -> InputSourceHandle {
-		let input_source = InputSource {
+	pub fn register_trigger<T>(&mut self, device_handle: &DeviceClassHandle, name: &str, value_type: TriggerDescription<T>) -> TriggerHandle where T: InputValue + Into<Value> {
+		let default = value_type.default;
+
+		let default: Value = default.into();
+		let default_value_type: Types = default.into();
+
+		assert_eq!(default_value_type, T::get_type(), "Default value type does not match input source type");
+
+		let input_source = Trigger {
 			device_class_handle: *device_handle,
 			name: name.to_string(),
-			r#type: value_type,
+			r#type: T::get_type(),
+			default,
 		};
 
-		InputSourceHandle(insert_return_length(&mut self.input_sources, input_source) as u32)
+		TriggerHandle(insert_return_length(&mut self.triggers, input_source) as u32)
 	}
 
 	/// Registers an input destination on a device.
@@ -328,8 +220,8 @@ impl InputManager {
 	/// # let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
 	/// input_manager.register_input_destination(&gamepad_device_class_handle, "Rumble", InputTypes::Float(InputSourceDescription::new(0f32, 0f32, 0f32, 1f32)));
 	/// ```
-	pub fn register_input_destination(&mut self, _device_class_handle: &DeviceClassHandle, _name: &str, _value_type: InputTypes) -> InputSourceHandle {
-		InputSourceHandle(0)
+	pub fn register_input_destination<T: InputValue>(&mut self, _device_class_handle: &DeviceClassHandle, _name: &str, _value_type: TriggerDescription<T>) -> TriggerHandle {
+		TriggerHandle(0)
 	}
 
 	/// Creates an instance of a device class.
@@ -348,8 +240,6 @@ impl InputManager {
 	/// let keyboard_device = input_manager.create_device(&keyboard_device_class_handle);
 	/// ```
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
-		let _device_class = &self.device_classes[device_class_handle.0 as usize];
-
 		let other_device = self.devices.iter().filter(|d| d.device_class_handle.0 == device_class_handle.0).min_by_key(|d| d.index);
 
 		let index = match other_device {
@@ -357,34 +247,9 @@ impl InputManager {
 			None => 0,
 		};
 
-		let input_source_handles = self.input_sources.iter().enumerate().filter(|i| i.1.device_class_handle == *device_class_handle).map(|i| InputSourceHandle(i.0 as u32)).collect::<Vec<_>>();
-
-		let mut input_source_states = std::collections::HashMap::with_capacity(input_source_handles.len());
-
-		for input_source_handle in input_source_handles {
-			let input_source = &self.input_sources[input_source_handle.0 as usize];
-
-			let input_source_state = InputSourceState {
-				value: match input_source.r#type {
-					InputTypes::Bool(description) => Value::Bool(description.default),
-					InputTypes::Unicode(description) => Value::Unicode(description.default),
-					InputTypes::Float(description) => Value::Float(description.default),
-					InputTypes::Int(description) => Value::Int(description.default),
-					InputTypes::Rgba(description) => Value::Rgba(description.default),
-					InputTypes::Vector2(description) => Value::Vector2(description.default),
-					InputTypes::Vector3(description) => Value::Vector3(description.default),
-					InputTypes::Quaternion(description) => Value::Quaternion(description.default),
-				},
-				time: std::time::SystemTime::now(),
-			};
-
-			input_source_states.insert(input_source_handle, input_source_state);
-		}
-
 		let device = Device {
 			device_class_handle: device_class_handle.clone(),
 			index,
-			input_source_states,
 		};
 
 		DeviceHandle(insert_return_length(&mut self.devices, device) as u32)
@@ -451,34 +316,24 @@ impl InputManager {
 	/// 	- Quaternion: Returns a quaternion when the RGBA color is reached.
 	/// 	- RGBA: Returns the RGBA color.
 
-	/// Records an input source action.
+	/// Records an input trigger value for a device into a queue.
+	/// The new value for the input trigger is not reflected until the next call to `update()`.
 	///
 	/// One example is the UP key on a keyboard being pressed.
-	pub fn record_input_source_action(&mut self, device_handle: &DeviceHandle, input_source_action: InputSourceAction, value: Value) {
-		let input_source = if let Some(input_source) = self.get_input_source_from_input_source_action(&input_source_action) {
-			input_source
+	pub fn record_trigger_value_for_device(&mut self, device_handle: DeviceHandle, trigger_reference: TriggerReference, value: Value) {
+		let trigger = if let Some(trigger) = self.get_trigger_from_trigger_reference(&trigger_reference) {
+			trigger
 		} else {
 			warn!("Tried to record an input source action that doesn't exist");
 			return;
 		};
 
-		let matches = match input_source.r#type {
-			InputTypes::Bool(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Bool(false)),
-			InputTypes::Unicode(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Unicode('\0')),
-			InputTypes::Float(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Float(0f32)),
-			InputTypes::Int(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Int(0)),
-			InputTypes::Rgba(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Rgba(RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 })),
-			InputTypes::Vector2(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Vector2(Vector2 { x: 0f32, y: 0f32 })),
-			InputTypes::Vector3(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 })),
-			InputTypes::Quaternion(_) => std::mem::discriminant(&value) == std::mem::discriminant(&Value::Quaternion(Quaternion::identity())),
-		};
-
-		if !matches {
-			warn!("Tried to record an extraneous type into input source: {}", input_source.name);
+		if trigger.r#type != value.into() {
+			warn!("Tried to record an extraneous type into input source: {}", trigger.name);
 			return; // Value type does not match input source declared type, so don't record.
 		}
 
-		let input_source_handle = if let Some(input_source_handle) = self.to_input_source_handle(&input_source_action) {
+		let trigger_handle = if let Some(input_source_handle) = self.to_trigger_handle(&trigger_reference) {
 			input_source_handle
 		} else {
 			warn!("Tried to record an input source action that doesn't exist");
@@ -487,73 +342,71 @@ impl InputManager {
 
 		let device = &mut self.devices[device_handle.0 as usize];
 
-		let input_source_state = device.input_source_states.get_mut(&input_source_handle);
-
-		if input_source_state.is_none() {
-			// TODO: log warning and handle gracefully.
-			panic!("Input source state not found!");
-		}
-
-		let input_source_state = input_source_state.unwrap();
-
 		let time = std::time::SystemTime::now();
 
-		input_source_state.value = value;
-		input_source_state.time = time;
-
 		let record = Record {
-			input_source_handle,
+			device_handle,
+			trigger_handle,
 			value,
 			time,
 		};
 
-		{
-			let mut i = 0;
-			while i < self.records.len() {
-				if self.records[i].input_source_handle == input_source_handle {
-					self.records.remove(i);
-				} else {
-					i += 1;
-				}
-			}
-		}
-
 		self.records.push(record);
-
-		if let Value::Bool(boo) = value {
-			let input_events = self.actions.iter_mut().filter(|ia| ia.input_event_descriptions.iter().any(|ied| ied.input_source_handle == input_source_handle));
-
-			if boo {
-				for input_event in input_events {
-					input_event.stack.push(record);
-				}
-			} else {
-				for input_event in input_events {
-					input_event.stack.retain(|r| r.input_source_handle != input_source_handle);
-				}
-			}
-		}
 	}
 
 	pub fn update(&mut self) {
-		let records = &self.records;
+		if self.records.is_empty() { return; }
 
-		if records.is_empty() { return; }
+		let mut records = self.records.clone();
+		self.records.clear();
+
+		records.sort_by(|a, b| a.time.cmp(&b.time));
+
+		let mut last_records: HashMap<(DeviceHandle, TriggerHandle), Record> = HashMap::with_capacity(records.len());
+
+		for record in records {
+			last_records.insert((record.device_handle, record.trigger_handle), record);
+		}
+
+		// Deduped and most recent records.
+		let records = last_records.into_values().collect::<Vec<_>>();
+
+		for record in &records {
+			let value = record.value;
+			let device_handle = record.device_handle;
+			let trigger_handle = record.trigger_handle;
+
+			self.trigger_values.insert((device_handle, trigger_handle), record.clone());
+		}
+
+		for record in &records {
+			if let Value::Bool(pressed) = record.value {
+				let actions = self.actions.iter_mut().filter(|a| a.trigger_mappings.iter().any(|tm| tm.trigger_handle == record.trigger_handle));
+	
+				if pressed {
+					for action in actions {
+						action.stack.push(record.clone());
+					}
+				} else {
+					for action in actions {
+						action.stack.retain(|r| (record.device_handle, record.trigger_handle) != (r.device_handle, r.trigger_handle));
+					}
+				}
+			}
+		}
 
 		for (i, action) in self.actions.iter().enumerate() {
-			let action_records = records.iter().filter(|r| action.input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle));
+			let action_records = records.iter().filter(|r| action.trigger_mappings.iter().any(|tm| tm.trigger_handle == r.trigger_handle));
 
 			let most_recent_record = action_records.max_by_key(|r| r.time);
 			
-			let handle = if let Some(handle) = &action.handle {
-				handle
-			} else {
-				continue;
-			};
+			let record = if let Some(record) = most_recent_record { record } else { continue; };
 
-			if let Some(record) = most_recent_record {
-				let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
+			let value = if let Some(value) = Self::resolve_action_value_from_record(action, record) { value } else { continue; };
 
+			self.action_values.insert((record.device_handle, ActionHandle(i as u32)), value);
+
+			if let Some(handle) = &action.handle {
 				match value {
 					Value::Bool(v) => {
 						match handle {
@@ -585,17 +438,15 @@ impl InputManager {
 				}
 			}
 		}
-
-		self.records.clear();
 	}
 
 	pub fn create_action(&mut self, name: &str, r#type: Types, action_binding_descriptions: &[ActionBindingDescription]) -> ActionHandle {
 		let input_event = InputAction {
 			name: name.to_string(),
 			r#type,
-			input_event_descriptions: action_binding_descriptions.iter().map(|input_event| {
-				Some(InputSourceMapping {
-					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
+			trigger_mappings: action_binding_descriptions.iter().map(|input_event| {
+				Some(TriggerMapping {
+					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
 					mapping: input_event.mapping,
 					function: input_event.function,
 				})
@@ -610,89 +461,43 @@ impl InputManager {
 		handle
 	}
 
-	/// Gets the input source action from the input source action.
-	pub fn get_input_source_record(&self, device_handle: &DeviceHandle, input_source_action: InputSourceAction) -> Record {
-		let _input_source = self.get_input_source_from_input_source_action(&input_source_action);
+	/// Get the latest processed value for an trigger for a device.
+	pub fn get_trigger_value_for_device(&self, device_handle: DeviceHandle, trigger_reference: TriggerReference) -> Result<Value, ()> {
+		let trigger_handle = self.to_trigger_handle(&trigger_reference).ok_or(())?;
 
-		let device = self.get_device(device_handle);
-		let state = &device.input_source_states[&self.to_input_source_handle(&input_source_action).unwrap()];
+		let trigger = self.get_trigger_from_trigger_reference(&trigger_reference).ok_or(())?;
 
-		Record {
-			input_source_handle: InputSourceHandle(0),
-			value: state.value,
-			time: state.time
-		}
+		Ok(self.trigger_values.get(&(device_handle, trigger_handle)).map(|record| record.value).unwrap_or(trigger.default))
 	}
 
-	pub fn get_input_source_value(&self, device_handle: &DeviceHandle, input_source_action: InputSourceAction) -> Value {
-		let _input_source = self.get_input_source_from_input_source_action(&input_source_action);
-
-		let device = self.get_device(device_handle);
-		let state = &device.input_source_states[&self.to_input_source_handle(&input_source_action).unwrap()];
-
-		state.value
-	}
-
-	pub fn get_input_source_values(&self, input_source_action: InputSourceAction) -> Vec<InputSourceEventState> {
-		let _input_source = self.get_input_source_from_input_source_action(&input_source_action);
-
-		self.devices.iter().enumerate().map(|(i, _device)| {
-			let device_handle = DeviceHandle(i as u32);
-
-			InputSourceEventState {
-				value: self.get_input_source_value(&device_handle, input_source_action),
-				device_handle,
-			}
-		}).collect::<Vec<_>>()
-	}
-
-	/// Gets the value of an input event.
-	pub fn get_action_state(&self, input_event_handle: ActionHandle, device_handle: &DeviceHandle) -> InputEventState {
-		let action = &self.actions[input_event_handle.0 as usize];
-		let (r#type, input_event_descriptions) = (action.r#type, &action.input_event_descriptions);
-
-		if let Some(record) = self.records.iter().filter(|r| input_event_descriptions.iter().any(|ied| ied.input_source_handle == r.input_source_handle)).max_by_key(|r| r.time) {
-			let value = self.resolve_action_value_from_record(action, record).unwrap_or(Value::Bool(false));
-
+	/// Gets the latest processed value of an action for a device.
+	pub fn get_action_state(&self, action_handle: ActionHandle, device_handle: DeviceHandle) -> InputEventState {
+		self.action_values.get(&(device_handle, action_handle)).map(|record| {
 			InputEventState {
-				device_handle: device_handle.clone(),
-				input_event_handle,
-				value,
+				device_handle,
+				input_event_handle: action_handle,
+				value: record.clone(),
 			}
-		} else {
-			let value = match self.input_sources[input_event_descriptions[0].input_source_handle.0 as usize].r#type {
-				InputTypes::Bool(_v) => {
-					match r#type {
-						Types::Bool => {
-							Value::Bool(false)
-						}
-						Types::Float => {
-							Value::Float(0.0f32)
-						}
-						Types::Vector2 => {
-							Value::Vector2(Vector2 { x: 0.0f32, y: 0.0f32 })
-						}
-						Types::Vector3 => {
-							Value::Vector3(Vector3 { x: 0.0f32, y: 0.0f32, z: 0.0f32 })
-						}
-						_ => panic!()
-					}
-				}
-				InputTypes::Float(v) => Value::Float(v.default),
-				InputTypes::Vector2(v) => Value::Vector2(v.default),
-				_ => panic!()
+		}).unwrap_or_else(|| {
+			let action = self.actions.get(action_handle.0 as usize).unwrap();
+			let default_value = match action.r#type {
+				Types::Bool => Value::Bool(false),
+				Types::Float => Value::Float(0f32),
+				Types::Vector2 => Value::Vector2(Vector2 { x: 0f32, y: 0f32 }),
+				Types::Vector3 => Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 }),
+				_ => panic!("Not implemented!"),
 			};
 
 			InputEventState {
-				device_handle: device_handle.clone(),
-				input_event_handle,
-				value,
+				device_handle,
+				input_event_handle: action_handle,
+				value: default_value,
 			}
-		}
+		})
 	}
 
-	fn resolve_action_value_from_record(&self, action: &InputAction, record: &Record) -> Option<Value> {
-		let mapping = action.input_event_descriptions.iter().find(|ied| ied.input_source_handle == record.input_source_handle).unwrap();
+	fn resolve_action_value_from_record(action: &InputAction, record: &Record) -> Option<Value> {
+		let mapping = action.trigger_mappings.iter().find(|ied| ied.trigger_handle == record.trigger_handle)?;
 
 		match action.r#type {
 			Types::Bool => {
@@ -715,10 +520,10 @@ impl InputManager {
 				let float: Option<f32> = match record.value {
 					Value::Bool(record_value) => {
 						if let Some(last) = action.stack.last() {
-							if let Value::Bool(_value) = last.value {
-								let event_description_for_input_source = action.input_event_descriptions.iter().find(|description| description.input_source_handle == last.input_source_handle).unwrap();
+							if let Value::Bool(pressed) = last.value { // Stack entry value does not really matter because if it is in the stack it _is_ pressed.
+								let trigger_mapping = action.trigger_mappings.iter().find(|description| description.trigger_handle == last.trigger_handle)?;
 
-								match event_description_for_input_source.mapping {
+								match trigger_mapping.mapping {
 									Value::Bool(value) => if value { 1f32 } else { 0f32 },
 									Value::Unicode(_) => 0f32,
 									Value::Float(value) => value,
@@ -852,18 +657,18 @@ impl InputManager {
 		}
 	}
 
-	fn get_input_source_from_input_source_action(&self, input_source_action: &InputSourceAction) -> Option<&InputSource> {
-		self.to_input_source_handle(input_source_action).and_then(|input_source_handle| self.input_sources.get(input_source_handle.0 as usize))
+	fn get_trigger_from_trigger_reference(&self, trigger_reference: &TriggerReference) -> Option<&Trigger> {
+		self.to_trigger_handle(trigger_reference).and_then(|trigger_handle| self.triggers.get(trigger_handle.0 as usize))
 	}
 
 	fn get_device(&self, device_handle: &DeviceHandle) -> &Device {
 		&self.devices[device_handle.0 as usize]
 	}
 
-	fn to_input_source_handle(&self, input_source_action: &InputSourceAction) -> Option<InputSourceHandle> {
-		match input_source_action {
-			InputSourceAction::Handle(handle) => Some(*handle),
-			InputSourceAction::Name(name) => {
+	fn to_trigger_handle(&self, trigger_reference: &TriggerReference) -> Option<TriggerHandle> {
+		match trigger_reference {
+			TriggerReference::Handle(handle) => Some(*handle),
+			TriggerReference::Name(name) => {
 				let tokens = (*name).split('.');
 
 				let input_device_class = self.device_classes.iter().enumerate().find(|(_, device_class)| device_class.name == tokens.clone().next().unwrap());
@@ -871,10 +676,10 @@ impl InputManager {
 				if let Some((idc_index, _)) = input_device_class {
 					let input_device_class_handle = DeviceClassHandle(idc_index as u32);
 
-					let input_source = self.input_sources.iter().enumerate().find(|(_, input_source)| input_source.name == tokens.clone().last().unwrap() && input_source.device_class_handle == input_device_class_handle);
+					let trigger = self.triggers.iter().enumerate().find(|(_, input_source)| input_source.name == tokens.clone().last().unwrap() && input_source.device_class_handle == input_device_class_handle);
 
-					if let Some(input_source) = input_source {
-						Some(InputSourceHandle(input_source.0 as u32))
+					if let Some(trigger) = trigger {
+						Some(TriggerHandle(trigger.0 as u32))
 					} else {
 						None
 					}
@@ -917,9 +722,9 @@ impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHa
 		let input_event = InputAction {
 			name: name.to_string(),
 			r#type,
-			input_event_descriptions: input_events.iter().map(|input_event| {
-				Some(InputSourceMapping {
-					input_source_handle: self.to_input_source_handle(&input_event.input_source)?,
+			trigger_mappings: input_events.iter().map(|input_event| {
+				Some(TriggerMapping {
+					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
 					mapping: input_event.mapping,
 					function: input_event.function,
 				})
@@ -936,11 +741,10 @@ impl Entity for InputManager {}
 
 #[cfg(test)]
 mod tests {
-	use crate::core::{spawn, spawn_as_child};
-	use std::{cell::RefCell, ops::DerefMut, os::unix::raw::dev_t, rc::Rc, sync::Arc};
+	use crate::{core::{spawn, spawn_as_child}, input::input_trigger::TriggerDescription};
+	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
 	use maths_rs::prelude::Base;
-	use utils::r#async::block_on; // TODO: remove, make own
 
 	use crate::{gameplay::space::Space, input::ActionBindingDescription};
 
@@ -949,16 +753,14 @@ mod tests {
 	fn declare_keyboard_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Keyboard");
 
-		let key_source_description = InputTypes::Bool(InputSourceDescription::new(false, false, false, true));
+		let _up_input_source = input_manager.register_trigger(&device_class_handle, "Up", TriggerDescription::<bool>::default());
+		let _down_input_source = input_manager.register_trigger(&device_class_handle, "Down", TriggerDescription::<bool>::default());
+		let _left_input_source = input_manager.register_trigger(&device_class_handle, "Left", TriggerDescription::<bool>::default());
+		let _right_input_source = input_manager.register_trigger(&device_class_handle, "Right", TriggerDescription::<bool>::default());
 
-		let _up_input_source = input_manager.register_input_source(&device_class_handle, "Up", key_source_description);
-		let _down_input_source = input_manager.register_input_source(&device_class_handle, "Down", key_source_description);
-		let _left_input_source = input_manager.register_input_source(&device_class_handle, "Left", key_source_description);
-		let _right_input_source = input_manager.register_input_source(&device_class_handle, "Right", key_source_description);
+		let key_source_description = TriggerDescription::new('\0', '\0', '\0', 'Z');
 
-		let key_source_description = InputTypes::Unicode(InputSourceDescription::new('\0', '\0', '\0', 'Z'));
-
-		let _a_input_source = input_manager.register_input_source(&device_class_handle, "Character", key_source_description);
+		let _a_input_source = input_manager.register_trigger(&device_class_handle, "Character", TriggerDescription::<bool>::default());
 
 		device_class_handle
 	}
@@ -966,17 +768,17 @@ mod tests {
 	fn declare_gamepad_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Gamepad");
 
-		let key_source_description = InputTypes::Float(InputSourceDescription::new(0.0f32, 0.0f32, 0.0f32, 1.0f32));
+		let key_source_description = TriggerDescription::new(0.0f32, 0.0f32, 0.0f32, 1.0f32);
 
-		let _up_input_source = input_manager.register_input_source(&device_class_handle, "LeftTrigger", key_source_description);
-		let _down_input_source = input_manager.register_input_source(&device_class_handle, "RighTrigger", key_source_description);
+		let _up_input_source = input_manager.register_trigger(&device_class_handle, "LeftTrigger", key_source_description);
+		let _down_input_source = input_manager.register_trigger(&device_class_handle, "RighTrigger", key_source_description);
 
-		let key_source_description = InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
+		let key_source_description = TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, });
 
-		let _a_input_source = input_manager.register_input_source(&device_class_handle, "LeftStick", key_source_description);
-		let _b_input_source = input_manager.register_input_source(&device_class_handle, "RightStick", key_source_description);
+		let _a_input_source = input_manager.register_trigger(&device_class_handle, "LeftStick", key_source_description);
+		let _b_input_source = input_manager.register_trigger(&device_class_handle, "RightStick", key_source_description);
 
-		let light_source_description = InputTypes::Rgba(InputSourceDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 }));
+		let light_source_description = TriggerDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 });
 
 		let _light_destination = input_manager.register_input_destination(&device_class_handle, "Light", light_source_description);
 
@@ -986,13 +788,11 @@ mod tests {
 	fn declare_vr_headset_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Headset");
 
-		let source_description = InputTypes::Vector3(InputSourceDescription::new(Vector3::new(0f32, 1.80f32, 0f32), Vector3::new(0f32, 0f32, 0f32), Vector3::min_value(), Vector3::max_value()));
+		let source_description = TriggerDescription::new(Vector3::new(0f32, 1.80f32, 0f32), Vector3::new(0f32, 0f32, 0f32), Vector3::min_value(), Vector3::max_value());
 
-		let _position_input_source = input_manager.register_input_source(&device_class_handle, "Position", source_description);
+		let _position_input_source = input_manager.register_trigger(&device_class_handle, "Position", source_description);
 
-		let source_description = InputTypes::Quaternion(InputSourceDescription::new(Quaternion::identity(), Quaternion::identity(), Quaternion::identity(), Quaternion::identity()));
-
-		let _rotation_input_source = input_manager.register_input_source(&device_class_handle, "Orientation", source_description);
+		let _rotation_input_source = input_manager.register_trigger(&device_class_handle, "Orientation", TriggerDescription::<Quaternion>::default());
 
 		device_class_handle
 	}
@@ -1000,13 +800,9 @@ mod tests {
 	fn declare_funky_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Funky");
 
-		let source_description = InputTypes::Int(InputSourceDescription::new(0, 0, 0, 3));
+		let _funky_input_source = input_manager.register_trigger(&device_class_handle, "Int", TriggerDescription::new(0, 0, 0, 3));
 
-		let _funky_input_source = input_manager.register_input_source(&device_class_handle, "Int", source_description);
-
-		let source_description = InputTypes::Rgba(InputSourceDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 }));
-
-		input_manager.register_input_source(&device_class_handle, "Rgba", source_description);
+		input_manager.register_trigger(&device_class_handle, "Rgba", TriggerDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 }));
 
 		device_class_handle
 	}
@@ -1026,14 +822,14 @@ mod tests {
 
 		declare_keyboard_input_device_class(&mut input_manager);
 
-		let stick_source_description = InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
+		let stick_source_description = TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, });
 
-		let _gamepad_left_stick_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftStick", stick_source_description);
-		let _gamepad_right_stick_input_source = input_manager.register_input_source(&gamepad_class_handle, "RightStick", stick_source_description);
+		let _gamepad_left_stick_input_source = input_manager.register_trigger(&gamepad_class_handle, "LeftStick", stick_source_description);
+		let _gamepad_right_stick_input_source = input_manager.register_trigger(&gamepad_class_handle, "RightStick", stick_source_description);
 
-		let trigger_source_description = InputTypes::Float(InputSourceDescription { default: 0.0, rest: 0.0, min: 0.0, max: 1.0 });
+		let trigger_source_description = TriggerDescription::<f32>::default();
 
-		let _trigger_input_source = input_manager.register_input_source(&gamepad_class_handle, "LeftTrigger", trigger_source_description);
+		let _trigger_input_source = input_manager.register_trigger(&gamepad_class_handle, "LeftTrigger", trigger_source_description);
 	}
 
 	#[test]
@@ -1046,76 +842,106 @@ mod tests {
 
 		let device = input_manager.create_device(&x);
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(1f32));
+		input_manager.update();
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Up"), false.into());
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(0f32));
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Up"), true.into());
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(1f32));
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Down"), true.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(-1f32));
+		input_manager.update();
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Down"), false.into());
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(1f32));
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), true.into());
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Up"), false.into());
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(-1f32));
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), false.into());
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(1f32));
+		input_manager.update();
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Down"), true.into());
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(-1f32));
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Up"), false.into());
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(-1f32));
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
 
-		input_manager.record_input_source_action(&device, InputSourceAction::Name("Keyboard.Down"), false.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, Value::Float(0f32));
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
+
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), true.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(-1f32));
+
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(-1f32));
+
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), false.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
 	}
 
-	fn record_and_assert_input_source_action_sequence<A, Z>(input_manager: &mut InputManager, device: &DeviceHandle, handle: InputSourceAction, a: A, b: A, z: Z) where A: Into<Value>, Z: Into<Value> {
+	fn record_and_assert_input_source_action_sequence<A, Z>(input_manager: &mut InputManager, device: DeviceHandle, trigger_reference: TriggerReference, a: A, b: A, z: Z) where A: Into<Value>, Z: Into<Value> {
 		let a: Value = a.into();
 		let b: Value = b.into();
 		let z: Value = z.into();
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), a); // Assert default value
+		assert_eq!(input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(), a); // Assert default value
 
-		input_manager.record_input_source_action(&device, handle, b); // Record alternate value.
+		input_manager.record_trigger_value_for_device(device, trigger_reference, b); // Record alternate value.
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), b); // Assert alternate value after recording.
+		input_manager.update();
 
-		input_manager.record_input_source_action(&device, handle, a); // Record default value.
+		assert_eq!(input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(), b); // Assert alternate value after recording.
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), a); // Assert default value after recording.
+		input_manager.record_trigger_value_for_device(device, trigger_reference, a); // Record default value.
 
-		input_manager.record_input_source_action(&device, handle, a); // Record default value again.
+		input_manager.update();
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), a); // Assert default value after recording.
+		assert_eq!(input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(), a); // Assert default value after recording.
 
-		input_manager.record_input_source_action(&device, handle, a); // Record default value.
-		input_manager.record_input_source_action(&device, handle, b); // Record alternate value after recording default value.
+		input_manager.record_trigger_value_for_device(device, trigger_reference, a); // Record default value again.
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), b); // Assert value is last value recorded.
+		input_manager.update();
 
-		input_manager.record_input_source_action(&device, handle, z); // Record a different type.
+		assert_eq!(input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(), a); // Assert default value after recording.
 
-		assert_eq!(input_manager.get_input_source_value(&device, handle), b); // Assert last value is kept after recording a different type.
+		input_manager.record_trigger_value_for_device(device, trigger_reference, a); // Record default value.
+		input_manager.record_trigger_value_for_device(device, trigger_reference, b); // Record alternate value after recording default value.
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(), b); // Assert value is last value recorded.
+
+		input_manager.record_trigger_value_for_device(device, trigger_reference, z); // Record a different type.
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(), b); // Assert last value is kept after recording a different type.
 	}
 
 	#[test]
@@ -1126,9 +952,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Keyboard.Up");
+		let handle = TriggerReference::Name("Keyboard.Up");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, false, true, 961f32);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, false, true, 961f32);
 	}
 
 	#[test]
@@ -1139,9 +965,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Keyboard.Character");
+		let handle = TriggerReference::Name("Keyboard.Character");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, '\0', 'a', true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, '\0', 'a', true);
 	}
 
 	#[test]
@@ -1152,9 +978,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Funky.Int");
+		let handle = TriggerReference::Name("Funky.Int");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, 0, 1, true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, 0, 1, true);
 	}
 
 	#[test]
@@ -1165,9 +991,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Gamepad.LeftTrigger");
+		let handle = TriggerReference::Name("Gamepad.LeftTrigger");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, 0.0f32, 1f32, true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, 0.0f32, 1f32, true);
 	}
 
 	#[test]
@@ -1178,9 +1004,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Gamepad.LeftStick");
+		let handle = TriggerReference::Name("Gamepad.LeftStick");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, Vector2 { x: 0f32, y: 0f32, }, Vector2 { x: 1f32, y: 1f32, }, true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, Vector2 { x: 0f32, y: 0f32, }, Vector2 { x: 1f32, y: 1f32, }, true);
 	}
 
 	#[test]
@@ -1191,9 +1017,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Headset.Position");
+		let handle = TriggerReference::Name("Headset.Position");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, Vector3 { x: 0f32, y: 1.8f32, z: 0f32 }, Vector3 { x: 1f32, y: 1f32, z: 1f32 }, true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, Vector3 { x: 0f32, y: 1.8f32, z: 0f32 }, Vector3 { x: 1f32, y: 1f32, z: 1f32 }, true);
 	}
 
 	#[test]
@@ -1204,9 +1030,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Headset.Orientation");
+		let handle = TriggerReference::Name("Headset.Orientation");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, Quaternion::from_euler_angles(0f32, 0f32, 0f32), Quaternion::from_euler_angles(1f32, 1f32, 1f32), true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, Quaternion::from_euler_angles(0f32, 0f32, 0f32), Quaternion::from_euler_angles(1f32, 1f32, 1f32), true);
 	}
 
 	#[test]
@@ -1217,21 +1043,27 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Funky.Rgba");
+		let handle = TriggerReference::Name("Funky.Rgba");
 
-		record_and_assert_input_source_action_sequence(&mut input_manager, &device, handle, RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }, RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 }, true);
+		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }, RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 }, true);
 	}
 
-	fn record_and_assert_boolean_input_source_action_interpolation<T>(input_manager: &mut InputManager, device: &DeviceHandle, handle: InputSourceAction, action_name: &str, input_source_name: &'static str, a: T, b: T) where T: InputValue + Into<Value> + Copy {
+	fn record_and_assert_boolean_input_source_action_interpolation<T>(input_manager: &mut InputManager, device: DeviceHandle, handle: TriggerReference, action_name: &str, input_source_name: &'static str, a: T, b: T) where T: InputValue + Into<Value> + Copy {
 		let action = input_manager.create_action(action_name, T::get_type(), &[ActionBindingDescription::new(input_source_name).mapped(b.into(), Function::Linear)]);
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, a.into());
+		assert_eq!(input_manager.get_action_state(action, device).value, a.into());
+		
+		input_manager.record_trigger_value_for_device(device, handle, true.into());
+		
+		input_manager.update();
 
-		input_manager.record_input_source_action(&device, handle, true.into());
+		assert_eq!(input_manager.get_action_state(action, device).value, b.into());
 
-		assert_eq!(input_manager.get_action_state(action, &device).value, b.into());
+		input_manager.record_trigger_value_for_device(device, handle, false.into());
 
-		input_manager.record_input_source_action(&device, handle, false.into());
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, a.into());
 	}
 
 	#[test]
@@ -1242,9 +1074,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Keyboard.Up");
+		let handle = TriggerReference::Name("Keyboard.Up");
 
-		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, &device, handle, "MoveForward", "Keyboard.Up", 0f32, 1f32);
+		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, device, handle, "MoveForward", "Keyboard.Up", 0f32, 1f32);
 	}
 
 	#[test]
@@ -1255,9 +1087,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Keyboard.Up");
+		let handle = TriggerReference::Name("Keyboard.Up");
 
-		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, &device, handle, "MoveForward", "Keyboard.Up", Vector2::zero(), Vector2::new(0f32, 1f32));
+		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, device, handle, "MoveForward", "Keyboard.Up", Vector2::zero(), Vector2::new(0f32, 1f32));
 	}
 
 	#[test]
@@ -1268,9 +1100,9 @@ mod tests {
 
 		let device = input_manager.create_device(&device_class_handle);
 
-		let handle = InputSourceAction::Name("Keyboard.Up");
+		let handle = TriggerReference::Name("Keyboard.Up");
 
-		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, &device, handle, "MoveForward", "Keyboard.Up", Vector3::zero(), Vector3::new(0f32, 0f32, 1f32));
+		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, device, handle, "MoveForward", "Keyboard.Up", Vector3::zero(), Vector3::new(0f32, 0f32, 1f32));
 	}
 
 	#[test]
@@ -1290,23 +1122,23 @@ mod tests {
 
 			let mouse_device_class_handle = input_manager.register_device_class("Mouse");
 
-			input_manager.register_input_source(&mouse_device_class_handle, "Position", InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))));
-			input_manager.register_input_source(&mouse_device_class_handle, "LeftButton", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-			input_manager.register_input_source(&mouse_device_class_handle, "RightButton", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-			input_manager.register_input_source(&mouse_device_class_handle, "Scroll", InputTypes::Float(InputSourceDescription::new(0f32, 0f32, -1f32, 1f32)));
+			input_manager.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
+			input_manager.register_trigger(&mouse_device_class_handle, "LeftButton", TriggerDescription::new(false, false, false, true));
+			input_manager.register_trigger(&mouse_device_class_handle, "RightButton", TriggerDescription::new(false, false, false, true));
+			input_manager.register_trigger(&mouse_device_class_handle, "Scroll", TriggerDescription::new(0f32, 0f32, -1f32, 1f32));
 
 			let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
 
-			input_manager.register_input_source(&keyboard_device_class_handle, "W", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-			input_manager.register_input_source(&keyboard_device_class_handle, "S", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-			input_manager.register_input_source(&keyboard_device_class_handle, "A", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-			input_manager.register_input_source(&keyboard_device_class_handle, "D", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-			input_manager.register_input_source(&keyboard_device_class_handle, "Space", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
+			input_manager.register_trigger(&keyboard_device_class_handle, "W", TriggerDescription::new(false, false, false, true));
+			input_manager.register_trigger(&keyboard_device_class_handle, "S", TriggerDescription::new(false, false, false, true));
+			input_manager.register_trigger(&keyboard_device_class_handle, "A", TriggerDescription::new(false, false, false, true));
+			input_manager.register_trigger(&keyboard_device_class_handle, "D", TriggerDescription::new(false, false, false, true));
+			input_manager.register_trigger(&keyboard_device_class_handle, "Space", TriggerDescription::new(false, false, false, true));
 
 			let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
 
-			input_manager.register_input_source(&gamepad_device_class_handle, "LeftStick", InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, })));
-			input_manager.register_input_source(&gamepad_device_class_handle, "RightStick", InputTypes::Vector2(InputSourceDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, })));
+			input_manager.register_trigger(&gamepad_device_class_handle, "LeftStick", TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
+			input_manager.register_trigger(&gamepad_device_class_handle, "RightStick", TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
 
 			mouse_device_handle = input_manager.create_device(&mouse_device_class_handle);
 			keyboard_device_handle = input_manager.create_device(&keyboard_device_class_handle);
@@ -1350,7 +1182,7 @@ mod tests {
 		{
 			let mut input_manager = input_manager.write();
 
-			input_manager.record_input_source_action(&keyboard_device_handle, InputSourceAction::Name("Keyboard.A"), Value::Bool(true));
+			input_manager.record_trigger_value_for_device(keyboard_device_handle, TriggerReference::Name("Keyboard.A"), Value::Bool(true));
 
 			input_manager.update();
 		}

@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::align_of};
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
 
-use crate::{graphics_hardware_interface, image::Builder, render_debugger::RenderDebugger, sampler, window, Size};
+use crate::{graphics_hardware_interface, image::Builder, render_debugger::RenderDebugger, sampler, window, FrameKey, Size};
 
 pub struct VulkanGHI {
 	entry: ash::Entry,
@@ -621,11 +621,11 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		command_buffer_handle
 	}
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frmae_index: Option<u32>) -> crate::CommandBufferRecording {
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording {
 		use graphics_hardware_interface::CommandBufferRecordable;
 		let pending_images = self.pending_images.clone();
 		self.pending_images.clear();
-		let mut recording = VulkanCommandBufferRecording::new(self, command_buffer_handle, frmae_index);
+		let mut recording = VulkanCommandBufferRecording::new(self, command_buffer_handle, frame_key);
 		recording.begin();
 		recording.transfer_textures(&pending_images);
 		recording
@@ -1380,8 +1380,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 
 		let mut semaphores = [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT];
 
-		for i in 0..min_image_count as usize {
+		for i in 0..self.frames as usize {
 			semaphores[i] = unsafe { self.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).expect("No semaphore") };
+			self.set_name(semaphores[i], format!("Swapchain semaphore ({i})").as_str().into());
 		}
 
 		self.swapchains.push(Swapchain {
@@ -1429,10 +1430,14 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		synchronizer_handle
 	}
 
-	fn acquire_swapchain_image(&mut self, frame_index: u32, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Option<Extent>) {
+	fn start_frame(&self, index: u32) -> FrameKey {
+		FrameKey { frame_index: index, sequence_index: (index % self.frames as u32) as u8 }
+	}
+
+	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Option<Extent>) {
 		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 
-		let semaphore = swapchain.semaphores[frame_index as usize % swapchain.semaphores.iter().filter(|s| !s.is_null()).count()];
+		let semaphore = swapchain.semaphores[frame_key.sequence_index as usize];
 
 		let timeout = if false {
 			std::time::Duration::from_secs(5).as_micros() as u64
@@ -1490,14 +1495,15 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		};
 
 		(graphics_hardware_interface::PresentKey{
-			frame_index: index as u8,
+			image_index: index as u8,
+			sequence_index: frame_key.sequence_index,
 			swapchain: swapchain_handle,
 		}, extent)
 	}
 
-	fn wait(&self, frame_index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
+	fn wait(&self, frame_key: FrameKey, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
-		let synchronizer = self.synchronizers[synchronizer_handles[frame_index as usize].0 as usize];
+		let synchronizer = self.synchronizers[synchronizer_handles[frame_key.sequence_index as usize].0 as usize];
 		unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect("No fence wait"); }
 		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
 	}
@@ -3312,7 +3318,8 @@ pub struct VulkanCommandBufferRecording<'a> {
 	ghi: &'a mut VulkanGHI,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
 	in_render_pass: bool,
-	modulo_frame_index: u32,
+	frame_index: u32,
+	sequence_index: u8,
 	states: HashMap<Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
@@ -3323,11 +3330,12 @@ pub struct VulkanCommandBufferRecording<'a> {
 }
 
 impl VulkanCommandBufferRecording<'_> {
-	pub fn new(ghi: &'_ mut VulkanGHI, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_index: Option<u32>) -> VulkanCommandBufferRecording<'_> {
+	pub fn new(ghi: &'_ mut VulkanGHI, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> VulkanCommandBufferRecording<'_> {
 		VulkanCommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
-			modulo_frame_index: frame_index.map(|frame_index| frame_index % ghi.frames as u32).unwrap_or(0),
+			frame_index: frame_key.map(|f| f.frame_index).unwrap_or(0),
+			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),			
 			in_render_pass: false,
 			states: ghi.states.clone(),
 
@@ -3349,7 +3357,7 @@ impl VulkanCommandBufferRecording<'_> {
 		let mut internal_image_handle = ImageHandle(handle.0);
 		loop {
 			let image = &self.ghi.images[internal_image_handle.0 as usize];
-			if i == self.modulo_frame_index || image.next.is_none() {
+			if i == self.sequence_index || image.next.is_none() {
 				return internal_image_handle;
 			}
 			internal_image_handle = image.next.unwrap();
@@ -3362,7 +3370,7 @@ impl VulkanCommandBufferRecording<'_> {
 	}
 
 	fn get_synchronizer(&self, syncronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> &Synchronizer {
-		&self.ghi.synchronizers[self.ghi.get_syncronizer_handles(syncronizer_handle)[self.modulo_frame_index as usize].0 as usize]
+		&self.ghi.synchronizers[self.ghi.get_syncronizer_handles(syncronizer_handle)[self.sequence_index as usize].0 as usize]
 	}
 
 	fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
@@ -3386,7 +3394,7 @@ impl VulkanCommandBufferRecording<'_> {
 	}
 
 	fn get_command_buffer(&self) -> &CommandBufferInternal {
-		&self.ghi.command_buffers[self.command_buffer.0 as usize].frames[self.modulo_frame_index as usize]
+		&self.ghi.command_buffers[self.command_buffer.0 as usize].frames[self.sequence_index as usize]
 	}
 
 	fn get_internal_descriptor_set_handle(&self, descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle) -> DescriptorSetHandle {
@@ -3394,7 +3402,7 @@ impl VulkanCommandBufferRecording<'_> {
 		let mut handle = DescriptorSetHandle(descriptor_set_handle.0);
 		loop {
 			let descriptor_set = &self.ghi.descriptor_sets[handle.0 as usize];
-			if i == self.modulo_frame_index {
+			if i == self.sequence_index {
 				return handle;
 			}
 			handle = descriptor_set.next.unwrap();
@@ -3585,7 +3593,7 @@ impl VulkanCommandBufferRecording<'_> {
 		let mut internal_buffer_handle = BufferHandle(handle.0);
 		loop {
 			let buffer = &self.ghi.buffers[internal_buffer_handle.0 as usize];
-			if i == self.modulo_frame_index || buffer.next.is_none() {
+			if i == self.sequence_index || buffer.next.is_none() {
 				return internal_buffer_handle;
 			}
 			internal_buffer_handle = buffer.next.unwrap();
@@ -4207,7 +4215,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 			self.ghi.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
 		};
 
-		let swapchain_image = swapchain_images[present_key.frame_index as usize];
+		let swapchain_image = swapchain_images[present_key.image_index as usize];
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 
@@ -4449,7 +4457,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		}).chain(
 			presentations.iter().map(|presentation| {
 				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_swapchain(presentation.swapchain).semaphores[presentation.frame_index as usize])
+					.semaphore(self.get_swapchain(presentation.swapchain).semaphores[presentation.sequence_index as usize])
 					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
 			})
 		).collect::<Vec<_>>();
@@ -4479,7 +4487,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 			let wait_semaphores = signal_semaphores.iter().map(|signal| signal.semaphore).collect::<Vec<_>>();
 
 			let swapchains = [swapchain.swapchain];
-			let image_indices = [presentation.frame_index as u32];
+			let image_indices = [presentation.image_index as u32];
 
 			let mut results = [vk::Result::default()];
 

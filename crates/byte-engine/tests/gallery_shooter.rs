@@ -4,7 +4,6 @@ use byte_engine::core::{entity::{DomainType, EntityBuilder, SelfDestroyingEntity
 use std::f32::consts::PI;
 use byte_engine::{application::application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{self, space::Space, Transform}, input, math::from_normal, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::{self}}, Vector3};
 use maths_rs::{mat::MatInverse, swizz::Vec3Swizzle, vec::Vec4};
-use utils::r#async::block_on;
 
 #[ignore]
 #[test]

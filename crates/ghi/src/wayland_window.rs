@@ -14,6 +14,8 @@ pub struct WaylandWindow {
 	surface: wl_surface::WlSurface,
 	xdg_surface: xdg_surface::XdgSurface,
 	xdg_toplevel: xdg_toplevel::XdgToplevel,
+
+	extent: Option<Extent>,
 }
 
 impl WaylandWindow {
@@ -40,6 +42,8 @@ impl WaylandWindow {
 				wl_callback: None,
 	
 				events: VecDeque::with_capacity(64),
+
+				extent: None,
 			};
 
 			event_queue.roundtrip(&mut app_data).unwrap();
@@ -60,6 +64,8 @@ impl WaylandWindow {
 		toplevel.set_title(name.to_string());
 		toplevel.set_app_id(id_name.to_string());
 
+		let extent;
+
 		{
 			let mut app_data = AppData {
 				compositor: None,
@@ -73,11 +79,15 @@ impl WaylandWindow {
 				wl_callback: None,
 	
 				events: VecDeque::with_capacity(64),
+
+				extent: None,
 			};
 			
 			event_queue.roundtrip(&mut app_data).unwrap();
 
 			surface.set_buffer_scale(app_data.scale as _);
+
+			extent = app_data.extent;
 		}
 
 		surface.commit();
@@ -90,6 +100,7 @@ impl WaylandWindow {
 			surface,
 			xdg_surface,
 			xdg_toplevel: toplevel,
+			extent,
 		})
 	}
 
@@ -121,6 +132,8 @@ impl WaylandWindow {
 			wl_callback: None,
 
 			events: VecDeque::with_capacity(64),
+
+			extent: self.extent,
 		};
 
 		let event_queue = &mut self.event_queue;
@@ -171,6 +184,8 @@ struct AppData {
 	wl_callback: Option<wl_callback::WlCallback>,
 
 	events: VecDeque<WindowEvents>,
+
+	extent: Option<Extent>,
 }
 
 impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry, ()> for AppData {
@@ -236,7 +251,6 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_surface::WlSurface, (
 				this.scale = this.scale.max(factor as _);
 				surface.set_buffer_scale(factor);
 				surface.commit();
-				println!("Factor: {}", factor);
 			}
 			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {
 			}
@@ -260,7 +274,6 @@ impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
     fn event(_: &mut Self, s: &xdg_surface::XdgSurface, event: xdg_surface::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			xdg_surface::Event::Configure { serial } => {
-				// s.set_window_geometry(0, 0, 1920, 1080);
 				s.ack_configure(serial);
 			}
 			_ => {}
@@ -278,7 +291,13 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 				}
 			}
 			xdg_toplevel::Event::ConfigureBounds { width, height } => {
-				println!("Configure bounds: [{}, {}]", width, height);
+				this.extent = if width == 0 || height == 0 {
+					None
+				} else {
+					let extent = Extent::rectangle(width as u32, height as u32);
+					this.events.push_back(WindowEvents::Resize{ width: extent.width(), height: extent.height() });
+					Some(extent)
+				};
 			}
 			xdg_toplevel::Event::Close => {
 				this.events.push_back(WindowEvents::Close);

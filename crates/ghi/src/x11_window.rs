@@ -211,10 +211,19 @@ impl Iterator for WindowIterator<'_> {
 							}
 						},
 						x::Event::MotionNotify(ev) => {
-							let x = ev.event_x();
-							let y = ev.event_y();
+							let width = self.window.extent.0 as f32;
+							let height = self.window.extent.1 as f32;
 
-							Some(WindowEvents::MouseMove { x: x as u32, y: self.window.extent.1 as u32 - (y as u32), time: ev.time() as u64 })
+							let x = ev.event_x() as f32;
+							let y = height - ev.event_y() as f32;
+
+							let x = x - width / 2.0;
+							let y = y - height / 2.0;
+
+							let x = x / width;
+							let y = y / height;
+
+							Some(WindowEvents::MouseMove { x, y, time: ev.time() as u64 })
 						},
 						x::Event::ConfigureNotify(ev) => {
 							if ev.width() == 0 || ev.height() == 0 {

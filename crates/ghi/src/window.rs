@@ -235,8 +235,8 @@ pub enum WindowEvents {
 		button: MouseKeys,
 	},
 	MouseMove {
-		x: u32,
-		y: u32,
+		x: f32,
+		y: f32,
 		time: u64,
 	},
 }

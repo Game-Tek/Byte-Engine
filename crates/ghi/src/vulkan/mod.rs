@@ -1390,6 +1390,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			surface_present_mode: presentation_mode,
 			swapchain,
 			semaphores,
+			extent,
 		});
 
 		swapchain_handle
@@ -1434,7 +1435,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		FrameKey { frame_index: index, sequence_index: (index % self.frames as u32) as u8 }
 	}
 
-	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Option<Extent>) {
+	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Extent) {
 		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 
 		let semaphore = swapchain.semaphores[frame_key.sequence_index as usize];
@@ -1489,9 +1490,9 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		// }
 
 		let extent = if surface_capabilities.current_extent.width != u32::MAX && surface_capabilities.current_extent.height != u32::MAX {
-			Some(Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height))
+			Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height)
 		} else {
-			None
+			Extent::rectangle(swapchain.extent.width, swapchain.extent.height)
 		};
 
 		(graphics_hardware_interface::PresentKey{
@@ -1529,6 +1530,7 @@ pub(crate) struct Swapchain {
 	surface_present_mode: vk::PresentModeKHR,
 	swapchain: vk::SwapchainKHR,
 	semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+	extent: vk::Extent2D,
 }
 
 #[derive(Clone)]

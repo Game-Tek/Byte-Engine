@@ -16,6 +16,7 @@ pub struct WaylandWindow {
 	xdg_toplevel: xdg_toplevel::XdgToplevel,
 
 	extent: Option<Extent>,
+	scale: u32,
 }
 
 impl WaylandWindow {
@@ -65,6 +66,7 @@ impl WaylandWindow {
 		toplevel.set_app_id(id_name.to_string());
 
 		let extent;
+		let scale;
 
 		{
 			let mut app_data = AppData {
@@ -87,10 +89,11 @@ impl WaylandWindow {
 
 			surface.set_buffer_scale(app_data.scale as _);
 
-			extent = app_data.extent;
-		}
+			surface.commit();
 
-		surface.commit();
+			extent = app_data.extent;
+			scale = app_data.scale;
+		}
 
 		Ok(Self {
 			connection: conn,
@@ -101,6 +104,7 @@ impl WaylandWindow {
 			xdg_surface,
 			xdg_toplevel: toplevel,
 			extent,
+			scale,
 		})
 	}
 
@@ -126,7 +130,7 @@ impl WaylandWindow {
 			wl_seat: None,
 			wl_output: None,
 
-			scale: 1,
+			scale: self.scale,
 
 			wl_surface: None,
 			wl_callback: None,
@@ -204,6 +208,12 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 					}
 					"wl_output" => {
 						this.wl_output = Some(registry.bind(name, version, qh, ()));
+					}
+					"wl_surface" => {
+						this.wl_surface = Some(registry.bind(name, version, qh, ()));
+					}
+					"wl_callback" => {
+						this.wl_callback = Some(registry.bind(name, version, qh, ()));
 					}
 					_ => {}
 				}
@@ -291,11 +301,16 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 				}
 			}
 			xdg_toplevel::Event::ConfigureBounds { width, height } => {
+				// Suggested size
+			}
+			xdg_toplevel::Event::Configure { width, height, states } => {
 				this.extent = if width == 0 || height == 0 {
 					None
 				} else {
-					let extent = Extent::rectangle(width as u32, height as u32);
-					this.events.push_back(WindowEvents::Resize{ width: extent.width(), height: extent.height() });
+					let extent = Extent::rectangle((width * (this.scale as i32)) as u32, (height * (this.scale as i32)) as u32);
+					if this.extent != Some(extent) {
+						this.events.push_back(WindowEvents::Resize{ width: extent.width(), height: extent.height() });
+					}
 					Some(extent)
 				};
 			}
@@ -329,7 +344,21 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 			wl_pointer::Event::Axis { time, axis, value } => {
 			}
 			wl_pointer::Event::Motion { time, surface_x, surface_y } => {
-				this.events.push_back(WindowEvents::MouseMove { x: surface_x as u32, y: surface_y as u32, time: time as u64 });
+				if let Some(extent) = this.extent {
+					let x = surface_x as f32;
+					let y = surface_y as f32;
+
+					let width = extent.width() as f32;
+					let height = extent.height() as f32;
+
+					let x = x - width / 2.0;
+					let y = y - height / 2.0;
+
+					let x = x / width;
+					let y = y / height;
+
+					this.events.push_back(WindowEvents::MouseMove { x, y, time: time as u64 });
+				}
 			}
 			_ => {}
 		}
@@ -353,6 +382,7 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 		match event {
 			wl_output::Event::Scale { factor } => {
 				this.scale = this.scale.max(factor as _);
+				println!("Scale: {}", factor);
 			}
 			wl_output::Event::Geometry { x, y, physical_width, physical_height, subpixel, make, model, transform } => {
 				println!("Geometry: [{}, {}] {}x{} {:?} {} {} {:?}", x, y, physical_width, physical_height, subpixel, make, model, transform);

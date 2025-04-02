@@ -212,7 +212,8 @@ impl Application for GraphicsApplication {
 							}
 						},
 						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
-							let vec = Vector2::new((x as f32 / 1920f32 - 0.5f32) * 2f32, (y as f32 / 1080f32 - 0.5f32) * 2f32);
+							let vec = Vector2::new(x, y);
+							println!("Mouse moved to: {:?}", vec);
 							input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec));
 						},
 						ghi::WindowEvents::Resize { width, height } => {

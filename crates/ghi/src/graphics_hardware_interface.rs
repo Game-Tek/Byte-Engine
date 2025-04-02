@@ -604,7 +604,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	/// # Returns
 	/// A present key for future presentation and, if defined, the extent of the image.
 	/// # Errors
-	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: SwapchainHandle) -> (PresentKey, Option<Extent>);
+	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
 
 	fn wait(&self, frame_key: FrameKey, synchronizer_handle: SynchronizerHandle);
 

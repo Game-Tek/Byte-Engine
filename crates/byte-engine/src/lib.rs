@@ -1,7 +1,7 @@
 //! # Byte-Engine
 //! Byte-Engine is a Rust powered game engine. It is designed to be efficient, fast and easy to use; with simple, composable patterns
 
-#![feature(const_trait_impl, future_join, coerce_unsized, unsize, once_cell_try)]
+#![feature(const_trait_impl, future_join, coerce_unsized, unsize, once_cell_try, iter_map_windows)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(unused_imports)]

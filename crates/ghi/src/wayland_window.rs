@@ -231,13 +231,7 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 impl wayland_client::Dispatch<wl_callback::WlCallback, ()> for AppData {
     fn event(this: &mut Self, callback: &wl_callback::WlCallback, event: wl_callback::Event, _: &(), _: &wayland_client::Connection, qh: &wayland_client::QueueHandle<AppData>,) {
         match event {
-			wl_callback::Event::Done { callback_data } => {
-				println!("Callback done: {}", callback_data);
-
-				if let Some(wl_surface) = &mut this.wl_surface {
-					// this.wl_callback = Some(wl_surface.frame(qh, ()));
-					// wl_surface.commit();
-				}
+			wl_callback::Event::Done { .. } => {
 			}
 			_ => {}
 		}
@@ -408,22 +402,16 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 		match event {
 			wl_output::Event::Scale { factor } => {
 				this.scale = this.scale.max(factor as _);
-				println!("Scale: {}", factor);
 			}
 			wl_output::Event::Geometry { x, y, physical_width, physical_height, subpixel, make, model, transform } => {
-				println!("Geometry: [{}, {}] {}x{} {:?} {} {} {:?}", x, y, physical_width, physical_height, subpixel, make, model, transform);
 			}
 			wl_output::Event::Mode { flags, width, height, refresh } => {
-				println!("Mode: {:?} [{}, {}] @ {}", flags, width, height, refresh);
 			}
 			wl_output::Event::Description { description } => {
-				println!("Description: {:?}", description);
 			}
 			wl_output::Event::Name { name } => {
-				println!("Name: {:?}", name);
 			}
 			wl_output::Event::Done => {
-				println!("Done");
 			}
 			_ => {}
 		}

@@ -753,12 +753,12 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		}
 	}
 
-	fn get_splitter<'a>(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter<'a> {
+	fn get_splitter<'a, T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter<'a, T> {
 		self.pending_buffers.push(buffer_handle);
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		let slice = unsafe {
-			std::slice::from_raw_parts_mut(buffer.pointer as *mut u8, buffer.size)
+			std::slice::from_raw_parts_mut(buffer.pointer as *mut T, buffer.size / std::mem::size_of::<T>())
 		};
 		graphics_hardware_interface::BufferSplitter::new(slice, offset)
 	}

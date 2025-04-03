@@ -1,5 +1,3 @@
-#![feature(const_mut_refs)]
-#![feature(async_closure)]
 #![feature(closure_lifetime_binder)]
 
 use std::sync::{Arc, Mutex};

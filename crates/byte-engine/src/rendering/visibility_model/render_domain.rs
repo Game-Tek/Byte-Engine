@@ -709,30 +709,30 @@ impl VisibilityWorldRenderDomain {
 		let vertices = generator.vertices();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
-		let indices = generator.indices();
-		let meshlet_indices = generator.meshlet_indices();
+		let indices = generator.indices().iter().map(|&i| i as u16).collect::<Vec<_>>();
+		let meshlet_indices = generator.meshlet_indices().iter().map_windows(|&[a, b, c]| [*a, *b, *c]).collect::<Vec<_>>();
 
 		let mut ghi = self.ghi.write();
 
-		let mut vertex_positions_buffer = ghi.get_splitter(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
-		let mut vertex_normals_buffer = ghi.get_splitter(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector3>());
-		let mut vertex_uv_buffer = ghi.get_splitter(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize * std::mem::size_of::<Vector2>());
-		let mut vertex_indices_buffer = ghi.get_splitter(self.vertex_indices_buffer, self.visibility_info.primitives_count as usize * std::mem::size_of::<u16>());
-		let mut primitive_indices_buffer = ghi.get_splitter(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize * 3 * std::mem::size_of::<u8>());
+		let mut vertex_positions_buffer = ghi.get_splitter::<Vector3>(self.vertex_positions_buffer, self.visibility_info.vertex_count as usize);
+		let mut vertex_normals_buffer = ghi.get_splitter::<Vector3>(self.vertex_normals_buffer, self.visibility_info.vertex_count as usize);
+		let mut vertex_uv_buffer = ghi.get_splitter::<Vector2>(self.vertex_uvs_buffer, self.visibility_info.vertex_count as usize);
+		let mut vertex_indices_buffer = ghi.get_splitter::<u16>(self.vertex_indices_buffer, self.visibility_info.primitives_count as usize);
+		let mut primitive_indices_buffer = ghi.get_splitter::<[u8; 3]>(self.primitive_indices_buffer, self.visibility_info.triangle_count as usize);
 
 		drop(ghi);
 
-		let vertices_buffer = vertex_positions_buffer.take(size_of::<Vector3>() * vertices.len());
-		let normals_buffer = vertex_normals_buffer.take(size_of::<Vector3>() * vertices.len());
-		let uvs_buffer = vertex_uv_buffer.take(size_of::<Vector2>() * vertices.len());
-		let indices_buffer = vertex_indices_buffer.take(size_of::<u16>() * indices.len());
-		let primitive_indices_buffer = primitive_indices_buffer.take(size_of::<u8>() * meshlet_indices.len());
+		let vertices_buffer = vertex_positions_buffer.take(vertices.len());
+		let normals_buffer = vertex_normals_buffer.take(vertices.len());
+		let uvs_buffer = vertex_uv_buffer.take(vertices.len());
+		let indices_buffer = vertex_indices_buffer.take(indices.len());
+		let primitive_indices_buffer = primitive_indices_buffer.take(meshlet_indices.len());
 
-		vertices_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * size_of::<Vector3>()) });
-		normals_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * size_of::<Vector3>()) });
-		uvs_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * size_of::<Vector2>()) });
-		indices_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * size_of::<u16>()) });
-		primitive_indices_buffer.copy_from_slice(unsafe { std::slice::from_raw_parts(meshlet_indices.as_ptr() as *const u8, meshlet_indices.len() * size_of::<u8>()) });
+		vertices_buffer.copy_from_slice(&vertices);
+		normals_buffer.copy_from_slice(&normals);
+		uvs_buffer.copy_from_slice(&uvs);
+		indices_buffer.copy_from_slice(&indices);
+		primitive_indices_buffer.copy_from_slice(&meshlet_indices);
 
 		let mut ghi = self.ghi.write();
 

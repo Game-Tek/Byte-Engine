@@ -457,20 +457,20 @@ impl Features {
 	}
 }
 
-pub struct BufferSplitter<'a> {
-	buffer: &'a mut [u8],
+pub struct BufferSplitter<'a, T: Copy> {
+	buffer: &'a mut [T],
 	offset: usize,
 }
 
-impl<'a> BufferSplitter<'a> {
-	pub fn new(buffer: &'a mut [u8], offset: usize) -> Self {
+impl<'a, T: Copy> BufferSplitter<'a, T> {
+	pub fn new(buffer: &'a mut [T], offset: usize) -> Self {
 		Self {
 			buffer,
 			offset,
 		}
 	}
 
-	pub fn take(&mut self, size: usize) -> &'a mut [u8] {
+	pub fn take(&mut self, size: usize) -> &'a mut [T] {
 		let buffer = &mut self.buffer[self.offset..][..size];
 		self.offset += size;
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
@@ -615,7 +615,7 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 
 	fn end_frame_capture(&self);
 
-	fn get_splitter<'a>(&mut self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a>;
+	fn get_splitter<'a, T: Copy>(&mut self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a, T>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

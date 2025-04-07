@@ -95,8 +95,8 @@ impl<'a, T: Resource + Serialize + Clone> From<Reference<T>> for ProcessedAsset 
     }
 }
 
-impl From<GenericResourceResponse> for ProcessedAsset {
-    fn from(value: GenericResourceResponse) -> Self {
+impl From<SerializableResource> for ProcessedAsset {
+    fn from(value: SerializableResource) -> Self {
         ProcessedAsset {
             id: value.id,
             class: value.class,
@@ -127,7 +127,7 @@ impl StreamDescription {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct BaseResource {
+pub struct SerializableResource {
     /// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
     id: String,
     hash: u64,
@@ -138,22 +138,9 @@ pub struct BaseResource {
 	streams: Option<Vec<StreamDescription>>,
 }
 
-#[derive()]
-pub struct GenericResourceResponse {
-    /// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
-    id: String,
-    hash: u64,
-    /// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
-    class: String,
-    size: usize,
-    /// The resource data.
-    resource: DataStorage,
-	streams: Option<Vec<StreamDescription>>,
-}
-
-impl GenericResourceResponse {
+impl SerializableResource {
     pub fn new(id: String, hash: u64, class: String, size: usize, resource: DataStorage, streams: Option<Vec<StreamDescription>>) -> Self {
-        GenericResourceResponse {
+        SerializableResource {
             id,
             hash,
             class,
@@ -164,7 +151,7 @@ impl GenericResourceResponse {
     }
 }
 
-impl <M: Model> Into<ReferenceModel<M>> for GenericResourceResponse {
+impl <M: Model> Into<ReferenceModel<M>> for SerializableResource {
 	fn into(self) -> ReferenceModel<M> {
 		ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
 	}

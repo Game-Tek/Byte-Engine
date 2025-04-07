@@ -1,6 +1,6 @@
-use crate::{asset::asset_manager::AssetManager, GenericResourceResponse, LoadResults, Reference, ReferenceModel, Resource, Solver};
+use crate::{asset::asset_manager::AssetManager, LoadResults, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
-use super::StorageBackend;
+use super::{storage_backend::Query, StorageBackend};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -57,7 +57,7 @@ impl ResourceManager {
 	/// Tries to load the information/metadata for a resource (and it's dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
-	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Option<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, GenericResourceResponse: TryInto<ReferenceModel<T::Model>> {
+	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Option<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, SerializableResource: TryInto<ReferenceModel<T::Model>> {
 		// Try to load the resource from cache or source.
 		let reference_model: ReferenceModel<T::Model> = if let Some(asset_manager) = &self.asset_manager {
 			asset_manager.load(id).ok()?
@@ -68,6 +68,10 @@ impl ResourceManager {
 		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()).ok()?;
 
 		reference.into()
+	}
+
+	pub fn query<'a, T: Resource + 'a>(&'a self) -> Vec<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, SerializableResource: Into<ReferenceModel<T::Model>> {
+		self.get_storage_backend().query(Query::new().classes(&["Material"])).unwrap().into_iter().map(|e| { let r: ReferenceModel<T::Model> = e.0.into(); let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap(); r }).collect()
 	}
 
 	// /// Tries to load a resource from cache or source.\

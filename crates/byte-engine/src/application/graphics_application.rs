@@ -2,7 +2,7 @@ use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, inp
 use std::time::Duration;
 
 use maths_rs::num::Base;
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, resource::resource_manager::ResourceManager};
+use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, material::Material, resource::resource_manager::ResourceManager};
 use utils::Extent;
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
@@ -101,6 +101,12 @@ impl Application for GraphicsApplication {
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 			keyboard_device_handle = input_system.create_device(&keyboard_device_class_handle);
 			gamepad_device_handle = input_system.create_device(&gamepad_device_class_handle);
+		}
+
+		{
+			let resource_manager = resource_manager.read();
+
+			let materials: Vec<resource_management::Reference<Material>> = resource_manager.query();
 		}
 
 		let renderer_handle = spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));

@@ -590,7 +590,6 @@ mod tests {
     // 	impl <'a, 'de> Solver<'de, Reference<'a, Base<'a>>> for ReferenceModel<BaseModel> {
     // 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Base<'a>>, SolveErrors> {
     // 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-    // 			println!("{:#?}", gr.resource);
     // 			let resource = BaseModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
     // 			let base = Base{
     // 				items: try_join_all(resource.items.into_iter().map(|item| {

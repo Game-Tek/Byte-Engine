@@ -171,12 +171,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 						Cow::Owned(binary.as_binary().to_vec())
 					},
 					Err(err) => {
-						let compiler_error_string = err.to_string();
-
-						println!("{}", source_code.as_str());
-						println!("------");
-						println!("{}", compiler_error_string);
-
 						return Err(());
 					}
 				}
@@ -1461,7 +1455,6 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities") };
 
 		// if swapchain_state == graphics_hardware_interface::SwapchainStates::Suboptimal || swapchain_state == graphics_hardware_interface::SwapchainStates::Invalid {
-		// 	println!("Recreating swapchain");
 
 		// 	unsafe { // TODO: consider deadlock https://vulkan-tutorial.com/Drawing_a_triangle/Swap_chain_recreation
 		// 		self.device.device_wait_idle().unwrap();
@@ -2109,8 +2102,6 @@ impl VulkanGHI {
 
 			if is_instance_extension_available(ash::khr::wayland_surface::NAME.to_str().unwrap()) {
 				extension_names.push(ash::khr::wayland_surface::NAME.as_ptr());
-			} else {
-				println!("Wayland surface extension not available.");
 			}
 		}
 
@@ -2186,7 +2177,6 @@ impl VulkanGHI {
 			#[cfg(debug_assertions)]
 			{
 				let properties = unsafe { instance.get_physical_device_properties(physical_device) };
-				println!("Selected specified physical device: {:?}", properties.device_name_as_c_str().or(Err("Cannot display physical device name"))?);
 			}
 
 			physical_device
@@ -2241,7 +2231,6 @@ impl VulkanGHI {
 			#[cfg(debug_assertions)]
 			{
 				let properties = unsafe { instance.get_physical_device_properties(physical_device) };
-				println!("Chose physical device: {:?}", properties.device_name_as_c_str().or(Err("Cannot display physical device name"))?);
 			}
 
 			physical_device
@@ -3425,14 +3414,12 @@ impl VulkanCommandBufferRecording<'_> {
 
 		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
 			let set_handle = if let Some(&h) = self.bound_descriptor_set_handles.get(set_index as usize) { h.1 } else {
-				println!("No bound descriptor set found for index {}", set_index);
 				continue;
 			};
 
 			let resources = match self.ghi.descriptors.get(&set_handle).map(|d| d.get(&binding_index)) {
 				Some(Some(b)) => b.values(),
 				_ => {
-					println!("Pipeline '{}' requires binding with '{}' index for set with '{}' index, but no such descriptor(s) exist.", bound_pipeline_handle.0, binding_index, set_index);
 					continue;
 				}
 			};
@@ -4501,10 +4488,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 			;
 
 			let is_suboptimal = unsafe { self.ghi.swapchain.queue_present(self.ghi.queue, &present_info).expect("No present") };
-
-			if is_suboptimal {
-				println!("¡¡Suboptimal present!!");
-			}
 		}
 	}
 
@@ -4519,7 +4502,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.ghi.debug_utils {
-				// println!("Starting region: {}", name.to_str().unwrap());
 				debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
 			}
 		}
@@ -4537,7 +4519,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.ghi.debug_utils {
-				// println!("Ending region");
 				debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
 			}
 		}

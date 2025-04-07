@@ -221,7 +221,6 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 				}
 			}
 			wayland_client::protocol::wl_registry::Event::GlobalRemove { name } => {
-				println!("Removed global {}", name);
 			}
 			_ => {}
 		}
@@ -291,10 +290,6 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
     fn event(this: &mut Self, s: &xdg_toplevel::XdgToplevel, event: xdg_toplevel::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			xdg_toplevel::Event::WmCapabilities { capabilities } => {
-				println!("Capabilties:");
-				for e in capabilities {
-					println!("	- {}", e);
-				}
 			}
 			xdg_toplevel::Event::ConfigureBounds { width, height } => {
 				// Suggested size

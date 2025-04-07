@@ -201,11 +201,9 @@ impl Application for GraphicsApplication {
 						},
 						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
 							let vec = Vector2::new(x, y);
-							println!("Mouse moved to: {:?}", vec);
 							input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec));
 						},
 						ghi::WindowEvents::Resize { width, height } => {
-							log::debug!("Resizing window to {}x{}", width, height);
 						}
 						ghi::WindowEvents::Key { pressed, key } => {
 							let (device_handle, input_source_action, value) = match key {

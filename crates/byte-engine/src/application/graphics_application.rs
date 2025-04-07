@@ -1,4 +1,4 @@
-use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, input::input_trigger};
+use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -94,32 +94,14 @@ impl Application for GraphicsApplication {
 			let input_system = input_system_handle.get_lock();
 			let mut input_system = input_system.write();
 
-			let mouse_device_class_handle = input_system.register_device_class("Mouse");
-
-			input_system.register_trigger(&mouse_device_class_handle, "Position", input_trigger::TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
-			input_system.register_trigger(&mouse_device_class_handle, "LeftButton", input_trigger::TriggerDescription::new(false, false, false, true));
-			input_system.register_trigger(&mouse_device_class_handle, "RightButton", input_trigger::TriggerDescription::new(false, false, false, true));
-			input_system.register_trigger(&mouse_device_class_handle, "Scroll", input_trigger::TriggerDescription::new(0f32, 0f32, -1f32, 1f32));
-
-			let keyboard_device_class_handle = input_system.register_device_class("Keyboard");
-
-			input_system.register_trigger(&keyboard_device_class_handle, "W", input_trigger::TriggerDescription::new(false, false, false, true));
-			input_system.register_trigger(&keyboard_device_class_handle, "S", input_trigger::TriggerDescription::new(false, false, false, true));
-			input_system.register_trigger(&keyboard_device_class_handle, "A", input_trigger::TriggerDescription::new(false, false, false, true));
-			input_system.register_trigger(&keyboard_device_class_handle, "D", input_trigger::TriggerDescription::new(false, false, false, true));
-			input_system.register_trigger(&keyboard_device_class_handle, "Space", input_trigger::TriggerDescription::new(false, false, false, true));
-
-			let gamepad_device_class_handle = input_system.register_device_class("Gamepad");
-
-			input_system.register_trigger(&gamepad_device_class_handle, "LeftStick", input_trigger::TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
-			input_system.register_trigger(&gamepad_device_class_handle, "RightStick", input_trigger::TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
+			let mouse_device_class_handle = register_mouse_device_class(&mut input_system);
+			let keyboard_device_class_handle = register_keyboard_device_class(&mut input_system);
+			let gamepad_device_class_handle = register_gamepad_device_class(&mut input_system);
 
 			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
 			keyboard_device_handle = input_system.create_device(&keyboard_device_class_handle);
 			gamepad_device_handle = input_system.create_device(&gamepad_device_class_handle);
 		}
-
-		// let file_tracker_handle = crate::core::spawn(file_tracker::FileTracker::new());
 
 		let renderer_handle = spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
 

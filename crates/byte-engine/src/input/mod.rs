@@ -1,4 +1,4 @@
-use utils::RGBA;
+use super::utils::RGBA;
 use crate::{Quaternion, Vector2, Vector3};
 
 pub mod input_manager;
@@ -7,6 +7,7 @@ pub mod device_class;
 pub mod device;
 pub mod input_trigger;
 pub mod action;
+pub mod utils;
 
 pub use action::Action;
 pub use action::ActionBindingDescription;

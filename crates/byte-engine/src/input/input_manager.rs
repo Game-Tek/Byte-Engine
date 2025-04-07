@@ -741,7 +741,7 @@ impl Entity for InputManager {}
 
 #[cfg(test)]
 mod tests {
-	use crate::{core::{spawn, spawn_as_child}, input::input_trigger::TriggerDescription};
+	use crate::{core::{spawn, spawn_as_child}, input::{input_trigger::TriggerDescription, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}};
 	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
 	use maths_rs::prelude::Base;
@@ -749,41 +749,6 @@ mod tests {
 	use crate::{gameplay::space::Space, input::ActionBindingDescription};
 
 	use super::*;
-
-	fn declare_keyboard_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
-		let device_class_handle = input_manager.register_device_class("Keyboard");
-
-		let _up_input_source = input_manager.register_trigger(&device_class_handle, "Up", TriggerDescription::<bool>::default());
-		let _down_input_source = input_manager.register_trigger(&device_class_handle, "Down", TriggerDescription::<bool>::default());
-		let _left_input_source = input_manager.register_trigger(&device_class_handle, "Left", TriggerDescription::<bool>::default());
-		let _right_input_source = input_manager.register_trigger(&device_class_handle, "Right", TriggerDescription::<bool>::default());
-
-		let key_source_description = TriggerDescription::new('\0', '\0', '\0', 'Z');
-
-		let _a_input_source = input_manager.register_trigger(&device_class_handle, "Character", TriggerDescription::<bool>::default());
-
-		device_class_handle
-	}
-
-	fn declare_gamepad_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
-		let device_class_handle = input_manager.register_device_class("Gamepad");
-
-		let key_source_description = TriggerDescription::new(0.0f32, 0.0f32, 0.0f32, 1.0f32);
-
-		let _up_input_source = input_manager.register_trigger(&device_class_handle, "LeftTrigger", key_source_description);
-		let _down_input_source = input_manager.register_trigger(&device_class_handle, "RighTrigger", key_source_description);
-
-		let key_source_description = TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, });
-
-		let _a_input_source = input_manager.register_trigger(&device_class_handle, "LeftStick", key_source_description);
-		let _b_input_source = input_manager.register_trigger(&device_class_handle, "RightStick", key_source_description);
-
-		let light_source_description = TriggerDescription::new(RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, RGBA { r: 1.0f32, g: 1.0f32, b: 1.0f32, a: 1.0f32 });
-
-		let _light_destination = input_manager.register_input_destination(&device_class_handle, "Light", light_source_description);
-
-		device_class_handle
-	}
 
 	fn declare_vr_headset_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Headset");
@@ -820,7 +785,7 @@ mod tests {
 
 		let gamepad_class_handle = input_manager.register_device_class("Gamepad");
 
-		declare_keyboard_input_device_class(&mut input_manager);
+		register_keyboard_device_class(&mut input_manager);
 
 		let stick_source_description = TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, });
 
@@ -836,7 +801,7 @@ mod tests {
 	fn test_boolean_source_input_overlap_action() {
 		let mut input_manager = InputManager::new();
 
-		let x = declare_keyboard_input_device_class(&mut input_manager);
+		let x = register_keyboard_device_class(&mut input_manager);
 
 		let action = input_manager.create_action("MoveLongitudinally", Types::Float, &[ActionBindingDescription::new("Keyboard.Up").mapped(1f32.into(), Function::Boolean), ActionBindingDescription::new("Keyboard.Down").mapped((-1f32).into(), Function::Boolean)]);
 
@@ -948,7 +913,7 @@ mod tests {
 	fn record_bool_input_source_actions() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -961,7 +926,7 @@ mod tests {
 	fn record_unicode_input_source_actions() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -987,7 +952,7 @@ mod tests {
 	fn record_float_input_source_actions() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_gamepad_input_device_class(&mut input_manager);
+		let device_class_handle = register_gamepad_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -1000,7 +965,7 @@ mod tests {
 	fn record_vector2_input_source_action() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_gamepad_input_device_class(&mut input_manager);
+		let device_class_handle = register_gamepad_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -1070,7 +1035,7 @@ mod tests {
 	fn test_boolean_float_interpolation() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -1083,7 +1048,7 @@ mod tests {
 	fn test_boolean_vector2_interpolation() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -1096,7 +1061,7 @@ mod tests {
 	fn test_boolean_vector3_interpolation() {
 		let mut input_manager = InputManager::new();
 
-		let device_class_handle = declare_keyboard_input_device_class(&mut input_manager);
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
 		let device = input_manager.create_device(&device_class_handle);
 
@@ -1120,25 +1085,9 @@ mod tests {
 		{
 			let mut input_manager = input_manager.write();
 
-			let mouse_device_class_handle = input_manager.register_device_class("Mouse");
-
-			input_manager.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32)));
-			input_manager.register_trigger(&mouse_device_class_handle, "LeftButton", TriggerDescription::new(false, false, false, true));
-			input_manager.register_trigger(&mouse_device_class_handle, "RightButton", TriggerDescription::new(false, false, false, true));
-			input_manager.register_trigger(&mouse_device_class_handle, "Scroll", TriggerDescription::new(0f32, 0f32, -1f32, 1f32));
-
-			let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
-
-			input_manager.register_trigger(&keyboard_device_class_handle, "W", TriggerDescription::new(false, false, false, true));
-			input_manager.register_trigger(&keyboard_device_class_handle, "S", TriggerDescription::new(false, false, false, true));
-			input_manager.register_trigger(&keyboard_device_class_handle, "A", TriggerDescription::new(false, false, false, true));
-			input_manager.register_trigger(&keyboard_device_class_handle, "D", TriggerDescription::new(false, false, false, true));
-			input_manager.register_trigger(&keyboard_device_class_handle, "Space", TriggerDescription::new(false, false, false, true));
-
-			let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
-
-			input_manager.register_trigger(&gamepad_device_class_handle, "LeftStick", TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
-			input_manager.register_trigger(&gamepad_device_class_handle, "RightStick", TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, }));
+			let mouse_device_class_handle = register_mouse_device_class(&mut input_manager);
+			let keyboard_device_class_handle = register_keyboard_device_class(&mut input_manager);
+			let gamepad_device_class_handle = register_gamepad_device_class(&mut input_manager);
 
 			mouse_device_handle = input_manager.create_device(&mouse_device_class_handle);
 			keyboard_device_handle = input_manager.create_device(&keyboard_device_class_handle);

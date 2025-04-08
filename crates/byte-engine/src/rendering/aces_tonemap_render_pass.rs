@@ -53,6 +53,10 @@ impl AcesToneMapPass {
 impl Entity for AcesToneMapPass {}
 
 impl RenderPass for AcesToneMapPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}

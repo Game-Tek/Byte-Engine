@@ -20,12 +20,14 @@ pub struct WindowHandle(u64);
 // unsafe impl Send for WindowOsHandles {}
 
 pub struct Window {
+	name: String,
 	extent: Extent,
 }
 
 impl Window {
 	pub fn new(name: &str, extent: Extent) -> EntityBuilder<'static, Window> {
 		EntityBuilder::new(Window {
+			name: name.to_string(),
 			extent
 		})
 	}
@@ -109,7 +111,7 @@ impl WindowSystem {
 
 impl EntitySubscriber<Window> for WindowSystem {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, window: &Window) -> () {
-		let h = self.create_window(handle, "Main Window", window.extent, "main_window");
+		let h = self.create_window(handle, &window.name, window.extent, "main_window");
 	}
 }
 

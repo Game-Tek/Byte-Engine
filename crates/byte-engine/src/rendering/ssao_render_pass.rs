@@ -1,7 +1,7 @@
 use besl::parser::Node;
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, DeviceAccesses, GraphicsHardwareInterface, Uses};
 use resource_management::{asset::{asset_manager::AssetManager, material_asset_handler::ProgramGenerator}, glsl_shader_generator::GLSLShaderGenerator, image::Image, resource::resource_manager::ResourceManager, shader_generator::{ShaderGenerationSettings, ShaderGenerator}, Reference};
-use crate::core::entity::{Entity, EntityHandle};
+use crate::core::entity::{Entity, EntityBuilder, EntityHandle};
 use std::{rc::Rc, sync::Arc};
 
 use utils::{json, sync::RwLock, Extent, RGBA};
@@ -92,6 +92,10 @@ impl ScreenSpaceAmbientOcclusionPass {
 impl Entity for ScreenSpaceAmbientOcclusionPass {}
 
 impl RenderPass for ScreenSpaceAmbientOcclusionPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}

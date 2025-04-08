@@ -28,7 +28,7 @@ pub trait Application {
 	fn new(name: &str, parameters: &[Parameter],) -> Self;
 
 	/// Returns the name of the application.
-	fn get_name(&self) -> String;
+	fn get_name<'a>(&'a self) -> &'a str;
 
 	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
 
@@ -73,7 +73,7 @@ impl Application for BaseApplication {
 
 	fn tick(&mut self) {}
 
-	fn get_name(&self) -> String { self.name.clone() }
+	fn get_name(&self) -> &str { &self.name }
 
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.parameters.iter().find(|p| p.name == name)

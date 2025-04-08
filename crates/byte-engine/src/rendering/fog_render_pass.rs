@@ -132,6 +132,10 @@ impl FogRenderPass {
 }
 
 impl RenderPass for FogRenderPass {
+	fn create() -> crate::core::entity::EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}

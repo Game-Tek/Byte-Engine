@@ -12,26 +12,10 @@ use utils::{sync::RwLock, Extent, RGBA};
 use crate::{
     core::{
         self, entity::{DomainType, EntityBuilder}, listener::{EntitySubscriber, Listener}, orchestrator, spawn, spawn_as_child, Entity, EntityHandle
-    },
-    ui::render_model::UIRenderModel,
-    utils,
-    window_system::{self, WindowSystem}, Vector3,
+    }, gameplay::space::{Space, Spawn}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Vector3
 };
 
-use super::{
-    aces_tonemap_render_pass::AcesToneMapPass,
-    background_render_pass::BackgroundRenderingPass,
-    fog_render_pass::FogRenderPass,
-    render_pass::{BlitPass, RenderPass},
-    shadow_render_pass::ShadowRenderingPass,
-    ssao_render_pass::ScreenSpaceAmbientOcclusionPass,
-    ssgi_render_pass::SSGIRenderPass,
-    texture_manager::TextureManager,
-    tonemap_render_pass::ToneMapRenderPass,
-    triangle::Triangle,
-    visibility_model::render_domain::VisibilityWorldRenderDomain,
-    world_render_domain::WorldRenderDomain,
-};
+use super::{render_pass::RenderPass, texture_manager::TextureManager, triangle::Triangle};
 
 pub struct Renderer {
     ghi: Rc<RwLock<ghi::GHI>>,
@@ -82,6 +66,8 @@ impl Renderer {
             let result;
             let accumulation_map;
             let depth_sampler;
+			let render_command_buffer;
+			let render_finished_synchronizer;
 
             {
                 let mut ghi = ghi_instance.write();
@@ -110,127 +96,14 @@ impl Renderer {
                         .reduction_mode(ghi::SamplingReductionModes::Min)
                         .filtering_mode(ghi::FilteringModes::Closest),
                 );
+
+				render_command_buffer = ghi.create_command_buffer(Some("Render"));
+				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
             };
 
             let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
-            let visibility_render_model: EntityHandle<VisibilityWorldRenderDomain> =
-                spawn_as_child(
-                    parent.clone(),
-                    VisibilityWorldRenderDomain::new(
-                        ghi_instance.clone(),
-                        resource_manager_handle.clone(),
-                        texture_manager.clone(),
-                    ),
-                );
-
-            let render_command_buffer;
-            let render_finished_synchronizer;
-
-            let diffuse = {
-                let vrm = visibility_render_model.read();
-                vrm.get_diffuse()
-            };
-
-            // let ao_render_pass = {
-            //     let vrm = visibility_render_model.read_sync();
-            //     crate::core::spawn(
-            //         ScreenSpaceAmbientOcclusionPass::new(
-            //             ghi_instance.clone(),
-            //             resource_manager_handle.clone(),
-            //             texture_manager.clone(),
-            //             vrm.get_descriptor_set_template(),
-            //             vrm.get_view_occlusion_image(),
-            //             vrm.get_view_depth_image(),
-            //         )
-            //         .await,
-            //     )
-            //     .await
-            // };
-
-            // let ssgi_render_pass = {
-            //     let vrm = visibility_render_model.read_sync();
-            //     crate::core::spawn(
-            //         SSGIRenderPass::new(
-            //             ghi_instance.clone(),
-            //             resource_manager_handle.clone(),
-            //             texture_manager.clone(),
-            //             vrm.get_descriptor_set_template(),
-            //             (vrm.get_view_depth_image(), depth_sampler),
-            //             vrm.get_diffuse(),
-            //         )
-            //         .await,
-            //     )
-            //     .await
-            // };
-
-            // let background_render_pass: EntityHandle<BackgroundRenderingPass> = {
-            //     let vrm = visibility_render_model.read_sync();
-            //     let mut ghi = ghi_instance.write();
-            //     crate::core::spawn(BackgroundRenderingPass::new(
-            //         &mut ghi,
-            //         vrm.get_views_buffer(),
-            //         vrm.get_view_depth_image(),
-            //         accumulation_map,
-            //     ))
-            //     .await
-            // };
-
-            // let fog_render_pass = {
-            //     let vrm = visibility_render_model.read_sync();
-            //     let result_image = vrm.get_diffuse();
-            //     let mut ghi = ghi_instance.write();
-            //     crate::core::spawn(FogRenderPass::new(
-            //         &mut ghi,
-            //         &vrm.get_descriptor_set_template(),
-            //         vrm.get_view_depth_image(),
-            //         result_image,
-            //     ))
-            //     .await
-            // };
-
-            let tonemap_render_model = {
-                let mut ghi = ghi_instance.write();
-
-                let tonemap_render_model: EntityHandle<AcesToneMapPass> = spawn(
-                    AcesToneMapPass::new(ghi.deref_mut(), accumulation_map, result),
-                );
-
-                render_command_buffer = ghi.create_command_buffer(Some("Render"));
-                render_finished_synchronizer =
-                    ghi.create_synchronizer(Some("Render Finisished"), true);
-
-                tonemap_render_model
-            };
-
-            let mut root_render_pass = RootRenderPass::new();
-
-            // visibility_render_model
-            //     .write_sync()
-            //     .add_render_pass(ao_render_pass);
-
-            root_render_pass.add_render_pass(visibility_render_model);
-
-            // root_render_pass
-            //     .add_render_pass(core::spawn(BlitPass::new(diffuse, accumulation_map)).await);
-
-            // if false {
-            //     root_render_pass.add_render_pass(ssgi_render_pass);
-            // }
-
-            // root_render_pass.add_render_pass(background_render_pass);
-            // root_render_pass.add_render_pass(fog_render_pass);
-            //
-
-            let screen_render_pass = {
-                let mut ghi = ghi_instance.write();
-                let screen_render_pass: EntityHandle<ScreenRenderPass> = spawn_as_child(parent, ScreenRenderPass::new(ghi.deref_mut(), accumulation_map));
-                screen_render_pass
-            };
-
-            root_render_pass.add_render_pass(screen_render_pass);
-
-            root_render_pass.add_render_pass(tonemap_render_model);
+			let root_render_pass = RootRenderPass::new();
 
             Renderer {
                 ghi: ghi_instance,
@@ -255,6 +128,11 @@ impl Renderer {
         })
         .listen_to::<window_system::Window>()
     }
+
+	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, space_handle: EntityHandle<Space>) {
+		let render_pass = space_handle.spawn(T::create());
+		self.root_render_pass.add_render_pass(render_pass);
+	}
 
     pub fn render(&mut self) {
         if self.swapchain_handles.is_empty() {
@@ -354,6 +232,10 @@ impl RootRenderPass {
 }
 
 impl RenderPass for RootRenderPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		Self::new().into()
+	}
+
     fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
         self.render_passes.push(render_pass);
     }
@@ -472,6 +354,10 @@ impl EntitySubscriber<Triangle> for ScreenRenderPass {
 }
 
 impl RenderPass for ScreenRenderPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		unimplemented!()
+	}
+
     fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
 		command_buffer_recording.bind_descriptor_sets(&self.layout, &[]);
 

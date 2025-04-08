@@ -460,6 +460,12 @@ impl InputManager {
 
 		handle
 	}
+	
+	/// Retrieves all device handles of a given device class identified by name.
+	pub fn get_devices_by_class_name(&self, class_name: &str) -> Option<Vec<DeviceHandle>> {
+		let device_class_handle = self.device_classes.iter().enumerate().find_map(|(i, d)| (d.name == class_name).then_some(DeviceClassHandle(i as u32)))?;
+		Some(self.devices.iter().filter(|d| d.device_class_handle == device_class_handle).map(|d| DeviceHandle(d.index as u32)).collect())
+	}
 
 	/// Get the latest processed value for an trigger for a device.
 	pub fn get_trigger_value_for_device(&self, device_handle: DeviceHandle, trigger_reference: TriggerReference) -> Result<Value, ()> {

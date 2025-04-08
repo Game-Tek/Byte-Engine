@@ -1,4 +1,4 @@
-use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}};
+use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, gameplay::space::Spawn, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -23,10 +23,8 @@ pub struct GraphicsApplication {
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
 
 	input_system_handle: EntityHandle<input::InputManager>,
-	mouse_device_handle: input::DeviceHandle,
-	keyboard_device_handle: input::DeviceHandle,
-	gamepad_device_handle: input::DeviceHandle,
 
+	resource_manager: EntityHandle<ResourceManager>,
 	renderer_handle: EntityHandle<Renderer>,
 	audio_system_handle: EntityHandle<DefaultAudioSystem>,
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
@@ -54,72 +52,18 @@ impl Application for GraphicsApplication {
 		let root_space_handle: EntityHandle<Space> = spawn(Space::new());
 
 		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
-		let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
 
 		let resource_manager = spawn(ResourceManager::new(resources_path.clone()));
 
-		{
-			let mut resource_manager = resource_manager.write();
+		let window_system_handle = root_space_handle.spawn(window_system::WindowSystem::new_as_system());
+		let input_system_handle = root_space_handle.spawn(input::InputManager::new_as_system());		
+		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
+		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
+		let physics_system_handle = root_space_handle.spawn(physics::PhysicsWorld::new_as_system());
 
-			let mut asset_manager = AssetManager::new(assets_path, resources_path);
+		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new());
 
-			asset_manager.add_asset_handler(MeshAssetHandler::new());
-
-			{
-				let mut material_asset_handler = MaterialAssetHandler::new();
-				let root_node = besl::Node::root();
-				let shader_generator = {
-					let common_shader_generator = CommonShaderGenerator::new();
-					let visibility_shader_generation = VisibilityShaderGenerator::new(root_node.into());
-					visibility_shader_generation
-				};
-				material_asset_handler.set_shader_generator(shader_generator);
-				asset_manager.add_asset_handler(material_asset_handler);
-			}
-
-			asset_manager.add_asset_handler(ImageAssetHandler::new());
-			asset_manager.add_asset_handler(AudioAssetHandler::new());
-
-			resource_manager.set_asset_manager(asset_manager);
-		}
-
-		let window_system_handle = spawn_as_child(root_space_handle.clone(), window_system::WindowSystem::new_as_system());
-		let input_system_handle: EntityHandle<input::InputManager> = spawn_as_child(root_space_handle.clone(), input::InputManager::new_as_system());
-
-		let mouse_device_handle;
-		let keyboard_device_handle;
-		let gamepad_device_handle;
-
-		{
-			let input_system = input_system_handle.get_lock();
-			let mut input_system = input_system.write();
-
-			let mouse_device_class_handle = register_mouse_device_class(&mut input_system);
-			let keyboard_device_class_handle = register_keyboard_device_class(&mut input_system);
-			let gamepad_device_class_handle = register_gamepad_device_class(&mut input_system);
-
-			mouse_device_handle = input_system.create_device(&mouse_device_class_handle);
-			keyboard_device_handle = input_system.create_device(&keyboard_device_class_handle);
-			gamepad_device_handle = input_system.create_device(&gamepad_device_class_handle);
-		}
-
-		{
-			let resource_manager = resource_manager.read();
-
-			let materials: Vec<resource_management::Reference<Material>> = resource_manager.query();
-		}
-
-		let renderer_handle = spawn_as_child(root_space_handle.clone(), rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
-
-		spawn_as_child::<Window>(root_space_handle.clone(), Window::new("Main Window", Extent::rectangle(1920, 1080,)));
-
-		let audio_system_handle = spawn_as_child(root_space_handle.clone(), DefaultAudioSystem::new_as_system(resource_manager.clone()));
-
-		let physics_system_handle = spawn_as_child(root_space_handle.clone(), physics::PhysicsWorld::new_as_system());
-
-		let anchor_system_handle: EntityHandle<AnchorSystem> = spawn_as_child(root_space_handle.clone(), AnchorSystem::new());
-
-		let tick_handle = spawn_as_child(root_space_handle.clone(), Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }));
+		let tick_handle = root_space_handle.spawn(Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }));
 
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
@@ -129,11 +73,9 @@ impl Application for GraphicsApplication {
 			window_system_handle,
 
 			input_system_handle,
-			mouse_device_handle,
-			keyboard_device_handle,
-			gamepad_device_handle,
 
 			renderer_handle,
+			resource_manager,
 			audio_system_handle,
 			physics_system_handle,
 			anchor_system_handle,
@@ -163,7 +105,7 @@ impl Application for GraphicsApplication {
 		self.application.get_parameter(name)
 	}
 
-	fn get_name(&self) -> String { self.application.get_name() }
+	fn get_name(&self) -> &str { self.application.get_name() }
 
 	fn tick(&mut self) {
 		let now = std::time::Instant::now();
@@ -179,48 +121,51 @@ impl Application for GraphicsApplication {
 			{
 				let mut input_system = self.input_system_handle.write();
 
+				let mouse_device_handle = input_system.get_devices_by_class_name("Mouse").unwrap().get(0).unwrap().clone();
+				let keyboard_device_handle = input_system.get_devices_by_class_name("Keyboard").unwrap().get(0).unwrap().clone();
+
 				window_system.update_windows(|_, event| {
 					match event {
 						ghi::WindowEvents::Close => { close = true },
 						ghi::WindowEvents::Button { pressed, button } => {
 							match button {
 								ghi::MouseKeys::Left => {
-									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed));
+									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed));
 								},
 								ghi::MouseKeys::Right => {
-									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed));
+									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed));
 								},
 								ghi::MouseKeys::ScrollUp => {
-									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32));
+									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32));
 								},
 								ghi::MouseKeys::ScrollDown => {
-									input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32));
+									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32));
 								},
 								_ => { }
 							}
 						},
 						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
 							let vec = Vector2::new(x, y);
-							input_system.record_trigger_value_for_device(self.mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec));
+							input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec));
 						},
 						ghi::WindowEvents::Resize { width, height } => {
 						}
 						ghi::WindowEvents::Key { pressed, key } => {
 							let (device_handle, input_source_action, value) = match key {
 								ghi::Keys::W => {
-									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
+									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::S => {
-									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
+									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::A => {
-									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
+									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::D => {
-									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
+									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
 								},
 								ghi::Keys::Space => {
-									(self.keyboard_device_handle.clone(), input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
+									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
 								},
 								_ => { return; }
 							};
@@ -317,12 +262,78 @@ impl GraphicsApplication {
 	pub fn get_tick_handle(&self) -> &EntityHandle<Property<Time>> {
 		&self.tick_handle
 	}
-
+	
 	pub fn do_loop(&mut self) {
 		while !self.close {
 			self.tick();
 		}
 	}
+}
+
+/// Performs a default setup of the application.
+/// This includes setting up mouse, keyboard and gamepad input devices,
+/// as well as setting up the resource manager with default asset handlers.
+/// It also sets up the renderer with a default render pipeline.
+/// The default render pipeline includes a visibility shader generator and a PBR visibility shading render pipeline.
+/// The default render pipeline also includes a tone mapping pass.
+/// A window is created with the application name.
+pub fn default_setup(application: &mut GraphicsApplication) {
+	{
+		let mut resource_manager = application.resource_manager.write();
+
+		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
+		let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
+
+		let mut asset_manager = AssetManager::new(assets_path, resources_path);
+
+		asset_manager.add_asset_handler(MeshAssetHandler::new());
+
+		{
+			let mut material_asset_handler = MaterialAssetHandler::new();
+			let root_node = besl::Node::root();
+			let shader_generator = {
+				let common_shader_generator = CommonShaderGenerator::new();
+				let visibility_shader_generation = VisibilityShaderGenerator::new(root_node.into());
+				visibility_shader_generation
+			};
+			material_asset_handler.set_shader_generator(shader_generator);
+			asset_manager.add_asset_handler(material_asset_handler);
+		}
+
+		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(AudioAssetHandler::new());
+
+		resource_manager.set_asset_manager(asset_manager);
+	}
+
+	{
+		let mut input_system = application.input_system_handle.write();
+
+		let mouse_device_class_handle = register_mouse_device_class(&mut input_system);
+		let keyboard_device_class_handle = register_keyboard_device_class(&mut input_system);
+		let gamepad_device_class_handle = register_gamepad_device_class(&mut input_system);
+
+		input_system.create_device(&mouse_device_class_handle);
+		input_system.create_device(&keyboard_device_class_handle);
+		input_system.create_device(&gamepad_device_class_handle);
+	}
+
+	{
+		let resource_manager = application.resource_manager.read();
+
+		let materials: Vec<resource_management::Reference<Material>> = resource_manager.query();
+	}
+	
+	application.root_space_handle.spawn(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
+
+	setup_pbr_visibility_shading_render_pipeline(application);
+}
+
+pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+	let mut renderer = application.renderer_handle.write();
+
+	renderer.add_render_pass::<VisibilityWorldRenderDomain>(application.root_space_handle.clone());
+	renderer.add_render_pass::<AcesToneMapPass>(application.root_space_handle.clone());
 }
 
 #[cfg(test)]

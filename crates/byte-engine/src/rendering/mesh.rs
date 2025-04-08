@@ -13,10 +13,10 @@ pub trait MeshGenerator {
 	fn normals(&self) -> Cow<[maths_rs::Vec3f]>;
 	fn uvs(&self) -> Cow<[maths_rs::Vec2f]>;
 	fn indices(&self) -> Cow<[u32]>;
-	fn colors(&self) -> Cow<[maths_rs::Vec4f]>;
 	fn tangents(&self) -> Cow<[maths_rs::Vec3f]>;
 	fn bitangents(&self) -> Cow<[maths_rs::Vec3f]>;
-	fn meshlet_indices(&self) -> Cow<[u8]>;
+	fn colors(&self) -> Option<Cow<[maths_rs::Vec4f]>> { None }
+	fn meshlet_indices(&self) -> Option<Cow<[u8]>> { None }
 }
 
 pub enum MeshSource {
@@ -26,11 +26,11 @@ pub enum MeshSource {
 
 pub trait RenderEntity: Entity {
 	fn get_transform(&self) -> maths_rs::Mat4f;
-	fn get_mesh(&self) -> MeshSource;
+	fn get_mesh(&self) -> &MeshSource;
 }
 
 pub struct Mesh {
-	resource_id: &'static str,
+	source: MeshSource,
 	transform: Transform,
 }
 
@@ -43,20 +43,25 @@ impl Entity for Mesh {
 
 impl RenderEntity for Mesh {
 	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_matrix() }
-	fn get_mesh(&self) -> MeshSource {
-		MeshSource::Resource(self.resource_id)
+	fn get_mesh(&self) -> &MeshSource {
+		&self.source
 	}
 }
 
 impl Mesh {
 	pub fn new(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
 		Self {
-			resource_id,
+			source: MeshSource::Resource(resource_id),
 			transform,
 		}.into()
 	}
 
-	pub fn get_resource_id(&self) -> &'static str { self.resource_id }
+	pub fn new_generated(generator: Box<dyn MeshGenerator>, transform: Transform) -> EntityBuilder<'static, Self> {
+		Self {
+			source: MeshSource::Generated(generator),
+			transform,
+		}.into()
+	}
 
 	pub fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
 		self.transform.set_orientation(normalize(orientation));

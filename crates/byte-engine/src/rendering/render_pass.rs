@@ -1,10 +1,12 @@
-use crate::core::EntityHandle;
+use crate::core::{entity::EntityBuilder, EntityHandle};
 
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use maths_rs::Vec2f;
 use utils::Extent;
 
 pub trait RenderPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized;
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>);
 
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
@@ -44,6 +46,10 @@ impl FullScreenRenderPass {
 }
 
 impl RenderPass for FullScreenRenderPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
@@ -105,6 +111,10 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
@@ -238,6 +248,10 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}

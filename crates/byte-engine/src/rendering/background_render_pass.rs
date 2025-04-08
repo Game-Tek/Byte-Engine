@@ -158,6 +158,10 @@ impl BackgroundRenderingPass {
 }
 
 impl RenderPass for BackgroundRenderingPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}

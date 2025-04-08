@@ -97,6 +97,10 @@ impl SSGIRenderPass {
 }
 
 impl RenderPass for SSGIRenderPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
@@ -244,6 +248,10 @@ impl TracePass {
 }
 
 impl RenderPass for TracePass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
@@ -312,6 +320,10 @@ impl UpsamplePass {
 }
 
 impl RenderPass for UpsamplePass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}
@@ -405,6 +417,10 @@ impl ApplyPass {
 }
 
 impl RenderPass for ApplyPass {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		unimplemented!()
 	}

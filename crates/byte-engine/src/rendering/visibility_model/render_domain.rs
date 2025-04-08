@@ -710,7 +710,7 @@ impl VisibilityWorldRenderDomain {
 		let normals = generator.normals();
 		let uvs = generator.uvs();
 		let indices = generator.indices().iter().map(|&i| i as u16).collect::<Vec<_>>();
-		let meshlet_indices = generator.meshlet_indices().iter().map_windows(|&[a, b, c]| [*a, *b, *c]).collect::<Vec<_>>();
+		let meshlet_indices = generator.meshlet_indices().expect("Need mesh to contain meshlet indices to be used with this render domain").iter().map_windows(|&[a, b, c]| [*a, *b, *c]).collect::<Vec<_>>();
 
 		let mut ghi = self.ghi.write();
 
@@ -1137,6 +1137,10 @@ impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 impl Entity for VisibilityWorldRenderDomain {}
 
 impl RenderPass for VisibilityWorldRenderDomain {
+	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!()
+	}
+
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
 		self.render_passes.push(render_pass);
 	}

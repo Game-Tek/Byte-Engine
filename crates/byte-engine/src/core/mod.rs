@@ -36,13 +36,13 @@ pub fn spawn<E>(entity: E) -> EntityHandle<E> {
 	let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 	let obj = Arc::new(RwLock::new(entity));
-	let handle = EntityHandle::<E>::new(obj, internal_id,);
+	let handle = EntityHandle::<E>::new(obj, internal_id);
 
 	handle
 }
 
 pub fn spawn_as_child<'a, E: Entity>(parent: DomainType, entity: impl SpawnHandler<E>) -> EntityHandle<E> {
-	let e = entity.call(Some(parent), unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }).unwrap();
+	let e = entity.call(Some(parent),).unwrap();
 	e
 }
 
@@ -50,12 +50,12 @@ pub fn spawn_as_child<'a, E: Entity>(parent: DomainType, entity: impl SpawnHandl
 
 /// Handles extractor pattern for most functions passed to the orchestrator.
 pub trait SpawnHandler<E: Entity> {
-	fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<E>> where Self: Sized;
+	fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<E>> where Self: Sized;
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for R {
-    fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
-		let internal_id = cid;
+    fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<R>> {
+		let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 		let obj = Arc::new(RwLock::new(self));
 
@@ -72,8 +72,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
-    fn call<'a>(self, domain: Option<DomainType>, cid: u32) -> Option<EntityHandle<R>> {
-		let internal_id = cid;
+    fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<R>> {
+		let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 		let entity = (self.create)(domain.clone());
 
@@ -98,6 +98,42 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		}
 
 		Some(handle)
+    }
+}
+
+impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
+    fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<R>> {
+		let handles = self.into_iter().map(|builder| {
+			let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
+
+			let entity = (builder.create)(domain.clone());
+
+			let obj = std::sync::Arc::new(RwLock::new(entity));
+
+			let mut handle = EntityHandle::<R>::new(obj, internal_id,);
+
+			for f in builder.post_creation_functions {
+				f(&mut handle,);
+			}
+
+			if let Some(domain) = domain.clone() {
+				for f in builder.listens_to {
+					f(domain.clone(), handle.clone())
+				}
+			}
+
+			handle
+		}).collect::<Vec<_>>();
+
+		if let Some(domain) = domain {
+			if let Some(listener) = domain.write().deref().get_listener() {
+				for handle in handles.iter() {
+					handle.read().deref().call_listeners(listener, handle.clone());
+				}
+			}
+		}
+
+		Some(handles[0].clone())
     }
 }
 

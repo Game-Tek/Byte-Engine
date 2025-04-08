@@ -3,7 +3,7 @@ use std::future::join;
 use maths_rs::mat::{MatScale, MatTranslate};
 use utils::BoxedFuture;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, EntitySubscriber, Listener}, spawn, spawn_as_child, Entity, EntityHandle}, physics, Vector3};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, EntitySubscriber, Listener}, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh::MeshSource, Vector3};
 
 #[cfg(not(feature = "headless"))]
 use crate::rendering::mesh::{self};
@@ -11,7 +11,7 @@ use crate::rendering::mesh::{self};
 use super::{Positionable, Transform, Transformable};
 
 pub struct Object {
-	resource_id: &'static str,
+	source: MeshSource,
 	transform: Transform,
 	velocity: Vector3,
 	collision: Event<EntityHandle<dyn physics::PhysicsEntity>>,
@@ -22,7 +22,7 @@ impl Object {
 	pub fn new<'a>(resource_id: &'static str, transform: Transform, body_type: physics::BodyTypes, velocity: Vector3) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent| {
 			Object {
-				resource_id,
+				source: MeshSource::Resource(resource_id),
 				transform,
 				velocity,
 				collision: Default::default(),
@@ -78,7 +78,7 @@ impl physics::PhysicsEntity for Object {
 #[cfg(not(feature = "headless"))]
 impl mesh::RenderEntity for Object {
 	fn get_transform(&self) -> maths_rs::Mat4f { (&self.transform).into() }
-	fn get_mesh(&self) -> mesh::MeshSource {
-		mesh::MeshSource::Resource(self.resource_id)
+	fn get_mesh(&self) -> &mesh::MeshSource {
+		&self.source
 	}
 }

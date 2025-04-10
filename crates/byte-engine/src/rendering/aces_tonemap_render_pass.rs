@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use crate::core::EntityHandle;
 
 use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
@@ -5,31 +7,33 @@ use utils::Extent;
 
 use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};
 
-use super::{render_pass::RenderPass, tonemap_render_pass};
+use super::{render_pass::{RenderPass, RenderPassBuilder}, tonemap_render_pass};
 
 pub struct AcesToneMapPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
-
-	source_image_handle: ghi::ImageHandle,
-	result_image_handle: ghi::ImageHandle,
 }
 
 const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
-impl AcesToneMapPass {
-    pub fn new(ghi: &mut ghi::GHI, source_image: ghi::ImageHandle, result_image: ghi::ImageHandle) -> AcesToneMapPass {
+impl Entity for AcesToneMapPass {}
+
+impl RenderPass for AcesToneMapPass {
+	fn create<'a>(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder<'a>) -> EntityBuilder<'static, Self> where Self: Sized {
+		let render_to_main = render_pass_builder.render_to("main");
+		let read_from_main = render_pass_builder.read_from("main");
+
 		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
 
 		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
 		let descriptor_set = ghi.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
 
-		let albedo_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, source_image, ghi::Layouts::General));
-		let result_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, result_image, ghi::Layouts::General));
+		let source_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
+		let destination_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
 
 		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
 			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -43,18 +47,7 @@ impl AcesToneMapPass {
 			pipeline_layout,
 			descriptor_set,
 			pipeline: tone_mapping_pipeline,
-
-			source_image_handle: source_image,
-			result_image_handle: result_image,
-		}
-    }
-}
-
-impl Entity for AcesToneMapPass {}
-
-impl RenderPass for AcesToneMapPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
-		todo!()
+		}.into()
 	}
 
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {

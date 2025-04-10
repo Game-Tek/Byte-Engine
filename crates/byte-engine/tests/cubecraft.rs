@@ -5,11 +5,16 @@
 
 use std::borrow::Cow;
 
-use byte_engine::core::{event::EventLike, EntityHandle};
+use byte_engine::core::listener::Listener;
+use byte_engine::core::Entity;
+use byte_engine::core::EntityHandle;
 
 use byte_engine::gameplay::space::Spawn;
-use byte_engine::rendering::mesh::MeshGenerator;
-use byte_engine::{application::{Application, Parameter}, audio::sound::Sound, camera::Camera, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function}, math, physics::PhysicsEntity, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
+use byte_engine::rendering::aces_tonemap_render_pass::AcesToneMapPass;
+use byte_engine::rendering::common_shader_generator::CommonShaderGenerator;
+use byte_engine::rendering::mesh::{MeshGenerator, MeshSource, RenderEntity};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, input::{Action, ActionBindingDescription, Function}, rendering::directional_light::DirectionalLight, Vector3};
+use maths_rs::mat::MatTranslate;
 
 #[ignore]
 #[test]
@@ -17,7 +22,22 @@ fn cubecraft() {
 	// Create the Byte-Engine application
 	let mut app = byte_engine::application::GraphicsApplication::new("Cubecraft", &[Parameter::new("resources-path", "../../resources"), Parameter::new("assets-path", "../../assets")]);
 
-	byte_engine::application::graphics_application::default_setup(&mut app);
+	{
+		let generator = {
+			let common_shader_generator = CommonShaderGenerator::new();
+			common_shader_generator
+		};
+
+		byte_engine::application::graphics_application::setup_default_resource_and_asset_management(&mut app, generator);
+	}
+
+	{
+		let mut renderer = app.get_renderer_handle().write();
+		renderer.add_render_pass::<AcesToneMapPass>(app.get_root_space_handle().clone());
+	}
+
+	byte_engine::application::graphics_application::setup_default_input(&mut app);
+	byte_engine::application::graphics_application::setup_default_window(&mut app);
 
 	// Get the root space handle
 	let space_handle = app.get_root_space_handle();
@@ -65,13 +85,43 @@ fn cubecraft() {
 				let block = make_block(position);
 
 				if block == GRASS_BLOCK {
-					space_handle.spawn(Mesh::new_generated(Box::new(CubeMeshGenerator {}), Transform::default().position(Vector3::new(x as f32, y as f32, z as f32))));
+					space_handle.spawn(Block::new(position, block));
 				}
 			}
 		}
 	}
 
 	app.do_loop()
+}
+
+struct Block {
+	position: (i32, i32, i32),
+	block: u32,
+
+	source: MeshSource,
+}
+
+impl Block {
+	fn new(position: (i32, i32, i32), block: u32) -> Self {
+		Block { position, block, source: MeshSource::Generated(Box::new(CubeMeshGenerator {})) }
+	}
+}
+
+impl Entity for Block {
+	fn call_listeners<'a>(&'a self, listener: &'a byte_engine::core::listener::BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
+		listener.invoke_for(handle.clone(), self);
+		listener.invoke_for(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
+	}
+}
+
+impl RenderEntity for Block {
+	fn get_mesh(&self) -> &byte_engine::rendering::mesh::MeshSource {
+		&self.source
+	}
+
+	fn get_transform(&self) -> maths_rs::Mat4f {
+		maths_rs::Mat4f::from_translation(Vector3::new(self.position.0 as f32, self.position.1 as f32, self.position.2 as f32))
+	}
 }
 
 struct CubeMeshGenerator {

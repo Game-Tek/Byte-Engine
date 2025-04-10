@@ -1,8 +1,5 @@
 use std::{
-    io::Write,
-    ops::{Deref, DerefMut},
-    rc::Rc,
-    sync::Arc,
+    borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
 use ghi::{BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, GraphicsHardwareInterface, RasterizationRenderPassMode};
@@ -15,7 +12,7 @@ use crate::{
     }, gameplay::space::{Space, Spawn}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Vector3
 };
 
-use super::{render_pass::RenderPass, texture_manager::TextureManager, triangle::Triangle};
+use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager, triangle::Triangle};
 
 pub struct Renderer {
     ghi: Rc<RwLock<ghi::GHI>>,
@@ -130,7 +127,8 @@ impl Renderer {
     }
 
 	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, space_handle: EntityHandle<Space>) {
-		let render_pass = space_handle.spawn(T::create());
+		let mut render_pass_builder = RenderPassBuilder::new();
+		let render_pass = space_handle.spawn(T::create(self.ghi.write().borrow_mut(), &mut render_pass_builder));
 		self.root_render_pass.add_render_pass(render_pass);
 	}
 
@@ -232,7 +230,7 @@ impl RootRenderPass {
 }
 
 impl RenderPass for RootRenderPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		Self::new().into()
 	}
 
@@ -354,7 +352,7 @@ impl EntitySubscriber<Triangle> for ScreenRenderPass {
 }
 
 impl RenderPass for ScreenRenderPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		unimplemented!()
 	}
 

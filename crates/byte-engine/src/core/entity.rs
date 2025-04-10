@@ -21,6 +21,12 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
 
+	/// Implementers can override this method to advertise the entity multiples traits.
+	/// ```rust
+	/// listener.invoke_for(handle, self); // Advertise as the same type
+	/// listener.invoke_for(handle as EntityHandle<dyn OtherTrait>, self as &dyn OtherTrait); // Advertise as a different type
+	/// // etc...
+	/// ```
 	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized { listener.invoke_for(handle, self) }
 }
 

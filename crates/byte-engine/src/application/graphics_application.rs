@@ -2,7 +2,7 @@ use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, gam
 use std::time::Duration;
 
 use maths_rs::num::Base;
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler}, material::Material, resource::resource_manager::ResourceManager};
+use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler}, material::Material, resource::resource_manager::ResourceManager};
 use utils::Extent;
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
@@ -262,6 +262,10 @@ impl GraphicsApplication {
 	pub fn get_tick_handle(&self) -> &EntityHandle<Property<Time>> {
 		&self.tick_handle
 	}
+
+	pub fn get_renderer_handle(&self) -> &EntityHandle<Renderer> {
+		&self.renderer_handle
+	}
 	
 	pub fn do_loop(&mut self) {
 		while !self.close {
@@ -279,54 +283,71 @@ impl GraphicsApplication {
 /// A window is created with the application name.
 pub fn default_setup(application: &mut GraphicsApplication) {
 	{
-		let mut resource_manager = application.resource_manager.write();
+		let generator = {
+			let common_shader_generator = CommonShaderGenerator::new();
+			let visibility_shader_generation = VisibilityShaderGenerator::new();
+			visibility_shader_generation
+		};
 
-		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
-		let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
-
-		let mut asset_manager = AssetManager::new(assets_path, resources_path);
-
-		asset_manager.add_asset_handler(MeshAssetHandler::new());
-
-		{
-			let mut material_asset_handler = MaterialAssetHandler::new();
-			let root_node = besl::Node::root();
-			let shader_generator = {
-				let common_shader_generator = CommonShaderGenerator::new();
-				let visibility_shader_generation = VisibilityShaderGenerator::new(root_node.into());
-				visibility_shader_generation
-			};
-			material_asset_handler.set_shader_generator(shader_generator);
-			asset_manager.add_asset_handler(material_asset_handler);
-		}
-
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
-		asset_manager.add_asset_handler(AudioAssetHandler::new());
-
-		resource_manager.set_asset_manager(asset_manager);
+		setup_default_resource_and_asset_management(application, generator);
 	}
 
-	{
-		let mut input_system = application.input_system_handle.write();
-
-		let mouse_device_class_handle = register_mouse_device_class(&mut input_system);
-		let keyboard_device_class_handle = register_keyboard_device_class(&mut input_system);
-		let gamepad_device_class_handle = register_gamepad_device_class(&mut input_system);
-
-		input_system.create_device(&mouse_device_class_handle);
-		input_system.create_device(&keyboard_device_class_handle);
-		input_system.create_device(&gamepad_device_class_handle);
-	}
-
-	{
-		let resource_manager = application.resource_manager.read();
-
-		let materials: Vec<resource_management::Reference<Material>> = resource_manager.query();
-	}
-	
-	application.root_space_handle.spawn(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
+	setup_default_input(application);
 
 	setup_pbr_visibility_shading_render_pipeline(application);
+
+	setup_default_window(application);
+}
+
+/// Creates a new window under the root space with the application name and an extent of 1920x1080.
+pub fn setup_default_window(application: &mut GraphicsApplication) {
+	let root_space_handle = application.get_root_space_handle();
+	root_space_handle.spawn(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
+}
+
+/// Sets up the default resource and asset management for the application.
+/// This includes setting up the resource manager with default asset handlers.
+/// The default asset handlers include:
+/// - MaterialAssetHandler
+/// - MeshAssetHandler
+/// - ImageAssetHandler
+/// - AudioAssetHandler
+/// 
+/// The default material asset handler is set up with a shader generator.
+/// The shader generator is passed as a parameter to this function.
+/// The resources folder path is taken from the `resources-path` parameter and defaults to `resources`.
+/// The assets folder path is taken from the `assets-path` parameter and defaults to `assets`.
+pub fn setup_default_resource_and_asset_management(application: &mut GraphicsApplication, generator: impl ProgramGenerator + 'static) {
+	let mut resource_manager = application.resource_manager.write();
+
+	let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
+	let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
+
+	let mut asset_manager = AssetManager::new(assets_path, resources_path);
+
+	let mut material_asset_handler = MaterialAssetHandler::new();
+	material_asset_handler.set_shader_generator(generator);
+	asset_manager.add_asset_handler(material_asset_handler);
+
+	asset_manager.add_asset_handler(MeshAssetHandler::new());
+	asset_manager.add_asset_handler(ImageAssetHandler::new());
+	asset_manager.add_asset_handler(AudioAssetHandler::new());
+
+	resource_manager.set_asset_manager(asset_manager);
+}
+
+/// Sets up a default input system for the application.
+/// This includes setting up mouse, keyboard and gamepad input devices.
+pub fn setup_default_input(application: &mut GraphicsApplication) {
+	let mut input_system = application.input_system_handle.write();
+
+	let mouse_device_class_handle = register_mouse_device_class(&mut input_system);
+	let keyboard_device_class_handle = register_keyboard_device_class(&mut input_system);
+	let gamepad_device_class_handle = register_gamepad_device_class(&mut input_system);
+
+	input_system.create_device(&mouse_device_class_handle);
+	input_system.create_device(&keyboard_device_class_handle);
+	input_system.create_device(&gamepad_device_class_handle);
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {

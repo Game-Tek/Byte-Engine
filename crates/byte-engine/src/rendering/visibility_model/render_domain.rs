@@ -32,8 +32,7 @@ use crate::core::{self, spawn, Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
-use crate::rendering::render_pass::RenderPass;
-use crate::rendering::shadow_render_pass::{self, ShadowRenderingPass};
+use crate::rendering::render_pass::{RenderPass, RenderPassBuilder};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
 use crate::rendering::visibility_shader_generator::VisibilityShaderGenerator;
@@ -208,8 +207,6 @@ pub struct VisibilityWorldRenderDomain {
 	material_offset_pass: MaterialOffsetPass,
 	pixel_mapping_pass: PixelMappingPass,
 
-	shadow_render_pass: EntityHandle<ShadowRenderingPass>,
-
 	shadow_map_binding: ghi::DescriptorSetBindingHandle,
 
 	lights: Vec<EntityHandle<DirectionalLight>>,
@@ -353,15 +350,9 @@ impl VisibilityWorldRenderDomain {
 				ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
 			];
 
-			let shadow_render_pass = spawn(ShadowRenderingPass::new(ghi_instance.deref_mut(), &descriptor_set_layout, &depth_target));
-
 			let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 			let depth_sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
 			let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
-
-			let shadow_map_image = {
-				shadow_render_pass.read().get_shadow_map_image()
-			};
 
 			let material_evaluation_descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 			let material_evaluation_descriptor_set = ghi_instance.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
@@ -372,7 +363,7 @@ impl VisibilityWorldRenderDomain {
 			let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], light_data_buffer));
 			let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], materials_data_buffer_handle));
 			let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[6], occlusion_map, sampler, ghi::Layouts::Read));
-			let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], shadow_map_image, depth_sampler, ghi::Layouts::Read));
+			let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], occlusion_map, depth_sampler, ghi::Layouts::Read));
 
 			let material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 + 4 }]);
 
@@ -394,8 +385,6 @@ impl VisibilityWorldRenderDomain {
 				material_count_pass,
 				material_offset_pass,
 				pixel_mapping_pass,
-
-				shadow_render_pass,
 
 				camera: None,
 
@@ -772,8 +761,8 @@ impl VisibilityWorldRenderDomain {
 				let root_node = besl::Node::root();
 				let shader_generator = {
 					let common_shader_generator = CommonShaderGenerator::new();
-					let visibility_shader_generation = VisibilityShaderGenerator::new(root_node.into());
-					visibility_shader_generation
+					let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(false, true, false, true, false, true, false, false);
+					visibility_shader_generator
 				};
 
 				let root_node = besl::parse(&"main: fn () -> void {
@@ -1108,14 +1097,6 @@ impl VisibilityWorldRenderDomain {
 			let _ = ghi.get_mut_buffer_slice(self.light_data_buffer); // Keep this here to trigger a copy
 		}
 
-		{
-			let lights_data_buffer = ghi.get_mut_buffer_slice(self.light_data_buffer);
-			let lights_data_reference: &mut LightingData = unsafe { lights_data_buffer.as_mut_ptr().cast::<LightingData>().as_mut().unwrap() };
-
-			let shadow_render_pass = self.shadow_render_pass.read();
-			shadow_render_pass.prepare(ghi, &self.lights, views_data_reference, lights_data_reference, &view);
-		}
-
 		Some(())
 	}
 
@@ -1137,7 +1118,7 @@ impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 impl Entity for VisibilityWorldRenderDomain {}
 
 impl RenderPass for VisibilityWorldRenderDomain {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!()
 	}
 
@@ -1165,22 +1146,6 @@ impl RenderPass for VisibilityWorldRenderDomain {
 
 		for render_pass in self.render_passes.iter() {
 			render_pass.write().record(command_buffer_recording, extent);
-		}
-
-		{
-			let shadow_render_pass = self.shadow_render_pass.read();
-
-			// directional_lights.sort_by(|a, b| maths_rs::length(b.color).partial_cmp(&maths_rs::length(a.color)).unwrap()); // Sort by intensity
-
-			if true {
-				if self.lights.len() > 0 {
-					shadow_render_pass.render(command_buffer_recording, self, &self.render_info.instances);
-				} else {
-					command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(1f32)),]);
-				}
-			} else {
-				command_buffer_recording.clear_images(&[(shadow_render_pass.get_shadow_map_image(), ghi::ClearValue::Depth(0f32)),]);
-			}
 		}
 
 		command_buffer_recording.start_region("Material Evaluation");
@@ -1736,8 +1701,9 @@ void main() {
 
 pub fn get_material_count_source() -> String {
 	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new_with_params(false, true, false, true, false, true, false, false);
-		common_shader_generator
+		let common_shader_generator = CommonShaderGenerator::new();
+		let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(false, true, false, true, false, true, false, false);
+		visibility_shader_generator
 	};
 
 	let main_code = r#"
@@ -1773,8 +1739,9 @@ pub fn get_material_count_source() -> String {
 
 pub fn get_material_offset_source() -> String {
 	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new_with_params(true, false, false, true, false, true, false, false);
-		common_shader_generator
+		let common_shader_generator = CommonShaderGenerator::new();
+		let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(true, false, false, true, false, true, false, false);
+		visibility_shader_generator
 	};
 
 	let main_code = r#"
@@ -1807,8 +1774,9 @@ pub fn get_material_offset_source() -> String {
 
 pub fn get_pixel_mapping_source() -> String {
 	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new_with_params(false, false, false, false, false, true, false, true);
-		common_shader_generator
+		let common_shader_generator = CommonShaderGenerator::new();
+		let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(false, false, false, false, false, true, false, true);
+		visibility_shader_generator
 	};
 
 	let main_code = r#"

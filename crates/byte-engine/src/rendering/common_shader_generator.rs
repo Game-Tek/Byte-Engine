@@ -10,30 +10,7 @@ use crate::besl::lexer;
 /// # Functions
 /// - `get_view_space_position_from_depth(depth_map: Texture2D, coords: vec2u, inverse_projection_matrix: mat4f) -> vec3f`
 pub struct CommonShaderGenerator {
-	views_binding: besl::parser::Node,
-	mesh_struct: besl::parser::Node,
-	view_struct: besl::parser::Node,
-	meshlet_struct: besl::parser::Node,
-	light_struct: besl::parser::Node,
-	material_struct: besl::parser::Node,
 	uv_derivatives_struct: besl::parser::Node,
-	meshes: besl::parser::Node,
-	positions: besl::parser::Node,
-	normals: besl::parser::Node,
-	uvs: besl::parser::Node,
-	vertex_indices: besl::parser::Node,
-	primitive_indices: besl::parser::Node,
-	meshlets: besl::parser::Node,
-	textures: besl::parser::Node,
-	material_count: besl::parser::Node,
-	material_offset: besl::parser::Node,
-	material_offset_scratch: besl::parser::Node,
-	material_evaluation_dispatches: besl::parser::Node,
-	pixel_mapping: besl::parser::Node,
-	triangle_index: besl::parser::Node,
-	instance_index: besl::parser::Node,
-	compute_vertex_index: besl::parser::Node,
-	process_meshlet: besl::parser::Node,
 	distribution_ggx: besl::parser::Node,
 	geometry_schlick_ggx: besl::parser::Node,
 	geometry_smith: besl::parser::Node,
@@ -85,33 +62,8 @@ impl ProgramGenerator for CommonShaderGenerator {
 
 return colors[i % 16];";
 
-		let mesh_struct = self.mesh_struct.clone();
-		let view_struct = self.view_struct.clone();
-		let meshlet_struct = self.meshlet_struct.clone();
-		let light_struct = self.light_struct.clone();
-		let material_struct = self.material_struct.clone();
-		let barycentric_deriv = self.barycentric_deriv.clone();
+	let barycentric_deriv = self.barycentric_deriv.clone();
 		let uv_derivatives_struct = self.uv_derivatives_struct.clone();
-
-		let camera_binding = self.views_binding.clone();
-		let material_offset = self.material_offset.clone();
-		let material_offset_scratch = self.material_offset_scratch.clone();
-		let material_evaluation_dispatches = self.material_evaluation_dispatches.clone();
-		let meshes = self.meshes.clone();
-		let material_count = self.material_count.clone();
-		let uvs = self.uvs.clone();
-		let textures = self.textures.clone();
-		let pixel_mapping = self.pixel_mapping.clone();
-		let triangle_index = self.triangle_index.clone();
-		let instance_index = self.instance_index.clone();
-		let meshlets = self.meshlets.clone();
-		let primitive_indices = self.primitive_indices.clone();
-		let vertex_indices = self.vertex_indices.clone();
-		let positions = self.positions.clone();
-		let normals = self.normals.clone();
-
-		let compute_vertex_index = self.compute_vertex_index.clone();
-		let process_meshlet = self.process_meshlet.clone();
 		let distribution_ggx = self.distribution_ggx.clone();
 		let geometry_schlick_ggx = self.geometry_schlick_ggx.clone();
 		let geometry_smith = self.geometry_smith.clone();
@@ -141,9 +93,7 @@ return colors[i % 16];";
 
 		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
 
-		root.add(vec![mesh_struct, view_struct, meshlet_struct, light_struct, barycentric_deriv, material_struct, uv_derivatives_struct]);
-		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
-		root.add(vec![compute_vertex_index, process_meshlet, distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff]);
+		root.add(vec![distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff, uv_derivatives_struct, barycentric_deriv,]);
 		root.add(vec![make_uv, interleaved_gradient_noise, make_perpendicular_vector, make_cosine_hemisphere_sample, make_world_space_position_from_depth, get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions, make_normal_from_positions, make_normal_from_depth_map]);
 		root.add(vec![get_debug_color]);
 
@@ -155,61 +105,9 @@ impl CommonShaderGenerator {
 	pub const SCOPE: &'static str = "Common";
 
 	pub fn new() -> Self {
-		Self::new_with_params(true, true, true, true, true, true, true, true)
-	}
-
-	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
 		use besl::parser::Node;
 
-		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_primitive_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
-		let view_struct = Node::r#struct("View", vec![Node::member("view", "mat4f"), Node::member("projection", "mat4f"), Node::member("view_projection", "mat4f"), Node::member("inverse_view", "mat4f"), Node::member("inverse_projection", "mat4f"), Node::member("inverse_view_projection", "mat4f"), Node::member("fov", "vec2f"), Node::member("near", "f32"), Node::member("far", "f32"),]);
-		let meshlet_struct = Node::r#struct("Meshlet", vec![Node::member("primitive_offset", "u16"), Node::member("triangle_offset", "u16"), Node::member("primitive_count", "u8"), Node::member("triangle_count", "u8")]);
-		let light_struct = Node::r#struct("Light", vec![Node::member("position", "vec3f"), Node::member("color", "vec3f"), Node::member("type", "u8"), Node::member("cascades", "u32[8]")]);
-		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
 		let uv_derivatives_struct = Node::r#struct("UVDerivatives", vec![Node::member("du", "vec3f"), Node::member("dv", "vec3f")]);
-
-		let views_binding = Node::binding("views", Node::buffer("ViewsBuffer", vec![Node::member("views", "View[8]")]), 0, 0, true, false);
-		let meshes = Node::binding("meshes", Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[64]")]), 0, 1, true, false);
-		let positions = Node::binding("vertex_positions", Node::buffer("Positions", vec![Node::member("positions", "vec3f[8192]")]), 0, 2, true, false);
-		let normals = Node::binding("vertex_normals", Node::buffer("Normals", vec![Node::member("normals", "vec3f[8192]")]), 0, 3, true, false);
-		let uvs = Node::binding("vertex_uvs", Node::buffer("UVs", vec![Node::member("uvs", "vec2f[8192]")]), 0, 5, true, false);
-		let vertex_indices = Node::binding("vertex_indices", Node::buffer("VertexIndices", vec![Node::member("vertex_indices", "u16[8192]")]), 0, 6, true, false);
-		let primitive_indices = Node::binding("primitive_indices", Node::buffer("PrimitiveIndices", vec![Node::member("primitive_indices", "u8[8192]")]), 0, 7, true, false);
-		let meshlets = Node::binding("meshlets", Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", "Meshlet[8192]")]), 0, 8, true, false);
-		let textures = Node::binding_array("textures", Node::combined_image_sampler(), 0, 9, true, false, 16);
-
-		let material_count = Node::binding("material_count", Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[2073600]")]), 1, 0, material_count_read, material_count_write); // TODO: somehow set read/write properties per shader
-		let material_offset = Node::binding("material_offset", Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600")]), 1, 1, material_offset_read, material_offset_write);
-		let material_offset_scratch = Node::binding("material_offset_scratch", Node::buffer("MaterialOffsetScratch", vec![Node::member("material_offset_scratch", "u32[2073600]")]), 1, 2, material_offset_scratch_read, material_offset_scratch_write);
-		let material_evaluation_dispatches = Node::binding("material_evaluation_dispatches", Node::buffer("MaterialEvaluationDispatches", vec![Node::member("material_evaluation_dispatches", "vec3u[2073600]")]), 1, 3, material_offset_read, material_offset_write);
-		let pixel_mapping = Node::binding("pixel_mapping", Node::buffer("PixelMapping", vec![Node::member("pixel_mapping", "vec2u16[2073600]")]), 1, 4, pixel_mapping_read, pixel_mapping_write);
-		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
-		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
-
-		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */", &["vertex_indices"], Vec::new())]);
-
-		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("instance_index", "u32"), Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("
-		Mesh mesh = meshes.meshes[instance_index];
-
-		uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
-		Meshlet meshlet = meshlets.meshlets[meshlet_index];
-	
-		SetMeshOutputsEXT(meshlet.primitive_count, meshlet.triangle_count);
-
-		uint primitive_index = gl_LocalInvocationID.x;
-	
-		if (primitive_index < uint(meshlet.primitive_count)) {
-			uint vertex_index = compute_vertex_index(mesh, meshlet, primitive_index);
-			gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
-		}
-		
-		if (primitive_index < uint(meshlet.triangle_count)) {
-			uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + primitive_index) * 3;
-			uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index + 0], primitive_indices.primitive_indices[triangle_index + 1], primitive_indices.primitive_indices[triangle_index + 2]);
-			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-			out_instance_index[primitive_index] = instance_index;
-			out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);
-		}", &["meshes", "vertex_positions", "vertex_indices", "primitive_indices", "meshlets", "compute_vertex_index"], Vec::new())]);
 
 		let square_vec2 = Node::function("vec2f_squared_length", vec![Node::parameter("v", "vec2f")], "f32", vec![Node::glsl("return dot(v, v)", &[], Vec::new())]);
 		let square_vec3 = Node::function("vec3f_squared_length", vec![Node::parameter("v", "vec3f")], "f32", vec![Node::glsl("return dot(v, v)", &[], Vec::new())]);
@@ -293,32 +191,8 @@ impl CommonShaderGenerator {
 		let unit_vector_from_xy = Node::function("unit_vector_from_xy", vec![Node::member("v", "vec2f")], "vec3f", vec![Node::glsl("v = v * 2.0f - 1.0f; return normalize(vec3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));", &[], Vec::new())]);
 
 		Self {
-			mesh_struct,
-			view_struct,
-			meshlet_struct,
-			light_struct,
-			material_struct,
 			uv_derivatives_struct,
 
-			views_binding,
-			meshes,
-			positions,
-			normals,
-			uvs,
-			vertex_indices,
-			primitive_indices,
-			meshlets,
-			textures,
-			material_count,
-			material_offset,
-			material_offset_scratch,
-			material_evaluation_dispatches,
-			pixel_mapping,
-			triangle_index,
-			instance_index,
-
-			compute_vertex_index,
-			process_meshlet,
 			distribution_ggx,
 			geometry_schlick_ggx,
 			geometry_smith,

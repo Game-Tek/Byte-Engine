@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
@@ -5,7 +7,7 @@ use maths_rs::Vec2f;
 use utils::Extent;
 
 pub trait RenderPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized;
+	fn create<'a>(ghi: &mut ghi::GHI, render_pass_builder: &'a mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized;
 
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>);
 
@@ -46,7 +48,7 @@ impl FullScreenRenderPass {
 }
 
 impl RenderPass for FullScreenRenderPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!()
 	}
 
@@ -77,42 +79,39 @@ pub struct BilateralBlurPass {
 	descriptor_set_y: ghi::DescriptorSetHandle,
 }
 
-impl BilateralBlurPass {
-	pub fn new<'c>(ghi: &mut ghi::GHI, (depth_image, depth_sampler): (ghi::ImageHandle, ghi::SamplerHandle), source_map: ghi::ImageHandle, x_blur_map: ghi::ImageHandle, y_blur_map: ghi::ImageHandle) -> Self {
-		let descriptor_set_template = ghi.create_descriptor_set_template(Some("SSGI Blur"), &[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING]);
-
-		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
-
-		let descriptor_set_x = ghi.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
-		let descriptor_set_y = ghi.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
-
-		let sampler = ghi.build_sampler(ghi::sampler::Builder::new());
-
-		ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::combined_image_sampler(&BLUR_DEPTH_BINDING, depth_image, depth_sampler, ghi::Layouts::Read));
-		ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source_map, sampler, ghi::Layouts::Read));
-		ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map, ghi::Layouts::General));
-
-		ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::combined_image_sampler(&BLUR_DEPTH_BINDING, depth_image, depth_sampler, ghi::Layouts::Read));
-		ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, x_blur_map, sampler, ghi::Layouts::Read));
-		ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map, ghi::Layouts::General));
-
-		let shader = ghi.create_shader(Some("SSGI Blur"), ghi::ShaderSource::GLSL(BLUR_SHADER.into()), ghi::ShaderTypes::Compute, &vec![BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create the ray march shader.");
-		let pipeline_x = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new::<Vec2f>(0, "vec2f".to_string(), Vec2f::new(1f32, 0f32))]));
-		let pipeline_y = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new::<Vec2f>(0, "vec2f".to_string(), Vec2f::new(0f32, 1f32))]));
-
-		BilateralBlurPass {
-			pipeline_x,
-			pipeline_y,
-			pipeline_layout,
-			descriptor_set_x,
-			descriptor_set_y,
-		}
-	}
-}
-
 impl RenderPass for BilateralBlurPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
-		todo!()
+	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
+		todo!();
+		// let descriptor_set_template = ghi.create_descriptor_set_template(Some("SSGI Blur"), &[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING]);
+
+		// let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
+
+		// let descriptor_set_x = ghi.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
+		// let descriptor_set_y = ghi.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
+
+		// let read_depth = render_pass_builder.read_from("depth");
+
+		// let sampler = ghi.build_sampler(ghi::sampler::Builder::new());
+
+		// ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::combined_image_sampler(&BLUR_DEPTH_BINDING, read_depth.borrow().into(), read_depth.borrow().into(), ghi::Layouts::Read));
+		// ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source_map, sampler, ghi::Layouts::Read));
+		// ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map, ghi::Layouts::General));
+
+		// ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::combined_image_sampler(&BLUR_DEPTH_BINDING, depth_image, depth_sampler, ghi::Layouts::Read));
+		// ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, x_blur_map, sampler, ghi::Layouts::Read));
+		// ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map, ghi::Layouts::General));
+
+		// let shader = ghi.create_shader(Some("SSGI Blur"), ghi::ShaderSource::GLSL(BLUR_SHADER.into()), ghi::ShaderTypes::Compute, &vec![BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create the ray march shader.");
+		// let pipeline_x = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new::<Vec2f>(0, "vec2f".to_string(), Vec2f::new(1f32, 0f32))]));
+		// let pipeline_y = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new::<Vec2f>(0, "vec2f".to_string(), Vec2f::new(0f32, 1f32))]));
+
+		// BilateralBlurPass {
+		// 	pipeline_x,
+		// 	pipeline_y,
+		// 	pipeline_layout,
+		// 	descriptor_set_x,
+		// 	descriptor_set_y,
+		// }
 	}
 
 	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
@@ -248,7 +247,7 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn create() -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!()
 	}
 
@@ -265,4 +264,75 @@ impl RenderPass for BlitPass {
 	}
 
 	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+}
+
+pub struct RenderPassBuilder<'a> {
+	consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
+}
+
+impl <'a> RenderPassBuilder<'a> {
+	pub fn new() -> Self {
+		RenderPassBuilder {
+			consumed_resources: Vec::new(),
+		}
+	}
+
+	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
+		if self.consumed_resources.iter().any(|(n, _)| *n == name) {
+			panic!("Resource {} already consumed", name);
+		}
+
+		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
+
+		todo!()
+	}
+
+	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
+		if self.consumed_resources.iter().any(|(n, _)| *n == name) {
+			panic!("Resource {} already consumed", name);
+		}
+
+		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
+
+		todo!()
+	}
+}
+
+pub struct ReadFromResult {
+	image: ghi::ImageHandle,
+	sample: ghi::SamplerHandle,
+}
+
+impl Into<ghi::ImageHandle> for ReadFromResult {
+	fn into(self) -> ghi::ImageHandle {
+		self.image
+	}
+}
+
+impl Into<ghi::ImageHandle> for &ReadFromResult {
+	fn into(self) -> ghi::ImageHandle {
+		self.image
+	}
+}
+
+impl Into<ghi::SamplerHandle> for ReadFromResult {
+	fn into(self) -> ghi::SamplerHandle {
+		self.sample
+	}
+}
+
+impl Into<ghi::SamplerHandle> for &ReadFromResult {
+	fn into(self) -> ghi::SamplerHandle {
+		self.sample
+	}
+}
+
+pub struct RenderToResult {
+	image: ghi::ImageHandle,
+}
+
+impl Into<ghi::ImageHandle> for RenderToResult {
+	fn into(self) -> ghi::ImageHandle {
+		self.image
+	}
 }

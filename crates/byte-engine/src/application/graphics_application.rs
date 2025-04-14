@@ -167,6 +167,10 @@ impl Application for GraphicsApplication {
 								ghi::Keys::Space => {
 									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
 								},
+								ghi::Keys::Escape => {
+									close = true;
+									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Escape"), input::Value::Bool(pressed))
+								}
 								_ => { return; }
 							};
 

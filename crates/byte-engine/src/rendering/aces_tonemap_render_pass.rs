@@ -22,9 +22,20 @@ const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Des
 impl Entity for AcesToneMapPass {}
 
 impl RenderPass for AcesToneMapPass {
-	fn create<'a>(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder<'a>) -> EntityBuilder<'static, Self> where Self: Sized {
-		let render_to_main = render_pass_builder.render_to("main");
+	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
+		vec!["main"]
+	}
+
+	fn get_write_attachments() -> Vec<&'static str> where Self: Sized {
+		vec!["result"]
+	}
+
+	fn create<'a>(render_pass_builder: &mut RenderPassBuilder<'a>) -> EntityBuilder<'static, Self> where Self: Sized {
 		let read_from_main = render_pass_builder.read_from("main");
+		let render_to_main = render_pass_builder.render_to("result");
+
+		let ghi = render_pass_builder.ghi();
+		let mut ghi = ghi.write();
 
 		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
 
@@ -50,19 +61,13 @@ impl RenderPass for AcesToneMapPass {
 		}.into()
 	}
 
-	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
-		unimplemented!()
-	}
-
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]) {
 		command_buffer_recording.start_region("Tonemap");
 		let r = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 		r.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
 		r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 		command_buffer_recording.end_region();
 	}
-
-	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 }
 
 const TONE_MAPPING_SHADER: &'static str = r#"

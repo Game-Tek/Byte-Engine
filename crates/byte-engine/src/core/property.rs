@@ -56,6 +56,7 @@ impl <T: Clone + 'static> Property<T> {
 		}
 	}
 
+	/// Adds a subscriber to the property.
 	pub fn add<F>(&self, get: F) where F: FnMut(&T) + 'static {
 		self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(get)));
 		// self.internal_state.write().unwrap().subscribers.push(std::rc::Rc::new(std::sync::RwLock::new(async move |e| { get(e) })));

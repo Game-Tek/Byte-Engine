@@ -67,7 +67,7 @@ bitflags::bitflags! {
 pub struct BaseBufferHandle(pub(super) u64);
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct BufferHandle<T>(pub(super) u64, std::marker::PhantomData<T>);
+pub struct BufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T>);
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct TopLevelAccelerationStructureHandle(pub(super) u64);
@@ -119,6 +119,12 @@ pub struct AllocationHandle(pub(crate) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
+
+impl <T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
+	fn into(self) -> BaseBufferHandle {
+		BaseBufferHandle(self.0)
+	}
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handle {
@@ -344,7 +350,7 @@ pub trait BoundRasterizationPipelineMode: RasterizationRenderPassMode {
 pub trait BoundComputePipelineMode: CommandBufferRecordable {
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
-	fn indirect_dispatch(&mut self, buffer: &BaseBufferHandle, entry_index: usize);
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: &BufferHandle<[(u32, u32, u32); N]>, entry_index: usize);
 }
 
 pub trait BoundRayTracingPipelineMode: CommandBufferRecordable {
@@ -544,21 +550,21 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	///
 	/// # Arguments
 	///
-	/// * `size` - The size of the buffer in bytes.
+	/// * `size` - The size of the buffer in elements.
 	/// * `resource_uses` - The uses of the buffer.
 	/// * `device_accesses` - The accesses of the buffer.
 	///
 	/// # Returns
 	///
 	/// The handle of the buffer.
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BaseBufferHandle;
+	fn create_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle<T>;
 
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
 
-	fn get_buffer_slice(&mut self, buffer_handle: BaseBufferHandle) -> &[u8];
+	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
 
 	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice<'a>(&'a mut self, buffer_handle: BaseBufferHandle) -> &'a mut [u8];
+	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: BufferHandle<T>) -> &'a mut T;
 
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
@@ -614,8 +620,6 @@ pub trait GraphicsHardwareInterface where Self: Sized {
 	fn start_frame_capture(&self);
 
 	fn end_frame_capture(&self);
-
-	fn get_splitter<'a, T: Copy>(&mut self, buffer_handle: BaseBufferHandle, offset: usize) -> BufferSplitter<'a, T>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -898,36 +902,37 @@ bitflags::bitflags! {
 		const NONE = 0b0;
 		/// The vertex stage.
 		const VERTEX = 1 << 1;
+		const INDEX = 1 << 2;
 		/// The task stage.
-		const TASK = 1 << 2;
+		const TASK = 1 << 3;
 		/// The mesh shader execution stage.
-		const MESH = 1 << 3;
+		const MESH = 1 << 4;
 		/// The fragment stage.
-		const FRAGMENT = 1 << 4;
+		const FRAGMENT = 1 << 5;
 		/// The compute stage.
-		const COMPUTE = 1 << 5;
+		const COMPUTE = 1 << 6;
 		/// The transfer stage.
-		const TRANSFER = 1 << 6;
+		const TRANSFER = 1 << 7;
 		/// The presentation stage.
-		const PRESENTATION = 1 << 7;
+		const PRESENTATION = 1 << 8;
 		/// The host stage.
-		const HOST = 1 << 8;
+		const HOST = 1 << 9;
 		/// The shader write stage.
-		const SHADER_WRITE = 1 << 9;
+		const SHADER_WRITE = 1 << 10;
 		/// The ray generation stage.
-		const RAYGEN = 1 << 10;
+		const RAYGEN = 1 << 11;
 		/// The closest hit stage.
-		const CLOSEST_HIT = 1 << 11;
+		const CLOSEST_HIT = 1 << 12;
 		/// The any hit stage.
-		const ANY_HIT = 1 << 12;
+		const ANY_HIT = 1 << 13;
 		/// The intersection stage.
-		const INTERSECTION = 1 << 13;
+		const INTERSECTION = 1 << 14;
 		/// The miss stage.
-		const MISS = 1 << 14;
+		const MISS = 1 << 15;
 		/// The callable stage.
-		const CALLABLE = 1 << 15;
+		const CALLABLE = 1 << 16;
 		/// The acceleration structure build stage.
-		const ACCELERATION_STRUCTURE_BUILD = 1 << 16;
+		const ACCELERATION_STRUCTURE_BUILD = 1 << 17;
 	}
 }
 
@@ -2076,7 +2081,7 @@ use super::*;
 			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
 		]);
 
-		let _buffer = renderer.create_buffer(None, 64, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let _buffer = renderer.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
@@ -2333,7 +2338,7 @@ use super::*;
 		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
 		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
-		let buffer = renderer.create_buffer(None, 64, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
 		let sampled_texture = renderer.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, 1);
 
@@ -2355,7 +2360,7 @@ use super::*;
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle,);
 
 		let sampler_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
-		let ubo_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer));
+		let ubo_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer.into()));
 		let tex_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
 
 		assert!(!renderer.has_errors());
@@ -2444,13 +2449,13 @@ use super::*;
 			0.0, 0.0, 1.0, 1.0,
 		];
 
-		let vertex_positions_buffer = renderer.create_buffer(None, positions.len() * 4, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let vertex_colors_buffer = renderer.create_buffer(None, colors.len() * 4, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let index_buffer = renderer.create_buffer(None, 3 * 2, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let vertex_positions_buffer = renderer.create_buffer::<[f32; 8 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
-		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, positions.len() * 4) });
-		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) });
-		renderer.get_mut_buffer_slice(index_buffer).copy_from_slice(unsafe { std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2) });
+		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(&positions);
+		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(&colors);
+		renderer.get_mut_buffer_slice(index_buffer).copy_from_slice(&[0u16, 1u16, 2u16]);
 
 		let raygen_shader_code = "
 #version 460 core
@@ -2565,9 +2570,9 @@ void main() {
 
 		let acceleration_structure_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
 		let render_target_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));
-		let vertex_positions_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[2], vertex_positions_buffer));
-		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[3], vertex_colors_buffer));
-		let indices_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer));
+		let vertex_positions_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()));
+		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()));
+		let indices_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
@@ -2584,15 +2589,15 @@ void main() {
 
 		renderer.write_instance(instances_buffer, 0, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
 
-		let scratch_buffer = renderer.create_buffer(None, 1024 * 1024, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(None, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::STATIC);
 
-		let raygen_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let miss_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let hit_sbt_buffer = renderer.create_buffer(None, 64, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let raygen_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
 
-		renderer.write_sbt_entry(raygen_sbt_buffer, 0, pipeline, raygen_shader);
-		renderer.write_sbt_entry(miss_sbt_buffer, 0, pipeline, miss_shader);
-		renderer.write_sbt_entry(hit_sbt_buffer, 0, pipeline, closest_hit_shader);
+		renderer.write_sbt_entry(raygen_sbt_buffer.into(), 0, pipeline, raygen_shader);
+		renderer.write_sbt_entry(miss_sbt_buffer.into(), 0, pipeline, miss_shader);
+		renderer.write_sbt_entry(hit_sbt_buffer.into(), 0, pipeline, closest_hit_shader);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			let frame_key = renderer.start_frame(i as u32);
@@ -2605,14 +2610,14 @@ void main() {
 				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
 					acceleration_structure: bottom_level_acceleration_structure,
 					description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-						vertex_buffer: BufferStridedRange::new(vertex_positions_buffer, 0, 12, 12 * 3),
+						vertex_buffer: BufferStridedRange::new(vertex_positions_buffer.into(), 0, 12, 12 * 3),
 						vertex_count: 3,
-						index_buffer: BufferStridedRange::new(index_buffer, 0, 2, 2 * 3),
+						index_buffer: BufferStridedRange::new(index_buffer.into(), 0, 2, 2 * 3),
 						vertex_position_encoding: Encodings::FloatingPoint,
 						index_format: DataTypes::U16,
 						triangle_count: 1,
 					},
-					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 0, range: 1024 * 512, slot: 0 },
+					scratch_buffer: BufferDescriptor { buffer: scratch_buffer.into(), offset: 0, range: 1024 * 512, slot: 0 },
 				}]);
 
 				unsafe { command_buffer_recording.consume_resources(&[
@@ -2630,7 +2635,7 @@ void main() {
 						instances_buffer,
 						instance_count: 1,
 					},
-					scratch_buffer: BufferDescriptor { buffer: scratch_buffer, offset: 1024 * 512, range: 1024 * 512, slot: 0 },
+					scratch_buffer: BufferDescriptor { buffer: scratch_buffer.into(), offset: 1024 * 512, range: 1024 * 512, slot: 0 },
 				});
 			}
 
@@ -2652,19 +2657,19 @@ void main() {
 					layout: Layouts::General,
 				},
 				Consumption {
-					handle: Handle::Buffer(raygen_sbt_buffer),
+					handle: Handle::Buffer(raygen_sbt_buffer.into()),
 					stages: Stages::RAYGEN,
 					access: AccessPolicies::READ,
 					layout: Layouts::General,
 				},
 				Consumption {
-					handle: Handle::Buffer(miss_sbt_buffer),
+					handle: Handle::Buffer(miss_sbt_buffer.into()),
 					stages: Stages::RAYGEN,
 					access: AccessPolicies::READ,
 					layout: Layouts::General,
 				},
 				Consumption {
-					handle: Handle::Buffer(hit_sbt_buffer),
+					handle: Handle::Buffer(hit_sbt_buffer.into()),
 					stages: Stages::RAYGEN,
 					access: AccessPolicies::READ,
 					layout: Layouts::General,
@@ -2672,9 +2677,9 @@ void main() {
 			]) };
 
 			ray_tracing_pipeline_command.trace_rays(BindingTables {
-				raygen: BufferStridedRange::new(raygen_sbt_buffer, 0, 64, 64),
-				hit: BufferStridedRange::new(hit_sbt_buffer, 0, 64, 64),
-				miss: BufferStridedRange::new(miss_sbt_buffer, 0, 64, 64),
+				raygen: BufferStridedRange::new(raygen_sbt_buffer.into(), 0, 64, 64),
+				hit: BufferStridedRange::new(hit_sbt_buffer.into(), 0, 64, 64),
+				miss: BufferStridedRange::new(miss_sbt_buffer.into(), 0, 64, 64),
 				callable: None,
 			}, 1920, 1080, 1);
 

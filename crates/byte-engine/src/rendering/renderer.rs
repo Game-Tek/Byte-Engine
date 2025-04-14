@@ -4,7 +4,7 @@ use std::{
 
 use ghi::{BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, GraphicsHardwareInterface, RasterizationRenderPassMode};
 use resource_management::resource::resource_manager::ResourceManager;
-use utils::{sync::RwLock, Extent, RGBA};
+use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
     core::{
@@ -25,10 +25,9 @@ pub struct Renderer {
     render_command_buffer: ghi::CommandBufferHandle,
     render_finished_synchronizer: ghi::SynchronizerHandle,
 
-    result: ghi::ImageHandle,
-    accumulation_map: ghi::ImageHandle,
-
     window_system: EntityHandle<window_system::WindowSystem>,
+
+	targets: HashMap<String, ghi::ImageHandle>,
 
     root_render_pass: RootRenderPass,
 
@@ -60,16 +59,15 @@ impl Renderer {
 
             let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
-            let result;
-            let accumulation_map;
-            let depth_sampler;
 			let render_command_buffer;
 			let render_finished_synchronizer;
+
+			let mut targets = HashMap::new();
 
             {
                 let mut ghi = ghi_instance.write();
 
-                result = ghi.create_image(
+                let result = ghi.create_image(
                     Some("result"),
                     extent,
                     ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
@@ -78,8 +76,8 @@ impl Renderer {
                     ghi::UseCases::DYNAMIC,
                     1,
                 );
-                accumulation_map = ghi.create_image(
-                    Some("accumulate_map"),
+                let main = ghi.create_image(
+                    Some("main"),
                     extent,
                     ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
                     ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
@@ -87,12 +85,15 @@ impl Renderer {
                     ghi::UseCases::DYNAMIC,
                     1,
                 );
-                depth_sampler = ghi.build_sampler(
+                let depth_sampler = ghi.build_sampler(
                     ghi::sampler::Builder::new()
                         .addressing_mode(ghi::SamplerAddressingModes::Border {})
                         .reduction_mode(ghi::SamplingReductionModes::Min)
                         .filtering_mode(ghi::FilteringModes::Closest),
                 );
+
+				targets.insert("main".to_string(), main);
+				targets.insert("result".to_string(), result);
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
 				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
@@ -100,7 +101,10 @@ impl Renderer {
 
             let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
-			let root_render_pass = RootRenderPass::new();
+			let mut root_render_pass = RootRenderPass::new();
+
+			root_render_pass.add_image("main".to_string(), targets.get("main").unwrap().clone(), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+			root_render_pass.add_image("result".to_string(), targets.get("result").unwrap().clone(), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
 
             Renderer {
                 ghi: ghi_instance,
@@ -113,10 +117,9 @@ impl Renderer {
                 render_command_buffer,
                 render_finished_synchronizer,
 
-                result,
-                accumulation_map,
-
                 window_system: window_system_handle,
+
+				targets,
 
                 root_render_pass,
 
@@ -127,9 +130,19 @@ impl Renderer {
     }
 
 	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, space_handle: EntityHandle<Space>) {
-		let mut render_pass_builder = RenderPassBuilder::new();
-		let render_pass = space_handle.spawn(T::create(self.ghi.write().borrow_mut(), &mut render_pass_builder));
-		self.root_render_pass.add_render_pass(render_pass);
+		let read_attachments = T::get_read_attachments();
+
+		if !read_attachments.iter().all(|a| self.targets.contains_key(*a)) {
+			return;
+		}
+
+		let mut render_pass_builder = RenderPassBuilder::new(self.ghi.clone());
+
+		render_pass_builder.images.insert("main".to_string(), (self.targets.get("main").unwrap().clone(), 0));
+		render_pass_builder.images.insert("result".to_string(), (self.targets.get("result").unwrap().clone(), 0));
+
+		let render_pass = space_handle.spawn(T::create(&mut render_pass_builder));
+		self.root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
     pub fn render(&mut self) {
@@ -157,10 +170,9 @@ impl Renderer {
         if extent != self.extent {
             let mut ghi = self.ghi.write();
 
-            ghi.resize_image(self.result, extent);
-            ghi.resize_image(self.accumulation_map, extent);
-
-            self.root_render_pass.resize(&mut ghi, extent);
+			for (_, image) in self.targets.iter_mut() {
+				ghi.resize_image(*image, extent);
+			}
 
             self.extent = extent;
         }
@@ -177,7 +189,9 @@ impl Renderer {
         self.root_render_pass
             .record(&mut command_buffer_recording, extent);
 
-        command_buffer_recording.copy_to_swapchain(self.result, present_key, swapchain_handle);
+		let result = self.targets.get("result").unwrap();
+
+        command_buffer_recording.copy_to_swapchain(*result, present_key, swapchain_handle);
 
         command_buffer_recording.execute(
             &[],
@@ -218,28 +232,36 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 impl Entity for Renderer {}
 
 struct RootRenderPass {
-    render_passes: Vec<EntityHandle<dyn RenderPass>>,
+    render_passes: Vec<(EntityHandle<dyn RenderPass>, Vec<String>)>,
+	images: HashMap<String, (ghi::ImageHandle, ghi::Formats, ghi::Layouts,)>,
+	order: Vec<usize>,
 }
 
 impl RootRenderPass {
     pub fn new() -> Self {
         Self {
-            render_passes: vec![],
+            render_passes: Vec::with_capacity(32),
+			images: HashMap::new(),
+			order: Vec::with_capacity(32),
         }
     }
-}
 
-impl RenderPass for RootRenderPass {
-	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		Self::new().into()
 	}
 
-    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
-        self.render_passes.push(render_pass);
+	fn add_image(&mut self, name: String, image: ghi::ImageHandle, format: ghi::Formats, layout: ghi::Layouts) {
+		self.images.insert(name, (image, format, layout));
+	}
+
+    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>, render_pass_builder: RenderPassBuilder) {
+		let index = self.render_passes.len();
+        self.render_passes.push((render_pass, render_pass_builder.consumed_resources.iter().map(|e| e.0.to_string()).collect()));
+		self.order.push(index);
     }
 
     fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
-        for render_pass in &self.render_passes {
+        for (render_pass, _) in &self.render_passes {
             render_pass.get_mut(|e| {
                 e.prepare(ghi, extent);
             });
@@ -247,17 +269,16 @@ impl RenderPass for RootRenderPass {
     }
 
     fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
-        for render_pass in &self.render_passes {
-            render_pass.get_mut(|e| {
-                e.record(command_buffer_recording, extent);
-            });
-        }
-    }
+        for index in &self.order {
+			let (render_pass, consumed) = &self.render_passes[*index];
 
-    fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
-        for render_pass in &self.render_passes {
+			let attachments = consumed.iter().map(|c| {
+				let (image, format, layout) = self.images.get(c).unwrap();
+				ghi::AttachmentInformation::new(*image, *format, *layout, ghi::ClearValue::Color(RGBA::black()), false, true)
+			}).collect::<Vec<_>>();
+
             render_pass.get_mut(|e| {
-                e.resize(ghi, extent);
+                e.record(command_buffer_recording, extent, &attachments);
             });
         }
     }
@@ -352,14 +373,14 @@ impl EntitySubscriber<Triangle> for ScreenRenderPass {
 }
 
 impl RenderPass for ScreenRenderPass {
-	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		unimplemented!()
 	}
 
-    fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+    fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]) {
 		command_buffer_recording.bind_descriptor_sets(&self.layout, &[]);
 
-		command_buffer_recording.start_render_pass(extent, &[ghi::AttachmentInformation::new(self.base, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, false, true)]);
+		command_buffer_recording.start_render_pass(extent, attachments);
 
     	let command_buffer_recording = command_buffer_recording.bind_raster_pipeline(&self.pipeline);
 
@@ -370,15 +391,7 @@ impl RenderPass for ScreenRenderPass {
 		command_buffer_recording.end_render_pass();
     }
 
-    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
-
-    }
-
     fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
-
-    }
-
-    fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {
 
     }
 }
@@ -391,4 +404,9 @@ impl RenderPassDriver {
     fn new(render_pass: EntityHandle<dyn RenderPass>) -> Self {
         Self { render_pass }
     }
+}
+
+struct Attachment {
+	name: String,
+	image: ghi::ImageHandle,
 }

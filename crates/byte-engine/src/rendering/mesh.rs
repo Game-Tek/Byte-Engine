@@ -9,9 +9,9 @@ use maths_rs::{mat::{MatRotate3D, MatScale, MatTranslate}, normalize};
 use utils::BoxedFuture;
 
 pub trait MeshGenerator {
-	fn vertices(&self) -> Cow<[maths_rs::Vec3f]>;
-	fn normals(&self) -> Cow<[maths_rs::Vec3f]>;
-	fn uvs(&self) -> Cow<[maths_rs::Vec2f]>;
+	fn vertices(&self) -> Cow<[(f32, f32, f32)]>;
+	fn normals(&self) -> Cow<[(f32, f32, f32)]>;
+	fn uvs(&self) -> Cow<[(f32, f32)]>;
 	fn indices(&self) -> Cow<[u32]>;
 	fn tangents(&self) -> Cow<[maths_rs::Vec3f]>;
 	fn bitangents(&self) -> Cow<[maths_rs::Vec3f]>;

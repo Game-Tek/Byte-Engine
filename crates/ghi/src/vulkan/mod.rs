@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::align_of};
+use std::{borrow::Cow, cell::RefCell, collections::{HashMap, HashSet}, mem::align_of};
 
 use ash::vk::{self, Handle as _};
 use utils::{partition, Extent};
@@ -53,7 +53,7 @@ pub struct VulkanGHI {
 	states: HashMap<Handle, TransitionState>,
 
 	pending_images: Vec<graphics_hardware_interface::ImageHandle>,
-	pending_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
+	pending_buffers: RefCell<Vec<graphics_hardware_interface::BaseBufferHandle>>,
 }
 
 enum Descriptor {
@@ -625,13 +625,14 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		recording
 	}
 
-	fn create_buffer(&mut self, name: Option<&str>, size: usize, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::BaseBufferHandle {
+	fn create_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases) -> graphics_hardware_interface::BufferHandle<T> {
 		let buffer_count = match use_case {
 			graphics_hardware_interface::UseCases::STATIC => 1,
 			graphics_hardware_interface::UseCases::DYNAMIC => self.frames,
 		};
 
 		let mut uses = uses_to_vk_usage_flags(resource_uses);
+		let size = std::mem::size_of::<T>();
 
 		if !self.settings.ray_tracing {
 			// Remove acc struct build flag
@@ -677,7 +678,7 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 			None
 		};
 
-		let buffer_handle = graphics_hardware_interface::BaseBufferHandle(self.buffers.len() as u64);
+		let buffer_handle = graphics_hardware_interface::BufferHandle::<T>(self.buffers.len() as u64, std::marker::PhantomData::<T>{});
 
 		let mut previous: Option<BufferHandle> = None;
 
@@ -730,31 +731,21 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		self.buffers[buffer_handle.0 as usize].device_address
 	}
 
-	fn get_buffer_slice(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> &[u8] {
+	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		unsafe {
-			std::slice::from_raw_parts(buffer.pointer, buffer.size)
+			std::mem::transmute(buffer.pointer)
 		}
 	}
 
-	fn get_mut_buffer_slice<'a>(&'a mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> &'a mut [u8] {
-		self.pending_buffers.push(buffer_handle);
+	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'a mut T {
+		self.pending_buffers.borrow_mut().push(buffer_handle.into());
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		unsafe {
-			std::slice::from_raw_parts_mut(buffer.pointer, buffer.size)
+			std::mem::transmute(buffer.pointer)
 		}
-	}
-
-	fn get_splitter<'a, T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, offset: usize) -> graphics_hardware_interface::BufferSplitter<'a, T> {
-		self.pending_buffers.push(buffer_handle);
-		let buffer = self.buffers[buffer_handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
-		let slice = unsafe {
-			std::slice::from_raw_parts_mut(buffer.pointer as *mut T, buffer.size / std::mem::size_of::<T>())
-		};
-		graphics_hardware_interface::BufferSplitter::new(slice, offset)
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
@@ -1123,7 +1114,11 @@ impl graphics_hardware_interface::GraphicsHardwareInterface for VulkanGHI {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
 		let shader_handles = pipeline.shader_handles.clone();
 
-		self.get_mut_buffer_slice(sbt_buffer_handle)[sbt_record_offset..sbt_record_offset + 32].copy_from_slice(shader_handles.get(&shader_handle).unwrap())
+		self.pending_buffers.borrow_mut().push(sbt_buffer_handle.into());
+		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
+		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+
+		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32].copy_from_slice(shader_handles.get(&shader_handle).unwrap());
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::ImageHandle, extent: Extent) {
@@ -1823,6 +1818,11 @@ fn to_pipeline_stage_flags(stages: graphics_hardware_interface::Stages, layout: 
 
 	if stages.contains(graphics_hardware_interface::Stages::VERTEX) { pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER }
 
+	if stages.contains(graphics_hardware_interface::Stages::INDEX) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT;
+		pipeline_stage_flags |= vk::PipelineStageFlags2::INDEX_INPUT;
+	}
+
 	if stages.contains(graphics_hardware_interface::Stages::MESH) { pipeline_stage_flags |= vk::PipelineStageFlags2::MESH_SHADER_EXT; }
 
 	if stages.contains(graphics_hardware_interface::Stages::FRAGMENT) {
@@ -1886,6 +1886,10 @@ fn to_access_flags(accesses: graphics_hardware_interface::AccessPolicies, stages
 	let mut access_flags = vk::AccessFlags2::empty();
 
 	if accesses.contains(graphics_hardware_interface::AccessPolicies::READ) {
+		if stages.intersects(graphics_hardware_interface::Stages::INDEX) {
+			access_flags |= vk::AccessFlags2::VERTEX_ATTRIBUTE_READ;
+			access_flags |= vk::AccessFlags2::INDEX_READ;
+		}
 		if stages.intersects(graphics_hardware_interface::Stages::TRANSFER) {
 			access_flags |= vk::AccessFlags2::TRANSFER_READ
 		}
@@ -2445,7 +2449,7 @@ impl VulkanGHI {
 			states: HashMap::with_capacity(4096),
 
 			pending_images: Vec::with_capacity(128),
-			pending_buffers: Vec::with_capacity(128),
+			pending_buffers: RefCell::new(Vec::with_capacity(128)),
 		})
 	}
 
@@ -3611,9 +3615,9 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 
 		unsafe { self.ghi.device.begin_command_buffer(command_buffer.command_buffer, &command_buffer_begin_info).expect("No command buffer begin") };
 
-		let mut pending_buffers = self.ghi.pending_buffers.clone();
+		let mut pending_buffers = self.ghi.pending_buffers.borrow().clone();
 
-		self.ghi.pending_buffers.clear();
+		self.ghi.pending_buffers.borrow_mut().clear();
 
 		pending_buffers.sort();
 		pending_buffers.dedup();
@@ -4539,9 +4543,22 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
+		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| {
+			Consumption {
+				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+				stages: graphics_hardware_interface::Stages::VERTEX,
+				access: graphics_hardware_interface::AccessPolicies::READ,
+				layout: graphics_hardware_interface::Layouts::Read,
+			}
+		}).collect::<Vec<_>>();
+
+		unsafe {
+			self.consume_resources(&consumptions);
+		}
+
 		let command_buffer = self.get_command_buffer();
 
-		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.ghi.buffers[buffer_descriptor.buffer.0 as usize].buffer).collect::<Vec<_>>();
+		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)).buffer).collect::<Vec<_>>();
 		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
 
 		// TODO: implent slot splitting
@@ -4549,9 +4566,18 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 	}
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+		unsafe {
+			self.consume_resources(&[Consumption {
+				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+				stages: graphics_hardware_interface::Stages::INDEX,
+				access: graphics_hardware_interface::AccessPolicies::READ,
+				layout: graphics_hardware_interface::Layouts::Read,
+			}]);
+		}
+
 		let command_buffer = self.get_command_buffer();
 
-		let buffer = self.ghi.buffers[buffer_descriptor.buffer.0 as usize];
+		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
 
 		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); }
 	}
@@ -4626,7 +4652,7 @@ impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBuff
 		}
 	}
 
-	fn indirect_dispatch(&mut self, buffer_handle: &graphics_hardware_interface::BaseBufferHandle, entry_index: usize) {
+	fn indirect_dispatch<const N: usize>(&mut self, buffer_handle: &graphics_hardware_interface::BufferHandle<[(u32, u32, u32); N]>, entry_index: usize) {
 		let buffer = self.ghi.buffers[buffer_handle.0 as usize];
 
 		let command_buffer = self.get_command_buffer();
@@ -4636,7 +4662,7 @@ impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBuff
 
 		self.consume_resources_current(&[
 			graphics_hardware_interface::Consumption{
-				handle: graphics_hardware_interface::Handle::Buffer(buffer_handle.clone()),
+				handle: graphics_hardware_interface::Handle::Buffer(buffer_handle.clone().into()),
 				stages: graphics_hardware_interface::Stages::COMPUTE,
 				access: graphics_hardware_interface::AccessPolicies::READ,
 				layout: graphics_hardware_interface::Layouts::Indirect,

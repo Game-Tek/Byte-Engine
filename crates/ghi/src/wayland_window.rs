@@ -4,7 +4,7 @@ use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}};
 
-use crate::{MouseKeys, WindowEvents};
+use crate::{Keys, MouseKeys, WindowEvents};
 
 pub struct WaylandWindow {
 	connection: wayland_client::Connection,
@@ -381,9 +381,17 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 }
 
 impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
-	fn event(_: &mut Self, s: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+	fn event(this: &mut Self, s: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			wl_keyboard::Event::Key { serial, time, key, state } => {
+				let pressed = state.into_result().unwrap() == wl_keyboard::KeyState::Pressed;
+
+				let key = match key {
+					1 => Keys::Escape,
+					_ => return,
+				};
+
+				this.events.push_back(WindowEvents::Key { pressed, key });
 			}
 			wl_keyboard::Event::Keymap { format, fd, size } => {
 			}

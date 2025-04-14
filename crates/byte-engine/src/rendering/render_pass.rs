@@ -1,20 +1,24 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, rc::Rc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
 use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
 use maths_rs::Vec2f;
-use utils::Extent;
+use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
 
 pub trait RenderPass {
-	fn create<'a>(ghi: &mut ghi::GHI, render_pass_builder: &'a mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized;
+	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
+		vec![]
+	}
 
-	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>);
+	fn get_write_attachments() -> Vec<&'static str> where Self: Sized {
+		vec![]
+	}
+
+	fn create<'a>(render_pass_builder: &'a mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized;
 
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent);
-
-	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent);
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]);
 }
 
 pub struct FullScreenRenderPass {
@@ -48,23 +52,17 @@ impl FullScreenRenderPass {
 }
 
 impl RenderPass for FullScreenRenderPass {
-	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!()
 	}
 
-	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
-		unimplemented!()
-	}
-
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
+	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]) {
 		command_buffer_recording.region("Downsample", |command_buffer_recording: &mut ghi::CommandBufferRecording<'_>| {
 			command_buffer_recording.bind_compute_pipeline(&self.pipeline);
 			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
 			command_buffer_recording.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
 		});
 	}
-
-	fn resize(&self, _ghi: &mut ghi::GHI, _extent: Extent) {}
 }
 
 const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
@@ -80,7 +78,7 @@ pub struct BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!();
 		// let descriptor_set_template = ghi.create_descriptor_set_template(Some("SSGI Blur"), &[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING]);
 
@@ -114,13 +112,9 @@ impl RenderPass for BilateralBlurPass {
 		// }
 	}
 
-	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
-		unimplemented!()
-	}
-
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 
-	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {
+	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
 		command_buffer.region("Blur", |command_buffer| {
 			let command_buffer = command_buffer.bind_compute_pipeline(&self.pipeline_x);
 			command_buffer.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set_x]);
@@ -130,8 +124,6 @@ impl RenderPass for BilateralBlurPass {
 			command_buffer.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
 		});
 	}
-
-	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 }
 
 const BLUR_SHADER: &'static str = r#"
@@ -247,60 +239,57 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn create(ghi: &mut ghi::GHI, render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
+	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!()
-	}
-
-	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>) {
-		unimplemented!()
 	}
 
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 
-	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent) {
+	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
 		command_buffer.region("Blit", |command_buffer| {
 			command_buffer.blit_image(self.source, ghi::Layouts::Transfer, self.destination, ghi::Layouts::Transfer);
 		});
 	}
-
-	fn resize(&self, ghi: &mut ghi::GHI, extent: Extent) {}
 }
 
 pub struct RenderPassBuilder<'a> {
-	consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
+	ghi: Rc<RwLock<ghi::GHI>>,
+	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
+	pub(crate) images: HashMap<String, (ghi::ImageHandle, i8)>,
 }
 
 impl <'a> RenderPassBuilder<'a> {
-	pub fn new() -> Self {
+	pub fn new(ghi: Rc<RwLock<ghi::GHI>>) -> Self {
 		RenderPassBuilder {
+			ghi,
 			consumed_resources: Vec::new(),
+			images: HashMap::new(),
 		}
 	}
 
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
-		if self.consumed_resources.iter().any(|(n, _)| *n == name) {
-			panic!("Resource {} already consumed", name);
-		}
-
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 
-		todo!()
+		let image = self.images.get(name).expect("Image not found").clone().0;
+
+		RenderToResult { image }
 	}
 
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
-		if self.consumed_resources.iter().any(|(n, _)| *n == name) {
-			panic!("Resource {} already consumed", name);
-		}
-
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 
-		todo!()
+		let (image, _) = self.images.get(name).expect("Image not found").clone();
+
+		ReadFromResult { image, }
+	}
+
+	pub fn ghi(&mut self) -> Rc<RwLock<ghi::GHI>> {
+		Rc::clone(&self.ghi)
 	}
 }
 
 pub struct ReadFromResult {
 	image: ghi::ImageHandle,
-	sample: ghi::SamplerHandle,
 }
 
 impl Into<ghi::ImageHandle> for ReadFromResult {
@@ -312,18 +301,6 @@ impl Into<ghi::ImageHandle> for ReadFromResult {
 impl Into<ghi::ImageHandle> for &ReadFromResult {
 	fn into(self) -> ghi::ImageHandle {
 		self.image
-	}
-}
-
-impl Into<ghi::SamplerHandle> for ReadFromResult {
-	fn into(self) -> ghi::SamplerHandle {
-		self.sample
-	}
-}
-
-impl Into<ghi::SamplerHandle> for &ReadFromResult {
-	fn into(self) -> ghi::SamplerHandle {
-		self.sample
 	}
 }
 

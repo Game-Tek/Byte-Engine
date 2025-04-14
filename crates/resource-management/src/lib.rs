@@ -314,7 +314,10 @@ pub struct StreamMut<'a> {
 }
 
 impl<'a> StreamMut<'a> {
-    pub fn new(name: &'a str, buffer: &'a mut [u8]) -> Self {
+    pub fn new<T: Copy>(name: &'a str, buffer: &'a mut [T]) -> Self {
+		let buffer = unsafe {
+			std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u8, std::mem::size_of::<T>() * buffer.len())
+		};
         StreamMut { buffer, name }
     }
 

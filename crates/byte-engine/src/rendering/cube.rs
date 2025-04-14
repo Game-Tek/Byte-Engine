@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::core::{entity::EntityBuilder, listener::Listener, Entity, EntityHandle};
 
 use super::mesh::{MeshGenerator, MeshSource, RenderEntity};
@@ -34,33 +36,33 @@ impl RenderEntity for Cube {
 struct CubeMeshGenerator {}
 
 impl MeshGenerator for CubeMeshGenerator {
-	fn vertices(&self) -> std::borrow::Cow<[maths_rs::Vec3f]> {
+	fn vertices(&self) -> Cow<'_, [(f32, f32, f32)]> {
 		std::borrow::Cow::Owned(vec![
-			maths_rs::Vec3f::new(-1.0, -1.0, -1.0),
-			maths_rs::Vec3f::new(1.0, -1.0, -1.0),
-			maths_rs::Vec3f::new(1.0, 1.0, -1.0),
-			maths_rs::Vec3f::new(-1.0, 1.0, -1.0),
-			maths_rs::Vec3f::new(-1.0, -1.0, 1.0),
-			maths_rs::Vec3f::new(1.0, -1.0, 1.0),
-			maths_rs::Vec3f::new(1.0, 1.0, 1.0),
-			maths_rs::Vec3f::new(-1.0, 1.0, 1.0),
+			(-1.0, -1.0, -1.0),
+			(1.0, -1.0, -1.0),
+			(1.0, 1.0, -1.0),
+			(-1.0, 1.0, -1.0),
+			(-1.0, -1.0, 1.0),
+			(1.0, -1.0, 1.0),
+			(1.0, 1.0, 1.0),
+			(-1.0, 1.0, 1.0),
 		])
 	}
 
-	fn normals(&self) -> std::borrow::Cow<[maths_rs::Vec3f]> {
+	fn normals(&self) -> Cow<'_, [(f32, f32, f32)]> {
 		std::borrow::Cow::Owned(vec![
-			maths_rs::Vec3f::new(0.0, 0.0, -1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, -1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, -1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, -1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, 1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, 1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, 1.0),
-			maths_rs::Vec3f::new(0.0, 0.0, 1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, 1.0),
+			(0.0, 0.0, 1.0),
+			(0.0, 0.0, 1.0),
+			(0.0, 0.0, 1.0),
 		])
 	}
 
-	fn tangents(&self) -> std::borrow::Cow<[maths_rs::Vec3f]> {
+	fn tangents(&self) -> Cow<[maths_rs::Vec3f]> {
 		std::borrow::Cow::Owned(vec![
 			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
 			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
@@ -86,16 +88,16 @@ impl MeshGenerator for CubeMeshGenerator {
 		])
 	}
 
-	fn uvs(&self) -> std::borrow::Cow<[maths_rs::Vec2f]> {
+	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
 		std::borrow::Cow::Owned(vec![
-			maths_rs::Vec2f::new(0.0, 0.0),
-			maths_rs::Vec2f::new(1.0, 0.0),
-			maths_rs::Vec2f::new(1.0, 1.0),
-			maths_rs::Vec2f::new(0.0, 1.0),
-			maths_rs::Vec2f::new(0.0, 0.0),
-			maths_rs::Vec2f::new(1.0, 0.0),
-			maths_rs::Vec2f::new(1.0, 1.0),
-			maths_rs::Vec2f::new(0.0, 1.0),
+			(0.0, 0.0),
+			(1.0, 0.0),
+			(1.0, 1.0),
+			(0.0, 1.0),
+			(0.0, 0.0),
+			(1.0, 0.0),
+			(1.0, 1.0),
+			(0.0, 1.0),
 		])
 	}
 

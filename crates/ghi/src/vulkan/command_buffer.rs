@@ -3,13 +3,12 @@ use utils::{hash::HashMap, partition, Extent};
 
 use crate::{graphics_hardware_interface, FrameKey};
 
-use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanGHI};
+use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, Device};
 
 pub struct VulkanCommandBufferRecording<'a> {
-	ghi: &'a mut VulkanGHI,
+	ghi: &'a mut Device,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
 	in_render_pass: bool,
-	frame_index: u32,
 	sequence_index: u8,
 	states: HashMap<Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
@@ -21,11 +20,10 @@ pub struct VulkanCommandBufferRecording<'a> {
 }
 
 impl VulkanCommandBufferRecording<'_> {
-	pub fn new(ghi: &'_ mut VulkanGHI, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> VulkanCommandBufferRecording<'_> {
+	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> VulkanCommandBufferRecording<'_> {
 		VulkanCommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
-			frame_index: frame_key.map(|f| f.frame_index).unwrap_or(0),
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),			
 			in_render_pass: false,
 			states: ghi.states.clone(),
@@ -223,29 +221,19 @@ impl VulkanCommandBufferRecording<'_> {
 
 					if buffer.buffer.is_null() { continue; }
 
-					// let buffer_memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
-					// 	vk::BufferMemoryBarrier2::default().src_stage_mask(source.stage).src_access_mask(source.access).src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					// } else {
-					// 	vk::BufferMemoryBarrier2::default().src_stage_mask(vk::PipelineStageFlags2::empty()).src_access_mask(vk::AccessFlags2KHR::empty()).src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					// }
-					// .dst_stage_mask(new_stage_mask)
-					// .dst_access_mask(new_access_mask)
-					// .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					// .buffer(buffer.buffer)
-					// .offset(0)
-					// .size(vk::WHOLE_SIZE);
-
-					// buffer_memory_barriers.push(buffer_memory_barrier);
-
-					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
-						vk::MemoryBarrier2::default().src_stage_mask(source.stage).src_access_mask(source.access)
+					let buffer_memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+						vk::BufferMemoryBarrier2::default().src_stage_mask(source.stage).src_access_mask(source.access).src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 					} else {
-						vk::MemoryBarrier2::default().src_stage_mask(vk::PipelineStageFlags2::empty()).src_access_mask(vk::AccessFlags2KHR::empty())
+						vk::BufferMemoryBarrier2::default().src_stage_mask(vk::PipelineStageFlags2::empty()).src_access_mask(vk::AccessFlags2KHR::empty()).src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 					}
 					.dst_stage_mask(new_stage_mask)
-					.dst_access_mask(new_access_mask);
+					.dst_access_mask(new_access_mask)
+					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.buffer(buffer.buffer)
+					.offset(0)
+					.size(vk::WHOLE_SIZE);
 
-					memory_barriers.push(memory_barrier);
+					buffer_memory_barriers.push(buffer_memory_barrier);
 				},
 				Handle::TopLevelAccelerationStructure(_) | Handle::BottomLevelAccelerationStructure(_)=> {
 					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
@@ -428,7 +416,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 	}
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild) {
-		use graphics_hardware_interface::GraphicsHardwareInterface;
+		use graphics_hardware_interface::Device;
 
 		let (acceleration_structure_handle, acceleration_structure) = self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
@@ -1377,7 +1365,7 @@ impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBuff
 
 impl graphics_hardware_interface::BoundRayTracingPipelineMode for VulkanCommandBufferRecording<'_> {
 	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
-		use graphics_hardware_interface::GraphicsHardwareInterface;
+		use graphics_hardware_interface::Device;
 
 		let command_buffer = self.get_command_buffer();
 		let comamand_buffer_handle = command_buffer.command_buffer;

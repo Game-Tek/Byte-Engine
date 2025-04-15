@@ -2,7 +2,7 @@ use std::{
     borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
-use ghi::{BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, GraphicsHardwareInterface, RasterizationRenderPassMode};
+use ghi::{BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
 use resource_management::resource::resource_manager::ResourceManager;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 

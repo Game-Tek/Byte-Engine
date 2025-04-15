@@ -411,15 +411,25 @@ impl ShaderBindingDescriptor {
 	}
 }
 
-/// Configuration for which features to request from the underlying API.
+/// Configuration for which features to request from the underlying API when creating a device/instance.
+/// This uses a builder pattern to allow for easy configuration of the features.
+/// 
+/// # Features
+/// - `validation`: Whether to enable validation layers for API use. This can provide insight into potential issues with the API usage at the expense of performance. Default is `false`.
+/// - `gpu_validation`: Whether to enable on GPU validation. This can provide more extensive validation at the expense of performance. Default is `false`.
+/// - `api_dump`: Whether to enable API dump. This will print all API calls to the console. Default is `false`.
+/// - `ray_tracing`: Whether to enable ray tracing. This will enable ray tracing features in the API. Default is `false`.
+/// - `debug_log_function`: A function to log debug messages. If none is provided, `println!` will be used. Default is `None`.
+/// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
+/// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
 pub struct Features {
 	pub(crate) validation: bool,
 	pub(crate) gpu_validation: bool,
-	/// Prints all API calls to the console.
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
 	pub(crate) debug_log_function: Option<fn(&str)>,
 	pub(crate) gpu: Option<&'static str>,
+	pub(crate) sparse: bool,
 }
 
 impl Features {
@@ -431,6 +441,7 @@ impl Features {
 			ray_tracing: false,
 			debug_log_function: None,
 			gpu: None,
+			sparse: false,
 		}
 	}
 
@@ -461,6 +472,11 @@ impl Features {
 
 	pub fn gpu(mut self, value: &'static str) -> Self {
 		self.gpu = Some(value);
+		self
+	}
+
+	pub fn sparse(mut self, value: bool) -> Self {
+		self.sparse = value;
 		self
 	}
 }
@@ -502,7 +518,7 @@ pub struct PresentKey {
 	pub(crate) swapchain: SwapchainHandle,
 }
 
-pub trait GraphicsHardwareInterface where Self: Sized {
+pub trait Device where Self: Sized {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
@@ -1511,7 +1527,7 @@ pub enum AccelerationStructureTypes {
 pub(super) mod tests {
 	use crate::{window::Window, GHI};
 
-use super::*;
+	use super::*;
 
 	#[test]
 	fn dispatch_extent() {
@@ -1546,7 +1562,7 @@ use super::*;
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
 	}
 
-	pub(crate) fn render_triangle(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn render_triangle(renderer: &mut impl Device) {
 		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -1662,7 +1678,7 @@ use super::*;
 		// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 	}
 
-	pub(crate) fn present(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn present(renderer: &mut impl Device) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1773,7 +1789,7 @@ use super::*;
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_present(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn multiframe_present(renderer: &mut impl Device) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1884,7 +1900,7 @@ use super::*;
 		}
 	}
 
-	pub(crate) fn multiframe_rendering(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn multiframe_rendering(renderer: &mut impl Device) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -2001,7 +2017,7 @@ use super::*;
 
 	// TODO: Test changing frames in flight count during rendering
 
-	pub(crate) fn dynamic_data(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn dynamic_data(renderer: &mut impl Device) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -2161,7 +2177,7 @@ use super::*;
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_resources(renderer: &mut impl GraphicsHardwareInterface) { // TODO: test multiframe resources for combined image samplers
+	pub(crate) fn multiframe_resources(renderer: &mut impl Device) { // TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
 			#pragma shader_stage(compute)
@@ -2281,7 +2297,7 @@ use super::*;
 		assert!(!renderer.has_errors());
 	}
 
-	pub(crate) fn descriptor_sets(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn descriptor_sets(renderer: &mut impl Device) {
 		let signal = renderer.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -2425,7 +2441,7 @@ use super::*;
 		assert!(!renderer.has_errors());
 	}
 
-	pub(crate) fn ray_tracing(renderer: &mut impl GraphicsHardwareInterface) {
+	pub(crate) fn ray_tracing(renderer: &mut impl Device) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 

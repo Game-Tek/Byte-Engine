@@ -26,17 +26,17 @@ pub mod image;
 pub mod sampler;
 
 pub fn create(settings: graphics_hardware_interface::Features) -> GHI {
-	GHI(vulkan::VulkanGHI::new(settings).expect("Failed to create VulkanGHI"))
+	GHI(vulkan::Device::new(settings).expect("Failed to create VulkanGHI"))
 }
 
 // pub enum GHI {
 // 	Vulkan(vulkan_ghi::VulkanGHI),
 // }
 
-pub struct GHI(pub vulkan::VulkanGHI);
+pub struct GHI(pub vulkan::Device);
 
 impl std::ops::Deref for GHI {
-	type Target = vulkan::VulkanGHI;
+	type Target = vulkan::Device;
 
 	fn deref(&self) -> &Self::Target {
 		&self.0

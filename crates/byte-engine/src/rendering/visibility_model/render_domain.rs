@@ -5,7 +5,7 @@ use std::mem::transmute;
 use std::ops::DerefMut;
 
 use ghi::{graphics_hardware_interface, ImageHandle};
-use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
+use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::spirv_shader_generator::SPIRVShaderGenerator;

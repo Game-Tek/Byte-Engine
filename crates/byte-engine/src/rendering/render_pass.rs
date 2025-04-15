@@ -2,7 +2,7 @@ use std::{borrow::Borrow, rc::Rc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{BoundComputePipelineMode, CommandBufferRecordable, GraphicsHardwareInterface};
+use ghi::{BoundComputePipelineMode, CommandBufferRecordable, Device};
 use maths_rs::Vec2f;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
 

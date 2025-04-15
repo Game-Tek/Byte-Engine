@@ -22,7 +22,7 @@ use byte_engine::rendering::view::View;
 use byte_engine::{application::{Application, Parameter}, camera::Camera, input::{Action, ActionBindingDescription, Function}, rendering::directional_light::DirectionalLight, Vector3};
 use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
-use ghi::GraphicsHardwareInterface;
+use ghi::Device;
 use ghi::RasterizationRenderPassMode;
 use maths_rs::mat::MatTranslate;
 use utils::sync::RwLock;

@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::core::EntityHandle;
 
-use ghi::{GraphicsHardwareInterface, CommandBufferRecordable, BoundComputePipelineMode};
+use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode};
 use utils::Extent;
 
 use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};

@@ -28,6 +28,10 @@ use ghi::CommandBufferRecordable;
 use ghi::Device;
 use ghi::RasterizationRenderPassMode;
 use maths_rs::mat::MatTranslate;
+use utils::hash::HashMap;
+use utils::hash::HashMapExt;
+use utils::hash::HashSet;
+use utils::hash::HashSetExt;
 use utils::sync::RwLock;
 
 #[ignore]
@@ -236,6 +240,8 @@ impl MeshGenerator for CubeMeshGenerator {
 	}
 }
 
+type Location = (i32, i32, i32);
+
 struct CubeCraftRenderPass {
 	vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 16 * 16 * 256 * 32]>,
 	index_buffer: ghi::BufferHandle<[u16; 16 * 16 * 256 * 32 * 3]>,
@@ -253,12 +259,16 @@ struct CubeCraftRenderPass {
 	instance_count: u32,
 
 	ghi: Rc<RwLock<ghi::GHI>>,
+
+	blocks: Vec<Location>,
 }
 
 impl Entity for CubeCraftRenderPass {}
 
 impl EntitySubscriber<Block> for CubeCraftRenderPass {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
+		self.blocks.push(params.position);
+
 		let mesh = params.get_mesh();
 
 		if self.instance_count > 0 {
@@ -365,6 +375,8 @@ impl RenderPass for CubeCraftRenderPass {
 			instance_count: 0,
 
 			ghi: render_pass_builder.ghi(),
+
+			blocks: Vec::with_capacity(8192 * 32),
 		}).listen_to::<Block>()
 	}
 
@@ -377,12 +389,40 @@ impl RenderPass for CubeCraftRenderPass {
 	}
 
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: utils::Extent) {
-		
+		let cube_sides = [
+			(1, 0, 0),
+			(-1, 0, 0),
+			(0, 1, 0),
+			(0, -1, 0),
+			(0, 0, 1),
+			(0, 0, -1),
+		];
+
+		let mut sides = HashMap::with_capacity(8192 * 6);
+
+		for block in &self.blocks {
+			for side in &cube_sides {
+				let side = (block.0 + side.0, block.1 + side.1, block.2 + side.2);
+
+				// If cube side already exists, then this wall is internal
+				sides.entry(side).and_modify(|e| *e = false).or_insert(true);
+			}
+		}
+
+		let distinct_x_values = sides.keys().map(|k| k.0).collect::<HashSet<_>>();
+		let distinct_y_values = sides.keys().map(|k| k.1).collect::<HashSet<_>>();
+		let distinct_z_values = sides.keys().map(|k| k.2).collect::<HashSet<_>>();
+
+		let external_sides = sides.iter().filter(|(_, v)| **v).map(|(k, _)| *k).collect::<Vec<_>>();
+
+		let x_planes = distinct_x_values.iter().map(|&x| external_sides.clone().into_iter().filter(move |(xx, _, _)| *xx == x));
+		let y_planes = distinct_y_values.iter().map(|&y| external_sides.clone().into_iter().filter(move |(_, yy, _)| *yy == y));
+		let z_planes = distinct_z_values.iter().map(|&z| external_sides.clone().into_iter().filter(move |(_, _, zz)| *zz == z));
 	}
 
 	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: utils::Extent, attachments: &[ghi::AttachmentInformation],) {
-		command_buffer_recording.bind_vertex_buffers(&[ghi::BufferDescriptor::new(self.vertex_buffer.into(), 0, (self.vertex_count * 12) as u64, 0)]);
-		command_buffer_recording.bind_index_buffer(&ghi::BufferDescriptor::new(self.index_buffer.into(), 0, (self.index_count * 2) as u64, 0));
+		command_buffer_recording.bind_vertex_buffers(&[ghi::BufferDescriptor::new(self.vertex_buffer.into(), 0, self.vertex_count as usize, 0)]);
+		command_buffer_recording.bind_index_buffer(&ghi::BufferDescriptor::new(self.index_buffer.into(), 0, self.index_count as usize, 0));
 		let render_pass = command_buffer_recording.start_render_pass(extent, attachments);
 		render_pass.bind_descriptor_sets(&self.layout, &[self.set]);
 		let pipeline = render_pass.bind_raster_pipeline(&self.pipeline);

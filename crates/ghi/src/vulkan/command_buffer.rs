@@ -1250,7 +1250,7 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
 
 		// TODO: implent slot splitting
-		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets); }
+		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets.iter().map(|&e| e as _).collect::<Vec<_>>()); }
 	}
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
@@ -1267,7 +1267,7 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 
 		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
 
-		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset, vk::IndexType::UINT16); }
+		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset as _, vk::IndexType::UINT16); }
 	}
 
 	/// Ends a render pass on the GPU.

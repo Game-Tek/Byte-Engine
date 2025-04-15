@@ -1398,17 +1398,17 @@ pub enum SwapchainStates {
 
 pub struct BufferDescriptor {
 	pub(super) buffer: BaseBufferHandle,
-	pub(super) offset: u64,
-	pub(super) range: u64,
+	pub(super) offset: usize,
+	pub(super) range: usize,
 	pub(super) slot: u32,
 }
 
 impl BufferDescriptor {
-	pub fn new(buffer: BaseBufferHandle, offset: u64, range: u64, slot: u32) -> Self {
+	pub fn new<T: Copy, const N: usize>(buffer: BufferHandle<[T; N]>, offset: usize, range: usize, slot: u32) -> Self {
 		Self {
-			buffer,
-			offset,
-			range,
+			buffer: buffer.into(),
+			offset: std::mem::size_of::<T>() * offset,
+			range: std::mem::size_of::<T>() * range,
 			slot,
 		}
 	}

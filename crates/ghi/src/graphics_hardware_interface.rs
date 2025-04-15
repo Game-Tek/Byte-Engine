@@ -275,6 +275,8 @@ pub trait CommandBufferRecordable where Self: Sized {
 	/// Enables recording on the command buffer.
 	fn begin(&mut self);
 
+	fn sync_buffers(&mut self);
+
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
 

@@ -186,6 +186,8 @@ impl Renderer {
             frame_key.into(),
         );
 
+		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
+
         self.root_render_pass
             .record(&mut command_buffer_recording, extent);
 

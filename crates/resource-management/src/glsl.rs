@@ -23,7 +23,7 @@ pub fn compile<'a>(source_code: &'a str, shader_name: &str) -> Result<CompiledSh
 			})
 		},
 		Err(err) => {
-			return Err(pretty_print(&process_glslc_error(shader_name, source_code, err.to_string().as_str())));
+			return Err(pretty_format_glsl_error_lines(&process_glslc_error(shader_name, source_code, err.to_string().as_str())));
 		}
 	}
 }
@@ -92,7 +92,7 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 
 pub type Error<'a> = Vec<Line<'a>>;
 
-pub fn pretty_print(error_lines: &[Line]) -> String {
+pub fn pretty_format_glsl_error_lines(error_lines: &[Line]) -> String {
 	let max_error_line_number = error_lines.iter().map(|error_line| error_line.line_number).max().unwrap_or(0);
 	let max_line_number_length = max_error_line_number.to_string().len();
 
@@ -106,6 +106,39 @@ pub fn pretty_print(error_lines: &[Line]) -> String {
 		error_string.push_str(&format!("{:>width$}| {} {} {}\n", error_line.line_number + 1, error_line.source_code.bold(), "←".red().bold(), line_errors.red(), width = max_line_number_length));
 	}
 
+	error_string
+}
+
+pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> Option<String> {
+	let mut error_string = String::new();
+
+	for error_line in error_lines {
+		// How many lines to show before and after the error line
+		let window_size = 2i32;
+
+		let error_line_index = error_line.line_number;
+		let line_errors = error_line.errors.iter().map(|e| e.error).collect::<Vec<_>>().join(", ");
+
+		let lines = (-window_size..window_size).filter_map(|delta| {
+			let line_index = error_line_index as i32 + delta;
+			if line_index < 0 { None } else { Some(line_index as usize) }
+		}).map(|line_index| {
+			if line_index == error_line_index {
+				format!("{}| {} {} {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").bold(), "←".red().bold(), line_errors.red())
+			} else {
+				format!("{}| {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").dimmed())
+			}
+		});
+
+		error_string.push_str(&format!("{}\n", lines.collect::<Vec<_>>().join("\n")));
+	}
+
+	Some(error_string)
+}
+
+pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str, source_code: &str) -> String {
+	let error_lines = process_glslc_error(shader_name, source_code, error_string);
+	let error_string = pretty_format_glslang_errors(&error_lines, source_code).unwrap_or_else(|| error_string.to_string());
 	error_string
 }
 
@@ -132,6 +165,6 @@ shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
 		assert_eq!(error[0].errors[0].symbol, "fresnel_schlick");
 		assert_eq!(error[0].errors[0].error, "no matching overloaded function found");		
 
-		println!("{}", pretty_print(&error));
+		println!("{}", pretty_format_glsl_error_lines(&error));
 	}
 }

@@ -4,7 +4,7 @@ use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
 use std::ops::DerefMut;
 
-use ghi::{glsl, graphics_hardware_interface, raster_pipeline, ImageHandle};
+use ghi::{graphics_hardware_interface, raster_pipeline, ImageHandle};
 use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
@@ -16,7 +16,7 @@ use maths_rs::mat::{MatInverse, MatProjection, MatRotate2D, MatRotate3D};
 use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
-use resource_management::Reference;
+use resource_management::{glsl, Reference};
 use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};

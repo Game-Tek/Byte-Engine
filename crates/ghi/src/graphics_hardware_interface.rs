@@ -1508,7 +1508,9 @@ pub enum AccelerationStructureTypes {
 pub(super) mod tests {
 	use std::borrow::Borrow;
 
-use crate::{glsl, window::Window, GHI};
+	use crate::{window::Window, GHI};
+
+	use resource_management::glsl;
 
 	use super::*;
 

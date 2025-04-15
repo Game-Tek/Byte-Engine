@@ -35,6 +35,8 @@ pub mod shader_generator;
 pub mod glsl_shader_generator;
 pub mod spirv_shader_generator;
 
+pub mod glsl;
+
 pub use resource::resource_manager::ResourceManager;
 pub use asset::asset_handler::AssetHandler;
 

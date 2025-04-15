@@ -2,8 +2,9 @@ use std::{borrow::Borrow, rc::Rc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{glsl, BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{BoundComputePipelineMode, CommandBufferRecordable, Device};
 use maths_rs::Vec2f;
+use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
 
 pub trait RenderPass {

@@ -714,9 +714,8 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "bitflags 2.9.0",
- "colored 3.0.0",
  "renderdoc",
- "shaderc",
+ "resource-management",
  "utils",
  "wayland-backend",
  "wayland-client",
@@ -1415,6 +1414,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "besl",
+ "colored 3.0.0",
  "downcast-rs 2.0.1",
  "futures",
  "gltf",

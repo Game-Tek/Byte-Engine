@@ -2,7 +2,8 @@ use std::borrow::Borrow;
 
 use crate::core::EntityHandle;
 
-use ghi::{glsl, BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{BoundComputePipelineMode, CommandBufferRecordable, Device};
+use resource_management::glsl;
 use utils::Extent;
 
 use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};

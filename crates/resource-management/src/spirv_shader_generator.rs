@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use utils::Extent;
 
-use crate::{glsl_shader_generator::GLSLShaderGenerator, shader_generator::{ShaderGenerationSettings, ShaderGenerator}};
+use crate::{glsl, glsl_shader_generator::GLSLShaderGenerator, shader_generator::{ShaderGenerationSettings, ShaderGenerator}};
 
 pub struct Binding {
 	pub binding: u32,
@@ -66,7 +66,7 @@ impl SPIRVShaderGenerator {
 			Ok(binary) => { binary }
 			Err(err) => {
 				let error_string = err.to_string();
-				return Err(besl::glsl::format_glslang_error(&shader_compilation_settings.name, &error_string, &glsl_shader).unwrap_or(error_string));
+				return Err(glsl::pretty_format_glslang_error_string(&error_string, &shader_compilation_settings.name, &glsl_shader));
 			}
 		};
 

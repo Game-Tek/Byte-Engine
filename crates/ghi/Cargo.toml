@@ -9,10 +9,11 @@ rust-version = "1.73.0"
 utils = { path = "../utils" }
 
 ash = { version = "0.38.0", features=['linked'] }
-shaderc = "0.9.1"
 bitflags = "2.9.0"
 renderdoc = "0.12.1"
-colored = "3.0.0"
+
+[dev-dependencies]
+resource-management = { path = "../resource-management" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader"] }

@@ -12,7 +12,7 @@ use crate::{
     }, gameplay::space::{Space, Spawn}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Vector3
 };
 
-use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager, triangle::Triangle};
+use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
 
 pub struct Renderer {
     ghi: Rc<RwLock<ghi::GHI>>,

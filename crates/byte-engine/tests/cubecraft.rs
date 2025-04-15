@@ -123,120 +123,19 @@ fn cubecraft() {
 }
 
 struct Block {
-	position: (i32, i32, i32),
+	position: Location,
 	block: u32,
-
-	source: MeshSource,
 }
 
 impl Block {
-	fn new(position: (i32, i32, i32), block: u32) -> EntityBuilder<'static, Self> {
-		Block { position, block, source: MeshSource::Generated(Box::new(CubeMeshGenerator {})) }.into()
+	fn new(position: Location, block: u32) -> EntityBuilder<'static, Self> {
+		Block { position, block, }.into()
 	}
 }
 
 impl Entity for Block {
 	fn call_listeners<'a>(&'a self, listener: &'a byte_engine::core::listener::BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
 		listener.invoke_for(handle.clone(), self);
-		listener.invoke_for(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
-	}
-}
-
-impl RenderEntity for Block {
-	fn get_mesh(&self) -> &byte_engine::rendering::mesh::MeshSource {
-		&self.source
-	}
-
-	fn get_transform(&self) -> maths_rs::Mat4f {
-		maths_rs::Mat4f::from_translation(Vector3::new(self.position.0 as f32, self.position.1 as f32, self.position.2 as f32))
-	}
-}
-
-struct CubeMeshGenerator {
-
-}
-
-impl MeshGenerator for CubeMeshGenerator {
-	fn vertices(&self) -> Cow<'_, [(f32, f32, f32)]> {
-		Cow::Owned(vec![
-			(-0.5, -0.5, -0.5),
-			(0.5, -0.5, -0.5),
-			(0.5, 0.5, -0.5),
-			(-0.5, 0.5, -0.5),
-			(-0.5, -0.5, 0.5),
-			(0.5, -0.5, 0.5),
-			(0.5, 0.5, 0.5),
-			(-0.5, 0.5, 0.5),
-		])
-	}
-
-	fn normals(&self) -> Cow<'_, [(f32, f32, f32)]> {
-		Cow::Owned(vec![
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, 1.0),
-			(0.0, 0.0, 1.0),
-			(0.0, 0.0, 1.0),
-			(0.0, 0.0, 1.0),
-		])
-	}
-
-	fn tangents(&self) -> std::borrow::Cow<[maths_rs::Vec3f]> {
-		Cow::Owned(vec![
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(-1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(-1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(-1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(-1.0, 0.0, 0.0),
-		])
-	}
-
-	fn bitangents(&self) -> std::borrow::Cow<[maths_rs::Vec3f]> {
-		Cow::Owned(vec![
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, -1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, -1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, -1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, -1.0, 0.0),
-		])
-	}
-
-	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
-		Cow::Owned(vec![
-			(0.0, 0.0),
-			(1.0, 0.0),
-			(1.0, 1.0),
-			(0.0, 1.0),
-			(0.0, 0.0),
-			(1.0, 0.0),
-			(1.0, 1.0),
-			(0.0, 1.0),
-		])
-	}
-
-	fn indices(&self) -> std::borrow::Cow<[u32]> {
-		Cow::Owned(vec![
-			0, 1, 2,
-			0, 2, 3,
-			4, 5, 6,
-			4, 6, 7,
-			0, 1, 5,
-			0, 5, 4,
-			1, 2, 6,
-			1, 6, 5,
-			2, 3, 7,
-			2, 7, 6,
-			3, 0, 4,
-			3, 4, 7,
-		])
 	}
 }
 
@@ -268,33 +167,6 @@ impl Entity for CubeCraftRenderPass {}
 impl EntitySubscriber<Block> for CubeCraftRenderPass {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
 		self.blocks.push(params.position);
-
-		let mesh = params.get_mesh();
-
-		if self.instance_count > 0 {
-			self.instance_count += 1;
-			return;
-		}
-
-		let mesh = match mesh { MeshSource::Generated(g) => g, _ => panic!("Mesh is not generated") };
-
-		let vertices = mesh.vertices();
-		let indices = mesh.indices();
-
-		let ghi = self.ghi.write();
-		ghi.get_mut_buffer_slice(self.vertex_buffer)[self.vertex_count as usize..][..vertices.len()].copy_from_slice(&vertices);
-		ghi.get_mut_buffer_slice(self.index_buffer)[self.index_count as usize..][..indices.len()].copy_from_slice(&indices.iter().map(|i| *i as u16).collect::<Vec<_>>());
-
-		self.vertex_count += vertices.len() as u32;
-		self.index_count += indices.len() as u32;
-		self.instance_count += 1;
-
-		// ghi.get_mut_buffer_slice(self.vertex_buffer)[self.vertex_count as usize..][..4].copy_from_slice(&[(-0.5, -0.5, 0f32), (0.5, -0.5, 0f32), (0.5, 0.5, 0f32), (-0.5, 0.5, 0f32)]);
-		// ghi.get_mut_buffer_slice(self.index_buffer)[self.index_count as usize..][..6].copy_from_slice(&[0, 1, 2, 0, 2, 3]);
-
-		// self.vertex_count += 4;
-		// self.index_count += 6;
-		// self.instance_count += 1;
 	}
 }
 
@@ -434,7 +306,7 @@ impl RenderPass for CubeCraftRenderPass {
 const AIR_BLOCK: u32 = 0;
 const GRASS_BLOCK: u32 = 1;
 
-fn make_block(position: (i32, i32, i32)) -> u32 {
+fn make_block(position: Location) -> u32 {
 	if position.1 > 0 {
 		AIR_BLOCK
 	} else {

@@ -8,8 +8,6 @@ use crate::{image, sampler, window, raster_pipeline};
 
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
-	/// GLSL code string
-	GLSL(String),
 	/// SPIR-V binary
 	SPIRV(&'a [u8]),
 }
@@ -1508,9 +1506,47 @@ pub enum AccelerationStructureTypes {
 
 #[cfg(test)]
 pub(super) mod tests {
-	use crate::{window::Window, GHI};
+	use std::borrow::Borrow;
+
+use crate::{glsl, window::Window, GHI};
 
 	use super::*;
+
+	fn compile_shaders() -> (glsl::CompiledShader, glsl::CompiledShader) {
+		let vertex_shader_code = "
+			#version 450
+			#pragma shader_stage(vertex)
+
+			layout(location = 0) in vec3 in_position;
+			layout(location = 1) in vec4 in_color;
+
+			layout(location = 0) out vec4 out_color;
+
+			void main() {
+				out_color = in_color;
+				gl_Position = vec4(in_position, 1.0);
+				gl_Position.y *= -1.0;
+			}
+		";
+
+		let fragment_shader_code = "
+			#version 450
+			#pragma shader_stage(fragment)
+
+			layout(location = 0) in vec4 in_color;
+
+			layout(location = 0) out vec4 out_color;
+
+			void main() {
+				out_color = in_color;
+			}
+		";
+
+		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
+		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+
+		(vertex_shader_artifact, fragment_shader_artifact)
+	}
 
 	#[test]
 	fn dispatch_extent() {
@@ -1560,42 +1596,15 @@ pub(super) mod tests {
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-				&vertex_layout
-			) };
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
 
-		let vertex_shader_code = "
-			#version 450
-			#pragma shader_stage(vertex)
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-			layout(location = 0) in vec3 in_position;
-			layout(location = 1) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-				gl_Position = vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
-			}
-		";
-
-		let fragment_shader_code = "
-			#version 450
-			#pragma shader_stage(fragment)
-
-			layout(location = 0) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-			}
-		";
-
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1678,10 +1687,10 @@ pub(super) mod tests {
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-				&vertex_layout
-			) };
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
 
 		let vertex_shader_code = "
 			#version 450
@@ -1699,21 +1708,10 @@ pub(super) mod tests {
 			}
 		";
 
-		let fragment_shader_code = "
-			#version 450
-			#pragma shader_stage(fragment)
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-			layout(location = 0) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-			}
-		";
-
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1784,42 +1782,15 @@ pub(super) mod tests {
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-				&vertex_layout
-			) };
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
 
-		let vertex_shader_code = "
-			#version 450
-			#pragma shader_stage(vertex)
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-			layout(location = 0) in vec3 in_position;
-			layout(location = 1) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-				gl_Position = vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
-			}
-		";
-
-		let fragment_shader_code = "
-			#version 450
-			#pragma shader_stage(fragment)
-
-			layout(location = 0) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-			}
-		";
-
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1889,42 +1860,15 @@ pub(super) mod tests {
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-				&vertex_layout
-			) };
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
 
-		let vertex_shader_code = "
-			#version 450
-			#pragma shader_stage(vertex)
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-			layout(location = 0) in vec3 in_position;
-			layout(location = 1) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-				gl_Position = vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
-			}
-		";
-
-		let fragment_shader_code = "
-			#version 450
-			#pragma shader_stage(fragment)
-
-			layout(location = 0) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-			}
-		";
-
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -2001,48 +1945,15 @@ pub(super) mod tests {
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-				&vertex_layout
-			) };
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
 
-		let vertex_shader_code = "
-			#version 450
-			#pragma shader_stage(vertex)
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-			layout(location = 0) in vec3 in_position;
-			layout(location = 1) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			layout(row_major) uniform;
-
-			layout(push_constant) uniform PushConstants {
-				mat4 matrix;
-			} push_constants;
-
-			void main() {
-				out_color = in_color;
-				gl_Position = push_constants.matrix * vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
-			}
-		";
-
-		let fragment_shader_code = "
-			#version 450
-			#pragma shader_stage(fragment)
-
-			layout(location = 0) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-			}
-		";
-
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
@@ -2154,7 +2065,9 @@ pub(super) mod tests {
 			}
 		";
 
-		let compute_shader = renderer.create_shader(None, ShaderSource::GLSL(compute_shader_string.to_string()), ShaderTypes::Compute, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
+		let compute_shader_artifact = glsl::compile(compute_shader_string, "compute").unwrap();
+
+		let compute_shader = renderer.create_shader(None, ShaderSource::SPIRV(compute_shader_artifact.borrow().into()), ShaderTypes::Compute, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
 
 		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
 		let last_frame_image_binding_template = DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
@@ -2311,8 +2224,11 @@ pub(super) mod tests {
 			}
 		";
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::GLSL(vertex_shader_code.to_string()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::GLSL(fragment_shader_code.to_string()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
+		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
+		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
 		let buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
@@ -2511,9 +2427,13 @@ void main() {
 }
 		";
 
-		let raygen_shader = renderer.create_shader(None, ShaderSource::GLSL(raygen_shader_code.to_string()), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]).expect("Failed to create raygen shader");
-		let closest_hit_shader = renderer.create_shader(None, ShaderSource::GLSL(closest_hit_shader_code.to_string()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
-		let miss_shader = renderer.create_shader(None, ShaderSource::GLSL(miss_shader_code.to_string()), ShaderTypes::Miss, &[]).expect("Failed to create miss shader");
+		let raygen_shader_artifact = glsl::compile(raygen_shader_code, "raygen").unwrap();
+		let closest_hit_shader_artifact = glsl::compile(closest_hit_shader_code, "closest_hit").unwrap();
+		let miss_shader_artifact = glsl::compile(miss_shader_code, "miss").unwrap();
+
+		let raygen_shader = renderer.create_shader(None, ShaderSource::SPIRV(raygen_shader_artifact.borrow().into()), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]).expect("Failed to create raygen shader");
+		let closest_hit_shader = renderer.create_shader(None, ShaderSource::SPIRV(closest_hit_shader_artifact.borrow().into()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
+		let miss_shader = renderer.create_shader(None, ShaderSource::SPIRV(miss_shader_artifact.borrow().into()), ShaderTypes::Miss, &[]).expect("Failed to create miss shader");
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"), 1);
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{

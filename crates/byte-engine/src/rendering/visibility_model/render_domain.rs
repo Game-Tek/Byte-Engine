@@ -4,7 +4,7 @@ use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
 use std::ops::DerefMut;
 
-use ghi::{graphics_hardware_interface, raster_pipeline, ImageHandle};
+use ghi::{glsl, graphics_hardware_interface, raster_pipeline, ImageHandle};
 use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
@@ -1342,7 +1342,11 @@ struct VisibilityPass {
 
 impl VisibilityPass {
 	pub fn new(ghi_instance: &mut ghi::GHI, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
-		let visibility_pass_mesh_shader = ghi_instance.create_shader(Some("Visibility Pass Mesh Shader"), ghi::ShaderSource::GLSL(get_visibility_pass_mesh_source()), ghi::ShaderTypes::Mesh,
+		let visibility_shader = get_visibility_pass_mesh_source();
+
+		let visibility_mesh_shader_artifact = glsl::compile(&visibility_shader, "Visibility Mesh Shader").unwrap();
+
+		let visibility_pass_mesh_shader = ghi_instance.create_shader(Some("Visibility Pass Mesh Shader"), ghi::ShaderSource::SPIRV(visibility_mesh_shader_artifact.borrow().into()), ghi::ShaderTypes::Mesh,
 			&[
 				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -1354,7 +1358,9 @@ impl VisibilityPass {
 			]
 		).expect("Failed to create shader");
 
-		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]).expect("Failed to create shader");
+		let visibility_fragment_shader_artifact = glsl::compile(VISIBILITY_PASS_FRAGMENT_SOURCE, "Visibility Fragment Shader").unwrap();
+
+		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::SPIRV(visibility_fragment_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[]).expect("Failed to create shader");
 
 		let visibility_pass_shaders = [
 			ghi::ShaderParameter::new(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh),
@@ -1417,7 +1423,9 @@ struct MaterialCountPass {
 
 impl MaterialCountPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
-		let material_count_shader = ghi_instance.create_shader(Some("Material Count Pass Compute Shader"), ghi::ShaderSource::GLSL(get_material_count_source()), ghi::ShaderTypes::Compute,
+		let material_count_shader_artifact = glsl::compile(&get_material_count_source(), "Material Count Pass Compute Shader").unwrap();
+
+		let material_count_shader = ghi_instance.create_shader(Some("Material Count Pass Compute Shader"), ghi::ShaderSource::SPIRV(material_count_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
 			&[
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
@@ -1472,7 +1480,9 @@ struct MaterialOffsetPass {
 
 impl MaterialOffsetPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::GLSL(get_material_offset_source()), ghi::ShaderTypes::Compute,
+		let material_offset_shader_artifact = glsl::compile(&get_material_offset_source(), "Material Offset Pass Compute Shader").unwrap();
+
+		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::SPIRV(material_offset_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
 			&[
 				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
 				MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
@@ -1534,7 +1544,9 @@ struct PixelMappingPass {
 
 impl PixelMappingPass {
 	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let pixel_mapping_shader = ghi_instance.create_shader(Some("Pixel Mapping Pass Compute Shader"), ghi::ShaderSource::GLSL(get_pixel_mapping_source()), ghi::ShaderTypes::Compute,
+		let pixel_mapping_shader_artifact = glsl::compile(&get_pixel_mapping_source(), "Pixel Mapping Pass Compute Shader").unwrap();
+
+		let pixel_mapping_shader = ghi_instance.create_shader(Some("Pixel Mapping Pass Compute Shader"), ghi::ShaderSource::SPIRV(pixel_mapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
 			&[
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),

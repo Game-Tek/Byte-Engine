@@ -1314,27 +1314,6 @@ impl graphics_hardware_interface::Device for Device {
 	/// Creates a shader.
 	fn create_shader(&mut self, name: Option<&str>, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: &[graphics_hardware_interface::ShaderBindingDescriptor],) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let shader = match shader_source_type {
-			graphics_hardware_interface::ShaderSource::GLSL(source_code) => {
-				let compiler = shaderc::Compiler::new().unwrap();
-				let mut options = shaderc::CompileOptions::new().unwrap();
-
-				options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-				options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
-				options.set_generate_debug_info();
-				options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-				options.set_invert_y(true);
-
-				let binary = compiler.compile_into_spirv(source_code.as_str(), shaderc::ShaderKind::InferFromSource, "shader_name", "main", Some(&options));
-
-				match binary {
-					Ok(binary) => {
-						Cow::Owned(binary.as_binary().to_vec())
-					},
-					Err(err) => {
-						return Err(());
-					}
-				}
-			}
 			graphics_hardware_interface::ShaderSource::SPIRV(spirv) => {
 				if !spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
 					return Err(());

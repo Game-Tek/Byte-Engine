@@ -3,6 +3,7 @@
 //! It uses the Byte-Engine to create a simple game with a player character that can move around and jump.
 //! It also includes a simple physics engine to handle collisions and movement.
 
+use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::rc::Rc;
 
@@ -20,6 +21,7 @@ use byte_engine::rendering::render_pass::RenderPass;
 use byte_engine::rendering::render_pass::RenderPassBuilder;
 use byte_engine::rendering::view::View;
 use byte_engine::{application::{Application, Parameter}, camera::Camera, input::{Action, ActionBindingDescription, Function}, rendering::directional_light::DirectionalLight, Vector3};
+use ghi::glsl;
 use ghi::raster_pipeline;
 use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
@@ -325,8 +327,11 @@ impl RenderPass for CubeCraftRenderPass {
 		}
 		"#;
 
-		let v_shader = ghi.create_shader(None, ghi::ShaderSource::GLSL(v_shader_source.into()), ghi::ShaderTypes::Vertex, &[ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ)]).unwrap();
-		let f_shader = ghi.create_shader(None, ghi::ShaderSource::GLSL(f_shader_source.into()), ghi::ShaderTypes::Fragment, &[]).unwrap();
+		let v_shader_artifact = glsl::compile(v_shader_source, "Cube Vertex Shader").unwrap();
+		let f_shader_artifact = glsl::compile(f_shader_source, "Cube Fragment Shader").unwrap();
+
+		let v_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(v_shader_artifact.borrow().into()), ghi::ShaderTypes::Vertex, &[ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ)]).unwrap();
+		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[]).unwrap();
 
 		// TODO: notify user if provided shaders don't consume any bindings in the layout
 		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, false, true)]));

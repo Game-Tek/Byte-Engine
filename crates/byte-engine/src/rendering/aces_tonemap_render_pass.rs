@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::core::EntityHandle;
 
-use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode};
+use ghi::{glsl, BoundComputePipelineMode, CommandBufferRecordable, Device};
 use utils::Extent;
 
 use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};
@@ -46,7 +46,9 @@ impl RenderPass for AcesToneMapPass {
 		let source_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
 		let destination_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
 
-		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::GLSL(TONE_MAPPING_SHADER.to_string()), ghi::ShaderTypes::Compute, &[
+		let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "ACES Tonemapping").unwrap();
+
+		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, &[
 			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create tone mapping shader");

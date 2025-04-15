@@ -2,7 +2,7 @@ use std::{borrow::Borrow, rc::Rc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{glsl, BoundComputePipelineMode, CommandBufferRecordable, Device};
 use maths_rs::Vec2f;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
 
@@ -39,7 +39,9 @@ impl FullScreenRenderPass {
 
 		ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(source_image_binding, *source_image, *source_sampler, ghi::Layouts::Read), ghi::DescriptorWrite::image(destination_image_binding, destination_image, ghi::Layouts::General)]);
 
-		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::GLSL(shader.to_string()), ghi::ShaderTypes::Compute, &[bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
+		let shader_artifact = glsl::compile(shader, "shader").unwrap();
+
+		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::SPIRV(shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, &[bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
 
 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
 

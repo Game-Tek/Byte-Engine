@@ -1,5 +1,39 @@
 use colored::Colorize;
 
+pub struct CompiledShader {
+	artifact: shaderc::CompilationArtifact,
+}
+
+pub fn compile<'a>(source_code: &'a str, shader_name: &str) -> Result<CompiledShader, String> {
+	let compiler = shaderc::Compiler::new().unwrap();
+	let mut options = shaderc::CompileOptions::new().unwrap();
+
+	options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
+	options.set_generate_debug_info();
+	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
+	options.set_invert_y(true);
+
+	let binary = compiler.compile_into_spirv(source_code, shaderc::ShaderKind::InferFromSource, shader_name, "main", Some(&options));
+
+	match binary {
+		Ok(binary) => {
+			Ok(CompiledShader {
+				artifact: binary,
+			})
+		},
+		Err(err) => {
+			return Err(pretty_print(&process_glslc_error(shader_name, source_code, err.to_string().as_str())));
+		}
+	}
+}
+
+impl <'a> Into<&'a [u8]> for &'a CompiledShader {
+	fn into(self) -> &'a [u8] {
+		self.artifact.as_binary_u8()
+	}
+}
+
 pub struct LineError<'a> {
 	pub column: Option<usize>,
 	pub symbol: &'a str,

@@ -2,7 +2,7 @@ use std::{
     borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
-use ghi::{BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
+use ghi::{raster_pipeline, BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
 use resource_management::resource::resource_manager::ResourceManager;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
@@ -322,23 +322,7 @@ void main() {
 
         let layout = ghi.create_pipeline_layout(&[], &[]);
 
-        let pipeline = ghi.create_raster_pipeline(&[
-            ghi::PipelineConfigurationBlocks::Shaders {
-                shaders: &[ghi::ShaderParameter::new(&vshader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Fragment)],
-            },
-            ghi::PipelineConfigurationBlocks::Layout { layout: &layout },
-            ghi::PipelineConfigurationBlocks::InputAssembly {  },
-            ghi::PipelineConfigurationBlocks::VertexInput {
-                vertex_elements: &[
-                    ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
-                ],
-            },
-            ghi::PipelineConfigurationBlocks::RenderTargets {
-                targets: &[ghi::PipelineAttachmentInformation::new(
-                    ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true,
-                )],
-            },
-        ]);
+        let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),],&[ghi::ShaderParameter::new(&vshader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Fragment)],&[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true,)],));
 
         let triangle_vertices = [
         	Vector3::new(0.0, -1.0, 0.0),

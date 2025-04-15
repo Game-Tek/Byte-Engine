@@ -24,6 +24,7 @@ pub use crate::vulkan::VulkanCommandBufferRecording as CommandBufferRecording;
 
 pub mod image;
 pub mod sampler;
+pub mod raster_pipeline;
 
 pub fn create(settings: graphics_hardware_interface::Features) -> GHI {
 	GHI(vulkan::Device::new(settings).expect("Failed to create VulkanGHI"))

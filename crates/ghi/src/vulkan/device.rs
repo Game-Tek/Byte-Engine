@@ -3,7 +3,7 @@ use std::{borrow::Cow, cell::RefCell};
 use ash::vk::{self, Handle as _};
 use utils::hash::{HashSet, HashSetExt};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, render_debugger::RenderDebugger, sampler, vulkan::{Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_pipeline_stage_flags, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -456,160 +456,134 @@ impl Device {
 		synchronizer_handles
 	}
 
-	fn create_vulkan_pipeline(&mut self, blocks: &[graphics_hardware_interface::PipelineConfigurationBlocks]) -> graphics_hardware_interface::PipelineHandle {
-		/// This function calls itself recursively to build the pipeline the pipeline states.
-		/// This is done because this way we can "dynamically" allocate on the stack the needed structs because the recursive call keep them alive.
-		fn build_block(ghi: &Device, pipeline_create_info: vk::GraphicsPipelineCreateInfo<'_>, mut block_iterator: std::slice::Iter<'_, graphics_hardware_interface::PipelineConfigurationBlocks>) -> vk::Pipeline {
-			if let Some(block) = block_iterator.next() {
-				match block {
-					graphics_hardware_interface::PipelineConfigurationBlocks::VertexInput { vertex_elements } => {
-						let mut vertex_input_attribute_descriptions = vec![];
+	fn create_vulkan_graphics_pipeline_create_info<'a, R>(&'a mut self, builder: raster_pipeline::Builder, after_build: impl FnOnce(&'a mut Self, raster_pipeline::Builder, vk::GraphicsPipelineCreateInfo) -> R) -> R {
+		let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
+			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering
+		;
 
-						let mut offset_per_binding = [0, 0, 0, 0, 0, 0, 0, 0]; // Assume 8 bindings max
+		let pipeline_layout = &self.pipeline_layouts[builder.layout.0 as usize];
 
-						for (i, vertex_element) in vertex_elements.iter().enumerate() {
-							let ve = vk::VertexInputAttributeDescription::default()
-								.binding(vertex_element.binding)
-								.location(i as u32)
-								.format(vertex_element.format.into())
-								.offset(offset_per_binding[vertex_element.binding as usize]);
+		let pipeline_create_info = pipeline_create_info.layout(pipeline_layout.pipeline_layout);
 
-							vertex_input_attribute_descriptions.push(ve);
+		let mut vertex_input_attribute_descriptions = vec![];
 
-							offset_per_binding[vertex_element.binding as usize] += vertex_element.format.size() as u32;
-						}
+		let mut offset_per_binding = [0, 0, 0, 0, 0, 0, 0, 0]; // Assume 8 bindings max
 
-						let max_binding = vertex_elements.iter().map(|ve| ve.binding).max().unwrap() + 1;
+		for (i, vertex_element) in builder.vertex_elements.iter().enumerate() {
+			let ve = vk::VertexInputAttributeDescription::default()
+				.binding(vertex_element.binding)
+				.location(i as u32)
+				.format(vertex_element.format.into())
+				.offset(offset_per_binding[vertex_element.binding as usize]);
 
-						let mut vertex_binding_descriptions = Vec::with_capacity(max_binding as usize);
+			vertex_input_attribute_descriptions.push(ve);
 
-						for i in 0..max_binding {
-							vertex_binding_descriptions.push(
-								vk::VertexInputBindingDescription::default()
-								.binding(i)
-								.stride(offset_per_binding[i as usize])
-								.input_rate(vk::VertexInputRate::VERTEX)
-							)
-						}
-
-						let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
-							.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
-							.vertex_binding_descriptions(&vertex_binding_descriptions);
-
-						let pipeline_create_info = pipeline_create_info.vertex_input_state(&vertex_input_state);
-
-						build_block(ghi, pipeline_create_info, block_iterator)
-					}
-					graphics_hardware_interface::PipelineConfigurationBlocks::InputAssembly {  } => {
-						let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
-							.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-							.primitive_restart_enable(false);
-
-						let pipeline_create_info = pipeline_create_info.input_assembly_state(&input_assembly_state);
-
-						build_block(ghi, pipeline_create_info, block_iterator)
-					}
-					graphics_hardware_interface::PipelineConfigurationBlocks::RenderTargets { targets } => {
-						let pipeline_color_blend_attachments = targets.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|_| {
-							vk::PipelineColorBlendAttachmentState::default()
-								.color_write_mask(vk::ColorComponentFlags::RGBA)
-								.blend_enable(false)
-								.src_color_blend_factor(vk::BlendFactor::ONE)
-								.src_alpha_blend_factor(vk::BlendFactor::ONE)
-								.dst_color_blend_factor(vk::BlendFactor::ZERO)
-								.dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-								.color_blend_op(vk::BlendOp::ADD)
-								.alpha_blend_op(vk::BlendOp::ADD)
-						}).collect::<Vec<_>>();
-
-						let color_attachement_formats: Vec<vk::Format> = targets.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|a| to_format(a.format)).collect::<Vec<_>>();
-
-						let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
-							.logic_op_enable(false)
-							.logic_op(vk::LogicOp::COPY)
-							.attachments(&pipeline_color_blend_attachments)
-							.blend_constants([0.0, 0.0, 0.0, 0.0]);
-
-						let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-							.color_attachment_formats(&color_attachement_formats)
-							.depth_attachment_format(vk::Format::UNDEFINED);
-
-						let pipeline_create_info = pipeline_create_info.color_blend_state(&color_blend_state);
-
-						if let Some(_) = targets.iter().find(|a| a.format == graphics_hardware_interface::Formats::Depth32) {
-							let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-								.depth_test_enable(true)
-								.depth_write_enable(true)
-								.depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
-								.depth_bounds_test_enable(false)
-								.stencil_test_enable(false)
-								.front(vk::StencilOpState::default())
-								.back(vk::StencilOpState::default())
-							;
-
-							rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
-
-							let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
-							let pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
-
-							build_block(ghi, pipeline_create_info, block_iterator)
-						} else {
-							let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
-
-							build_block(ghi, pipeline_create_info, block_iterator)
-						}
-					}
-					graphics_hardware_interface::PipelineConfigurationBlocks::Shaders { shaders } => {
-						let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
-						let mut entries = [vk::SpecializationMapEntry::default(); 32];
-						let mut entry_count = 0;
-						let specilization_info_count = 0;
-
-						let stages = shaders
-							.iter()
-							.map(move |stage| {
-								for entry in stage.specialization_map.iter() {
-									specialization_entries_buffer.extend_from_slice(entry.get_data());
-
-									entries[entry_count] = vk::SpecializationMapEntry::default()
-										.constant_id(entry.get_constant_id())
-										.size(entry.get_size())
-										.offset(specialization_entries_buffer.len() as u32);
-
-									entry_count += 1;
-								}
-
-								let shader = &ghi.shaders[stage.handle.0 as usize];
-
-								assert!(specilization_info_count == 0);
-
-								vk::PipelineShaderStageCreateInfo::default()
-									.stage(to_shader_stage_flags(stage.stage))
-									.module(shader.shader)
-									.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
-							})
-							.collect::<Vec<_>>();
-
-						let pipeline_create_info = pipeline_create_info.stages(&stages);
-
-						build_block(ghi, pipeline_create_info, block_iterator)
-					}
-					graphics_hardware_interface::PipelineConfigurationBlocks::Layout { layout } => {
-						let pipeline_layout = &ghi.pipeline_layouts[layout.0 as usize];
-
-						let pipeline_create_info = pipeline_create_info.layout(pipeline_layout.pipeline_layout);
-
-						build_block(ghi, pipeline_create_info, block_iterator)
-					}
-				}
-			} else {
-				let pipeline_create_infos = [pipeline_create_info];
-
-				let pipelines = unsafe { ghi.device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None).expect("No pipeline") };
-
-				pipelines[0]
-			}
+			offset_per_binding[vertex_element.binding as usize] += vertex_element.format.size() as u32;
 		}
+
+		let max_binding = builder.vertex_elements.iter().map(|ve| ve.binding).max().unwrap() + 1;
+
+		let mut vertex_binding_descriptions = Vec::with_capacity(max_binding as usize);
+
+		for i in 0..max_binding {
+			vertex_binding_descriptions.push(
+				vk::VertexInputBindingDescription::default()
+				.binding(i)
+				.stride(offset_per_binding[i as usize])
+				.input_rate(vk::VertexInputRate::VERTEX)
+			)
+		}
+
+		let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
+			.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
+			.vertex_binding_descriptions(&vertex_binding_descriptions);
+
+		let pipeline_create_info = pipeline_create_info.vertex_input_state(&vertex_input_state);
+
+		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
+		let mut entries = [vk::SpecializationMapEntry::default(); 32];
+		let mut entry_count = 0;
+		let specilization_info_count = 0;
+
+		let stages = builder.shaders
+			.iter()
+			.map(|stage| {
+				for entry in stage.specialization_map.iter() {
+					specialization_entries_buffer.extend_from_slice(entry.get_data());
+
+					entries[entry_count] = vk::SpecializationMapEntry::default()
+						.constant_id(entry.get_constant_id())
+						.size(entry.get_size())
+						.offset(specialization_entries_buffer.len() as u32);
+
+					entry_count += 1;
+				}
+
+				let shader = &self.shaders[stage.handle.0 as usize];
+
+				assert!(specilization_info_count == 0);
+
+				vk::PipelineShaderStageCreateInfo::default()
+					.stage(to_shader_stage_flags(stage.stage))
+					.module(shader.shader)
+					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+			})
+			.collect::<Vec<_>>();
+
+		let pipeline_create_info = pipeline_create_info.stages(&stages);
+
+		let pipeline_color_blend_attachments = builder.render_targets.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|_| {
+			vk::PipelineColorBlendAttachmentState::default()
+				.color_write_mask(vk::ColorComponentFlags::RGBA)
+				.blend_enable(false)
+				.src_color_blend_factor(vk::BlendFactor::ONE)
+				.src_alpha_blend_factor(vk::BlendFactor::ONE)
+				.dst_color_blend_factor(vk::BlendFactor::ZERO)
+				.dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+				.color_blend_op(vk::BlendOp::ADD)
+				.alpha_blend_op(vk::BlendOp::ADD)
+		}).collect::<Vec<_>>();
+
+		let color_attachement_formats: Vec<vk::Format> = builder.render_targets.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|a| to_format(a.format)).collect::<Vec<_>>();
+
+		let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
+			.logic_op_enable(false)
+			.logic_op(vk::LogicOp::COPY)
+			.attachments(&pipeline_color_blend_attachments)
+			.blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+		let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+			.color_attachment_formats(&color_attachement_formats)
+			.depth_attachment_format(vk::Format::UNDEFINED);
+
+		let pipeline_create_info = pipeline_create_info.color_blend_state(&color_blend_state);
+
+		let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+			.depth_test_enable(true)
+			.depth_write_enable(true)
+			.depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
+			.depth_bounds_test_enable(false)
+			.stencil_test_enable(false)
+			.front(vk::StencilOpState::default())
+			.back(vk::StencilOpState::default())
+		;
+
+		let pipeline_create_info = if let Some(_) = builder.render_targets.iter().find(|a| a.format == graphics_hardware_interface::Formats::Depth32) {
+			rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
+			let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
+			let pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
+			pipeline_create_info
+		} else {
+			let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
+			pipeline_create_info
+		};
+
+		let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
+			.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+			.primitive_restart_enable(false)
+		;
+
+		let pipeline_create_info = pipeline_create_info.input_assembly_state(&input_assembly_state);
 
 		let viewports = [vk::Viewport::default().x(0.0).y(9.0).width(16.0).height(9.0).min_depth(0.0).max_depth(1.0)];
 
@@ -650,41 +624,43 @@ impl Device {
 			.primitive_restart_enable(false)
 		;
 
-		let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
-			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering
-			.dynamic_state(&dynamic_state)
+		let pipeline_create_info = pipeline_create_info
 			.viewport_state(&viewport_state)
+			.dynamic_state(&dynamic_state)
 			.rasterization_state(&rasterization_state)
 			.multisample_state(&multisample_state)
 			.input_assembly_state(&input_assembly_state)
 		;
 
-		let pipeline = build_block(self, pipeline_create_info, blocks.iter());
+		after_build(self, builder, pipeline_create_info)
+	}
 
-		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
+	fn create_vulkan_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
+		self.create_vulkan_graphics_pipeline_create_info(builder, |this, builder, pipeline_create_info| {
+			let pipeline_create_infos = [pipeline_create_info];
 
-		let resource_access: Vec<((u32, u32), (graphics_hardware_interface::Stages, graphics_hardware_interface::AccessPolicies))> = blocks.iter().find_map(|b| {
-			match b {
-				graphics_hardware_interface::PipelineConfigurationBlocks::Shaders { shaders } => {
-					Some(shaders.iter().map(|s| {
-						let shader = &self.shaders[s.handle.0 as usize];
-						shader.shader_binding_descriptors.iter().map(|sbd| {
-							((sbd.set, sbd.binding), (Into::<graphics_hardware_interface::Stages>::into(s.stage), sbd.access))
-						}).collect::<Vec<_>>()
-					}))
-				},
-				_ => None,
-			}
-		}).unwrap().flatten().collect::<Vec<_>>();
-
-		self.pipelines.push(Pipeline {
-			pipeline,
-			shader_handles: HashMap::new(),
-			shaders: Vec::new(),
-			resource_access,
-		});
-
-		handle
+			let pipelines = unsafe { this.device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None).expect("No pipeline") };
+	
+			let pipeline = pipelines[0];
+	
+			let handle = graphics_hardware_interface::PipelineHandle(this.pipelines.len() as u64);
+	
+			let resource_access: Vec<((u32, u32), (graphics_hardware_interface::Stages, graphics_hardware_interface::AccessPolicies))> = builder.shaders.iter().map(|s| {
+				let shader = &this.shaders[s.handle.0 as usize];
+				shader.shader_binding_descriptors.iter().map(|sbd| {
+					((sbd.set, sbd.binding), (Into::<graphics_hardware_interface::Stages>::into(s.stage), sbd.access))
+				})
+			}).flatten().collect::<Vec<_>>();
+	
+			this.pipelines.push(Pipeline {
+				pipeline,
+				shader_handles: HashMap::new(),
+				shaders: Vec::new(),
+				resource_access,
+			});
+	
+			handle
+		})
 	}
 
 	fn create_vulkan_buffer(&self, name: Option<&str>, size: usize, usage: vk::BufferUsageFlags) -> MemoryBackedResourceCreationResult<vk::Buffer> {
@@ -1000,8 +976,8 @@ impl Device {
 	}
 
 	fn get_descriptor_set(&self, descriptor_set_handle: DescriptorSetHandle) -> &DescriptorSet {
-        self.descriptor_sets.get(descriptor_set_handle.0 as usize).expect("No descriptor set with that handle.")
-    }
+		self.descriptor_sets.get(descriptor_set_handle.0 as usize).expect("No descriptor set with that handle.")
+	}
 
 	fn write_binding(&mut self, descriptor_set_write: &graphics_hardware_interface::DescriptorWrite) {
 		let binding_handle = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0);
@@ -1582,8 +1558,8 @@ impl graphics_hardware_interface::Device for Device {
 		handle
 	}
 
-	fn create_raster_pipeline(&mut self, pipeline_blocks: &[graphics_hardware_interface::PipelineConfigurationBlocks]) -> graphics_hardware_interface::PipelineHandle {
-		self.create_vulkan_pipeline(pipeline_blocks)
+	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
+		self.create_vulkan_pipeline(builder)
 	}
 
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, shader_parameter: graphics_hardware_interface::ShaderParameter) -> graphics_hardware_interface::PipelineHandle {
@@ -2701,7 +2677,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 		return vk::FALSE;
 	}
 
-    let message = std::ffi::CStr::from_ptr(callback_data.p_message);
+	let message = std::ffi::CStr::from_ptr(callback_data.p_message);
 
 	let message = if let Some(message) = message.to_str().ok() { message } else { return vk::FALSE; };
 
@@ -2721,5 +2697,5 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 		_ => {}
 	}
 
-    vk::FALSE
+	vk::FALSE
 }

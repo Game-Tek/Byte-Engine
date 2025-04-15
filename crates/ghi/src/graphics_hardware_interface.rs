@@ -4,7 +4,7 @@
 
 use utils::{Extent, RGBA};
 
-use crate::{image::Builder, sampler, window};
+use crate::{image, sampler, window, raster_pipeline};
 
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
@@ -34,7 +34,7 @@ pub enum DataTypes {
 	UInt4,
 }
 
-#[derive(Hash)]
+#[derive(Clone, Hash)]
 pub struct VertexElement {
 	pub(crate) name: String,
 	pub(crate) format: DataTypes,
@@ -552,7 +552,7 @@ pub trait Device where Self: Sized {
 
 	fn create_pipeline_layout(&mut self, descriptor_set_template_handles: &[DescriptorSetTemplateHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
 
-	fn create_raster_pipeline(&mut self, pipeline_blocks: &[PipelineConfigurationBlocks]) -> PipelineHandle;
+	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> PipelineHandle;
 
 	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle;
 
@@ -594,7 +594,7 @@ pub trait Device where Self: Sized {
 	/// * `format` - The format of the image.
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases, array_layers: u32) -> ImageHandle;
 
-	fn build_image(&mut self, builder: Builder) -> ImageHandle;
+	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;
 
 	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
 
@@ -1458,6 +1458,7 @@ impl SpecializationMapEntry {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct ShaderParameter<'a> {
 	pub(crate) handle: &'a ShaderHandle,
 	pub(crate) stage: ShaderTypes,
@@ -1476,24 +1477,6 @@ impl <'a> ShaderParameter<'a> {
 	pub fn with_specialization_map(mut self, specialization_map: &'a [SpecializationMapEntry]) -> Self {
 		self.specialization_map = specialization_map;
 		self
-	}
-}
-
-pub enum PipelineConfigurationBlocks<'a> {
-	VertexInput {
-		vertex_elements: &'a [VertexElement]
-	},
-	InputAssembly {
-
-	},
-	RenderTargets {
-		targets: &'a [PipelineAttachmentInformation],
-	},
-	Shaders {
-		shaders: &'a [ShaderParameter<'a>],
-	},
-	Layout {
-		layout: &'a PipelineLayoutHandle,
 	}
 }
 
@@ -1625,12 +1608,7 @@ pub(super) mod tests {
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&[
-			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
-			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
-			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
@@ -1745,12 +1723,7 @@ pub(super) mod tests {
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&[
-			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
-			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
-			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
@@ -1856,12 +1829,7 @@ pub(super) mod tests {
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&[
-			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
-			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
-			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
@@ -1969,12 +1937,7 @@ pub(super) mod tests {
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&[
-			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
-			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
-			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
@@ -2092,12 +2055,7 @@ pub(super) mod tests {
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&[
-			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
-			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
-			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
 		let _buffer = renderer.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
 
@@ -2394,12 +2352,7 @@ pub(super) mod tests {
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(&[
-			PipelineConfigurationBlocks::Layout { layout: &pipeline_layout },
-			PipelineConfigurationBlocks::Shaders { shaders: &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], },
-			PipelineConfigurationBlocks::VertexInput { vertex_elements: &vertex_layout, },
-			PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 

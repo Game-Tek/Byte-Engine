@@ -4,7 +4,7 @@ use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
 use std::ops::DerefMut;
 
-use ghi::{graphics_hardware_interface, ImageHandle};
+use ghi::{graphics_hardware_interface, raster_pipeline, ImageHandle};
 use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
@@ -1356,7 +1356,7 @@ impl VisibilityPass {
 
 		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::GLSL(VISIBILITY_PASS_FRAGMENT_SOURCE.to_string()), ghi::ShaderTypes::Fragment, &[]).expect("Failed to create shader");
 
-		let visibility_pass_shaders = &[
+		let visibility_pass_shaders = [
 			ghi::ShaderParameter::new(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh),
 			ghi::ShaderParameter::new(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
@@ -1372,11 +1372,7 @@ impl VisibilityPass {
 			ghi::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
 		];
 
-		let visibility_pass_pipeline = ghi_instance.create_raster_pipeline(&[
-			ghi::PipelineConfigurationBlocks::Layout { layout: &pipeline_layout_handle },
-			ghi::PipelineConfigurationBlocks::Shaders { shaders: visibility_pass_shaders },
-			ghi::PipelineConfigurationBlocks::RenderTargets { targets: &attachments },
-		]);
+		let visibility_pass_pipeline = ghi_instance.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout_handle, &[], &visibility_pass_shaders, &attachments));
 
 		VisibilityPass {
 			pipeline_layout: pipeline_layout_handle,

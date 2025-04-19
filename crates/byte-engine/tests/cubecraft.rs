@@ -109,22 +109,20 @@ fn cubecraft() {
 	const CHUNK_SIZE: i32 = 16;
 	const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
 
-	// let blocks = (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |x| {
-	// 	(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |z| {
-	// 		(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
-	// 			let position = (x, y, z);
-	// 			let block = make_block(position);
+	let blocks = (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |x| {
+		(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |z| {
+			(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
+				let position = (x, y, z);
+				let block = make_block(position);
 
-	// 			if block == GRASS_BLOCK {
-	// 				Some(Block::new(position, block))
-	// 			} else {
-	// 				None
-	// 			}
-	// 		})
-	// 	}).flatten()
-	// }).flatten().collect::<Vec<_>>();
-
-	let blocks = vec![Block::new((0, 0, 0), GRASS_BLOCK)];
+				if block == GRASS_BLOCK {
+					Some(Block::new(position, block))
+				} else {
+					None
+				}
+			})
+		}).flatten()
+	}).flatten().collect::<Vec<_>>();
 
 	space_handle.spawn(blocks);
 
@@ -233,7 +231,7 @@ impl RenderPass for CubeCraftRenderPass {
 
 		let camera = ghi.create_buffer(Some("camera"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
-		let view = View::new_perspective(45f32, 16f32 / 9f32, 0.1f32, 100f32, maths_rs::Vec3f::new(0f32, 1f32, -2f32), maths_rs::Vec3f::new(0f32, 0f32, 1f32));
+		let view = View::new_perspective(45f32, 16f32 / 9f32, 0.1f32, 100f32, maths_rs::Vec3f::new(0f32, 2f32, 0f32), maths_rs::Vec3f::new(0f32, 0f32, 1f32));
 
 		*ghi.get_mut_buffer_slice(camera) = view.view_projection();
 
@@ -334,14 +332,16 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 
 	for block in blocks {
 		for &side in &cube_sides {
-			let &pos = block;
+			let pos = (block.0 * 2, block.1 * 2, block.2 * 2);
+
+			let face = (pos.0 + side.0, pos.1 + side.1, pos.2 + side.2);
 
 			// If cube side already exists, then this wall is internal
-			sides.entry((pos, side)).and_modify(|e| *e = false).or_insert(true);
+			sides.entry(face).and_modify(|(_, external): &mut (_, bool)| *external = false).or_insert(((pos, side), true));
 		}
 	}
 
-	let external_sides = sides.iter().filter(|(_, v)| **v).map(|(k, _)| *k).collect::<Vec<_>>();
+	let external_sides = sides.values().filter(|(_, external)| *external).map(|(k, _)| *k).collect::<Vec<_>>();
 
 	let face_corners = [
 		(-1, 1),
@@ -380,7 +380,18 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 	let mut z_sides = external_sides.clone().into_iter().filter(move |&(_, (_, _, sz))| sz.abs() == 1).collect::<Vec<_>>();
 
 	x_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.0 + bs.0).cmp(&(ac.0 + r#as.0))); // Place higher x sides first, as they are more likely to be visible
-	y_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.1 + bs.1).cmp(&(ac.1 + r#as.1))); // Place higher y sides first, as they are more likely to be visible
+	y_sides.sort_by(|(ac, r#as), (bc, bs)| {
+		let (_, ay, az) = (ac.0 + r#as.0, ac.1 + r#as.1, ac.2 + r#as.2);
+		let (_, by, bz) = (bc.0 + bs.0, bc.1 + bs.1, bc.2 + bs.2);
+
+		// Place higher y sides first, as they are more likely to be visible, and then sort by z so nearer sides are drawn first
+
+		if ay == by {
+			return (az).cmp(&bz);
+		} else {
+			return by.cmp(&ay);
+		}
+	});
 	z_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.2 + bs.2).cmp(&(ac.2 + r#as.2)));
 
 	let mut indices = Vec::with_capacity(corners.len() * 3);
@@ -435,6 +446,16 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 mod tests {
     use crate::build_cubes;
 
+	fn assert_upper_cube_face(vertices: &[(f32, f32, f32)], indices: &[u16], face: usize, offset: (f32, f32, f32)) {
+		let (x, y, z) = offset;
+		assert_eq!(vertices[indices[face + 0] as usize], (-0.5 + x, 0.5 + y, 0.5 + z));
+		assert_eq!(vertices[indices[face + 1] as usize], (0.5 + x, 0.5 + y, 0.5 + z));
+		assert_eq!(vertices[indices[face + 2] as usize], (0.5 + x, 0.5 + y, -0.5 + z));
+		assert_eq!(vertices[indices[face + 3] as usize], (0.5 + x, 0.5 + y, -0.5 + z));
+		assert_eq!(vertices[indices[face + 4] as usize], (-0.5 + x, 0.5 + y, -0.5 + z));
+		assert_eq!(vertices[indices[face + 5] as usize], (-0.5 + x, 0.5 + y, 0.5 + z));
+	}
+
 	#[test]
 	fn test_build_single_cube() {
 		let blocks = [
@@ -482,11 +503,34 @@ mod tests {
 			assert_eq!(window[2], window[3]);
 		});
 
-		assert_eq!(vertices[indices[0] as usize], (-0.5, 0.5, 0.5));
-		assert_eq!(vertices[indices[1] as usize], (0.5, 0.5, 0.5));
-		assert_eq!(vertices[indices[2] as usize], (0.5, 0.5, -0.5));
-		assert_eq!(vertices[indices[3] as usize], (0.5, 0.5, -0.5));
-		assert_eq!(vertices[indices[4] as usize], (-0.5, 0.5, -0.5));
-		assert_eq!(vertices[indices[5] as usize], (-0.5, 0.5, 0.5));
+		assert_upper_cube_face(&vertices, &indices, 0, (0.0, 0.0, 0.0));
+	}
+
+	#[test]
+	fn test_build_two_cubes() {
+		let blocks = [
+			(0, 0, 0),
+			(0, 0, 1),
+		];
+
+		let (vertices, indices) = build_cubes(&blocks);
+
+		dbg!(&vertices);
+		dbg!(&indices);
+
+		assert_eq!(vertices.len(), 4 + 4 + 4);
+		assert_eq!(indices.len(), 5 * 2 * 6);
+
+		indices.iter().for_each(|index| {
+			assert!((*index as usize) < vertices.len());
+		});
+
+		indices.chunks(6).for_each(|window| {
+			assert_eq!(window[0], window[5]);
+			assert_eq!(window[2], window[3]);
+		});
+
+		assert_upper_cube_face(&vertices, &indices, 0, (0.0, 0.0, 0.0));
+		assert_upper_cube_face(&vertices, &indices, 6, (0.0, 0.0, 1.0));
 	}
 }

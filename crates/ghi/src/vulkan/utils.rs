@@ -152,7 +152,10 @@ pub(super) fn to_shader_stage_flags(shader_type: graphics_hardware_interface::Sh
 pub(super) fn to_pipeline_stage_flags(stages: graphics_hardware_interface::Stages, layout: Option<graphics_hardware_interface::Layouts>, format: Option<graphics_hardware_interface::Formats>) -> vk::PipelineStageFlags2 {
 	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
 
-	if stages.contains(graphics_hardware_interface::Stages::VERTEX) { pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER }
+	if stages.contains(graphics_hardware_interface::Stages::VERTEX) {
+		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT;
+		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER;
+	}
 
 	if stages.contains(graphics_hardware_interface::Stages::INDEX) {
 		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT;
@@ -222,6 +225,9 @@ pub(super) fn to_access_flags(accesses: graphics_hardware_interface::AccessPolic
 	let mut access_flags = vk::AccessFlags2::empty();
 
 	if accesses.contains(graphics_hardware_interface::AccessPolicies::READ) {
+		if stages.intersects(graphics_hardware_interface::Stages::VERTEX) {
+			access_flags |= vk::AccessFlags2::VERTEX_ATTRIBUTE_READ;
+		}
 		if stages.intersects(graphics_hardware_interface::Stages::INDEX) {
 			access_flags |= vk::AccessFlags2::VERTEX_ATTRIBUTE_READ;
 			access_flags |= vk::AccessFlags2::INDEX_READ;

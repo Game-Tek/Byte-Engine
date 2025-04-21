@@ -54,7 +54,7 @@ pub struct Device {
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 
-	pub(super) buffer_writes_queue: RefCell<Vec<(graphics_hardware_interface::BaseBufferHandle, u32)>>,
+	pub(super) buffer_writes_queue: RefCell<HashMap<graphics_hardware_interface::BaseBufferHandle, u32>>,
 
 	pub(super) pending_images: Vec<graphics_hardware_interface::ImageHandle>,
 }
@@ -441,7 +441,7 @@ impl Device {
 
 			pending_images: Vec::with_capacity(128),
 
-			buffer_writes_queue: RefCell::new(Vec::with_capacity(128)),
+			buffer_writes_queue: RefCell::new(HashMap::with_capacity(128)),
 		})
 	}
 
@@ -1881,7 +1881,10 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'a mut T {
-		self.buffer_writes_queue.borrow_mut().push((buffer_handle.into(), 0));
+		let mut buffer_writes = self.buffer_writes_queue.borrow_mut();
+		let mut entry = buffer_writes.entry(buffer_handle.into()).insert_entry(0);
+		*entry.get_mut() = 0;
+
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		unsafe {
@@ -2255,7 +2258,11 @@ impl graphics_hardware_interface::Device for Device {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
 		let shader_handles = pipeline.shader_handles.clone();
 
-		self.buffer_writes_queue.borrow_mut().push((sbt_buffer_handle.into(), 0));
+		let mut buffer_writes = self.buffer_writes_queue.borrow_mut();
+		let mut entry = buffer_writes.entry(sbt_buffer_handle.into()).insert_entry(0);
+
+		*entry.get_mut() = 0;
+
 		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 

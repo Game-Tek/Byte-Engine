@@ -3,7 +3,7 @@ use utils::{hash::HashMap, partition, Extent};
 
 use crate::{graphics_hardware_interface, FrameKey};
 
-use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, Device};
+use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption};
 
 pub struct VulkanCommandBufferRecording<'a> {
 	ghi: &'a mut Device,
@@ -154,11 +154,7 @@ impl VulkanCommandBufferRecording<'_> {
 	unsafe fn consume_resources(&mut self, consumptions: &[Consumption]) {
 		if consumptions.is_empty() { return; } // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
 
-		let mut image_memory_barriers = Vec::new();
-		let mut buffer_memory_barriers = Vec::new();
-		let mut memory_barriers = Vec::new();
-
-		for consumption in consumptions {
+		let consumptions = consumptions.iter().map(|consumption| {
 			let format = match consumption.handle {
 				Handle::Image(texture_handle) => {
 					let image = self.get_image(texture_handle);
@@ -167,19 +163,43 @@ impl VulkanCommandBufferRecording<'_> {
 				_ => { None }
 			};
 
-			let new_stage_mask = to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format);
-			let new_access_mask = to_access_flags(consumption.access, consumption.stages, consumption.layout, format);
+			let stages = to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format);
+			let access = to_access_flags(consumption.access, consumption.stages, consumption.layout, format);
+
+			let layout = match consumption.handle {
+				Handle::Image(image_handle) => {
+					let image = self.get_image(image_handle);
+					texture_format_and_resource_use_to_image_layout(image.format_, consumption.layout, Some(consumption.access))
+				}
+				_ => vk::ImageLayout::UNDEFINED
+			};
+
+			VulkanConsumption {
+				handle: consumption.handle,
+				stages,
+				access,
+				layout,
+			}
+		}).collect::<Vec<_>>();
+
+		self.vulkan_consume_resources(&consumptions);
+	}
+
+	unsafe fn vulkan_consume_resources(&mut self, consumptions: &[VulkanConsumption]) {
+		if consumptions.is_empty() { return; } // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
+
+		let mut image_memory_barriers = Vec::new();
+		let mut buffer_memory_barriers = Vec::new();
+		let mut memory_barriers = Vec::new();
+
+		for consumption in consumptions {
+			let new_stage_mask = consumption.stages;
+			let new_access_mask = consumption.access;
 
 			let transition_state = TransitionState {
 				stage: new_stage_mask,
 				access: new_access_mask,
-				layout: match consumption.handle {
-					Handle::Image(image_handle) => {
-						let image = self.get_image(image_handle);
-						texture_format_and_resource_use_to_image_layout(image.format_, consumption.layout, Some(consumption.access))
-					}
-					_ => vk::ImageLayout::UNDEFINED
-				}
+				layout: consumption.layout,
 			};
 
 			if let Some(state) = self.states.get(&consumption.handle) {
@@ -192,7 +212,7 @@ impl VulkanCommandBufferRecording<'_> {
 
 					if image.image.is_null() { continue; }
 
-					let new_layout = texture_format_and_resource_use_to_image_layout(image.format_, consumption.layout, Some(consumption.access));
+					let new_layout = consumption.layout;
 
 					let image_memory_barrier = if let Some(barrier_source) = self.states.get(&consumption.handle) {
 							vk::ImageMemoryBarrier2::default().old_layout(barrier_source.layout).src_stage_mask(barrier_source.stage).src_access_mask(barrier_source.access)
@@ -305,23 +325,20 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 
 		let copy_buffers = {
 			let mut dirty_buffers = self.ghi.buffer_writes_queue.borrow_mut();
-		
-			dirty_buffers.sort();
-			dirty_buffers.dedup();
 
-			dirty_buffers.retain(|(_, f)| *f < self.ghi.frames as u32);
+			dirty_buffers.retain(|_, v| *v < self.ghi.frames as u32);
 			dirty_buffers.iter_mut().for_each(|(_, f)| *f += 1);
 			
-			dirty_buffers.iter().map(|&(b, _)| self.get_internal_buffer_handle(b)).filter(|b| { let b = self.get_buffer(*b); b.staging.is_some() && b.size != 0 }).collect::<Vec<_>>()
+			dirty_buffers.keys().map(|&b| self.get_internal_buffer_handle(b)).filter(|b| { let b = self.get_buffer(*b); b.staging.is_some() && b.size != 0 }).collect::<Vec<_>>()
 		};
 
 		unsafe {
-			self.consume_resources(&copy_buffers.iter().map(|&b| {
-				Consumption {
+			self.vulkan_consume_resources(&copy_buffers.iter().map(|&b| {
+				VulkanConsumption {
 					handle: Handle::Buffer(b),
-					stages: graphics_hardware_interface::Stages::TRANSFER,
-					access: graphics_hardware_interface::AccessPolicies::WRITE,
-					layout: graphics_hardware_interface::Layouts::General,
+					stages: vk::PipelineStageFlags2::COPY,
+					access: vk::AccessFlags2::TRANSFER_WRITE,
+					layout: vk::ImageLayout::UNDEFINED,
 				}
 			}).collect::<Vec<_>>());
 		}
@@ -1232,16 +1249,16 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
 		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| {
-			Consumption {
+			VulkanConsumption {
 				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-				stages: graphics_hardware_interface::Stages::VERTEX,
-				access: graphics_hardware_interface::AccessPolicies::READ,
-				layout: graphics_hardware_interface::Layouts::Read,
+				stages: vk::PipelineStageFlags2::VERTEX_INPUT,
+				access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+				layout: vk::ImageLayout::UNDEFINED,
 			}
 		}).collect::<Vec<_>>();
 
 		unsafe {
-			self.consume_resources(&consumptions);
+			self.vulkan_consume_resources(&consumptions);
 		}
 
 		let command_buffer = self.get_command_buffer();
@@ -1255,11 +1272,11 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
 		unsafe {
-			self.consume_resources(&[Consumption {
+			self.vulkan_consume_resources(&[VulkanConsumption {
 				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-				stages: graphics_hardware_interface::Stages::INDEX,
-				access: graphics_hardware_interface::AccessPolicies::READ,
-				layout: graphics_hardware_interface::Layouts::Read,
+				stages: vk::PipelineStageFlags2::INDEX_INPUT,
+				access: vk::AccessFlags2::INDEX_READ,
+				layout: vk::ImageLayout::UNDEFINED,
 			}]);
 		}
 

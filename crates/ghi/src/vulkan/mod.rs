@@ -63,6 +63,14 @@ pub(super) struct Consumption {
 	pub(super) layout: graphics_hardware_interface::Layouts,
 }
 
+#[derive(Clone, PartialEq,)]
+pub(super) struct VulkanConsumption {
+	pub(super) handle: Handle,
+	pub(super) stages: vk::PipelineStageFlags2,
+	pub(super) access: vk::AccessFlags2,
+	pub(super) layout: vk::ImageLayout,
+}
+
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 #[derive(Clone)]

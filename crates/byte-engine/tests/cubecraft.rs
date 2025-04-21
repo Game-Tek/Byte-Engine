@@ -280,6 +280,8 @@ impl RenderPass for CubeCraftRenderPass {
 		let f_shader_source = r#"#version 450 core
 		#pragma shader_stage(fragment)
 		#extension GL_EXT_shader_16bit_storage: require
+		#extension GL_EXT_fragment_shader_barycentric: require
+
 		layout(location = 0) out vec4 out_color;
 
 		layout(set = 0, binding = 1) readonly buffer Faces {
@@ -293,7 +295,7 @@ impl RenderPass for CubeCraftRenderPass {
 				out_color = vec4(0.0, 1.0, 0.0, 1.0);
 			} else {
 				if (in_block == 2) {
-					out_color = vec4(0.5, 0.5, 0.5, 1.0);
+					out_color = vec4(0.25, 0.25, 0.25, 1.0);
 				} else if (in_block == 3) {
 					out_color = vec4(0.5, 0.25, 0.0, 1.0);
 				} else {
@@ -420,10 +422,12 @@ fn make_block(position: Location) -> u32 {
 	}
 }
 
+type Vertex = (f32, f32, f32);
+
 /// Returns a list of vertices and indices for the blocks
 /// The vertices are in the format (x, y, z) and the indices are in the format (v1, v2, v3)
 /// Triangles for higher Y values are drawn first, as they are more likely to be visible
-fn build_cubes(blocks: &[Block]) -> (Vec<(f32, f32, f32)>, Vec<u16>, Vec<u16>) {
+fn build_cubes(blocks: &[Block]) -> (Vec<Vertex>, Vec<u16>, Vec<u16>) {
 	let cube_sides: [(i32, i32, i32); 6] = [
 		(1, 0, 0),
 		(-1, 0, 0),

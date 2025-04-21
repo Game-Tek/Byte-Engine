@@ -53,6 +53,7 @@ impl Renderer {
                     .debug_log_function(|message| {
                         log::error!("{}", message);
                     })
+					.geometry_shader(true)
 					// .gpu("llvmpipe (LLVM 15.0.7, 256 bits)")
 					// .gpu("AMD Radeon Graphics (RADV RENOIR)")
             )));
@@ -85,14 +86,18 @@ impl Renderer {
                     ghi::UseCases::DYNAMIC,
                     1,
                 );
-                let depth_sampler = ghi.build_sampler(
-                    ghi::sampler::Builder::new()
-                        .addressing_mode(ghi::SamplerAddressingModes::Border {})
-                        .reduction_mode(ghi::SamplingReductionModes::Min)
-                        .filtering_mode(ghi::FilteringModes::Closest),
-                );
+				let depth = ghi.create_image(
+					Some("depth"),
+					extent,
+					ghi::Formats::Depth32,
+					ghi::Uses::RenderTarget | ghi::Uses::Image,
+					ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+					ghi::UseCases::DYNAMIC,
+					1,
+				);
 
 				targets.insert("main".to_string(), main);
+				targets.insert("depth".to_string(), depth);
 				targets.insert("result".to_string(), result);
 
 				render_command_buffer = ghi.create_command_buffer(Some("Render"));
@@ -104,6 +109,7 @@ impl Renderer {
 			let mut root_render_pass = RootRenderPass::new();
 
 			root_render_pass.add_image("main".to_string(), targets.get("main").unwrap().clone(), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+			root_render_pass.add_image("depth".to_string(), targets.get("depth").unwrap().clone(), ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
 			root_render_pass.add_image("result".to_string(), targets.get("result").unwrap().clone(), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
 
             Renderer {
@@ -139,6 +145,7 @@ impl Renderer {
 		let mut render_pass_builder = RenderPassBuilder::new(self.ghi.clone());
 
 		render_pass_builder.images.insert("main".to_string(), (self.targets.get("main").unwrap().clone(), 0));
+		render_pass_builder.images.insert("depth".to_string(), (self.targets.get("depth").unwrap().clone(), 0));
 		render_pass_builder.images.insert("result".to_string(), (self.targets.get("result").unwrap().clone(), 0));
 
 		let render_pass = space_handle.spawn(T::create(&mut render_pass_builder));

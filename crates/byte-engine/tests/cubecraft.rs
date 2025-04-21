@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use byte_engine::camera;
 use byte_engine::core::entity::EntityBuilder;
 use byte_engine::core::listener::EntitySubscriber;
 use byte_engine::core::listener::Listener;
@@ -94,17 +95,35 @@ fn cubecraft() {
 		ActionBindingDescription::new("Keyboard.Escape"),
 	],));
 
+	space_handle.spawn(ChunkLoader::create());
+
 	// Create the camera
-	let camera = space_handle.spawn(Camera::new(Vector3::new(0.0, 1.0, 0.0),));
+	let camera = space_handle.spawn(Camera::new(Vector3::new(0.0, 1.8, 0.0),));
 
 	// Create the directional light
 	let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(Vector3::new(0.0, -1.0, 0.0)), 4000f32));
 
-	lookaround_action_handle.write().value().add(move |value: &Vector3| {
-		let mut camera = camera.write();
+	{
+		let camera = camera.clone();
 
-		camera.set_orientation(*value);
-	});
+		lookaround_action_handle.write().value().add(move |value: &Vector3| {
+			let mut camera = camera.write();
+	
+			camera.set_orientation(*value);
+		});
+	}
+
+	{
+		let camera = camera.clone();
+
+		move_action_handle.write().value().add(move |value: &Vector3| {
+			let mut camera = camera.write();
+	
+			let position = camera.get_position();
+
+			camera.set_position(position + *value);
+		});
+	}
 
 	const CHUNK_SIZE: i32 = 16;
 	const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
@@ -115,8 +134,8 @@ fn cubecraft() {
 				let position = (x, y, z);
 				let block = make_block(position);
 
-				if block == GRASS_BLOCK {
-					Some(Block::new(position, block))
+				if block != AIR_BLOCK {
+					Some(Block::create(position, block))
 				} else {
 					None
 				}
@@ -129,13 +148,41 @@ fn cubecraft() {
 	app.do_loop()
 }
 
+struct ChunkLoader {
+	loaded: Vec<Location>,
+	camera: Option<EntityHandle<Camera>>,
+}
+
+impl ChunkLoader {
+	fn new() -> Self {
+		ChunkLoader { loaded: Vec::new(), camera: None, }
+	}
+
+	fn create() -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(ChunkLoader::new()).listen_to::<Camera>()
+	}
+}
+
+impl Entity for ChunkLoader {}
+
+impl EntitySubscriber<Camera> for ChunkLoader {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, params: &'a Camera) -> () {
+		self.camera = Some(handle.clone());
+	}
+}
+
+#[derive(Clone, Copy)]
 struct Block {
 	position: Location,
 	block: u32,
 }
 
 impl Block {
-	fn new(position: Location, block: u32) -> EntityBuilder<'static, Self> {
+	fn new(position: Location, block: u32) -> Self {
+		Block { position, block, }
+	}
+
+	fn create(position: Location, block: u32) -> EntityBuilder<'static, Self> {
 		Block { position, block, }.into()
 	}
 }
@@ -154,11 +201,19 @@ struct RenderParams {
 	instance_count: u32,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct FaceShaderData {
+	block: u16,
+}
+
 struct CubeCraftRenderPass {
 	vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 16 * 16 * 256 * 32]>,
 	index_buffer: ghi::BufferHandle<[u16; 16 * 16 * 256 * 32 * 3]>,
 
-	camera: ghi::BufferHandle<maths_rs::Mat4f>,
+	camera_data_buffer: ghi::BufferHandle<maths_rs::Mat4f>,
+
+	face_data_buffer: ghi::BufferHandle<[FaceShaderData; 16 * 16 * 256 * 32]>,
 
 	set: ghi::DescriptorSetHandle,
 	binding: ghi::DescriptorSetBindingHandle,
@@ -170,14 +225,22 @@ struct CubeCraftRenderPass {
 
 	ghi: Rc<RwLock<ghi::GHI>>,
 
-	blocks: Vec<Location>,
+	blocks: Vec<Block>,
+
+	camera: Option<EntityHandle<Camera>>,
 }
 
 impl Entity for CubeCraftRenderPass {}
 
 impl EntitySubscriber<Block> for CubeCraftRenderPass {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
-		self.blocks.push(params.position);
+		self.blocks.push(*params);
+	}
+}
+
+impl EntitySubscriber<Camera> for CubeCraftRenderPass {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, params: &'a Camera) -> () {
+		self.camera = Some(handle.clone());
 	}
 }
 
@@ -187,12 +250,14 @@ impl RenderPass for CubeCraftRenderPass {
 		let mut ghi = ghi.write();
 
 		render_pass_builder.render_to("main");
+		render_pass_builder.render_to("depth");
 
 		let vertex_buffer = ghi.create_buffer(Some("vertices"), ghi::Uses::Vertex, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		let index_buffer = ghi.create_buffer(Some("indices"), ghi::Uses::Index, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("template"), &[
 			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX),
+			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::FRAGMENT),
 		]);
 		let layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
 
@@ -214,30 +279,46 @@ impl RenderPass for CubeCraftRenderPass {
 
 		let f_shader_source = r#"#version 450 core
 		#pragma shader_stage(fragment)
+		#extension GL_EXT_shader_16bit_storage: require
 		layout(location = 0) out vec4 out_color;
+
+		layout(set = 0, binding = 1) readonly buffer Faces {
+			uint16_t block[];
+		} faces;
+
 		void main() {
-			out_color = vec4(1.0, 1.0, 1.0, 1.0);
+			uint in_block = uint(faces.block[gl_PrimitiveID / 2]);
+
+			if (in_block == 1) {
+				out_color = vec4(0.0, 1.0, 0.0, 1.0);
+			} else {
+				if (in_block == 2) {
+					out_color = vec4(0.5, 0.5, 0.5, 1.0);
+				} else if (in_block == 3) {
+					out_color = vec4(0.5, 0.25, 0.0, 1.0);
+				} else {
+					out_color = vec4(1.0, 1.0, 1.0, 1.0);
+				}
+			}
 		}
 		"#;
 
 		let v_shader_artifact = glsl::compile(v_shader_source, "Cube Vertex Shader").unwrap();
 		let f_shader_artifact = glsl::compile(f_shader_source, "Cube Fragment Shader").unwrap();
 
-		let v_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(v_shader_artifact.borrow().into()), ghi::ShaderTypes::Vertex, &[ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ)]).unwrap();
-		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[]).unwrap();
+		let v_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(v_shader_artifact.borrow().into()), ghi::ShaderTypes::Vertex, &[ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),]).unwrap();
+		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ)]).unwrap();
 
 		// TODO: notify user if provided shaders don't consume any bindings in the layout
-		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, false, true)]));
+		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, false, true), ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0), false, true)]));
 
-		let camera = ghi.create_buffer(Some("camera"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
-
-		let view = View::new_perspective(45f32, 16f32 / 9f32, 0.1f32, 100f32, maths_rs::Vec3f::new(0f32, 2f32, 0f32), maths_rs::Vec3f::new(0f32, 0f32, 1f32));
-
-		*ghi.get_mut_buffer_slice(camera) = view.view_projection();
+		let camera_data_buffer = ghi.create_buffer(Some("camera"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
+		let face_data_buffer = ghi.create_buffer(Some("face_data_buffer"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 
 		let set = ghi.create_descriptor_set(None, &descriptor_set_template);
 
-		let binding = ghi.create_descriptor_binding(set, ghi::BindingConstructor::buffer(&ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX), camera.into()));
+		let camera_data_buffer_binding = ghi.create_descriptor_binding(set, ghi::BindingConstructor::buffer(&ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX), camera_data_buffer.into()));
+		let face_data_buffer_binding = ghi.create_descriptor_binding(set, ghi::BindingConstructor::buffer(&ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX), face_data_buffer.into()));
 
 		drop(ghi);
 
@@ -251,10 +332,12 @@ impl RenderPass for CubeCraftRenderPass {
 			vertex_buffer,
 			index_buffer,
 
-			camera,
+			camera_data_buffer,
+
+			face_data_buffer,
 
 			set,
-			binding,
+			binding: camera_data_buffer_binding,
 
 			layout,
 			pipeline,
@@ -264,7 +347,9 @@ impl RenderPass for CubeCraftRenderPass {
 			ghi: render_pass_builder.ghi(),
 
 			blocks: Vec::with_capacity(8192 * 32),
-		}).listen_to::<Block>()
+
+			camera: None,
+		}).listen_to::<Block>().listen_to::<Camera>()
 	}
 
 	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
@@ -276,10 +361,22 @@ impl RenderPass for CubeCraftRenderPass {
 	}
 
 	fn prepare(&self, ghi: &mut ghi::GHI, extent: utils::Extent) {
-		let (vertices, indices) = build_cubes(&self.blocks);
+		if let Some(camera) = &self.camera {
+			let camera = camera.read();
+
+			let view = View::new_perspective(camera.get_fov(), extent.aspect_ratio(), 0.1f32, 100f32, camera.get_position(), camera.get_orientation());
+	
+			*ghi.get_mut_buffer_slice(self.camera_data_buffer) = view.view_projection();
+		}
+
+		let (vertices, indices, faces) = build_cubes(&self.blocks);
 
 		ghi.get_mut_buffer_slice(self.vertex_buffer)[..vertices.len()].copy_from_slice(&vertices);
-		ghi.get_mut_buffer_slice(self.index_buffer)[..indices.len()].copy_from_slice(&indices);	
+		ghi.get_mut_buffer_slice(self.index_buffer)[..indices.len()].copy_from_slice(&indices);
+
+		let faces = faces.iter().map(|&face| FaceShaderData { block: face as u16, }).collect::<Vec<_>>();
+
+		ghi.get_mut_buffer_slice(self.face_data_buffer)[..faces.len()].copy_from_slice(&faces);
 
 		let mut render_params = self.render_params.borrow_mut();
 
@@ -306,19 +403,27 @@ impl RenderPass for CubeCraftRenderPass {
 
 const AIR_BLOCK: u32 = 0;
 const GRASS_BLOCK: u32 = 1;
+const STONE_BLOCK: u32 = 2;
+const DIRT_BLOCK: u32 = 3;
 
 fn make_block(position: Location) -> u32 {
 	if position.1 > 0 {
 		AIR_BLOCK
 	} else {
-		GRASS_BLOCK
+		if position.1 == 0 {
+			GRASS_BLOCK
+		} else if position.1 == -1 {
+			DIRT_BLOCK
+		} else {
+			STONE_BLOCK
+		}
 	}
 }
 
 /// Returns a list of vertices and indices for the blocks
 /// The vertices are in the format (x, y, z) and the indices are in the format (v1, v2, v3)
 /// Triangles for higher Y values are drawn first, as they are more likely to be visible
-fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
+fn build_cubes(blocks: &[Block]) -> (Vec<(f32, f32, f32)>, Vec<u16>, Vec<u16>) {
 	let cube_sides: [(i32, i32, i32); 6] = [
 		(1, 0, 0),
 		(-1, 0, 0),
@@ -328,16 +433,23 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 		(0, 0, -1),
 	];
 
+	// Per cube face data
+	let mut faces = Vec::with_capacity(8192 * 6 * 4);
+
 	let mut sides = HashMap::with_capacity(8192 * 6);
 
 	for block in blocks {
+		let pos = block.position;
+
 		for &side in &cube_sides {
-			let pos = (block.0 * 2, block.1 * 2, block.2 * 2);
+			let pos = (pos.0 * 2, pos.1 * 2, pos.2 * 2);
 
 			let face = (pos.0 + side.0, pos.1 + side.1, pos.2 + side.2);
 
+			let block = Block::new(pos, block.block);
+
 			// If cube side already exists, then this wall is internal
-			sides.entry(face).and_modify(|(_, external): &mut (_, bool)| *external = false).or_insert(((pos, side), true));
+			sides.entry(face).and_modify(|(_, external): &mut (_, bool)| *external = false).or_insert(((block, side), true));
 		}
 	}
 
@@ -353,18 +465,18 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 	let mut corners = HashMap::with_capacity(8192 * 6 * 4 * 3);
 	let mut vertices = Vec::with_capacity(corners.len() * 3);
 
-	for &((cx, cy, cz), (sx, sy, sz)) in &external_sides {
-		let (x, y, z) = (cx + sx, cy + sy, cz + sz);
+	for &(block, normal) in &external_sides {
+		let (cx, cy, cz) = block.position;
 
 		for (fx, fy) in face_corners {
-			let (cx, cy, cz) = match (sx.abs(), sy.abs(), sz.abs()) {
+			let (x, y, z) = match (normal.0.abs(), normal.1.abs(), normal.2.abs()) {
 				(1, 0, 0) => (0, fx, fy),
 				(0, 1, 0) => (fx, 0, fy),
 				(0, 0, 1) => (fx, fy, 0),
 				_ => unreachable!(),
 			};
 
-			let vertex = (cx + x, cy + y, cz + z);
+			let vertex = (cx + normal.0 + x, cy + normal.1 + y, cz + normal.2 + z);
 
 			corners.entry(vertex).or_insert_with(|| {
 				let index = vertices.len();
@@ -379,10 +491,10 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 	let mut y_sides = external_sides.clone().into_iter().filter(move |&(_, (_, sy, _))| sy.abs() == 1).collect::<Vec<_>>();
 	let mut z_sides = external_sides.clone().into_iter().filter(move |&(_, (_, _, sz))| sz.abs() == 1).collect::<Vec<_>>();
 
-	x_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.0 + bs.0).cmp(&(ac.0 + r#as.0))); // Place higher x sides first, as they are more likely to be visible
+	x_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.position.0 + bs.0).cmp(&(ac.position.0 + r#as.0))); // Place higher x sides first, as they are more likely to be visible
 	y_sides.sort_by(|(ac, r#as), (bc, bs)| {
-		let (_, ay, az) = (ac.0 + r#as.0, ac.1 + r#as.1, ac.2 + r#as.2);
-		let (_, by, bz) = (bc.0 + bs.0, bc.1 + bs.1, bc.2 + bs.2);
+		let (_, ay, az) = (ac.position.0 + r#as.0, ac.position.1 + r#as.1, ac.position.2 + r#as.2);
+		let (_, by, bz) = (bc.position.0 + bs.0, bc.position.1 + bs.1, bc.position.2 + bs.2);
 
 		// Place higher y sides first, as they are more likely to be visible, and then sort by z so nearer sides are drawn first
 
@@ -392,59 +504,42 @@ fn build_cubes(blocks: &[Location]) -> (Vec<(f32, f32, f32)>, Vec<u16>) {
 			return by.cmp(&ay);
 		}
 	});
-	z_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.2 + bs.2).cmp(&(ac.2 + r#as.2)));
+	z_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.position.2 + bs.2).cmp(&(ac.position.2 + r#as.2)));
 
 	let mut indices = Vec::with_capacity(corners.len() * 3);
 
 	// Draw y sides first, as they are more likely to be visible
-	for ((cx, cy, cz), (sx, sy, sz)) in y_sides {
-		let normal = sy;
-		let (x, _, z) = (cx + sx, cy + sy, cz + sz);
 
-		for (fx, _, fz) in [(-1, 0, 1), (1, 0, 1), (1, 0, -1), (1, 0, -1), (-1, 0, -1), (-1, 0, 1)] {
-			let (fx, fz) = (fx * normal, fz * normal);
-			let corner = (fx + x, cy + normal, fz + z);
+	for (sides, square_vertices) in [(y_sides, [(-1, 0, 1), (1, 0, 1), (1, 0, -1), (1, 0, -1), (-1, 0, -1), (-1, 0, 1)]), (x_sides, [(0, 1, -1), (0, 1, 1), (0, -1, 1), (0, -1, 1), (0, -1, -1), (0, 1, -1)]), (z_sides, [(1, 1, 0), (-1, 1, 0), (-1, -1, 0), (-1, -1, 0), (1, -1, 0), (1, 1, 0)])] {
+		for (block, normal) in sides {			
+			let (cx, cy, cz) = block.position;
+			let (x, y, z) = (cx + normal.0, cy + normal.1, cz + normal.2);
+		
+			for (fx, fy, fz) in square_vertices {
+				let (fx, fy, fz) = match (normal.0.abs(), normal.1.abs(), normal.2.abs()) {
+					(1, 0, 0) => (fx, fy * normal.0, fz),
+					(0, 1, 0) => (fx, fy, fz * normal.1),
+					(0, 0, 1) => (fx * normal.2, fy, fz),
+					_ => unreachable!(),
+				};
 
-			let corner_index = corners.get(&corner).expect("Corner must exist!");
-
-			indices.push(*corner_index as u16);
+				let corner = (fx + x, fy + y, fz + z);
+		
+				let corner_index = corners.get(&corner).expect("Corner must exist!");
+		
+				indices.push(*corner_index as u16);
+			}
+		
+			faces.push(block.block as u16);
 		}
 	}
 
-	for ((cx, cy, cz), (sx, sy, sz)) in x_sides {
-		let normal = sx;
-		let (_, y, z) = (cx + sx, cy + sy, cz + sz);
-
-		for (_, fy, fz) in [(0, 1, -1), (0, 1, 1), (0, -1, 1), (0, -1, 1), (0, -1, -1), (0, 1, -1)] {
-			let (fy, fz) = (fy * normal, fz * normal);
-			let corner = (cx + normal, fy + y, fz + z);
-
-			let corner_index = corners.get(&corner).expect("Corner must exist!");
-
-			indices.push(*corner_index as u16);
-		}
-	}
-
-	for ((cx, cy, cz), (sx, sy, sz)) in z_sides {
-		let normal = sz;
-		let (x, y, _) = (cx + sx, cy + sy, cz + sz);
-
-		for (fx, fy, _) in [(-1, 1, 0), (1, 1, 0), (1, -1, 0), (1, -1, 0), (-1, -1, 0), (-1, 1, 0)] {
-			let (fx, fy) = (fx * normal, fy * normal);
-			let corner = (fx + x, fy + y, cz + normal);
-
-			let corner_index = corners.get(&corner).expect("Corner must exist!");
-
-			indices.push(*corner_index as u16);
-		}
-	}
-
-	(vertices, indices)
+	(vertices, indices, faces)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::build_cubes;
+    use crate::{build_cubes, Block, DIRT_BLOCK, GRASS_BLOCK};
 
 	fn assert_upper_cube_face(vertices: &[(f32, f32, f32)], indices: &[u16], face: usize, offset: (f32, f32, f32)) {
 		let (x, y, z) = offset;
@@ -456,19 +551,30 @@ mod tests {
 		assert_eq!(vertices[indices[face + 5] as usize], (-0.5 + x, 0.5 + y, 0.5 + z));
 	}
 
+	fn assert_lower_cube_face(vertices: &[(f32, f32, f32)], indices: &[u16], face: usize, offset: (f32, f32, f32)) {
+		let (x, y, z) = offset;
+		assert_eq!(vertices[indices[face + 0] as usize], (-0.5 + x, -0.5 + y, -0.5 + z));
+		assert_eq!(vertices[indices[face + 1] as usize], (0.5 + x, -0.5 + y, -0.5 + z));
+		assert_eq!(vertices[indices[face + 2] as usize], (0.5 + x, -0.5 + y, 0.5 + z));
+		assert_eq!(vertices[indices[face + 3] as usize], (0.5 + x, -0.5 + y, 0.5 + z));
+		assert_eq!(vertices[indices[face + 4] as usize], (-0.5 + x, -0.5 + y, 0.5 + z));
+		assert_eq!(vertices[indices[face + 5] as usize], (-0.5 + x, -0.5 + y, -0.5 + z));
+	}
+
 	#[test]
 	fn test_build_single_cube() {
 		let blocks = [
-			(0, 0, 0),
+			Block::new((0, 0, 0), GRASS_BLOCK),
 		];
 
-		let (vertices, indices) = build_cubes(&blocks);
+		let (vertices, indices, faces) = build_cubes(&blocks);
 
 		dbg!(&vertices);
 		dbg!(&indices);
 
 		assert_eq!(vertices.len(), 8);
 		assert_eq!(indices.len(), 36);
+		assert_eq!(faces.len(), 6);
 
 		{
 			let mut vertices = vertices.clone();
@@ -504,16 +610,25 @@ mod tests {
 		});
 
 		assert_upper_cube_face(&vertices, &indices, 0, (0.0, 0.0, 0.0));
+
+		assert_eq!(faces[0], 1);
+		assert_eq!(faces[1], 1);
+		assert_eq!(faces[2], 1);
+		assert_eq!(faces[3], 1);
+		assert_eq!(faces[4], 1);
+		assert_eq!(faces[5], 1);
+
+		assert_lower_cube_face(&vertices, &indices, 6, (0.0, 0.0, 0.0));
 	}
 
 	#[test]
 	fn test_build_two_cubes() {
 		let blocks = [
-			(0, 0, 0),
-			(0, 0, 1),
+			Block::new((0, 0, 0), GRASS_BLOCK),
+			Block::new((0, 0, 1), DIRT_BLOCK),
 		];
 
-		let (vertices, indices) = build_cubes(&blocks);
+		let (vertices, indices, faces) = build_cubes(&blocks);
 
 		dbg!(&vertices);
 		dbg!(&indices);
@@ -532,5 +647,7 @@ mod tests {
 
 		assert_upper_cube_face(&vertices, &indices, 0, (0.0, 0.0, 0.0));
 		assert_upper_cube_face(&vertices, &indices, 6, (0.0, 0.0, 1.0));
+
+		assert_eq!(faces[0], 1);
 	}
 }

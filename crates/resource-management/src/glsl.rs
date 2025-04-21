@@ -12,7 +12,6 @@ pub fn compile<'a>(source_code: &'a str, shader_name: &str) -> Result<CompiledSh
 	options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
 	options.set_generate_debug_info();
 	options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-	options.set_invert_y(true);
 
 	let binary = compiler.compile_into_spirv(source_code, shaderc::ShaderKind::InferFromSource, shader_name, "main", Some(&options));
 

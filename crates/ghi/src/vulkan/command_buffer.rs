@@ -396,9 +396,9 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 		let viewports = [
 			vk::Viewport {
 				x: 0.0,
-				y: 0.0,
+				y: (extent.height() as f32),
 				width: extent.width() as f32,
-				height: (extent.height() as f32),
+				height: -(extent.height() as f32),
 				min_depth: 0.0,
 				max_depth: 1.0,
 			}

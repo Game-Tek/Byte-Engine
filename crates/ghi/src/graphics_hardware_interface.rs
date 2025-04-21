@@ -420,6 +420,7 @@ impl ShaderBindingDescriptor {
 /// - `debug_log_function`: A function to log debug messages. If none is provided, `println!` will be used. Default is `None`.
 /// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
 /// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
+/// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
 pub struct Features {
 	pub(crate) validation: bool,
 	pub(crate) gpu_validation: bool,
@@ -428,6 +429,7 @@ pub struct Features {
 	pub(crate) debug_log_function: Option<fn(&str)>,
 	pub(crate) gpu: Option<&'static str>,
 	pub(crate) sparse: bool,
+	pub(crate) geometry_shader: bool,
 }
 
 impl Features {
@@ -440,6 +442,7 @@ impl Features {
 			debug_log_function: None,
 			gpu: None,
 			sparse: false,
+			geometry_shader: false,
 		}
 	}
 
@@ -475,6 +478,11 @@ impl Features {
 
 	pub fn sparse(mut self, value: bool) -> Self {
 		self.sparse = value;
+		self
+	}
+
+	pub fn geometry_shader(mut self, value: bool) -> Self {
+		self.geometry_shader = value;
 		self
 	}
 }

@@ -204,7 +204,8 @@ impl Device {
 				features.shader_sampled_image_array_dynamic_indexing != vk::FALSE &&
 				features.shader_storage_buffer_array_dynamic_indexing != vk::FALSE &&
 				features.shader_uniform_buffer_array_dynamic_indexing != vk::FALSE &&
-				features.shader_storage_image_write_without_format != vk::FALSE
+				features.shader_storage_image_write_without_format != vk::FALSE &&
+				features.geometry_shader == settings.geometry_shader as vk::Bool32
 			}).max_by_key(|physical_device| {
 				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
 	
@@ -308,6 +309,7 @@ impl Device {
 			.shader_storage_image_array_dynamic_indexing(true)
 			.shader_storage_image_write_without_format(true)
 			.texture_compression_bc(true)
+			.geometry_shader(settings.geometry_shader)
 		;
 
 		let mut physical_device_mesh_shading_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
@@ -602,7 +604,7 @@ impl Device {
 			.depth_clamp_enable(false)
 			.rasterizer_discard_enable(false)
 			.polygon_mode(vk::PolygonMode::FILL)
-			.cull_mode(vk::CullModeFlags::NONE)
+			.cull_mode(vk::CullModeFlags::BACK)
 			.front_face(vk::FrontFace::CLOCKWISE)
 			.depth_bias_enable(false)
 			.depth_bias_constant_factor(0.0)

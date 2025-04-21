@@ -116,6 +116,10 @@ impl Extent {
 	pub fn height(&self) -> u32 { self.height }
 	#[inline]
 	pub fn depth(&self) -> u32 { self.depth }
+	
+	pub fn aspect_ratio(&self) -> f32 {
+		(self.width as f32) / (self.height as f32)
+	}
 }
 
 impl From<[u32; 3]> for Extent {

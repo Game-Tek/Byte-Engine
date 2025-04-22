@@ -773,17 +773,6 @@ impl Default for PresentationModes {
 }
 
 #[derive(Clone, Copy)]
-/// Stores the information of a memory region.
-pub struct Memory<'a> {
-	/// The allocation that the memory region is associated with.
-	allocation: &'a AllocationHandle,
-	/// The offset of the memory region.
-	offset: usize,
-	/// The size of the memory region.
-	size: usize,
-}
-
-#[derive(Clone, Copy)]
 pub enum ClearValue {
 	None,
 	Color(RGBA),
@@ -834,26 +823,14 @@ impl AttachmentInformation {
 pub struct PipelineAttachmentInformation {
 	/// The format of the attachment.
 	pub(crate) format: Formats,
-	/// The layout of the attachment.
-	pub(crate) layout: Layouts,
-	/// The clear color of the attachment.
-	pub(crate) clear: ClearValue,
-	/// Whether to load the contents of the attchment when starting a render pass.
-	pub(crate) load: bool,
-	/// Whether to store the contents of the attachment when ending a render pass.
-	pub(crate) store: bool,
 	/// The image layer index for the attachment.
 	pub(crate) layer: Option<u32>,
 }
 
 impl PipelineAttachmentInformation {
-	pub fn new(format: Formats, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
+	pub fn new(format: Formats,) -> Self {
 		Self {
 			format,
-			layout,
-			clear,
-			load,
-			store,
 			layer: None,
 		}
 	}
@@ -862,30 +839,6 @@ impl PipelineAttachmentInformation {
 		self.layer = Some(layer);
 		self
 	}
-}
-
-#[derive(Clone, Copy)]
-/// Stores the information of a image copy.
-pub struct ImageCopy {
-	/// The source image.
-	pub(super) source: ImageHandle,
-	pub(super) source_format: Formats,
-	/// The destination image.
-	pub(super) destination: ImageHandle,
-	pub(super) destination_format: Formats,
-	/// The images extent.
-	pub(super) extent: Extent,
-}
-
-#[derive(Clone, Copy)]
-/// Stores the information of a buffer copy.
-pub struct BufferCopy {
-	/// The source buffer.
-	pub(super)	source: BaseBufferHandle,
-	/// The destination buffer.
-	pub(super)	destination: BaseBufferHandle,
-	/// The size of the copy.
-	pub(super) size: usize,
 }
 
 bitflags::bitflags! {
@@ -1387,12 +1340,6 @@ pub struct ImageSubresourceLayout {
 	pub(super) depth_pitch: usize,
 }
 
-/// Describes the properties of a particular surface.
-pub struct SurfaceProperties {
-	/// The current extent of the surface.
-	pub(super) extent: Extent,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Enumerates the states of a swapchain's validity for presentation.
 pub enum SwapchainStates {
@@ -1407,8 +1354,6 @@ pub enum SwapchainStates {
 pub struct BufferDescriptor {
 	pub(super) buffer: BaseBufferHandle,
 	pub(super) offset: usize,
-	pub(super) range: usize,
-	pub(super) slot: u32,
 }
 
 impl BufferDescriptor {
@@ -1416,8 +1361,6 @@ impl BufferDescriptor {
 		Self {
 			buffer: buffer.into(),
 			offset: std::mem::size_of::<T>() * offset,
-			range: std::mem::size_of::<T>() * range,
-			slot,
 		}
 	}
 }
@@ -1516,7 +1459,7 @@ pub enum AccelerationStructureTypes {
 pub(super) mod tests {
 	use std::borrow::Borrow;
 
-	use crate::{window::Window, GHI};
+	use crate::window::Window;
 
 	use resource_management::glsl;
 
@@ -1624,7 +1567,7 @@ pub(super) mod tests {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1702,22 +1645,6 @@ pub(super) mod tests {
 			&vertex_layout
 		) };
 
-		let vertex_shader_code = "
-			#version 450
-			#pragma shader_stage(vertex)
-
-			layout(location = 0) in vec3 in_position;
-			layout(location = 1) in vec4 in_color;
-
-			layout(location = 0) out vec4 out_color;
-
-			void main() {
-				out_color = in_color;
-				gl_Position = vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
-			}
-		";
-
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
@@ -1728,7 +1655,7 @@ pub(super) mod tests {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1807,7 +1734,7 @@ pub(super) mod tests {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::None,false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1888,7 +1815,7 @@ pub(super) mod tests {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1973,7 +1900,7 @@ pub(super) mod tests {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1985,13 +1912,6 @@ pub(super) mod tests {
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let modulo_frame_index = i as u32 % FRAMES_IN_FLIGHT as u32;
-			// renderer.wait(render_finished_synchronizer);
-
-			//let pointer = renderer.get_buffer_pointer(Some(frames[i % FRAMES_IN_FLIGHT]), buffer);
-
-			//unsafe { std::ptr::copy_nonoverlapping(matrix.as_ptr(), pointer as *mut f32, 16); }
-
 			let frame_key = renderer.start_frame(i as u32);
 
 			renderer.start_frame_capture();
@@ -2092,8 +2012,8 @@ pub(super) mod tests {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_template);
 
-		let image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
-		let last_frame_image_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
 
 		let command_buffer = renderer.create_command_buffer(None);
 
@@ -2261,9 +2181,9 @@ pub(super) mod tests {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle,);
 
-		let sampler_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
-		let ubo_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer.into()));
-		let tex_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer.into()));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
 
 		assert!(!renderer.has_errors());
 
@@ -2275,7 +2195,7 @@ pub(super) mod tests {
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -2469,11 +2389,11 @@ void main() {
 
 		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
-		let acceleration_structure_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
-		let render_target_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));
-		let vertex_positions_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()));
-		let vertex_colors_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()));
-		let indices_binding = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()));
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
@@ -2518,7 +2438,7 @@ void main() {
 						index_format: DataTypes::U16,
 						triangle_count: 1,
 					},
-					scratch_buffer: BufferDescriptor { buffer: scratch_buffer.into(), offset: 0, range: 1024 * 512, slot: 0 },
+					scratch_buffer: BufferDescriptor::new(scratch_buffer, 0, 1024 * 512, 0),
 				}]);
 
 				unsafe { command_buffer_recording.consume_resources(&[
@@ -2536,7 +2456,7 @@ void main() {
 						instances_buffer,
 						instance_count: 1,
 					},
-					scratch_buffer: BufferDescriptor { buffer: scratch_buffer.into(), offset: 1024 * 512, range: 1024 * 512, slot: 0 },
+					scratch_buffer: BufferDescriptor::new(scratch_buffer, 1024 * 512, 1024 * 512, 0),
 				});
 			}
 

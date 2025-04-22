@@ -1,7 +1,5 @@
 //! Remote is a state tracking structure to keep track of the state of the communication with a remote.
 
-use std::ops::Shl;
-
 use utils::bit_array::BitArray;
 
 use super::{sequence_greater_than, PacketInfo};

@@ -76,7 +76,6 @@ const MAX_FRAMES_IN_FLIGHT: usize = 3;
 #[derive(Clone)]
 pub(crate) struct Swapchain {
 	surface: vk::SurfaceKHR,
-	surface_present_mode: vk::PresentModeKHR,
 	swapchain: vk::SwapchainKHR,
 	semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
 	extent: vk::Extent2D,
@@ -114,7 +113,6 @@ pub(crate) struct Shader {
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	shaders: Vec<graphics_hardware_interface::ShaderHandle>,
 	resource_access: Vec<((u32, u32), (graphics_hardware_interface::Stages, graphics_hardware_interface::AccessPolicies))>,
 }
 
@@ -127,10 +125,7 @@ pub(super) struct CommandBufferInternal {
 #[derive(Clone)]
 pub(crate) struct Binding {
 	descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle,
-	type_: graphics_hardware_interface::DescriptorType,
 	descriptor_type: vk::DescriptorType,
-	stages: graphics_hardware_interface::Stages,
-	pipeline_stages: vk::PipelineStageFlags2,
 	index: u32,
 	count: u32,
 }
@@ -157,8 +152,6 @@ pub(crate) struct Buffer {
 	device_address: vk::DeviceAddress,
 	pointer: *mut u8,
 	uses: graphics_hardware_interface::Uses,
-	use_cases: Option<graphics_hardware_interface::UseCases>,
-	frame: Option<u8>,
 }
 
 unsafe impl Send for Buffer {}
@@ -176,7 +169,6 @@ pub(crate) struct Image {
 	name: Option<String>,
 	next: Option<ImageHandle>,
 	staging_buffer: Option<BufferHandle>,
-	allocation_handle: graphics_hardware_interface::AllocationHandle,
 	image: vk::Image,
 	image_view: vk::ImageView,
 	image_views: [vk::ImageView; 8],
@@ -184,7 +176,6 @@ pub(crate) struct Image {
 	extent: vk::Extent3D,
 	format: vk::Format,
 	format_: graphics_hardware_interface::Formats,
-	layout: vk::ImageLayout,
 	size: usize,
 	uses: graphics_hardware_interface::Uses,
 	layers: u32,
@@ -211,7 +202,6 @@ struct TransitionState {
 
 struct Mesh {
 	buffer: vk::Buffer,
-	allocation: graphics_hardware_interface::AllocationHandle,
 	vertex_count: u32,
 	index_count: u32,
 	vertex_size: usize,
@@ -220,11 +210,6 @@ struct Mesh {
 struct AccelerationStructure {
 	acceleration_structure: vk::AccelerationStructureKHR,
 	buffer: vk::Buffer,
-	scratch_size: usize,
-}
-
-struct Frame {
-
 }
 
 #[derive(Clone, Copy)]
@@ -234,8 +219,6 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	resource: T,
 	/// The final size of the resource.
 	size: usize,
-	/// The alignment the resources needs when bound to a memory region.
-	alignment: usize,
 	/// The memory flags that need used to create the resource.
 	memory_flags: u32,
 }

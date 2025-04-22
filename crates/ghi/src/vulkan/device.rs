@@ -5,14 +5,13 @@ use utils::hash::{HashSet, HashSetExt};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
 use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Size};
 
-use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_pipeline_stage_flags, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
+use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
 pub struct Device {
 	entry: ash::Entry,
 	instance: ash::Instance,
 
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
-	debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
 	debug_data: Box<DebugCallbackData>,
 
 	physical_device: vk::PhysicalDevice,
@@ -139,7 +138,7 @@ impl Device {
 			error_log_function: settings.debug_log_function.unwrap_or(|message| { println!("{}", message); }),
 		});
 
-		let debug_utils_messenger = if settings.validation {
+		if settings.validation {
 			let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
 
 			let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
@@ -169,7 +168,7 @@ impl Device {
 
 			#[cfg(debug_assertions)]
 			{
-				let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+				let _ = unsafe { instance.get_physical_device_properties(physical_device) };
 			}
 
 			physical_device
@@ -182,7 +181,7 @@ impl Device {
 				};
 
 				unsafe {
-					instance.get_physical_device_tool_properties(*physical_device, &mut tools[0..tool_count])
+					instance.get_physical_device_tool_properties(*physical_device, &mut tools[0..tool_count]).unwrap();
 				};
 
 				let buffer_device_address_capture_replay = tools.iter().take(tool_count as usize).any(|tool| {
@@ -224,7 +223,7 @@ impl Device {
 
 			#[cfg(debug_assertions)]
 			{
-				let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+				let _ = unsafe { instance.get_physical_device_properties(physical_device) };
 			}
 
 			physical_device
@@ -349,7 +348,7 @@ impl Device {
 			.push_next(&mut physical_device_vulkan_11_features)
 			.push_next(&mut physical_device_vulkan_12_features)
 			.push_next(&mut physical_device_vulkan_13_features)
-			// .push_next(&mut shader_atomic_float_features)
+			.push_next(&mut shader_atomic_float_features)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features)
@@ -398,7 +397,6 @@ impl Device {
 			instance,
 
 			debug_utils,
-			debug_utils_messenger,
 			debug_data,
 
 			physical_device,
@@ -657,7 +655,6 @@ impl Device {
 			this.pipelines.push(Pipeline {
 				pipeline,
 				shader_handles: HashMap::new(),
-				shaders: Vec::new(),
 				resource_access,
 			});
 	
@@ -680,7 +677,6 @@ impl Device {
 		MemoryBackedResourceCreationResult {
 			resource: buffer,
 			size: memory_requirements.size as usize,
-			alignment: memory_requirements.alignment as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 		}
 	}
@@ -706,7 +702,7 @@ impl Device {
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
 
-	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, _access_policies: graphics_hardware_interface::AccessPolicies, mip_levels: u32, array_layers: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
+	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, mip_levels: u32, array_layers: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_create_info = vk::ImageCreateInfo::default()
 			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format))
@@ -729,7 +725,6 @@ impl Device {
 		MemoryBackedResourceCreationResult {
 			resource: image.to_owned(),
 			size: memory_requirements.size as usize,
-			alignment: memory_requirements.alignment as usize,
 			memory_flags: memory_requirements.memory_type_bits,
 		}
 	}
@@ -1304,7 +1299,6 @@ impl graphics_hardware_interface::Device for Device {
 
 		self.meshes.push(Mesh {
 			buffer: buffer_creation_result.resource,
-			allocation: allocation_handle,
 			vertex_count,
 			index_count,
 			vertex_size: vertex_layout.size(),
@@ -1361,13 +1355,11 @@ impl graphics_hardware_interface::Device for Device {
 					.stage_flags(binding.stages.into())
 				;
 
-				let x = if let Some(inmutable_samplers) = &binding.immutable_samplers {
+				let _ = if let Some(inmutable_samplers) = &binding.immutable_samplers {
 					inmutable_samplers.iter().map(|sampler| vk::Sampler::from_raw(sampler.0)).collect::<Vec<_>>()
 				} else {
 					Vec::new()
 				};
-
-				b.immutable_samplers(&x);
 
 				map.push((b.descriptor_type, b.descriptor_count));
 
@@ -1415,11 +1407,8 @@ impl graphics_hardware_interface::Device for Device {
 		let created_binding = Binding {
 			descriptor_set_handle: descriptor_set,
 			descriptor_type,
-			type_: binding.descriptor_type,
 			count: binding.descriptor_count,
 			index: binding.binding,
-			stages: binding.stages,
-			pipeline_stages: to_pipeline_stage_flags(binding.stages, None, None),
 		};
 
 		let binding_handle = graphics_hardware_interface::DescriptorSetBindingHandle(self.bindings.len() as u64);
@@ -1452,11 +1441,8 @@ impl graphics_hardware_interface::Device for Device {
 		self.bindings.push(Binding {
 			descriptor_set_handle: descriptor_set,
 			descriptor_type,
-			type_: binding_template.descriptor_type,
 			count: binding_template.descriptor_count,
 			index: binding_template.binding,
-			stages: binding_template.stages,
-			pipeline_stages: to_pipeline_stage_flags(binding_template.stages, None, None),
 		});
 
 		handle
@@ -1621,7 +1607,6 @@ impl graphics_hardware_interface::Device for Device {
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			shader_handles: HashMap::new(),
-			shaders: vec![*shader_parameter.handle],
 			resource_access,
 		});
 
@@ -1717,7 +1702,6 @@ impl graphics_hardware_interface::Device for Device {
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			shader_handles: handles,
-			shaders: shaders.iter().map(|shader| *shader.handle).collect(),
 			resource_access,
 		});
 
@@ -1793,8 +1777,6 @@ impl graphics_hardware_interface::Device for Device {
 					device_address,
 					pointer,
 					uses: resource_uses,
-					use_cases: None,
-					frame: None,
 				}
 			} else {
 				Buffer {
@@ -1805,8 +1787,6 @@ impl graphics_hardware_interface::Device for Device {
 					device_address: 0,
 					pointer: std::ptr::null_mut(),
 					uses: resource_uses,
-					use_cases: None,
-					frame: None,
 				}
 			};
 
@@ -1823,7 +1803,7 @@ impl graphics_hardware_interface::Device for Device {
 
 		let mut previous: Option<BufferHandle> = None;
 
-		for f in 0..buffer_count {
+		for _ in 0..buffer_count {
 			let handle = BufferHandle(self.buffers.len() as u64);
 
 			let buffer = if size != 0 {
@@ -1839,8 +1819,6 @@ impl graphics_hardware_interface::Device for Device {
 					device_address,
 					pointer,
 					uses: resource_uses,
-					use_cases: Some(use_case),
-					frame: Some(f as _),
 				}
 			} else {
 				Buffer {
@@ -1851,8 +1829,6 @@ impl graphics_hardware_interface::Device for Device {
 					device_address: 0,
 					pointer: std::ptr::null_mut(),
 					uses: resource_uses,
-					use_cases: Some(use_case),
-					frame: Some(f as _),
 				}
 			};
 
@@ -1922,7 +1898,7 @@ impl graphics_hardware_interface::Device for Device {
 					device_accesses
 				};
 
-				let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, m_device_accesses, graphics_hardware_interface::AccessPolicies::WRITE, 1, array_layers);
+				let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, 1, array_layers);
 
 				let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, texture_creation_result.memory_flags.into(), m_device_accesses);
 
@@ -1947,8 +1923,6 @@ impl graphics_hardware_interface::Device for Device {
 						device_address: address,
 						pointer,
 						uses: graphics_hardware_interface::Uses::TransferDestination,
-						use_cases: None,
-						frame: None,
 					});
 
 					(Some(staging_buffer_handle), pointer)
@@ -1969,8 +1943,6 @@ impl graphics_hardware_interface::Device for Device {
 						device_address: address,
 						pointer,
 						uses: graphics_hardware_interface::Uses::TransferSource,
-						use_cases: None,
-						frame: None,
 					});
 
 					(Some(staging_buffer_handle), pointer)
@@ -1994,7 +1966,6 @@ impl graphics_hardware_interface::Device for Device {
 					next: None,
 					size: texture_creation_result.size,
 					staging_buffer,
-					allocation_handle,
 					image: texture_creation_result.resource,
 					image_view,
 					image_views,
@@ -2002,7 +1973,6 @@ impl graphics_hardware_interface::Device for Device {
 					extent,
 					format: to_format(format),
 					format_: format,
-					layout: vk::ImageLayout::UNDEFINED,
 					uses: resource_uses,
 					layers: array_layers,
 				});
@@ -2013,7 +1983,6 @@ impl graphics_hardware_interface::Device for Device {
 					next: None,
 					size: 0,
 					staging_buffer: None,
-					allocation_handle: crate::AllocationHandle(!0u64),
 					image: vk::Image::null(),
 					image_view: vk::ImageView::null(),
 					image_views: [vk::ImageView::null(); 8],
@@ -2021,7 +1990,6 @@ impl graphics_hardware_interface::Device for Device {
 					extent,
 					format: to_format(format),
 					format_: format,
-					layout: vk::ImageLayout::UNDEFINED,
 					uses: resource_uses,
 					layers: array_layers,
 				});
@@ -2091,8 +2059,6 @@ impl graphics_hardware_interface::Device for Device {
 			device_address: address,
 			pointer,
 			uses: graphics_hardware_interface::Uses::empty(),
-			use_cases: None,
-			frame: None,
 		});
 
 		buffer_handle
@@ -2118,7 +2084,7 @@ impl graphics_hardware_interface::Device for Device {
 		}
 
 		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
-		let scratch_size = size_info.build_scratch_size as usize;
+		let _ = size_info.build_scratch_size as usize;
 
 		let buffer = self.create_vulkan_buffer(None, acceleration_structure_size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
@@ -2143,7 +2109,6 @@ impl graphics_hardware_interface::Device for Device {
 			self.acceleration_structures.push(AccelerationStructure {
 				acceleration_structure: handle,
 				buffer: buffer.resource,
-				scratch_size,
 			});
 
 			self.set_name(handle, name);
@@ -2200,7 +2165,7 @@ impl graphics_hardware_interface::Device for Device {
 		}
 
 		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
-		let scratch_size = size_info.build_scratch_size as usize;
+		let _ = size_info.build_scratch_size as usize;
 
 		let buffer_descriptor = self.create_vulkan_buffer(None, acceleration_structure_size, vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
 
@@ -2224,7 +2189,6 @@ impl graphics_hardware_interface::Device for Device {
 			self.acceleration_structures.push(AccelerationStructure {
 				acceleration_structure: handle,
 				buffer: buffer_descriptor.resource,
-				scratch_size,
 			});
 		}
 
@@ -2299,7 +2263,7 @@ impl graphics_hardware_interface::Device for Device {
 			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
 
 			#[cfg(debug_assertions)]
-			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1, layers);
+			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
 			#[cfg(not(debug_assertions))]
 			let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1, layers);
 
@@ -2524,7 +2488,6 @@ impl graphics_hardware_interface::Device for Device {
 
 		self.swapchains.push(Swapchain {
 			surface,
-			surface_present_mode: presentation_mode,
 			swapchain,
 			semaphores,
 			extent,
@@ -2585,7 +2548,7 @@ impl graphics_hardware_interface::Device for Device {
 
 		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, timeout, semaphore, vk::Fence::null()) };
 
-		let (index, swapchain_state) = if let Ok((index, is_suboptimal)) = acquisition_result {
+		let (index, _) = if let Ok((index, is_suboptimal)) = acquisition_result {
 			if !is_suboptimal {
 				(index, graphics_hardware_interface::SwapchainStates::Ok)
 			} else {

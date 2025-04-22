@@ -1,6 +1,6 @@
 use utils::bit_array::BitArray;
 
-use super::{sequence_greater_than, PacketInfo};
+use super::PacketInfo;
 
 /// The packet history is the number of (last) packets that we keep track of.
 const PACKET_HISTORY: usize = 1024;

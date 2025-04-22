@@ -1,9 +1,9 @@
 use std::{collections::{hash_map::Entry, HashMap}, ops::Deref};
 use utils::sync::{Mutex , OnceCell, RwLock, Arc};
 
-use crate::{asset::{asset_handler::LoadErrors, get_extension, ResourceId}, resource, Description, Model, ProcessedAsset, ReferenceModel};
+use crate::{asset::ResourceId, resource, Description, Model, ProcessedAsset, ReferenceModel};
 
-use super::{asset_handler::{Asset, AssetHandler}, BEADType, FileStorageBackend, StorageBackend};
+use super::{asset_handler::{Asset, AssetHandler}, FileStorageBackend, StorageBackend};
 
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
@@ -182,7 +182,7 @@ impl AssetManager {
 
         // Asset is not baked, load/bake it.
         let _ = lock.get_or_try_init(|| {
-            let dependencies = asset_loader.requested_assets();
+            let _ = asset_loader.requested_assets();
             let r = asset_loader.load(self, self.resource_storage_backend.as_ref(), self.asset_storage_backend.as_ref(), id).map_err(|r| LoadMessages::FailedToBake { asset: id.to_string(), error: r });
             log::trace!("Baked '{:#?}' asset in {:#?}", id, start_time.elapsed());
             r
@@ -230,14 +230,14 @@ impl AssetManager {
 pub mod tests {
 	use utils::json;
 
-use crate::asset::{self, asset_handler::Asset};
+	use crate::asset::{self, asset_handler::{Asset, LoadErrors}};
 
 	use super::*;
 
 	struct TestAsset {}
 
 	impl Asset for TestAsset {
-		fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> Result<(), String> {
             Ok(())
 		}
 		fn requested_assets(&self) -> Vec<String> {
@@ -262,7 +262,7 @@ use crate::asset::{self, asset_handler::Asset};
             id == "example"
         }
 
-		fn load<'a>(&'a self, _: &'a AssetManager, _ : &'a dyn resource::StorageBackend, _: &'a dyn StorageBackend, id: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
+		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn resource::StorageBackend, _: &'a dyn StorageBackend, id: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
 			let res = if id.get_base().as_ref() == "example" {
 				Ok(Box::new(TestAsset {}) as Box<dyn Asset>)
 			} else {
@@ -308,7 +308,7 @@ use crate::asset::{self, asset_handler::Asset};
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
-		let asset_manager = AssetManager::new("../assets".into(), "../assets".into());
+		let _ = AssetManager::new("../assets".into(), "../assets".into());
 
 		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -318,7 +318,7 @@ use crate::asset::{self, asset_handler::Asset};
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
-		let asset_manager = AssetManager::new("../assets".into(), "../assets".into());
+		let _ = AssetManager::new("../assets".into(), "../assets".into());
 
 		let _: json::Value = json::from_str(r#"{}"#).unwrap();
 

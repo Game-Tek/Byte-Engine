@@ -657,7 +657,7 @@ impl VisibilityWorldRenderDomain {
 			)
 		}).collect();
 
-		let mut ghi = self.ghi.write();
+		let ghi = self.ghi.read();
 
 		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
 
@@ -879,7 +879,7 @@ impl VisibilityWorldRenderDomain {
 						"MaterialEvaluation" => {
 							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, resource, ghi.clone()).unwrap();
 
-							let mut ghi = ghi.write();
+							let ghi = ghi.read();
 
 							let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
@@ -996,7 +996,7 @@ impl VisibilityWorldRenderDomain {
 			let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
 
 			{
-				let mut ghi = ghi.write();
+				let ghi = ghi.read();
 
 				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
@@ -1023,7 +1023,7 @@ impl VisibilityWorldRenderDomain {
 
 	fn get_transform(&self) -> Mat4f { Mat4f::identity() }
 	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
-		let mut ghi = self.ghi.write();
+		let ghi = self.ghi.read();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
@@ -1292,7 +1292,7 @@ impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRe
 
 impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>, light: &point_light::PointLight) -> () {
-		let mut ghi = self.ghi.write();
+		let ghi = self.ghi.read();
 
 		let lighting_data = ghi.get_mut_buffer_slice(self.light_data_buffer);
 
@@ -1368,9 +1368,9 @@ impl VisibilityPass {
 		];
 
 		let attachments = [
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
+			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,),
+			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,),
+			ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32,),
 		];
 
 		let vertex_layout = [

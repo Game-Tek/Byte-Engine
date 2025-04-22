@@ -1196,7 +1196,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 				.image_indices(&image_indices)
 			;
 
-			let is_suboptimal = unsafe { self.ghi.swapchain.queue_present(self.ghi.queue, &present_info).expect("No present") };
+			let _ = unsafe { self.ghi.swapchain.queue_present(self.ghi.queue, &present_info).expect("No present") };
 		}
 	}
 

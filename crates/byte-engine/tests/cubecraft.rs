@@ -4,11 +4,9 @@
 //! It also includes a simple physics engine to handle collisions and movement.
 
 use std::borrow::Borrow;
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use byte_engine::camera;
 use byte_engine::constants::FORWARD;
 use byte_engine::constants::RIGHT;
 use byte_engine::constants::UP;
@@ -22,7 +20,6 @@ use byte_engine::core::Task;
 use byte_engine::gameplay::space::Spawn;
 use byte_engine::rendering::aces_tonemap_render_pass::AcesToneMapPass;
 use byte_engine::rendering::common_shader_generator::CommonShaderGenerator;
-use byte_engine::rendering::mesh::{MeshGenerator, MeshSource, RenderEntity};
 use byte_engine::rendering::render_pass::RenderPass;
 use byte_engine::rendering::render_pass::RenderPassBuilder;
 use byte_engine::rendering::view::View;
@@ -36,7 +33,6 @@ use resource_management::glsl;
 use utils::hash::HashMap;
 use utils::hash::HashMapExt;
 use utils::sync::RwLock;
-use utils::Extent;
 
 #[ignore]
 #[test]
@@ -323,7 +319,7 @@ impl RenderPass for CubeCraftRenderPass {
 		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ), ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ)]).unwrap();
 
 		// TODO: notify user if provided shaders don't consume any bindings in the layout
-		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, false, true), ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0), false, true)]));
+		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),), ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32,)]));
 
 		let camera_data_buffer = ghi.create_buffer(Some("camera"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		let face_data_buffer = ghi.create_buffer(Some("face_data_buffer"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);

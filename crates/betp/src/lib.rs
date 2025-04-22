@@ -43,11 +43,7 @@ mod packet_buffer;
 
 pub mod packets;
 
-use std::{
-    hash::{Hash, Hasher},
-    io::{Read, Write},
-    ops::Sub,
-};
+use std::io::Write;
 
 use self::packets::DataPacket;
 
@@ -104,10 +100,8 @@ fn write_packet<const N: usize>(buffer: &mut [u8], packet_header: DataPacket<N>)
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, Read};
-
     use packets::{Packet, Packets};
-    use tests::packets::{ConnectionStatus, PacketHeader, PacketType};
+    use tests::packets::PacketType;
 
     use super::*;
 

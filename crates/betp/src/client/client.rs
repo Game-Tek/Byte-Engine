@@ -1,9 +1,7 @@
 //! Client module for the Byte-Engine networking library.
 //! The client is the entity that connects to a server and participates in the game.
 
-use std::{hash::{Hash, Hasher}, net::ToSocketAddrs};
-
-use crate::{local::Local, packet_buffer::PacketBuffer, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packet, Packets}, remote::Remote};
+use crate::{local::Local, packet_buffer::PacketBuffer, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets}, remote::Remote};
 
 /// The client is the entity that connects to a server and participates in the game.
 pub struct Client {
@@ -18,7 +16,7 @@ pub struct Client {
 impl Client {
 	/// Creates a client that will connect to the server at the specified address.
 	/// Must call `connect` to establish a connection.
-	pub fn new(address: std::net::SocketAddr) -> Result<Self, ()> {
+	pub fn new(_: std::net::SocketAddr) -> Result<Self, ()> {
 		let _ = machineid_rs::IdBuilder::new(machineid_rs::Encryption::MD5).add_component(machineid_rs::HWIDComponent::MacAddress).build("Byte-Engine").ok().ok_or(())?;
 
 		Ok(Self {
@@ -75,7 +73,7 @@ impl Client {
 
 	/// Updates the client.
 	/// Returns a list of packets to send to the server.
-	pub fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Packets>, ()> {
+	pub fn update(&mut self, _: std::time::Instant) -> Result<Vec<Packets>, ()> {
 		Ok(self.packet_buffer.gather_unsent_packets().into_iter().map(|p| Packets::Data(p)).collect())
 	}
 
@@ -108,6 +106,6 @@ mod tests {
 
 	#[test]
 	fn test_client_connect() {
-		let client = Client::new(std::net::SocketAddr::from_str("127.0.0.1:6669").unwrap()).expect("Failed to connect to server.");
+		let _ = Client::new(std::net::SocketAddr::from_str("127.0.0.1:6669").unwrap()).expect("Failed to connect to server.");
 	}
 }

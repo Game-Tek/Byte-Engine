@@ -17,7 +17,7 @@ pub struct WindowIterator<'a> {
 }
 
 impl X11Window {
-	pub fn try_new(name: &str, extent: Extent, id_name: &str) -> Option<X11Window> {
+	pub fn try_new(name: &str, extent: Extent, _: &str) -> Option<X11Window> {
 		let (connection, screen_index) = xcb::Connection::connect(None).ok()?;
 
 		let setup = connection.get_setup();

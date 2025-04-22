@@ -404,20 +404,6 @@ pub(super) enum Atoms {
 	VariableDeclaration{ name: String, r#type: String, },
 }
 
-#[derive(Clone, Debug)]
-enum BindingTypes {
-	Buffer {
-		name: String,
-		members: Vec<Node>,
-	},
-	Image {
-		format: String,
-	},
-	CombinedImageSampler {
-		format: String,
-	},
-}
-
 #[derive(Debug)]
 pub(super) enum ParsingFailReasons {
 	/// The parser does not handle this type of syntax.

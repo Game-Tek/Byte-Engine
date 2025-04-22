@@ -1,5 +1,3 @@
-use std::hash::{Hash, Hasher};
-
 use crate::{packet_buffer::PacketBuffer, packets::{DataPacket, DisconnectPacket}};
 
 use super::super::{local::Local, packets::ConnectionStatus, remote::Remote, ConnectionStates};
@@ -93,10 +91,6 @@ impl Client {
 }
 #[cfg(test)]
 mod tests {
-	use std::io::{BufRead, Read};
-
-	use crate::packets::Packet;
-
 	use super::*;
 
 	#[test]

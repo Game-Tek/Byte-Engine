@@ -30,6 +30,8 @@ pub mod ui;
 #[cfg(not(feature = "headless"))]
 pub mod window_system;
 
+pub mod constants;
+
 pub mod gameplay;
 pub mod math;
 pub mod physics;

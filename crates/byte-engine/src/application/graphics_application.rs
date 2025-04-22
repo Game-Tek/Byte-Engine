@@ -1,4 +1,4 @@
-use crate::{core::{property::Property, spawn, spawn_as_child, EntityHandle}, gameplay::space::Spawn, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{property::Property, spawn, spawn_as_child, task, EntityHandle}, gameplay::space::Spawn, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -30,6 +30,7 @@ pub struct GraphicsApplication {
 	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
 	anchor_system_handle: EntityHandle<AnchorSystem>,
 	tick_handle: EntityHandle<Property<Time>>,
+	task_executor_handle: EntityHandle<task::TaskExecutor>,
 	root_space_handle: EntityHandle<Space>,
 
 	#[cfg(debug_assertions)]
@@ -60,6 +61,7 @@ impl Application for GraphicsApplication {
 		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
 		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
 		let physics_system_handle = root_space_handle.spawn(physics::PhysicsWorld::new_as_system());
+		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
 
 		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new());
 
@@ -79,6 +81,7 @@ impl Application for GraphicsApplication {
 			audio_system_handle,
 			physics_system_handle,
 			anchor_system_handle,
+			task_executor_handle,
 			root_space_handle,
 
 			tick_handle,
@@ -188,6 +191,11 @@ impl Application for GraphicsApplication {
 			tick.set(|_| time);
 		});
 
+		self.task_executor_handle.map(|handle| {
+			let mut e = handle.write();
+			e.execute(self.start_time.elapsed(), dt, self.tick_count);
+		});
+
 		self.input_system_handle.map(|handle| {
 			let mut e = handle.write();
 			e.update();
@@ -244,7 +252,7 @@ impl GraphicsApplication {
 		self.close = true;
 
 		#[cfg(debug_assertions)]
-		log::debug!("Run stats:\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);
+		log::debug!("Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed(), self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);
 	}
 
 	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<input::InputManager> {

@@ -9,12 +9,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byte_engine::camera;
+use byte_engine::constants::FORWARD;
+use byte_engine::constants::RIGHT;
+use byte_engine::constants::UP;
 use byte_engine::core::entity::EntityBuilder;
 use byte_engine::core::listener::EntitySubscriber;
 use byte_engine::core::listener::Listener;
 use byte_engine::core::Entity;
 use byte_engine::core::EntityHandle;
 
+use byte_engine::core::Task;
 use byte_engine::gameplay::space::Spawn;
 use byte_engine::rendering::aces_tonemap_render_pass::AcesToneMapPass;
 use byte_engine::rendering::common_shader_generator::CommonShaderGenerator;
@@ -28,13 +32,11 @@ use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
 use ghi::Device;
 use ghi::RasterizationRenderPassMode;
-use maths_rs::mat::MatTranslate;
 use resource_management::glsl;
 use utils::hash::HashMap;
 use utils::hash::HashMapExt;
-use utils::hash::HashSet;
-use utils::hash::HashSetExt;
 use utils::sync::RwLock;
+use utils::Extent;
 
 #[ignore]
 #[test]
@@ -61,7 +63,7 @@ fn cubecraft() {
 	byte_engine::application::graphics_application::setup_default_window(&mut app);
 
 	// Get the root space handle
-	let space_handle = app.get_root_space_handle();
+	let space_handle = app.get_root_space_handle().clone();
 
 	// Create the lookaround action handle
 	let lookaround_action_handle = space_handle.spawn(Action::<Vector3>::new("Lookaround", &[
@@ -71,12 +73,10 @@ fn cubecraft() {
 
 	// Create the move action
 	let move_action_handle = space_handle.spawn(Action::<Vector3>::new("Move", &[
-		ActionBindingDescription::new("Keyboard.W").mapped(Vector3::new(0f32, 0f32, 1f32).into(), Function::Linear),
-		ActionBindingDescription::new("Keyboard.S").mapped(Vector3::new(0f32, 0f32, -1f32).into(), Function::Linear),
-		ActionBindingDescription::new("Keyboard.A").mapped(Vector3::new(-1f32, 0f32, 0f32).into(), Function::Linear),
-		ActionBindingDescription::new("Keyboard.D").mapped(Vector3::new(1f32, 0f32, 0f32).into(), Function::Linear),
-
-		ActionBindingDescription::new("Gamepad.LeftStick").mapped(Vector3::new(1f32, 0f32, 1f32).into(), Function::Linear),
+		ActionBindingDescription::new("Keyboard.W").mapped(FORWARD.into(), Function::Linear),
+		ActionBindingDescription::new("Keyboard.S").mapped((-FORWARD).into(), Function::Linear),
+		ActionBindingDescription::new("Keyboard.A").mapped((-RIGHT).into(), Function::Linear),
+		ActionBindingDescription::new("Keyboard.D").mapped(RIGHT.into(), Function::Linear),
 	],));
 
 	// Create the jump action
@@ -101,7 +101,7 @@ fn cubecraft() {
 	let camera = space_handle.spawn(Camera::new(Vector3::new(0.0, 1.8, 0.0),));
 
 	// Create the directional light
-	let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(Vector3::new(0.0, -1.0, 0.0)), 4000f32));
+	let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(-UP), 4000f32));
 
 	{
 		let camera = camera.clone();
@@ -113,37 +113,45 @@ fn cubecraft() {
 		});
 	}
 
-	{
-		let camera = camera.clone();
-
-		move_action_handle.write().value().add(move |value: &Vector3| {
-			let mut camera = camera.write();
-	
-			let position = camera.get_position();
-
-			camera.set_position(position + *value);
-		});
-	}
-
 	const CHUNK_SIZE: i32 = 16;
 	const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
 
-	let blocks = (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |x| {
-		(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |z| {
-			(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
-				let position = (x, y, z);
-				let block = make_block(position);
+	{
+		let camera = camera.clone();
+		let move_action_handle = move_action_handle.clone();
 
-				if block != AIR_BLOCK {
-					Some(Block::create(position, block))
-				} else {
-					None
-				}
-			})
-		}).flatten()
-	}).flatten().collect::<Vec<_>>();
+		space_handle.spawn(Task::tick(move || {
+			let value = move_action_handle.read().value().get();
 
-	space_handle.spawn(blocks);
+			let mut camera = camera.write();
+	
+			let position = camera.get_position();
+			camera.set_position(position + value);
+		}));
+	}
+
+	{
+		let a = space_handle.clone();
+
+		space_handle.spawn(Task::once(move || {
+			let blocks = (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |x| {
+				(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).map(move |z| {
+					(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
+						let position = (x, y, z);
+						let block = make_block(position);
+		
+						if block != AIR_BLOCK {
+							Some(Block::create(position, block))
+						} else {
+							None
+						}
+					})
+				}).flatten()
+			}).flatten().collect::<Vec<_>>();
+		
+			a.spawn(blocks);
+		}));
+	}
 
 	app.do_loop()
 }
@@ -258,6 +266,7 @@ impl RenderPass for CubeCraftRenderPass {
 		let descriptor_set_template = ghi.create_descriptor_set_template(Some("template"), &[
 			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX),
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::FRAGMENT),
+			ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::FRAGMENT),
 		]);
 		let layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
 
@@ -288,6 +297,8 @@ impl RenderPass for CubeCraftRenderPass {
 			uint16_t block[];
 		} faces;
 
+		layout(set = 0, binding = 2) readonly uniform sampler2D[] textures;
+
 		void main() {
 			uint in_block = uint(faces.block[gl_PrimitiveID / 2]);
 
@@ -309,7 +320,7 @@ impl RenderPass for CubeCraftRenderPass {
 		let f_shader_artifact = glsl::compile(f_shader_source, "Cube Fragment Shader").unwrap();
 
 		let v_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(v_shader_artifact.borrow().into()), ghi::ShaderTypes::Vertex, &[ghi::ShaderBindingDescriptor::new(0, 0, ghi::AccessPolicies::READ),]).unwrap();
-		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ)]).unwrap();
+		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ), ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ)]).unwrap();
 
 		// TODO: notify user if provided shaders don't consume any bindings in the layout
 		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget, ghi::ClearValue::None, false, true), ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32, ghi::Layouts::RenderTarget, ghi::ClearValue::Depth(0.0), false, true)]));
@@ -319,8 +330,11 @@ impl RenderPass for CubeCraftRenderPass {
 
 		let set = ghi.create_descriptor_set(None, &descriptor_set_template);
 
+		// let grass_texture = ghi.create_image(None, Extent::square(16), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC, 0);
+
 		let camera_data_buffer_binding = ghi.create_descriptor_binding(set, ghi::BindingConstructor::buffer(&ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX), camera_data_buffer.into()));
 		let face_data_buffer_binding = ghi.create_descriptor_binding(set, ghi::BindingConstructor::buffer(&ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX), face_data_buffer.into()));
+		// let texture_binding = ghi.create_descriptor_binding(set, ghi::BindingConstructor::combined_image_sampler(&ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::FRAGMENT), grass_texture, sampler, ghi::Layouts::Read));
 
 		drop(ghi);
 

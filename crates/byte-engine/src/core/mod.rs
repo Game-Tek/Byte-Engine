@@ -6,10 +6,9 @@ pub mod property;
 pub mod event;
 pub mod listener;
 
-use std::ops::Deref;
+pub mod task;
 
-pub use entity::Entity;
-pub use entity::EntityHandle;
+use std::ops::Deref;
 
 pub use orchestrator::Orchestrator;
 use listener::EntitySubscriber;
@@ -17,6 +16,11 @@ use listener::Listener;
 
 use entity::DomainType;
 use entity::EntityBuilder;
+
+pub use entity::Entity;
+pub use entity::EntityHandle;
+
+pub use task::Task;
 
 use utils::sync::{Arc, RwLock};
 

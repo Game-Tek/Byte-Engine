@@ -1,12 +1,14 @@
 //! The Redb storage backend provides a way to store and retrieve assets and resources using a Redb database.
+//! This backend stores the resource's metadata/definition in a Redb database and the resource's binary data in a file.
+//! Resource urls are hashed into `ResourceId`s which are the primary key of the database.
+//! Resource metadata is stored in the database by serializing the `SerializableResource` struct into a byte array. The serialization is done using the `pot` crate.
 
 use std::hash::Hasher;
 
-use base64::Engine;
 use redb::ReadableTable;
 use utils::sync::{remove_file, File, Write};
 
-use crate::{asset::ResourceId, resource::resource_handler::{FileResourceReader, MultiResourceReader, ResourceReader}, ProcessedAsset, SerializableResource};
+use crate::{asset, resource::{resource_handler::{FileResourceReader, MultiResourceReader}, ResourceId}, ProcessedAsset, SerializableResource};
 
 use super::{Query, ReadStorageBackend, StorageBackend, WriteStorageBackend};
 
@@ -15,7 +17,7 @@ pub struct RedbStorageBackend {
     base_path: std::path::PathBuf,
 }
 
-const TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("resources");
+const RESOURCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resources");
 
 impl RedbStorageBackend {
     pub fn new(base_path: std::path::PathBuf) -> Self {
@@ -42,7 +44,7 @@ impl RedbStorageBackend {
 
 		{
 			let write = db.begin_write().unwrap();
-			let _ = write.open_table(TABLE); // Create table if it doesn't exist
+			let _ = write.open_table(RESOURCES_TABLE); // Create table if it doesn't exist
 			write.commit();
 		}
 
@@ -58,29 +60,31 @@ impl ReadStorageBackend for RedbStorageBackend {
 		let mut resources = Vec::new();
 
 		let read = self.db.begin_read().unwrap();
-		let table = read.open_table(TABLE).unwrap();
+		let table = read.open_table(RESOURCES_TABLE).unwrap();
 
 		for doc in table.iter().unwrap() {
 			let doc = doc.unwrap();
-			resources.push(doc.0.value().to_string());
+			let resource: SerializableResource = pot::from_slice(doc.1.value()).unwrap();
+			resources.push(resource.id);
 		}
 
 		Ok(resources)
     }
 
-    fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, MultiResourceReader)> {
+    fn read<'s, 'a, 'b>(&'s self, id: asset::ResourceId<'b>,) -> Option<(SerializableResource, MultiResourceReader)> {
 		let read = self.db.begin_read().unwrap();
-		let table = read.open_table(TABLE).unwrap();
+		let table = read.open_table(RESOURCES_TABLE).unwrap();
 		
-        if let Some(d) = table.get(id.get_base().as_ref()).unwrap() {
+		let id = ResourceId::from(id.as_ref());
+
+        if let Some(d) = table.get(&id).unwrap() {
 			let resource: SerializableResource = pot::from_slice(d.value()).unwrap();
 			let base_path = self.base_path.clone();
-			let uid = {
-				base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.get_base().as_ref().as_bytes())
-			};
+
+			let uid: &str = id.as_ref();
 
 			let resource_reader = Box::new(FileResourceReader::new(
-				File::open(base_path.join(&uid)).ok()?,
+				File::open(base_path.join(uid)).ok()?,
 			));
 
 			Some((resource, resource_reader))
@@ -93,7 +97,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 		let base_path = self.base_path.clone();
 
 		let read = self.db.begin_read().unwrap();
-		let table = read.open_table(TABLE).unwrap();
+		let table = read.open_table(RESOURCES_TABLE).unwrap();
 
 		let resources = table.iter().unwrap().filter_map(|d| {
 			let d = d.unwrap();
@@ -102,9 +106,9 @@ impl ReadStorageBackend for RedbStorageBackend {
 			let class = query.class.map_or(false, |c| c.contains(&resource.class.as_str()));
 
 			if class {
-				let uid = {
-					base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(d.0.value().as_bytes())
-				};
+				let hash = ResourceId(d.0.value());
+
+				let uid: &str = hash.as_ref();
 
 				let resource_reader = Box::new(FileResourceReader::new(
 					File::open(base_path.join(&uid)).unwrap(),
@@ -121,16 +125,19 @@ impl ReadStorageBackend for RedbStorageBackend {
 }
 
 impl WriteStorageBackend for RedbStorageBackend {
-    fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
+    fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+		let id = ResourceId::from(id.as_ref());
+
 		let write = self.db.begin_write().unwrap();
 		{
-			let mut table = write.open_table(TABLE).unwrap();
-			let _ = table.remove(id.as_ref());
+			let mut table = write.open_table(RESOURCES_TABLE).unwrap();
+			let _ = table.remove(&id);
 		}
 
 		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
 
-		let uid = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.get_base().as_ref().as_bytes());
+		let uid: &str = id.as_ref();
+
 		let resource_path = self.base_path.join(std::path::Path::new(&uid));
 
 		let _ = remove_file(&resource_path);
@@ -152,14 +159,16 @@ impl WriteStorageBackend for RedbStorageBackend {
 			hasher.finish()
 		};
 
+		let rid = ResourceId::from(resource.id.as_ref());
+
 		let resource = {
 			let resource = SerializableResource { id, hash, class, size, streams, resource: resource.resource.clone() };
 
 			let write = self.db.begin_write().unwrap();
 
 			{
-				let mut table = write.open_table(TABLE).unwrap();
-				table.insert(resource.id.as_str(), pot::to_vec(&resource).unwrap().as_slice()).unwrap();
+				let mut table = write.open_table(RESOURCES_TABLE).unwrap();
+				table.insert(&rid, pot::to_vec(&resource).unwrap().as_slice()).unwrap();
 			}
 
 			write.commit().map_err(|_| ())?;
@@ -167,9 +176,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 			resource
 		};
 
-		let uid = {
-			base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&resource.id)
-		};
+		let uid: &str = rid.as_ref();
 
 		let resource_path = self.base_path.join(std::path::Path::new(&uid));
 
@@ -185,18 +192,18 @@ impl WriteStorageBackend for RedbStorageBackend {
         if let Some(other) = other.downcast_ref::<RedbStorageBackend>() {
 			{
 				let write = self.db.begin_write().unwrap();
-				write.delete_table(TABLE).expect("Failed to delete table");
-				write.open_table(TABLE).expect("Failed to open table");
+				write.delete_table(RESOURCES_TABLE).expect("Failed to delete table");
+				write.open_table(RESOURCES_TABLE).expect("Failed to open table");
 			}
 
             {
 				let read = other.db.begin_read().unwrap();
-				let source_table = read.open_table(TABLE).unwrap();
+				let source_table = read.open_table(RESOURCES_TABLE).unwrap();
 
 				let write = self.db.begin_write().unwrap();
 
 				{
-					let mut dest_table = write.open_table(TABLE).unwrap();
+					let mut dest_table = write.open_table(RESOURCES_TABLE).unwrap();
 
 					for doc in source_table.iter().unwrap() {
 						let doc = doc.unwrap();

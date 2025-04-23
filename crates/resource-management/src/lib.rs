@@ -8,6 +8,7 @@
 #![feature(map_try_insert)]
 #![feature(future_join)]
 #![feature(once_cell_try)]
+#![feature(ascii_char)]
 
 use std::{any::Any, hash::Hasher};
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
@@ -389,8 +390,10 @@ pub enum SolveErrors {
     StorageError,
 }
 
-/// The solver trait provides methods to solve a resource.
-/// This is used to load resources from the storage backend.
+/// The solver trait provides methods to resolve a resource.
+/// This is used to load resources from the storage backend into typed resources.
+/// `solve` will be called by nested resources to resolve their entire "tree" of dependencies.
+/// The initial call to `solve` will be done by the resource manager to resolve the resource which was requested by the client.
 pub trait Solver<'de, T>
 where
     Self: serde::Deserialize<'de>,
@@ -407,6 +410,11 @@ pub trait Description: Any + Send + Sync {
 
 #[cfg(test)]
 mod tests {
+	/// Path to the assets folder for the tests.
 	pub const ASSETS_PATH: &str = "../../assets";
+
+	/// Path to the resources folder for the tests.
+	/// This is rarely used, but is here for completeness.
+	/// Most of the time the resources are written to memory backed storage or to a /tmp folder.
 	pub const RESOURCES_PATH: &str = "../../resources";
 }

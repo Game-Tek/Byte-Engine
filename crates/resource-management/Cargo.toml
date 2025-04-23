@@ -13,7 +13,7 @@ shaderc = "0.9.1"
 png = "0.17.16"
 pot = { version = "3.0.1" }
 serde_json = { version = "1.0.140" }
-base64 = { version = "0.22.1" }
+md5 = { version = "0.7.0" }
 redb = { version = "2.4.0" }
 notify-debouncer-full = { version = "0.5.0", default-features = false }
 intel_tex_2 = "0.4.0"

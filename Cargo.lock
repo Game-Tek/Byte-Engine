@@ -1057,6 +1057,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "md5"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
+
+[[package]]
 name = "memchr"
 version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1412,7 +1418,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "resource-management"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "besl",
  "colored 3.0.0",
  "downcast-rs 2.0.1",
@@ -1424,6 +1429,7 @@ dependencies = [
  "libdeflater",
  "log",
  "maths-rs",
+ "md5",
  "meshopt",
  "notify-debouncer-full",
  "png",

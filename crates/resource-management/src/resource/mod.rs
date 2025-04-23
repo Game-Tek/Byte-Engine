@@ -6,10 +6,14 @@ pub mod resource_handler;
 
 pub mod storage_backend;
 
+pub mod resource_id;
+
 pub use storage_backend::redb_storage_backend::RedbStorageBackend;
 pub use storage_backend::ReadStorageBackend;
 pub use storage_backend::WriteStorageBackend;
 pub use storage_backend::StorageBackend;
+
+pub use resource_id::ResourceId;
 
 #[cfg(test)]
 pub mod tests {

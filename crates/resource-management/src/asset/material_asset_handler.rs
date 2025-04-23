@@ -3,7 +3,7 @@ use std::sync::Arc;
 use log::debug;
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{asset, material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generator::{ShaderGenerationSettings}, spirv_shader_generator::SPIRVShaderGenerator, types::{AlphaMode, ShaderTypes}, Data, ProcessedAsset, ReferenceModel};
+use crate::{asset, material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator, types::{AlphaMode, ShaderTypes}, ProcessedAsset, ReferenceModel};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -71,7 +71,7 @@ impl Asset for MaterialAsset {
 			}
 		};
 
-		let resource = if is_material {
+		if is_material {
 			let material_domain = asset["domain"].as_str().ok_or("Domain not found".to_string()).or_else(|e| { debug!("{}", e); Err("Domain not found".to_string()) })?;
 
 			let generator = self.generator.as_ref();
@@ -121,12 +121,9 @@ impl Asset for MaterialAsset {
 				parameters,
 			};
 
-			let bytes = pot::to_vec(&resource).unwrap();
-			let reconstructed: MaterialModel = pot::from_slice(&bytes).unwrap();
-
 			let resource = ProcessedAsset::new(url, resource);
 
-			storage_backend.store(&resource, &[]);
+			storage_backend.store(&resource, &[]).or_else(|_| { Err("Failed to store resource".to_string()) })?;
 
 			resource
 		} else {
@@ -314,7 +311,7 @@ pub mod tests {
 	use utils::json;
 
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, glsl_shader_generator::GLSLShaderGenerator, material::VariantModel, resource, shader_generator::ShaderGenerationSettings, ReferenceModel};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend}, glsl_shader_generator::GLSLShaderGenerator, material::VariantModel, resource::storage_backend::tests::TestStorageBackend, shader_generator::ShaderGenerationSettings, ReferenceModel};
 
 	pub struct RootTestShaderGenerator {
 
@@ -400,7 +397,7 @@ pub mod tests {
 
 	#[test]
 	fn load_material() {
-		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
 			"domain": "World",
@@ -426,7 +423,7 @@ pub mod tests {
 
 		asset_storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let resource_storage_backend = TestStorageBackend::new();
 
 		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend.clone(), resource_storage_backend.clone());
 		let mut asset_handler = MaterialAssetHandler::new();
@@ -462,7 +459,7 @@ pub mod tests {
 
 	#[test]
 	fn load_variant() {
-		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
 			"domain": "World",
@@ -500,7 +497,7 @@ pub mod tests {
 
 		asset_storage_backend.add_file("variant.bema", variant_json.as_bytes());
 
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let resource_storage_backend = TestStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 		let mut asset_handler = MaterialAssetHandler::new();

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use utils::sync::Arc;
-use resource_management::{asset::{asset_manager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, resource::{ReadStorageBackend, WriteStorageBackend}};
+use resource_management::{asset::{asset_manager::{self, AssetManager}, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend}};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -70,7 +70,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::List {} => {
-			let storage_backend = resource_management::resource::DbStorageBackend::new(destination_path.into());
+			let storage_backend = RedbStorageBackend::new(destination_path.into());
 
 			match storage_backend.list() {
 				Ok(resources) => {
@@ -91,7 +91,7 @@ fn main() -> Result<(), i32> {
 			}
 		}
 		Commands::Bake { ids, sync } => {
-			let mut asset_manager = asset_manager::AssetManager::new(source_path.into(), destination_path.into());
+			let mut asset_manager = AssetManager::new(source_path.into(), destination_path.into());
 
 			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
 			asset_manager.add_asset_handler(audio_asset_handler::AudioAssetHandler::new());
@@ -145,7 +145,7 @@ fn main() -> Result<(), i32> {
 			Ok(())
 		}
 		Commands::Delete { ids } => {
-			let storage_backend = resource_management::resource::DbStorageBackend::new(destination_path.into());
+			let storage_backend = RedbStorageBackend::new(destination_path.into());
 
 			let mut ok = true;
 

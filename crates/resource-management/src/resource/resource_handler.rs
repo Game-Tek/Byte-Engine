@@ -103,29 +103,17 @@ pub trait ResourceReader: Send + Sync + Debug {
 
 #[derive(Debug)]
 pub struct FileResourceReader {
-	#[cfg(not(test))]
 	file: File,
-	#[cfg(test)]
-	data: Box<[u8]>,
 }
 
 impl FileResourceReader {
-	#[cfg(not(test))]
 	pub fn new(file: File) -> Self {
 		Self {
 			file,
 		}
 	}
-
-	#[cfg(test)]
-	pub fn new(data: Box<[u8]>) -> Self {
-		Self {
-			data,
-		}
-	}
 }
 
-#[cfg(not(test))]
 impl ResourceReader for FileResourceReader {
 	fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
 		match read_target {
@@ -163,33 +151,52 @@ impl ResourceReader for FileResourceReader {
 }
 
 #[cfg(test)]
-impl ResourceReader for FileResourceReader {
-	fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
-		match read_target {
-			ReadTargets::Buffer(buffer) => {
-				buffer.copy_from_slice(&self.data[..buffer.len()]);
-				Ok(LoadTargets::Buffer(buffer))
+pub mod tests {
+    use crate::{Stream, StreamDescription};
+
+    use super::{LoadTargets, ReadTargets, ResourceReader};
+
+	#[derive(Debug)]
+	pub struct MemoryResourceReader {
+		data: Box<[u8]>,
+	}
+
+	impl MemoryResourceReader {
+		pub fn new(data: Box<[u8]>) -> Self {
+			Self {
+				data,
 			}
-			ReadTargets::Box(mut buffer) => {
-				buffer.copy_from_slice(&self.data[..buffer.len()]);
-				Ok(LoadTargets::Box(buffer))
-			}
-			ReadTargets::Streams(mut streams) => {
-				if let Some(stream_descriptions) = stream_descriptions{
-					for sd in stream_descriptions {
-						let offset = sd.offset;
-						if let Some(s) = streams.iter_mut().find(|s| s.name == sd.name) {
-							s.buffer.copy_from_slice(&self.data[offset..][..s.buffer.len()]);
+		}
+	}
+
+	impl ResourceReader for MemoryResourceReader {
+		fn read_into<'b, 'c: 'b, 'a: 'b>(self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
+			match read_target {
+				ReadTargets::Buffer(buffer) => {
+					buffer.copy_from_slice(&self.data[..buffer.len()]);
+					Ok(LoadTargets::Buffer(buffer))
+				}
+				ReadTargets::Box(mut buffer) => {
+					buffer.copy_from_slice(&self.data[..buffer.len()]);
+					Ok(LoadTargets::Box(buffer))
+				}
+				ReadTargets::Streams(mut streams) => {
+					if let Some(stream_descriptions) = stream_descriptions{
+						for sd in stream_descriptions {
+							let offset = sd.offset;
+							if let Some(s) = streams.iter_mut().find(|s| s.name == sd.name) {
+								s.buffer.copy_from_slice(&self.data[offset..][..s.buffer.len()]);
+							}
 						}
+						Ok(LoadTargets::Streams(streams.into_iter().map(|stream| {
+							Stream {
+								name: stream.name,
+								buffer: stream.buffer,
+							}
+						}).collect()))
+					} else {
+						Err(())
 					}
-					Ok(LoadTargets::Streams(streams.into_iter().map(|stream| {
-						Stream {
-							name: stream.name,
-							buffer: stream.buffer,
-						}
-					}).collect()))
-				} else {
-					Err(())
 				}
 			}
 		}

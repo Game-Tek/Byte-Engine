@@ -1,11 +1,10 @@
-
 use std::any::Any;
 
 use utils::Extent;
 
 use crate::{image::Image, resource, asset, types::{Formats, Gamma}, Description, ProcessedAsset};
 
-use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId, ResourceIdBase};
+use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, resource_id::ResourceIdBase, ResourceId};
 
 pub struct ImageAsset {
     id: String,
@@ -18,7 +17,7 @@ pub struct ImageAsset {
 impl Asset for ImageAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
 		let semantic = guess_semantic_from_name(url.get_base());
 
 		let format = self.format;
@@ -36,7 +35,7 @@ impl Asset for ImageAsset {
 
 		let resource_document = ProcessedAsset::new(url, image);
 
-		storage_backend.store(&resource_document, &data);
+		storage_backend.store(&resource_document, &data).map_err(|_| format!("Failed to store resource"))?;
 
 		Ok(())
     }
@@ -350,16 +349,16 @@ impl Description for ImageDescription {
 #[cfg(test)]
 mod tests {
 	use super::ImageAssetHandler;
-	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, resource};
+	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, resource::storage_backend::tests::TestStorageBackend, tests::ASSETS_PATH};
 
 	#[test]
 	fn load_image() {
 		let asset_handler = ImageAssetHandler::new();
 
-		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
+		let resource_storage_backend = TestStorageBackend::new();
 		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
-		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
+		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 

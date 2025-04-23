@@ -17,7 +17,6 @@ use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::{glsl, Reference};
-use resource_management::resource::{image_resource_handler, mesh_resource_handler};
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::image::Image as ResourceImage;

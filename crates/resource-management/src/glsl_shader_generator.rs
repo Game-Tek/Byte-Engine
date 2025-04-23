@@ -339,7 +339,11 @@ impl GLSLShaderGenerator {
 				if !self.minified { string.push('\n'); }
 			}
 			besl::Nodes::PushConstant { members } => {
-				string.push_str("layout(push_constant) uniform PushConstant {");
+				if self.minified {
+					string.push_str("layout(push_constant)uniform PushConstant{");
+				} else {
+					string.push_str("layout(push_constant) uniform PushConstant {");
+				}
 
 				if !self.minified { string.push('\n'); }
 
@@ -349,7 +353,11 @@ impl GLSLShaderGenerator {
 					if self.minified { string.push(';') } else { string.push_str(";\n"); }
 				}
 
-				string.push_str("} push_constant;");
+				if self.minified {
+					string.push_str("}push_constant;");
+				} else {
+					string.push_str("} push_constant;");
+				}
 
 				if !self.minified { string.push('\n'); }
 			}
@@ -614,7 +622,7 @@ mod tests {
 
 		// We have to split the assertions because the order of the bindings is not guaranteed.
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
-		assert_string_contains!(shader, "layout(set=0,binding=1) writeonly uniform image2D image;");
+		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
 		assert_string_contains!(shader, "layout(set=1,binding=0) uniform sampler2D texture;");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
 
@@ -624,7 +632,7 @@ mod tests {
 
 	#[test]
 	fn test_specializtions() {
-		let main = shader_generator::tests::bindings();
+		let main = shader_generator::tests::specializations();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
@@ -633,7 +641,7 @@ mod tests {
 
 	#[test]
 	fn fragment_shader() {
-		let main = shader_generator::tests::bindings();
+		let main = shader_generator::tests::fragment_shader();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::fragment(), &main).expect("Failed to generate shader");
 
@@ -646,7 +654,7 @@ mod tests {
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "void used_by_used() {\n}\nvoid used() {\n\tused_by_used();\n}\nvoid main() {\n\tused();\n}\n");
+		assert_string_contains!(shader, "void used_by_used(){}void used(){used_by_used();}void main(){used();}");
 	}
 
 	#[test]
@@ -655,7 +663,7 @@ mod tests {
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "struct Vertex {\n\tvec3 position;\n\tvec3 normal;\n};\nVertex use_vertex() {\n}\nvoid main() {\n\tuse_vertex();\n}\n");
+		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};Vertex use_vertex(){}void main(){use_vertex();}");
 	}
 
 	#[test]
@@ -664,7 +672,7 @@ mod tests {
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "layout(push_constant) uniform PushConstant {\n\tuint32_t material_id;\n} push_constant;\nvoid main() {\n\tpush_constant;\n}\n");
+		assert_string_contains!(shader, "layout(push_constant)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}");
 	}
 
 	#[test]

@@ -9,14 +9,11 @@
 #![feature(future_join)]
 #![feature(once_cell_try)]
 
-use std::{any::Any, collections::{HashMap}, hash::Hasher, sync::{Arc, Mutex}};
-use base64::Engine;
-use redb::ReadableTable;
+use std::{any::Any, hash::Hasher};
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
 use resource::{resource_handler::{FileResourceReader, LoadTargets, ReadTargets, ResourceReader}, storage_backend::ReadStorageBackend};
-use asset::{get_base, read_asset_from_source, BEADType, ResourceId};
-use utils::{json, sync::File};
+use asset::ResourceId;
 
 pub mod asset;
 pub mod resource;
@@ -40,7 +37,6 @@ pub mod glsl;
 pub use resource::resource_manager::ResourceManager;
 pub use asset::asset_handler::AssetHandler;
 
-pub(crate) type Data = pot::Value<'static>;
 pub(crate) type DataStorage = Vec<u8>;
 pub(crate) use pot::from_slice;
 
@@ -524,96 +520,6 @@ pub trait Description: Any + Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use futures::future::try_join_all;
-    use serde::Deserialize;
-
-    use crate::{ProcessedAsset, Model, Reference,ReferenceModel, Resource, SolveErrors, Solver,};
-
-    // #[test]
-    // fn solve_resources() {
-    // 	#[derive(serde::Serialize)]
-    // 	struct Base<'a> {
-    // 		items: Vec<Reference<'a, Item>>,
-    // 	}
-
-    // 	#[derive(serde::Deserialize)]
-    // 	struct BaseModel {
-    // 		items: Vec<ReferenceModel<Item>>,
-    // 	}
-
-    // 	#[derive(serde::Serialize, serde::Deserialize)]
-    // 	struct Item {
-    // 		property: String,
-    // 	}
-
-    // 	#[derive(serde::Serialize,)]
-    // 	struct Variant<'a> {
-    // 		parent: Reference<'a, Base<'a>>
-    // 	}
-
-    // 	#[derive(serde::Deserialize)]
-    // 	struct VariantModel {
-    // 		parent: ReferenceModel<BaseModel>
-    // 	}
-
-    // 	impl <'a> Resource for Base<'a> {
-    // 		fn get_class(&self) -> &'static str { "Base" }
-
-    // 		type Model = BaseModel;
-    // 	}
-
-    // 	impl Model for BaseModel {
-    // 		fn get_class() -> &'static str { "Base" }
-    // 	}
-
-    // 	impl Resource for Item {
-    // 		fn get_class(&self) -> &'static str { "Item" }
-
-    // 		type Model = Item;
-    // 	}
-
-    // 	impl Model for Item {
-    // 		fn get_class() -> &'static str { "Item" }
-    // 	}
-
-    // 	impl <'a> Resource for Variant<'a> {
-    // 		fn get_class(&self) -> &'static str { "Variant" }
-
-    // 		type Model = VariantModel;
-    // 	}
-
-    // 	impl Model for VariantModel {
-    // 		fn get_class() -> &'static str { "Variant" }
-    // 	}
-
-    // 	let storage_backend = TestStorageBackend::new();
-
-    // 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("item", Item{ property: "hello".to_string() }), &[])).unwrap();
-    // 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("base", Base{ items: vec![Reference::new("item", 0, 0, Item{ property: "hello".to_string() })] }), &[])).unwrap();
-    // 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("variant", Variant{ parent: Reference::new("base", 0, 0, Base{ items: vec![Reference::new("item", 0, 0, Item{ property: "hello".to_string() })] }) }), &[])).unwrap();
-
-    // 	impl <'a, 'de> Solver<'de, Reference<'a, Base<'a>>> for ReferenceModel<BaseModel> {
-    // 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Base<'a>>, SolveErrors> {
-    // 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-    // 			let resource = BaseModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-    // 			let base = Base{
-    // 				items: try_join_all(resource.items.into_iter().map(|item| {
-    // 					item.solve(storage_backend)
-    // 				})).await.map_err(|_| SolveErrors::StorageError)?
-    // 			};
-    // 			Ok(Reference::new(&gr.id, 0, 0, base, reader))
-    // 		}
-    // 	}
-
-    // 	impl <'a, 'de> Solver<'de, Reference<'a, Item>> for ReferenceModel<Item> {
-    // 		async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<Reference<'a, Item>, SolveErrors> {
-    // 			let (gr, reader) = smol::block_on(storage_backend.read(&self.id)).ok_or_else(|| SolveErrors::StorageError)?;
-    // 			let item = Item::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-    // 			Ok(Reference::new(&gr.id, 0, 0, item, reader))
-    // 		}
-    // 	}
-
-    // 	let base: ReferenceModel<BaseModel> = smol::block_on(storage_backend.read("base")).unwrap().0.into();
-    // 	let base = base.solve(&storage_backend);
-    // }
+	pub const ASSETS_PATH: &str = "../../assets";
+	pub const RESOURCES_PATH: &str = "../../resources";
 }

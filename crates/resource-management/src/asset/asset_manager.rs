@@ -37,7 +37,7 @@ impl AssetManager {
 			}
 		}
 
-		Self::new_with_storage_backends(FileStorageBackend::new(source_path), resource::DbStorageBackend::new(destination_path))
+		Self::new_with_storage_backends(FileStorageBackend::new(source_path), resource::RedbStorageBackend::new(destination_path))
 	}
 
 	pub fn new_with_storage_backends<ASB: StorageBackend + 'static, RSB: resource::StorageBackend>(asset_storage_backend: ASB, resource_storage_backend: RSB) -> AssetManager {
@@ -230,7 +230,7 @@ impl AssetManager {
 pub mod tests {
 	use utils::json;
 
-	use crate::asset::{self, asset_handler::{Asset, LoadErrors}};
+	use crate::{asset::{self, asset_handler::{Asset, LoadErrors}}, tests::{ASSETS_PATH, RESOURCES_PATH}};
 
 	use super::*;
 
@@ -274,7 +274,7 @@ pub mod tests {
 	}
 
 	pub fn new_testing_asset_manager() -> AssetManager {
-		AssetManager::new("../assets".into(), "../assets".into())
+		AssetManager::new(ASSETS_PATH.into(), RESOURCES_PATH.into())
 	}
 
 	#[test]
@@ -284,7 +284,7 @@ pub mod tests {
 
 	#[test]
 	fn test_add_asset_manager() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../assets".into());
+		let mut asset_manager = AssetManager::new(ASSETS_PATH.into(), RESOURCES_PATH.into());
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -294,7 +294,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_with_asset_manager() {
-		let mut asset_manager = AssetManager::new("../assets".into(), "../assets".into());
+		let mut asset_manager = AssetManager::new(ASSETS_PATH.into(), RESOURCES_PATH.into());
 
 		let test_asset_handler = TestAssetHandler::new();
 
@@ -308,7 +308,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
-		let _ = AssetManager::new("../assets".into(), "../assets".into());
+		let _ = AssetManager::new(ASSETS_PATH.into(), RESOURCES_PATH.into());
 
 		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -318,7 +318,7 @@ pub mod tests {
 	#[test]
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
-		let _ = AssetManager::new("../assets".into(), "../assets".into());
+		let _ = AssetManager::new(ASSETS_PATH.into(), RESOURCES_PATH.into());
 
 		let _: json::Value = json::from_str(r#"{}"#).unwrap();
 

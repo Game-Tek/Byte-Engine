@@ -1,4 +1,4 @@
-use crate::{asset::asset_manager::AssetManager, LoadResults, Reference, ReferenceModel, Resource, SerializableResource, Solver};
+use crate::{asset::asset_manager::AssetManager, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
 use super::{storage_backend::Query, StorageBackend};
 
@@ -29,13 +29,12 @@ impl ResourceManager {
 		}
 
 		ResourceManager {
-			// storage_backend: Box::new(DbStorageBackend::new(std::path::Path::new("resources"))),
 			asset_manager: None,
 			storage_backend: None,
 		}
 	}
 
-	pub fn new_with_storage_backend<T: StorageBackend + 'static>(storage_backend: T) -> Self {
+	pub fn new_with_storage_backend<SB: StorageBackend + 'static>(storage_backend: SB) -> Self {
 		ResourceManager {
 			storage_backend: Some(Box::new(storage_backend)),
 			asset_manager: None,
@@ -43,15 +42,11 @@ impl ResourceManager {
 	}
 
 	pub fn set_asset_manager(&mut self, asset_manager: AssetManager) {
-		{ self.asset_manager = Some(asset_manager); }
+		self.asset_manager = Some(asset_manager);
 	}
 
-	fn get_storage_backend(&self) -> &dyn StorageBackend {
-		if let Some(asset_manager) = &self.asset_manager {
-			asset_manager.get_resource_storage_backend()
-		} else {
-			self.storage_backend.as_ref().unwrap().as_ref()
-		}
+	fn get_storage_backend(&self) -> Option<&dyn StorageBackend> {
+		self.storage_backend.as_ref().map(|s| s.as_ref())
 	}
 
 	/// Tries to load the information/metadata for a resource (and it's dependencies).\
@@ -65,13 +60,13 @@ impl ResourceManager {
             return None;
         };
 
-		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()).ok()?;
+		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()?).ok()?;
 
 		reference.into()
 	}
 
 	pub fn query<'a, T: Resource + 'a>(&'a self) -> Vec<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, SerializableResource: Into<ReferenceModel<T::Model>> {
-		self.get_storage_backend().query(Query::new().classes(&["Material"])).unwrap().into_iter().map(|e| { let r: ReferenceModel<T::Model> = e.0.into(); let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap(); r }).collect()
+		self.get_storage_backend().expect("Need storage backend").query(Query::new().classes(&["Material"])).unwrap().into_iter().map(|e| { let r: ReferenceModel<T::Model> = e.0.into(); let r: Reference<T> = r.solve(self.get_storage_backend().expect("Need storage backend")).unwrap(); r }).collect()
 	}
 
 	// /// Tries to load a resource from cache or source.\
@@ -92,9 +87,8 @@ impl ResourceManager {
 mod tests {
 	use crate::{Model, Resource};
 
-	use super::*;
-
 	struct MyResourceHandler {}
+
 	impl MyResourceHandler {
 		pub fn new() -> Self {
 			MyResourceHandler {}
@@ -114,36 +108,4 @@ mod tests {
 			"MyResource"
 		}
 	}
-
-	// #[test]
-	// fn get() {
-	// 	let storage_backend = TestStorageBackend::new();
-
-	// 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
-
-	// 	let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
-
-	// 	resource_manager.add_resource_handler(MyResourceHandler::new());
-
-	// 	smol::block_on(resource_manager.get("test")).unwrap();
-	// }
-
-	// #[test]
-	// fn request() {
-	// 	let storage_backend = TestStorageBackend::new();
-
-	// 	smol::block_on(storage_backend.store(&GenericResourceSerialization::new("test", ()), &[])).expect("Failed to store resource");
-
-	// 	let mut resource_manager = ResourceManager::new_with_storage_backend(storage_backend);
-
-	// 	resource_manager.add_resource_handler(MyResourceHandler::new());
-
-	// 	let request = smol::block_on(resource_manager.request("test")).unwrap();
-
-	// 	let request = LoadResourceRequest::new(request);
-
-	// 	let load = smol::block_on(resource_manager.load(request)).expect("Failed to load resource");
-
-	// 	assert_eq!(load.get_buffer(), None);
-	// }
 }

@@ -1,9 +1,7 @@
-use futures::future::join_all;
-use gltf::{mesh::Reader, Buffer};
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
-use utils::{r#async::{spawn_blocking_local, try_join_all}, json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
+use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{ asset::{get_base, get_fragment, image_asset_handler::{guess_semantic_from_name, Semantic}}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, resource, asset, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StreamDescription};
+use crate::{asset::image_asset_handler::{guess_semantic_from_name, Semantic}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, resource, asset, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StreamDescription};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -39,7 +37,7 @@ impl Asset for MeshAsset {
 
         if let Some(fragment) = url.get_fragment() {
 			let image = gltf.images().find(|i| i.name() == Some(fragment.as_ref())).ok_or("Image not found")?;
-			let image = spawn_blocking_local(move || { gltf::image::Data::from_source(image.source(), None, &buffers) }).map_err(|e| e.to_string())?;
+			let image = gltf::image::Data::from_source(image.source(), None, &buffers).map_err(|e| e.to_string())?;
 			let format = match image.format {
 				gltf::image::Format::R8G8B8 => Formats::RGB8,
 				gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
@@ -71,122 +69,6 @@ impl Asset for MeshAsset {
 		};
 
         const MESHLETIZE: bool = true;
-
-        // for mesh in gltf.meshes() {
-        //     for primitive in mesh.primitives() {
-        //         {
-        //             let material = primitive.material();
-
-        //             // Return the name of the texture
-        //             async fn manage_image<'x>(
-        //                 images: &'x [gltf::image::Data],
-        //                 texture: &'x gltf::Texture<'x>,
-        //             ) -> Result<(String, ()), String> {
-        //                 let image = &images[texture.source().index()];
-
-        //                 let format = match image.format {
-        //                     gltf::image::Format::R8G8B8 => Formats::RGB8,
-        //                     gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
-        //                     gltf::image::Format::R16G16B16 => Formats::RGB16,
-        //                     gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
-        //                     _ => return Err("Unsupported image format".to_string()),
-        //                 };
-
-        //                 let name = texture.source().name().ok_or("No image name")?.to_string();
-
-        //                 Ok((name, ()))
-        //             }
-
-        //             let pbr = material.pbr_metallic_roughness();
-
-        //             let albedo = if let Some(base_color_texture) = pbr.base_color_texture() {
-        //                 let (name, resource) = manage_image(images.as_slice(), &base_color_texture.texture()).await.or_else(|e| Err(e))?;
-        //                 resources.push(resource);
-        //                 Property::Texture(name)
-        //             } else {
-        //                 let color = pbr.base_color_factor();
-        //                 Property::Factor(Value::Vector4(color))
-        //             };
-
-        //             let (roughness, metallic) =
-        //                 if let Some(roughness_texture) = pbr.metallic_roughness_texture() {
-        //                     (
-        //                         {
-        //                             let (name, resource) = manage_image(
-        //                                 images.as_slice(),
-        //                                 &roughness_texture.texture(),
-        //                             )
-        //                             .await.or_else(|e| Err(e))?;
-        //                             resources.push(resource);
-        //                             Property::Texture(name)
-        //                         },
-        //                         {
-        //                             let (name, resource) = manage_image(
-        //                                 images.as_slice(),
-        //                                 &roughness_texture.texture(),
-        //                             )
-        //                             .await.or_else(|e| Err(e))?;
-        //                             resources.push(resource);
-        //                             Property::Texture(name)
-        //                         },
-        //                     )
-        //                 } else {
-        //                     (
-        //                         Property::Factor(Value::Scalar(pbr.roughness_factor())),
-        //                         Property::Factor(Value::Scalar(pbr.metallic_factor())),
-        //                     )
-        //                 };
-
-        //             let normal = if let Some(normal_texture) = material.normal_texture() {
-        //                 let (name, resource) =
-        //                     manage_image(images.as_slice(), &normal_texture.texture())
-        //                         .await.or_else(|e| Err(e))?;
-        //                 resources.push(resource);
-        //                 Property::Texture(name)
-        //             } else {
-        //                 Property::Factor(Value::Vector3([0.0, 0.0, 1.0]))
-        //             };
-
-        //             let emissive = if let Some(emissive_texture) = material.emissive_texture() {
-        //                 let (name, resource) =
-        //                     manage_image(images.as_slice(), &emissive_texture.texture())
-        //                         .await.or_else(|e| Err(e))?;
-        //                 resources.push(resource);
-        //                 Property::Texture(name)
-        //             } else {
-        //                 Property::Factor(Value::Vector3(material.emissive_factor()))
-        //             };
-
-        //             let occlusion =
-        //                 if let Some(occlusion_texture) = material.occlusion_texture() {
-        //                     let (name, resource) =
-        //                         manage_image(images.as_slice(), &occlusion_texture.texture())
-        //                             .await.or_else(|e| Err(e))?;
-        //                     resources.push(resource);
-        //                     Property::Texture(name)
-        //                 } else {
-        //                     Property::Factor(Value::Scalar(1.0))
-        //                 };
-
-        //             Material {
-        //                 double_sided: material.double_sided(),
-        //                 alpha_mode: match material.alpha_mode() {
-        //                     gltf::material::AlphaMode::Blend => AlphaMode::Blend,
-        //                     gltf::material::AlphaMode::Mask => {
-        //                         AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5))
-        //                     }
-        //                     gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
-        //                 },
-        //                 model: Model {
-        //                     name: "".to_string(),
-        //                     pass: "".to_string(),
-        //                 },
-        // 				shaders: Vec::new(),
-        // 				parameters: Vec::new(),
-        //             };
-        //         }
-		// 	}
-		// }
 
 		// Gather vertex components and check that they are all equal
 		let all = gltf.meshes().map(|mesh| {
@@ -577,8 +459,8 @@ impl AssetHandler for MeshAssetHandler {
 
         let (gltf, buffers) = if dt == "glb" {
 			let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
-			let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|e| LoadErrors::FailedToProcess)?;
-			let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect())).map_err(|e| LoadErrors::FailedToProcess)?;
+			let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
+			let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect())).map_err(|_| LoadErrors::FailedToProcess)?;
 			(gltf, buffers)
 		} else {
 			let gltf = gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
@@ -626,11 +508,11 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 #[cfg(test)]
 mod tests {
     use super::MeshAssetHandler;
-    use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, ResourceId}, mesh::MeshModel, resource, ReferenceModel};
+    use crate::{asset::{self, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, ResourceId}, mesh::MeshModel, resource::storage_backend::tests::TestStorageBackend, ReferenceModel};
 
     #[test]
     fn load_gltf() {
-		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
 		asset_storage_backend.add_file("Box.bema", r#"{
@@ -647,9 +529,9 @@ mod tests {
 		}"#.as_bytes());
 		asset_storage_backend.add_file("Box.glb.bead", r#"{"asset": {"Texture": {"asset": "Texture.bema" }}}"#.as_bytes());
 
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let resource_storage_backend = TestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend);
 
         let asset_handler = MeshAssetHandler::new();
 		asset_manager.add_asset_handler({
@@ -665,6 +547,8 @@ mod tests {
 
         let mesh: ReferenceModel<MeshModel> = asset_manager.load(url).expect("Failed to parse asset");
 
+		let resource_storage_backend = asset_manager.get_resource_storage_backend().downcast_ref::<TestStorageBackend>().unwrap();
+
         let generated_resources = resource_storage_backend.get_resources();
 
         assert_eq!(generated_resources.len(), 4);
@@ -677,7 +561,7 @@ mod tests {
 
 	#[test]
     fn load_gltf_with_bin() {
-		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
 		asset_storage_backend.add_file("Material.bema", r#"{
@@ -694,7 +578,7 @@ mod tests {
 		}"#.as_bytes());
 		asset_storage_backend.add_file("Suzanne.gltf.bead", r#"{"asset": {"Suzanne": {"asset": "Suzanne.bema" }}}"#.as_bytes());
 
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let resource_storage_backend = TestStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 
@@ -756,11 +640,11 @@ mod tests {
     #[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb() {
-		let asset_storage_backend = asset::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		asset_storage_backend.add_file("shaders/pbr.besl", "main: fn () -> void {}".as_bytes());
 
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let resource_storage_backend = TestStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 
@@ -945,7 +829,7 @@ mod tests {
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb_image() {
 		let asset_storage_backend = asset::storage_backend::FileStorageBackend::new("../assets".into());
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let resource_storage_backend = TestStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
 

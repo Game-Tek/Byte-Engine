@@ -10,7 +10,7 @@ pub struct AudioAsset {
 impl Asset for AudioAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> Result<(), String> {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> Result<(), String> {
         let data = &self.data;
 
         let riff = &data[0..4];
@@ -142,7 +142,7 @@ struct AudioDescription {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset, Data};
+    use crate::{asset, tests::ASSETS_PATH};
 
     use super::*;
 
@@ -150,10 +150,10 @@ mod tests {
     fn test_audio_asset_handler() {
 		let audio_asset_handler = AudioAssetHandler::new();
 
-		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
-		let resource_storage_backend = resource::storage_backend::TestStorageBackend::new();
+		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
+		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
         let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
-		let asset_storage_backend = asset::FileStorageBackend::new("../../assets".into());
+		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
 
         let url = ResourceId::new("gun.wav");
 

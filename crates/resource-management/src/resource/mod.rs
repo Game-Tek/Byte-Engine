@@ -3,14 +3,10 @@
 pub mod resource_manager;
 
 pub mod resource_handler;
-pub mod image_resource_handler;
-pub mod mesh_resource_handler;
-pub mod material_resource_handler;
-pub mod audio_resource_handler;
 
 pub mod storage_backend;
 
-pub use storage_backend::DbStorageBackend;
+pub use storage_backend::redb_storage_backend::RedbStorageBackend;
 pub use storage_backend::ReadStorageBackend;
 pub use storage_backend::WriteStorageBackend;
 pub use storage_backend::StorageBackend;
@@ -35,7 +31,7 @@ pub mod tests {
 	}
 
 	impl ResourceReader for TestResourceReader {
-		fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, streams: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
+		fn read_into<'b, 'c: 'b, 'a: 'b>(self, _: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
 			let offset = 0;
 
 			match read_target {

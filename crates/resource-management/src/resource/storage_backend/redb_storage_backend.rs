@@ -1,0 +1,213 @@
+//! The Redb storage backend provides a way to store and retrieve assets and resources using a Redb database.
+
+use std::hash::Hasher;
+
+use base64::Engine;
+use redb::ReadableTable;
+use utils::sync::{remove_file, File, Write};
+
+use crate::{asset::ResourceId, resource::resource_handler::FileResourceReader, ProcessedAsset, SerializableResource};
+
+use super::{Query, ReadStorageBackend, StorageBackend, WriteStorageBackend};
+
+pub struct RedbStorageBackend {
+    db: redb::Database,
+    base_path: std::path::PathBuf,
+}
+
+const TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("resources");
+
+impl RedbStorageBackend {
+    pub fn new(base_path: std::path::PathBuf) -> Self {
+        let mut memory_only = false;
+
+        if cfg!(test) {
+            // If we are running tests we want to use memory database. This way we can run tests in parallel.
+            memory_only = true;
+        }
+
+        let db_res = if !memory_only {
+            redb::Database::create(base_path.join("resources.db"))
+        } else {
+            log::info!("Using memory database instead of file database.");
+			redb::Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())
+        };
+
+        let db = match db_res {
+            Ok(db) => db,
+            Err(_) => {
+                panic!("Could not create database")
+            }
+        };
+
+		{
+			let write = db.begin_write().unwrap();
+			let _ = write.open_table(TABLE); // Create table if it doesn't exist
+			write.commit();
+		}
+
+        RedbStorageBackend {
+            db,
+            base_path,
+        }
+    }
+}
+
+impl ReadStorageBackend for RedbStorageBackend {
+    fn list<'a>(&'a self) -> Result<Vec<String>, String> {
+		let mut resources = Vec::new();
+
+		let read = self.db.begin_read().unwrap();
+		let table = read.open_table(TABLE).unwrap();
+
+		for doc in table.iter().unwrap() {
+			let doc = doc.unwrap();
+			resources.push(doc.0.value().to_string());
+		}
+
+		Ok(resources)
+    }
+
+    fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, FileResourceReader)> {
+		let read = self.db.begin_read().unwrap();
+		let table = read.open_table(TABLE).unwrap();
+		
+        if let Some(d) = table.get(id.get_base().as_ref()).unwrap() {
+			let resource: SerializableResource = pot::from_slice(d.value()).unwrap();
+			let base_path = self.base_path.clone();
+			let uid = {
+				base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.get_base().as_ref().as_bytes())
+			};
+
+			let resource_reader = FileResourceReader::new(
+				File::open(base_path.join(&uid)).ok()?,
+			);
+
+			Some((resource, resource_reader))
+		} else {
+			None
+		}
+    }
+
+	fn query<'a>(&'a self, query: Query<'a>) -> Result<Vec<(SerializableResource, FileResourceReader)>, ()> {
+		let base_path = self.base_path.clone();
+
+		let read = self.db.begin_read().unwrap();
+		let table = read.open_table(TABLE).unwrap();
+
+		let resources = table.iter().unwrap().filter_map(|d| {
+			let d = d.unwrap();
+			let resource: SerializableResource = pot::from_slice(d.1.value()).unwrap();
+
+			let class = query.class.map_or(false, |c| c.contains(&resource.class.as_str()));
+
+			if class {
+				let uid = {
+					base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(d.0.value().as_bytes())
+				};
+
+				let resource_reader = FileResourceReader::new(
+					File::open(base_path.join(&uid)).unwrap(),
+				);
+
+				Some((resource, resource_reader))
+			} else {
+				None
+			}
+		}).collect::<Vec<_>>();
+
+		Ok(resources)
+	}
+}
+
+impl WriteStorageBackend for RedbStorageBackend {
+    fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
+		let write = self.db.begin_write().unwrap();
+		{
+			let mut table = write.open_table(TABLE).unwrap();
+			let _ = table.remove(id.as_ref());
+		}
+
+		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
+
+		let uid = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.get_base().as_ref().as_bytes());
+		let resource_path = self.base_path.join(std::path::Path::new(&uid));
+
+		let _ = remove_file(&resource_path);
+
+		Ok(())
+    }
+
+    fn store<'a, 'b: 'a>(&'a self,resource: &'b ProcessedAsset,data: &'a [u8],) -> Result<SerializableResource, ()> {
+		let id = resource.id.clone();
+		let size = data.len();
+		let class = resource.class.clone();
+		let streams = resource.streams.clone();
+
+		let hash = {
+		    let mut hasher = gxhash::GxHasher::with_seed(961961961961961);
+
+		    std::hash::Hasher::write(&mut hasher, data); // Hash binary data (For identifying the resource)
+
+			hasher.finish()
+		};
+
+		let resource = {
+			let resource = SerializableResource { id, hash, class, size, streams, resource: resource.resource.clone() };
+
+			let write = self.db.begin_write().unwrap();
+
+			{
+				let mut table = write.open_table(TABLE).unwrap();
+				table.insert(resource.id.as_str(), pot::to_vec(&resource).unwrap().as_slice()).unwrap();
+			}
+
+			write.commit().map_err(|_| ())?;
+
+			resource
+		};
+
+		let uid = {
+			base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&resource.id)
+		};
+
+		let resource_path = self.base_path.join(std::path::Path::new(&uid));
+
+		let mut file = File::create(resource_path).or(Err(()))?;
+
+		file.write_all(data).or(Err(()))?;
+		file.flush().or(Err(()))?; // Must flush to ensure the file is written to disk, or else reads can cause failures
+
+		Ok(resource)
+    }
+
+    fn sync<'s, 'a>(&'s self, other: &'a dyn ReadStorageBackend) -> () {
+        if let Some(other) = other.downcast_ref::<RedbStorageBackend>() {
+			{
+				let write = self.db.begin_write().unwrap();
+				write.delete_table(TABLE).expect("Failed to delete table");
+				write.open_table(TABLE).expect("Failed to open table");
+			}
+
+            {
+				let read = other.db.begin_read().unwrap();
+				let source_table = read.open_table(TABLE).unwrap();
+
+				let write = self.db.begin_write().unwrap();
+
+				{
+					let mut dest_table = write.open_table(TABLE).unwrap();
+
+					for doc in source_table.iter().unwrap() {
+						let doc = doc.unwrap();
+						dest_table.insert(doc.0.value(), doc.1.value()).unwrap();
+					}
+				}
+
+				write.commit().expect("Failed to commit transaction");
+			}
+        }
+    }
+}
+
+impl StorageBackend for RedbStorageBackend {}

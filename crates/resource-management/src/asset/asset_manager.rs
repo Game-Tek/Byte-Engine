@@ -9,8 +9,6 @@ pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
 	asset_storage_backend: Box<dyn StorageBackend>,
 	resource_storage_backend: Box<dyn resource::StorageBackend>,
-	asset_loaders: Mutex<HashMap<String, Arc<OnceCell<Box<dyn Asset>>>>>,
-	loading_assets: RwLock<HashMap<String, Arc<OnceCell<()>>>>,
 }
 
 /// Enumeration of the possible messages that can be returned when loading an asset.
@@ -45,8 +43,6 @@ impl AssetManager {
 			asset_handlers: Vec::new(),
 			asset_storage_backend: Box::new(asset_storage_backend),
 			resource_storage_backend: Box::new(resource_storage_backend),
-			asset_loaders: Mutex::new(HashMap::new()),
-			loading_assets: RwLock::new(HashMap::new()),
 		}
 	}
 
@@ -125,68 +121,26 @@ impl AssetManager {
 			return Ok(r)
 		}
 
-		// Look for asset loader in map. If it is there, wait for it to finish loading. If it is not there, load it.
-		let asset_loader = {
-    		let mut assets_loaders = self.asset_loaders.lock();
-
-            match assets_loaders.entry(id.get_base().to_string()) {
-                Entry::Occupied(entry) => {
-                    entry.get().clone()
-                }
-                Entry::Vacant(entry) => { // Asset loader was not found, flag as requested
-                    let asset_loader = Arc::new(OnceCell::new());
-                    entry.insert(asset_loader.clone());
-                    asset_loader
-                }
-            }
-		};
-
-		let asset_loader = asset_loader.get_or_try_init(|| {
-		    let asset_handler = match self.asset_handlers.iter().find(|handler| handler.can_handle(id.get_extension())) {
-                Some(handler) => handler,
-                None => {
-                    log::warn!("No asset handler found for asset: {:#?}", id);
-                    return Err(LoadMessages::NoAssetHandler);
-                }
-            };
-
-            let asset_loader = match asset_handler.load(self, self.resource_storage_backend.as_ref(), self.asset_storage_backend.as_ref(), id) {
-                Ok(asset) => asset,
-                Err(error) => {
-                    log::error!("Failed to load asset: {:#?}", error);
-                    return Err(LoadMessages::NoAsset);
-                }
-            };
-
-            Ok(asset_loader)
-		})?;
-
-        // If asset is already baked, return it.
-        if let Some((r, _)) = self.resource_storage_backend.read(id) { // TODO: check hash
- 			log::debug!("Cache hit for {:#?}", id);
- 			let r: ReferenceModel<M> = r.into();
- 			return Ok(r)
-  		}
-
-        let mut lock = self.loading_assets.write();
-
-		let lock = match lock.entry(id.to_string()) {
-			Entry::Occupied(entry) => entry.get().clone(),
-			Entry::Vacant(entry) => {
-				let asset_mutex = entry.insert(Arc::new(OnceCell::new())).clone();
-				asset_mutex
+		let asset_handler = match self.asset_handlers.iter().find(|handler| handler.can_handle(id.get_extension())) {
+			Some(handler) => handler,
+			None => {
+				log::warn!("No asset handler found for asset: {:#?}", id);
+				return Err(LoadMessages::NoAssetHandler);
 			}
 		};
 
-        let start_time = std::time::Instant::now();
+		let asset_loader = match asset_handler.load(self, self.resource_storage_backend.as_ref(), self.asset_storage_backend.as_ref(), id) {
+			Ok(asset) => asset,
+			Err(error) => {
+				log::error!("Failed to load asset: {:#?}", error);
+				return Err(LoadMessages::NoAsset);
+			}
+		};
 
-        // Asset is not baked, load/bake it.
-        let _ = lock.get_or_try_init(|| {
-            let _ = asset_loader.requested_assets();
-            let r = asset_loader.load(self, self.resource_storage_backend.as_ref(), self.asset_storage_backend.as_ref(), id).map_err(|r| LoadMessages::FailedToBake { asset: id.to_string(), error: r });
-            log::trace!("Baked '{:#?}' asset in {:#?}", id, start_time.elapsed());
-            r
-        })?;
+		asset_loader.load(self, self.resource_storage_backend.as_ref(), self.asset_storage_backend.as_ref(), id).or_else(|error| {
+			log::error!("Failed to load asset: {:#?}", error);
+			Err(LoadMessages::NoAsset)
+		})?;
 
         // Asset is now baked, return it.
         if let Some((r, _)) = self.resource_storage_backend.read(id) { // TODO: check hash

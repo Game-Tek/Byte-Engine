@@ -12,7 +12,7 @@
 use std::{any::Any, hash::Hasher};
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-use resource::{resource_handler::{FileResourceReader, LoadTargets, ReadTargets, ResourceReader}, storage_backend::ReadStorageBackend};
+use resource::{resource_handler::{LoadTargets, MultiResourceReader, ReadTargets}, storage_backend::ReadStorageBackend};
 use asset::ResourceId;
 
 pub mod asset;
@@ -208,7 +208,7 @@ pub struct Reference<T: Resource> {
     pub hash: u64,
     pub size: usize,
     pub resource: T,
-    reader: Option<FileResourceReader>,
+    reader: Option<MultiResourceReader>,
 	streams: Option<Vec<StreamDescription>>,
 }
 
@@ -228,7 +228,7 @@ impl<'a, T: Resource + 'a> Serialize for Reference<T> {
 }
 
 impl<'a, T: Resource + 'a> Reference<T> {
-	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: FileResourceReader) -> Self {
+	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: MultiResourceReader) -> Self {
 		Reference {
 			id: model.id,
 			hash: model.hash,
@@ -261,7 +261,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
         self.resource
     }
 
-    pub fn consume_reader(&mut self) -> FileResourceReader {
+    pub fn consume_reader(&mut self) -> MultiResourceReader {
         self.reader.take().unwrap()
     }
 
@@ -274,7 +274,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
 
 	/// Loads the resource's binary data into memory from the storage backend.
 	pub fn load<'s>(&'s mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults> {
-		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
+		let mut reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
 		reader.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target).map_err(|_| LoadResults::LoadFailed)
 	}
 }
@@ -384,7 +384,7 @@ pub struct CreateInfo<'a> {
 }
 
 #[derive(Debug)]
-enum SolveErrors {
+pub enum SolveErrors {
     DeserializationFailed(String),
     StorageError,
 }
@@ -397,119 +397,6 @@ where
 {
     fn solve(self, storage_backend: &dyn ReadStorageBackend) -> Result<T, SolveErrors>;
 }
-
-// #[cfg(test)]
-// impl StorageBackend for DbStorageBackend {
-// 	fn list<'a>(&'a self) -> utils::BoxedFuture<'a, Result<Vec<String>, String>> {
-// 		let resources = self.resources.lock().unwrap();
-// 		let mut names = Vec::with_capacity(resources.len());
-// 		for resource in resources.iter() {
-// 			names.push(resource.0.id.clone());
-// 		}
-
-// 		Box::pin(async move {
-// 			Ok(names)
-// 		})
-// 	}
-
-// 	fn delete<'a>(&'a self, id: &'a str) -> utils::BoxedFuture<'a, Result<(), String>> {
-// 		let mut resources = self.resources.lock().unwrap();
-// 		let mut index = None;
-// 		for (i, resource) in resources.iter().enumerate() {
-// 			if resource.0.id == id {
-// 				index = Some(i);
-// 				break;
-// 			}
-// 		}
-
-// 		if let Some(i) = index {
-// 			resources.remove(i);
-// 			Box::pin(async move {
-// 				Ok(())
-// 			})
-// 		} else {
-// 			Box::pin(async move {
-// 				Err("Resource not found".to_string())
-// 			})
-// 		}
-// 	}
-
-// 	fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &[u8]) -> utils::SendSyncBoxedFuture<'a, Result<GenericResourceResponse, ()>> {
-// 		self.resources.lock().unwrap().push((resource.clone(), data.into()));
-
-// 		let id = resource.id.clone();
-// 		let class = resource.class.clone();
-// 		let size = data.len();
-// 		let streams = resource.streams.clone();
-// 		let resource = resource.resource.clone();
-
-// 		Box::pin(async move {
-// 			Ok(GenericResourceResponse::new(id, 0, class, size, resource, streams))
-// 		})
-// 	}
-
-// 	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> utils::SendSyncBoxedFuture<'a, Option<(GenericResourceResponse, FileResourceReader)>> {
-// 		let mut x = None;
-
-// 		let resources = self.resources.lock().unwrap();
-// 		for (resource, data) in resources.iter() {
-// 			if resource.id == id.as_ref() {
-// 				// TODO: use actual hash
-// 				x = Some((GenericResourceResponse::new(id.to_string(), 0, resource.class.clone(), data.len(), resource.resource.clone(), resource.streams.clone()), FileResourceReader::new(data.clone())));
-// 				break;
-// 			}
-// 		}
-
-// 		Box::pin(async move {
-// 			x
-// 		})
-// 	}
-
-// 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> utils::SendSyncBoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> { Box::pin(async move {
-// 		// All of this weirdness is to avoid Send + Sync errors because of the locks
-
-// 		let r = {
-// 			let files = self.files.lock().unwrap();
-// 			if let Some(f) = files.get(url.as_ref()) {
-// 				let bead = {
-// 					let mut url = url.get_base().to_string();
-// 					url.push_str(".bead");
-// 					if let Some(spec) = files.get(url.as_str()) {
-// 						Some(json::from_str(std::str::from_utf8(spec).unwrap()).unwrap())
-// 					} else {
-// 						None
-// 					}
-// 				};
-
-// 				// Extract extension from url
-// 				Ok((f.clone(), bead, url.get_extension().to_string()))
-// 			} else {
-// 				Err(())
-// 			}
-// 		};
-
-// 		if let Err(_) = r {
-// 			let bead = {
-// 				let mut url = url.get_base().to_string();
-// 				url.push_str(".bead");
-// 				if let Some(spec) = self.files.lock().unwrap().get(url.as_str()) {
-// 					Some(json::from_str(std::str::from_utf8(spec).unwrap()).unwrap())
-// 				} else {
-// 					None
-// 				}
-// 			};
-
-// 			if let Ok(x) = read_asset_from_source(url, Some(&std::path::Path::new("../assets"))).await {
-// 				let bead = bead.or(x.1);
-// 				Ok((x.0, bead, x.2))
-// 			} else {
-// 				Err(())
-// 			}
-// 		} else {
-// 			r
-// 		}
-// 	}) }
-// }
 
 pub trait Description: Any + Send + Sync {
     // type Resource: Resource;

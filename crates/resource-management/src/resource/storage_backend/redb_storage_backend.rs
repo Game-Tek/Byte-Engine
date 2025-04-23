@@ -6,7 +6,7 @@ use base64::Engine;
 use redb::ReadableTable;
 use utils::sync::{remove_file, File, Write};
 
-use crate::{asset::ResourceId, resource::resource_handler::FileResourceReader, ProcessedAsset, SerializableResource};
+use crate::{asset::ResourceId, resource::resource_handler::{FileResourceReader, MultiResourceReader, ResourceReader}, ProcessedAsset, SerializableResource};
 
 use super::{Query, ReadStorageBackend, StorageBackend, WriteStorageBackend};
 
@@ -68,7 +68,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 		Ok(resources)
     }
 
-    fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, FileResourceReader)> {
+    fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, MultiResourceReader)> {
 		let read = self.db.begin_read().unwrap();
 		let table = read.open_table(TABLE).unwrap();
 		
@@ -79,9 +79,9 @@ impl ReadStorageBackend for RedbStorageBackend {
 				base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.get_base().as_ref().as_bytes())
 			};
 
-			let resource_reader = FileResourceReader::new(
+			let resource_reader = Box::new(FileResourceReader::new(
 				File::open(base_path.join(&uid)).ok()?,
-			);
+			));
 
 			Some((resource, resource_reader))
 		} else {
@@ -89,7 +89,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 		}
     }
 
-	fn query<'a>(&'a self, query: Query<'a>) -> Result<Vec<(SerializableResource, FileResourceReader)>, ()> {
+	fn query<'a>(&'a self, query: Query<'a>) -> Result<Vec<(SerializableResource, MultiResourceReader)>, ()> {
 		let base_path = self.base_path.clone();
 
 		let read = self.db.begin_read().unwrap();
@@ -106,11 +106,11 @@ impl ReadStorageBackend for RedbStorageBackend {
 					base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(d.0.value().as_bytes())
 				};
 
-				let resource_reader = FileResourceReader::new(
+				let resource_reader = Box::new(FileResourceReader::new(
 					File::open(base_path.join(&uid)).unwrap(),
-				);
+				));
 
-				Some((resource, resource_reader))
+				Some((resource, resource_reader as MultiResourceReader))
 			} else {
 				None
 			}

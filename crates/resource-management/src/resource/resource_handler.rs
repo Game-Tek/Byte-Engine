@@ -98,7 +98,7 @@ impl <'a> From<ReadTargets<'a>> for LoadTargets<'a> {
 
 /// The resource reader trait provides methods to read a single resource.
 pub trait ResourceReader: Send + Sync + Debug {
-	fn read_into<'b, 'c: 'b, 'a: 'b>(self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()>;
+	fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()>;
 }
 
 #[derive(Debug)]
@@ -115,7 +115,7 @@ impl FileResourceReader {
 }
 
 impl ResourceReader for FileResourceReader {
-	fn read_into<'b, 'c: 'b, 'a: 'b>(mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
+	fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
 		match read_target {
 			ReadTargets::Buffer(buffer) => {
 				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
@@ -150,6 +150,8 @@ impl ResourceReader for FileResourceReader {
 	}
 }
 
+pub type MultiResourceReader = Box<dyn ResourceReader>;
+
 #[cfg(test)]
 pub mod tests {
     use crate::{Stream, StreamDescription};
@@ -170,7 +172,7 @@ pub mod tests {
 	}
 
 	impl ResourceReader for MemoryResourceReader {
-		fn read_into<'b, 'c: 'b, 'a: 'b>(self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
+		fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
 			match read_target {
 				ReadTargets::Buffer(buffer) => {
 					buffer.copy_from_slice(&self.data[..buffer.len()]);

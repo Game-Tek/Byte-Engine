@@ -31,7 +31,7 @@ pub mod tests {
 	}
 
 	impl ResourceReader for TestResourceReader {
-		fn read_into<'b, 'c: 'b, 'a: 'b>(self, _: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
+		fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, _: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
 			let offset = 0;
 
 			match read_target {

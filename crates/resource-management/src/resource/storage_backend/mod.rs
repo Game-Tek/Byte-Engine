@@ -4,7 +4,7 @@ pub mod redb_storage_backend;
 
 use crate::{asset::ResourceId, ProcessedAsset, SerializableResource};
 
-use super::resource_handler::FileResourceReader;
+use super::resource_handler::MultiResourceReader;
 
 pub struct Query<'a> {
 	class: Option<&'a [&'a str]>,
@@ -25,9 +25,9 @@ impl<'a> Query<'a> {
 
 pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn list<'a>(&'a self) -> Result<Vec<String>, String>;
-	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, FileResourceReader)>;
+	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, MultiResourceReader)>;
 
-	fn query<'a>(&'a self, query: Query<'a>) -> Result<Vec<(SerializableResource, FileResourceReader)>, ()>;
+	fn query<'a>(&'a self, query: Query<'a>) -> Result<Vec<(SerializableResource, MultiResourceReader)>, ()>;
 
 	/// Returns the type of the asset, if attainable from the url.
     /// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
@@ -61,6 +61,8 @@ pub mod tests {
 
 	use gxhash::HashMapExt;
 	use utils::{sync::Mutex, hash::HashMap};
+
+	use crate::resource::resource_handler::tests::MemoryResourceReader;
 
 	use super::*;
 
@@ -112,7 +114,7 @@ pub mod tests {
 			Ok(self.0.lock().keys().map(|x| x.to_string()).collect())
 		}
 	
-		fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, FileResourceReader)> {
+		fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>,) -> Option<(SerializableResource, MultiResourceReader)> {
 			let (resource, data) = if let Some(e) = self.0.lock().get(id.as_ref()) {
 				(e.0.clone(), e.1.clone())
 			} else {
@@ -123,14 +125,12 @@ pub mod tests {
 	
 			let resource: SerializableResource = pot::from_slice(&resource).unwrap();
 	
-			// let resource_reader = MemoryResourceReader::new(data);
-
-			todo!();
+			let resource_reader = Box::new(MemoryResourceReader::new(data));
 	
-			// Some((resource, resource_reader))
+			Some((resource, resource_reader))
 		}
 
-		fn query<'a>(&'a self, _: Query<'a>) -> Result<Vec<(SerializableResource, FileResourceReader)>, ()> {
+		fn query<'a>(&'a self, _: Query<'a>) -> Result<Vec<(SerializableResource, MultiResourceReader)>, ()> {
 			Err(())
 		}
 	}

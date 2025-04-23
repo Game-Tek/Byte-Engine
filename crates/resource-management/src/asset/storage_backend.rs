@@ -30,7 +30,7 @@ impl StorageBackend for FileStorageBackend {
 pub mod tests {
 	use std::{collections::HashMap, io::Read, sync::{Arc, Mutex}};
 
-	use crate::asset::{BEADType, ResourceId};
+	use crate::{asset::{BEADType, ResourceId}, tests::ASSETS_PATH};
 
 	use utils::{json, sync::File};
 
@@ -61,7 +61,7 @@ pub mod tests {
 	
 			// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
 	
-			let path = std::path::Path::new("../../assets");
+			let path = std::path::Path::new(ASSETS_PATH);
 			let path = path.join(url.get_base().as_ref());
 			
 			// Check if the file name exitst in our map

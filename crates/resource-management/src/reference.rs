@@ -2,7 +2,7 @@ use std::hash::Hasher;
 
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-use crate::{asset::ResourceId, resource::resource_handler::{LoadTargets, MultiResourceReader, ReadTargets}, DataStorage, LoadResults, Model, Resource, StreamDescription};
+use crate::{asset::ResourceId, resource::{resource_handler::MultiResourceReader, ReadTargets, ReadTargetsMut}, DataStorage, LoadResults, Model, Resource, StreamDescription};
 
 #[derive(Debug)]
 /// Represents a resource reference and can be use to embed resources in other resources.
@@ -76,7 +76,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
     }
 
 	/// Loads the resource's binary data into memory from the storage backend.
-	pub fn load<'s>(&'s mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults> {
+	pub fn load<'s>(&'s mut self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, LoadResults> {
 		let mut reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
 		reader.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target).map_err(|_| LoadResults::LoadFailed)
 	}

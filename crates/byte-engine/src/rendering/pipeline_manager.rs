@@ -56,7 +56,7 @@ impl PipelineManager {
 				let read_target = shader.into();
 				let load_request = shader.load(read_target).unwrap();
 
-				let buffer = if let Some(b) = load_request.get_buffer() {
+				let buffer = if let Some(b) = load_request.buffer() {
 					b
 				} else {
 					return Err(());

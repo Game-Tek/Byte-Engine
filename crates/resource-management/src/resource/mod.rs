@@ -9,6 +9,7 @@ pub mod storage_backend;
 pub mod resource_id;
 
 pub mod reader;
+pub mod read_target;
 
 pub use storage_backend::redb_storage_backend::RedbStorageBackend;
 pub use storage_backend::ReadStorageBackend;
@@ -16,6 +17,8 @@ pub use storage_backend::WriteStorageBackend;
 pub use storage_backend::StorageBackend;
 
 pub use resource_id::ResourceId;
+pub use read_target::ReadTargets;
+pub use read_target::ReadTargetsMut;
 
 use crate::Model;
 
@@ -33,7 +36,7 @@ pub trait Resource: Send + Sync {
 pub mod tests {
     use crate::StreamDescription;
 
-    use super::{reader::ResourceReader, resource_handler::{LoadTargets, ReadTargets,}};
+    use super::{reader::ResourceReader, ReadTargets, ReadTargetsMut};
 
 	#[derive(Debug)]
 	pub struct TestResourceReader {
@@ -49,19 +52,19 @@ pub mod tests {
 	}
 
 	impl ResourceReader for TestResourceReader {
-		fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, _: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
+		fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, _: Option<&'c [StreamDescription]>, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, ()> {
 			let offset = 0;
 
 			match read_target {
-				ReadTargets::Buffer(buffer) => {
+				ReadTargetsMut::Buffer(buffer) => {
 					let l = buffer.len();
 					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-					Ok(LoadTargets::Buffer(&buffer[..self.data.len().min(l)]))
+					Ok(ReadTargets::Buffer(&buffer[..self.data.len().min(l)]))
 				}
-				ReadTargets::Box(mut buffer) => {
+				ReadTargetsMut::Box(mut buffer) => {
 					let l = buffer.len();
 					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-					Ok(LoadTargets::Box(buffer))
+					Ok(ReadTargets::Box(buffer))
 				}
 				_ => {
 					Err(())

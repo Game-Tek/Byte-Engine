@@ -1,5 +1,5 @@
 use std::{collections::HashMap, f32::consts::PI};
-use resource_management::{resources::audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
+use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
 
 use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
 use ahi::{audio_hardware_interface::AudioHardwareInterface, self};
@@ -51,9 +51,9 @@ impl AudioSystem for DefaultAudioSystem {
 		} else {
 			let resource_manager = self.resource_manager.read();
 			let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).unwrap();
-			let load_target = audio_resource_reference.load(ReadTargets::create_buffer(&audio_resource_reference)).unwrap(); // Request resource be written into a managed buffer.
+			let load_target = audio_resource_reference.load(ReadTargetsMut::create_buffer(&audio_resource_reference)).unwrap(); // Request resource be written into a managed buffer.
 
-			let bytes = match load_target.get_buffer() {
+			let bytes = match load_target.buffer() {
 				Some(b) => {
 					b.chunks_exact(2).map(|chunk| {
 						let mut bytes = [0; 2];

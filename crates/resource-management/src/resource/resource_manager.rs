@@ -68,19 +68,6 @@ impl ResourceManager {
 	pub fn query<'a, T: Resource + 'a>(&'a self) -> Vec<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, SerializableResource: Into<ReferenceModel<T::Model>> {
 		self.get_storage_backend().expect("Need storage backend").query(Query::new().classes(&["Material"])).unwrap().into_iter().map(|e| { let r: ReferenceModel<T::Model> = e.0.into(); let r: Reference<T> = r.solve(self.get_storage_backend().expect("Need storage backend")).unwrap(); r }).collect()
 	}
-
-	// /// Tries to load a resource from cache or source.\
-	// /// This is a more advanced version of get() as it allows to load resources that depend on other resources.\
-	// ///
-	// /// If the resource cannot be found (non existent file, unreacheble network address, fails to parse, etc.) it will return None.\
-	// /// If the resource is in cache but it's data cannot be parsed, it will return None.
-	// /// Return is a tuple containing the resource description and it's associated binary data.\
-	// /// The requested resource will always the last one in the array. With the previous resources being the ones it depends on. This way when iterating the array forward the dependencies will be loaded first.
-	// pub async fn get<'s, 'a, T: Resource + 'a>(&'s self, mut resource: Reference<'a, T>) -> Option<Reference<'a, T>> where ReferenceModel<T::Model>: Solver<'a, Reference<'a, T>>, Reference<'a, T>: Loader<'b>, 'a: 'b {
-	// 	// let reference: Reference<T> = resource.load().await.ok()?;
-	// 	resource.load().await.ok()?;
-	// 	resource.into()
-	// }
 }
 
 #[cfg(test)]

@@ -601,7 +601,7 @@ impl VisibilityWorldRenderDomain {
 			let meshlet_offset = *mesh_meshlet_counter;
 
 			let meshlets = if let Some(stream) = primitive.meshlet_stream() {
-				let m = load_target.get_stream("Meshlets").unwrap();
+				let m = load_target.stream("Meshlets").unwrap();
 
 				let meshlet_stream = unsafe {
 					std::slice::from_raw_parts(m.buffer().as_ptr().byte_add(stream.offset) as *const Meshlet, stream.count())

@@ -2,7 +2,7 @@ use std::any::Any;
 
 use utils::Extent;
 
-use crate::{image::Image, resource, asset, types::{Formats, Gamma}, Description, ProcessedAsset};
+use crate::{resources::image::Image, resource, asset, types::{Formats, Gamma}, Description, ProcessedAsset};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, resource_id::ResourceIdBase, ResourceId};
 

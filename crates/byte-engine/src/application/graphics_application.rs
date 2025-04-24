@@ -2,7 +2,7 @@ use crate::{core::{property::Property, spawn, spawn_as_child, task, EntityHandle
 use std::time::Duration;
 
 use maths_rs::num::Base;
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler}, material::Material, resource::{resource_manager::ResourceManager, RedbStorageBackend}};
+use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler}, resources::material::Material, resource::{resource_manager::ResourceManager, RedbStorageBackend}};
 use utils::Extent;
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};

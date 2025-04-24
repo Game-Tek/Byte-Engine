@@ -11,20 +11,21 @@
 #![feature(ascii_char)]
 
 use std::{any::Any, hash::Hasher};
-use serde::{ser::SerializeStruct, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
-use resource::{resource_handler::{LoadTargets, MultiResourceReader, ReadTargets}, storage_backend::ReadStorageBackend};
 use asset::ResourceId;
 
 pub mod asset;
 pub mod resource;
 
+pub mod model;
+pub mod solver;
+pub mod stream;
+pub mod reference;
+
 pub mod types;
 
-pub mod audio;
-pub mod image;
-pub mod material;
-pub mod mesh;
+pub mod resources;
 
 pub mod file_tracker;
 
@@ -37,6 +38,13 @@ pub mod glsl;
 
 pub use resource::resource_manager::ResourceManager;
 pub use asset::asset_handler::AssetHandler;
+
+pub use model::Model;
+pub use resource::Resource;
+pub use solver::Solver;
+pub use stream::Stream;
+pub use reference::Reference;
+pub use reference::ReferenceModel;
 
 pub(crate) type DataStorage = Vec<u8>;
 pub(crate) use pot::from_slice;
@@ -156,179 +164,6 @@ impl <M: Model> Into<ReferenceModel<M>> for SerializableResource {
 	}
 }
 
-pub trait Model: for<'de> serde::Deserialize<'de> {
-    fn get_class() -> &'static str;
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct ReferenceModel<T: Model> {
-    pub id: String,
-    hash: u64,
-	size: usize,
-    class: String,
-    resource: DataStorage,
-    #[serde(skip)]
-    phantom: std::marker::PhantomData<T>,
-	streams: Option<Vec<StreamDescription>>,
-}
-
-impl<T: Model> ReferenceModel<T> {
-    pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self where T: serde::Serialize {
-        ReferenceModel {
-            id: id.to_string(),
-            hash,
-			size,
-            class: T::get_class().to_string(),
-            resource: pot::to_vec(resource).unwrap(),
-            phantom: std::marker::PhantomData,
-			streams,
-        }
-    }
-
-    pub fn new_serialized(id: &str, hash: u64, size: usize, resource: DataStorage, streams: Option<Vec<StreamDescription>>) -> Self {
-        ReferenceModel {
-            id: id.to_string(),
-            hash,
-			size,
-            class: T::get_class().to_string(),
-            resource,
-            phantom: std::marker::PhantomData,
-			streams,
-        }
-    }
-
-	pub fn id(&self) -> ResourceId {
-		ResourceId::new(&self.id)
-	}
-}
-
-#[derive(Debug)]
-/// Represents a resource reference and can be use to embed resources in other resources.
-pub struct Reference<T: Resource> {
-    pub id: String,
-    pub hash: u64,
-    pub size: usize,
-    pub resource: T,
-    reader: Option<MultiResourceReader>,
-	streams: Option<Vec<StreamDescription>>,
-}
-
-impl<'a, T: Resource + 'a> Serialize for Reference<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut state = serializer.serialize_struct("TypedDocument", 3)?;
-
-        state.serialize_field("id", &self.id)?;
-        state.serialize_field("hash", &self.hash)?;
-        state.serialize_field("class", &self.resource.get_class())?;
-
-        state.end()
-    }
-}
-
-impl<'a, T: Resource + 'a> Reference<T> {
-	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: MultiResourceReader) -> Self {
-		Reference {
-			id: model.id,
-			hash: model.hash,
-			size: model.size,
-			resource,
-			reader: Some(reader),
-			streams: model.streams,
-		}
-	}
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn hash(&self) -> u64 {
-        self.hash
-    }
-
-	pub fn get_hash(&self) -> u64 { self.hash }
-
-    pub fn resource(&self) -> &T {
-        &self.resource
-    }
-
-    pub fn resource_mut(&mut self) -> &mut T {
-        &mut self.resource
-    }
-
-    pub fn into_resource(self) -> T {
-        self.resource
-    }
-
-    pub fn consume_reader(&mut self) -> MultiResourceReader {
-        self.reader.take().unwrap()
-    }
-
-    pub fn map(self, f: impl FnOnce(T) -> T) -> Self {
-        Reference {
-            resource: f(self.resource),
-            ..self
-        }
-    }
-
-	/// Loads the resource's binary data into memory from the storage backend.
-	pub fn load<'s>(&'s mut self, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, LoadResults> {
-		let mut reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
-		reader.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target).map_err(|_| LoadResults::LoadFailed)
-	}
-}
-
-#[derive(Debug)]
-pub struct Stream<'a> {
-    /// The slice of the buffer to load the resource binary data into.
-    buffer: &'a [u8],
-    /// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
-    name: &'a str,
-}
-
-impl<'a> Stream<'a> {
-    pub fn new(name: &'a str, buffer: &'a [u8]) -> Self {
-        Stream { buffer, name }
-    }
-
-    pub fn buffer(&'a self) -> &'a [u8] {
-        self.buffer
-    }
-}
-
-impl<'a> From<StreamMut<'a>> for Stream<'a> {
-    fn from(value: StreamMut<'a>) -> Self {
-        Stream::new(value.name, value.buffer)
-    }
-}
-
-#[derive(Debug)]
-pub struct StreamMut<'a> {
-    /// The slice of the buffer to load the resource binary data into.
-    buffer: &'a mut [u8],
-    /// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
-    name: &'a str,
-}
-
-impl<'a> StreamMut<'a> {
-    pub fn new<T: Copy>(name: &'a str, buffer: &'a mut [T]) -> Self {
-		let buffer = unsafe {
-			std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u8, std::mem::size_of::<T>() * buffer.len())
-		};
-        StreamMut { buffer, name }
-    }
-
-    pub fn buffer(&'a self) -> &'a [u8] {
-        self.buffer
-    }
-
-    pub fn buffer_mut(&'a mut self) -> &'a mut [u8] {
-        self.buffer
-    }
-}
-
 /// Enumaration for all the possible results of a resource load fails.
 #[derive(Debug)]
 pub enum LoadResults {
@@ -342,63 +177,6 @@ pub enum LoadResults {
     UnsuportedResourceType,
     /// No read target was set for the resource.
     NoReadTarget,
-}
-
-/// Trait that defines a resource.
-pub trait Resource: Send + Sync {
-    /// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
-    /// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
-    /// Is needed by the deserialize function.
-    fn get_class(&self) -> &'static str;
-
-    type Model: Model;
-}
-
-impl <T: Resource> std::hash::Hash for Reference<T> {
-	fn hash<H: Hasher>(&self, state: &mut H) {
-		self.id.hash(state); self.hash.hash(state); self.size.hash(state); self.resource.get_class().hash(state);
-	}
-}
-
-/// Options for loading a resource.
-#[derive(Debug)]
-pub struct OptionResource<'a> {
-    /// The resource to apply this option to.
-    pub url: String,
-    /// The buffers to load the resource binary data into.
-    pub streams: Vec<StreamMut<'a>>,
-}
-
-/// Represents the options for performing a bundled/batch resource load.
-pub struct Options<'a> {
-    pub resources: Vec<OptionResource<'a>>,
-}
-
-pub trait CreateResource: downcast_rs::Downcast + Send + Sync {}
-
-downcast_rs::impl_downcast!(CreateResource);
-
-pub struct CreateInfo<'a> {
-    pub name: &'a str,
-    pub info: Box<dyn CreateResource>,
-    pub data: &'a [u8],
-}
-
-#[derive(Debug)]
-pub enum SolveErrors {
-    DeserializationFailed(String),
-    StorageError,
-}
-
-/// The solver trait provides methods to resolve a resource.
-/// This is used to load resources from the storage backend into typed resources.
-/// `solve` will be called by nested resources to resolve their entire "tree" of dependencies.
-/// The initial call to `solve` will be done by the resource manager to resolve the resource which was requested by the client.
-pub trait Solver<'de, T>
-where
-    Self: serde::Deserialize<'de>,
-{
-    fn solve(self, storage_backend: &dyn ReadStorageBackend) -> Result<T, SolveErrors>;
 }
 
 pub trait Description: Any + Send + Sync {

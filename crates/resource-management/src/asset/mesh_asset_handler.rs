@@ -1,7 +1,7 @@
 use maths_rs::{mat::{MatNew4, MatScale}, vec::Vec3};
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{asset::image_asset_handler::{guess_semantic_from_name, Semantic}, material::VariantModel, mesh::{MeshModel, PrimitiveModel}, resource, asset, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StreamDescription};
+use crate::{asset::image_asset_handler::{guess_semantic_from_name, Semantic}, resources::material::VariantModel, resources::mesh::{MeshModel, PrimitiveModel}, resource, asset, types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics}, Description, ProcessedAsset, StreamDescription};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -508,7 +508,7 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 #[cfg(test)]
 mod tests {
     use super::MeshAssetHandler;
-    use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId}, mesh::MeshModel, resource::storage_backend::tests::TestStorageBackend, tests::ASSETS_PATH, ReferenceModel};
+    use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId}, resources::mesh::MeshModel, resource::storage_backend::tests::TestStorageBackend, tests::ASSETS_PATH, ReferenceModel};
 
     #[test]
     fn load_gltf() {
@@ -553,8 +553,8 @@ mod tests {
 
         assert_eq!(generated_resources.len(), 4);
 
-        assert_eq!(mesh.id, url);
-        assert_eq!(mesh.class, "Mesh");
+        assert_eq!(mesh.id().as_ref(), url);
+        assert_eq!(mesh.class(), "Mesh");
 
         // TODO: ASSERT BINARY DATA
     }
@@ -604,7 +604,7 @@ mod tests {
         let url = ResourceId::new(url);
 
         assert_eq!(mesh.id(), url);
-        assert_eq!(mesh.class, "Mesh");
+        assert_eq!(mesh.class(), "Mesh");
 
         // TODO: ASSERT BINARY DATA
 

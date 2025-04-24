@@ -1,4 +1,4 @@
-use crate::{audio::Audio, types::BitDepths, ProcessedAsset, asset, resource};
+use crate::{resources::audio::Audio, types::BitDepths, ProcessedAsset, asset, resource};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 

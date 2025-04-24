@@ -19,10 +19,10 @@ use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGene
 use resource_management::{glsl, Reference};
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
-use resource_management::image::Image as ResourceImage;
-use resource_management::mesh::{Mesh as ResourceMesh, Primitive};
-use resource_management::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
-use resource_management::material::Variant as ResourceVariant;
+use resource_management::resources::image::Image as ResourceImage;
+use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
+use resource_management::resources::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
+use resource_management::resources::material::Variant as ResourceVariant;
 use utils::sync::{Rc, Arc, RwLock};
 use utils::{Extent, RGBA};
 
@@ -540,12 +540,12 @@ impl VisibilityWorldRenderDomain {
 		assert_eq!(meshlet_stream.stride, 2, "Meshlet stream stride is not of size 2");
 
 		let streams = vec![
-			resource_management::StreamMut::new("Vertex.Position", &mut vertex_positions_buffer[self.visibility_info.vertex_count as usize..vertex_positions_stream.count()]),
-			resource_management::StreamMut::new("Vertex.Normal", &mut vertex_normals_buffer[self.visibility_info.vertex_count as usize..vertex_normals_stream.count()]),
-			resource_management::StreamMut::new("Vertex.UV", &mut vertex_uv_buffer[self.visibility_info.vertex_count as usize..vertex_uv_stream.count()]),
-			resource_management::StreamMut::new("VertexIndices", &mut vertex_indices_buffer[self.visibility_info.primitives_count as usize..vertex_indices_stream.count()]),
-			resource_management::StreamMut::new("MeshletIndices", &mut primitive_indices_buffer[self.visibility_info.triangle_count as usize..primitive_indices_stream.count()]), // TODO: this might be wrong
-			resource_management::StreamMut::new("Meshlets", buffer_allocator.take(meshlet_stream.size)),
+			resource_management::stream::StreamMut::new("Vertex.Position", &mut vertex_positions_buffer[self.visibility_info.vertex_count as usize..vertex_positions_stream.count()]),
+			resource_management::stream::StreamMut::new("Vertex.Normal", &mut vertex_normals_buffer[self.visibility_info.vertex_count as usize..vertex_normals_stream.count()]),
+			resource_management::stream::StreamMut::new("Vertex.UV", &mut vertex_uv_buffer[self.visibility_info.vertex_count as usize..vertex_uv_stream.count()]),
+			resource_management::stream::StreamMut::new("VertexIndices", &mut vertex_indices_buffer[self.visibility_info.primitives_count as usize..vertex_indices_stream.count()]),
+			resource_management::stream::StreamMut::new("MeshletIndices", &mut primitive_indices_buffer[self.visibility_info.triangle_count as usize..primitive_indices_stream.count()]), // TODO: this might be wrong
+			resource_management::stream::StreamMut::new("Meshlets", buffer_allocator.take(meshlet_stream.size)),
 		];
 
 		let load_target = resource_request.load(streams.into()).unwrap();

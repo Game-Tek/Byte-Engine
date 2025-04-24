@@ -1,5 +1,5 @@
 use std::{collections::HashMap, f32::consts::PI};
-use resource_management::{audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
+use resource_management::{resources::audio::Audio, resource::{resource_handler::ReadTargets, resource_manager::ResourceManager}, types::BitDepths, Reference};
 
 use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
 use ahi::{audio_hardware_interface::AudioHardwareInterface, self};

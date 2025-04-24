@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
-use utils::sync::{File, Seek, Read};
+use crate::{stream::StreamMut, Reference, Resource, Stream};
 
-use crate::{Reference, Resource, Stream, StreamDescription, StreamMut};
+use super::reader::ResourceReader;
 
 #[derive(Debug)]
 pub enum ReadTargets<'a> {
@@ -26,7 +26,7 @@ impl <'a> ReadTargets<'a> {
 
 	pub fn get_stream(&self, arg: &str) -> Option<&StreamMut> {
 		match self {
-			ReadTargets::Streams(streams) => streams.iter().find(|s| s.name == arg),
+			ReadTargets::Streams(streams) => streams.iter().find(|s| s.name() == arg),
 			_ => None,
 		}
 	}
@@ -80,7 +80,7 @@ impl <'a> LoadTargets<'a> {
 
 	pub fn get_stream(&self, arg: &str) -> Option<&Stream> {
 		match self {
-			LoadTargets::Streams(streams) => streams.iter().find(|s| s.name == arg),
+			LoadTargets::Streams(streams) => streams.iter().find(|s| s.name() == arg),
 			_ => None,
 		}
 	}
@@ -96,65 +96,11 @@ impl <'a> From<ReadTargets<'a>> for LoadTargets<'a> {
 	}
 }
 
-/// The resource reader trait provides methods to read a single resource.
-pub trait ResourceReader: Send + Sync + Debug {
-	fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()>;
-}
-
-#[derive(Debug)]
-pub struct FileResourceReader {
-	file: File,
-}
-
-impl FileResourceReader {
-	pub fn new(file: File) -> Self {
-		Self {
-			file,
-		}
-	}
-}
-
-impl ResourceReader for FileResourceReader {
-	fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, stream_descriptions: Option<&'c [StreamDescription]>, read_target: ReadTargets<'a>) -> Result<LoadTargets<'a>, ()> {
-		match read_target {
-			ReadTargets::Buffer(buffer) => {
-				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
-				self.file.read_exact(buffer).or(Err(()))?;
-				Ok(LoadTargets::Buffer(buffer))
-			}
-			ReadTargets::Box(mut buffer) => {
-				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
-				self.file.read_exact(&mut buffer[..]).or(Err(()))?;
-				Ok(LoadTargets::Box(buffer))
-			}
-			ReadTargets::Streams(mut streams) => {
-				if let Some(stream_descriptions) = stream_descriptions{
-					for sd in stream_descriptions {
-						let offset = sd.offset;
-						if let Some(s) = streams.iter_mut().find(|s| s.name == sd.name) {
-							self.file.seek(std::io::SeekFrom::Start(offset as u64)).or(Err(()))?;
-							self.file.read_exact(s.buffer).or(Err(()))?;
-						}
-					}
-					Ok(LoadTargets::Streams(streams.into_iter().map(|stream| {
-						Stream {
-							name: stream.name,
-							buffer: stream.buffer,
-						}
-					}).collect()))
-				} else {
-					Err(())
-				}
-			}
-		}
-	}
-}
-
 pub type MultiResourceReader = Box<dyn ResourceReader>;
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{Stream, StreamDescription};
+    use crate::StreamDescription;
 
     use super::{LoadTargets, ReadTargets, ResourceReader};
 
@@ -183,18 +129,17 @@ pub mod tests {
 					Ok(LoadTargets::Box(buffer))
 				}
 				ReadTargets::Streams(mut streams) => {
-					if let Some(stream_descriptions) = stream_descriptions{
+					if let Some(stream_descriptions) = stream_descriptions {
 						for sd in stream_descriptions {
 							let offset = sd.offset;
-							if let Some(s) = streams.iter_mut().find(|s| s.name == sd.name) {
-								s.buffer.copy_from_slice(&self.data[offset..][..s.buffer.len()]);
+							if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
+								let len = s.buffer_mut().len();
+								s.buffer_mut().copy_from_slice(&self.data[offset..][..len]);
 							}
 						}
+						
 						Ok(LoadTargets::Streams(streams.into_iter().map(|stream| {
-							Stream {
-								name: stream.name,
-								buffer: stream.buffer,
-							}
+							stream.into()
 						}).collect()))
 					} else {
 						Err(())

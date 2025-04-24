@@ -1,5 +1,3 @@
-use crate::CreateResource;
-
 // Audio
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Clone, Copy)]
@@ -175,19 +173,6 @@ impl Size for IntegralTypes {
 }
 
 // Image
-
-pub struct CreateImage {
-	pub format: Formats,
-	pub extent: [u32; 3],
-}
-
-impl CreateResource for CreateImage {}
-
-// #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
-// pub enum CompressionSchemes {
-// 	BC7,
-// 	BC5,
-// }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Gamma {

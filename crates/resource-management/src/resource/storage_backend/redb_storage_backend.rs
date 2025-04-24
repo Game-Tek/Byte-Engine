@@ -8,7 +8,7 @@ use std::hash::Hasher;
 use redb::ReadableTable;
 use utils::sync::{remove_file, File, Write};
 
-use crate::{asset, resource::{resource_handler::{FileResourceReader, MultiResourceReader}, ResourceId}, ProcessedAsset, SerializableResource};
+use crate::{asset, resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId}, ProcessedAsset, SerializableResource};
 
 use super::{Query, ReadStorageBackend, StorageBackend, WriteStorageBackend};
 

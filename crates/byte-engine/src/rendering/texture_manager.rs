@@ -2,7 +2,7 @@
 
 use std::{collections::hash_map::Entry, num::NonZeroU8};
 
-use resource_management::{image::Image, Reference};
+use resource_management::{resources::image::Image, Reference};
 use utils::{hash::{HashMap, HashMapExt}, sync::{Rc, RwLock}, Extent};
 use ghi::Device;
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use log::debug;
 use utils::{json::{self, JsonContainerTrait, JsonValueTrait}, Extent};
 
-use crate::{asset, material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator, types::{AlphaMode, ShaderTypes}, ProcessedAsset, ReferenceModel};
+use crate::{asset, resources::material::{Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel, VariantVariableModel}, resource, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator, types::{AlphaMode, ShaderTypes}, ProcessedAsset, ReferenceModel};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
@@ -311,7 +311,7 @@ pub mod tests {
 	use utils::json;
 
 	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend}, glsl_shader_generator::GLSLShaderGenerator, material::VariantModel, resource::storage_backend::tests::TestStorageBackend, shader_generator::ShaderGenerationSettings, ReferenceModel};
+	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend}, glsl_shader_generator::GLSLShaderGenerator, resources::material::VariantModel, resource::storage_backend::tests::TestStorageBackend, shader_generator::ShaderGenerationSettings, ReferenceModel};
 
 	pub struct RootTestShaderGenerator {
 

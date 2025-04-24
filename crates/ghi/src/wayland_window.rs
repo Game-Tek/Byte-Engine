@@ -59,14 +59,12 @@ impl WaylandWindow {
 
 		let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
 
-		xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
-
 		let toplevel = xdg_surface.get_toplevel(&qh, ());
 
 		toplevel.set_title(name.to_string());
 		toplevel.set_app_id(id_name.to_string());
 
-		let extent;
+		let reported_extent;
 		let scale;
 
 		{
@@ -89,10 +87,11 @@ impl WaylandWindow {
 			event_queue.roundtrip(&mut app_data).unwrap();
 
 			surface.set_buffer_scale(app_data.scale as _);
+			xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
 
 			surface.commit();
 
-			extent = app_data.extent;
+			reported_extent = app_data.extent;
 			scale = app_data.scale;
 		}
 
@@ -103,7 +102,7 @@ impl WaylandWindow {
 			surface,
 			xdg_surface,
 			xdg_toplevel: toplevel,
-			extent,
+			extent: reported_extent,
 			scale,
 		})
 	}

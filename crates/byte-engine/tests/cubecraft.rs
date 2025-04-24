@@ -293,7 +293,7 @@ impl RenderPass for CubeCraftRenderPass {
 			uint16_t block[];
 		} faces;
 
-		layout(set = 0, binding = 2) readonly uniform sampler2D[] textures;
+		layout(set = 0, binding = 2) uniform sampler2D[] textures;
 
 		void main() {
 			uint in_block = uint(faces.block[gl_PrimitiveID / 2]);

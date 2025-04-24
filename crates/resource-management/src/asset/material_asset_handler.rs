@@ -66,7 +66,7 @@ impl Asset for MaterialAsset {
 					ValueModel::Vector3([value[0], value[1], value[2]])
 				}
 				"float" => ValueModel::Scalar(0f32),
-				"Texture2D" => ValueModel::Image(asset_manager.load(v).unwrap()),
+				"Texture2D" => ValueModel::Image(asset_manager.load(v, storage_backend).unwrap()),
 				_ => panic!("Unknown data type")
 			}
 		};
@@ -129,7 +129,7 @@ impl Asset for MaterialAsset {
 		} else {
 			let parent_material_url = asset["parent"].as_str().unwrap();
 
-			let material = asset_manager.load(parent_material_url).or_else(|_| { Err("Failed to load parent material") })?;
+			let material = asset_manager.load(parent_material_url, storage_backend).or_else(|_| { Err("Failed to load parent material") })?;
 
 			let material_repr: MaterialModel = pot::from_slice(&material.resource).unwrap();
 
@@ -210,7 +210,7 @@ impl AssetHandler for MaterialAssetHandler {
 		r#type == "bema"
 	}
 
-	fn load<'a>(&'a self, asset_manager: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
 		if let Some(dt) = storage_backend.get_type(url) {
 			if dt != "bema" { return Err(LoadErrors::UnsupportedType); }
 		}
@@ -310,8 +310,9 @@ fn transform_shader(generator: &dyn ProgramGenerator, storage_backend: &dyn reso
 pub mod tests {
 	use utils::json;
 
-	use super::{MaterialAssetHandler, ProgramGenerator};
-	use crate::{asset::{asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend}, glsl_shader_generator::GLSLShaderGenerator, resources::material::VariantModel, resource::storage_backend::tests::TestStorageBackend, shader_generator::ShaderGenerationSettings, ReferenceModel};
+	use crate::{asset::{storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, asset_handler::AssetHandler, asset_manager::AssetManager, material_asset_handler::MaterialAssetHandler, ResourceId}, glsl_shader_generator::GLSLShaderGenerator, resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend, resources::material::VariantModel, shader_generator::ShaderGenerationSettings, ReferenceModel};
+
+	use super::ProgramGenerator;
 
 	pub struct RootTestShaderGenerator {
 
@@ -423,18 +424,18 @@ pub mod tests {
 
 		asset_storage_backend.add_file("fragment.besl", shader_file.as_bytes());
 
-		let resource_storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend.clone(), resource_storage_backend.clone());
+		let asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
 
-		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema"),).expect("Failed to load material");
+		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, asset_manager.get_storage_backend(), ResourceId::new("material.bema"),).expect("Failed to load material");
 
-		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, ResourceId::new("material.bema"));
+		let _ = asset.load(&asset_manager, &resource_storage_backend, asset_manager.get_storage_backend(), ResourceId::new("material.bema"));
 
 		let generated_resources = resource_storage_backend.get_resources();
 
@@ -497,9 +498,9 @@ pub mod tests {
 
 		asset_storage_backend.add_file("variant.bema", variant_json.as_bytes());
 
-		let resource_storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = MaterialAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
@@ -508,7 +509,7 @@ pub mod tests {
 
 		asset_manager.add_asset_handler(asset_handler);
 
-		let _: ReferenceModel<VariantModel> = asset_manager.load("variant.bema").expect("Failed to load material");
+		let _: ReferenceModel<VariantModel> = asset_manager.load("variant.bema", &resource_storage_backend).expect("Failed to load material");
 
 		let generated_resources = resource_storage_backend.get_resources();
 		assert_eq!(generated_resources.len(), 3);

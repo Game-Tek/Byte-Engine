@@ -348,17 +348,15 @@ impl Description for ImageDescription {
 
 #[cfg(test)]
 mod tests {
-	use super::ImageAssetHandler;
-	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, ResourceId}, resource::storage_backend::tests::TestStorageBackend, tests::ASSETS_PATH};
+	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId}, resource};
 
 	#[test]
 	fn load_image() {
 		let asset_handler = ImageAssetHandler::new();
 
-		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
-		let resource_storage_backend = TestStorageBackend::new();
-		let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
-		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
+		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
+		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		let asset_manager = AssetManager::new(asset_storage_backend.clone());
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 

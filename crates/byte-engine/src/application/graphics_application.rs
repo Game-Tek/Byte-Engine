@@ -2,7 +2,7 @@ use crate::{core::{property::Property, spawn, spawn_as_child, task, EntityHandle
 use std::time::Duration;
 
 use maths_rs::num::Base;
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler}, resources::material::Material, resource::{resource_manager::ResourceManager, RedbStorageBackend}};
+use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler, FileStorageBackend}, resource::{resource_manager::ResourceManager, RedbStorageBackend}, resources::material::Material};
 use utils::Extent;
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
@@ -54,7 +54,7 @@ impl Application for GraphicsApplication {
 
 		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 
-		let resource_manager = spawn(ResourceManager::new(resources_path.clone()));
+		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path.clone())));
 
 		let window_system_handle = root_space_handle.spawn(window_system::WindowSystem::new_as_system());
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new_as_system());		
@@ -335,7 +335,9 @@ pub fn setup_default_resource_and_asset_management(application: &mut GraphicsApp
 	let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 	let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
 
-	let mut asset_manager = AssetManager::new(assets_path, resources_path);
+	let storage_backend = FileStorageBackend::new(resources_path.clone());
+
+	let mut asset_manager = AssetManager::new(storage_backend);
 
 	let mut material_asset_handler = MaterialAssetHandler::new();
 	material_asset_handler.set_shader_generator(generator);

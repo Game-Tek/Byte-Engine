@@ -29,6 +29,7 @@ impl RedbStorageBackend {
         }
 
         let db_res = if !memory_only {
+			std::fs::create_dir_all(&base_path).unwrap();
             redb::Database::create(base_path.join("resources.db"))
         } else {
             log::info!("Using memory database instead of file database.");

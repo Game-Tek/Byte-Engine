@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use utils::sync::Arc;
-use resource_management::{asset::{asset_manager::{self, AssetManager}, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler}, resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend}};
+use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler, FileStorageBackend}, resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend}};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -91,7 +91,8 @@ fn main() -> Result<(), i32> {
 			}
 		}
 		Commands::Bake { ids, sync } => {
-			let mut asset_manager = AssetManager::new(source_path.into(), destination_path.into());
+			let asset_storage_backend = FileStorageBackend::new(source_path.into());
+			let mut asset_manager = AssetManager::new(asset_storage_backend);
 
 			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
 			asset_manager.add_asset_handler(audio_asset_handler::AudioAssetHandler::new());
@@ -113,10 +114,12 @@ fn main() -> Result<(), i32> {
 				return Ok(());
 			}
 
+			let resource_storage_backend = RedbStorageBackend::new(destination_path.into());
+
 			if sync {
 				for id in ids {
 					log::info!("Baking resource '{}'", id);
-					match asset_manager.bake(&id) {
+					match asset_manager.bake(&id, &resource_storage_backend) {
 						Ok(_) => {
 							log::info!("Baked resource '{}'", id);
 						}
@@ -131,7 +134,7 @@ fn main() -> Result<(), i32> {
 				ids.into_iter().for_each(|id| {
 					let asset_manager = asset_manager.clone();
 					log::info!("Baking resource '{}'", id);
-					match asset_manager.bake(&id) {
+					match asset_manager.bake(&id, &resource_storage_backend) {
 						Ok(_) => {
 							log::info!("Baked resource '{}'", id);
 						}

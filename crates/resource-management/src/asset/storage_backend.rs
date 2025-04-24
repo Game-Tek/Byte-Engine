@@ -14,6 +14,8 @@ pub struct FileStorageBackend {
 
 impl FileStorageBackend {
 	pub fn new(base_path: PathBuf) -> Self {
+		std::fs::create_dir_all(&base_path).expect("Failed to create base path");
+
 		Self {
 			base_path,
 		}

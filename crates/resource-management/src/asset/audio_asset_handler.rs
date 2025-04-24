@@ -142,18 +142,15 @@ struct AudioDescription {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset, tests::ASSETS_PATH};
-
-    use super::*;
+    use crate::{asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId}, resource, resources::audio::Audio, types::BitDepths, AssetHandler};
 
     #[test]
     fn test_audio_asset_handler() {
 		let audio_asset_handler = AudioAssetHandler::new();
 
-		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
+		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-        let asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
-		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
+        let asset_manager = AssetManager::new(asset_storage_backend.clone());
 
         let url = ResourceId::new("gun.wav");
 

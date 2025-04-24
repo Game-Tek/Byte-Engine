@@ -56,7 +56,7 @@ impl Asset for MeshAsset {
 				gamma: if semantic == Semantic::Albedo { Gamma::SRGB } else { Gamma::Linear },
 			};
 
-			let resource = asset_manager.produce(url, "image/png", &image_description, image.pixels.into_boxed_slice());
+			let resource = asset_manager.produce(url, "image/png", &image_description, image.pixels.into_boxed_slice(), storage_backend);
 
 			return Ok(());
 		}
@@ -160,7 +160,7 @@ impl Asset for MeshAsset {
 		}).collect::<Vec<String>>();
 
 		let materials_per_primitive = material_name_per_primitive.into_iter().map(|n| (n, asset_manager)).map(|(name, asset_manager): (String, &'a AssetManager)| {
-			asset_manager.load::<VariantModel>(&name)
+			asset_manager.load::<VariantModel>(&name, storage_backend)
 		}).collect::<Result<Vec<_>, _>>().or(Err("Failed to load materials"))?;
 
 		let vertex_counts = flat_mesh_tree.clone().map(|(_, reader, _)| {
@@ -508,7 +508,7 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 #[cfg(test)]
 mod tests {
     use super::MeshAssetHandler;
-    use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId}, resources::mesh::MeshModel, resource::storage_backend::tests::TestStorageBackend, tests::ASSETS_PATH, ReferenceModel};
+    use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler}, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId}, resources::mesh::MeshModel, resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend, tests::ASSETS_PATH, ReferenceModel};
 
     #[test]
     fn load_gltf() {
@@ -529,9 +529,9 @@ mod tests {
 		}"#.as_bytes());
 		asset_storage_backend.add_file("Box.glb.bead", r#"{"asset": {"Texture": {"asset": "Texture.bema" }}}"#.as_bytes());
 
-		let resource_storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
         let asset_handler = MeshAssetHandler::new();
 		asset_manager.add_asset_handler({
@@ -545,9 +545,7 @@ mod tests {
 
         let url = "Box.glb";
 
-        let mesh: ReferenceModel<MeshModel> = asset_manager.load(url).expect("Failed to parse asset");
-
-		let resource_storage_backend = asset_manager.get_resource_storage_backend().downcast_ref::<TestStorageBackend>().unwrap();
+        let mesh: ReferenceModel<MeshModel> = asset_manager.load(url, &resource_storage_backend).expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();
 
@@ -578,9 +576,9 @@ mod tests {
 		}"#.as_bytes());
 		asset_storage_backend.add_file("Suzanne.gltf.bead", r#"{"asset": {"Suzanne": {"asset": "Suzanne.bema" }}}"#.as_bytes());
 
-		let resource_storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
 		asset_manager.add_asset_handler({
 			let mut material_asset_handler = MaterialAssetHandler::new();
@@ -595,7 +593,7 @@ mod tests {
 
         let url = "Suzanne.gltf";
 
-        let mesh: ReferenceModel<MeshModel> = asset_manager.load(url,).expect("Failed to parse asset");
+        let mesh: ReferenceModel<MeshModel> = asset_manager.load(url, &resource_storage_backend).expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();
 
@@ -644,9 +642,9 @@ mod tests {
 
 		asset_storage_backend.add_file("shaders/pbr.besl", "main: fn () -> void {}".as_bytes());
 
-		let resource_storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
 		// storage_backend.add_file("PBR.bema", r#"{
 		// 	"domain": "World",
@@ -801,7 +799,7 @@ mod tests {
 
         let url = "Revolver.glb";
 
-        let mesh: ReferenceModel<MeshModel> = asset_manager.load(&url,).unwrap();
+        let mesh: ReferenceModel<MeshModel> = asset_manager.load(&url, &resource_storage_backend).unwrap();
 
         let url = ResourceId::new(url);
 
@@ -828,13 +826,12 @@ mod tests {
 	#[test]
     #[ignore="Test uses data not pushed to the repository"]
     fn load_glb_image() {
-		let asset_storage_backend = asset::storage_backend::FileStorageBackend::new(ASSETS_PATH.into());
-		let resource_storage_backend = TestStorageBackend::new();
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new_with_storage_backends(asset_storage_backend, resource_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
         let asset_handler = MeshAssetHandler::new();
-		let asset_storage_backend = asset::FileStorageBackend::new(ASSETS_PATH.into());
 
 		let image_asset_handler = ImageAssetHandler::new();
 
@@ -842,9 +839,9 @@ mod tests {
 
         let url = ResourceId::new("Revolver.glb#Revolver_Metallic-Revolver_Roughness");
 
-        let asset_loader = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).expect("Image asset handler did not handle asset");
+        let asset_loader = asset_handler.load(&asset_manager, &resource_storage_backend, asset_manager.get_storage_backend(), url,).expect("Image asset handler did not handle asset");
 
-		asset_loader.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).expect("Image asset handler did not handle asset");
+		asset_loader.load(&asset_manager, &resource_storage_backend, asset_manager.get_storage_backend(), url).expect("Image asset handler did not handle asset");
 
 		let _ = resource_storage_backend.get_resource_data_by_name(url).unwrap();
 

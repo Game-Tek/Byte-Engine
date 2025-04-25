@@ -5,7 +5,7 @@ use crate::{graphics_hardware_interface, FrameKey};
 
 use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption};
 
-pub struct VulkanCommandBufferRecording<'a> {
+pub struct CommandBufferRecording<'a> {
 	ghi: &'a mut Device,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
 	in_render_pass: bool,
@@ -19,9 +19,9 @@ pub struct VulkanCommandBufferRecording<'a> {
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 }
 
-impl VulkanCommandBufferRecording<'_> {
-	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> VulkanCommandBufferRecording<'_> {
-		VulkanCommandBufferRecording {
+impl CommandBufferRecording<'_> {
+	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
+		CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),			
@@ -309,7 +309,7 @@ impl VulkanCommandBufferRecording<'_> {
 	}
 }
 
-impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBufferRecording<'_> {
+impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecording<'_> {
 	fn begin(&mut self) {
 		let command_buffer = self.get_command_buffer();
 
@@ -496,7 +496,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[graphics_hardware_interface::BottomLevelAccelerationStructureBuild]) {
 		if acceleration_structure_builds.is_empty() { return; }
 
-		fn visit(this: &mut VulkanCommandBufferRecording, acceleration_structure_builds: &[graphics_hardware_interface::BottomLevelAccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,) {
+		fn visit(this: &mut CommandBufferRecording, acceleration_structure_builds: &[graphics_hardware_interface::BottomLevelAccelerationStructureBuild], mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>, mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>, mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,) {
 			if let Some(build) = acceleration_structure_builds.first() {
 				let (acceleration_structure_handle, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
 
@@ -1234,7 +1234,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for VulkanCommandBuffe
 	}
 }
 
-impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandBufferRecording<'_> {
+impl graphics_hardware_interface::RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	/// Binds a pipeline to the GPU.
 	fn bind_raster_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundRasterizationPipelineMode {
 		let command_buffer = self.get_command_buffer();
@@ -1295,7 +1295,7 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for VulkanCommandB
 	}
 }
 
-impl graphics_hardware_interface::BoundRasterizationPipelineMode for VulkanCommandBufferRecording<'_> {
+impl graphics_hardware_interface::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		let command_buffer = self.get_command_buffer();
@@ -1341,7 +1341,7 @@ impl graphics_hardware_interface::BoundRasterizationPipelineMode for VulkanComma
 	}
 }
 
-impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBufferRecording<'_> {
+impl graphics_hardware_interface::BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
@@ -1380,7 +1380,7 @@ impl graphics_hardware_interface::BoundComputePipelineMode for VulkanCommandBuff
 	}
 }
 
-impl graphics_hardware_interface::BoundRayTracingPipelineMode for VulkanCommandBufferRecording<'_> {
+impl graphics_hardware_interface::BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
 		use graphics_hardware_interface::Device;
 

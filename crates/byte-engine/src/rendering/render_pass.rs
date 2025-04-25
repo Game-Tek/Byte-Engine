@@ -258,7 +258,7 @@ impl RenderPass for BlitPass {
 pub struct RenderPassBuilder<'a> {
 	ghi: Rc<RwLock<ghi::Device>>,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
-	pub(crate) images: HashMap<String, (ghi::ImageHandle, i8)>,
+	pub(crate) images: HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
 }
 
 impl <'a> RenderPassBuilder<'a> {
@@ -273,15 +273,15 @@ impl <'a> RenderPassBuilder<'a> {
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 
-		let image = self.images.get(name).expect("Image not found").clone().0;
+		let (image, format, _) = self.images.get(name).expect("Image not found").clone();
 
-		RenderToResult { image }
+		RenderToResult { image, format }
 	}
 
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 
-		let (image, _) = self.images.get(name).expect("Image not found").clone();
+		let (image, _, _) = self.images.get(name).expect("Image not found").clone();
 
 		ReadFromResult { image, }
 	}
@@ -309,10 +309,17 @@ impl Into<ghi::ImageHandle> for &ReadFromResult {
 
 pub struct RenderToResult {
 	image: ghi::ImageHandle,
+	format: ghi::Formats,
 }
 
 impl Into<ghi::ImageHandle> for RenderToResult {
 	fn into(self) -> ghi::ImageHandle {
 		self.image
+	}
+}
+
+impl Into<ghi::PipelineAttachmentInformation> for RenderToResult {
+	fn into(self) -> ghi::PipelineAttachmentInformation {
+		ghi::PipelineAttachmentInformation::new(self.format)
 	}
 }

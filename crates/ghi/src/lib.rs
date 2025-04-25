@@ -19,44 +19,15 @@ pub mod render_debugger;
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
-pub use crate::vulkan::VulkanCommandBufferRecording as CommandBufferRecording;
+#[cfg(target_os = "linux")]
+pub use vulkan::Device as Device;
+#[cfg(target_os = "linux")]
+pub use vulkan::CommandBufferRecording as CommandBufferRecording;
 
 pub mod image;
 pub mod sampler;
 pub mod raster_pipeline;
 
 pub fn create(settings: graphics_hardware_interface::Features) -> Device {
-	Device(vulkan::Device::new(settings).expect("Failed to create VulkanGHI"))
-}
-
-pub struct Device(pub vulkan::Device);
-
-impl std::ops::Deref for Device {
-	type Target = vulkan::Device;
-
-	fn deref(&self) -> &Self::Target {
-		&self.0
-	}
-}
-
-impl std::ops::DerefMut for Device {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		&mut self.0
-	}
-}
-
-pub struct CBR<'a>(pub vulkan::VulkanCommandBufferRecording<'a>);
-
-impl<'a> std::ops::Deref for CBR<'a> {
-	type Target = vulkan::VulkanCommandBufferRecording<'a>;
-
-	fn deref(&self) -> &Self::Target {
-		&self.0
-	}
-}
-
-impl<'a> std::ops::DerefMut for CBR<'a> {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		&mut self.0
-	}
+	vulkan::Device::new(settings).expect("Failed to create VulkanGHI")
 }

@@ -144,9 +144,13 @@ impl Renderer {
 
 		let mut render_pass_builder = RenderPassBuilder::new(self.ghi.clone());
 
-		render_pass_builder.images.insert("main".to_string(), (self.targets.get("main").unwrap().clone(), 0));
-		render_pass_builder.images.insert("depth".to_string(), (self.targets.get("depth").unwrap().clone(), 0));
-		render_pass_builder.images.insert("result".to_string(), (self.targets.get("result").unwrap().clone(), 0));
+		let main_image = self.root_render_pass.images.get("main").unwrap().clone();
+		let depth_image = self.root_render_pass.images.get("depth").unwrap().clone();
+		let result_image = self.root_render_pass.images.get("result").unwrap().clone();
+
+		render_pass_builder.images.insert("main".to_string(), (main_image.0, main_image.1, 0));
+		render_pass_builder.images.insert("depth".to_string(), (depth_image.0, depth_image.1, 0));
+		render_pass_builder.images.insert("result".to_string(), (result_image.0, result_image.1, 0));
 
 		let render_pass = space_handle.spawn(T::create(&mut render_pass_builder));
 		self.root_render_pass.add_render_pass(render_pass, render_pass_builder);

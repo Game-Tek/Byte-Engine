@@ -31,7 +31,6 @@ use ghi::graphics_hardware_interface::Device as _;
 use ghi::raster_pipeline;
 use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
-use ghi::Device;
 use ghi::RasterizationRenderPassMode;
 use resource_management::glsl;
 use utils::hash::HashMap;
@@ -346,8 +345,8 @@ impl RenderPass for CubeCraftRenderPass {
 		let ghi = render_pass_builder.ghi();
 		let mut ghi = ghi.write();
 
-		render_pass_builder.render_to("main");
-		render_pass_builder.render_to("depth");
+		let render_to_main = render_pass_builder.render_to("main");
+		let render_to_depth = render_pass_builder.render_to("depth");
 
 		let vertex_buffer = ghi.create_buffer(Some("vertices"), ghi::Uses::Vertex, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		let index_buffer = ghi.create_buffer(Some("indices"), ghi::Uses::Index, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
@@ -412,7 +411,7 @@ impl RenderPass for CubeCraftRenderPass {
 		let f_shader = ghi.create_shader(None, ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, &[ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ), ghi::ShaderBindingDescriptor::new(0, 1, ghi::AccessPolicies::READ)]).unwrap();
 
 		// TODO: notify user if provided shaders don't consume any bindings in the layout
-		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),), ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32,)]));
+		let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(layout, &[ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)], &[ghi::ShaderParameter::new(&v_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&f_shader, ghi::ShaderTypes::Fragment)], &[render_to_main.into(), render_to_depth.into()]));
 
 		let camera_data_buffer = ghi.create_buffer(Some("camera"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);
 		let face_data_buffer = ghi.create_buffer(Some("face_data_buffer"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC);

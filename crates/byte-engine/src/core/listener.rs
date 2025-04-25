@@ -2,7 +2,9 @@ use std::ops::DerefMut;
 
 use utils::{sync::RwLock, BoxedFuture};
 
-use super::{entity::{get_entity_trait_for_type, EntityTrait}, Entity, EntityHandle};
+use crate::gameplay::space::Spawn;
+
+use super::{domain::Domain, entity::{get_entity_trait_for_type, EntityTrait}, spawn_as_child, Entity, EntityHandle, SpawnHandler};
 
 pub trait Listener: Entity {
 	/// Notifies all listeners of the given type that the given entity has been created.
@@ -79,6 +81,16 @@ impl Entity for BasicListener {
 	}
 }
 
+impl Domain for BasicListener {}
+
+impl Spawn for EntityHandle<BasicListener> {
+	type Domain = BasicListener;
+
+	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
+		spawn_as_child(self.clone(), spawner)
+	}
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
@@ -120,7 +132,7 @@ mod tests {
 
 		let listener_handle = spawn(BasicListener::new());
 
-		let _: EntityHandle<System> = spawn_as_child(listener_handle.clone(), System::new());
+		let _: EntityHandle<System> = listener_handle.spawn(System::new());
 
 		assert_eq!(unsafe { COUNTER }, 0);
 

@@ -14,41 +14,24 @@ impl Space {
 			listener: BasicListener::new(),
 		}
 	}
-
-	// fn spawn<E: Entity>(&mut self, spawner: EntityBuilder<'static, E>) -> EntityHandle<E> {
-	// 	let internal_id = 0;
-		
-	// 	let entity = (spawner.create)(domain.clone()).await;
-		
-	// 	let obj = std::sync::Arc::new(RwLock::new(entity));
-		
-	// 	let mut handle = EntityHandle::<R>::new(obj, internal_id,);
-		
-	// 	for f in self.post_creation_functions {
-	// 		f(&mut handle,);
-	// 	}
-		
-	// 	if let Some(domain) = domain.clone() {
-	// 		for f in self.listens_to {
-	// 			f(domain.clone(), handle.clone())
-	// 		}
-	// 	}
-		
-	// 	if let Some(domain) = domain {
-	// 		if let Some(listener) = domain.write_sync().deref().get_listener() {
-	// 			handle.read_sync().deref().call_listeners(listener, handle.clone()).await;
-	// 		}
-	// 	}
-		
-	// 	Some(handle)
-	// }
 }
 
 pub trait Spawn {
+	type Domain: Domain + ?Sized;
 	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E>;
 }
 
 impl Spawn for EntityHandle<Space> {
+	type Domain = Space;
+	
+	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
+		spawn_as_child(self.clone(), spawner)
+	}
+}
+
+impl Spawn for EntityHandle<dyn Domain> {
+	type Domain = dyn Domain;
+	
 	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
 		spawn_as_child(self.clone(), spawner)
 	}

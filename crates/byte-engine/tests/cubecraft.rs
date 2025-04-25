@@ -18,6 +18,9 @@ use byte_engine::core::EntityHandle;
 
 use byte_engine::core::Task;
 use byte_engine::gameplay::space::Spawn;
+use byte_engine::gameplay::Anchor;
+use byte_engine::gameplay::Positionable;
+use byte_engine::gameplay::Transform;
 use byte_engine::rendering::aces_tonemap_render_pass::AcesToneMapPass;
 use byte_engine::rendering::common_shader_generator::CommonShaderGenerator;
 use byte_engine::rendering::render_pass::RenderPass;
@@ -93,8 +96,12 @@ fn cubecraft() {
 
 	space_handle.spawn(ChunkLoader::create());
 
+	let mut camera = Camera::new(Vector3::new(0.0, 0.0, 0.0),);
+
+	camera.set_fov(90.0);
+
 	// Create the camera
-	let camera = space_handle.spawn(Camera::new(Vector3::new(0.0, 1.8, 0.0),));
+	let camera = space_handle.spawn(camera);
 
 	// Create the directional light
 	let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(-UP), 4000f32));
@@ -109,22 +116,32 @@ fn cubecraft() {
 		});
 	}
 
-	const CHUNK_SIZE: i32 = 16;
-	const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
+	let player = space_handle.spawn(Player::create());
+
+	let mut anchor = Anchor::new(Transform::default());
+
+	anchor.attach_with_offset(camera, UP * 1.8);
+
+	let anchor = space_handle.spawn(anchor);
 
 	{
-		let camera = camera.clone();
+		let positionable = anchor.clone();
 		let move_action_handle = move_action_handle.clone();
 
 		space_handle.spawn(Task::tick(move || {
 			let value = move_action_handle.read().value().get();
 
-			let mut camera = camera.write();
+			let mut positionable = positionable.write();
 	
-			let position = camera.get_position();
-			camera.set_position(position + value);
+			let position = positionable.transform().get_position();
+			positionable.transform_mut().set_position(position + value);
 		}));
 	}
+
+	let _ = space_handle.spawn(Physics::create(anchor));
+
+	const CHUNK_SIZE: i32 = 16;
+	const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
 
 	{
 		let a = space_handle.clone();
@@ -136,7 +153,7 @@ fn cubecraft() {
 						let position = (x, y, z);
 						let block = make_block(position);
 		
-						if block != AIR_BLOCK {
+						if block != AIR_BLOCK && y <= z {
 							Some(Block::create(position, block))
 						} else {
 							None
@@ -172,6 +189,81 @@ impl Entity for ChunkLoader {}
 impl EntitySubscriber<Camera> for ChunkLoader {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, params: &'a Camera) -> () {
 		self.camera = Some(handle.clone());
+	}
+}
+
+struct Player {
+	position: Vector3,
+}
+
+impl Player {
+	fn new() -> Self {
+		Player { position: Vector3::new(0.0, 0.0, 0.0), }
+	}
+
+	fn create() -> EntityBuilder<'static, Self> {
+		Player::new().into()
+	}
+}
+
+impl Entity for Player {}
+
+impl Positionable for Player {
+	fn get_position(&self) -> Vector3 {
+		self.position
+	}
+
+	fn set_position(&mut self, position: Vector3) {
+		self.position = position;
+	}
+}
+
+struct Physics {
+	player: Option<EntityHandle<dyn Positionable>>,
+	blocks: Vec<EntityHandle<Block>>,
+}
+
+impl Physics {
+	fn new(player: EntityHandle<dyn Positionable>) -> Self {
+		Physics { player: Some(player), blocks: Vec::new(), }
+	}
+
+	fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(Physics::new(player)).listen_to::<Block>().then(|space, handle| {
+			space.spawn(Task::tick(move || {
+				handle.write().update();
+			}));
+		})
+	}
+
+	fn update(&self) {
+		if let Some(player) = &self.player {
+			let mut player = player.write();
+			let position = player.get_position();
+
+			for block in &self.blocks {
+				let block = block.read();
+				let block_position = (block.position.0 as f32, block.position.1 as f32, block.position.2 as f32);
+
+				if position.x > block_position.0 - 0.5 && position.x < block_position.0 + 0.5 && position.z > block_position.2 - 0.5 && position.z < block_position.2 + 0.5 {
+					player.set_position(Vector3::new(position.x, block_position.1 + 0.5, position.z));
+				}
+			}
+		}
+	}
+}
+
+impl Entity for Physics {}
+
+impl EntitySubscriber<Block> for Physics {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
+		self.blocks.push(handle.clone());
+	}
+}
+
+impl EntitySubscriber<Player> for Physics {
+	fn on_create<'a>(&'a mut self, handle: EntityHandle<Player>, params: &'a Player) -> () {
+		self.player = Some(handle.clone());
 	}
 }
 

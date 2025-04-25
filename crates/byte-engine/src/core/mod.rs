@@ -10,6 +10,7 @@ pub mod task;
 
 use std::ops::Deref;
 
+use domain::Domain;
 pub use orchestrator::Orchestrator;
 use listener::EntitySubscriber;
 use listener::Listener;
@@ -23,6 +24,8 @@ pub use entity::EntityHandle;
 pub use task::Task;
 
 use utils::sync::{Arc, RwLock};
+
+use crate::gameplay::space::Spawn;
 
 struct NoneListener {}
 impl Listener for NoneListener {
@@ -45,8 +48,8 @@ pub fn spawn<E>(entity: E) -> EntityHandle<E> {
 	handle
 }
 
-pub fn spawn_as_child<'a, E: Entity>(parent: DomainType, entity: impl SpawnHandler<E>) -> EntityHandle<E> {
-	let e = entity.call(Some(parent),).unwrap();
+pub fn spawn_as_child<'a, E: Entity>(parent: EntityHandle<dyn Domain>, entity: impl SpawnHandler<E>) -> EntityHandle<E> {
+	let e = entity.call(parent,).unwrap();
 	e
 }
 
@@ -54,21 +57,19 @@ pub fn spawn_as_child<'a, E: Entity>(parent: DomainType, entity: impl SpawnHandl
 
 /// Handles extractor pattern for most functions passed to the orchestrator.
 pub trait SpawnHandler<E: Entity> {
-	fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<E>> where Self: Sized;
+	fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<E>> where Self: Sized;
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for R {
-    fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
 		let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 		let obj = Arc::new(RwLock::new(self));
 
 		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
-		if let Some(domain) = domain {
-			if let Some(listener) = domain.write().deref().get_listener() {
-				handle.read().deref().call_listeners(listener, handle.clone());
-			}
+		if let Some(listener) = domain.read().get_listener() {
+			handle.read().call_listeners(listener, handle.clone());
 		}
 
 		Some(handle)
@@ -76,29 +77,25 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
-    fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
 		let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 		let entity = (self.create)(domain.clone());
 
 		let obj = std::sync::Arc::new(RwLock::new(entity));
 
-		let mut handle = EntityHandle::<R>::new(obj, internal_id,);
+		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
 		for f in self.post_creation_functions {
-			f(&mut handle,);
+			f(domain.clone(), handle.clone(),);
 		}
 
-		if let Some(domain) = domain.clone() {
-			for f in self.listens_to {
-				f(domain.clone(), handle.clone())
-			}
+		for f in self.listens_to {
+			f(domain.clone(), handle.clone())
 		}
 
-		if let Some(domain) = domain {
-			if let Some(listener) = domain.write().deref().get_listener() {
-				handle.read().deref().call_listeners(listener, handle.clone());
-			}
+		if let Some(listener) = domain.read().get_listener() {
+			handle.read().call_listeners(listener, handle.clone());
 		}
 
 		Some(handle)
@@ -106,7 +103,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
-    fn call<'a>(self, domain: Option<DomainType>,) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
 		let handles = self.into_iter().map(|builder| {
 			let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
@@ -114,26 +111,22 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 
 			let obj = std::sync::Arc::new(RwLock::new(entity));
 
-			let mut handle = EntityHandle::<R>::new(obj, internal_id,);
+			let handle = EntityHandle::<R>::new(obj, internal_id,);
 
 			for f in builder.post_creation_functions {
-				f(&mut handle,);
+				f(domain.clone(),  handle.clone(),);
 			}
 
-			if let Some(domain) = domain.clone() {
-				for f in builder.listens_to {
-					f(domain.clone(), handle.clone())
-				}
+			for f in builder.listens_to {
+				f(domain.clone(), handle.clone())
 			}
 
 			handle
 		}).collect::<Vec<_>>();
 
-		if let Some(domain) = domain {
-			if let Some(listener) = domain.write().deref().get_listener() {
-				for handle in handles.iter() {
-					handle.read().deref().call_listeners(listener, handle.clone());
-				}
+		if let Some(listener) = domain.read().get_listener() {
+			for handle in handles.iter() {
+				handle.read().call_listeners(listener, handle.clone());
 			}
 		}
 

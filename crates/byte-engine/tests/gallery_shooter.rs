@@ -1,6 +1,6 @@
 #![feature(closure_lifetime_binder)]
 
-use byte_engine::core::{entity::{DomainType, EntityBuilder, SelfDestroyingEntity, SpawnerEntity,}, property::{DerivedProperty, Property}, spawn_as_child, Entity, EntityHandle};
+use byte_engine::{core::{entity::{DomainType, EntityBuilder, SelfDestroyingEntity,}, property::{DerivedProperty, Property}, spawn_as_child, Entity, EntityHandle}, gameplay::space::Spawn};
 use std::f32::consts::PI;
 use byte_engine::{application::application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{self, space::Space, Transform}, input, math::from_normal, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::{self}}, Vector3};
 use maths_rs::{mat::MatInverse, swizz::Vec3Swizzle, vec::Vec4};
@@ -72,7 +72,7 @@ impl Entity for GameState {}
 
 impl GameState {
 	fn new() -> EntityBuilder<'static, Self> {
-		EntityBuilder::new_from_closure(|| {
+		EntityBuilder::new_from_function(|| {
 			Self {
 				points: Property::new(0),
 				duration: std::time::Duration::new(30, 0),
@@ -104,15 +104,12 @@ struct Player {
 }
 
 impl Entity for Player {}
-impl SpawnerEntity<Space> for Player {
-	fn get_parent(&self) -> EntityHandle<Space> { self.parent.clone() }
-}
 
 impl Player {
 	fn new(game_state: EntityHandle<GameState>, lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>,) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
 			let transform = Transform::default().position(Vector3::new(0.25, -0.15, 0.4f32)).scale(Vector3::new(0.05, 0.03, 0.2));
-			let camera_handle = crate::spawn_as_child(parent.clone(), byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
+			let camera_handle = parent.spawn(byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
 
 			let mut magazine_size = Property::new(5);
 			let magazine_as_string = DerivedProperty::new(&mut magazine_size, |magazine_size| { magazine_size.to_string() });
@@ -124,13 +121,13 @@ impl Player {
 				audio_system: audio_system,
 
 				camera: camera_handle,
-				mesh: crate::spawn_as_child(parent, mesh::Mesh::new("Box.glb", transform)),
+				mesh: parent.spawn(mesh::Mesh::new("Box.glb", transform)),
 
 				magazine_size,
 				magazine_as_string,
 				magazine_capacity: 5,
 			}
-		}).then(move |this| {
+		}).then(move |_, this| {
 			lookaround.write().value_mut().link_to(this.clone(), Player::lookaround);
 			click.write().value_mut().link_to(this.clone(), Player::shoot);
 		})
@@ -188,12 +185,12 @@ impl SelfDestroyingEntity for Bullet {
 impl Bullet {
 	fn new<'a>(position: Vector3, direction: Vector3) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
-			let bullet_object = spawn_as_child(parent, gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,));
+			let bullet_object: EntityHandle<gameplay::Object> = parent.spawn(gameplay::object::Object::new("Box.glb", Transform::identity().position(position).rotation(direction).scale(Vector3::new(0.1f32, 0.1f32, 0.1f32)), physics::BodyTypes::Dynamic, direction * 20.0f32,));
 
 			Self {
 				bullet_object,
 			}
-		}).then(|s| {
+		}).then(|_, s| {
 			let me = s.clone();
 
 			{

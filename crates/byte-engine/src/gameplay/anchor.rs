@@ -61,6 +61,16 @@ impl Anchor {
 	}
 }
 
+impl Positionable for Anchor {
+	fn set_position(&mut self, position: Vector3) {
+		self.transform.set_position(position);
+	}
+
+	fn get_position(&self) -> Vector3 {
+		self.transform.get_position()
+	}
+}
+
 pub struct AnchorSystem {
 	anchors: Vec<EntityHandle<Anchor>>,
 }

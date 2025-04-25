@@ -4,6 +4,7 @@ use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
 use std::ops::DerefMut;
 
+use ghi::graphics_hardware_interface::Device as _;
 use ghi::{graphics_hardware_interface, raster_pipeline, ImageHandle};
 use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
 use maths_rs::swizz::Vec2Swizzle;
@@ -136,7 +137,7 @@ struct Image {
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
-	ghi: Rc<RwLock<ghi::GHI>>,
+	ghi: Rc<RwLock<ghi::Device>>,
 
 	resource_manager: EntityHandle<ResourceManager>,
 
@@ -245,7 +246,7 @@ pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTempl
 pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl VisibilityWorldRenderDomain {
-	pub fn new<'a>(ghi: Rc<RwLock<ghi::GHI>>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> EntityBuilder<'a, Self> {
+	pub fn new<'a>(ghi: Rc<RwLock<ghi::Device>>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> EntityBuilder<'a, Self> {
 		EntityBuilder::new_from_function(move || {
 			let mut ghi_instance = ghi.write();
 
@@ -1029,7 +1030,7 @@ impl VisibilityWorldRenderDomain {
 		meshes_data_slice[0].model = value;
 	}
 
-	pub fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent,) -> Option<()> {
+	pub fn prepare(&self, ghi: &mut ghi::Device, extent: Extent,) -> Option<()> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
@@ -1096,7 +1097,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 		todo!()
 	}
 
-	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {
 		VisibilityWorldRenderDomain::prepare(&self, ghi, extent);
 	}
 
@@ -1340,7 +1341,7 @@ struct VisibilityPass {
 }
 
 impl VisibilityPass {
-	pub fn new(ghi_instance: &mut ghi::GHI, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
+	pub fn new(ghi_instance: &mut ghi::Device, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
 		let visibility_shader = get_visibility_pass_mesh_source();
 
 		let visibility_mesh_shader_artifact = glsl::compile(&visibility_shader, "Visibility Mesh Shader").unwrap();
@@ -1421,7 +1422,7 @@ struct MaterialCountPass {
 }
 
 impl MaterialCountPass {
-	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
+	fn new(ghi_instance: &mut ghi::Device, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
 		let material_count_shader_artifact = glsl::compile(&get_material_count_source(), "Material Count Pass Compute Shader").unwrap();
 
 		let material_count_shader = ghi_instance.create_shader(Some("Material Count Pass Compute Shader"), ghi::ShaderSource::SPIRV(material_count_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
@@ -1478,7 +1479,7 @@ struct MaterialOffsetPass {
 }
 
 impl MaterialOffsetPass {
-	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
+	fn new(ghi_instance: &mut ghi::Device, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let material_offset_shader_artifact = glsl::compile(&get_material_offset_source(), "Material Offset Pass Compute Shader").unwrap();
 
 		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::SPIRV(material_offset_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
@@ -1542,7 +1543,7 @@ struct PixelMappingPass {
 }
 
 impl PixelMappingPass {
-	fn new(ghi_instance: &mut ghi::GHI, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
+	fn new(ghi_instance: &mut ghi::Device, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
 		let pixel_mapping_shader_artifact = glsl::compile(&get_pixel_mapping_source(), "Pixel Mapping Pass Compute Shader").unwrap();
 
 		let pixel_mapping_shader = ghi_instance.create_shader(Some("Pixel Mapping Pass Compute Shader"), ghi::ShaderSource::SPIRV(pixel_mapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
@@ -1584,7 +1585,7 @@ impl PixelMappingPass {
 		command_buffer_recording.end_region();
 	}
 
-	fn resize(&self, extent: Extent, ghi: &mut ghi::GHI) {
+	fn resize(&self, extent: Extent, ghi: &mut ghi::Device) {
 		ghi.resize_buffer(self.material_xy.into(), (extent.width() * extent.height() * 4) as usize);
 	}
 }
@@ -1593,7 +1594,7 @@ struct MaterialEvaluationPass {
 }
 
 impl MaterialEvaluationPass {
-	fn new(ghi_instance: &mut ghi::GHI, visibility_pass: &VisibilityPass, material_count_pass: &MaterialCountPass, material_offset_pass: &MaterialOffsetPass, pixel_mapping_pass: &PixelMappingPass) -> Self {
+	fn new(ghi_instance: &mut ghi::Device, visibility_pass: &VisibilityPass, material_count_pass: &MaterialCountPass, material_offset_pass: &MaterialOffsetPass, pixel_mapping_pass: &PixelMappingPass) -> Self {
 		MaterialEvaluationPass {}
 	}
 }

@@ -2,7 +2,7 @@ use std::{borrow::Borrow, rc::Rc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device};
 use maths_rs::Vec2f;
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
@@ -18,7 +18,7 @@ pub trait RenderPass {
 
 	fn create<'a>(render_pass_builder: &'a mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized;
 
-	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {}
 	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]);
 }
 
@@ -29,7 +29,7 @@ pub struct FullScreenRenderPass {
 }
 
 impl FullScreenRenderPass {
-	pub fn new(ghi: &mut ghi::GHI, shader: &str, bindings: &[ghi::DescriptorSetBindingTemplate], (source_image, source_sampler): &(ghi::ImageHandle, ghi::SamplerHandle), destination_image: ghi::ImageHandle) -> FullScreenRenderPass {
+	pub fn new(ghi: &mut ghi::Device, shader: &str, bindings: &[ghi::DescriptorSetBindingTemplate], (source_image, source_sampler): &(ghi::ImageHandle, ghi::SamplerHandle), destination_image: ghi::ImageHandle) -> FullScreenRenderPass {
 		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Fullscreen Pass Set Layout"), bindings);
 		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
@@ -115,7 +115,7 @@ impl RenderPass for BilateralBlurPass {
 		// }
 	}
 
-	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {}
 
 	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
 		command_buffer.region("Blur", |command_buffer| {
@@ -246,7 +246,7 @@ impl RenderPass for BlitPass {
 		todo!()
 	}
 
-	fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {}
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {}
 
 	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
 		command_buffer.region("Blit", |command_buffer| {
@@ -256,13 +256,13 @@ impl RenderPass for BlitPass {
 }
 
 pub struct RenderPassBuilder<'a> {
-	ghi: Rc<RwLock<ghi::GHI>>,
+	ghi: Rc<RwLock<ghi::Device>>,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: HashMap<String, (ghi::ImageHandle, i8)>,
 }
 
 impl <'a> RenderPassBuilder<'a> {
-	pub fn new(ghi: Rc<RwLock<ghi::GHI>>) -> Self {
+	pub fn new(ghi: Rc<RwLock<ghi::Device>>) -> Self {
 		RenderPassBuilder {
 			ghi,
 			consumed_resources: Vec::new(),
@@ -286,7 +286,7 @@ impl <'a> RenderPassBuilder<'a> {
 		ReadFromResult { image, }
 	}
 
-	pub fn ghi(&mut self) -> Rc<RwLock<ghi::GHI>> {
+	pub fn ghi(&mut self) -> Rc<RwLock<ghi::Device>> {
 		Rc::clone(&self.ghi)
 	}
 }

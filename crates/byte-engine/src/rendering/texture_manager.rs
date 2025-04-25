@@ -4,7 +4,7 @@ use std::{collections::hash_map::Entry, num::NonZeroU8};
 
 use resource_management::{resources::image::Image, Reference};
 use utils::{hash::{HashMap, HashMapExt}, sync::{Rc, RwLock}, Extent};
-use ghi::Device;
+use ghi::{graphics_hardware_interface::Device as _, Device};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SamplerState {
@@ -31,7 +31,7 @@ impl TextureManager {
 		}
 	}
 
-	pub fn load(&mut self, reference: &mut Reference<Image>, ghi: Rc<RwLock<ghi::GHI>>) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
+	pub fn load(&mut self, reference: &mut Reference<Image>, ghi: Rc<RwLock<ghi::Device>>) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
 		if let Some(r) = self.textures.get(reference.id()) {
 			return Some((reference.id().to_string(), r.0, r.1));
 		}
@@ -103,7 +103,7 @@ impl TextureManager {
 		Some((reference.id().to_string(), v.0, v.1))
 	}
 
-	fn create_sampler(&mut self, ghi: &mut ghi::GHI) -> ghi::SamplerHandle {
+	fn create_sampler(&mut self, ghi: &mut ghi::Device) -> ghi::SamplerHandle {
 		let sampler_state = SamplerState {
 			filtering_mode: ghi::FilteringModes::Linear,
 			reduction_mode: ghi::SamplingReductionModes::WeightedAverage,

@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::core::EntityHandle;
 
-use ghi::{BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device};
 use resource_management::glsl;
 use utils::Extent;
 

@@ -25,17 +25,13 @@ pub mod image;
 pub mod sampler;
 pub mod raster_pipeline;
 
-pub fn create(settings: graphics_hardware_interface::Features) -> GHI {
-	GHI(vulkan::Device::new(settings).expect("Failed to create VulkanGHI"))
+pub fn create(settings: graphics_hardware_interface::Features) -> Device {
+	Device(vulkan::Device::new(settings).expect("Failed to create VulkanGHI"))
 }
 
-// pub enum GHI {
-// 	Vulkan(vulkan_ghi::VulkanGHI),
-// }
+pub struct Device(pub vulkan::Device);
 
-pub struct GHI(pub vulkan::Device);
-
-impl std::ops::Deref for GHI {
+impl std::ops::Deref for Device {
 	type Target = vulkan::Device;
 
 	fn deref(&self) -> &Self::Target {
@@ -43,7 +39,7 @@ impl std::ops::Deref for GHI {
 	}
 }
 
-impl std::ops::DerefMut for GHI {
+impl std::ops::DerefMut for Device {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		&mut self.0
 	}

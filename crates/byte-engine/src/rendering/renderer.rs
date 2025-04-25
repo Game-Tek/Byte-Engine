@@ -2,7 +2,7 @@ use std::{
     borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
-use ghi::{raster_pipeline, BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
+use ghi::{graphics_hardware_interface::Device as _, raster_pipeline, BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
 use resource_management::resource::resource_manager::ResourceManager;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
@@ -15,7 +15,7 @@ use crate::{
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
 
 pub struct Renderer {
-    ghi: Rc<RwLock<ghi::GHI>>,
+    ghi: Rc<RwLock<ghi::Device>>,
 
     rendered_frame_count: usize,
     frame_queue_depth: usize,
@@ -269,7 +269,7 @@ impl RootRenderPass {
 		self.order.push(index);
     }
 
-    fn prepare(&self, ghi: &mut ghi::GHI, extent: Extent) {
+    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {
         for (render_pass, _) in &self.render_passes {
             render_pass.get_mut(|e| {
                 e.prepare(ghi, extent);

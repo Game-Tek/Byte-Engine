@@ -1,6 +1,6 @@
 use std::{cell::OnceCell, hash::Hash, rc::Rc};
 
-use ghi::Device;
+use ghi::{graphics_hardware_interface::Device as _, Device};
 use resource_management::{resources::material::{Material, Shader, Variant, VariantVariable}, types::ShaderTypes, Reference};
 use utils::{hash::{HashMap, HashMapExt}, stale_map::{Entry, StaleHashMap}, sync::{RwLock, RwLockUpgradableReadGuard}};
 
@@ -17,7 +17,7 @@ impl PipelineManager {
 		}
 	}
 
-	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, ghi: Rc<RwLock<ghi::GHI>>) -> Option<ghi::PipelineHandle> {
+	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, ghi: Rc<RwLock<ghi::Device>>) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
@@ -78,7 +78,7 @@ impl PipelineManager {
 		r.ok().map(|v| *v)
 	}
 
-	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Rc<RwLock<ghi::GHI>>,) -> Option<ghi::PipelineHandle> {
+	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Rc<RwLock<ghi::Device>>,) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();

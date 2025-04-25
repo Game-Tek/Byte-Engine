@@ -27,6 +27,7 @@ use byte_engine::rendering::render_pass::RenderPass;
 use byte_engine::rendering::render_pass::RenderPassBuilder;
 use byte_engine::rendering::view::View;
 use byte_engine::{application::{Application, Parameter}, camera::Camera, input::{Action, ActionBindingDescription, Function}, rendering::directional_light::DirectionalLight, Vector3};
+use ghi::graphics_hardware_interface::Device as _;
 use ghi::raster_pipeline;
 use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
@@ -319,7 +320,7 @@ struct CubeCraftRenderPass {
 
 	render_params: Rc<RefCell<RenderParams>>,
 
-	ghi: Rc<RwLock<ghi::GHI>>,
+	ghi: Rc<RwLock<ghi::Device>>,
 
 	blocks: Vec<Block>,
 
@@ -464,7 +465,7 @@ impl RenderPass for CubeCraftRenderPass {
 		vec!["main"]
 	}
 
-	fn prepare(&self, ghi: &mut ghi::GHI, extent: utils::Extent) {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: utils::Extent) {
 		if let Some(camera) = &self.camera {
 			let camera = camera.read();
 

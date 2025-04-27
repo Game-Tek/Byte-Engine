@@ -13,7 +13,7 @@ Byte depends on a few external tools to work properly. You will need to install 
 ### Linux packages
 
 ```bash
-sudo apt install -y libwayland-dev libasound2-dev libvulkan1 vulkan-tools vulkan-validationlayers vulkan-sdk
+sudo apt install -y libwayland-dev libasound2-dev libx11-xcb-dev libvulkan-dev
 ```
 
 #### Rust(up)
@@ -28,14 +28,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ## Optional
 
 ### Mold
-Mold is fast linker. It is not required to run Byte, but if you are writing native code, it is recommended.
+[Mold](https://github.com/rui314/mold) is fast linker. It is not required by Byte, but we recommend for it's improved iteration speed.
 
-```bash
-sudo apt install mold
-```
+Install steps, including Rust setup, are outlined in it's repository.
 
 ### RenderDoc
-RenderDoc is a graphics debugger. It is not required to run Byte, but it is useful for debugging.
+RenderDoc is a graphics debugger. It is not required to run Byte, but it is useful for debugging during graphics development.
 Byte has an integration with RenderDoc to facilitate debugging.
 
 

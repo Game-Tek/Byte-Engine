@@ -1,2 +1,2 @@
 [build]
-rustflags = ["-Clink-arg=-fuse-ld=mold", "-Ctarget-feature=+avx2,+aes,+pclmul", "-Zthreads=12"]
+rustflags = ["-Ctarget-feature=+avx2,+aes,+pclmul"]

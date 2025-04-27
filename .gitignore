@@ -1,5 +1,5 @@
-**/target
-**/resources
+target
+./resources
 coverage/
 *.db
 *.db.*

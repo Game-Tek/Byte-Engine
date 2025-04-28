@@ -13,7 +13,7 @@ Byte depends on a few external tools to work properly. You will need to install 
 ### Linux packages
 
 ```bash
-sudo apt install -y libwayland-dev libasound2-dev libx11-xcb-dev libvulkan-dev
+sudo apt install -y libwayland-dev libasound2-dev libx11-xcb-dev libvulkan-dev vulkan-tools vulkan-validationlayers
 ```
 
 #### Rust(up)

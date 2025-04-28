@@ -221,7 +221,7 @@ impl Iterator for WindowIterator<'_> {
 							let half_height = height / 2.0;
 
 							let x = (x - half_width) / half_width;
-							let y = (half_height - y) / half_height;
+							let y = (y - half_height) / half_height;
 
 							Some(WindowEvents::MouseMove { x, y, time: ev.time() as u64 })
 						},

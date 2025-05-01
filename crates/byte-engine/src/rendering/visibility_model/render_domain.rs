@@ -466,7 +466,7 @@ impl VisibilityWorldRenderDomain {
 
 		let mut resource_request: Reference<ResourceMesh> = {
 			let resource_manager = self.resource_manager.read();
-			let resource_request: Reference<ResourceMesh> = if let Some(resource_info) = resource_manager.request(id) { resource_info } else {
+			let resource_request: Reference<ResourceMesh> = if let Ok(resource_info) = resource_manager.request(id) { resource_info } else {
 				log::error!("Failed to load mesh resource {}", id);
 				return Err(());
 			};
@@ -1093,10 +1093,6 @@ impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 impl Entity for VisibilityWorldRenderDomain {}
 
 impl RenderPass for VisibilityWorldRenderDomain {
-	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
-		todo!()
-	}
-
 	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {
 		VisibilityWorldRenderDomain::prepare(&self, ghi, extent);
 	}

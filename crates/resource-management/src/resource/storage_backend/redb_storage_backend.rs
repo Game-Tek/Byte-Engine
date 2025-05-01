@@ -82,10 +82,10 @@ impl ReadStorageBackend for RedbStorageBackend {
 			let resource: SerializableResource = pot::from_slice(d.value()).unwrap();
 			let base_path = self.base_path.clone();
 
-			let uid: &str = id.as_ref();
+			let id: String = id.into();
 
 			let resource_reader = Box::new(FileResourceReader::new(
-				File::open(base_path.join(uid)).ok()?,
+				File::open(base_path.join(id)).ok()?,
 			));
 
 			Some((resource, resource_reader))
@@ -109,10 +109,10 @@ impl ReadStorageBackend for RedbStorageBackend {
 			if class {
 				let hash = ResourceId(d.0.value());
 
-				let uid: &str = hash.as_ref();
+				let id: String = hash.into();
 
 				let resource_reader = Box::new(FileResourceReader::new(
-					File::open(base_path.join(&uid)).unwrap(),
+					File::open(base_path.join(id)).unwrap(),
 				));
 
 				Some((resource, resource_reader as MultiResourceReader))
@@ -137,9 +137,9 @@ impl WriteStorageBackend for RedbStorageBackend {
 
 		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
 
-		let uid: &str = id.as_ref();
+		let id: String = id.into();
 
-		let resource_path = self.base_path.join(std::path::Path::new(&uid));
+		let resource_path = self.base_path.join(id);
 
 		let _ = remove_file(&resource_path);
 
@@ -177,11 +177,11 @@ impl WriteStorageBackend for RedbStorageBackend {
 			resource
 		};
 
-		let uid: &str = rid.as_ref();
+		let id: String = rid.into();
 
-		let resource_path = self.base_path.join(std::path::Path::new(&uid));
+		let resource_path = self.base_path.join(id);
 
-		let mut file = File::create(resource_path).or(Err(()))?;
+		let mut file = File::create(resource_path).unwrap();
 
 		file.write_all(data).or(Err(()))?;
 		file.flush().or(Err(()))?; // Must flush to ensure the file is written to disk, or else reads can cause failures

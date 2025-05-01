@@ -66,6 +66,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8_SRGB }
 			}
 		}
 		graphics_hardware_interface::Formats::R16(encoding) => {
@@ -73,6 +74,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16_SFLOAT }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
 			}
 		}
 		graphics_hardware_interface::Formats::R32(encoding) => {
@@ -80,6 +82,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R32_SFLOAT }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R32_UINT }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R32_SINT }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
 			}
 		}
 		graphics_hardware_interface::Formats::RG8(encoding) => {
@@ -87,6 +90,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8G8_SRGB }
 			}
 		}
 		graphics_hardware_interface::Formats::RG16(encoding) => {
@@ -94,6 +98,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16_SFLOAT }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
 			}
 		}
 		graphics_hardware_interface::Formats::RGB8(encoding) => {
@@ -101,6 +106,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8B8_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8G8B8_SRGB }
 			}
 		}
 		graphics_hardware_interface::Formats::RGB16(encoding) => {
@@ -108,6 +114,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16B16_SFLOAT }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16B16_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16B16_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
 			}
 		}
 		graphics_hardware_interface::Formats::RGBA8(encoding) => {
@@ -115,6 +122,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8B8A8_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8A8_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8G8B8A8_SRGB }
 			}
 		}
 		graphics_hardware_interface::Formats::RGBA16(encoding) => {
@@ -122,6 +130,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16B16A16_SFLOAT }
 				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16B16A16_UNORM }
 				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16B16A16_SNORM }
+				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
 			}
 		}
 		graphics_hardware_interface::Formats::RGBu10u10u11 => vk::Format::B10G11R11_UFLOAT_PACK32,

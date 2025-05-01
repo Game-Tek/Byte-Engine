@@ -22,16 +22,8 @@ const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Des
 
 impl Entity for AcesToneMapPass {}
 
-impl RenderPass for AcesToneMapPass {
-	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
-		vec!["main"]
-	}
-
-	fn get_write_attachments() -> Vec<&'static str> where Self: Sized {
-		vec!["result"]
-	}
-
-	fn create<'a>(render_pass_builder: &mut RenderPassBuilder<'a>) -> EntityBuilder<'static, Self> where Self: Sized {
+impl AcesToneMapPass {
+	pub fn create<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> EntityBuilder<'static, Self> where Self: Sized {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to("result");
 
@@ -62,6 +54,16 @@ impl RenderPass for AcesToneMapPass {
 			descriptor_set,
 			pipeline: tone_mapping_pipeline,
 		}.into()
+	}
+}
+
+impl RenderPass for AcesToneMapPass {
+	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
+		vec!["main"]
+	}
+
+	fn get_write_attachments() -> Vec<&'static str> where Self: Sized {
+		vec!["result"]
 	}
 
 	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]) {

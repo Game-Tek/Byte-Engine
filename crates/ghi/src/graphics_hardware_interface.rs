@@ -274,6 +274,7 @@ pub trait CommandBufferRecordable where Self: Sized {
 	fn begin(&mut self);
 
 	fn sync_buffers(&mut self);
+	fn sync_textures(&mut self,);
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
@@ -295,9 +296,9 @@ pub trait CommandBufferRecordable where Self: Sized {
 	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
 
-	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]);
+	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
-	/// Copies imaeg data from a CPU accessible buffer to a GPU accessible image.
+	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
 	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
 
 	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundComputePipelineMode;
@@ -313,8 +314,6 @@ pub trait CommandBufferRecordable where Self: Sized {
 	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut impl CommandBufferRecordable;
 
 	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
-
-	fn sync_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
 
 	fn start_region(&self, name: &str);
 
@@ -411,7 +410,7 @@ impl ShaderBindingDescriptor {
 
 /// Configuration for which features to request from the underlying API when creating a device/instance.
 /// This uses a builder pattern to allow for easy configuration of the features.
-/// 
+///
 /// # Features
 /// - `validation`: Whether to enable validation layers for API use. This can provide insight into potential issues with the API usage at the expense of performance. Default is `false`.
 /// - `gpu_validation`: Whether to enable on GPU validation. This can provide more extensive validation at the expense of performance. Default is `false`.
@@ -592,6 +591,10 @@ pub trait Device where Self: Sized {
 
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
+	/// Enables writing to a texture and queues a copy operation for it.
+	/// Texture must still be synchronized by calling `sync` on a command buffer.
+	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
+
 	/// Creates an image.
 	///
 	/// # Arguments
@@ -702,6 +705,8 @@ pub enum Encodings {
 	FloatingPoint,
 	UnsignedNormalized,
 	SignedNormalized,
+	#[allow(non_camel_case_types)]
+	sRGB,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -1592,7 +1597,7 @@ pub(super) mod tests {
 
 		render_pass_command.end_render_pass();
 
-		let texture_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
+		let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
@@ -1843,7 +1848,7 @@ pub(super) mod tests {
 
 			raster_pipeline_command.end_render_pass();
 
-			let texture_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
 			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
@@ -1942,7 +1947,7 @@ pub(super) mod tests {
 
 			raster_render_pass_command.end_render_pass();
 
-			let copy_texture_handles = command_buffer_recording.sync_textures(&[render_target]);
+			let copy_texture_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
 			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
@@ -2028,7 +2033,7 @@ pub(super) mod tests {
 		command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
@@ -2050,7 +2055,7 @@ pub(super) mod tests {
 		command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
 		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
@@ -2067,7 +2072,7 @@ pub(super) mod tests {
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
-		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
@@ -2084,7 +2089,7 @@ pub(super) mod tests {
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
-		let copy_handles = command_buffer_recording.sync_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
@@ -2224,7 +2229,7 @@ pub(super) mod tests {
 
 		raster_render_pass_command.end_render_pass();
 
-		let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
+		let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
@@ -2504,7 +2509,7 @@ void main() {
 				callable: None,
 			}, 1920, 1080, 1);
 
-			let texure_copy_handles = command_buffer_recording.sync_textures(&[render_target]);
+			let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
 			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 

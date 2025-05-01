@@ -1,4 +1,4 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, fmt::{Debug, Write}};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,8 +31,12 @@ impl Borrow<[u8; 16]> for &ResourceId {
 	}
 }
 
-impl AsRef<str> for ResourceId {
-	fn as_ref(&self) -> &str {
-		unsafe { std::str::from_utf8_unchecked(&self.0) }
+impl Into<String> for ResourceId {
+	fn into(self) -> String {
+		let mut s = String::with_capacity(32);
+		for byte in &self.0 {
+			write!(s, "{:02x}", byte).unwrap();
+		}
+		s
 	}
 }

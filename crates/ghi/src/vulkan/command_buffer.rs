@@ -24,7 +24,7 @@ impl CommandBufferRecording<'_> {
 		CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
-			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),			
+			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
 			in_render_pass: false,
 			states: ghi.states.clone(),
 
@@ -321,19 +321,17 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 	}
 
 	fn sync_buffers(&mut self) {
-		self.start_region("Buffer Sync");
-
 		let copy_buffers = {
 			let mut dirty_buffers = self.ghi.buffer_writes_queue.borrow_mut();
 
-			dirty_buffers.retain(|_, v| *v < self.ghi.frames as u32);
-			dirty_buffers.iter_mut().for_each(|(_, f)| *f += 1);
-			
-			dirty_buffers.keys().map(|&b| self.get_internal_buffer_handle(b)).filter(|b| { let b = self.get_buffer(*b); b.staging.is_some() && b.size != 0 }).collect::<Vec<_>>()
+			dirty_buffers.retain(|_, v| v.0 < self.ghi.frames as u32);
+			dirty_buffers.iter_mut().for_each(|(_, f)| f.0 += 1);
+
+			dirty_buffers.iter().map(|(&k, v)| (self.get_internal_buffer_handle(k), v.1)).filter(|(b, _)| { let b = self.get_buffer(*b); b.staging.is_some() && b.size != 0 }).collect::<Vec<_>>()
 		};
 
 		unsafe {
-			self.vulkan_consume_resources(&copy_buffers.iter().map(|&b| {
+			self.vulkan_consume_resources(&copy_buffers.iter().map(|&(b, _)| {
 				VulkanConsumption {
 					handle: Handle::Buffer(b),
 					stages: vk::PipelineStageFlags2::COPY,
@@ -343,9 +341,9 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			}).collect::<Vec<_>>());
 		}
 
-		let copy_buffers = copy_buffers.iter().map(|&b| self.get_buffer(b));
+		for &(b, _) in &copy_buffers { // Copy all staging buffers to their respective buffers
+			let buffer = self.get_buffer(b);
 
-		for buffer in copy_buffers { // Copy all staging buffers to their respective buffers
 			let vk_buffer = buffer.buffer;
 			let staging_buffer_handle = buffer.staging.unwrap();
 			let staging_buffer = self.get_buffer(staging_buffer_handle).buffer;
@@ -369,9 +367,145 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			}
 		}
 
-		self.end_region();
+		// TODO: bad. remove this.
+		unsafe {
+			self.vulkan_consume_resources(&copy_buffers.iter().map(|&(b, p)| {
+				VulkanConsumption {
+					handle: Handle::Buffer(b),
+					stages: p,
+					access: vk::AccessFlags2::SHADER_READ,
+					layout: vk::ImageLayout::UNDEFINED,
+				}
+			}).collect::<Vec<_>>());
+		}
 
 		self.stages |= vk::PipelineStageFlags2::TRANSFER;
+	}
+
+	fn sync_textures(&mut self,) {
+		let image_handles = {
+			let mut dirty_images = self.ghi.image_writes_queue.borrow_mut();
+
+			dirty_images.retain(|_, v| *v < self.ghi.frames as u32);
+			dirty_images.iter_mut().for_each(|(_, f)| *f += 1);
+
+			dirty_images.keys().map(|&b| self.get_internal_image_handle(b)).filter(|b| { let b = self.get_image(*b); b.staging_buffer.is_some() && b.size != 0 }).collect::<Vec<_>>()
+		};
+
+		unsafe { self.vulkan_consume_resources(&image_handles.iter().map(|image_handle|
+			VulkanConsumption {
+				handle: Handle::Image(*image_handle),
+				stages: vk::PipelineStageFlags2::TRANSFER,
+				access: vk::AccessFlags2::TRANSFER_WRITE,
+				layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+			}
+		).collect::<Vec<_>>()) };
+
+		let command_buffer = self.get_command_buffer();
+
+		for image_handle in &image_handles {
+			let image = self.get_image(*image_handle);
+
+			let regions = [vk::BufferImageCopy2::default()
+				.buffer_offset(0)
+				.buffer_row_length(0)
+				.buffer_image_height(0)
+				.image_subresource(vk::ImageSubresourceLayers::default()
+					.aspect_mask(vk::ImageAspectFlags::COLOR)
+					.mip_level(0)
+					.base_array_layer(0)
+					.layer_count(1)
+				)
+				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
+				.image_extent(vk::Extent3D::default().width(image.extent.width).height(image.extent.height).depth(image.extent.depth))];
+
+			let buffer = self.get_buffer(image.staging_buffer.expect("No staging buffer"));
+
+			// Copy to images from staging buffer
+			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
+				.src_buffer(buffer.buffer)
+				.dst_image(image.image)
+				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+				.regions(&regions);
+
+			unsafe {
+				self.ghi.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
+			}
+		}
+
+		// TODO: bad. remove this.
+		unsafe { self.vulkan_consume_resources(&image_handles.iter().map(|image_handle|
+			VulkanConsumption {
+				handle: Handle::Image(*image_handle),
+				stages: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+				access: vk::AccessFlags2::SHADER_SAMPLED_READ,
+				layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+			}
+		).collect::<Vec<_>>()) };
+
+		self.stages |= vk::PipelineStageFlags2::TRANSFER;
+	}
+
+	fn transfer_textures(&mut self, image_handles: &[graphics_hardware_interface::ImageHandle]) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
+		unsafe {
+			let buffer_handles = image_handles.iter().filter_map(|image_handle| self.get_image(self.get_internal_image_handle(*image_handle)).staging_buffer).collect::<Vec<_>>();
+
+			self.consume_resources(&image_handles.iter().map(|image_handle| Consumption {
+				handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
+				stages: graphics_hardware_interface::Stages::TRANSFER,
+				access: graphics_hardware_interface::AccessPolicies::READ,
+				layout: graphics_hardware_interface::Layouts::Transfer,
+			}).chain(buffer_handles.iter().map(|buffer_handle| Consumption {
+				handle: Handle::Buffer(*buffer_handle),
+				stages: graphics_hardware_interface::Stages::TRANSFER,
+				access: graphics_hardware_interface::AccessPolicies::WRITE,
+				layout: graphics_hardware_interface::Layouts::Transfer,
+			})).collect::<Vec<_>>());
+		};
+
+		let command_buffer = self.get_command_buffer();
+		let command_buffer = command_buffer.command_buffer;
+
+		for image_handle in image_handles {
+			let image = self.get_image(self.get_internal_image_handle(*image_handle));
+			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
+			if let Some(staging_buffer_handle) = image.staging_buffer {
+				let staging_buffer = self.get_buffer(staging_buffer_handle);
+
+				let regions = [vk::BufferImageCopy2KHR::default()
+					.buffer_offset(0)
+					.buffer_row_length(0)
+					.buffer_image_height(0)
+					.image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
+					.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
+					.image_extent(image.extent)
+				];
+
+				let copy_image_to_buffer_info = vk::CopyImageToBufferInfo2KHR::default()
+					.src_image(image.image)
+					.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+					.dst_buffer(staging_buffer.buffer)
+					.regions(&regions)
+				;
+
+				unsafe {
+					self.ghi.device.cmd_copy_image_to_buffer2(command_buffer, &copy_image_to_buffer_info);
+				}
+			}
+		}
+
+		let mut texture_copies = Vec::new();
+
+		for image_handle in image_handles {
+			let internal_image_handle = self.get_internal_image_handle(*image_handle);
+			let image = self.get_image(internal_image_handle);
+			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
+			if let Some(_) = image.staging_buffer {
+				texture_copies.push(graphics_hardware_interface::TextureCopyHandle(internal_image_handle.0));
+			}
+		}
+
+		texture_copies
 	}
 
 	fn start_render_pass(&mut self, extent: Extent, attachments: &[graphics_hardware_interface::AttachmentInformation]) -> &mut impl graphics_hardware_interface::RasterizationRenderPassMode {
@@ -773,51 +907,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		}
 	}
 
-	fn transfer_textures(&mut self, image_handles: &[graphics_hardware_interface::ImageHandle]) {
-		unsafe { self.consume_resources(&image_handles.iter().map(|image_handle|
-			Consumption{
-				handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::WRITE,
-				layout: graphics_hardware_interface::Layouts::Transfer,
-			}
-		).collect::<Vec<_>>()) };
-
-		let command_buffer = self.get_command_buffer();
-
-		for image_handle in image_handles {
-			let image = self.get_image(self.get_internal_image_handle(*image_handle));
-
-			let regions = [vk::BufferImageCopy2::default()
-				.buffer_offset(0)
-				.buffer_row_length(0)
-				.buffer_image_height(0)
-				.image_subresource(vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1)
-				)
-				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(vk::Extent3D::default().width(image.extent.width).height(image.extent.height).depth(image.extent.depth))];
-
-			let buffer = self.get_buffer(image.staging_buffer.expect("No staging buffer"));
-
-			// Copy to images from staging buffer
-			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
-				.src_buffer(buffer.buffer)
-				.dst_image(image.image)
-				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.regions(&regions);
-
-			unsafe {
-				self.ghi.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
-			}
-		}
-
-		self.stages |= vk::PipelineStageFlags2::TRANSFER;
-	}
-
 	fn write_image_data(&mut self, image_handle: graphics_hardware_interface::ImageHandle, data: &[graphics_hardware_interface::RGBAu8]) {
 		let internal_image_handle = self.get_internal_image_handle(image_handle);
 
@@ -1071,70 +1160,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		self
 	}
 
-	fn sync_textures(&mut self, image_handles: &[graphics_hardware_interface::ImageHandle]) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
-		unsafe {
-			self.consume_resources(&image_handles.iter().map(|image_handle| Consumption {
-				handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::READ,
-				layout: graphics_hardware_interface::Layouts::Transfer,
-			}).collect::<Vec<_>>());
-
-			let buffer_handles = image_handles.iter().filter_map(|image_handle| self.get_image(self.get_internal_image_handle(*image_handle)).staging_buffer).collect::<Vec<_>>();
-
-			self.consume_resources(&buffer_handles.iter().map(|buffer_handle| Consumption {
-				handle: Handle::Buffer(*buffer_handle),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::WRITE,
-				layout: graphics_hardware_interface::Layouts::Transfer,
-			}).collect::<Vec<_>>());
-		};
-
-		let command_buffer = self.get_command_buffer();
-		let command_buffer = command_buffer.command_buffer;
-
-		for image_handle in image_handles {
-			let image = self.get_image(self.get_internal_image_handle(*image_handle));
-			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
-			if let Some(staging_buffer_handle) = image.staging_buffer {
-				let staging_buffer = self.get_buffer(staging_buffer_handle);
-
-				let regions = [vk::BufferImageCopy2KHR::default()
-					.buffer_offset(0)
-					.buffer_row_length(0)
-					.buffer_image_height(0)
-					.image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
-					.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-					.image_extent(image.extent)
-				];
-
-				let copy_image_to_buffer_info = vk::CopyImageToBufferInfo2KHR::default()
-					.src_image(image.image)
-					.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-					.dst_buffer(staging_buffer.buffer)
-					.regions(&regions)
-				;
-
-				unsafe {
-					self.ghi.device.cmd_copy_image_to_buffer2(command_buffer, &copy_image_to_buffer_info);
-				}
-			}
-		}
-
-		let mut texture_copies = Vec::new();
-
-		for image_handle in image_handles {
-			let internal_image_handle = self.get_internal_image_handle(*image_handle);
-			let image = self.get_image(internal_image_handle);
-			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
-			if let Some(_) = image.staging_buffer {
-				texture_copies.push(graphics_hardware_interface::TextureCopyHandle(internal_image_handle.0));
-			}
-		}
-
-		texture_copies
-	}
-
 	fn execute(mut self, wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], presentations: &[graphics_hardware_interface::PresentKey], execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		self.end();
 
@@ -1311,16 +1336,12 @@ impl graphics_hardware_interface::BoundRasterizationPipelineMode for CommandBuff
 		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer_handle, 0, &buffers, &offsets); }
 		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer_handle, mesh.buffer, index_data_offset, vk::IndexType::UINT16); }
 
-		// self.consume_resources_current();
-
 		unsafe { self.ghi.device.cmd_draw_indexed(command_buffer_handle, mesh.index_count, 1, 0, 0, 0); }
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
-
-		// self.consume_resources_current();
 
 		self.stages |= vk::PipelineStageFlags2::MESH_SHADER_EXT;
 
@@ -1332,8 +1353,6 @@ impl graphics_hardware_interface::BoundRasterizationPipelineMode for CommandBuff
 	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
-
-		// self.consume_resources_current();
 
 		unsafe {
 			self.ghi.device.cmd_draw_indexed(command_buffer_handle, index_count, instance_count, first_index, vertex_offset, first_instance);

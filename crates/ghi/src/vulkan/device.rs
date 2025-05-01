@@ -53,9 +53,8 @@ pub struct Device {
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 
-	pub(super) buffer_writes_queue: RefCell<HashMap<graphics_hardware_interface::BaseBufferHandle, u32>>,
-
-	pub(super) pending_images: Vec<graphics_hardware_interface::ImageHandle>,
+	pub(super) buffer_writes_queue: RefCell<HashMap<graphics_hardware_interface::BaseBufferHandle, (u32, vk::PipelineStageFlags2)>>,
+	pub(super) image_writes_queue: RefCell<HashMap<graphics_hardware_interface::ImageHandle, u32>>,
 }
 
 impl Device {
@@ -155,6 +154,10 @@ impl Device {
 			None
 		};
 
+		let mut barycentric_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default()
+			.fragment_shader_barycentric(false)
+		;
+
 		let physical_devices = unsafe { instance.enumerate_physical_devices().or(Err("Failed to enumerate physical devices"))? };
 
 		let physical_device = if let Some(gpu_name) = settings.gpu {
@@ -190,14 +193,16 @@ impl Device {
 				});
 
 				let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
-				let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().push_next(&mut physical_device_vulkan_12_features);
-	
+				let mut physical_device_barycentric_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
+				let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().push_next(&mut physical_device_vulkan_12_features).push_next(&mut physical_device_barycentric_features);
+
 				unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
-	
+
 				let features = physical_device_features.features;
-	
+
 				if features.sample_rate_shading == vk::FALSE { return false; }
 				if physical_device_vulkan_12_features.buffer_device_address_capture_replay != buffer_device_address_capture_replay as vk::Bool32 { return false; }
+				if physical_device_barycentric_features.fragment_shader_barycentric != barycentric_features.fragment_shader_barycentric { return false; }
 
 				features.shader_storage_image_array_dynamic_indexing != vk::FALSE &&
 				features.shader_sampled_image_array_dynamic_indexing != vk::FALSE &&
@@ -207,9 +212,9 @@ impl Device {
 				features.geometry_shader == settings.geometry_shader as vk::Bool32
 			}).max_by_key(|physical_device| {
 				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
-	
+
 				let mut device_score = 0u64;
-	
+
 				device_score += match properties.device_type {
 					vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
 					vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
@@ -217,7 +222,7 @@ impl Device {
 					vk::PhysicalDeviceType::CPU => 100,
 					_ => 0,
 				};
-	
+
 				device_score
 			}).ok_or("Failed to choose a best physical device")?;
 
@@ -349,6 +354,7 @@ impl Device {
 			.push_next(&mut physical_device_vulkan_12_features)
 			.push_next(&mut physical_device_vulkan_13_features)
 			.push_next(&mut shader_atomic_float_features)
+			.push_next(&mut barycentric_features)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features)
@@ -437,9 +443,8 @@ impl Device {
 
 			states: HashMap::with_capacity(4096),
 
-			pending_images: Vec::with_capacity(128),
-
 			buffer_writes_queue: RefCell::new(HashMap::with_capacity(128)),
+			image_writes_queue: RefCell::new(HashMap::with_capacity(128)),
 		})
 	}
 
@@ -640,24 +645,24 @@ impl Device {
 			let pipeline_create_infos = [pipeline_create_info];
 
 			let pipelines = unsafe { this.device.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None).expect("No pipeline") };
-	
+
 			let pipeline = pipelines[0];
-	
+
 			let handle = graphics_hardware_interface::PipelineHandle(this.pipelines.len() as u64);
-	
+
 			let resource_access: Vec<((u32, u32), (graphics_hardware_interface::Stages, graphics_hardware_interface::AccessPolicies))> = builder.shaders.iter().map(|s| {
 				let shader = &this.shaders[s.handle.0 as usize];
 				shader.shader_binding_descriptors.iter().map(|sbd| {
 					((sbd.set, sbd.binding), (Into::<graphics_hardware_interface::Stages>::into(s.stage), sbd.access))
 				})
 			}).flatten().collect::<Vec<_>>();
-	
+
 			this.pipelines.push(Pipeline {
 				pipeline,
 				shader_handles: HashMap::new(),
 				resource_access,
 			});
-	
+
 			handle
 		})
 	}
@@ -1742,11 +1747,8 @@ impl graphics_hardware_interface::Device for Device {
 
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording {
 		use graphics_hardware_interface::CommandBufferRecordable;
-		let pending_images = self.pending_images.clone();
-		self.pending_images.clear();
 		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, frame_key);
 		recording.begin();
-		recording.transfer_textures(&pending_images);
 		recording
 	}
 
@@ -1858,8 +1860,8 @@ impl graphics_hardware_interface::Device for Device {
 
 	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'a mut T {
 		let mut buffer_writes = self.buffer_writes_queue.borrow_mut();
-		let mut entry = buffer_writes.entry(buffer_handle.into()).insert_entry(0);
-		*entry.get_mut() = 0;
+		let mut entry = buffer_writes.entry(buffer_handle.into()).insert_entry((0, vk::PipelineStageFlags2::ALL_GRAPHICS));
+		entry.get_mut().0 = 0;
 
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
@@ -1869,12 +1871,25 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		self.pending_images.push(texture_handle);
 		let texture = &self.images[texture_handle.0 as usize];
 		assert!(texture.pointer != std::ptr::null());
 		unsafe {
 			std::slice::from_raw_parts_mut(texture.pointer as *mut u8, texture.size)
 		}
+	}
+
+	fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
+		let texture = &self.images[texture_handle.0 as usize];
+		assert!(texture.pointer != std::ptr::null());
+		let slice = unsafe {
+			std::slice::from_raw_parts_mut(texture.pointer as *mut u8, texture.size)
+		};
+
+		f(slice);
+
+		let mut texture_writes = self.image_writes_queue.borrow_mut();
+		let mut entry = texture_writes.entry(texture_handle.into()).insert_entry(0);
+		*entry.get_mut() = 0;
 	}
 
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases, array_layers: u32) -> graphics_hardware_interface::ImageHandle {
@@ -2223,9 +2238,9 @@ impl graphics_hardware_interface::Device for Device {
 		let shader_handles = pipeline.shader_handles.clone();
 
 		let mut buffer_writes = self.buffer_writes_queue.borrow_mut();
-		let mut entry = buffer_writes.entry(sbt_buffer_handle.into()).insert_entry(0);
+		let mut entry = buffer_writes.entry(sbt_buffer_handle.into()).insert_entry((0, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR));
 
-		*entry.get_mut() = 0;
+		entry.get_mut().0 = 0;
 
 		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];

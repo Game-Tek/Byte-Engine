@@ -54,9 +54,7 @@ impl Renderer {
                         log::error!("{}", message);
                     })
 					.geometry_shader(true)
-					// .gpu("llvmpipe (LLVM 15.0.7, 256 bits)")
-					// .gpu("AMD Radeon Graphics (RADV RENOIR)")
-            )));
+            ).unwrap()));
 
             let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
@@ -135,7 +133,7 @@ impl Renderer {
         .listen_to::<window_system::Window>()
     }
 
-	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, space_handle: EntityHandle<Space>) {
+	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
 		let read_attachments = T::get_read_attachments();
 
 		if !read_attachments.iter().all(|a| self.targets.contains_key(*a)) {
@@ -152,7 +150,8 @@ impl Renderer {
 		render_pass_builder.images.insert("depth".to_string(), (depth_image.0, depth_image.1, 0));
 		render_pass_builder.images.insert("result".to_string(), (result_image.0, result_image.1, 0));
 
-		let render_pass = space_handle.spawn(T::create(&mut render_pass_builder));
+		let render_pass = creator(&mut render_pass_builder,);
+
 		self.root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
@@ -171,8 +170,7 @@ impl Renderer {
 
         ghi.start_frame_capture();
 
-        let (present_key, extent) =
-            ghi.acquire_swapchain_image(frame_key, swapchain_handle,);
+        let (present_key, extent) = ghi.acquire_swapchain_image(frame_key, swapchain_handle,);
 
         assert!(extent.width() <= 65535 && extent.height() <= 65535, "The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits.", extent);
 
@@ -198,6 +196,7 @@ impl Renderer {
         );
 
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
+		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
         self.root_render_pass
             .record(&mut command_buffer_recording, extent);

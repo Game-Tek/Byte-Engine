@@ -1,4 +1,4 @@
-use crate::{core::{property::Property, spawn, spawn_as_child, task, EntityHandle}, gameplay::space::Spawn, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{property::Property, spawn, spawn_as_child, task, EntityHandle}, gameplay::space::Spawn, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -54,7 +54,7 @@ impl Application for GraphicsApplication {
 
 		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 
-		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path.clone())));
+		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
 		let window_system_handle = root_space_handle.spawn(window_system::WindowSystem::new_as_system());
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new_as_system());		
@@ -284,6 +284,10 @@ impl GraphicsApplication {
 			self.tick();
 		}
 	}
+	
+	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {		
+		&self.resource_manager
+	}
 }
 
 /// Performs a default setup of the application.
@@ -332,10 +336,9 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 pub fn setup_default_resource_and_asset_management(application: &mut GraphicsApplication, generator: impl ProgramGenerator + 'static) {
 	let mut resource_manager = application.resource_manager.write();
 
-	let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 	let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
 
-	let storage_backend = FileStorageBackend::new(resources_path.clone());
+	let storage_backend = FileStorageBackend::new(assets_path.clone());
 
 	let mut asset_manager = AssetManager::new(storage_backend);
 
@@ -367,8 +370,9 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	let mut renderer = application.renderer_handle.write();
 
-	renderer.add_render_pass::<VisibilityWorldRenderDomain>(application.root_space_handle.clone());
-	renderer.add_render_pass::<AcesToneMapPass>(application.root_space_handle.clone());
+	renderer.add_render_pass(|c| {
+		application.root_space_handle.spawn(AcesToneMapPass::create(c))
+	});
 }
 
 #[cfg(test)]

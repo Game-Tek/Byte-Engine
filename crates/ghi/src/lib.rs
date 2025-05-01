@@ -13,8 +13,9 @@ pub mod wayland_window;
 pub mod win32_window;
 
 pub mod graphics_hardware_interface;
-pub mod vulkan;
 pub mod render_debugger;
+
+pub mod vulkan;
 
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
@@ -28,6 +29,6 @@ pub mod image;
 pub mod sampler;
 pub mod raster_pipeline;
 
-pub fn create(settings: graphics_hardware_interface::Features) -> Device {
-	vulkan::Device::new(settings).expect("Failed to create VulkanGHI")
+pub fn create(settings: graphics_hardware_interface::Features) -> Result<Device, &'static str> {
+	vulkan::Device::new(settings)
 }

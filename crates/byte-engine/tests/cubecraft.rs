@@ -186,39 +186,11 @@ fn cubecraft() {
 
     let _ = space_handle.spawn(Physics::create(anchor));
 
-    const CHUNK_SIZE: i32 = 16;
-    const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
-
-    {
-        let a = space_handle.clone();
-
-        space_handle.spawn(Task::once(move || {
-            let blocks = (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE)
-                .map(move |x| {
-                    (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE)
-                        .map(move |z| {
-                            (-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
-                                let position = (x, y, z);
-                                let block = make_block(position);
-
-                                if block != AIR_BLOCK && y <= z {
-                                    Some(Block::create(position, block))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .flatten()
-                })
-                .flatten()
-                .collect::<Vec<_>>();
-
-            a.spawn(blocks);
-        }));
-    }
-
     app.do_loop()
 }
+
+const CHUNK_SIZE: i32 = 16;
+const HALF_CHUNK_SIZE: i32 = CHUNK_SIZE / 2;
 
 struct ChunkLoader {
     loaded: Vec<Location>,
@@ -234,7 +206,54 @@ impl ChunkLoader {
     }
 
     fn create() -> EntityBuilder<'static, Self> {
-        EntityBuilder::new(ChunkLoader::new()).listen_to::<Camera>()
+        EntityBuilder::new(ChunkLoader::new()).listen_to::<Camera>().then(|space, handle| {
+			let a = space.clone();
+			space.spawn(Task::tick(move || {
+				let mut chunk_loader = handle.write();
+
+				let p = if let Some(camera) = &chunk_loader.camera {
+					let camera = camera.read();
+					let position = camera.get_position();
+
+					let chunk_x = (position.x / 16.0).round() as i32;
+					let chunk_z = (position.z / 16.0).round() as i32;
+
+					if !chunk_loader.loaded.contains(&(chunk_x, 0, chunk_z)) {
+						let blocks = ((chunk_x * CHUNK_SIZE - HALF_CHUNK_SIZE)..(chunk_x * CHUNK_SIZE + HALF_CHUNK_SIZE))
+							.map(move |x| {
+								((chunk_z * CHUNK_SIZE - HALF_CHUNK_SIZE)..(chunk_z * CHUNK_SIZE + HALF_CHUNK_SIZE))
+									.map(move |z| {
+										(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
+											let position = (x, y, z);
+											let block = make_block(position);
+			
+											if block != Blocks::Air {
+												Some(Block::create(position, block))
+											} else {
+												None
+											}
+										})
+									})
+									.flatten()
+							})
+							.flatten()
+						.collect::<Vec<_>>();
+
+						a.spawn(blocks);
+
+						Some((chunk_x, 0, chunk_z))
+					} else {
+						None
+					}
+				} else {
+					None
+				};
+
+				if let Some(p) = p {
+					chunk_loader.loaded.push(p);
+				}
+			}));
+        })
     }
 }
 
@@ -343,15 +362,15 @@ impl EntitySubscriber<Player> for Physics {
 #[derive(Clone, Copy)]
 struct Block {
     position: Location,
-    block: u32,
+    block: Blocks,
 }
 
 impl Block {
-    fn new(position: Location, block: u32) -> Self {
+    fn new(position: Location, block: Blocks) -> Self {
         Block { position, block }
     }
 
-    fn create(position: Location, block: u32) -> EntityBuilder<'static, Self> {
+    fn create(position: Location, block: Blocks) -> EntityBuilder<'static, Self> {
         Block { position, block }.into()
     }
 }
@@ -378,7 +397,7 @@ struct RenderParams {
 }
 
 struct CubeCraftRenderPass {
-    vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 4]>,
+    vertex_buffer: ghi::BufferHandle<[((f32, f32, f32), (f32, f32)); 4]>,
     index_buffer: ghi::BufferHandle<[u16; 6]>,
 
     camera_data_buffer: ghi::BufferHandle<maths_rs::Mat4f>,
@@ -428,7 +447,7 @@ impl CubeCraftRenderPass {
         let render_to_main = render_pass_builder.render_to("main");
         let render_to_depth = render_pass_builder.render_to("depth");
 
-        let vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 4]> = ghi.create_buffer(
+        let vertex_buffer: ghi::BufferHandle<[((f32, f32, f32), (f32, f32)); 4]> = ghi.create_buffer(
             Some("vertices"),
             ghi::Uses::Vertex,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
@@ -476,7 +495,9 @@ impl CubeCraftRenderPass {
 		layout(row_major) buffer;
 
 		layout(location = 0) in vec3 in_position;
+		layout(location = 1) in vec2 in_uv;
 		layout(location = 0) out uint instance_id;
+		layout(location = 1) out vec2 out_uv;
 
 		layout(set = 0, binding = 0) readonly buffer Camera {
 			mat4 vp;
@@ -514,7 +535,7 @@ impl CubeCraftRenderPass {
 					break;
 				case 5:
 				case 6:
-					position.x = flip * in_position.x;
+					position.x = -flip * in_position.x;
 					position.y = in_position.y;
 					position.z = flip * 0.5;
 					break;
@@ -525,6 +546,7 @@ impl CubeCraftRenderPass {
 			position += face.position;
 			gl_Position = camera.vp * vec4(position, 1.0);
 			instance_id = gl_InstanceIndex;
+			out_uv = in_uv;
 		}
 		"#;
 
@@ -537,6 +559,7 @@ impl CubeCraftRenderPass {
 
 		layout(location = 0) out vec4 out_color;
 		layout(location = 0) in flat uint instance_id;
+		layout(location = 1) in vec2 in_uv;
 
 		struct Face {
 			uint16_t block;
@@ -553,19 +576,9 @@ impl CubeCraftRenderPass {
 		void main() {
 			uint in_block = uint(faces[instance_id].block);
 
-			vec2 uv = gl_FragCoord.xy / vec2(1920.0, 1080.0);
+			vec2 uv = in_uv;
 
-			if (in_block == 1) {
-				out_color = texture(textures[1], uv);
-			} else {
-				if (in_block == 2) {
-					out_color = texture(textures[2], uv);
-				} else if (in_block == 3) {
-					out_color = texture(textures[3], uv);
-				} else {
-					out_color = vec4(1.0, 1.0, 1.0, 1.0);
-				}
-			}
+			out_color = texture(textures[in_block], uv);
 		}
 		"#;
 
@@ -603,6 +616,10 @@ impl CubeCraftRenderPass {
             &[ghi::VertexElement::new(
                 "POSITION",
                 ghi::DataTypes::Float3,
+                0,
+            ), ghi::VertexElement::new(
+                "UV",
+                ghi::DataTypes::Float2,
                 0,
             )],
             &[
@@ -663,7 +680,7 @@ impl CubeCraftRenderPass {
             ),
         );
 
-		for (block_type, a) in [(GRASS_BLOCK, "grass_carried.png"), (STONE_BLOCK, "stone.png"), (DIRT_BLOCK, "dirt.png")] {
+		for (block_type, a) in [(GRASS_TOP_FACE, "grass_carried.png"), (GRASS_SIDE_FACE, "grass_side_carried.png"), (STONE_FACE, "stone.png"), (DIRT_FACE, "dirt.png")] {
 			let mut request: Reference<Image> = resource_manager
 				.read()
 				.request(a)
@@ -683,7 +700,7 @@ impl CubeCraftRenderPass {
 				request.load(s.into());
 			});
 
-			if block_type == GRASS_BLOCK {
+			if block_type == GRASS_TOP_FACE {
 				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 					texture_binding,
 					texture,
@@ -703,10 +720,10 @@ impl CubeCraftRenderPass {
 		}
 
 		*ghi.get_mut_buffer_slice(vertex_buffer) = [
-			(0.5, 0.5, 0.),
-			(-0.5, 0.5, 0.),
-			(-0.5, -0.5, 0.),
-			(0.5, -0.5, 0.),
+			((-0.5, 0.5, 0.0), (0.0, 0.0)),
+			((0.5, 0.5, 0.0), (1.0, 0.0)),
+			((0.5, -0.5, 0.0), (1.0, 1.0)),
+			((-0.5, -0.5, 0.0), (0.0, 1.0)),
 		];
 
 		*ghi.get_mut_buffer_slice(index_buffer) = [
@@ -846,21 +863,29 @@ impl Direction {
 	}
 }
 
-const AIR_BLOCK: u32 = 0;
-const GRASS_BLOCK: u32 = 1;
-const STONE_BLOCK: u32 = 2;
-const DIRT_BLOCK: u32 = 3;
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Blocks {
+    Air,
+    Grass,
+    Stone,
+    Dirt,
+}
 
-fn make_block(position: Location) -> u32 {
+const GRASS_TOP_FACE: u32 = 1;
+const GRASS_SIDE_FACE: u32 = 2;
+const STONE_FACE: u32 = 3;
+const DIRT_FACE: u32 = 4;
+
+fn make_block(position: Location) -> Blocks {
     if position.1 > 0 {
-        AIR_BLOCK
+        Blocks::Air
     } else {
         if position.1 == 0 {
-            GRASS_BLOCK
+            Blocks::Grass
         } else if position.1 == -1 {
-            DIRT_BLOCK
+            Blocks::Dirt
         } else {
-            STONE_BLOCK
+            Blocks::Stone
         }
     }
 }
@@ -893,8 +918,18 @@ fn compute_external_block_faces(blocks: &[Block]) -> Vec<Face> {
 		for side in &cube_sides {
 			let pos = (pos.0 * 2, pos.1 * 2, pos.2 * 2);
 	
+			let block = match block.block {
+				Blocks::Grass => match side {
+					Direction::Up | Direction::Down => GRASS_TOP_FACE,
+					_ => GRASS_SIDE_FACE,
+				},
+				Blocks::Stone => STONE_FACE,
+				Blocks::Dirt => DIRT_FACE,
+				_ => unreachable!(),
+			};
+
 			let face = Face {
-				block: block.block,
+				block,
 				direction: side.clone(),
 				position: pos,
 			};
@@ -966,34 +1001,34 @@ fn build_cube_faces(blocks: &[Block]) -> Vec<FaceData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{compute_external_block_faces, Block, Direction, DIRT_BLOCK, GRASS_BLOCK};
+    use crate::{compute_external_block_faces, Block, Direction, Blocks, GRASS_TOP_FACE};
 
 	#[test]
 	fn test_faces_single_block() {
-		let block = Block::new((0, 0, 0), GRASS_BLOCK);
+		let block = Block::new((0, 0, 0), Blocks::Grass);
 		let blocks = vec![block];
 
 		let faces = compute_external_block_faces(&blocks);
 
 		assert_eq!(faces.len(), 6);
 
-		assert_eq!(faces[0].block, GRASS_BLOCK);
+		assert_eq!(faces[0].block, GRASS_TOP_FACE);
 		assert_eq!(faces[0].direction, Direction::Up);
 		assert_eq!(faces[0].position, (0, 0, 0));
 	}
 
 	#[test]
 	fn test_faces_two_blocks() {
-		let blocks = vec![Block::new((0, 0, 0), GRASS_BLOCK), Block::new((0, 0, 1), GRASS_BLOCK)];
+		let blocks = vec![Block::new((0, 0, 0), Blocks::Grass), Block::new((0, 0, 1), Blocks::Grass)];
 
 		let faces = compute_external_block_faces(&blocks);
 
 		assert_eq!(faces.len(), 10);
 
-		assert_eq!(faces[0].block, GRASS_BLOCK);
+		assert_eq!(faces[0].block, GRASS_TOP_FACE);
 		assert_eq!(faces[0].direction, Direction::Up);
 		assert_eq!(faces[0].position, (0, 0, 0));
-		assert_eq!(faces[1].block, GRASS_BLOCK);
+		assert_eq!(faces[1].block, GRASS_TOP_FACE);
 		assert_eq!(faces[1].direction, Direction::Up);
 		assert_eq!(faces[1].position, (0, 0, 2));
 	}

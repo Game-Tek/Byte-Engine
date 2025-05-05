@@ -607,7 +607,7 @@ impl Device {
 			.depth_clamp_enable(false)
 			.rasterizer_discard_enable(false)
 			.polygon_mode(vk::PolygonMode::FILL)
-			.cull_mode(vk::CullModeFlags::NONE)
+			.cull_mode(vk::CullModeFlags::BACK)
 			.front_face(vk::FrontFace::CLOCKWISE)
 			.depth_bias_enable(false)
 			.depth_bias_constant_factor(0.0)

@@ -283,7 +283,7 @@ impl Device {
 		;
 
 		let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
-			.descriptor_indexing(true).descriptor_binding_partially_bound(true).runtime_descriptor_array(true)
+			.descriptor_indexing(true).descriptor_binding_partially_bound(true).runtime_descriptor_array(true).descriptor_binding_variable_descriptor_count(true)
 			.shader_sampled_image_array_non_uniform_indexing(true).shader_storage_image_array_non_uniform_indexing(true)
 			.scalar_block_layout(true)
 			.buffer_device_address(true)
@@ -607,7 +607,7 @@ impl Device {
 			.depth_clamp_enable(false)
 			.rasterizer_discard_enable(false)
 			.polygon_mode(vk::PolygonMode::FILL)
-			.cull_mode(vk::CullModeFlags::BACK)
+			.cull_mode(vk::CullModeFlags::NONE)
 			.front_face(vk::FrontFace::CLOCKWISE)
 			.depth_bias_enable(false)
 			.depth_bias_constant_factor(0.0)
@@ -980,294 +980,6 @@ impl Device {
 	fn get_descriptor_set(&self, descriptor_set_handle: DescriptorSetHandle) -> &DescriptorSet {
 		self.descriptor_sets.get(descriptor_set_handle.0 as usize).expect("No descriptor set with that handle.")
 	}
-
-	fn write_binding(&mut self, descriptor_set_write: &graphics_hardware_interface::DescriptorWrite) {
-		let binding_handle = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0);
-
-		let binding = &self.bindings[binding_handle.0 as usize];
-		let descriptor_type = binding.descriptor_type;
-		let binding_index = binding.index;
-
-		assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
-
-		let descriptor_set_handles = {
-			let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
-			let mut descriptor_set_handles = Vec::with_capacity(3);
-
-			let mut descriptor_set_handle_option = Some(descriptor_set_handle);
-
-			while let Some(descriptor_set_handle) = descriptor_set_handle_option {
-				let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-				descriptor_set_handles.push(descriptor_set_handle);
-				descriptor_set_handle_option = descriptor_set.next;
-			}
-
-			descriptor_set_handles
-		};
-
-		match descriptor_set_write.descriptor {
-			graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
-				let buffer_handles = {
-					let mut buffer_handles = Vec::with_capacity(3);
-					let mut buffer_handle_option = Some(BufferHandle(handle.0));
-
-					while let Some(buffer_handle) = buffer_handle_option {
-						buffer_handles.push(buffer_handle);
-						let buffer = &self.buffers[buffer_handle.0 as usize];
-						buffer_handle_option = buffer.next;
-					}
-
-					buffer_handles
-				};
-
-				for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-					let buffer_handle = buffer_handles[((i as i32 - offset) % buffer_handles.len() as i32) as usize];
-					let buffer = &self.buffers[buffer_handle.0 as usize];
-
-					if !buffer.buffer.is_null() {
-						let buffers = [vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0u64).range(match size { graphics_hardware_interface::Ranges::Size(size) => { size as u64 } graphics_hardware_interface::Ranges::Whole => { vk::WHOLE_SIZE } })];
-
-						let write_info = vk::WriteDescriptorSet::default()
-							.dst_set(descriptor_set.descriptor_set)
-							.dst_binding(binding_index)
-							.dst_array_element(descriptor_set_write.array_element)
-							.descriptor_type(descriptor_type)
-							.buffer_info(&buffers)
-						;
-
-						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
-					}
-
-					self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::Buffer{ size, buffer: buffer_handle });
-					self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Buffer(buffer_handle));
-				}
-			},
-			graphics_hardware_interface::Descriptor::Image{ handle, layout } => {
-				let image_handles = {
-					let mut image_handles = Vec::with_capacity(3);
-					let mut image_handle_option = Some(ImageHandle(handle.0));
-
-					while let Some(image_handle) = image_handle_option {
-						image_handles.push(image_handle);
-						let image = &self.images[image_handle.0 as usize];
-						image_handle_option = image.next;
-					}
-
-					image_handles
-				};
-
-				for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-					let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
-
-					let image = &self.images[image_handle.0 as usize];
-
-					if !image.image.is_null() && !image.image_view.is_null() {
-						let images = [
-							vk::DescriptorImageInfo::default()
-							.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
-							.image_view(image.image_view)
-						];
-
-						let write_info = vk::WriteDescriptorSet::default()
-							.dst_set(descriptor_set.descriptor_set)
-							.dst_binding(binding_index)
-							.dst_array_element(descriptor_set_write.array_element)
-							.descriptor_type(descriptor_type)
-							.image_info(&images)
-						;
-
-						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
-					}
-
-					self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::Image{ layout, image: image_handle });
-					self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Image(image_handle));
-				}
-			},
-			graphics_hardware_interface::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout, layer } => {
-				let image_handles = {
-					let mut image_handles = Vec::with_capacity(3);
-					let mut image_handle_option = Some(ImageHandle(image_handle.0));
-
-					while let Some(image_handle) = image_handle_option {
-						image_handles.push(image_handle);
-						let image = &self.images[image_handle.0 as usize];
-						image_handle_option = image.next;
-					}
-
-					image_handles
-				};
-
-				for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-					let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
-
-					let image = &self.images[image_handle.0 as usize];
-
-					if !image.image.is_null() {
-						let image_view = if let Some(layer) = layer { // If the descriptor asks for a subresource, we need to create a new image view
-							image.image_views[layer as usize]
-						} else {
-							image.image_view
-						};
-
-						let images = [
-							vk::DescriptorImageInfo::default()
-							.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
-							.image_view(image_view)
-							.sampler(vk::Sampler::from_raw(sampler_handle.0))
-						];
-
-						let write_info = vk::WriteDescriptorSet::default()
-							.dst_set(descriptor_set.descriptor_set)
-							.dst_binding(binding_index)
-							.dst_array_element(descriptor_set_write.array_element)
-							.descriptor_type(descriptor_type)
-							.image_info(&images)
-						;
-
-						unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
-					}
-
-					self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::CombinedImageSampler{ image: image_handle, sampler: vk::Sampler::from_raw(sampler_handle.0), layout });
-					self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Image(image_handle));
-				}
-			},
-			graphics_hardware_interface::Descriptor::Sampler(handle) => {
-				for (_, descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-					let sampler_handle = handle;
-					let images = [vk::DescriptorImageInfo::default().sampler(vk::Sampler::from_raw(sampler_handle.0))];
-
-					let write_info = vk::WriteDescriptorSet::default()
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(descriptor_set_write.array_element)
-						.descriptor_type(descriptor_type)
-						.image_info(&images)
-					;
-
-					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
-				}
-			},
-			graphics_hardware_interface::Descriptor::StaticSamplers => {}
-			graphics_hardware_interface::Descriptor::Swapchain(_) => {
-				unimplemented!()
-			}
-			graphics_hardware_interface::Descriptor::AccelerationStructure { handle } => {
-				for (_, descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-					let acceleration_structure_handle = handle;
-					let acceleration_structure = &self.acceleration_structures[acceleration_structure_handle.0 as usize];
-
-					let acceleration_structures = [acceleration_structure.acceleration_structure];
-
-					let mut acc_str_descriptor_info = vk::WriteDescriptorSetAccelerationStructureKHR::default()
-						.acceleration_structures(&acceleration_structures);
-
-					let write_info = vk::WriteDescriptorSet{ descriptor_count: 1, ..vk::WriteDescriptorSet::default() }
-						.push_next(&mut acc_str_descriptor_info)
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(descriptor_set_write.array_element)
-						.descriptor_type(descriptor_type)
-					;
-
-					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
-				}
-			}
-		}
-
-		let binding = &self.bindings[descriptor_set_write.binding_handle.0 as usize];
-
-		let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
-
-		let descriptor_sets = {
-			let mut descriptor_sets = Vec::with_capacity(3);
-
-			let mut descriptor_set_handle_option = Some(descriptor_set_handle);
-
-			while let Some(descriptor_set_handle) = descriptor_set_handle_option {
-				let descriptor_set = self.get_descriptor_set(descriptor_set_handle);
-
-				descriptor_sets.push(descriptor_set_handle);
-
-				descriptor_set_handle_option = descriptor_set.next;
-			}
-
-			descriptor_sets
-		};
-
-		for (i, _) in descriptor_sets.iter().enumerate() {
-			match descriptor_set_write.descriptor {
-				graphics_hardware_interface::Descriptor::Buffer { handle, .. } => {
-					let buffer_handles = {
-						let mut buffer_handles = Vec::with_capacity(3);
-						let mut buffer_handle_option = Some(BufferHandle(handle.0));
-
-						while let Some(buffer_handle) = buffer_handle_option {
-							buffer_handles.push(buffer_handle);
-							let buffer = &self.buffers[buffer_handle.0 as usize];
-							buffer_handle_option = buffer.next;
-						}
-
-						buffer_handles
-					};
-					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-					let buffer_handle = buffer_handles[((i as i32 - offset) % buffer_handles.len() as i32) as usize];
-					self.resource_to_descriptor.entry(Handle::Buffer(buffer_handle)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
-				}
-				graphics_hardware_interface::Descriptor::Image { handle, .. } => {
-					let images_handles = {
-						let mut images = Vec::with_capacity(3);
-						let mut image_handle_option = Some(ImageHandle(handle.0));
-
-						while let Some(image_handle) = image_handle_option {
-							let image = &self.images[image_handle.0 as usize];
-							images.push(image_handle);
-							image_handle_option = image.next;
-						}
-
-						images
-					};
-
-					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-					let image = &images_handles[((i as i32 - offset) % images_handles.len() as i32) as usize];
-
-					self.resource_to_descriptor.entry(Handle::Image(*image)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
-				}
-				graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, .. } => {
-					let image_handles = {
-						let mut images = Vec::with_capacity(3);
-						let mut image_handle_option = Some(ImageHandle(image_handle.0));
-
-						while let Some(image_handle) = image_handle_option {
-							let image = &self.images[image_handle.0 as usize];
-							images.push(image_handle);
-							image_handle_option = image.next;
-						}
-
-						images
-					};
-
-					let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-					let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
-
-					self.resource_to_descriptor.entry(Handle::Image(image_handle)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
-				}
-				_ => {}
-			}
-		}
-	}
 }
 
 impl graphics_hardware_interface::Device for Device {
@@ -1343,53 +1055,55 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn create_descriptor_set_template(&mut self, name: Option<&str>, bindings: &[graphics_hardware_interface::DescriptorSetBindingTemplate]) -> graphics_hardware_interface::DescriptorSetTemplateHandle {
-		fn m(rs: &mut Device, bindings: &[graphics_hardware_interface::DescriptorSetBindingTemplate], layout_bindings: &mut Vec<vk::DescriptorSetLayoutBinding>, map: &mut Vec<(vk::DescriptorType, u32)>) -> vk::DescriptorSetLayout {
-			if let Some(binding) = bindings.get(0) {
-				let b = vk::DescriptorSetLayoutBinding::default()
-					.binding(binding.binding)
-					.descriptor_type(match binding.descriptor_type {
-						graphics_hardware_interface::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-						graphics_hardware_interface::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
-						graphics_hardware_interface::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
-						graphics_hardware_interface::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-						graphics_hardware_interface::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
-						graphics_hardware_interface::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
-						graphics_hardware_interface::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-					})
-					.descriptor_count(binding.descriptor_count)
-					.stage_flags(binding.stages.into())
-				;
+		let bindings = bindings.iter().map(|binding| {
+			let b = vk::DescriptorSetLayoutBinding::default()
+				.binding(binding.binding)
+				.descriptor_type(match binding.descriptor_type {
+					graphics_hardware_interface::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+					graphics_hardware_interface::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+					graphics_hardware_interface::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
+					graphics_hardware_interface::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+					graphics_hardware_interface::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
+					graphics_hardware_interface::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
+					graphics_hardware_interface::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+				})
+				.descriptor_count(binding.descriptor_count)
+				.stage_flags(binding.stages.into())
+			;
 
-				let _ = if let Some(inmutable_samplers) = &binding.immutable_samplers {
-					inmutable_samplers.iter().map(|sampler| vk::Sampler::from_raw(sampler.0)).collect::<Vec<_>>()
-				} else {
-					Vec::new()
-				};
+			assert_ne!(binding.descriptor_count, 0, "Descriptor count must be greater than 0.");
 
-				map.push((b.descriptor_type, b.descriptor_count));
-
-				layout_bindings.push(b);
-
-				m(rs, &bindings[1..], layout_bindings, map)
+			let _ = if let Some(inmutable_samplers) = &binding.immutable_samplers {
+				inmutable_samplers.iter().map(|sampler| vk::Sampler::from_raw(sampler.0)).collect::<Vec<_>>()
 			} else {
-				let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(layout_bindings);
+				Vec::new()
+			};
 
-				let descriptor_set_layout = unsafe { rs.device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None).expect("No descriptor set layout") };
+			b
+		}).collect::<Vec<_>>();
 
-				descriptor_set_layout
+		let binding_flags = bindings.iter().map(|binding| {
+			if binding.descriptor_count > 1 {
+				vk::DescriptorBindingFlags::PARTIALLY_BOUND
+			} else {
+				vk::DescriptorBindingFlags::empty()
 			}
-		}
+		}).collect::<Vec<_>>();
 
-		let mut bindings_list = Vec::with_capacity(8);
+		let mut dslbfci = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
 
-		let descriptor_set_layout = m(self, bindings, &mut Vec::new(), &mut bindings_list);
+		let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default().push_next(&mut dslbfci).bindings(&bindings);
+
+		let descriptor_set_layout = unsafe { self.device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None).expect("No descriptor set layout") };
 
 		self.set_name(descriptor_set_layout, name);
 
 		let handle = graphics_hardware_interface::DescriptorSetTemplateHandle(self.descriptor_sets_layouts.len() as u64);
 
 		self.descriptor_sets_layouts.push(DescriptorSetLayout {
-			bindings: bindings_list,
+			bindings: bindings.iter().map(|binding| {
+				(binding.descriptor_type, binding.descriptor_count)
+			}).collect::<Vec<_>>(),
 			descriptor_set_layout,
 		});
 
@@ -1420,12 +1134,12 @@ impl graphics_hardware_interface::Device for Device {
 
 		self.bindings.push(created_binding);
 
-		self.write_binding(&graphics_hardware_interface::DescriptorWrite {
+		self.write(&[graphics_hardware_interface::DescriptorWrite {
 			array_element: constructor.array_element,
 			binding_handle,
 			descriptor: constructor.descriptor,
 			frame_offset: constructor.frame_offset,
-		});
+		}]);
 
 		binding_handle
 	}
@@ -1459,8 +1173,9 @@ impl graphics_hardware_interface::Device for Device {
 		}).collect::<Vec<_>>();
 
 		let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-			.max_sets(3/* LEAVE AS 3 AS THAT IS THE MAX AMOUNT OF BUFFERED FRAMES */)
-			.pool_sizes(&pool_sizes);
+			.max_sets(MAX_FRAMES_IN_FLIGHT as _)
+			.pool_sizes(&pool_sizes)
+		;
 
 		let descriptor_pool = unsafe { self.device.create_descriptor_pool(&descriptor_pool_create_info, None).expect("No descriptor pool") };
 
@@ -1504,8 +1219,316 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[graphics_hardware_interface::DescriptorWrite]) {
-		for dsw in descriptor_set_writes {
-			self.write_binding(dsw);
+		let mut buffers: StableVec<vk::DescriptorBufferInfo, 1024> = StableVec::new();
+		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
+		let mut acceleration_structures: StableVec<vk::AccelerationStructureKHR, 1024> = StableVec::new();
+		let mut acceleration_structures_writes: StableVec<vk::WriteDescriptorSetAccelerationStructureKHR, 1024> = StableVec::new();
+
+		let writes = descriptor_set_writes.iter().filter_map(|descriptor_set_write| {
+			let binding_handle = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0);
+
+			let binding = &self.bindings[binding_handle.0 as usize];
+			let descriptor_type = binding.descriptor_type;
+			let binding_index = binding.index;
+
+			assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
+
+			let descriptor_set_handles = {
+				let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
+				let mut descriptor_set_handles = Vec::with_capacity(3);
+
+				let mut descriptor_set_handle_option = Some(descriptor_set_handle);
+
+				while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+					descriptor_set_handles.push(descriptor_set_handle);
+					descriptor_set_handle_option = descriptor_set.next;
+				}
+
+				descriptor_set_handles
+			};
+
+			match descriptor_set_write.descriptor {
+				graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
+					let buffer_handles = {
+						let mut buffer_handles = Vec::with_capacity(3);
+						let mut buffer_handle_option = Some(BufferHandle(handle.0));
+
+						while let Some(buffer_handle) = buffer_handle_option {
+							buffer_handles.push(buffer_handle);
+							let buffer = &self.buffers[buffer_handle.0 as usize];
+							buffer_handle_option = buffer.next;
+						}
+
+						buffer_handles
+					};
+
+					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+					for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+						let buffer_handle = buffer_handles[((i as i32 - offset) % buffer_handles.len() as i32) as usize];
+						let buffer = &self.buffers[buffer_handle.0 as usize];
+
+						if !buffer.buffer.is_null() {
+							let e = buffers.append([vk::DescriptorBufferInfo::default().buffer(buffer.buffer).offset(0u64).range(match size { graphics_hardware_interface::Ranges::Size(size) => { size as u64 } graphics_hardware_interface::Ranges::Whole => { vk::WHOLE_SIZE } })]);
+
+							let write_info = vk::WriteDescriptorSet::default()
+								.dst_set(descriptor_set.descriptor_set)
+								.dst_binding(binding_index)
+								.dst_array_element(descriptor_set_write.array_element)
+								.descriptor_type(descriptor_type)
+								.buffer_info(e)
+							;
+
+							writes.push(write_info);
+						}
+
+						self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::Buffer{ size, buffer: buffer_handle });
+						self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Buffer(buffer_handle));
+					}
+
+					Some(writes)
+				},
+				graphics_hardware_interface::Descriptor::Image{ handle, layout } => {
+					let image_handles = {
+						let mut image_handles = Vec::with_capacity(3);
+						let mut image_handle_option = Some(ImageHandle(handle.0));
+
+						while let Some(image_handle) = image_handle_option {
+							image_handles.push(image_handle);
+							let image = &self.images[image_handle.0 as usize];
+							image_handle_option = image.next;
+						}
+
+						image_handles
+					};
+
+					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+					for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+						let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
+
+						let image = &self.images[image_handle.0 as usize];
+
+						if !image.image.is_null() && !image.image_view.is_null() {
+							let e = images.append([vk::DescriptorImageInfo::default().image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None)).image_view(image.image_view)]);
+
+							let write_info = vk::WriteDescriptorSet::default()
+								.dst_set(descriptor_set.descriptor_set)
+								.dst_binding(binding_index)
+								.dst_array_element(descriptor_set_write.array_element)
+								.descriptor_type(descriptor_type)
+								.image_info(&e)
+							;
+
+							writes.push(write_info);
+						}
+
+						self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::Image{ layout, image: image_handle });
+						self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Image(image_handle));
+					}
+
+					Some(writes)
+				},
+				graphics_hardware_interface::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout, layer } => {
+					let image_handles = {
+						let mut image_handles = Vec::with_capacity(3);
+						let mut image_handle_option = Some(ImageHandle(image_handle.0));
+
+						while let Some(image_handle) = image_handle_option {
+							image_handles.push(image_handle);
+							let image = &self.images[image_handle.0 as usize];
+							image_handle_option = image.next;
+						}
+
+						image_handles
+					};
+
+					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+					for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+						let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
+
+						let image = &self.images[image_handle.0 as usize];
+
+						if !image.image.is_null() {
+							let image_view = if let Some(layer) = layer { // If the descriptor asks for a subresource, we need to create a new image view
+								image.image_views[layer as usize]
+							} else {
+								image.image_view
+							};
+
+							let e = images.append([vk::DescriptorImageInfo::default()
+								.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
+								.image_view(image_view)
+								.sampler(vk::Sampler::from_raw(sampler_handle.0))
+							]);
+
+							let write_info = vk::WriteDescriptorSet::default()
+								.dst_set(descriptor_set.descriptor_set)
+								.dst_binding(binding_index)
+								.dst_array_element(descriptor_set_write.array_element)
+								.descriptor_type(descriptor_type)
+								.image_info(e)
+							;
+
+							writes.push(write_info);
+						}
+
+						self.descriptors.entry(descriptor_set_handle).or_insert_with(HashMap::new).entry(binding_index).or_insert_with(HashMap::new).insert(descriptor_set_write.array_element, Descriptor::CombinedImageSampler{ image: image_handle, sampler: vk::Sampler::from_raw(sampler_handle.0), layout });
+						self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_insert_with(HashSet::new).insert(Handle::Image(image_handle));
+					}
+
+					Some(writes)
+				},
+				graphics_hardware_interface::Descriptor::Sampler(handle) => {
+					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+					for (_, descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let sampler_handle = handle;
+						let e = images.append([vk::DescriptorImageInfo::default().sampler(vk::Sampler::from_raw(sampler_handle.0))]);
+
+						let write_info = vk::WriteDescriptorSet::default()
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(binding_index)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+							.image_info(e)
+						;
+
+						writes.push(write_info);
+					}
+
+					Some(writes)
+				},
+				graphics_hardware_interface::Descriptor::StaticSamplers => { None }
+				graphics_hardware_interface::Descriptor::Swapchain(_) => {
+					unimplemented!()
+				}
+				graphics_hardware_interface::Descriptor::AccelerationStructure { handle } => {
+					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+					for (_, descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let acceleration_structure_handle = handle;
+						let acceleration_structure = &self.acceleration_structures[acceleration_structure_handle.0 as usize];
+
+						let f = acceleration_structures.append([acceleration_structure.acceleration_structure]);
+
+						let e = acceleration_structures_writes.push_mut(vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&f));
+
+						let write_info = vk::WriteDescriptorSet{ descriptor_count: 1, ..vk::WriteDescriptorSet::default() }
+							.push_next(e)
+							.dst_set(descriptor_set.descriptor_set)
+							.dst_binding(binding_index)
+							.dst_array_element(descriptor_set_write.array_element)
+							.descriptor_type(descriptor_type)
+						;
+
+						writes.push(write_info);
+					}
+
+					Some(writes)
+				}
+			}
+		}).flatten().collect::<Vec<_>>();
+
+		unsafe { self.device.update_descriptor_sets(&writes, &[]) };
+
+		for descriptor_set_write in descriptor_set_writes {
+			let binding_handle = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0);
+			let binding = &self.bindings[descriptor_set_write.binding_handle.0 as usize];
+
+			let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
+
+			let descriptor_sets = {
+				let mut descriptor_sets = Vec::with_capacity(3);
+
+				let mut descriptor_set_handle_option = Some(descriptor_set_handle);
+
+				while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+					let descriptor_set = self.get_descriptor_set(descriptor_set_handle);
+
+					descriptor_sets.push(descriptor_set_handle);
+
+					descriptor_set_handle_option = descriptor_set.next;
+				}
+
+				descriptor_sets
+			};
+
+			for (i, _) in descriptor_sets.iter().enumerate() {
+				match descriptor_set_write.descriptor {
+					graphics_hardware_interface::Descriptor::Buffer { handle, .. } => {
+						let buffer_handles = {
+							let mut buffer_handles = Vec::with_capacity(3);
+							let mut buffer_handle_option = Some(BufferHandle(handle.0));
+
+							while let Some(buffer_handle) = buffer_handle_option {
+								buffer_handles.push(buffer_handle);
+								let buffer = &self.buffers[buffer_handle.0 as usize];
+								buffer_handle_option = buffer.next;
+							}
+
+							buffer_handles
+						};
+						let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+						let buffer_handle = buffer_handles[((i as i32 - offset) % buffer_handles.len() as i32) as usize];
+						self.resource_to_descriptor.entry(Handle::Buffer(buffer_handle)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
+					}
+					graphics_hardware_interface::Descriptor::Image { handle, .. } => {
+						let images_handles = {
+							let mut images = Vec::with_capacity(3);
+							let mut image_handle_option = Some(ImageHandle(handle.0));
+
+							while let Some(image_handle) = image_handle_option {
+								let image = &self.images[image_handle.0 as usize];
+								images.push(image_handle);
+								image_handle_option = image.next;
+							}
+
+							images
+						};
+
+						let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+						let image = &images_handles[((i as i32 - offset) % images_handles.len() as i32) as usize];
+
+						self.resource_to_descriptor.entry(Handle::Image(*image)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
+					}
+					graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, .. } => {
+						let image_handles = {
+							let mut images = Vec::with_capacity(3);
+							let mut image_handle_option = Some(ImageHandle(image_handle.0));
+
+							while let Some(image_handle) = image_handle_option {
+								let image = &self.images[image_handle.0 as usize];
+								images.push(image_handle);
+								image_handle_option = image.next;
+							}
+
+							images
+						};
+
+						let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+						let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
+
+						self.resource_to_descriptor.entry(Handle::Image(image_handle)).or_insert_with(HashSet::new).insert((binding_handle, descriptor_set_write.array_element));
+					}
+					_ => {}
+				}
+			}
 		}
 	}
 
@@ -2561,6 +2584,10 @@ impl graphics_hardware_interface::Device for Device {
 			u64::MAX
 		};
 
+		unsafe {
+			self.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
+		};
+
 		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, timeout, semaphore, vk::Fence::null()) };
 
 		let (index, _) = if let Ok((index, is_suboptimal)) = acquisition_result {
@@ -2664,4 +2691,43 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 	}
 
 	vk::FALSE
+}
+
+struct StableVec<T: Default, const N: usize> {
+	data: [T; N],
+	pos: usize,
+}
+
+impl <T: Default + Copy, const N: usize> StableVec<T, N> {
+	pub fn new() -> Self {
+		StableVec {
+			data: [T::default(); N],
+			pos: 0,
+		}
+	}
+
+	pub fn push(&mut self, value: T) -> &'static T {
+		assert!(self.pos < N, "StableVec is full");
+		let pos = self.pos;
+		self.data[pos] = value;
+		self.pos += 1;
+		unsafe { std::mem::transmute(&self.data[pos]) } // SAFETY: this is not correct
+	}
+
+	pub fn push_mut(&mut self, value: T) -> &'static mut T {
+		assert!(self.pos < N, "StableVec is full");
+		let pos = self.pos;
+		self.data[pos] = value;
+		self.pos += 1;
+		unsafe { std::mem::transmute(&mut self.data[pos]) } // SAFETY: this is not correct
+	}
+
+	pub fn append<const M: usize>(&mut self, array: [T; M]) -> &'static [T] {
+		assert!(self.pos + M <= N, "StableVec is full");
+		let start = self.pos;
+		let end = start + M;
+		self.data[start..end].copy_from_slice(&array);
+		self.pos += M;
+		unsafe { std::mem::transmute(&self.data[start..end]) } // SAFETY: this is not correct
+	}
 }

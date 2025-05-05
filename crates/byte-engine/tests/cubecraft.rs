@@ -377,19 +377,13 @@ struct RenderParams {
     instance_count: u32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct FaceShaderData {
-    block: u16,
-}
-
 struct CubeCraftRenderPass {
-    vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 16 * 16 * 256 * 32]>,
-    index_buffer: ghi::BufferHandle<[u16; 16 * 16 * 256 * 32 * 3]>,
+    vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 4]>,
+    index_buffer: ghi::BufferHandle<[u16; 6]>,
 
     camera_data_buffer: ghi::BufferHandle<maths_rs::Mat4f>,
 
-    face_data_buffer: ghi::BufferHandle<[FaceShaderData; 16 * 16 * 256 * 32]>,
+    face_data_buffer: ghi::BufferHandle<[FaceData; 16 * 16 * 256 * 32]>,
 
     set: ghi::DescriptorSetHandle,
     binding: ghi::DescriptorSetBindingHandle,
@@ -434,13 +428,14 @@ impl CubeCraftRenderPass {
         let render_to_main = render_pass_builder.render_to("main");
         let render_to_depth = render_pass_builder.render_to("depth");
 
-        let vertex_buffer = ghi.create_buffer(
+        let vertex_buffer: ghi::BufferHandle<[(f32, f32, f32); 4]> = ghi.create_buffer(
             Some("vertices"),
             ghi::Uses::Vertex,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
             ghi::UseCases::DYNAMIC,
         );
-        let index_buffer = ghi.create_buffer(
+
+        let index_buffer: ghi::BufferHandle<[u16; 6]> = ghi.create_buffer(
             Some("indices"),
             ghi::Uses::Index,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
@@ -458,7 +453,7 @@ impl CubeCraftRenderPass {
                 ghi::DescriptorSetBindingTemplate::new(
                     1,
                     ghi::DescriptorType::StorageBuffer,
-                    ghi::Stages::FRAGMENT,
+                    ghi::Stages::VERTEX | ghi::Stages::FRAGMENT,
                 ),
                 ghi::DescriptorSetBindingTemplate::new_array(
                     2,
@@ -472,37 +467,93 @@ impl CubeCraftRenderPass {
 
         let v_shader_source = r#"#version 450 core
 		#pragma shader_stage(vertex)
+		#extension GL_EXT_shader_8bit_storage: require
+		#extension GL_EXT_shader_16bit_storage: require
+		#extension GL_EXT_shader_explicit_arithmetic_types: require
+		#extension GL_EXT_scalar_block_layout: require
+		#extension GL_EXT_nonuniform_qualifier: require
 		// Row major matrices in buffers
 		layout(row_major) buffer;
 
 		layout(location = 0) in vec3 in_position;
+		layout(location = 0) out uint instance_id;
 
 		layout(set = 0, binding = 0) readonly buffer Camera {
 			mat4 vp;
 		} camera;
 
+		struct Face {
+			uint16_t block;
+			uint8_t direction;
+			vec3 position;
+		};
+
+		layout(set = 0, binding = 1, scalar) readonly buffer Faces {
+			Face faces[];
+		};
+
 		void main() {
-			gl_Position = camera.vp * vec4(in_position, 1.0);
+			Face face = faces[gl_InstanceIndex];
+
+			float flip = face.direction == 1 || face.direction == 3 || face.direction == 5 ? -1.0 : 1.0;
+
+			vec3 position = vec3(0.0, 0.0, 0.0);
+
+			switch (uint32_t(face.direction)) {
+				case 1:
+				case 2:
+					position.x = flip * 0.5;
+					position.y = in_position.y;
+					position.z = flip * in_position.x;
+					break;
+				case 3:
+				case 4:
+					position.x = in_position.x;
+					position.y = flip * 0.5;
+					position.z = flip * in_position.y;
+					break;
+				case 5:
+				case 6:
+					position.x = flip * in_position.x;
+					position.y = in_position.y;
+					position.z = flip * 0.5;
+					break;
+				default:
+					break;
+			}
+
+			position += face.position;
+			gl_Position = camera.vp * vec4(position, 1.0);
+			instance_id = gl_InstanceIndex;
 		}
 		"#;
 
         let f_shader_source = r#"#version 450 core
 		#pragma shader_stage(fragment)
+		#extension GL_EXT_shader_8bit_storage: require
 		#extension GL_EXT_shader_16bit_storage: require
-		#extension GL_EXT_fragment_shader_barycentric: require
+		#extension GL_EXT_scalar_block_layout: require
+		#extension GL_EXT_nonuniform_qualifier: require
 
 		layout(location = 0) out vec4 out_color;
+		layout(location = 0) in flat uint instance_id;
 
-		layout(set = 0, binding = 1) readonly buffer Faces {
-			uint16_t block[];
-		} faces;
+		struct Face {
+			uint16_t block;
+			uint8_t direction;
+			vec3 position;
+		};
+
+		layout(set = 0, binding = 1, scalar) readonly buffer Faces {
+			Face faces[];
+		};
 
 		layout(set = 0, binding = 2) uniform sampler2D[] textures;
 
 		void main() {
-			uint in_block = uint(faces.block[gl_PrimitiveID / 2]);
+			uint in_block = uint(faces[instance_id].block);
 
-			vec2 uv = gl_BaryCoordEXT.xy;
+			vec2 uv = gl_FragCoord.xy / vec2(1920.0, 1080.0);
 
 			if (in_block == 1) {
 				out_color = texture(textures[1], uv);
@@ -597,7 +648,7 @@ impl CubeCraftRenderPass {
                 &ghi::DescriptorSetBindingTemplate::new(
                     1,
                     ghi::DescriptorType::StorageBuffer,
-                    ghi::Stages::VERTEX,
+                    ghi::Stages::VERTEX | ghi::Stages::FRAGMENT,
                 ),
                 face_data_buffer.into(),
             ),
@@ -632,6 +683,16 @@ impl CubeCraftRenderPass {
 				request.load(s.into());
 			});
 
+			if block_type == GRASS_BLOCK {
+				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+					texture_binding,
+					texture,
+					sampler,
+					ghi::Layouts::Read,
+					0 as _,
+				)]);
+			}
+
 			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 				texture_binding,
 				texture,
@@ -641,11 +702,22 @@ impl CubeCraftRenderPass {
 			)]);
 		}
 
+		*ghi.get_mut_buffer_slice(vertex_buffer) = [
+			(0.5, 0.5, 0.),
+			(-0.5, 0.5, 0.),
+			(-0.5, -0.5, 0.),
+			(0.5, -0.5, 0.),
+		];
+
+		*ghi.get_mut_buffer_slice(index_buffer) = [
+			0, 1, 2, 2, 3, 0,
+		];
+
         drop(ghi);
 
         let render_params = RenderParams {
-            index_count: 0,
-            vertex_count: 0,
+            index_count: 6,
+            vertex_count: 4,
             instance_count: 0,
         };
 
@@ -707,23 +779,13 @@ impl RenderPass for CubeCraftRenderPass {
             *ghi.get_mut_buffer_slice(self.camera_data_buffer) = view.view_projection();
         }
 
-        let (vertices, indices, faces) = build_cubes(&self.blocks);
-
-        ghi.get_mut_buffer_slice(self.vertex_buffer)[..vertices.len()].copy_from_slice(&vertices);
-        ghi.get_mut_buffer_slice(self.index_buffer)[..indices.len()].copy_from_slice(&indices);
-
-        let faces = faces
-            .iter()
-            .map(|&face| FaceShaderData { block: face as u16 })
-            .collect::<Vec<_>>();
+        let faces = build_cube_faces(&self.blocks);
 
         ghi.get_mut_buffer_slice(self.face_data_buffer)[..faces.len()].copy_from_slice(&faces);
 
         let mut render_params = self.render_params.borrow_mut();
 
-        render_params.index_count = indices.len() as u32;
-        render_params.vertex_count = vertices.len() as u32;
-        render_params.instance_count = 1;
+        render_params.instance_count = faces.len() as u32;
     }
 
     fn record(
@@ -761,6 +823,29 @@ impl RenderPass for CubeCraftRenderPass {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Direction {
+    Left = 1,
+    Right = 2,
+    Down = 3,
+    Up = 4,
+    Forward = 5,
+    Backward = 6,
+} 
+
+impl Direction {
+	fn to_normal(&self) -> (i32, i32, i32) {
+		match self {
+			Direction::Left => (-1, 0, 0),
+			Direction::Right => (1, 0, 0),
+			Direction::Down => (0, -1, 0),
+			Direction::Up => (0, 1, 0),
+			Direction::Forward => (0, 0, -1),
+			Direction::Backward => (0, 0, 1),
+		}
+	}
+}
+
 const AIR_BLOCK: u32 = 0;
 const GRASS_BLOCK: u32 = 1;
 const STONE_BLOCK: u32 = 2;
@@ -782,334 +867,134 @@ fn make_block(position: Location) -> u32 {
 
 type Vertex = (f32, f32, f32);
 
-/// Returns a list of vertices and indices for the blocks
-/// The vertices are in the format (x, y, z) and the indices are in the format (v1, v2, v3)
-/// Triangles for higher Y values are drawn first, as they are more likely to be visible
-fn build_cubes(blocks: &[Block]) -> (Vec<Vertex>, Vec<u16>, Vec<u16>) {
-    let cube_sides: [(i32, i32, i32); 6] = [
-        (1, 0, 0),
-        (-1, 0, 0),
-        (0, 1, 0),
-        (0, -1, 0),
-        (0, 0, 1),
-        (0, 0, -1),
-    ];
+#[derive(Clone, Copy)]
+struct Face {
+	block: u32,
+	direction: Direction,
+	position: Location,
+}
 
-    // Per cube face data
-    let mut faces = Vec::with_capacity(8192 * 6 * 4);
+/// Returns a list of blocks and their external faces
+fn compute_external_block_faces(blocks: &[Block]) -> Vec<Face> {
+	let cube_sides = [
+		Direction::Left,
+		Direction::Right,
+		Direction::Down,
+		Direction::Up,
+		Direction::Forward,
+		Direction::Backward,
+	];
+	
+	let mut sides = HashMap::with_capacity(8192 * 6);
+	
+	for block in blocks {
+		let pos = block.position;
+	
+		for side in &cube_sides {
+			let pos = (pos.0 * 2, pos.1 * 2, pos.2 * 2);
+	
+			let face = Face {
+				block: block.block,
+				direction: side.clone(),
+				position: pos,
+			};
 
-    let mut sides = HashMap::with_capacity(8192 * 6);
+			let side = side.to_normal();
 
-    for block in blocks {
-        let pos = block.position;
+			let face_position = (pos.0 + side.0, pos.1 + side.1, pos.2 + side.2);
+	
+			// If cube side already exists, then this wall is internal
+			sides
+				.entry(face_position)
+				.and_modify(|(_, external): &mut (_, bool)| *external = false)
+				.or_insert((face, true));
+		}
+	}
+	
+	let mut external_sides = sides
+		.values()
+		.filter(|(_, external)| *external)
+		.map(|(k, _)| *k)
+		.collect::<Vec<_>>();
 
-        for &side in &cube_sides {
-            let pos = (pos.0 * 2, pos.1 * 2, pos.2 * 2);
+	// Place Up faces first
+	external_sides.sort_by(|a, b| {
+		let a = a.direction;
+		let b = b.direction;
 
-            let face = (pos.0 + side.0, pos.1 + side.1, pos.2 + side.2);
+		if a == Direction::Up {
+			std::cmp::Ordering::Less
+		} else if b == Direction::Up {
+			std::cmp::Ordering::Greater
+		} else {
+			std::cmp::Ordering::Equal
+		}
+	});
 
-            let block = Block::new(pos, block.block);
+	external_sides
+}
 
-            // If cube side already exists, then this wall is internal
-            sides
-                .entry(face)
-                .and_modify(|(_, external): &mut (_, bool)| *external = false)
-                .or_insert(((block, side), true));
-        }
-    }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FaceData {
+	block: u16,
+	// 1: -x, 2: +x, 3: -y, 4: +y, 5: -z, 6: +z
+	direction: u8,
+	position: (f32, f32, f32),
+}
 
-    let external_sides = sides
-        .values()
-        .filter(|(_, external)| *external)
-        .map(|(k, _)| *k)
-        .collect::<Vec<_>>();
+/// Returns a list of per instance data to transform the squares
+fn build_cube_faces(blocks: &[Block]) -> Vec<FaceData> {
+	let external_sides = compute_external_block_faces(blocks);
 
-    let face_corners = [(-1, 1), (1, 1), (-1, -1), (1, -1)];
+	external_sides.into_iter().map(|face| {
+		let direction = face.direction as u8;
 
-    let mut corners = HashMap::with_capacity(8192 * 6 * 4 * 3);
-    let mut vertices = Vec::with_capacity(corners.len() * 3);
+		let position = (
+			face.position.0 as f32 * 0.5,
+			face.position.1 as f32 * 0.5,
+			face.position.2 as f32 * 0.5,
+		);
 
-    for &(block, normal) in &external_sides {
-        let (cx, cy, cz) = block.position;
-
-        for (fx, fy) in face_corners {
-            let (x, y, z) = match (normal.0.abs(), normal.1.abs(), normal.2.abs()) {
-                (1, 0, 0) => (0, fx, fy),
-                (0, 1, 0) => (fx, 0, fy),
-                (0, 0, 1) => (fx, fy, 0),
-                _ => unreachable!(),
-            };
-
-            let vertex = (cx + normal.0 + x, cy + normal.1 + y, cz + normal.2 + z);
-
-            corners.entry(vertex).or_insert_with(|| {
-                let index = vertices.len();
-                let (x, y, z) = vertex;
-                vertices.push((x as f32 * 0.5, y as f32 * 0.5, z as f32 * 0.5));
-                index
-            });
-        }
-    }
-
-    let mut x_sides = external_sides
-        .clone()
-        .into_iter()
-        .filter(move |&(_, (sx, _, _))| sx.abs() == 1)
-        .collect::<Vec<_>>();
-    let mut y_sides = external_sides
-        .clone()
-        .into_iter()
-        .filter(move |&(_, (_, sy, _))| sy.abs() == 1)
-        .collect::<Vec<_>>();
-    let mut z_sides = external_sides
-        .clone()
-        .into_iter()
-        .filter(move |&(_, (_, _, sz))| sz.abs() == 1)
-        .collect::<Vec<_>>();
-
-    x_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.position.0 + bs.0).cmp(&(ac.position.0 + r#as.0))); // Place higher x sides first, as they are more likely to be visible
-    y_sides.sort_by(|(ac, r#as), (bc, bs)| {
-        let (_, ay, az) = (
-            ac.position.0 + r#as.0,
-            ac.position.1 + r#as.1,
-            ac.position.2 + r#as.2,
-        );
-        let (_, by, bz) = (
-            bc.position.0 + bs.0,
-            bc.position.1 + bs.1,
-            bc.position.2 + bs.2,
-        );
-
-        // Place higher y sides first, as they are more likely to be visible, and then sort by z so nearer sides are drawn first
-
-        if ay == by {
-            return (az).cmp(&bz);
-        } else {
-            return by.cmp(&ay);
-        }
-    });
-    z_sides.sort_by(|(ac, r#as), (bc, bs)| (bc.position.2 + bs.2).cmp(&(ac.position.2 + r#as.2)));
-
-    let mut indices = Vec::with_capacity(corners.len() * 3);
-
-    // Draw y sides first, as they are more likely to be visible
-
-    for (sides, square_vertices) in [
-        (
-            y_sides,
-            [
-                (-1, 0, 1),
-                (1, 0, 1),
-                (1, 0, -1),
-                (1, 0, -1),
-                (-1, 0, -1),
-                (-1, 0, 1),
-            ],
-        ),
-        (
-            x_sides,
-            [
-                (0, 1, -1),
-                (0, 1, 1),
-                (0, -1, 1),
-                (0, -1, 1),
-                (0, -1, -1),
-                (0, 1, -1),
-            ],
-        ),
-        (
-            z_sides,
-            [
-                (1, 1, 0),
-                (-1, 1, 0),
-                (-1, -1, 0),
-                (-1, -1, 0),
-                (1, -1, 0),
-                (1, 1, 0),
-            ],
-        ),
-    ] {
-        for (block, normal) in sides {
-            let (cx, cy, cz) = block.position;
-            let (x, y, z) = (cx + normal.0, cy + normal.1, cz + normal.2);
-
-            for (fx, fy, fz) in square_vertices {
-                let (fx, fy, fz) = match (normal.0.abs(), normal.1.abs(), normal.2.abs()) {
-                    (1, 0, 0) => (fx, fy * normal.0, fz),
-                    (0, 1, 0) => (fx, fy, fz * normal.1),
-                    (0, 0, 1) => (fx * normal.2, fy, fz),
-                    _ => unreachable!(),
-                };
-
-                let corner = (fx + x, fy + y, fz + z);
-
-                let corner_index = corners.get(&corner).expect("Corner must exist!");
-
-                indices.push(*corner_index as u16);
-            }
-
-            faces.push(block.block as u16);
-        }
-    }
-
-    (vertices, indices, faces)
+		FaceData {
+			block: face.block as u16,
+			direction,
+			position,
+		}
+	}).collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{build_cubes, Block, DIRT_BLOCK, GRASS_BLOCK};
+    use crate::{compute_external_block_faces, Block, Direction, DIRT_BLOCK, GRASS_BLOCK};
 
-    fn assert_upper_cube_face(
-        vertices: &[(f32, f32, f32)],
-        indices: &[u16],
-        face: usize,
-        offset: (f32, f32, f32),
-    ) {
-        let (x, y, z) = offset;
-        assert_eq!(
-            vertices[indices[face + 0] as usize],
-            (-0.5 + x, 0.5 + y, 0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 1] as usize],
-            (0.5 + x, 0.5 + y, 0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 2] as usize],
-            (0.5 + x, 0.5 + y, -0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 3] as usize],
-            (0.5 + x, 0.5 + y, -0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 4] as usize],
-            (-0.5 + x, 0.5 + y, -0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 5] as usize],
-            (-0.5 + x, 0.5 + y, 0.5 + z)
-        );
-    }
+	#[test]
+	fn test_faces_single_block() {
+		let block = Block::new((0, 0, 0), GRASS_BLOCK);
+		let blocks = vec![block];
 
-    fn assert_lower_cube_face(
-        vertices: &[(f32, f32, f32)],
-        indices: &[u16],
-        face: usize,
-        offset: (f32, f32, f32),
-    ) {
-        let (x, y, z) = offset;
-        assert_eq!(
-            vertices[indices[face + 0] as usize],
-            (-0.5 + x, -0.5 + y, -0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 1] as usize],
-            (0.5 + x, -0.5 + y, -0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 2] as usize],
-            (0.5 + x, -0.5 + y, 0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 3] as usize],
-            (0.5 + x, -0.5 + y, 0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 4] as usize],
-            (-0.5 + x, -0.5 + y, 0.5 + z)
-        );
-        assert_eq!(
-            vertices[indices[face + 5] as usize],
-            (-0.5 + x, -0.5 + y, -0.5 + z)
-        );
-    }
+		let faces = compute_external_block_faces(&blocks);
 
-    #[test]
-    fn test_build_single_cube() {
-        let blocks = [Block::new((0, 0, 0), GRASS_BLOCK)];
+		assert_eq!(faces.len(), 6);
 
-        let (vertices, indices, faces) = build_cubes(&blocks);
+		assert_eq!(faces[0].block, GRASS_BLOCK);
+		assert_eq!(faces[0].direction, Direction::Up);
+		assert_eq!(faces[0].position, (0, 0, 0));
+	}
 
-        dbg!(&vertices);
-        dbg!(&indices);
+	#[test]
+	fn test_faces_two_blocks() {
+		let blocks = vec![Block::new((0, 0, 0), GRASS_BLOCK), Block::new((0, 0, 1), GRASS_BLOCK)];
 
-        assert_eq!(vertices.len(), 8);
-        assert_eq!(indices.len(), 36);
-        assert_eq!(faces.len(), 6);
+		let faces = compute_external_block_faces(&blocks);
 
-        {
-            let mut vertices = vertices.clone();
-            vertices.sort_by(|(ax, ay, az), (bx, by, bz)| {
-                if ax == bx {
-                    if ay == by {
-                        az.partial_cmp(bz).unwrap()
-                    } else {
-                        ay.partial_cmp(by).unwrap()
-                    }
-                } else {
-                    ax.partial_cmp(bx).unwrap()
-                }
-            });
+		assert_eq!(faces.len(), 10);
 
-            assert_eq!(vertices[0], (-0.5, -0.5, -0.5));
-            assert_eq!(vertices[1], (-0.5, -0.5, 0.5));
-            assert_eq!(vertices[2], (-0.5, 0.5, -0.5));
-            assert_eq!(vertices[3], (-0.5, 0.5, 0.5));
-            assert_eq!(vertices[4], (0.5, -0.5, -0.5));
-            assert_eq!(vertices[5], (0.5, -0.5, 0.5));
-            assert_eq!(vertices[6], (0.5, 0.5, -0.5));
-            assert_eq!(vertices[7], (0.5, 0.5, 0.5));
-        }
-
-        indices.iter().for_each(|index| {
-            assert!((*index as usize) < vertices.len());
-        });
-
-        indices.chunks(6).for_each(|window| {
-            assert_eq!(window[0], window[5]);
-            assert_eq!(window[2], window[3]);
-        });
-
-        assert_upper_cube_face(&vertices, &indices, 0, (0.0, 0.0, 0.0));
-
-        assert_eq!(faces[0], 1);
-        assert_eq!(faces[1], 1);
-        assert_eq!(faces[2], 1);
-        assert_eq!(faces[3], 1);
-        assert_eq!(faces[4], 1);
-        assert_eq!(faces[5], 1);
-
-        assert_lower_cube_face(&vertices, &indices, 6, (0.0, 0.0, 0.0));
-    }
-
-    #[test]
-    fn test_build_two_cubes() {
-        let blocks = [
-            Block::new((0, 0, 0), GRASS_BLOCK),
-            Block::new((0, 0, 1), DIRT_BLOCK),
-        ];
-
-        let (vertices, indices, faces) = build_cubes(&blocks);
-
-        dbg!(&vertices);
-        dbg!(&indices);
-
-        assert_eq!(vertices.len(), 4 + 4 + 4);
-        assert_eq!(indices.len(), 5 * 2 * 6);
-
-        indices.iter().for_each(|index| {
-            assert!((*index as usize) < vertices.len());
-        });
-
-        indices.chunks(6).for_each(|window| {
-            assert_eq!(window[0], window[5]);
-            assert_eq!(window[2], window[3]);
-        });
-
-        assert_upper_cube_face(&vertices, &indices, 0, (0.0, 0.0, 0.0));
-        assert_upper_cube_face(&vertices, &indices, 6, (0.0, 0.0, 1.0));
-
-        assert_eq!(faces[0], 1);
-    }
+		assert_eq!(faces[0].block, GRASS_BLOCK);
+		assert_eq!(faces[0].direction, Direction::Up);
+		assert_eq!(faces[0].position, (0, 0, 0));
+		assert_eq!(faces[1].block, GRASS_BLOCK);
+		assert_eq!(faces[1].direction, Direction::Up);
+		assert_eq!(faces[1].position, (0, 0, 2));
+	}
 }

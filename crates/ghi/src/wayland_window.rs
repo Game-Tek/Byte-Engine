@@ -338,7 +338,7 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 				let pressed = state.into_result().unwrap() == wl_pointer::ButtonState::Pressed;
 
 				let button = match button {
-					1 => MouseKeys::Left,
+					272 => MouseKeys::Left,
 					2 => MouseKeys::Middle,
 					3 => MouseKeys::Right,
 					4 => MouseKeys::ScrollUp,

@@ -166,7 +166,7 @@ fn cubecraft() {
 
     let mut anchor = Anchor::new(Transform::default());
 
-    anchor.attach_with_offset(camera, UP * 1.8);
+    anchor.attach_with_offset(camera.clone(), UP * 1.8);
 
     let anchor = space_handle.spawn(anchor);
 
@@ -184,7 +184,24 @@ fn cubecraft() {
         }));
     }
 
-    let _ = space_handle.spawn(Physics::create(anchor));
+    let physics = space_handle.spawn(Physics::create(anchor));
+
+	{
+		let camera = camera.clone();
+		let physics = physics.clone();
+
+		fire_action_handle
+			.write()
+			.value()
+			.add(move |v| {
+				if *v {
+					let camera = camera.read();
+					let physics = physics.read();
+	
+					physics.print_block(camera.get_position(), camera.get_orientation());
+				}
+			});
+	}
 
     app.do_loop()
 }
@@ -343,6 +360,51 @@ impl Physics {
             }
         }
     }
+
+	fn print_block(&self, start: Vector3, direction: Vector3) {
+		log::debug!("start: {:?}", start);
+		log::debug!("direction: {:?}", direction);
+
+		let block = self.blocks.iter().filter_map(|b| {
+			let b = b.read();
+
+			let block_position = (
+				b.position.0 as f32 * 0.5,
+				b.position.1 as f32 * 0.5,
+				b.position.2 as f32 * 0.5,
+			);
+
+			let min = Vector3::new(
+				block_position.0 - 0.5,
+				block_position.1 - 0.5,
+				block_position.2 - 0.5,
+			);
+
+			let max = Vector3::new(
+				block_position.0 + 0.5,
+				block_position.1 + 0.5,
+				block_position.2 + 0.5,
+			);
+
+			ray_aabb_intersection(start, direction, min, max).map(|t| {
+				(b.clone(), t)
+			})
+		}).min_by(|a, b| {
+			a.1.partial_cmp(&b.1).unwrap()
+		}).map(|(block, _)| block);
+
+		if let Some(block) = block {
+			let block = block.block;
+			match block {
+				Blocks::Grass => println!("Grass"),
+				Blocks::Stone => println!("Stone"),
+				Blocks::Dirt => println!("Dirt"),
+				_ => unreachable!(),
+			}
+		} else {
+			println!("Air");
+		}
+	}
 }
 
 impl Entity for Physics {}
@@ -999,9 +1061,34 @@ fn build_cube_faces(blocks: &[Block]) -> Vec<FaceData> {
 	}).collect()
 }
 
+fn ray_aabb_intersection(
+	start: Vector3,
+	direction: Vector3,
+	min: Vector3,
+	max: Vector3,
+) -> Option<f32> {
+	let t1 = (min.x - start.x) / direction.x;
+	let t2 = (max.x - start.x) / direction.x;
+	let t3 = (min.y - start.y) / direction.y;
+	let t4 = (max.y - start.y) / direction.y;
+	let t5 = (min.z - start.z) / direction.z;
+	let t6 = (max.z - start.z) / direction.z;
+
+	let tmin = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
+	let tmax = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
+
+	if tmax >= 0.0 && tmin <= tmax {
+		Some(tmin)
+	} else {
+		None
+	}
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{compute_external_block_faces, Block, Direction, Blocks, GRASS_TOP_FACE};
+    use byte_engine::Vector3;
+
+    use crate::{compute_external_block_faces, ray_aabb_intersection, Block, Blocks, Direction, GRASS_TOP_FACE};
 
 	#[test]
 	fn test_faces_single_block() {
@@ -1031,5 +1118,15 @@ mod tests {
 		assert_eq!(faces[1].block, GRASS_TOP_FACE);
 		assert_eq!(faces[1].direction, Direction::Up);
 		assert_eq!(faces[1].position, (0, 0, 2));
+	}
+
+	#[test]
+	fn test_intersection() {
+		let start = Vector3::new(0.0, 2.0, 0.0);
+		let direction = Vector3::new(0.0, -1.0, 0.0);
+		let min = Vector3::new(-0.5, -0.5, -0.5);
+		let max = Vector3::new(0.5, 0.5, 0.5);
+
+		assert_eq!(ray_aabb_intersection(start, direction, min, max), Some(1.5));
 	}
 }

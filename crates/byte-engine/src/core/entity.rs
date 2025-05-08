@@ -1,7 +1,7 @@
 use utils::sync::{RwLock, Arc, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::core::spawn_as_child;
-use crate::gameplay::space::{Space, Spawn};
+use crate::gameplay::space::{Space, Spawner};
 
 /// The Entity trait is the base trait for all entities in the engine.
 ///
@@ -28,7 +28,7 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 	/// listener.invoke_for(handle as EntityHandle<dyn OtherTrait>, self as &dyn OtherTrait); // Advertise as a different type
 	/// // etc...
 	/// ```
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized { listener.invoke_for(handle, self) }
+	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized { listener.broadcast_creation(handle, self) }
 }
 
 pub unsafe fn get_entity_trait_for_type<T: ?Sized + 'static>() -> EntityTrait {
@@ -222,17 +222,15 @@ impl <'c, T: 'c> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn listen_to<C: Entity + ?Sized + 'static>(mut self,) -> Self where T: EntitySubscriber<C> + 'static {
-		self.listens_to.push(Box::new(move |domain_handle, e| {
-			let l = domain_handle.write();
-			let l = l.deref();
+	pub fn listen_to<C: Entity + ?Sized>(mut self,) -> Self where T: EntitySubscriber<C> + 'static {
+		self.listens_to.push(Box::new(move |domain, e| {
+			let domain = domain.read();
 
-			if let Some(l) = l.get_listener() {
+			if let Some(l) = domain.get_listener() {
 				l.add_listener(e);
-			} else {
-				// log::error!("Entity listens to but wasn't spawned in a domain.");
 			}
 		}));
+
 		self
 	}
 }
@@ -275,6 +273,10 @@ mod tests {
 		impl EntitySubscriber<Component> for System {
 			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, component: &Component) -> () where Self: Sized + Send + Sync {
 				println!("Component created: {} {}", component.name, component.value);
+			}
+
+			fn on_delete<'a>(&'a mut self, handle: EntityHandle<Component>) -> () {
+				println!("Component deleted: {}", handle.read().name);
 			}
 		}
 

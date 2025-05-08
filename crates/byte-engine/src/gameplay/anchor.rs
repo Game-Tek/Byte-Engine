@@ -104,4 +104,8 @@ impl EntitySubscriber<Anchor> for AnchorSystem {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Anchor>, params: &'a Anchor) -> () {
 		self.anchors.push(handle);
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Anchor>) -> () {
+		self.anchors.retain(|h| h != &handle);
+	}
 }

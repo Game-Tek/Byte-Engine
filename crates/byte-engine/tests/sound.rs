@@ -3,7 +3,7 @@
 //! It does not check if the sound is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer, gameplay::space::Spawn};
+use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer, gameplay::space::Spawner};
 
 #[test]
 fn sound() {

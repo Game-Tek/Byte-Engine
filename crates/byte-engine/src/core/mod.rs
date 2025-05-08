@@ -25,12 +25,14 @@ pub use task::Task;
 
 use utils::sync::{Arc, RwLock};
 
-use crate::gameplay::space::Spawn;
+use crate::gameplay::space::Spawner;
 
 struct NoneListener {}
+
 impl Listener for NoneListener {
-	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>, _: &'a T) -> () {}
 	fn add_listener<T: ?Sized + 'static>(&self, _: EntityHandle<dyn EntitySubscriber<T>>) {}
+	fn broadcast_creation<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>, _: &'a T) -> () {}
+	fn broadcast_deletion<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>) -> () {}
 }
 
 impl Entity for NoneListener {}
@@ -138,7 +140,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 mod tests {
 	use super::*;
 	use crate::gameplay::space::Space;
-	use crate::gameplay::space::Spawn;
+	use crate::gameplay::space::Spawner;
 
 	#[test]
 	fn test_entity_has_listeners_called_with_own_type() {
@@ -155,6 +157,10 @@ mod tests {
 		impl EntitySubscriber<EntityObject> for ListenerTest {
 			fn on_create<'a>(&'a mut self, handle: EntityHandle<EntityObject>, params: &'a EntityObject) -> () {
 				self.called = true;
+			}
+
+			fn on_delete<'a>(&'a mut self, handle: EntityHandle<EntityObject>) -> () {
+				self.called = false;
 			}
 		}
 

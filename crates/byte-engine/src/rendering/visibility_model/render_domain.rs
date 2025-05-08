@@ -1088,6 +1088,12 @@ impl EntitySubscriber<camera::Camera> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<camera::Camera>, camera: &camera::Camera) -> () {
 		self.camera = Some(handle);
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<camera::Camera>) -> () {
+		if Some(handle) == self.camera {
+			self.camera = None;
+		}
+	}
 }
 
 impl Entity for VisibilityWorldRenderDomain {}
@@ -1278,11 +1284,19 @@ impl EntitySubscriber<dyn mesh::RenderEntity> for VisibilityWorldRenderDomain {
 		assert!((self.visibility_info.vertex_count as usize) < MAX_PRIMITIVE_TRIANGLES, "Primitive triangle count exceeded");
 		assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<dyn mesh::RenderEntity>) -> () {
+		todo!("Remove mesh from visibility world render domain");
+	}
 }
 
 impl EntitySubscriber<directional_light::DirectionalLight> for VisibilityWorldRenderDomain {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>, light: &directional_light::DirectionalLight) -> () {
 		self.lights.push(handle);
+	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<directional_light::DirectionalLight>) -> () {
+		self.lights.retain(|l| l != &handle);
 	}
 }
 
@@ -1301,6 +1315,10 @@ impl EntitySubscriber<point_light::PointLight> for VisibilityWorldRenderDomain {
 		lighting_data.count += 1;
 
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
+	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<point_light::PointLight>) -> () {
+		todo!("Remove light from visibility world render domain");
 	}
 }
 

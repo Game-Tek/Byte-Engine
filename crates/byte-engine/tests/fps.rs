@@ -1,6 +1,6 @@
 use byte_engine::core::{event::EventLike, EntityHandle};
 
-use byte_engine::gameplay::space::Spawn;
+use byte_engine::gameplay::space::Spawner;
 use byte_engine::{application::{Application, Parameter}, audio::sound::Sound, camera::Camera, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function}, math, physics::PhysicsEntity, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
 
 #[ignore]

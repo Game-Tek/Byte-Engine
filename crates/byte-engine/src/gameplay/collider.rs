@@ -38,8 +38,8 @@ impl Cube {
 
 impl Entity for Sphere {
 	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.invoke_for(handle.clone(), self);
-		let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
+		let se = listener.broadcast_creation(handle.clone(), self);
+		let pe = listener.broadcast_creation(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
 	}
 }
 
@@ -56,8 +56,8 @@ impl Entity for Cube {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 	
 	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.invoke_for(handle.clone(), self);
-		let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
+		let se = listener.broadcast_creation(handle.clone(), self);
+		let pe = listener.broadcast_creation(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
 	}
 }
 

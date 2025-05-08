@@ -103,6 +103,10 @@ impl EntitySubscriber<Window> for WindowSystem {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, window: &Window) -> () {
 		let h = self.create_window(handle, &window.name, window.extent, "main_window");
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Window>) -> () {
+		todo!("Remove window from system");
+	}
 }
 
 #[cfg(test)]

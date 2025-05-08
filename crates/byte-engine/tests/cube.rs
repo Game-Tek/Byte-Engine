@@ -3,7 +3,7 @@
 //! It does not check if the cube is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::space::Spawn, rendering::{cube::Cube, point_light::PointLight}};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::space::Spawner, rendering::{cube::Cube, point_light::PointLight}};
 use maths_rs::vec::Vec3;
 
 #[test]

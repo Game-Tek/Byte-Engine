@@ -2,26 +2,32 @@ use std::ops::DerefMut;
 
 use utils::{sync::RwLock, BoxedFuture};
 
-use crate::gameplay::space::Spawn;
+use crate::gameplay::space::{Destroyer, Spawner};
 
 use super::{domain::Domain, entity::{get_entity_trait_for_type, EntityTrait}, spawn_as_child, Entity, EntityHandle, SpawnHandler};
 
 pub trait Listener: Entity {
-	/// Notifies all listeners of the given type that the given entity has been created.
-	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> ();
-
 	/// Subscribes the given listener `L` to the given entity type `T`.
-	fn add_listener<T: Entity + ?Sized>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>);
+	fn add_listener<T: Entity + ?Sized + 'static>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) -> ();
+
+	/// Notifies all listeners of the given type that the given entity has been created.
+	fn broadcast_creation<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> ();
+
+	/// Notifies all listeners of the given type that the given entity has been deleted.
+	fn broadcast_deletion<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>) -> ();
 }
 
+/// This trait allows implementers to listen to entity creation and deletion events.
 pub trait EntitySubscriber<T: ?Sized> {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<T>, params: &'a T) -> ();
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<T>) -> ();
 }
 
 pub struct BasicListener {
 	listeners: RwLock<std::collections::HashMap<EntityTrait, Box<dyn std::any::Any>>>,
 }
 
+/// List of listeners for a given entity type.
 struct List<T: ?Sized> {
 	/// List of listeners for a given entity type. (EntityHandle<dyn EntitySubscriber<T>>)
 	listeners: Vec<EntityHandle<dyn EntitySubscriber<T>>>,
@@ -34,9 +40,15 @@ impl <T: ?Sized + 'static> List<T> {
 		}
 	}
 
-	fn invoke_for(&self, listenee_handle: EntityHandle<T>, listenee: &T) {
+	fn broadcast_creation(&self, listenee_handle: EntityHandle<T>, listenee: &T) {
 		self.listeners.iter().for_each(move |l| {
-			l.write().deref_mut().on_create(listenee_handle.clone(), listenee);
+			l.write().on_create(listenee_handle.clone(), listenee);
+		});
+	}
+
+	fn broadcast_deletion(&self, listenee_handle: EntityHandle<T>) {
+		self.listeners.iter().for_each(move |l| {
+			l.write().on_delete(listenee_handle.clone());
 		});
 	}
 
@@ -54,23 +66,33 @@ impl BasicListener {
 }
 
 impl Listener for BasicListener  {
-	fn invoke_for<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> () {
-		let listeners = self.listeners.read();
-
-		if let Some(listeners) = listeners.get(&unsafe { get_entity_trait_for_type::<T>() }) {
-			if let Some(listeners) = listeners.downcast_ref::<List<T>>() {
-				listeners.invoke_for(handle, reference);
-			}
-		}
-	}
-
-	fn add_listener<T: Entity + ?Sized>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {
+	fn add_listener<T: Entity + ?Sized + 'static>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {
 		let mut listeners = self.listeners.write();
 
 		let listeners = listeners.entry(unsafe { get_entity_trait_for_type::<T>() }).or_insert_with(|| Box::new(List::<T>::new()));
 
 		if let Some(listeners) = listeners.downcast_mut::<List<T>>() {
-			listeners.push(listener,);
+			listeners.push(listener);
+		}
+	}
+
+	fn broadcast_creation<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> () {
+		let listeners = self.listeners.read();
+
+		if let Some(listeners) = listeners.get(&unsafe { get_entity_trait_for_type::<T>() }) {
+			if let Some(listeners) = listeners.downcast_ref::<List<T>>() {
+				listeners.broadcast_creation(handle, reference);
+			}
+		}
+	}
+
+	fn broadcast_deletion<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>) -> () {
+		let listeners = self.listeners.read();
+
+		if let Some(listeners) = listeners.get(&unsafe { get_entity_trait_for_type::<T>() }) {
+			if let Some(listeners) = listeners.downcast_ref::<List<T>>() {
+				listeners.broadcast_deletion(handle);
+			}
 		}
 	}
 }
@@ -81,9 +103,17 @@ impl Entity for BasicListener {
 	}
 }
 
-impl Domain for BasicListener {}
+impl Domain for BasicListener {
+	fn get_listener(&self) -> Option<&BasicListener> {
+		Some(self)
+	}
 
-impl Spawn for EntityHandle<BasicListener> {
+	fn get_listener_mut(&mut self) -> Option<&mut BasicListener> {
+		Some(self)
+	}
+}
+
+impl Spawner for EntityHandle<BasicListener> {
 	type Domain = BasicListener;
 
 	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
@@ -128,6 +158,12 @@ mod tests {
 					COUNTER += 1;
 				}
 			}
+
+			fn on_delete<'a>(&'a mut self, handle: EntityHandle<Component>) -> () {
+				unsafe {
+					COUNTER -= 1;
+				}
+			}
 		}
 
 		let listener_handle = spawn(BasicListener::new());
@@ -157,7 +193,7 @@ mod tests {
 			fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
 			fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
 				// listener.invoke_for(handle);
-				listener.invoke_for(handle as EntityHandle<dyn Boo>, self);
+				listener.broadcast_creation(handle as EntityHandle<dyn Boo>, self);
 			}
 		}
 
@@ -186,6 +222,12 @@ mod tests {
 			fn on_create<'a>(&'a mut self, _: EntityHandle<dyn Boo>, _: &(dyn Boo + 'static)) -> () {
 				unsafe {
 					COUNTER += 1;
+				}
+			}
+
+			fn on_delete<'a>(&'a mut self, handle: EntityHandle<dyn Boo>) -> () {
+				unsafe {
+					COUNTER -= 1;
 				}
 			}
 		}

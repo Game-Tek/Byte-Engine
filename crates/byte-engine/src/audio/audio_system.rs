@@ -159,6 +159,10 @@ impl EntitySubscriber<Sound> for DefaultAudioSystem {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Sound>, sound: &'a Sound) -> () {
 		self.play(&sound.asset);
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Sound>) -> () {
+		todo!("Delete sound");
+	}
 }
 
 impl EntitySubscriber<Synthesizer> for DefaultAudioSystem {
@@ -168,5 +172,9 @@ impl EntitySubscriber<Synthesizer> for DefaultAudioSystem {
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 554f32 }, current_sample: 0, gain: 0.10f32 });
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 659f32 }, current_sample: 0, gain: 0.10f32 });
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 830f32 }, current_sample: 0, gain: 0.10f32 });
+	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Synthesizer>) -> () {
+		todo!("Delete synthesizer");
 	}
 }

@@ -1,6 +1,6 @@
 #![feature(closure_lifetime_binder)]
 
-use byte_engine::{core::{entity::{DomainType, EntityBuilder, SelfDestroyingEntity,}, property::{DerivedProperty, Property}, spawn_as_child, Entity, EntityHandle}, gameplay::space::Spawn};
+use byte_engine::{core::{entity::{DomainType, EntityBuilder, SelfDestroyingEntity,}, property::{DerivedProperty, Property}, spawn_as_child, Entity, EntityHandle}, gameplay::space::Spawner};
 use std::f32::consts::PI;
 use byte_engine::{application::application::Application, audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{self, space::Space, Transform}, input, math::from_normal, physics::{self, PhysicsEntity}, rendering::{directional_light::DirectionalLight, mesh::{self}}, Vector3};
 use maths_rs::{mat::MatInverse, swizz::Vec3Swizzle, vec::Vec4};

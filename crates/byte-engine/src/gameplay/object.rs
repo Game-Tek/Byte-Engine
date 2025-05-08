@@ -40,14 +40,14 @@ impl Entity for Object {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 
 	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>,) -> () where Self: Sized {
-		let same = listener.invoke_for(handle.clone(), self);
+		let same = listener.broadcast_creation(handle.clone(), self);
 		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
-		let pe = listener.invoke_for(s, self);
+		let pe = listener.broadcast_creation(s, self);
 
 		#[cfg(not(feature = "headless"))]
 		{
 			let s: EntityHandle<dyn mesh::RenderEntity> = handle.clone();
-			let re = listener.invoke_for(s, self);
+			let re = listener.broadcast_creation(s, self);
 		}
 	}
 }

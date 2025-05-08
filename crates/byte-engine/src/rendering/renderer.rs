@@ -9,7 +9,7 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 use crate::{
     core::{
         self, entity::{DomainType, EntityBuilder}, listener::{EntitySubscriber, Listener}, orchestrator, spawn, spawn_as_child, Entity, EntityHandle
-    }, gameplay::space::{Space, Spawn}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Vector3
+    }, gameplay::space::{Space, Spawner}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Vector3
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -35,11 +35,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new_as_system<'a>(
-        window_system_handle: EntityHandle<WindowSystem>,
-        resource_manager_handle: EntityHandle<ResourceManager>,
-    ) -> EntityBuilder<'a, Self> {
-        EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
+    pub fn new_as_system<'a>(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>,) -> EntityBuilder<'a, Self> {
+        EntityBuilder::new_from_closure_with_parent(move |parent| {
             let enable_validation = std::env::vars()
                 .find(|(k, _)| k == "BE_RENDER_DEBUG")
                 .is_some()
@@ -239,6 +236,10 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 
         self.swapchain_handles.push(swapchain_handle);
     }
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<window_system::Window>) -> () {
+		todo!("Handle window deletion.");
+	}
 }
 
 impl Entity for Renderer {}

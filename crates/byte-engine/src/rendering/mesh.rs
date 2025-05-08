@@ -36,8 +36,8 @@ pub struct Mesh {
 
 impl Entity for Mesh {
 	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.invoke_for(handle.clone(), self);
-		let re = listener.invoke_for(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
+		let se = listener.broadcast_creation(handle.clone(), self);
+		let re = listener.broadcast_creation(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
 	}
 }
 

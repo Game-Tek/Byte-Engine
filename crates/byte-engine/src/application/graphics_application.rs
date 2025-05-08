@@ -1,4 +1,4 @@
-use crate::{core::{property::Property, spawn, spawn_as_child, task, EntityHandle}, gameplay::space::Spawn, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{domain::Domain, property::Property, spawn, spawn_as_child, task, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -31,7 +31,7 @@ pub struct GraphicsApplication {
 	anchor_system_handle: EntityHandle<AnchorSystem>,
 	tick_handle: EntityHandle<Property<Time>>,
 	task_executor_handle: EntityHandle<task::TaskExecutor>,
-	root_space_handle: EntityHandle<Space>,
+	root_space_handle: EntityHandle<dyn Domain>,
 
 	#[cfg(debug_assertions)]
 	ttff: std::time::Duration,
@@ -50,7 +50,7 @@ impl Application for GraphicsApplication {
 
 		let application = BaseApplication::new(name, parameters);
 
-		let root_space_handle: EntityHandle<Space> = spawn(Space::new());
+		let root_space_handle: EntityHandle<dyn Domain> = spawn(Space::new());
 
 		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 
@@ -267,7 +267,7 @@ impl GraphicsApplication {
 		&self.physics_system_handle
 	}
 
-	pub fn get_root_space_handle(&self) -> &EntityHandle<crate::gameplay::space::Space> {
+	pub fn get_root_space_handle(&self) -> &EntityHandle<dyn Domain> {
 		&self.root_space_handle
 	}
 

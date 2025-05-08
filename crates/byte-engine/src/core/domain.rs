@@ -1,5 +1,8 @@
 use crate::core::{Entity, EntityHandle, SpawnHandler};
 
-pub trait Domain: Entity {
-	// fn spawn<E: Entity>(&mut self, spawner: impl SpawnHandler<E>) -> EntityHandle<E>;
+use super::listener::BasicListener;
+
+pub trait Domain {
+	fn get_listener(&self) -> Option<&BasicListener>;
+	fn get_listener_mut(&mut self) -> Option<&mut BasicListener>;
 }

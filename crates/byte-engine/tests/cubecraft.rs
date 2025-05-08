@@ -10,6 +10,7 @@ use std::rc::Rc;
 use byte_engine::constants::FORWARD;
 use byte_engine::constants::RIGHT;
 use byte_engine::constants::UP;
+use byte_engine::core::domain::Domain;
 use byte_engine::core::entity::EntityBuilder;
 use byte_engine::core::listener::EntitySubscriber;
 use byte_engine::core::listener::Listener;
@@ -17,7 +18,8 @@ use byte_engine::core::Entity;
 use byte_engine::core::EntityHandle;
 
 use byte_engine::core::Task;
-use byte_engine::gameplay::space::Spawn;
+use byte_engine::gameplay::space::Destroyer as _;
+use byte_engine::gameplay::space::Spawner;
 use byte_engine::gameplay::Anchor;
 use byte_engine::gameplay::Positionable;
 use byte_engine::gameplay::Transform;
@@ -277,9 +279,13 @@ impl ChunkLoader {
 impl Entity for ChunkLoader {}
 
 impl EntitySubscriber<Camera> for ChunkLoader {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, params: &'a Camera) -> () {
+    fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, _: &'a Camera) -> () {
         self.camera = Some(handle.clone());
     }
+
+	fn on_delete<'a>(&'a mut self, _: EntityHandle<Camera>) -> () {
+		self.camera = None;
+	}
 }
 
 struct Player {
@@ -311,20 +317,22 @@ impl Positionable for Player {
 }
 
 struct Physics {
+	parent: EntityHandle<dyn Domain>,
     player: Option<EntityHandle<dyn Positionable>>,
     blocks: Vec<EntityHandle<Block>>,
 }
 
 impl Physics {
-    fn new(player: EntityHandle<dyn Positionable>) -> Self {
+    fn new(player: EntityHandle<dyn Positionable>, parent: EntityHandle<dyn Domain>) -> Self {
         Physics {
+			parent,
             player: Some(player),
             blocks: Vec::new(),
         }
     }
 
     fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
-        EntityBuilder::new(Physics::new(player))
+        EntityBuilder::new_from_closure_with_parent(|p| Physics::new(player, p))
             .listen_to::<Block>()
             .then(|space, handle| {
                 space.spawn(Task::tick(move || {
@@ -366,12 +374,12 @@ impl Physics {
 		log::debug!("direction: {:?}", direction);
 
 		let block = self.blocks.iter().filter_map(|b| {
-			let b = b.read();
+			let block = b.read();
 
 			let block_position = (
-				b.position.0 as f32 * 0.5,
-				b.position.1 as f32 * 0.5,
-				b.position.2 as f32 * 0.5,
+				block.position.0 as f32 * 0.5,
+				block.position.1 as f32 * 0.5,
+				block.position.2 as f32 * 0.5,
 			);
 
 			let min = Vector3::new(
@@ -393,14 +401,20 @@ impl Physics {
 			a.1.partial_cmp(&b.1).unwrap()
 		}).map(|(block, _)| block);
 
-		if let Some(block) = block {
-			let block = block.block;
-			match block {
-				Blocks::Grass => println!("Grass"),
-				Blocks::Stone => println!("Stone"),
-				Blocks::Dirt => println!("Dirt"),
-				_ => unreachable!(),
+		if let Some(b) = block {
+			{
+				let block = b.read();
+	
+				let block = block.block;
+				match block {
+					Blocks::Grass => println!("Grass"),
+					Blocks::Stone => println!("Stone"),
+					Blocks::Dirt => println!("Dirt"),
+					_ => unreachable!(),
+				}
 			}
+
+			self.parent.destroy(b);
 		} else {
 			println!("Air");
 		}
@@ -413,15 +427,25 @@ impl EntitySubscriber<Block> for Physics {
     fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
         self.blocks.push(handle.clone());
     }
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Block>) -> () {
+		self.blocks.retain(|b| b != &handle);
+	}
 }
 
 impl EntitySubscriber<Player> for Physics {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Player>, params: &'a Player) -> () {
+    fn on_create<'a>(&'a mut self, handle: EntityHandle<Player>, _: &'a Player) -> () {
         self.player = Some(handle.clone());
     }
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Player>) -> () {
+		if Some(handle as EntityHandle<dyn Positionable>) == self.player {
+			self.player = None;
+		}
+	}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Block {
     position: Location,
     block: Blocks,
@@ -438,15 +462,8 @@ impl Block {
 }
 
 impl Entity for Block {
-    fn call_listeners<'a>(
-        &'a self,
-        listener: &'a byte_engine::core::listener::BasicListener,
-        handle: EntityHandle<Self>,
-    ) -> ()
-    where
-        Self: Sized,
-    {
-        listener.invoke_for(handle.clone(), self);
+    fn call_listeners<'a>(&'a self, listener: &'a byte_engine::core::listener::BasicListener, handle: EntityHandle<Self>,) -> () where Self: Sized {
+        listener.broadcast_creation(handle.clone(), self);
     }
 }
 
@@ -476,7 +493,7 @@ struct CubeCraftRenderPass {
 
     ghi: Rc<RwLock<ghi::Device>>,
 
-    blocks: Vec<Block>,
+    blocks: Vec<EntityHandle<Block>>,
 
     camera: Option<EntityHandle<Camera>>,
 }
@@ -484,14 +501,25 @@ struct CubeCraftRenderPass {
 impl Entity for CubeCraftRenderPass {}
 
 impl EntitySubscriber<Block> for CubeCraftRenderPass {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
-        self.blocks.push(*params);
+    fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, _: &'a Block) -> () {
+        self.blocks.push(handle.clone());
     }
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Block>) -> () {
+		log::debug!("Block deleted: {:?}", handle);
+		self.blocks.retain(|b| b != &handle);
+	}
 }
 
 impl EntitySubscriber<Camera> for CubeCraftRenderPass {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, params: &'a Camera) -> () {
+    fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, _: &'a Camera) -> () {
         self.camera = Some(handle.clone());
+    }
+
+    fn on_delete<'a>(&'a mut self, handle: EntityHandle<Camera>) -> () {
+        if Some(handle) == self.camera {
+            self.camera = None;
+        }
     }
 }
 
@@ -504,26 +532,26 @@ impl CubeCraftRenderPass {
         Self: Sized,
     {
         let ghi = render_pass_builder.ghi();
-        let mut ghi = ghi.write();
+        let mut device = ghi.write();
 
         let render_to_main = render_pass_builder.render_to("main");
         let render_to_depth = render_pass_builder.render_to("depth");
 
-        let vertex_buffer: ghi::BufferHandle<[((f32, f32, f32), (f32, f32)); 4]> = ghi.create_buffer(
+        let vertex_buffer: ghi::BufferHandle<[((f32, f32, f32), (f32, f32)); 4]> = device.create_buffer(
             Some("vertices"),
             ghi::Uses::Vertex,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
             ghi::UseCases::DYNAMIC,
         );
 
-        let index_buffer: ghi::BufferHandle<[u16; 6]> = ghi.create_buffer(
+        let index_buffer: ghi::BufferHandle<[u16; 6]> = device.create_buffer(
             Some("indices"),
             ghi::Uses::Index,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
             ghi::UseCases::DYNAMIC,
         );
 
-        let descriptor_set_template = ghi.create_descriptor_set_template(
+        let descriptor_set_template = device.create_descriptor_set_template(
             Some("template"),
             &[
                 ghi::DescriptorSetBindingTemplate::new(
@@ -544,7 +572,7 @@ impl CubeCraftRenderPass {
                 ),
             ],
         );
-        let layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
+        let layout = device.create_pipeline_layout(&[descriptor_set_template], &[]);
 
         let v_shader_source = r#"#version 450 core
 		#pragma shader_stage(vertex)
@@ -647,7 +675,7 @@ impl CubeCraftRenderPass {
         let v_shader_artifact = glsl::compile(v_shader_source, "Cube Vertex Shader").unwrap();
         let f_shader_artifact = glsl::compile(f_shader_source, "Cube Fragment Shader").unwrap();
 
-        let v_shader = ghi
+        let v_shader = device
             .create_shader(
                 None,
                 ghi::ShaderSource::SPIRV(v_shader_artifact.borrow().into()),
@@ -659,7 +687,7 @@ impl CubeCraftRenderPass {
                 )],
             )
             .unwrap();
-        let f_shader = ghi
+        let f_shader = device
             .create_shader(
                 None,
                 ghi::ShaderSource::SPIRV(f_shader_artifact.borrow().into()),
@@ -673,7 +701,7 @@ impl CubeCraftRenderPass {
             .unwrap();
 
         // TODO: notify user if provided shaders don't consume any bindings in the layout
-        let pipeline = ghi.create_raster_pipeline(raster_pipeline::Builder::new(
+        let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
             layout,
             &[ghi::VertexElement::new(
                 "POSITION",
@@ -691,26 +719,24 @@ impl CubeCraftRenderPass {
             &[render_to_main.into(), render_to_depth.into()],
         ));
 
-        let camera_data_buffer = ghi.create_buffer(
+        let camera_data_buffer = device.create_buffer(
             Some("camera"),
             ghi::Uses::Storage,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
             ghi::UseCases::DYNAMIC,
         );
-        let face_data_buffer = ghi.create_buffer(
+        let face_data_buffer = device.create_buffer(
             Some("face_data_buffer"),
             ghi::Uses::Storage,
             ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,
             ghi::UseCases::DYNAMIC,
         );
 
-        let set = ghi.create_descriptor_set(None, &descriptor_set_template);
+        let set = device.create_descriptor_set(None, &descriptor_set_template);
 
-		let sampler = ghi.build_sampler(
-            ghi::sampler::Builder::new().filtering_mode(ghi::FilteringModes::Closest),
-        );
+		let sampler = ghi::sampler::Builder::new().filtering_mode(ghi::FilteringModes::Closest).build(&mut device);
 
-		let camera_data_buffer_binding = ghi.create_descriptor_binding(
+		let camera_data_buffer_binding = device.create_descriptor_binding(
             set,
             ghi::BindingConstructor::buffer(
                 &ghi::DescriptorSetBindingTemplate::new(
@@ -721,7 +747,7 @@ impl CubeCraftRenderPass {
                 camera_data_buffer.into(),
             ),
         );
-        let face_data_buffer_binding = ghi.create_descriptor_binding(
+        let face_data_buffer_binding = device.create_descriptor_binding(
             set,
             ghi::BindingConstructor::buffer(
                 &ghi::DescriptorSetBindingTemplate::new(
@@ -732,7 +758,7 @@ impl CubeCraftRenderPass {
                 face_data_buffer.into(),
             ),
         );
-        let texture_binding = ghi.create_descriptor_binding_array(
+        let texture_binding = device.create_descriptor_binding_array(
             set,
             &ghi::DescriptorSetBindingTemplate::new_array(
                 2,
@@ -748,7 +774,7 @@ impl CubeCraftRenderPass {
 				.request(a)
 				.unwrap();
 
-			let texture = ghi.create_image(
+			let texture = device.create_image(
 				None,
 				Extent::square(16),
 				ghi::Formats::RGBA8(ghi::Encodings::sRGB),
@@ -758,12 +784,12 @@ impl CubeCraftRenderPass {
 				1,
 			);
 	
-			ghi.write_texture(texture, |s| {
+			device.write_texture(texture, |s| {
 				request.load(s.into());
 			});
 
 			if block_type == GRASS_TOP_FACE {
-				ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+				device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 					texture_binding,
 					texture,
 					sampler,
@@ -772,7 +798,7 @@ impl CubeCraftRenderPass {
 				)]);
 			}
 
-			ghi.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+			device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 				texture_binding,
 				texture,
 				sampler,
@@ -781,18 +807,18 @@ impl CubeCraftRenderPass {
 			)]);
 		}
 
-		*ghi.get_mut_buffer_slice(vertex_buffer) = [
+		*device.get_mut_buffer_slice(vertex_buffer) = [
 			((-0.5, 0.5, 0.0), (0.0, 0.0)),
 			((0.5, 0.5, 0.0), (1.0, 0.0)),
 			((0.5, -0.5, 0.0), (1.0, 1.0)),
 			((-0.5, -0.5, 0.0), (0.0, 1.0)),
 		];
 
-		*ghi.get_mut_buffer_slice(index_buffer) = [
+		*device.get_mut_buffer_slice(index_buffer) = [
 			0, 1, 2, 2, 3, 0,
 		];
 
-        drop(ghi);
+        drop(device);
 
         let render_params = RenderParams {
             index_count: 6,
@@ -858,7 +884,9 @@ impl RenderPass for CubeCraftRenderPass {
             *ghi.get_mut_buffer_slice(self.camera_data_buffer) = view.view_projection();
         }
 
-        let faces = build_cube_faces(&self.blocks);
+		let blocks = self.blocks.iter().map(|f| f.read().clone()).collect::<Vec<_>>();
+
+        let faces = build_cube_faces(&blocks);
 
         ghi.get_mut_buffer_slice(self.face_data_buffer)[..faces.len()].copy_from_slice(&faces);
 

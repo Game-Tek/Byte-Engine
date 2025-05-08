@@ -184,4 +184,8 @@ impl EntitySubscriber<Task> for TaskExecutor {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<Task>, params: &'a Task) -> () {
 		self.add_task(handle);
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Task>) -> () {
+		self.tasks.retain(|task| task != &handle);
+	}
 }

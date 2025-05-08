@@ -741,6 +741,10 @@ impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHa
 
 		self.actions.push(input_event);
 	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Action<T>>) -> () {
+		todo!("Implement on_delete for InputManager");
+	}
 }
 
 impl Entity for InputManager {}

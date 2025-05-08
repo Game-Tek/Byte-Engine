@@ -36,4 +36,8 @@ impl EntitySubscriber<Timer> for TimerService {
 	fn on_create(&mut self, handle: EntityHandle<Timer>, timer: &Timer) {
 		self.timers.push(handle);
 	}
+
+	fn on_delete(&mut self, handle: EntityHandle<Timer>) {
+		self.timers.retain(|h| *h != handle);
+	}
 }

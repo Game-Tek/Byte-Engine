@@ -3,7 +3,7 @@
 //! It does not check if the triangle is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, gameplay::space::Spawn};
+use byte_engine::{application::{Application, Parameter}, gameplay::space::Spawner};
 
 #[test]
 fn triangle() {

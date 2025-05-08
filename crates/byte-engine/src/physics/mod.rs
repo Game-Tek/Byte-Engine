@@ -71,8 +71,8 @@ impl Sphere {
 
 impl Entity for Sphere {
 	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.invoke_for(handle.clone(), self);
-		let pe = listener.invoke_for(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
+		let se = listener.broadcast_creation(handle.clone(), self);
+		let pe = listener.broadcast_creation(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
 	}
 }
 
@@ -201,5 +201,9 @@ impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
 	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> () {
 		log::info!("{:#?}", params.get_collision_shape());
 		let index = self.add_body(Body{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: params.get_collision_shape(), handle: handle.clone() });
+	}
+
+	fn on_delete<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>) -> () {
+		todo!("Remove body from physics world");
 	}
 }

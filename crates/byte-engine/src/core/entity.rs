@@ -28,7 +28,33 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 	/// listener.invoke_for(handle as EntityHandle<dyn OtherTrait>, self as &dyn OtherTrait); // Advertise as a different type
 	/// // etc...
 	/// ```
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized { listener.broadcast_creation(handle, self) }
+	fn call_listeners<'a>(&'a self, caller: Caller<'a>, handle: EntityHandle<Self>) -> () where Self: Sized { caller.call(handle, self) }
+}
+
+pub(crate) enum CallTypes {
+	Creation,
+	Deletion,
+}
+
+pub struct Caller<'a> {
+	r#type: CallTypes,
+	listener: &'a BasicListener,
+}
+
+impl <'a> Caller<'a> {
+	pub(crate) fn new(listener: &'a BasicListener, r#type: CallTypes) -> Self {
+		Caller {
+			r#type,
+			listener,
+		}
+	}
+
+	pub fn call<T: Entity + ?Sized>(&self, handle: EntityHandle<T>, reference: &T) {
+		match self.r#type {
+			CallTypes::Creation => self.listener.broadcast_creation(handle, reference),
+			CallTypes::Deletion => self.listener.broadcast_deletion(handle),
+		}
+	}
 }
 
 pub unsafe fn get_entity_trait_for_type<T: ?Sized + 'static>() -> EntityTrait {
@@ -180,6 +206,10 @@ impl <T: ?Sized> EntityHandle<T> {
 		self.container.write()
 	}
 
+	pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
+		self.container.try_read()
+	}
+
 	pub fn map<'a, R>(&self, function: impl FnOnce(&Self) -> R) -> R {
 		function(self)
 	}
@@ -238,6 +268,35 @@ impl <'c, T: 'c> EntityBuilder<'c, T> {
 impl <'c, T> From<T> for EntityBuilder<'c, T> {
 	fn from(entity: T) -> Self {
 		Self::new(entity)
+	}
+}
+
+pub trait MapAndCollectAsAvailable<T: ?Sized, U> {
+	/// Maps the entities in the vector and collects them into a new vector but skips taken locks until they are available.
+	/// This avoids stalling the thread if a lock is taken.
+	/// Order of the elements is **not** preserved.
+	fn map_and_collect_as_available(&self, function: impl FnMut(&T) -> U) -> Vec<U>;
+}
+
+impl <T: ?Sized, U> MapAndCollectAsAvailable<T, U> for Vec<EntityHandle<T>> {
+	fn map_and_collect_as_available(&self, mut function: impl FnMut(&T) -> U) -> Vec<U> {
+		let mut source = (0..self.len()).collect::<Vec<_>>();
+		let mut res = Vec::with_capacity(self.len());
+
+		while !source.is_empty() {
+			source.retain(|i| {
+				let e = &self[*i];
+
+				if let Some(b) = e.try_read() {
+					res.push(function(&b));
+					false
+				} else {
+					true
+				}
+			});
+		}
+	
+		res
 	}
 }
 

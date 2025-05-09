@@ -1,4 +1,4 @@
-use crate::core::listener::BasicListener;
+use crate::core::{entity::Caller, listener::BasicListener};
 use std::{collections::HashMap, future::join};
 
 use maths_rs::{Vec3f, mag};
@@ -70,9 +70,9 @@ impl Sphere {
 }
 
 impl Entity for Sphere {
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.broadcast_creation(handle.clone(), self);
-		let pe = listener.broadcast_creation(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
+	fn call_listeners<'a>(&'a self, caller: Caller<'a>, handle: EntityHandle<Self>) -> () where Self: Sized {
+		caller.call(handle.clone(), self);
+		caller.call(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
 	}
 }
 

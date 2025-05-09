@@ -125,7 +125,7 @@ impl Spawner for EntityHandle<BasicListener> {
 #[allow(dead_code)]
 mod tests {
 	use super::*;
-	use crate::core::{spawn, spawn_as_child, entity::EntityBuilder};
+	use crate::core::{entity::{Caller, EntityBuilder}, spawn, spawn_as_child};
 
 	#[test]
 	fn listeners() {
@@ -191,9 +191,8 @@ mod tests {
 
 		impl Entity for Component {
 			fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
-			fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-				// listener.invoke_for(handle);
-				listener.broadcast_creation(handle as EntityHandle<dyn Boo>, self);
+			fn call_listeners<'a>(&'a self, caller: Caller<'a>, handle: EntityHandle<Self>) -> () where Self: Sized {
+				caller.call(handle as EntityHandle<dyn Boo>, self);
 			}
 		}
 

@@ -3,7 +3,7 @@ use std::future::join;
 use maths_rs::mat::{MatScale, MatTranslate};
 use utils::BoxedFuture;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, EntitySubscriber, Listener}, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh::MeshSource, Vector3};
+use crate::{core::{entity::{get_entity_trait_for_type, Caller, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, EntitySubscriber, Listener}, spawn, spawn_as_child, Entity, EntityHandle}, physics, rendering::mesh::MeshSource, Vector3};
 
 #[cfg(not(feature = "headless"))]
 use crate::rendering::mesh::{self};
@@ -39,15 +39,13 @@ impl Object {
 impl Entity for Object {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>,) -> () where Self: Sized {
-		let same = listener.broadcast_creation(handle.clone(), self);
-		let s: EntityHandle<dyn physics::PhysicsEntity> = handle.clone();
-		let pe = listener.broadcast_creation(s, self);
+	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>,) -> () where Self: Sized {
+		caller.call(handle.clone(), self);
+		caller.call(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
 
 		#[cfg(not(feature = "headless"))]
 		{
-			let s: EntityHandle<dyn mesh::RenderEntity> = handle.clone();
-			let re = listener.broadcast_creation(s, self);
+			let re = caller.call(handle.clone() as EntityHandle<dyn mesh::RenderEntity>, self);
 		}
 	}
 }

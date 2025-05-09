@@ -12,11 +12,10 @@ use byte_engine::constants::RIGHT;
 use byte_engine::constants::UP;
 use byte_engine::core::domain::Domain;
 use byte_engine::core::entity::EntityBuilder;
+use byte_engine::core::entity::MapAndCollectAsAvailable;
 use byte_engine::core::listener::EntitySubscriber;
-use byte_engine::core::listener::Listener;
 use byte_engine::core::Entity;
 use byte_engine::core::EntityHandle;
-
 use byte_engine::core::Task;
 use byte_engine::gameplay::space::Destroyer as _;
 use byte_engine::gameplay::space::Spawner;
@@ -462,9 +461,6 @@ impl Block {
 }
 
 impl Entity for Block {
-    fn call_listeners<'a>(&'a self, listener: &'a byte_engine::core::listener::BasicListener, handle: EntityHandle<Self>,) -> () where Self: Sized {
-        listener.broadcast_creation(handle.clone(), self);
-    }
 }
 
 type Location = (i32, i32, i32);
@@ -524,13 +520,7 @@ impl EntitySubscriber<Camera> for CubeCraftRenderPass {
 }
 
 impl CubeCraftRenderPass {
-    pub fn create<'a>(
-        render_pass_builder: &'a mut RenderPassBuilder<'_>,
-        resource_manager: EntityHandle<ResourceManager>,
-    ) -> EntityBuilder<'static, Self>
-    where
-        Self: Sized,
-    {
+    pub fn create<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>, resource_manager: EntityHandle<ResourceManager>,) -> EntityBuilder<'static, Self> where Self: Sized {
         let ghi = render_pass_builder.ghi();
         let mut device = ghi.write();
 
@@ -884,7 +874,7 @@ impl RenderPass for CubeCraftRenderPass {
             *ghi.get_mut_buffer_slice(self.camera_data_buffer) = view.view_projection();
         }
 
-		let blocks = self.blocks.iter().map(|f| f.read().clone()).collect::<Vec<_>>();
+		let blocks = self.blocks.map_and_collect_as_available(|e| *e);
 
         let faces = build_cube_faces(&blocks);
 
@@ -895,12 +885,7 @@ impl RenderPass for CubeCraftRenderPass {
         render_params.instance_count = faces.len() as u32;
     }
 
-    fn record(
-        &self,
-        command_buffer_recording: &mut ghi::CommandBufferRecording,
-        extent: utils::Extent,
-        attachments: &[ghi::AttachmentInformation],
-    ) {
+    fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: utils::Extent, attachments: &[ghi::AttachmentInformation],) {
         let (vertex_count, index_count, instance_count) = {
             let render_params = self.render_params.borrow_mut();
             (

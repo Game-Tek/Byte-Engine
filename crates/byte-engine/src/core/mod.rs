@@ -11,6 +11,8 @@ pub mod task;
 use std::ops::Deref;
 
 use domain::Domain;
+use entity::CallTypes;
+use entity::Caller;
 pub use orchestrator::Orchestrator;
 use listener::EntitySubscriber;
 use listener::Listener;
@@ -55,8 +57,6 @@ pub fn spawn_as_child<'a, E: Entity>(parent: EntityHandle<dyn Domain>, entity: i
 	e
 }
 
-// TODO: alert when no one is listening to an specific entity
-
 /// Handles extractor pattern for most functions passed to the orchestrator.
 pub trait SpawnHandler<E: Entity> {
 	fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<E>> where Self: Sized;
@@ -71,7 +71,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
 		if let Some(listener) = domain.read().get_listener() {
-			handle.read().call_listeners(listener, handle.clone());
+			let caller = Caller::new(listener, CallTypes::Creation);
+			handle.read().call_listeners(caller, handle.clone());
 		}
 
 		Some(handle)
@@ -97,7 +98,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		}
 
 		if let Some(listener) = domain.read().get_listener() {
-			handle.read().call_listeners(listener, handle.clone());
+			let caller = Caller::new(listener, CallTypes::Creation);
+			handle.read().call_listeners(caller, handle.clone());
 		}
 
 		Some(handle)
@@ -128,7 +130,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 
 		if let Some(listener) = domain.read().get_listener() {
 			for handle in handles.iter() {
-				handle.read().call_listeners(listener, handle.clone());
+				let caller = Caller::new(listener, CallTypes::Creation);
+				handle.read().call_listeners(caller, handle.clone());
 			}
 		}
 

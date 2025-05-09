@@ -1,4 +1,4 @@
-use crate::core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, Listener}, Entity, EntityHandle};
+use crate::core::{entity::{get_entity_trait_for_type, Caller, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, Listener}, Entity, EntityHandle};
 use std::future::join;
 
 use maths_rs::Vec3f;
@@ -37,9 +37,9 @@ impl Cube {
 }
 
 impl Entity for Sphere {
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.broadcast_creation(handle.clone(), self);
-		let pe = listener.broadcast_creation(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
+	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
+		let se = caller.call(handle.clone(), self);
+		let pe = caller.call(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
 	}
 }
 
@@ -55,9 +55,9 @@ impl physics::PhysicsEntity for Sphere {
 impl Entity for Cube {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
 	
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.broadcast_creation(handle.clone(), self);
-		let pe = listener.broadcast_creation(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
+	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
+		caller.call(handle.clone(), self);
+		caller.call(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
 	}
 }
 

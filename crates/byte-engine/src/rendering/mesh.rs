@@ -1,6 +1,6 @@
 //! Mesh component module
 
-use crate::core::{entity::EntityBuilder, listener::{BasicListener, Listener}, Entity, EntityHandle};
+use crate::core::{entity::{Caller, EntityBuilder}, listener::{BasicListener, Listener}, Entity, EntityHandle};
 use crate::{core::orchestrator, gameplay::Transform, math};
 
 use std::{borrow::Cow, future::join};
@@ -35,9 +35,9 @@ pub struct Mesh {
 }
 
 impl Entity for Mesh {
-	fn call_listeners<'a>(&'a self, listener: &'a BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.broadcast_creation(handle.clone(), self);
-		let re = listener.broadcast_creation(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
+	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
+		caller.call(handle.clone(), self);
+		caller.call(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
 	}
 }
 

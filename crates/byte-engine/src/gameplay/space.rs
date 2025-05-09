@@ -1,4 +1,4 @@
-use crate::core::{entity::EntityBuilder, spawn_as_child, SpawnHandler};
+use crate::core::{entity::{CallTypes, Caller, EntityBuilder}, spawn_as_child, SpawnHandler};
 
 use utils::BoxedFuture;
 
@@ -55,7 +55,8 @@ impl Destroyer for EntityHandle<dyn Domain> {
 
 	fn destroy<E: Entity>(&self, handle: EntityHandle<E>) {
 		if let Some(listener) = self.read().get_listener() {
-			handle.read().call_listeners(listener, handle.clone());
+			let caller = Caller::new(listener, CallTypes::Deletion);
+			handle.read().call_listeners(caller, handle.clone());
 		}
 	}
 }

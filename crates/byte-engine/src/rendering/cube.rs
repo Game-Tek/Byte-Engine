@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::core::{entity::EntityBuilder, listener::Listener, Entity, EntityHandle};
+use crate::core::{entity::{Caller, EntityBuilder}, listener::Listener, Entity, EntityHandle};
 
 use super::mesh::{MeshGenerator, MeshSource, RenderEntity};
 
@@ -17,9 +17,9 @@ impl Cube {
 }
 
 impl Entity for Cube {
-	fn call_listeners<'a>(&'a self, listener: &'a crate::core::listener::BasicListener, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = listener.broadcast_creation(handle.clone(), self);
-		let re = listener.broadcast_creation(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
+	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
+		caller.call(handle.clone(), self);
+		caller.call(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
 	}
 }
 

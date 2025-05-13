@@ -23,7 +23,7 @@ use log::warn;
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
-use crate::{core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, Quaternion, Vector2, Vector3};
+use crate::{core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, Quaternion, Vector2, Vector3};
 
 use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TriggerHandle, Types, Value};
 
@@ -130,14 +130,6 @@ impl InputManager {
 			trigger_values: HashMap::with_capacity(512),
 			action_values: HashMap::with_capacity(64),
 		}
-	}
-
-	pub fn new_as_system<'a>() -> EntityBuilder<'a, InputManager> {
-		EntityBuilder::new(Self::new())
-			.listen_to::<Action<bool>>()
-			.listen_to::<Action<f32>>()
-			.listen_to::<Action<Vector2>>()
-			.listen_to::<Action<Vector3>>()
 	}
 
 	/// Registers a device class/type.
@@ -721,10 +713,13 @@ impl Into<TypedHandle> for EntityHandle<Action<Vector3>> {
 	}
 }
 
-impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHandle<Action<T>>: Into<TypedHandle> {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Action<T>>, action: &Action<T>) -> () {
-		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
+impl <T: InputValue> Listener<CreateEvent<Action<T>>> for InputManager where EntityHandle<Action<T>>: Into<TypedHandle> {
+	fn handle(&mut self, event: &CreateEvent<Action<T>>) {
+		let handle = event.handle();
+		let action = handle.read();
 
+		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
+	
 		let input_event = InputAction {
 			name: name.to_string(),
 			r#type,
@@ -738,16 +733,20 @@ impl <T: InputValue> EntitySubscriber<Action<T>> for InputManager where EntityHa
 			stack: Vec::new(),
 			handle: Some(handle.clone().into()),
 		};
-
+	
 		self.actions.push(input_event);
-	}
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Action<T>>) -> () {
-		todo!("Implement on_delete for InputManager");
 	}
 }
 
-impl Entity for InputManager {}
+impl Entity for InputManager {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self)
+			.listen_to::<CreateEvent<Action<bool>>>()
+			.listen_to::<CreateEvent<Action<f32>>>()
+			.listen_to::<CreateEvent<Action<Vector2>>>()
+			.listen_to::<CreateEvent<Action<Vector3>>>()
+	}
+}
 
 #[cfg(test)]
 mod tests {
@@ -1086,7 +1085,7 @@ mod tests {
 
 		let space = spawn(Space::new());
 
-		let input_manager: EntityHandle<InputManager> = spawn_as_child(space.clone(), InputManager::new_as_system());
+		let input_manager: EntityHandle<InputManager> = spawn_as_child(space.clone(), InputManager::new().builder());
 
 		let mouse_device_handle;
 		let keyboard_device_handle;

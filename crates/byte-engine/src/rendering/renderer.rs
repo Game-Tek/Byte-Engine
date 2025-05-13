@@ -8,8 +8,8 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
     core::{
-        self, entity::{DomainType, EntityBuilder}, listener::{EntitySubscriber, Listener}, orchestrator, spawn, spawn_as_child, Entity, EntityHandle
-    }, gameplay::space::{Space, Spawner}, ui::render_model::UIRenderModel, utils, window_system::{self, WindowSystem}, Vector3
+        entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle
+    }, window_system::{self, WindowSystem}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -35,99 +35,96 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new_as_system<'a>(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>,) -> EntityBuilder<'a, Self> {
-        EntityBuilder::new_from_closure_with_parent(move |parent| {
-            let enable_validation = std::env::vars()
-                .find(|(k, _)| k == "BE_RENDER_DEBUG")
-                .is_some()
-                || true;
+    pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>,) -> Self {
+		let enable_validation = std::env::vars()
+			.find(|(k, _)| k == "BE_RENDER_DEBUG")
+			.is_some()
+			|| true;
 
-            let ghi_instance = Rc::new(RwLock::new(ghi::create(
-                ghi::Features::new()
-                    .validation(enable_validation)
-                    .api_dump(false)
-                    .gpu_validation(false)
-                    .debug_log_function(|message| {
-                        log::error!("{}", message);
-                    })
-					.geometry_shader(true)
-            ).unwrap()));
+		let ghi_instance = Rc::new(RwLock::new(ghi::create(
+			ghi::Features::new()
+				.validation(enable_validation)
+				.api_dump(false)
+				.gpu_validation(false)
+				.debug_log_function(|message| {
+					log::error!("{}", message);
+				})
+				.geometry_shader(true)
+		).unwrap()));
 
-            let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
+		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
-			let render_command_buffer;
-			let render_finished_synchronizer;
+		let render_command_buffer;
+		let render_finished_synchronizer;
 
-			let mut targets = HashMap::new();
+		let mut targets = HashMap::new();
 
-            {
-                let mut ghi = ghi_instance.write();
+		{
+			let mut ghi = ghi_instance.write();
 
-                let result = ghi.create_image(
-                    Some("result"),
-                    extent,
-                    ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-                    ghi::Uses::Storage | ghi::Uses::TransferDestination,
-                    ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
-                    ghi::UseCases::DYNAMIC,
-                    1,
-                );
-                let main = ghi.create_image(
-                    Some("main"),
-                    extent,
-                    ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
-                    ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
-                    ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
-                    ghi::UseCases::DYNAMIC,
-                    1,
-                );
-				let depth = ghi.create_image(
-					Some("depth"),
-					extent,
-					ghi::Formats::Depth32,
-					ghi::Uses::RenderTarget | ghi::Uses::Image,
-					ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
-					ghi::UseCases::DYNAMIC,
-					1,
-				);
+			let result = ghi.create_image(
+				Some("result"),
+				extent,
+				ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
+				ghi::Uses::Storage | ghi::Uses::TransferDestination,
+				ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+				ghi::UseCases::DYNAMIC,
+				1,
+			);
+			let main = ghi.create_image(
+				Some("main"),
+				extent,
+				ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
+				ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
+				ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+				ghi::UseCases::DYNAMIC,
+				1,
+			);
+			let depth = ghi.create_image(
+				Some("depth"),
+				extent,
+				ghi::Formats::Depth32,
+				ghi::Uses::RenderTarget | ghi::Uses::Image,
+				ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+				ghi::UseCases::DYNAMIC,
+				1,
+			);
 
-				targets.insert("main".to_string(), main);
-				targets.insert("depth".to_string(), depth);
-				targets.insert("result".to_string(), result);
+			targets.insert("main".to_string(), main);
+			targets.insert("depth".to_string(), depth);
+			targets.insert("result".to_string(), result);
 
-				render_command_buffer = ghi.create_command_buffer(Some("Render"));
-				render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
-            };
+			render_command_buffer = ghi.create_command_buffer(Some("Render"));
+			render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
+		};
 
-            let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
+		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
-			let mut root_render_pass = RootRenderPass::new();
+		let mut root_render_pass = RootRenderPass::new();
 
-			root_render_pass.add_image("main".to_string(), targets.get("main").unwrap().clone(), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
-			root_render_pass.add_image("depth".to_string(), targets.get("depth").unwrap().clone(), ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
-			root_render_pass.add_image("result".to_string(), targets.get("result").unwrap().clone(), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("main".to_string(), targets.get("main").unwrap().clone(), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("depth".to_string(), targets.get("depth").unwrap().clone(), ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("result".to_string(), targets.get("result").unwrap().clone(), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
 
-            Renderer {
-                ghi: ghi_instance,
+		Renderer {
+			ghi: ghi_instance,
 
-                rendered_frame_count: 0,
-                frame_queue_depth: 2,
+			rendered_frame_count: 0,
+			frame_queue_depth: 2,
 
-                swapchain_handles: vec![],
+			swapchain_handles: vec![],
 
-                render_command_buffer,
-                render_finished_synchronizer,
+			render_command_buffer,
+			render_finished_synchronizer,
 
-                window_system: window_system_handle,
+			window_system: window_system_handle,
 
-				targets,
+			targets,
 
-                root_render_pass,
+			root_render_pass,
 
-                extent,
-            }
-        })
-        .listen_to::<window_system::Window>()
+			extent,
+		}
     }
 
 	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
@@ -215,12 +212,10 @@ impl Renderer {
     }
 }
 
-impl EntitySubscriber<window_system::Window> for Renderer {
-    fn on_create<'a>(
-        &'a mut self,
-        handle: EntityHandle<window_system::Window>,
-        window: &window_system::Window,
-    ) -> () {
+impl Listener<CreateEvent<window_system::Window>> for Renderer {
+    fn handle(&mut self, event: &CreateEvent<window_system::Window>) {
+		let handle = event.handle();
+		
         let os_handles = self.window_system.map(|e| {
             let e = e.read();
             e.get_os_handles(&handle)
@@ -236,13 +231,14 @@ impl EntitySubscriber<window_system::Window> for Renderer {
 
         self.swapchain_handles.push(swapchain_handle);
     }
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<window_system::Window>) -> () {
-		todo!("Handle window deletion.");
-	}
 }
 
-impl Entity for Renderer {}
+impl Entity for Renderer {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self)
+			.listen_to::<CreateEvent<window_system::Window>>()
+	}
+}
 
 struct RootRenderPass {
     render_passes: Vec<(EntityHandle<dyn RenderPass>, Vec<String>)>,

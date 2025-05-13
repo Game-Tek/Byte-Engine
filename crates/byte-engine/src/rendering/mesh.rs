@@ -1,6 +1,6 @@
 //! Mesh component module
 
-use crate::core::{entity::{Caller, EntityBuilder}, listener::{BasicListener, Listener}, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, Entity};
 use crate::{core::orchestrator, gameplay::Transform, math};
 
 use std::{borrow::Cow, future::join};
@@ -34,12 +34,7 @@ pub struct Mesh {
 	transform: Transform,
 }
 
-impl Entity for Mesh {
-	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
-		caller.call(handle.clone(), self);
-		caller.call(handle.clone() as EntityHandle<dyn RenderEntity>, self as &dyn RenderEntity);
-	}
-}
+impl Entity for Mesh {}
 
 impl RenderEntity for Mesh {
 	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_matrix() }
@@ -54,6 +49,13 @@ impl Mesh {
 			source: MeshSource::Resource(resource_id),
 			transform,
 		}.into()
+	}
+
+	pub fn create(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(Self {
+			source: MeshSource::Resource(resource_id),
+			transform,
+		}).r#as::<Self>().r#as::<dyn RenderEntity>()
 	}
 
 	pub fn new_generated(generator: Box<dyn MeshGenerator>, transform: Transform) -> EntityBuilder<'static, Self> {

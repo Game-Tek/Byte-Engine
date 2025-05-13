@@ -1,6 +1,7 @@
 //! An [`Anchor`] is a object that holds a transformation and can have other objects attached to it.
 
-use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
+use crate::core::listener::{CreateEvent, Listener};
+use crate::core::{entity::EntityBuilder, Entity, EntityHandle};
 
 use crate::Vector3;
 
@@ -79,7 +80,7 @@ impl Entity for AnchorSystem {}
 
 impl AnchorSystem {
 	pub fn new() -> EntityBuilder<'static, AnchorSystem> {
-		EntityBuilder::new(AnchorSystem{ anchors: Vec::with_capacity(1024) }).listen_to::<Anchor>()
+		EntityBuilder::new(AnchorSystem{ anchors: Vec::with_capacity(1024) }).listen_to::<CreateEvent<Anchor>>()
 	}
 
 	pub fn update(&self,) {
@@ -100,12 +101,9 @@ impl AnchorSystem {
 	}
 }
 
-impl EntitySubscriber<Anchor> for AnchorSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Anchor>, params: &'a Anchor) -> () {
-		self.anchors.push(handle);
-	}
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Anchor>) -> () {
-		self.anchors.retain(|h| h != &handle);
+impl Listener<CreateEvent<Anchor>> for AnchorSystem {
+	fn handle(&mut self, event: &CreateEvent<Anchor>) {
+		let handle = event.handle();
+		self.anchors.push(handle.clone());
 	}
 }

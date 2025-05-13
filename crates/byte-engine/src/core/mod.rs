@@ -11,10 +11,7 @@ pub mod task;
 use std::ops::Deref;
 
 use domain::Domain;
-use entity::CallTypes;
-use entity::Caller;
 pub use orchestrator::Orchestrator;
-use listener::EntitySubscriber;
 use listener::Listener;
 
 use entity::DomainType;
@@ -28,16 +25,6 @@ pub use task::Task;
 use utils::sync::{Arc, RwLock};
 
 use crate::gameplay::space::Spawner;
-
-struct NoneListener {}
-
-impl Listener for NoneListener {
-	fn add_listener<T: ?Sized + 'static>(&self, _: EntityHandle<dyn EntitySubscriber<T>>) {}
-	fn broadcast_creation<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>, _: &'a T) -> () {}
-	fn broadcast_deletion<'a, T: ?Sized + 'static>(&'a self, _: EntityHandle<T>) -> () {}
-}
-
-impl Entity for NoneListener {}
 
 static mut COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -71,8 +58,6 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
 		if let Some(listener) = domain.read().get_listener() {
-			let caller = Caller::new(listener, CallTypes::Creation);
-			handle.read().call_listeners(caller, handle.clone());
 		}
 
 		Some(handle)
@@ -98,8 +83,6 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		}
 
 		if let Some(listener) = domain.read().get_listener() {
-			let caller = Caller::new(listener, CallTypes::Creation);
-			handle.read().call_listeners(caller, handle.clone());
 		}
 
 		Some(handle)
@@ -130,8 +113,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 
 		if let Some(listener) = domain.read().get_listener() {
 			for handle in handles.iter() {
-				let caller = Caller::new(listener, CallTypes::Creation);
-				handle.read().call_listeners(caller, handle.clone());
+				
 			}
 		}
 
@@ -142,6 +124,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::core::listener::CreateEvent;
 	use crate::gameplay::space::Space;
 	use crate::gameplay::space::Spawner;
 
@@ -157,19 +140,15 @@ mod tests {
 
 		impl Entity for ListenerTest {}
 
-		impl EntitySubscriber<EntityObject> for ListenerTest {
-			fn on_create<'a>(&'a mut self, handle: EntityHandle<EntityObject>, params: &'a EntityObject) -> () {
+		impl Listener<CreateEvent<EntityObject>> for ListenerTest {
+			fn handle(&mut self, event: &CreateEvent<EntityObject>) {
 				self.called = true;
-			}
-
-			fn on_delete<'a>(&'a mut self, handle: EntityHandle<EntityObject>) -> () {
-				self.called = false;
 			}
 		}
 
 		let space = spawn(Space::new());
 
-		let listener = spawn_as_child(space.clone(), EntityBuilder::new(ListenerTest { called: false }).listen_to::<EntityObject>());
+		let listener = spawn_as_child(space.clone(), EntityBuilder::new(ListenerTest { called: false }).listen_to::<CreateEvent<EntityObject>>());
 
 		assert_eq!(listener.read().called, false);
 

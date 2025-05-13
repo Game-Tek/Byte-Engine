@@ -1,4 +1,4 @@
-use crate::{core::{domain::Domain, property::Property, spawn, spawn_as_child, task, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{domain::Domain, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -57,10 +57,10 @@ impl Application for GraphicsApplication {
 		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
 		let window_system_handle = root_space_handle.spawn(window_system::WindowSystem::new_as_system());
-		let input_system_handle = root_space_handle.spawn(input::InputManager::new_as_system());		
-		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new_as_system(window_system_handle.clone(), resource_manager.clone()));
+		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
+		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(window_system_handle.clone(), resource_manager.clone()).builder());
 		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
-		let physics_system_handle = root_space_handle.spawn(physics::PhysicsWorld::new_as_system());
+		let physics_system_handle = root_space_handle.spawn(physics::PhysicsWorld::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
 
 		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new());
@@ -113,76 +113,23 @@ impl Application for GraphicsApplication {
 	fn tick(&mut self) {
 		let now = std::time::Instant::now();
 		let dt = now - self.last_tick_time;
-		self.last_tick_time = std::time::Instant::now();
+		self.last_tick_time = now;
 
 		let mut close = false;
 
 		{
-			let window_system = self.window_system_handle.get_lock();
-			let mut window_system = window_system.write();
+			let mut window_system = self.window_system_handle.write();
+			let mut input_system = self.input_system_handle.write();
 
-			{
-				let mut input_system = self.input_system_handle.write();
+			window_system.update_windows(|_, event| {
+				if let ghi::WindowEvents::Close { .. } = event {
+					close = true;
+				}
 
-				let mouse_device_handle = input_system.get_devices_by_class_name("Mouse").unwrap().get(0).unwrap().clone();
-				let keyboard_device_handle = input_system.get_devices_by_class_name("Keyboard").unwrap().get(0).unwrap().clone();
-
-				window_system.update_windows(|_, event| {
-					match event {
-						ghi::WindowEvents::Close => { close = true },
-						ghi::WindowEvents::Button { pressed, button } => {
-							match button {
-								ghi::MouseKeys::Left => {
-									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed));
-								},
-								ghi::MouseKeys::Right => {
-									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed));
-								},
-								ghi::MouseKeys::ScrollUp => {
-									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32));
-								},
-								ghi::MouseKeys::ScrollDown => {
-									input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32));
-								},
-								_ => { }
-							}
-						},
-						ghi::WindowEvents::MouseMove { x, y, time: _ } => {
-							let vec = Vector2::new(x, y);
-							input_system.record_trigger_value_for_device(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec));
-						},
-						ghi::WindowEvents::Resize { width, height } => {
-						}
-						ghi::WindowEvents::Key { pressed, key } => {
-							let (device_handle, input_source_action, value) = match key {
-								ghi::Keys::W => {
-									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
-								},
-								ghi::Keys::S => {
-									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
-								},
-								ghi::Keys::A => {
-									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
-								},
-								ghi::Keys::D => {
-									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
-								},
-								ghi::Keys::Space => {
-									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
-								},
-								ghi::Keys::Escape => {
-									close = true;
-									(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Escape"), input::Value::Bool(pressed))
-								}
-								_ => { return; }
-							};
-
-							input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
-						},
-						_ => { }
-					}
-				});
-			}
+				if let Some((device_handle, input_source_action, value)) = process_default_window_input(&mut input_system, event) {
+					input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
+				}					
+			});
 		}
 
 		let time = Time { elapsed: self.start_time.elapsed(), delta: dt };
@@ -223,21 +170,22 @@ impl Application for GraphicsApplication {
 
 		self.tick_count += 1;
 
-		if self.tick_count == 1 {
-			self.ttff = self.start_time.elapsed();
-		}
-
-		#[cfg(debug_assertions)]
-		if let Some(kill_after) = self.kill_after {
-			if self.tick_count >= kill_after {
-				close = true;
-			}
-		}
-
 		#[cfg(debug_assertions)]
 		{
-			self.min_frame_time = self.min_frame_time.min(dt);
-			self.max_frame_time = self.max_frame_time.max(dt);
+			if self.tick_count == 1 {
+				self.ttff = self.start_time.elapsed();
+			}
+
+			if let Some(kill_after) = self.kill_after {
+				if self.tick_count >= kill_after {
+					close = true;
+				}
+			}
+
+			{
+				self.min_frame_time = self.min_frame_time.min(dt);
+				self.max_frame_time = self.max_frame_time.max(dt);
+			}
 		}
 
 		if close {
@@ -373,6 +321,63 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	renderer.add_render_pass(|c| {
 		application.root_space_handle.spawn(AcesToneMapPass::create(c))
 	});
+}
+
+pub fn process_default_window_input(input_system: &mut input::InputManager, event: ghi::WindowEvents) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {
+	let mouse_device_handle = input_system.get_devices_by_class_name("Mouse").unwrap().get(0).unwrap().clone();
+	let keyboard_device_handle = input_system.get_devices_by_class_name("Keyboard").unwrap().get(0).unwrap().clone();
+
+	let r = match event {
+		ghi::WindowEvents::Button { pressed, button } => {
+			match button {
+				ghi::MouseKeys::Left => {
+					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed))
+				},
+				ghi::MouseKeys::Right => {
+					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed))
+				},
+				ghi::MouseKeys::ScrollUp => {
+					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32))
+				},
+				ghi::MouseKeys::ScrollDown => {
+					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32))
+				},
+				ghi::MouseKeys::Middle => {
+					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.MiddleButton"), input::Value::Bool(pressed))
+				},
+			}
+		},
+		ghi::WindowEvents::MouseMove { x, y, time: _ } => {
+			let vec = Vector2::new(x, y);
+			(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec))
+		},
+		ghi::WindowEvents::Key { pressed, key } => {
+			match key {
+				ghi::Keys::W => {
+					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
+				},
+				ghi::Keys::S => {
+					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
+				},
+				ghi::Keys::A => {
+					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
+				},
+				ghi::Keys::D => {
+					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
+				},
+				ghi::Keys::Space => {
+					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
+				},
+				ghi::Keys::Escape => {
+					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Escape"), input::Value::Bool(pressed))
+				},
+				_ => { return None; }
+			}
+		},
+		_ => { return None; }
+	};
+
+	Some(r)
 }
 
 #[cfg(test)]

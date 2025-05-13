@@ -1,13 +1,12 @@
-use crate::core::{entity::Caller, listener::BasicListener};
 use std::{collections::HashMap, future::join};
 
 use maths_rs::{Vec3f, mag};
 use utils::BoxedFuture;
 
-use crate::{application::Time, core::{entity::{EntityBuilder, EntityHash}, event::{Event, EventLike,}, listener::{EntitySubscriber, Listener}, orchestrator, property::Property, Entity, EntityHandle}, utils, Vector3};
+use crate::{application::Time, core::{entity::EntityBuilder, event::Event, listener::{CreateEvent, Listener}, property::Subscriber, Entity, EntityHandle}, Vector3};
 
 pub trait PhysicsEntity: Entity {
-	fn on_collision(&mut self) -> Option<&mut Event<EntityHandle<dyn PhysicsEntity>>>;
+	fn on_collision(&mut self) -> Option<&mut CollisionEvent>;
 
 	fn get_body_type(&self) -> BodyTypes;
 	fn get_collision_shape(&self) -> CollisionShapes;
@@ -34,7 +33,7 @@ pub struct Sphere {
 	position: Vec3f,
 	velocity: Vec3f,
 	radius: f32,
-	collision_event: Event<EntityHandle<dyn PhysicsEntity>>,
+	collision_event: CollisionEvent,
 }
 
 #[derive(Debug, Clone)]
@@ -59,25 +58,21 @@ struct Body {
 
 impl Sphere {
 	pub fn new(body_type: BodyTypes, position: Vec3f, velocity: Vec3f, radius: f32) -> EntityBuilder<'static, Self> {
-		Self {
+		EntityBuilder::new(Self {
 			body_type,
 			position,
 			velocity,
 			radius,
-			collision_event: Event::default(),
-		}.into()
+			collision_event: CollisionEvent {},
+		}).r#as::<Self>().r#as::<dyn PhysicsEntity>()
 	}
 }
 
 impl Entity for Sphere {
-	fn call_listeners<'a>(&'a self, caller: Caller<'a>, handle: EntityHandle<Self>) -> () where Self: Sized {
-		caller.call(handle.clone(), self);
-		caller.call(handle.clone() as EntityHandle<dyn PhysicsEntity>, self as &dyn PhysicsEntity);
-	}
 }
 
 impl PhysicsEntity for Sphere {
-	fn on_collision(&mut self) -> Option<&mut Event<EntityHandle<dyn PhysicsEntity>>> { Some(&mut self.collision_event) }
+	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { Some(&mut self.collision_event) }
 
 	fn get_body_type(&self) -> BodyTypes { self.body_type }
 
@@ -88,21 +83,21 @@ impl PhysicsEntity for Sphere {
 	fn get_collision_shape(&self) -> CollisionShapes { CollisionShapes::Sphere { radius: self.radius } }
 }
 
+pub struct CollisionEvent {}
+
+impl Event for CollisionEvent {}
+
 pub struct PhysicsWorld {
 	bodies: Vec<Body>,
 	ongoing_collisions: Vec<(usize, usize)>,
 }
 
 impl PhysicsWorld {
-	fn new() -> Self {
+	pub fn new() -> Self {
 		Self {
 			bodies: Vec::new(),
 			ongoing_collisions: Vec::new(),
 		}
-	}
-
-	pub fn new_as_system<'c>() -> EntityBuilder<'c, Self> {
-		EntityBuilder::new(Self::new()).listen_to::<dyn PhysicsEntity>()
 	}
 
 	fn add_body(&mut self, body: Body) -> usize {
@@ -182,7 +177,7 @@ impl PhysicsWorld {
 			self.bodies[j].handle.map(|e| {
 				let mut e = e.write();
 				if let Some(collision_event) = e.on_collision() {
-					collision_event.ocurred(&self.bodies[i].handle);
+					// collision_event.ocurred(&self.bodies[i].handle);
 				}
 			});
 
@@ -195,15 +190,16 @@ impl PhysicsWorld {
 	}
 }
 
-impl Entity for PhysicsWorld {}
-
-impl EntitySubscriber<dyn PhysicsEntity> for PhysicsWorld {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>, params: &'a dyn PhysicsEntity) -> () {
-		log::info!("{:#?}", params.get_collision_shape());
-		let index = self.add_body(Body{ body_type: params.get_body_type(), position: params.get_position(), velocity: params.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: params.get_collision_shape(), handle: handle.clone() });
+impl Entity for PhysicsWorld {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self).listen_to::<CreateEvent<dyn PhysicsEntity>>()
 	}
+}
 
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<dyn PhysicsEntity>) -> () {
-		todo!("Remove body from physics world");
+impl Listener<CreateEvent<dyn PhysicsEntity>> for PhysicsWorld {
+	fn handle(&mut self, event: &CreateEvent<dyn PhysicsEntity>) {
+		let handle = event.handle();
+		let physics_entity = handle.read();
+		self.add_body(Body{ body_type: physics_entity.get_body_type(), position: physics_entity.get_position(), velocity: physics_entity.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: physics_entity.get_collision_shape(), handle: handle.clone() });
 	}
 }

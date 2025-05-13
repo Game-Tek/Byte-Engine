@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle};
 
 struct Timer {
 	period: Duration,
@@ -19,10 +19,10 @@ struct TimerService {
 }
 
 impl TimerService {
-	pub fn new() -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self {
+	pub fn new() -> Self {
+		Self {
 			timers: Vec::new(),
-		}).listen_to::<Timer>()
+		}
 	}
 
 	pub fn update(&mut self, time: Duration) {
@@ -32,12 +32,15 @@ impl TimerService {
 	}
 }
 
-impl EntitySubscriber<Timer> for TimerService {
-	fn on_create(&mut self, handle: EntityHandle<Timer>, timer: &Timer) {
-		self.timers.push(handle);
+impl Entity for TimerService {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self).listen_to::<CreateEvent<Timer>>()
 	}
+}
 
-	fn on_delete(&mut self, handle: EntityHandle<Timer>) {
-		self.timers.retain(|h| *h != handle);
+impl Listener<CreateEvent<Timer>> for TimerService {
+	fn handle(&mut self, event: &CreateEvent<Timer>) {
+		let handle = event.handle();
+		self.timers.push(handle.clone());
 	}
 }

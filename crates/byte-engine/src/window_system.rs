@@ -2,7 +2,7 @@
 
 use utils::{hash::HashMap, Extent};
 
-use crate::core::{entity::EntityBuilder, listener::{EntitySubscriber, Listener}, orchestrator, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, orchestrator, Entity, EntityHandle};
 
 /// The window system.
 pub struct WindowSystem {
@@ -42,7 +42,7 @@ impl WindowSystem {
 	}
 
 	pub fn new_as_system<'a>() -> EntityBuilder<'a, WindowSystem> {
-		EntityBuilder::new(Self::new()).listen_to::<Window>()
+		EntityBuilder::new(Self::new()).listen_to::<CreateEvent<Window>>()
 	}
 
 	pub fn update(&mut self) -> bool {
@@ -99,13 +99,11 @@ impl WindowSystem {
 	}
 }
 
-impl EntitySubscriber<Window> for WindowSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Window>, window: &Window) -> () {
-		let h = self.create_window(handle, &window.name, window.extent, "main_window");
-	}
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Window>) -> () {
-		todo!("Remove window from system");
+impl Listener<CreateEvent<Window>> for WindowSystem {
+	fn handle(&mut self, event: &CreateEvent<Window>) {
+		let handle = event.handle();
+		let window = handle.read();
+		self.create_window(handle.clone(), &window.name, window.extent, "main_window");
 	}
 }
 

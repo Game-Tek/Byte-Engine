@@ -1,7 +1,7 @@
 use core::task;
 use std::ops::Deref;
 
-use super::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
+use super::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle};
 
 pub enum Interval {
 	Time(std::time::Duration),
@@ -70,7 +70,7 @@ impl TaskExecutor {
 	}
 
 	pub fn create() -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new()).listen_to::<Task>()
+		EntityBuilder::new(Self::new()).listen_to::<CreateEvent<Task>>()
 	}
 
 	fn add_task(&mut self, task: EntityHandle<Task>) {
@@ -180,12 +180,9 @@ impl TaskExecutor {
 
 impl Entity for TaskExecutor {}
 
-impl EntitySubscriber<Task> for TaskExecutor {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Task>, params: &'a Task) -> () {
-		self.add_task(handle);
-	}
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Task>) -> () {
-		self.tasks.retain(|task| task != &handle);
+impl Listener<CreateEvent<Task>> for TaskExecutor {
+	fn handle(&mut self, event: &CreateEvent<Task>) {
+		let handle = event.handle();
+		self.add_task(handle.clone());
 	}
 }

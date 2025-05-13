@@ -1,5 +1,4 @@
-use crate::core::{entity::{get_entity_trait_for_type, Caller, EntityBuilder, EntityTrait}, event::Event, listener::{BasicListener, Listener}, Entity, EntityHandle};
-use std::future::join;
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::CollisionEvent};
 
 use maths_rs::Vec3f;
 
@@ -20,31 +19,28 @@ impl Sphere {
 			radius,
 		}
 	}
+
+	pub fn create(radius: f32) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(Self::new(radius)).r#as::<Self>().r#as::<dyn physics::PhysicsEntity>()
+	}
 }
 
 impl Cube {
-	// pub fn new(size: Vec3f) -> Self {
-	// 	Self {
-	// 		size,
-	// 	}
-	// }
-
-	pub fn new(size: Vec3f) -> EntityBuilder<'static, Self> {
+	pub fn new(size: Vec3f) -> Self {
 		Self {
 			size,
-		}.into()
+		}
+	}
+
+	pub fn create(size: Vec3f) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(Self::new(size)).r#as::<Self>().r#as::<dyn physics::PhysicsEntity>()
 	}
 }
 
-impl Entity for Sphere {
-	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
-		let se = caller.call(handle.clone(), self);
-		let pe = caller.call(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
-	}
-}
+impl Entity for Sphere {}
 
 impl physics::PhysicsEntity for Sphere {
-	fn on_collision(&mut self) -> Option<&mut Event<EntityHandle<dyn physics::PhysicsEntity>>> { None }
+	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { None }
 	fn get_position(&self) -> maths_rs::Vec3f { maths_rs::Vec3f::new(0.0, -0.5, 0.0) }
 	fn set_position(&mut self, position: maths_rs::Vec3f) {}
 	fn get_velocity(&self) -> maths_rs::Vec3f { maths_rs::Vec3f::new(0.0, 0.0, 0.0) }
@@ -54,15 +50,10 @@ impl physics::PhysicsEntity for Sphere {
 
 impl Entity for Cube {
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn physics::PhysicsEntity>() }] }
-	
-	fn call_listeners<'a>(&'a self, caller: Caller, handle: EntityHandle<Self>) -> () where Self: Sized {
-		caller.call(handle.clone(), self);
-		caller.call(handle.clone() as EntityHandle<dyn physics::PhysicsEntity>, self);
-	}
 }
 
 impl physics::PhysicsEntity for Cube {
-	fn on_collision(&mut self) -> Option<&mut Event<EntityHandle<dyn physics::PhysicsEntity>>> { None }
+	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { None }
 	fn get_position(&self) -> maths_rs::Vec3f { maths_rs::Vec3f::new(0.0, -0.5, 0.0) }
 	fn set_position(&mut self, position: maths_rs::Vec3f) {}
 	fn get_velocity(&self) -> maths_rs::Vec3f { maths_rs::Vec3f::new(0.0, 0.0, 0.0) }

@@ -1,29 +1,19 @@
-use crate::core::{entity::{CallTypes, Caller, EntityBuilder}, spawn_as_child, SpawnHandler};
+use crate::core::{spawn_as_child, SpawnHandler};
 
-use utils::BoxedFuture;
-
-use crate::core::{domain::Domain, entity::EntityTrait, listener::{BasicListener, EntitySubscriber, Listener}, Entity, EntityHandle};
+use crate::core::{domain::Domain, Entity, EntityHandle};
 
 pub struct Space {
-	listener: BasicListener,
 }
 
 impl Space {
 	pub fn new() -> Self {
 		Space {
-			listener: BasicListener::new(),
 		}
 	}
 }
 
 impl Domain for Space {
-	fn get_listener(&self) -> Option<&BasicListener> {
-		Some(&self.listener)
-	}
-
-	fn get_listener_mut(&mut self) -> Option<&mut BasicListener> {
-		Some(&mut self.listener)
-	}
+	
 }
 
 /// This trait allows implementers to spawn entities.
@@ -54,29 +44,9 @@ impl Destroyer for EntityHandle<dyn Domain> {
 	type Domain = dyn Domain;
 
 	fn destroy<E: Entity>(&self, handle: EntityHandle<E>) {
-		if let Some(listener) = self.read().get_listener() {
-			let caller = Caller::new(listener, CallTypes::Deletion);
-			handle.read().call_listeners(caller, handle.clone());
-		}
-	}
-}
-
-impl Listener for Space {
-	fn add_listener<T: Entity + ?Sized + 'static>(&self, listener: EntityHandle<dyn EntitySubscriber<T>>) {
-		self.listener.add_listener::<T>(listener);
-	}
-
-	fn broadcast_creation<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>, reference: &'a T) -> () {
-		self.listener.broadcast_creation(handle, reference)
-	}
-
-	fn broadcast_deletion<'a, T: ?Sized + 'static>(&'a self, handle: EntityHandle<T>) -> () {
-		self.listener.broadcast_deletion(handle)
+		todo!();
 	}
 }
 
 impl Entity for Space {
-	fn get_listener(&self) -> Option<&BasicListener> {
-		Some(&self.listener)
-	}
 }

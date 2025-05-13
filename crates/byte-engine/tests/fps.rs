@@ -1,4 +1,4 @@
-use byte_engine::core::{event::EventLike, EntityHandle};
+use byte_engine::core::{event::Event, EntityHandle};
 
 use byte_engine::gameplay::space::Spawner;
 use byte_engine::{application::{Application, Parameter}, audio::sound::Sound, camera::Camera, gameplay::{self, Anchor, Object, Transform}, input::{Action, ActionBindingDescription, Function}, math, physics::PhysicsEntity, rendering::{directional_light::DirectionalLight, mesh::Mesh}, Vector3};
@@ -126,9 +126,9 @@ fn fps() {
 				let c = space_handle.spawn(Object::new("Sphere.gltf", Transform::identity().position(position).scale(Vector3::new(0.05, 0.05, 0.05)), byte_engine::physics::BodyTypes::Dynamic, direction * 25.0));
 				let _ = space_handle.spawn(Sound::new("gun.wav".to_string(),));
 
-				c.write().on_collision().unwrap().trigger(move |_: &EntityHandle<dyn PhysicsEntity>| {
-					log::info!("Collision: {:?}", "hehehj");
-				});
+				// c.write().on_collision().unwrap().trigger(move |_: &EntityHandle<dyn PhysicsEntity>| {
+				// 	log::info!("Collision: {:?}", "hehehj");
+				// });
 			}
 		});
 	}

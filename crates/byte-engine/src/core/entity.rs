@@ -8,12 +8,6 @@ use crate::gameplay::space::{Space, Spawner};
 /// An entity is a type that can be spawned and managed by the engine.
 /// The trait provides some convenience methods to interact with the entity.
 pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
-	/// Exposes an optional feature of the entity, which is the listener.
-	/// This is used to allow entities to listen to other entities.
-	fn get_listener(&self) -> Option<&BasicListener> {
-		None
-	}
-
 	fn get_entity_trait(&self) -> EntityTrait {
 		EntityTrait {
 			trait_id: std::any::TypeId::of::<Self>(),
@@ -22,38 +16,8 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
 
-	/// Implementers can override this method to advertise the entity multiples traits.
-	/// ```rust
-	/// listener.invoke_for(handle, self); // Advertise as the same type
-	/// listener.invoke_for(handle as EntityHandle<dyn OtherTrait>, self as &dyn OtherTrait); // Advertise as a different type
-	/// // etc...
-	/// ```
-	fn call_listeners<'a>(&'a self, caller: Caller<'a>, handle: EntityHandle<Self>) -> () where Self: Sized { caller.call(handle, self) }
-}
-
-pub(crate) enum CallTypes {
-	Creation,
-	Deletion,
-}
-
-pub struct Caller<'a> {
-	r#type: CallTypes,
-	listener: &'a BasicListener,
-}
-
-impl <'a> Caller<'a> {
-	pub(crate) fn new(listener: &'a BasicListener, r#type: CallTypes) -> Self {
-		Caller {
-			r#type,
-			listener,
-		}
-	}
-
-	pub fn call<T: Entity + ?Sized>(&self, handle: EntityHandle<T>, reference: &T) {
-		match self.r#type {
-			CallTypes::Creation => self.listener.broadcast_creation(handle, reference),
-			CallTypes::Deletion => self.listener.broadcast_deletion(handle),
-		}
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self)
 	}
 }
 
@@ -181,7 +145,8 @@ use std::{marker::Unsize, ops::Deref};
 use std::ops::CoerceUnsized;
 
 use super::domain::Domain;
-use super::{listener::{BasicListener, EntitySubscriber, Listener}, SpawnHandler};
+use super::event::Event;
+use super::{listener::Listener, SpawnHandler};
 
 impl<T, U> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
 where
@@ -252,13 +217,16 @@ impl <'c, T: 'c> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn listen_to<C: Entity + ?Sized>(mut self,) -> Self where T: EntitySubscriber<C> + 'static {
+	pub fn r#as<E: Entity + ?Sized>(self) -> Self {
+		todo!("Implement Entity trait for EntityBuilder");
+		self
+	}
+
+	pub fn listen_to<C: Event>(mut self) -> Self where T: Listener<C> + 'static {
 		self.listens_to.push(Box::new(move |domain, e| {
 			let domain = domain.read();
 
-			if let Some(l) = domain.get_listener() {
-				l.add_listener(e);
-			}
+			todo!("Implement Entity trait for EntityBuilder");
 		}));
 
 		self
@@ -304,7 +272,7 @@ impl <T: ?Sized, U> MapAndCollectAsAvailable<T, U> for Vec<EntityHandle<T>> {
 #[allow(dead_code)]
 mod tests {
 	use super::*;
-	use crate::core::spawn;
+	use crate::core::{listener::CreateEvent, spawn};
 
 	#[test]
 	fn spawn_entities() {
@@ -329,13 +297,9 @@ mod tests {
 			}
 		}
 
-		impl EntitySubscriber<Component> for System {
-			fn on_create<'a>(&'a mut self, _: EntityHandle<Component>, component: &Component) -> () where Self: Sized + Send + Sync {
-				println!("Component created: {} {}", component.name, component.value);
-			}
-
-			fn on_delete<'a>(&'a mut self, handle: EntityHandle<Component>) -> () {
-				println!("Component deleted: {}", handle.read().name);
+		impl Listener<CreateEvent<Component>> for System {
+			fn handle(&mut self, event: &CreateEvent<Component>) {
+				println!("Component created");
 			}
 		}
 

@@ -1,10 +1,10 @@
 use std::{collections::HashMap, f32::consts::PI};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
 
-use crate::core::{entity::EntityBuilder, listener::EntitySubscriber, Entity, EntityHandle};
+use crate::core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle};
 use ahi::{audio_hardware_interface::AudioHardwareInterface, self};
 
-use super::{sound::Sound, synthesizer::Synthesizer};
+use super::{sound::{self, Sound}, synthesizer::Synthesizer};
 
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
@@ -38,7 +38,7 @@ impl DefaultAudioSystem {
 	}
 
 	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(resource_manager)).listen_to::<Sound>().listen_to::<Synthesizer>()
+		EntityBuilder::new(Self::new(resource_manager)).listen_to::<CreateEvent<Sound>>().listen_to::<CreateEvent<Synthesizer>>()
 	}
 }
 
@@ -155,26 +155,20 @@ struct PlayingSound {
 	gain: f32,
 }
 
-impl EntitySubscriber<Sound> for DefaultAudioSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Sound>, sound: &'a Sound) -> () {
+impl Listener<CreateEvent<Sound>> for DefaultAudioSystem {
+	fn handle<'a>(&'a mut self, event: &CreateEvent<Sound>) -> () {
+		let handle = event.handle();
+		let sound = handle.read();
 		self.play(&sound.asset);
-	}
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Sound>) -> () {
-		todo!("Delete sound");
 	}
 }
 
-impl EntitySubscriber<Synthesizer> for DefaultAudioSystem {
-	fn on_create<'a>(&'a mut self, handle: EntityHandle<Synthesizer>, params: &'a Synthesizer) -> () {
+impl Listener<CreateEvent<Synthesizer>> for DefaultAudioSystem {
+	fn handle<'a>(&'a mut self, handle: &CreateEvent<Synthesizer>) -> () {
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 110f32 }, current_sample: 0, gain: 0.10f32 });
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 440f32 }, current_sample: 0, gain: 0.10f32 });
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 554f32 }, current_sample: 0, gain: 0.10f32 });
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 659f32 }, current_sample: 0, gain: 0.10f32 });
 		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 830f32 }, current_sample: 0, gain: 0.10f32 });
-	}
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Synthesizer>) -> () {
-		todo!("Delete synthesizer");
 	}
 }

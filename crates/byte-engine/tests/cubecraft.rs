@@ -13,7 +13,8 @@ use byte_engine::constants::UP;
 use byte_engine::core::domain::Domain;
 use byte_engine::core::entity::EntityBuilder;
 use byte_engine::core::entity::MapAndCollectAsAvailable;
-use byte_engine::core::listener::EntitySubscriber;
+use byte_engine::core::listener::CreateEvent;
+use byte_engine::core::listener::Listener;
 use byte_engine::core::Entity;
 use byte_engine::core::EntityHandle;
 use byte_engine::core::Task;
@@ -224,7 +225,7 @@ impl ChunkLoader {
     }
 
     fn create() -> EntityBuilder<'static, Self> {
-        EntityBuilder::new(ChunkLoader::new()).listen_to::<Camera>().then(|space, handle| {
+        EntityBuilder::new(ChunkLoader::new()).listen_to::<CreateEvent<Camera>>().then(|space, handle| {
 			let a = space.clone();
 			space.spawn(Task::tick(move || {
 				let mut chunk_loader = handle.write();
@@ -277,13 +278,10 @@ impl ChunkLoader {
 
 impl Entity for ChunkLoader {}
 
-impl EntitySubscriber<Camera> for ChunkLoader {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, _: &'a Camera) -> () {
-        self.camera = Some(handle.clone());
-    }
-
-	fn on_delete<'a>(&'a mut self, _: EntityHandle<Camera>) -> () {
-		self.camera = None;
+impl Listener<CreateEvent<Camera>> for ChunkLoader {
+	fn handle(&mut self, event: &CreateEvent<Camera>) {
+		let handle = event.handle();
+		self.camera = Some(handle.clone());
 	}
 }
 
@@ -332,7 +330,7 @@ impl Physics {
 
     fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
         EntityBuilder::new_from_closure_with_parent(|p| Physics::new(player, p))
-            .listen_to::<Block>()
+            .listen_to::<CreateEvent<Block>>()
             .then(|space, handle| {
                 space.spawn(Task::tick(move || {
                     handle.write().update();
@@ -422,25 +420,17 @@ impl Physics {
 
 impl Entity for Physics {}
 
-impl EntitySubscriber<Block> for Physics {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, params: &'a Block) -> () {
-        self.blocks.push(handle.clone());
-    }
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Block>) -> () {
-		self.blocks.retain(|b| b != &handle);
+impl Listener<CreateEvent<Block>> for Physics {
+	fn handle(&mut self, event: &CreateEvent<Block>) {
+		let handle = event.handle();
+		self.blocks.push(handle.clone());
 	}
 }
 
-impl EntitySubscriber<Player> for Physics {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Player>, _: &'a Player) -> () {
-        self.player = Some(handle.clone());
-    }
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Player>) -> () {
-		if Some(handle as EntityHandle<dyn Positionable>) == self.player {
-			self.player = None;
-		}
+impl Listener<CreateEvent<Player>> for Physics {
+	fn handle(&mut self, event: &CreateEvent<Player>) {
+		let handle = event.handle();
+		self.player = Some(handle.clone());
 	}
 }
 
@@ -496,27 +486,18 @@ struct CubeCraftRenderPass {
 
 impl Entity for CubeCraftRenderPass {}
 
-impl EntitySubscriber<Block> for CubeCraftRenderPass {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Block>, _: &'a Block) -> () {
-        self.blocks.push(handle.clone());
-    }
-
-	fn on_delete<'a>(&'a mut self, handle: EntityHandle<Block>) -> () {
-		log::debug!("Block deleted: {:?}", handle);
-		self.blocks.retain(|b| b != &handle);
+impl Listener<CreateEvent<Block>> for CubeCraftRenderPass {
+	fn handle(&mut self, event: &CreateEvent<Block>) {
+		let handle = event.handle();
+		self.blocks.push(handle.clone());
 	}
 }
 
-impl EntitySubscriber<Camera> for CubeCraftRenderPass {
-    fn on_create<'a>(&'a mut self, handle: EntityHandle<Camera>, _: &'a Camera) -> () {
-        self.camera = Some(handle.clone());
-    }
-
-    fn on_delete<'a>(&'a mut self, handle: EntityHandle<Camera>) -> () {
-        if Some(handle) == self.camera {
-            self.camera = None;
-        }
-    }
+impl Listener<CreateEvent<Camera>> for CubeCraftRenderPass {
+	fn handle(&mut self, event: &CreateEvent<Camera>) {
+		let handle = event.handle();
+		self.camera = Some(handle.clone());
+	}
 }
 
 impl CubeCraftRenderPass {
@@ -838,8 +819,8 @@ impl CubeCraftRenderPass {
 
             camera: None,
         })
-        .listen_to::<Block>()
-        .listen_to::<Camera>()
+        .listen_to::<CreateEvent<Block>>()
+        .listen_to::<CreateEvent<Camera>>()
     }
 }
 

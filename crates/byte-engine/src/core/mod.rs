@@ -11,6 +11,7 @@ pub mod task;
 use std::ops::Deref;
 
 use domain::Domain;
+use listener::CreateEvent;
 pub use orchestrator::Orchestrator;
 use listener::Listener;
 
@@ -57,7 +58,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for R {
 
 		let handle = EntityHandle::<R>::new(obj, internal_id,);
 
-		if let Some(listener) = domain.read().get_listener() {
+		if let Some(event_registry) = domain.read().get_event_registry() {
+			event_registry.broadcast(CreateEvent::new(handle.clone()));
 		}
 
 		Some(handle)
@@ -77,12 +79,15 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		for f in self.post_creation_functions {
 			f(domain.clone(), handle.clone(),);
 		}
+		
+		if let Some(event_registry) = domain.read().get_event_registry() {
+			for f in self.listens_to {
+				f(event_registry, handle.clone())
+			}
 
-		for f in self.listens_to {
-			f(domain.clone(), handle.clone())
-		}
-
-		if let Some(listener) = domain.read().get_listener() {
+			for f in self.events {
+				f(event_registry, handle.clone());
+			}
 		}
 
 		Some(handle)
@@ -104,18 +109,18 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 				f(domain.clone(),  handle.clone(),);
 			}
 
-			for f in builder.listens_to {
-				f(domain.clone(), handle.clone())
+			if let Some(event_registry) = domain.read().get_event_registry() {
+				for f in builder.listens_to {
+					f(event_registry, handle.clone())
+				}
+
+				for f in builder.events {
+					f(event_registry, handle.clone());
+				}
 			}
 
 			handle
 		}).collect::<Vec<_>>();
-
-		if let Some(listener) = domain.read().get_listener() {
-			for handle in handles.iter() {
-				
-			}
-		}
 
 		Some(handles[0].clone())
     }

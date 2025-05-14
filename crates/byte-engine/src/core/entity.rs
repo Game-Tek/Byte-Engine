@@ -16,6 +16,38 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 
 	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
 
+	/// Create an entity builder for this entity.
+	/// This is a convenience method to create an entity builder with the current "unwrapped" entity as the base.
+	/// 
+	/// Implementations of this trait should override this method to provide a custom entity builder, such as one that listens to events, or produces creation events.
+	/// 
+	/// The default implementation will create a new `EntityBuilder` with the current entity as the base.
+	/// 
+	/// # Examples
+	/// 
+	/// ```rust
+	/// use crate::core::{Entity, EntityBuilder};
+	/// 
+	/// struct MyEntity {}
+	/// 
+	/// impl MyEntity {
+	/// 	fn new() -> Self {
+	/// 		MyEntity {}
+	/// 	}
+	/// }
+	/// 
+	/// impl Entity for MyEntity {
+	/// 	fn builder(self) -> EntityBuilder<'static, Self> {
+	/// 		EntityBuilder::new(self).r#as::<MyEntity>() // Produces a creation event as `MyEntity`
+	/// 	}
+	/// }
+	/// 
+	/// fn main() {
+	/// 	let entity = MyEntity::new(); // Choose how to create the entity
+	/// 	let builder = entity.builder(); // Make a builder for extra functionality when spawning
+	/// 	// Do something with the builder...
+	/// }
+	/// ```
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
 		EntityBuilder::new(self)
 	}
@@ -145,7 +177,8 @@ use std::{marker::Unsize, ops::Deref};
 use std::ops::CoerceUnsized;
 
 use super::domain::Domain;
-use super::event::Event;
+use super::event::{Event, EventRegistry};
+use super::listener::CreateEvent;
 use super::{listener::Listener, SpawnHandler};
 
 impl<T, U> CoerceUnsized<EntityHandle<U>> for EntityHandle<T>
@@ -186,9 +219,10 @@ pub trait PostCreationFunction<T> = FnOnce(DomainType, EntityHandle<T>);
 
 /// Entity creation functions must return this type.
 pub struct EntityBuilder<'c, T: 'c> {
-	pub create: Box<dyn FnOnce(DomainType) -> T + 'c>,
-	pub post_creation_functions: Vec<std::boxed::Box<dyn PostCreationFunction<T> + 'c>>,
-	pub listens_to: Vec<Box<dyn Fn(DomainType, EntityHandle<T>) + 'c>>,
+	pub(crate) create: Box<dyn FnOnce(DomainType) -> T + 'c>,
+	pub(crate) post_creation_functions: Vec<std::boxed::Box<dyn PostCreationFunction<T> + 'c>>,
+	pub(crate) listens_to: Vec<Box<dyn Fn(&EventRegistry, EntityHandle<T>) + 'c>>,
+	pub(crate) events: Vec<Box<dyn Fn(&EventRegistry, EntityHandle<T>) + 'c>>,
 }
 
 impl <'c, T: 'c> EntityBuilder<'c, T> {
@@ -197,6 +231,7 @@ impl <'c, T: 'c> EntityBuilder<'c, T> {
 			create: Box::new(create),
 			post_creation_functions: Vec::new(),
 			listens_to: Vec::new(),
+			events: Vec::new(),
 		}
 	}
 
@@ -217,16 +252,17 @@ impl <'c, T: 'c> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn r#as<E: Entity + ?Sized>(self) -> Self {
-		todo!("Implement Entity trait for EntityBuilder");
+	pub fn r#as<E: Entity + ?Sized>(mut self) -> Self {
+		self.events.push(Box::new(move |event_registry, handle| {
+			event_registry.broadcast(CreateEvent::new(handle));
+		}));
+
 		self
 	}
 
 	pub fn listen_to<C: Event>(mut self) -> Self where T: Listener<C> + 'static {
-		self.listens_to.push(Box::new(move |domain, e| {
-			let domain = domain.read();
-
-			todo!("Implement Entity trait for EntityBuilder");
+		self.listens_to.push(Box::new(move |event_registry, e| {
+			event_registry.subscribe::<C, T>(e);
 		}));
 
 		self

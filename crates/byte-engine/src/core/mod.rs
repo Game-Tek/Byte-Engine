@@ -11,6 +11,7 @@ pub mod task;
 use std::ops::Deref;
 
 use domain::Domain;
+use entity::EntityEvents;
 use listener::CreateEvent;
 pub use orchestrator::Orchestrator;
 use listener::Listener;
@@ -52,17 +53,7 @@ pub trait SpawnHandler<E: Entity> {
 
 impl <R: Entity + 'static> SpawnHandler<R> for R {
     fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
-		let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
-
-		let obj = Arc::new(RwLock::new(self));
-
-		let handle = EntityHandle::<R>::new(obj, internal_id,);
-
-		if let Some(event_registry) = domain.read().get_event_registry() {
-			event_registry.broadcast(CreateEvent::new(handle.clone()));
-		}
-
-		Some(handle)
+		self.builder().call(domain)
     }
 }
 
@@ -80,13 +71,18 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 			f(domain.clone(), handle.clone(),);
 		}
 		
-		if let Some(event_registry) = domain.read().get_event_registry() {
-			for f in self.listens_to {
-				f(event_registry, handle.clone())
-			}
+		let mut domain = domain.write();
 
-			for f in self.events {
-				f(event_registry, handle.clone());
+		let domain_events = domain.events_mut();
+
+		for event in &self.events {
+			match event {
+				EntityEvents::As { f } => {
+					f(handle.clone(), domain_events);
+				}
+				EntityEvents::Listen { f } => {
+					f(handle.clone(), domain_events);
+				}
 			}
 		}
 
@@ -96,7 +92,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 
 impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
     fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
-		let handles = self.into_iter().map(|builder| {
+		let init = self.into_iter().map(|builder| {
 			let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 			let entity = (builder.create)(domain.clone());
@@ -109,18 +105,29 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 				f(domain.clone(),  handle.clone(),);
 			}
 
-			if let Some(event_registry) = domain.read().get_event_registry() {
-				for f in builder.listens_to {
-					f(event_registry, handle.clone())
-				}
+			(builder.events, handle)
+		});
 
-				for f in builder.events {
-					f(event_registry, handle.clone());
+		let mut domain = domain.write();
+
+		let domain_events = domain.events_mut();
+
+		let post = init.map(|(events, handle)| {
+			for event in events {
+				match event {
+					EntityEvents::As { f } => {
+						f(handle.clone(), domain_events);
+					}
+					EntityEvents::Listen { f } => {
+						f(handle.clone(), domain_events);
+					}
 				}
 			}
 
 			handle
-		}).collect::<Vec<_>>();
+		});
+
+		let handles = post.collect::<Vec<_>>();
 
 		Some(handles[0].clone())
     }
@@ -129,7 +136,8 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::core::listener::CreateEvent;
+	use crate::core::domain::DomainEvents;
+use crate::core::listener::CreateEvent;
 	use crate::gameplay::space::Space;
 	use crate::gameplay::space::Spawner;
 
@@ -155,10 +163,20 @@ mod tests {
 
 		let listener = spawn_as_child(space.clone(), EntityBuilder::new(ListenerTest { called: false }).listen_to::<CreateEvent<EntityObject>>());
 
-		assert_eq!(listener.read().called, false);
+		let events = space.write().get_events();
+		assert_eq!(events.len(), 1);
 
-		let entity = spawn_as_child(space.clone(), EntityObject {});
+		let listen_event = &events[0];
 
-		assert_eq!(listener.read().called, true);
+		assert!(matches!(listen_event, DomainEvents::StartListen { .. }));
+
+		let entity = spawn_as_child(space.clone(), EntityObject {}.builder());
+
+		let events = space.write().get_events();
+		assert_eq!(events.len(), 1);
+
+		let creation_event = &events[0];
+
+		assert!(matches!(creation_event, DomainEvents::EntityCreated { .. }));
 	}
 }

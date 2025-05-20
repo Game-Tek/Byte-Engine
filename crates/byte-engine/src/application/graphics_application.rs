@@ -1,4 +1,4 @@
-use crate::{core::{domain::Domain, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -115,6 +115,33 @@ impl Application for GraphicsApplication {
 		let dt = now - self.last_tick_time;
 		self.last_tick_time = now;
 
+		let elapsed = self.start_time.elapsed();
+		let tick_count = self.tick_count;
+
+		{
+			let events = self.root_space_handle.write().get_events();
+
+			for event in events {
+				match event {
+					DomainEvents::EntityCreated { f } => {
+						self.task_executor_handle.get_mut(|executor| {
+							f(executor);
+						});
+					}
+					DomainEvents::EntityRemoved { f } => {
+						self.task_executor_handle.get_mut(|executor| {
+							f(executor);
+						});
+					}
+					DomainEvents::StartListen { f } => {
+						self.task_executor_handle.get_mut(|executor| {
+							f(executor);
+						});
+					}
+				}
+			}
+		}
+
 		let mut close = false;
 
 		{
@@ -132,15 +159,22 @@ impl Application for GraphicsApplication {
 			});
 		}
 
-		let time = Time { elapsed: self.start_time.elapsed(), delta: dt };
+		let time = Time { elapsed, delta: dt };
 
 		self.tick_handle.get_mut(move |tick| {
 			tick.set(|_| time);
 		});
 
+		let execution = self.task_executor_handle.map(|handle| {
+			let mut e = handle.write();
+			e.get_execution(elapsed, dt, tick_count)
+		});
+
+		execution.run();
+
 		self.task_executor_handle.map(|handle| {
 			let mut e = handle.write();
-			e.execute(self.start_time.elapsed(), dt, self.tick_count);
+			e.update_tasks(elapsed, dt, tick_count);
 		});
 
 		self.input_system_handle.map(|handle| {

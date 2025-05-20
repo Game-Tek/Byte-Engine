@@ -14,6 +14,7 @@ use byte_engine::core::domain::Domain;
 use byte_engine::core::entity::EntityBuilder;
 use byte_engine::core::entity::MapAndCollectAsAvailable;
 use byte_engine::core::listener::CreateEvent;
+use byte_engine::core::listener::DeleteEvent;
 use byte_engine::core::listener::Listener;
 use byte_engine::core::Entity;
 use byte_engine::core::EntityHandle;
@@ -146,7 +147,7 @@ fn cubecraft() {
     camera.set_fov(90.0);
 
     // Create the camera
-    let camera = space_handle.spawn(camera);
+    let camera = space_handle.spawn(camera.builder());
 
     // Create the directional light
     let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(-UP), 4000f32));
@@ -164,7 +165,7 @@ fn cubecraft() {
             });
     }
 
-    let player = space_handle.spawn(Player::create());
+    let _ = space_handle.spawn(Player::new().builder());
 
     let mut anchor = Anchor::new(Transform::default());
 
@@ -247,7 +248,7 @@ impl ChunkLoader {
 											let block = make_block(position);
 			
 											if block != Blocks::Air {
-												Some(Block::create(position, block))
+												Some(Block::new(position, block).builder())
 											} else {
 												None
 											}
@@ -295,10 +296,6 @@ impl Player {
             position: Vector3::new(0.0, 0.0, 0.0),
         }
     }
-
-    fn create() -> EntityBuilder<'static, Self> {
-        Player::new().into()
-    }
 }
 
 impl Entity for Player {}
@@ -315,7 +312,7 @@ impl Positionable for Player {
 
 struct Physics {
 	parent: EntityHandle<dyn Domain>,
-    player: Option<EntityHandle<dyn Positionable>>,
+    player: EntityHandle<dyn Positionable>,
     blocks: Vec<EntityHandle<Block>>,
 }
 
@@ -323,47 +320,45 @@ impl Physics {
     fn new(player: EntityHandle<dyn Positionable>, parent: EntityHandle<dyn Domain>) -> Self {
         Physics {
 			parent,
-            player: Some(player),
+            player,
             blocks: Vec::new(),
         }
     }
 
-    fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
-        EntityBuilder::new_from_closure_with_parent(|p| Physics::new(player, p))
-            .listen_to::<CreateEvent<Block>>()
-            .then(|space, handle| {
-                space.spawn(Task::tick(move || {
-                    handle.write().update();
-                }));
-            })
-    }
+	fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new_from_closure_with_parent(|p| Physics::new(player, p))
+			.listen_to::<CreateEvent<Block>>()
+			.then(|space, handle| {
+				space.spawn(Task::tick(move || {
+					handle.write().update();
+				}));
+			})
+	}
 
     fn update(&self) {
-        if let Some(player) = &self.player {
-            let mut player = player.write();
-            let position = player.get_position();
+		let mut player = self.player.write();
+		let position = player.get_position();
 
-            for block in &self.blocks {
-                let block = block.read();
-                let block_position = (
-                    block.position.0 as f32,
-                    block.position.1 as f32,
-                    block.position.2 as f32,
-                );
+		for block in &self.blocks {
+			let block = block.read();
+			let block_position = (
+				block.position.0 as f32,
+				block.position.1 as f32,
+				block.position.2 as f32,
+			);
 
-                if position.x > block_position.0 - 0.5
-                    && position.x < block_position.0 + 0.5
-                    && position.z > block_position.2 - 0.5
-                    && position.z < block_position.2 + 0.5
-                {
-                    player.set_position(Vector3::new(
-                        position.x,
-                        block_position.1 + 0.5,
-                        position.z,
-                    ));
-                }
-            }
-        }
+			if position.x > block_position.0 - 0.5
+				&& position.x < block_position.0 + 0.5
+				&& position.z > block_position.2 - 0.5
+				&& position.z < block_position.2 + 0.5
+			{
+				player.set_position(Vector3::new(
+					position.x,
+					block_position.1 + 0.5,
+					position.z,
+				));
+			}
+		}
     }
 
 	fn print_block(&self, start: Vector3, direction: Vector3) {
@@ -418,7 +413,8 @@ impl Physics {
 	}
 }
 
-impl Entity for Physics {}
+impl Entity for Physics {
+}
 
 impl Listener<CreateEvent<Block>> for Physics {
 	fn handle(&mut self, event: &CreateEvent<Block>) {
@@ -430,7 +426,7 @@ impl Listener<CreateEvent<Block>> for Physics {
 impl Listener<CreateEvent<Player>> for Physics {
 	fn handle(&mut self, event: &CreateEvent<Player>) {
 		let handle = event.handle();
-		self.player = Some(handle.clone());
+		self.player = handle.clone();
 	}
 }
 
@@ -443,10 +439,6 @@ struct Block {
 impl Block {
     fn new(position: Location, block: Blocks) -> Self {
         Block { position, block }
-    }
-
-    fn create(position: Location, block: Blocks) -> EntityBuilder<'static, Self> {
-        Block { position, block }.into()
     }
 }
 
@@ -497,6 +489,13 @@ impl Listener<CreateEvent<Camera>> for CubeCraftRenderPass {
 	fn handle(&mut self, event: &CreateEvent<Camera>) {
 		let handle = event.handle();
 		self.camera = Some(handle.clone());
+	}
+}
+
+impl Listener<DeleteEvent<Block>> for CubeCraftRenderPass {
+	fn handle(&mut self, event: &DeleteEvent<Block>) {
+		let handle = event.handle();
+		self.blocks.retain(|b| b != handle);
 	}
 }
 
@@ -819,8 +818,9 @@ impl CubeCraftRenderPass {
 
             camera: None,
         })
-        .listen_to::<CreateEvent<Block>>()
-        .listen_to::<CreateEvent<Camera>>()
+			.listen_to::<CreateEvent<Block>>()
+			.listen_to::<DeleteEvent<Block>>()
+			.listen_to::<CreateEvent<Camera>>()
     }
 }
 

@@ -16,7 +16,7 @@ pub struct CreateEvent<T: ?Sized> {
 	handle: EntityHandle<T>,
 }
 
-impl<T: ?Sized> CreateEvent<T> {
+impl <T: ?Sized> CreateEvent<T> {
 	pub(crate) fn new(handle: EntityHandle<T>) -> Self {
 		CreateEvent { handle }
 	}
@@ -26,16 +26,26 @@ impl<T: ?Sized> CreateEvent<T> {
 	}
 }
 
-impl <T: ?Sized> Event for CreateEvent<T> {
+impl <T: ?Sized + 'static> Event for CreateEvent<T> {
 }
 
 /// An event that is triggered when an entity of the type `T` is deleted in the domain.
 /// This event is sent to all listener/subscribers of the event.
 pub struct DeleteEvent<T: ?Sized> {
-	phantom: std::marker::PhantomData<T>,
+	handle: EntityHandle<T>,
 }
 
-impl <T: ?Sized> Event for DeleteEvent<T> {
+impl <T: ?Sized> DeleteEvent<T> {
+	pub(crate) fn new(handle: EntityHandle<T>) -> Self {
+		DeleteEvent { handle }
+	}
+
+	pub fn handle(&self) -> &EntityHandle<T> {
+		&self.handle
+	}
+}
+
+impl <T: ?Sized + 'static> Event for DeleteEvent<T> {
 }
 
 #[cfg(test)]

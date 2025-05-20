@@ -12,6 +12,8 @@ pub mod bit_array;
 
 use std::ops::Div;
 
+pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
+
 pub use sonic_rs as json;
 
 pub use gxhash as hash;

@@ -7,7 +7,8 @@ rust-version = "1.73.0"
 
 [dependencies]
 futures = "0.3.31"
-tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "fs", "io-util", "sync"] }
+tokio = { version = "1.45.0", features = ["rt", "rt-multi-thread", "fs", "io-util", "sync"] }
 parking_lot = "0.12.3"
 gxhash = "3.5.0"
-sonic-rs = "0.4.0"
+sonic-rs = "0.5.1"
+smallbox = { version = "0.8", features = ["coerce"] }

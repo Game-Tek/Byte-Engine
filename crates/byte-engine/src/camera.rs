@@ -1,3 +1,4 @@
+use crate::core::entity::EntityBuilder;
 use crate::core::Entity;
 use crate::gameplay::{Positionable, Transformable};
 use crate::Vec3f;
@@ -46,7 +47,11 @@ impl Camera {
 	}
 }
 
-impl Entity for Camera {}
+impl Entity for Camera {
+	fn builder(self) -> crate::core::entity::EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self).r#as::<Camera>()
+	}
+}
 
 impl Positionable for Camera {
 	fn get_position(&self) -> Vec3f { self.position }

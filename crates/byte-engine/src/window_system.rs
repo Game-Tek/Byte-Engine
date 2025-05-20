@@ -29,7 +29,7 @@ impl Window {
 		EntityBuilder::new(Window {
 			name: name.to_string(),
 			extent
-		})
+		}).r#as::<Window>()
 	}
 }
 

@@ -46,3 +46,10 @@ impl Parameter {
 		self.name == name
 	}
 }
+
+/// Event that can be sent to an application. Mostly used to control the application life cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Events {
+	/// Request the application to close.
+	Close,
+}

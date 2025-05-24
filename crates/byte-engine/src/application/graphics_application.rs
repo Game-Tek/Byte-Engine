@@ -7,7 +7,7 @@ use utils::Extent;
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
 
-use super::{application::{Application, BaseApplication}, Parameter, Time};
+use super::{application::{Application, BaseApplication}, Parameter, Time, Events};
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
@@ -20,10 +20,10 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
+	application_events: (std::sync::mpsc::Sender<Events>, std::sync::mpsc::Receiver<Events>),
+
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
-
 	input_system_handle: EntityHandle<input::InputManager>,
-
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer_handle: EntityHandle<Renderer>,
 	audio_system_handle: EntityHandle<DefaultAudioSystem>,
@@ -70,12 +70,15 @@ impl Application for GraphicsApplication {
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
 
+		let application_events = std::sync::mpsc::channel();
+
 		GraphicsApplication {
 			application,
+
+			application_events,
+
 			window_system_handle,
-
 			input_system_handle,
-
 			renderer_handle,
 			resource_manager,
 			audio_system_handle,
@@ -222,6 +225,14 @@ impl Application for GraphicsApplication {
 			}
 		}
 
+		for e in self.application_events.1.try_iter() {
+			match e {
+				Events::Close => {
+					close = true;
+				}
+			}
+		}
+
 		if close {
 			self.close();
 		}
@@ -266,9 +277,23 @@ impl GraphicsApplication {
 			self.tick();
 		}
 	}
+
+	pub fn get_events_sender(&self) -> ApplicationEventsChannel {
+		ApplicationEventsChannel(self.application_events.0.clone())
+	}
 	
 	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {		
 		&self.resource_manager
+	}
+}
+
+pub struct ApplicationEventsChannel(std::sync::mpsc::Sender<Events>);
+
+impl ApplicationEventsChannel {
+	/// Requests the application to close.
+	/// This will send a `Close` event to the application.
+	pub fn close(&self) {
+		self.0.send(Events::Close).unwrap();
 	}
 }
 

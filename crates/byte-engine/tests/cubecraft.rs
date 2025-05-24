@@ -140,11 +140,21 @@ fn cubecraft() {
         &[ActionBindingDescription::new("Keyboard.Escape")],
     ));
 
+	let application_events = app.get_events_sender();
+
+	exit_action_handle.write().value().add(move |v| {
+		if *v {
+			let _ = application_events.close();
+		}
+	});
+
+	space_handle.spawn(DeletedBlockSpawner::new().builder());
+
     space_handle.spawn(ChunkLoader::create());
 
     let mut camera = Camera::new(Vector3::new(0.0, 0.0, 0.0));
 
-    camera.set_fov(90.0);
+    camera.set_fov(60.0);
 
     // Create the camera
     let camera = space_handle.spawn(camera.builder());
@@ -328,6 +338,7 @@ impl Physics {
 	fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new_from_closure_with_parent(|p| Physics::new(player, p))
 			.listen_to::<CreateEvent<Block>>()
+			.listen_to::<DeleteEvent<Block>>()
 			.then(|space, handle| {
 				space.spawn(Task::tick(move || {
 					handle.write().update();
@@ -339,32 +350,52 @@ impl Physics {
 		let mut player = self.player.write();
 		let position = player.get_position();
 
-		for block in &self.blocks {
-			let block = block.read();
+		let bottom_blocks = self.blocks.iter().filter_map(|b| {
+			let block = b.read();
 			let block_position = (
 				block.position.0 as f32,
 				block.position.1 as f32,
 				block.position.2 as f32,
 			);
 
-			if position.x > block_position.0 - 0.5
-				&& position.x < block_position.0 + 0.5
-				&& position.z > block_position.2 - 0.5
-				&& position.z < block_position.2 + 0.5
-			{
-				player.set_position(Vector3::new(
-					position.x,
-					block_position.1 + 0.5,
-					position.z,
-				));
+			if position.x > block_position.0 - 0.5 && position.x < block_position.0 + 0.5 && position.z > block_position.2 - 0.5 && position.z < block_position.2 + 0.5 {
+				Some(b)
+			} else {
+				None
 			}
+		});
+
+		let nearest_block = bottom_blocks
+			.map(|b| {
+				let block = b.read();
+				let block_position = (
+					block.position.0 as f32,
+					block.position.1 as f32,
+					block.position.2 as f32,
+				);
+
+				(block_position, block)
+			})
+			.max_by(|a, b| {
+				a.1.position.1.partial_cmp(&b.1.position.1).unwrap()
+			});
+		
+		if let Some((block_position, _)) = nearest_block {
+			let block_position = (
+				block_position.0 as f32,
+				block_position.1 as f32,
+				block_position.2 as f32,
+			);
+
+			player.set_position(Vector3::new(
+				position.x,
+				block_position.1 + 0.5,
+				position.z,
+			));
 		}
     }
 
 	fn print_block(&self, start: Vector3, direction: Vector3) {
-		log::debug!("start: {:?}", start);
-		log::debug!("direction: {:?}", direction);
-
 		let block = self.blocks.iter().filter_map(|b| {
 			let block = b.read();
 
@@ -391,21 +422,9 @@ impl Physics {
 			})
 		}).min_by(|a, b| {
 			a.1.partial_cmp(&b.1).unwrap()
-		}).map(|(block, _)| block);
+		}).take_if(|(_, d)| *d <= 2f32).map(|(block, _)| block);
 
 		if let Some(b) = block {
-			{
-				let block = b.read();
-	
-				let block = block.block;
-				match block {
-					Blocks::Grass => println!("Grass"),
-					Blocks::Stone => println!("Stone"),
-					Blocks::Dirt => println!("Dirt"),
-					_ => unreachable!(),
-				}
-			}
-
 			self.parent.destroy(b);
 		} else {
 			println!("Air");
@@ -427,6 +446,36 @@ impl Listener<CreateEvent<Player>> for Physics {
 	fn handle(&mut self, event: &CreateEvent<Player>) {
 		let handle = event.handle();
 		self.player = handle.clone();
+	}
+}
+
+impl Listener<DeleteEvent<Block>> for Physics {
+	fn handle(&mut self, event: &DeleteEvent<Block>) {
+		let handle = event.handle();
+		self.blocks.retain(|b| b != handle);
+	}
+}
+
+struct DeletedBlockSpawner {
+
+}
+
+impl DeletedBlockSpawner {
+	pub fn new() -> Self {
+		DeletedBlockSpawner {}
+	}
+}
+
+impl Entity for DeletedBlockSpawner {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self)
+			.listen_to::<DeleteEvent<Block>>()
+	}
+}
+
+impl Listener<DeleteEvent<Block>> for DeletedBlockSpawner {
+	fn handle(&mut self, event: &DeleteEvent<Block>) {
+		println!("Block deleted: {:?}", event.handle());
 	}
 }
 

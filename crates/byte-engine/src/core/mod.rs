@@ -51,10 +51,16 @@ pub trait SpawnHandler<E: Entity> {
 	fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<E>> where Self: Sized;
 }
 
-impl <R: Entity + 'static> SpawnHandler<R> for R {
+// impl <R: Entity + 'static> SpawnHandler<R> for R {
+//     fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
+// 		self.builder().call(domain)
+//     }
+// }
+
+impl <'c, R: Entity + 'static, F> SpawnHandler<R> for F where F: FnOnce(EntityHandle<dyn Domain>) -> EntityBuilder<'c, R> {
     fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
-		self.builder().call(domain)
-    }
+		self(domain.clone()).call(domain)
+	}
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {

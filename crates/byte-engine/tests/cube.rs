@@ -3,7 +3,7 @@
 //! It does not check if the cube is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, camera::Camera, gameplay::space::Spawner, rendering::{cube::Cube, point_light::PointLight}};
+use byte_engine::{application::{Application, Parameter}, camera::Camera, core::Entity, gameplay::space::Spawner, rendering::{cube::Cube, point_light::PointLight}};
 use maths_rs::vec::Vec3;
 
 #[test]
@@ -12,8 +12,8 @@ fn cube() {
 
     let space_handle = app.get_root_space_handle();
 
-	space_handle.spawn(Camera::new(Vec3::new(0.0, 0.0, -2.0)));
-	space_handle.spawn(PointLight::new(Vec3::new(0f32, 0f32, -2f32), 4500f32));
+	space_handle.spawn(Camera::new(Vec3::new(0.0, 0.0, -2.0)).builder());
+	space_handle.spawn(PointLight::new(Vec3::new(0f32, 0f32, -2f32), 4500f32).builder());
     space_handle.spawn::<Cube>(Cube::new());
 
 	app.do_loop();

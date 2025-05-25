@@ -1,3 +1,4 @@
+use byte_engine::core::Entity;
 use byte_engine::core::{event::Event, EntityHandle};
 
 use byte_engine::gameplay::space::Spawner;
@@ -16,7 +17,7 @@ fn fps() {
 	let lookaround_action_handle = space_handle.spawn(Action::<Vector3>::new("Lookaround", &[
 		ActionBindingDescription::new("Mouse.Position").mapped(Vector3::new(1f32, 1f32, 1f32).into(), Function::Sphere),
 		ActionBindingDescription::new("Gamepad.RightStick"),
-	],));
+	],).builder());
 
 	// Create the move action
 	let move_action_handle = space_handle.spawn(Action::<Vector3>::new("Move", &[
@@ -26,27 +27,27 @@ fn fps() {
 		ActionBindingDescription::new("Keyboard.D").mapped(Vector3::new(1f32, 0f32, 0f32).into(), Function::Linear),
 
 		ActionBindingDescription::new("Gamepad.LeftStick").mapped(Vector3::new(1f32, 0f32, 1f32).into(), Function::Linear),
-	],));
+	],).builder());
 
 	// Create the jump action
 	let jump_action_handle = space_handle.spawn(Action::<bool>::new("Jump", &[
 		ActionBindingDescription::new("Keyboard.Space"),
 		ActionBindingDescription::new("Gamepad.A"),
-	],));
+	],).builder());
 
 	// Create the fire action
 	let fire_action_handle = space_handle.spawn(Action::<bool>::new("Fire", &[
 		ActionBindingDescription::new("Mouse.LeftButton"),
 		ActionBindingDescription::new("Gamepad.RightTrigger"),
-	],));
+	],).builder());
 
 	// Create the camera
-	let camera = space_handle.spawn(Camera::new(Vector3::new(0.0, 1.0, 0.0),));
+	let camera = space_handle.spawn(Camera::new(Vector3::new(0.0, 1.0, 0.0),).builder());
 
 	// Create the directional light
-	let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(Vector3::new(0.0, -1.0, 0.0)), 4000f32));
+	let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(Vector3::new(0.0, -1.0, 0.0)), 4000f32).builder());
 
-	let anchor = space_handle.spawn(Anchor::new(Transform::identity()));
+	let anchor = space_handle.spawn(Anchor::new(Transform::identity()).builder());
 
 	// Attach the camera to the anchor, offset from the anchor
 	anchor.write().attach_with_offset(camera.clone(), Vector3::new(0.0, 1.0, 0.0));
@@ -97,7 +98,7 @@ fn fps() {
 
 	// Create the floor
 	let _floor: EntityHandle<Object> = space_handle.spawn(Object::new("Box.glb", Transform::identity().position(Vector3::new(0.0, -0.5, 1.0)).scale(Vector3::new(15.0, 1.0, 15.0)), byte_engine::physics::BodyTypes::Static, Vector3::new(0.0, 0.0, 0.0)));
-	let _: EntityHandle<gameplay::collider::Cube> = space_handle.spawn(gameplay::collider::Cube::new(Vector3::new(15.0, 1.0, 15.0)));
+	let _: EntityHandle<gameplay::collider::Cube> = space_handle.spawn(gameplay::collider::Cube::new(Vector3::new(15.0, 1.0, 15.0)).builder());
 
 	let _a: EntityHandle<Mesh> = space_handle.spawn(Mesh::new("Suzanne.gltf", Transform::default().position(Vector3::new(0.0, 0.5, 1.0)).scale(Vector3::new(0.4, 0.4, 0.4))));
 	let _a: EntityHandle<Mesh> = space_handle.spawn(Mesh::new("Suzanne.gltf", Transform::default().position(Vector3::new(-3.5, 0.5, 4.0)).scale(Vector3::new(0.4, 0.4, 0.4))));
@@ -124,7 +125,7 @@ fn fps() {
 				}
 
 				let c = space_handle.spawn(Object::new("Sphere.gltf", Transform::identity().position(position).scale(Vector3::new(0.05, 0.05, 0.05)), byte_engine::physics::BodyTypes::Dynamic, direction * 25.0));
-				let _ = space_handle.spawn(Sound::new("gun.wav".to_string(),));
+				let _ = space_handle.spawn(Sound::new("gun.wav".to_string(),).builder());
 
 				// c.write().on_collision().unwrap().trigger(move |_: &EntityHandle<dyn PhysicsEntity>| {
 				// 	log::info!("Collision: {:?}", "hehehj");

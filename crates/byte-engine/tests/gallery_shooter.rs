@@ -17,12 +17,12 @@ fn gallery_shooter() {
 	let lookaround_action_handle = spawn_as_child(space_handle.clone(), input::Action::new("Lookaround", &[
 		input::ActionBindingDescription::new("Mouse.Position").mapped(input::Value::Vector3(Vector3::new(1f32, 1f32, 1f32)), input::Function::Sphere),
 		input::ActionBindingDescription::new("Gamepad.RightStick"),
-	],));
+	],).builder());
 
 	let trigger_action = spawn_as_child(space_handle.clone(), input::Action::new("Trigger", &[
 		input::ActionBindingDescription::new("Mouse.LeftButton"),
 		input::ActionBindingDescription::new("Gamepad.RightTrigger"),
-	],));
+	],).builder());
 
 	let scale = Vector3::new(0.1, 0.1, 0.1);
 
@@ -47,7 +47,7 @@ fn gallery_shooter() {
 	});
 
 	// let _sun: EntityHandle<PointLight> = crate::spawn_as_child(space_handle.clone(), PointLight::new(Vector3::new(0.0, 1.5, -0.5), 4500.0));
-	let _sun: EntityHandle<DirectionalLight> = spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0));
+	let _sun: EntityHandle<DirectionalLight> = spawn_as_child(space_handle.clone(), DirectionalLight::new(maths_rs::normalize(Vector3::new(-1.0, -1.0, 1.0)), 4500.0).builder());
 
 	let game_state = spawn_as_child(space_handle.clone(), GameState::new());
 
@@ -109,7 +109,7 @@ impl Player {
 	fn new(game_state: EntityHandle<GameState>, lookaround: EntityHandle<input::Action<Vector3>>, click: EntityHandle<input::Action<bool>>, audio_system: EntityHandle<DefaultAudioSystem>,) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new_from_closure_with_parent(move |parent: DomainType| {
 			let transform = Transform::default().position(Vector3::new(0.25, -0.15, 0.4f32)).scale(Vector3::new(0.05, 0.03, 0.2));
-			let camera_handle = parent.spawn(byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)));
+			let camera_handle = parent.spawn(byte_engine::camera::Camera::new(Vector3::new(0.0, 0.0, 0.0)).builder());
 
 			let mut magazine_size = Property::new(5);
 			let magazine_as_string = DerivedProperty::new(&mut magazine_size, |magazine_size| { magazine_size.to_string() });

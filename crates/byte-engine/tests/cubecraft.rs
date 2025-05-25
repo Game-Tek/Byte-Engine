@@ -41,6 +41,7 @@ use ghi::raster_pipeline;
 use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
 use ghi::RasterizationRenderPassMode;
+use math::collision::ray_aabb_intersection;
 use resource_management::glsl;
 use resource_management::resources::image::Image;
 use resource_management::Reference;
@@ -104,7 +105,7 @@ fn cubecraft() {
                 .mapped(Vector3::new(1f32, 1f32, 1f32).into(), Function::Sphere),
             ActionBindingDescription::new("Gamepad.RightStick"),
         ],
-    ));
+    ).builder());
 
     // Create the move action
     let move_action_handle = space_handle.spawn(Action::<Vector3>::new(
@@ -115,7 +116,7 @@ fn cubecraft() {
             ActionBindingDescription::new("Keyboard.A").mapped((-RIGHT).into(), Function::Linear),
             ActionBindingDescription::new("Keyboard.D").mapped(RIGHT.into(), Function::Linear),
         ],
-    ));
+    ).builder());
 
     // Create the jump action
     let jump_action_handle = space_handle.spawn(Action::<bool>::new(
@@ -124,7 +125,7 @@ fn cubecraft() {
             ActionBindingDescription::new("Keyboard.Space"),
             ActionBindingDescription::new("Gamepad.A"),
         ],
-    ));
+    ).builder());
 
     // Create the right hand action
     let fire_action_handle = space_handle.spawn(Action::<bool>::new(
@@ -133,12 +134,19 @@ fn cubecraft() {
             ActionBindingDescription::new("Mouse.LeftButton"),
             ActionBindingDescription::new("Gamepad.RightTrigger"),
         ],
-    ));
+    ).builder());
+
+    let apply_action_handle = space_handle.spawn(Action::<bool>::new(
+        "Apply",
+        &[
+            ActionBindingDescription::new("Mouse.RightButton"),
+        ],
+    ).builder());
 
     let exit_action_handle = space_handle.spawn(Action::<bool>::new(
         "Exit",
         &[ActionBindingDescription::new("Keyboard.Escape")],
-    ));
+    ).builder());
 
 	let application_events = app.get_events_sender();
 
@@ -154,13 +162,13 @@ fn cubecraft() {
 
     let mut camera = Camera::new(Vector3::new(0.0, 0.0, 0.0));
 
-    camera.set_fov(60.0);
+    camera.set_fov(75.0);
 
     // Create the camera
     let camera = space_handle.spawn(camera.builder());
 
     // Create the directional light
-    let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(-UP), 4000f32));
+    let _ = space_handle.spawn(DirectionalLight::new(maths_rs::normalize(-UP), 4000f32).builder());
 
     {
         let camera = camera.clone();
@@ -181,7 +189,7 @@ fn cubecraft() {
 
     anchor.attach_with_offset(camera.clone(), UP * 1.8);
 
-    let anchor = space_handle.spawn(anchor);
+    let anchor = space_handle.spawn(anchor.builder());
 
     {
         let positionable = anchor.clone();
@@ -194,14 +202,15 @@ fn cubecraft() {
 
             let position = positionable.transform().get_position();
             positionable.transform_mut().set_position(position + value);
-        }));
+        }).builder());
     }
 
-    let physics = space_handle.spawn(Physics::create(anchor));
+    let physics = space_handle.spawn(|d| Physics::new(anchor, d).builder());
 
 	{
 		let camera = camera.clone();
 		let physics = physics.clone();
+		let space = space_handle.clone();
 
 		fire_action_handle
 			.write()
@@ -210,8 +219,39 @@ fn cubecraft() {
 				if *v {
 					let camera = camera.read();
 					let physics = physics.read();
-	
-					physics.print_block(camera.get_position(), camera.get_orientation());
+
+					let block = physics.get_block(camera.get_position(), camera.get_orientation());
+
+					if let Some(block) = block {
+						space.destroy(block);
+					}
+				}
+			});
+	}
+
+	{
+		let physics = physics.clone();
+		let physics = physics.clone();
+		let space = space_handle.clone();
+
+		apply_action_handle
+			.write()
+			.value()
+			.add(move |v| {
+				if *v {
+					let camera = camera.read();
+					let physics = physics.read();
+
+					let position = camera.get_position();
+					let direction = camera.get_orientation();
+
+					let p = physics.get_place_position(position, direction);
+
+					println!("Place position: {:?} {:?} {:?}", position, direction, p);
+
+					if let Some((location, _)) = p {
+						space.spawn(Block::new(location, Blocks::Grass).builder());
+					}
 				}
 			});
 	}
@@ -256,7 +296,7 @@ impl ChunkLoader {
 										(-HALF_CHUNK_SIZE..HALF_CHUNK_SIZE).filter_map(move |y| {
 											let position = (x, y, z);
 											let block = make_block(position);
-			
+
 											if block != Blocks::Air {
 												Some(Block::new(position, block).builder())
 											} else {
@@ -282,7 +322,7 @@ impl ChunkLoader {
 				if let Some(p) = p {
 					chunk_loader.loaded.push(p);
 				}
-			}));
+			}).builder());
         })
     }
 }
@@ -335,17 +375,6 @@ impl Physics {
         }
     }
 
-	fn create(player: EntityHandle<dyn Positionable>) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new_from_closure_with_parent(|p| Physics::new(player, p))
-			.listen_to::<CreateEvent<Block>>()
-			.listen_to::<DeleteEvent<Block>>()
-			.then(|space, handle| {
-				space.spawn(Task::tick(move || {
-					handle.write().update();
-				}));
-			})
-	}
-
     fn update(&self) {
 		let mut player = self.player.write();
 		let position = player.get_position();
@@ -379,7 +408,7 @@ impl Physics {
 			.max_by(|a, b| {
 				a.1.position.1.partial_cmp(&b.1.position.1).unwrap()
 			});
-		
+
 		if let Some((block_position, _)) = nearest_block {
 			let block_position = (
 				block_position.0 as f32,
@@ -395,14 +424,14 @@ impl Physics {
 		}
     }
 
-	fn print_block(&self, start: Vector3, direction: Vector3) {
+	fn get_block(&self, start: Vector3, direction: Vector3) -> Option<EntityHandle<Block>> {
 		let block = self.blocks.iter().filter_map(|b| {
 			let block = b.read();
 
 			let block_position = (
-				block.position.0 as f32 * 0.5,
-				block.position.1 as f32 * 0.5,
-				block.position.2 as f32 * 0.5,
+				block.position.0 as f32,
+				block.position.1 as f32,
+				block.position.2 as f32,
 			);
 
 			let min = Vector3::new(
@@ -424,15 +453,66 @@ impl Physics {
 			a.1.partial_cmp(&b.1).unwrap()
 		}).take_if(|(_, d)| *d <= 2f32).map(|(block, _)| block);
 
-		if let Some(b) = block {
-			self.parent.destroy(b);
-		} else {
-			println!("Air");
-		}
+		block
+	}
+
+	/// Returns a position and a normal of a block to place
+	fn get_place_position(&self, start: Vector3, direction: Vector3) -> Option<(Location, (i32, i32, i32))> {
+		let location = self.blocks.iter().filter_map(|b| {
+			let block = b.read();
+
+			let block_position = (
+				block.position.0 as f32,
+				block.position.1 as f32,
+				block.position.2 as f32,
+			);
+
+			let min = Vector3::new(
+				block_position.0 - 0.5,
+				block_position.1 - 0.5,
+				block_position.2 - 0.5,
+			);
+
+			let max = Vector3::new(
+				block_position.0 + 0.5,
+				block_position.1 + 0.5,
+				block_position.2 + 0.5,
+			);
+
+			let normal = {
+				let direction = -direction;
+				match (direction.x.abs(), direction.y.abs(), direction.z.abs()) {
+					(d, _, _) if d > 0.5 => (direction.x.signum() as i32, 0, 0),
+					(_, d, _) if d > 0.5 => (0, direction.y.signum() as i32, 0),
+					(_, _, d) if d > 0.5 => (0, 0, direction.z.signum() as i32),
+					_ => return None,
+				}
+			};
+
+			let position = (block.position.0 + normal.0, block.position.1 + normal.1, block.position.2 + normal.2);
+
+			ray_aabb_intersection(start, direction, min, max).map(|t| {
+				((position, normal), t)
+			})
+		}).min_by(|a, b| {
+			a.1.partial_cmp(&b.1).unwrap()
+		}).take_if(|(_, d)| *d <= 2f32).map(|(p, _)| p);
+
+		location
 	}
 }
 
 impl Entity for Physics {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self)
+			.listen_to::<CreateEvent<Block>>()
+			.listen_to::<DeleteEvent<Block>>()
+			.then(|space, handle| {
+				space.spawn(Task::tick(move || {
+					handle.write().update();
+				}).builder());
+			})
+	}
 }
 
 impl Listener<CreateEvent<Block>> for Physics {
@@ -802,7 +882,7 @@ impl CubeCraftRenderPass {
 				ghi::UseCases::STATIC,
 				1,
 			);
-	
+
 			device.write_texture(texture, |s| {
 				request.load(s.into());
 			});
@@ -953,7 +1033,7 @@ enum Direction {
     Up = 4,
     Forward = 5,
     Backward = 6,
-} 
+}
 
 impl Direction {
 	fn to_normal(&self) -> (i32, i32, i32) {
@@ -1014,15 +1094,15 @@ fn compute_external_block_faces(blocks: &[Block]) -> Vec<Face> {
 		Direction::Forward,
 		Direction::Backward,
 	];
-	
+
 	let mut sides = HashMap::with_capacity(8192 * 6);
-	
+
 	for block in blocks {
 		let pos = block.position;
-	
+
 		for side in &cube_sides {
 			let pos = (pos.0 * 2, pos.1 * 2, pos.2 * 2);
-	
+
 			let block = match block.block {
 				Blocks::Grass => match side {
 					Direction::Up | Direction::Down => GRASS_TOP_FACE,
@@ -1042,7 +1122,7 @@ fn compute_external_block_faces(blocks: &[Block]) -> Vec<Face> {
 			let side = side.to_normal();
 
 			let face_position = (pos.0 + side.0, pos.1 + side.1, pos.2 + side.2);
-	
+
 			// If cube side already exists, then this wall is internal
 			sides
 				.entry(face_position)
@@ -1050,7 +1130,7 @@ fn compute_external_block_faces(blocks: &[Block]) -> Vec<Face> {
 				.or_insert((face, true));
 		}
 	}
-	
+
 	let mut external_sides = sides
 		.values()
 		.filter(|(_, external)| *external)
@@ -1104,34 +1184,11 @@ fn build_cube_faces(blocks: &[Block]) -> Vec<FaceData> {
 	}).collect()
 }
 
-fn ray_aabb_intersection(
-	start: Vector3,
-	direction: Vector3,
-	min: Vector3,
-	max: Vector3,
-) -> Option<f32> {
-	let t1 = (min.x - start.x) / direction.x;
-	let t2 = (max.x - start.x) / direction.x;
-	let t3 = (min.y - start.y) / direction.y;
-	let t4 = (max.y - start.y) / direction.y;
-	let t5 = (min.z - start.z) / direction.z;
-	let t6 = (max.z - start.z) / direction.z;
-
-	let tmin = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
-	let tmax = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
-
-	if tmax >= 0.0 && tmin <= tmax {
-		Some(tmin)
-	} else {
-		None
-	}
-}
-
 #[cfg(test)]
 mod tests {
     use byte_engine::Vector3;
 
-    use crate::{compute_external_block_faces, ray_aabb_intersection, Block, Blocks, Direction, GRASS_TOP_FACE};
+    use crate::{compute_external_block_faces, Block, Blocks, Direction, GRASS_TOP_FACE};
 
 	#[test]
 	fn test_faces_single_block() {
@@ -1161,15 +1218,5 @@ mod tests {
 		assert_eq!(faces[1].block, GRASS_TOP_FACE);
 		assert_eq!(faces[1].direction, Direction::Up);
 		assert_eq!(faces[1].position, (0, 0, 2));
-	}
-
-	#[test]
-	fn test_intersection() {
-		let start = Vector3::new(0.0, 2.0, 0.0);
-		let direction = Vector3::new(0.0, -1.0, 0.0);
-		let min = Vector3::new(-0.5, -0.5, -0.5);
-		let max = Vector3::new(0.5, 0.5, 0.5);
-
-		assert_eq!(ray_aabb_intersection(start, direction, min, max), Some(1.5));
 	}
 }

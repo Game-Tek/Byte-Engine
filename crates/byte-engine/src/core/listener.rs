@@ -101,7 +101,7 @@ mod tests {
 
 		assert_eq!(unsafe { COUNTER }, 0);
 
-		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), Component { name: "test".to_string(), value: 1 });
+		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), Component { name: "test".to_string(), value: 1 }.builder());
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}

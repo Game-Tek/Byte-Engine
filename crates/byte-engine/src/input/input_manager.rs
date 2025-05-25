@@ -1111,7 +1111,7 @@ mod tests {
 			ActionBindingDescription::new("Keyboard.D").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 0f32)), Function::Linear),
 
 			ActionBindingDescription::new("Gamepad.LeftStick").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 1f32)), Function::Linear),
-		],));
+		],).builder());
 
 		let input_queue = Rc::new(RefCell::new(Vec::new()));
 
@@ -1127,7 +1127,7 @@ mod tests {
 		let jump_action_handle = spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
 			ActionBindingDescription::new("Keyboard.Space").mapped(Value::Bool(true), Function::Linear),
 			ActionBindingDescription::new("Gamepad.A").mapped(Value::Bool(true), Function::Linear),
-		],));
+		],).builder());
 
 		{
 			let input_queue = input_queue.clone();

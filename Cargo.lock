@@ -240,6 +240,7 @@ dependencies = [
  "dual_quaternion",
  "ghi",
  "log",
+ "math",
  "maths-rs",
  "resource-management",
  "serde",
@@ -1038,6 +1039,13 @@ dependencies = [
  "whoami",
  "winreg",
  "wmi",
+]
+
+[[package]]
+name = "math"
+version = "0.1.0"
+dependencies = [
+ "maths-rs",
 ]
 
 [[package]]

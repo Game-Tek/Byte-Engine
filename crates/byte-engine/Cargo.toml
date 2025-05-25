@@ -13,6 +13,7 @@ ghi = { path = "../ghi" }
 ahi = { path = "../ahi" }
 besl = { path = "../besl" }
 resource-management = { path = "../resource-management" }
+math = { path = "../math" }
 
 serde_json = "1.0.140"
 dual_quaternion = "0.2.0"

@@ -65,7 +65,7 @@ impl Application for GraphicsApplication {
 
 		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new());
 
-		let tick_handle = root_space_handle.spawn(Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }));
+		let tick_handle = root_space_handle.spawn(Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }).builder());
 
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());

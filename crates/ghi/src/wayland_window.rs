@@ -340,7 +340,7 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 				let button = match button {
 					272 => MouseKeys::Left,
 					2 => MouseKeys::Middle,
-					3 => MouseKeys::Right,
+					273 => MouseKeys::Right,
 					4 => MouseKeys::ScrollUp,
 					5 => MouseKeys::ScrollDown,
 					_ => return,

@@ -1,4 +1,5 @@
-use maths_rs::{mat::{MatInverse, MatProjection, MatTranslate}, num::Base, Mat4f, Vec3f, Vec4f};
+use ::math::plane::Plane;
+use maths_rs::{mat::{MatInverse, MatProjection, MatTranslate}, normalize, num::Base, swizz::Vec3Swizzle, vec::Vec3, Mat4f, Vec3f, Vec4f};
 
 use crate::{gameplay::Transform, math::{self, projection_matrix}};
 
@@ -125,25 +126,29 @@ impl View {
 	}
 
 	/// Returns the frustum planes of the view, in world space.
-	pub fn get_frustum_planes(&self) -> [Vec4f; 6] {
-		let corners = self.get_frustum_corners();
+	pub fn get_frustum_planes(&self) -> [Plane; 6] {
+		let pv = self.view_projection();
 
-		let mut planes = [Vec4f::zero(); 6];
+		let r0 = Vec4f::new(pv[0], pv[1], pv[2], pv[3]); // Right
+		let r1 = Vec4f::new(pv[4], pv[5], pv[6], pv[7]); // Up
+		let r2 = Vec4f::new(pv[8], pv[9], pv[10], pv[11]); // Forward
+		let r3 = Vec4f::new(pv[12], pv[13], pv[14], pv[15]); // Clip space
 
-		planes[0] = maths_rs::normalize(Vec4f::new(corners[0].x, corners[1].x, corners[2].x, corners[3].x));
-		planes[1] = maths_rs::normalize(Vec4f::new(corners[0].y, corners[1].y, corners[4].y, corners[5].y));
-		planes[2] = maths_rs::normalize(Vec4f::new(corners[0].z, corners[2].z, corners[4].z, corners[6].z));
-		planes[3] = maths_rs::normalize(Vec4f::new(corners[7].x, corners[6].x, corners[5].x, corners[4].x));
-		planes[4] = maths_rs::normalize(Vec4f::new(corners[7].y, corners[3].y, corners[2].y, corners[6].y));
-		planes[5] = maths_rs::normalize(Vec4f::new(corners[7].z, corners[5].z, corners[3].z, corners[1].z));
-
-		return planes;
+		[
+			Plane::new(Vec3f::new(r3.x + r0.x, r3.y + r0.y, r3.z + r0.z), r3.w + r0.w), // Left
+			Plane::new(Vec3f::new(r3.x - r0.x, r3.y - r0.y, r3.z - r0.z), r3.w - r0.w), // Right
+			Plane::new(Vec3f::new(r3.x + r1.x, r3.y + r1.y, r3.z + r1.z), r3.w + r1.w), // Bottom
+			Plane::new(Vec3f::new(r3.x - r1.x, r3.y - r1.y, r3.z - r1.z), r3.w - r1.w), // Top
+			Plane::new(Vec3f::new(r3.x + r2.x, r3.y + r2.y, r3.z + r2.z), r3.w + r2.w), // Near
+			Plane::new(Vec3f::new(r3.x - r2.x, r3.y - r2.y, r3.z - r2.z), r3.w - r2.w), // Far
+		]
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::{mat::MatNew4, vec::{Vec3, VecN}};
+	use ::math::{assert_float_eq, assert_vec3f_near};
+use maths_rs::{mat::MatNew4, vec::{Vec3, VecN}};
 
 	use super::*;
 
@@ -161,5 +166,40 @@ mod tests {
 		assert_eq!(corners[5], Vec4f::new(1.0, -1.0, 1.0, 1.0));
 		assert_eq!(corners[6], Vec4f::new(-1.0, 1.0, 1.0, 1.0));
 		assert_eq!(corners[7], Vec4f::new(1.0, 1.0, 1.0, 1.0));
+	}
+
+	#[test]
+	fn test_orthographic_view_frustum_planes() {
+		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Vec3f::zero(), Vec3f::unit_z());
+
+		let planes = view.get_frustum_planes();
+
+		assert_eq!(planes[0].normal, Vec3f::new(1.0, 0.0, 0.0)); // Left
+		assert_eq!(planes[1].normal, Vec3f::new(-1.0, 0.0, 0.0)); // Right
+		assert_eq!(planes[2].normal, Vec3f::new(0.0, 1.0, 0.0)); // Bottom
+		assert_eq!(planes[3].normal, Vec3f::new(0.0, -1.0, 0.0)); // Top
+		assert_eq!(planes[4].normal, Vec3f::new(0.0, 0.0, -1.0)); // Near
+		assert_eq!(planes[5].normal, Vec3f::new(0.0, 0.0, 1.0)); // Far
+	}
+
+	#[test]
+	fn test_perspective_view_frustum_planes() {
+		let view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vec3f::zero(), Vec3f::unit_z());
+
+		let planes = view.get_frustum_planes();
+
+		assert_vec3f_near!(planes[0].normal, Vec3f::new(0.707, 0.0, 0.707)); // Left
+		assert_vec3f_near!(planes[1].normal, Vec3f::new(-0.707, 0.0, 0.707)); // Right
+		assert_vec3f_near!(planes[2].normal, Vec3f::new(0.0, 0.707, 0.707)); // Bottom
+		assert_vec3f_near!(planes[3].normal, Vec3f::new(0.0, -0.707, 0.707)); // Top
+		assert_vec3f_near!(planes[4].normal, Vec3f::new(0.0, 0.0, 1.0)); // Near
+		assert_vec3f_near!(planes[5].normal, Vec3f::new(0.0, 0.0, 1.0)); // Far
+
+		assert_float_eq!(planes[0].distance, 0.0, "Left plane distance");
+		assert_float_eq!(planes[1].distance, 0.0, "Right plane distance");
+		assert_float_eq!(planes[2].distance, 0.0, "Bottom plane distance");
+		assert_float_eq!(planes[3].distance, 0.0, "Top plane distance");
+		assert_float_eq!(planes[4].distance, 0.1, "Near plane distance");
+		assert_float_eq!(planes[5].distance, -0.1, "Far plane distance");
 	}
 }

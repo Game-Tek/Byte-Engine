@@ -42,6 +42,8 @@ use ghi::BoundRasterizationPipelineMode;
 use ghi::CommandBufferRecordable;
 use ghi::RasterizationRenderPassMode;
 use math::collision::ray_aabb_intersection;
+use math::collision::sphere_in_frustum;
+use math::sphere::Sphere;
 use resource_management::glsl;
 use resource_management::resources::image::Image;
 use resource_management::Reference;
@@ -366,6 +368,8 @@ struct Physics {
     blocks: Vec<EntityHandle<Block>>,
 }
 
+const INTERACT_DISTANCE: f32 = 3f32;
+
 impl Physics {
     fn new(player: EntityHandle<dyn Positionable>, parent: EntityHandle<dyn Domain>) -> Self {
         Physics {
@@ -451,7 +455,7 @@ impl Physics {
 			})
 		}).min_by(|a, b| {
 			a.1.partial_cmp(&b.1).unwrap()
-		}).take_if(|(_, d)| *d <= 2f32).map(|(block, _)| block);
+		}).take_if(|(_, d)| *d <= INTERACT_DISTANCE).map(|(block, _)| block);
 
 		block
 	}
@@ -496,7 +500,7 @@ impl Physics {
 			})
 		}).min_by(|a, b| {
 			a.1.partial_cmp(&b.1).unwrap()
-		}).take_if(|(_, d)| *d <= 2f32).map(|(p, _)| p);
+		}).take_if(|(_, d)| *d <= INTERACT_DISTANCE).map(|(p, _)| p);
 
 		location
 	}
@@ -969,7 +973,7 @@ impl RenderPass for CubeCraftRenderPass {
     }
 
     fn prepare(&self, ghi: &mut ghi::Device, extent: utils::Extent) {
-        if let Some(camera) = &self.camera {
+        let view = if let Some(camera) = &self.camera {
             let camera = camera.read();
 
             let view = View::new_perspective(
@@ -982,11 +986,22 @@ impl RenderPass for CubeCraftRenderPass {
             );
 
             *ghi.get_mut_buffer_slice(self.camera_data_buffer) = view.view_projection();
-        }
+
+			view
+        } else {
+			panic!("Camera not set for CubeCraftRenderPass");
+		};
+
+		let frustum_planes = view.get_frustum_planes();
 
 		let blocks = self.blocks.map_and_collect_as_available(|e| *e);
 
-        let faces = build_cube_faces(&blocks);
+        let mut faces = build_cube_faces(&blocks);
+		
+		faces.retain(|f| {
+			let sphere = f.get_bounding_sphere();
+			sphere_in_frustum(&sphere, &frustum_planes)
+		});
 
         ghi.get_mut_buffer_slice(self.face_data_buffer)[..faces.len()].copy_from_slice(&faces);
 
@@ -1161,6 +1176,35 @@ struct FaceData {
 	// 1: -x, 2: +x, 3: -y, 4: +y, 5: -z, 6: +z
 	direction: u8,
 	position: (f32, f32, f32),
+}
+
+impl FaceData {
+	fn get_bounding_sphere(&self) -> Sphere {
+		let position = self.position;
+		let center = Vector3::new(position.0, position.1, position.2);
+
+		let sign = match self.direction {
+			1 | 3 | 5 => -1.0,
+			2 | 4 | 6 => 1.0,
+			_ => panic!("Invalid direction"),
+		};
+
+		let offset = match self.direction {
+			1 | 2 => Vector3::new(0.5, 0.0, 0.0),
+			3 | 4 => Vector3::new(0.0, 0.5, 0.0),
+			5 | 6 => Vector3::new(0.0, 0.0, 0.5),
+			_ => panic!("Invalid direction"),
+		};
+
+		let center = center + offset * sign;
+
+		let radius = 0.5;
+
+		Sphere {
+			center,
+			radius,
+		}
+	}
 }
 
 /// Returns a list of per instance data to transform the squares

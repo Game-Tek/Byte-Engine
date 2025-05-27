@@ -3,6 +3,16 @@ pub mod sphere;
 
 pub mod collision;
 
+pub use maths_rs::Vec2f as Vector2;
+pub use maths_rs::Vec3f as Vector3;
+pub use maths_rs::Vec4f as Vector4;
+
+pub use maths_rs::Mat3f as Matrix3;
+pub use maths_rs::Mat4f as Matrix4;
+pub use maths_rs::Quatf as Quaternion;
+
+pub use maths_rs::normalize as normalize;
+
 #[macro_use]
 pub mod macros {
 	#[macro_export]

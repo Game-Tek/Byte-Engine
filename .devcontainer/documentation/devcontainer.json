@@ -1,5 +1,4 @@
 {
 	"name": "📖 Docs",
-	"image": "mcr.microsoft.com/devcontainers/javascript-node:1-20-bullseye",
-	"postCreateCommand": "npm install retypeapp --global"
+	"image": "oven/bun:1.2.14"
 }

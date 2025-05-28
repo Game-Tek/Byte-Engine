@@ -1,6 +1,7 @@
 import { source } from '@/lib/source';
 import { getLLMText } from '@/lib/llms';
 
+export const runtime = "edge";
 export const revalidate = false;
 
 export async function GET() {

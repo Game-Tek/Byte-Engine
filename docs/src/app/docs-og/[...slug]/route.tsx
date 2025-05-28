@@ -3,6 +3,8 @@ import { source } from '@/lib/source';
 import { notFound } from 'next/navigation';
 import { APP_NAME } from '@/lib/consts';
 
+export const runtime = "edge";
+
 export async function GET(
 	_req: Request,
 	{ params }: { params: Promise<{ slug: string[] }> },

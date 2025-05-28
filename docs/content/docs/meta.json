@@ -1,0 +1,6 @@
+{
+	"title": "Byte Engine",
+	"description": "Byte Engine documentation",
+	"icon": "Book",
+	"pages": ["---Introduction---", "index", "requirements", "get-started", "---Use---", "use", "---Contribute---", "develop", "---Reference---", "reference"]
+}

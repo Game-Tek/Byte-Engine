@@ -3,7 +3,7 @@ import { source } from '@/lib/source';
 import { notFound } from 'next/navigation';
 import { APP_NAME } from '@/lib/consts';
 
-export const runtime = "edge";
+export const dynamicParams = false;
 
 export async function GET(
 	_req: Request,

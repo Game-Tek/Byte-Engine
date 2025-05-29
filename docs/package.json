@@ -3,12 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "next build --turbo",
     "dev": "next dev --turbo",
-	"preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-	"deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-	"upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
-	"cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "start": "next start",
     "postinstall": "fumadocs-mdx"
   },
@@ -19,8 +19,9 @@
     "fumadocs-ui": "15.4.1",
     "lucide-react": "^0.511.0",
     "next": "15.3.2",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "preact-render-to-string": "^6.5.13",
+    "react": "npm:@preact/compat",
+    "react-dom": "npm:@preact/compat",
     "wrangler": "^4.17.0"
   },
   "devDependencies": {

@@ -9,6 +9,7 @@ node_modules
 # test & build
 /coverage
 /.next/
+.open-next
 /out/
 /build
 *.tsbuildinfo
@@ -26,3 +27,4 @@ yarn-error.log*
 .env*.local
 .vercel
 next-env.d.ts
+.dev.vars

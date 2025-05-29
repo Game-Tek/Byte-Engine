@@ -5,17 +5,23 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev --turbo",
+	"preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+	"deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+	"upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+	"cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "start": "next start",
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.1.0",
     "fumadocs-core": "15.4.1",
     "fumadocs-mdx": "11.6.6",
     "fumadocs-ui": "15.4.1",
     "lucide-react": "^0.511.0",
     "next": "15.3.2",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "wrangler": "^4.17.0"
   },
   "devDependencies": {
     "@types/node": "22.15.21",

@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"main": ".open-next/worker.js",
+	"main": ".output/server/index.mjs",
 	"name": "byte-engine",
 	"compatibility_date": "2025-05-28",
 	"compatibility_flags": [
@@ -8,7 +8,7 @@
 		"global_fetch_strictly_public",
 	],
 	"assets": {
-		"directory": ".open-next/assets",
+		"directory": ".output/public/assets",
 		"binding": "ASSETS",
 	},
 	"services": [

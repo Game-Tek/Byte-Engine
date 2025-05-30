@@ -3,7 +3,7 @@
   "type": "module",
   "scripts": {
     "dev": "vinxi dev",
-    "build": "NODE_ENV=production vinxi build",
+    "build": "vinxi build",
     "start": "vinxi start"
   },
   "private": true,
@@ -21,6 +21,7 @@
     "vinxi": "^0.5.6"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.3.1",
     "@tailwindcss/vite": "^4.1.8",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
@@ -28,6 +29,7 @@
     "tailwindcss": "^4.1.8",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
-    "vite-tsconfig-paths": "^5.1.4"
+    "vite-tsconfig-paths": "^5.1.4",
+    "wrangler": "^4.18.0"
   }
 }

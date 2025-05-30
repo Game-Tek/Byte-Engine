@@ -1,3 +1,8 @@
 @import 'tailwindcss';
-@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/black.css';
 @import 'fumadocs-ui/css/preset.css';
+
+.dark {
+	--color-fd-ring: hsl(135, 66%, 55%);
+	--color-fd-primary: hsl(135, 66%, 55%);
+}

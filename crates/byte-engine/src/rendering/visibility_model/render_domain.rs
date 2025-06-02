@@ -25,7 +25,7 @@ use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::resources::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
 use resource_management::resources::material::Variant as ResourceVariant;
 use utils::sync::{Rc, Arc, RwLock};
-use utils::{Extent, RGBA};
+use utils::{Extent, RGBA, Box};
 
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{CreateEvent, Listener};
@@ -33,7 +33,7 @@ use crate::core::{Entity, EntityHandle};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
-use crate::rendering::render_pass::{RenderPass, RenderPassBuilder};
+use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
 use crate::rendering::visibility_shader_generator::VisibilityShaderGenerator;
@@ -121,6 +121,7 @@ struct RenderDescription {
 	variant: RenderDescriptionVariants,
 }
 
+#[derive(Clone, Copy)]
 pub struct Instance {
 	pub meshlet_count: u32,
 }
@@ -759,7 +760,7 @@ impl VisibilityWorldRenderDomain {
 				let main_node = RefCell::borrow(&root).get_main().ok_or(())?;
 
 				let shader = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|_| ())?;
-		
+
 				let bindings = shader.bindings().iter().map(|b| {
 					ghi::ShaderBindingDescriptor::new(b.set, b.binding, if b.read { ghi::AccessPolicies::READ } else { ghi::AccessPolicies::empty() } | if b.write { ghi::AccessPolicies::WRITE } else { ghi::AccessPolicies::empty() })
 				}).collect::<Vec<_>>();
@@ -770,7 +771,7 @@ impl VisibilityWorldRenderDomain {
 					ghi::ShaderTypes::Compute,
 					&bindings,
 				).unwrap();
-		
+
 				let pipeline = ghi.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute));
 
 				Ok(RenderDescription {
@@ -1024,7 +1025,30 @@ impl VisibilityWorldRenderDomain {
 		meshes_data_slice[0].model = value;
 	}
 
-	pub fn prepare(&self, ghi: &mut ghi::Device, extent: Extent,) -> Option<()> {
+	pub fn get_transfer_synchronizer(&self) -> ghi::SynchronizerHandle {
+		self.transfer_synchronizer
+	}
+}
+
+impl Listener<CreateEvent<camera::Camera>> for VisibilityWorldRenderDomain {
+	fn handle(&mut self, event: &CreateEvent<camera::Camera>) {
+		let handle = event.handle();
+		self.camera = Some(handle.clone());
+	}
+}
+
+impl Entity for VisibilityWorldRenderDomain {
+	fn builder(self) -> EntityBuilder<'static, Self> {
+		EntityBuilder::new(self)
+			.listen_to::<CreateEvent<camera::Camera>>()
+			.listen_to::<CreateEvent<directional_light::DirectionalLight>>()
+			.listen_to::<CreateEvent<point_light::PointLight>>()
+			.listen_to::<CreateEvent<dyn mesh::RenderEntity>>()
+	}
+}
+
+impl RenderPass for VisibilityWorldRenderDomain {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
@@ -1035,11 +1059,7 @@ impl VisibilityWorldRenderDomain {
 
 		let view = View::new_perspective(fov_y, aspect_ratio, 0.1f32, 100f32, camera_position, camera_orientation);
 
-		let fov = {
-			let fov_x = 2f32 * ((fov_y / 2f32).to_radians().tan() * aspect_ratio).atan(); // Is this correct?
-			let fov_y = fov_y.to_radians();
-			[fov_x, fov_y]
-		};
+		let fov = view.fov();
 
 		let camera = ShaderViewData {
 			view: view.view(),
@@ -1066,92 +1086,70 @@ impl VisibilityWorldRenderDomain {
 			}
 		}
 
-		{
-			let _ = ghi.get_mut_buffer_slice(self.light_data_buffer); // Keep this here to trigger a copy
-		}
+		let visibility_pass = self.visibility_pass.prepare(self.visibility_info, &self.render_info.instances, self.primitive_index, self.instance_id, self.depth_target, extent);
+		let material_count_pass = self.material_count_pass.prepare(extent);
+		let material_offset_pass = self.material_offset_pass.prepare(extent);
+		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(extent);
 
-		Some(())
-	}
-
-	pub fn get_transfer_synchronizer(&self) -> ghi::SynchronizerHandle {
-		self.transfer_synchronizer
-	}
-}
-
-impl Listener<CreateEvent<camera::Camera>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<camera::Camera>) {
-		let handle = event.handle();
-		self.camera = Some(handle.clone());
-	}
-}
-
-impl Entity for VisibilityWorldRenderDomain {
-	fn builder(self) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<camera::Camera>>()
-			.listen_to::<CreateEvent<directional_light::DirectionalLight>>()
-			.listen_to::<CreateEvent<point_light::PointLight>>()
-			.listen_to::<CreateEvent<dyn mesh::RenderEntity>>()
-	}
-}
-
-impl RenderPass for VisibilityWorldRenderDomain {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {
-		VisibilityWorldRenderDomain::prepare(&self, ghi, extent);
-	}
-
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
-		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return; };
-
-		command_buffer_recording.start_region("Visibility Render Model");
-
-		self.visibility_pass.render(command_buffer_recording, &self.visibility_info, &self.render_info.instances, self.primitive_index, self.instance_id, self.depth_target, extent);
-		self.material_count_pass.render(command_buffer_recording, extent);
-		self.material_offset_pass.render(command_buffer_recording);
-		self.pixel_mapping_pass.render(command_buffer_recording, extent);
-
-		command_buffer_recording.end_region();
-
-		command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout_handle, &[self.descriptor_set]);
-
-		command_buffer_recording.start_region("Material Evaluation");
-		command_buffer_recording.clear_images(&[(self.diffuse, ghi::ClearValue::Color(RGBA::black())), (self.specular, ghi::ClearValue::Color(RGBA::black()))]);
-
-		command_buffer_recording.start_region("Opaque");
+		let pipeline_layout_handle = self.pipeline_layout_handle;
+		let descriptor_set = self.descriptor_set;
+		let diffuse = self.diffuse;
+		let specular = self.specular;
+		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
+		let material_evaluation_descriptor_set = self.material_evaluation_descriptor_set;
+		let material_evaluation_pipeline_layout = self.material_evaluation_pipeline_layout;
+		let material_evaluation_dispatches = self.material_offset_pass.material_evaluation_dispatches;
 
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
-
-		command_buffer_recording.write_push_constant(&self.material_evaluation_pipeline_layout, 0, 0); // Set view index to 0 (camera)
-
-		for (name, index, pipeline) in opaque_materials {
-			command_buffer_recording.start_region(&format!("Material: {}", name));
-			// No need for sync here, as each thread across all invocations will write to a different pixel
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
-			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 4, index); // Set material index
-			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, index as usize);
-			command_buffer_recording.end_region();
-		}
-
-		command_buffer_recording.end_region();
-
-		command_buffer_recording.start_region("Transparent");
-
 		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 
-		for (name, index, pipeline) in transparent_materials { // TODO: sort by distance to camera
-			command_buffer_recording.start_region(&format!("Material: {}", name));
-			// No need for sync here, as each thread across all invocations will write to a different pixel
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-			compute_pipeline_command.bind_descriptor_sets(&self.material_evaluation_pipeline_layout, &[self.descriptor_set, self.visibility_passes_descriptor_set, self.material_evaluation_descriptor_set]);
-			compute_pipeline_command.write_push_constant(&self.material_evaluation_pipeline_layout, 4, index); // Set material index
-			compute_pipeline_command.indirect_dispatch(&self.material_offset_pass.material_evaluation_dispatches, index as usize);
+		Some(Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer_recording.start_region("Visibility Render Model");
+
+			visibility_pass(command_buffer_recording, attachments);
+			material_count_pass(command_buffer_recording, attachments);
+			material_offset_pass(command_buffer_recording, attachments);
+			pixel_mapping_pass(command_buffer_recording, attachments);
+
 			command_buffer_recording.end_region();
-		}
 
-		command_buffer_recording.end_region();
+			command_buffer_recording.bind_descriptor_sets(&pipeline_layout_handle, &[descriptor_set]);
 
-		command_buffer_recording.end_region();
+			command_buffer_recording.start_region("Material Evaluation");
+			command_buffer_recording.clear_images(&[(diffuse, ghi::ClearValue::Color(RGBA::black())), (specular, ghi::ClearValue::Color(RGBA::black()))]);
+
+			command_buffer_recording.start_region("Opaque");
+
+			command_buffer_recording.write_push_constant(&material_evaluation_pipeline_layout, 0, 0); // Set view index to 0 (camera)
+
+			for (name, index, pipeline) in &opaque_materials {
+				command_buffer_recording.start_region(&format!("Material: {}", name));
+				// No need for sync here, as each thread across all invocations will write to a different pixel
+				let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+				compute_pipeline_command.bind_descriptor_sets(&material_evaluation_pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
+				compute_pipeline_command.write_push_constant(&material_evaluation_pipeline_layout, 4, *index); // Set material index
+				compute_pipeline_command.indirect_dispatch(&material_evaluation_dispatches, *index as usize);
+				command_buffer_recording.end_region();
+			}
+
+			command_buffer_recording.end_region();
+
+			command_buffer_recording.start_region("Transparent");
+
+			for (name, index, pipeline) in &transparent_materials { // TODO: sort by distance to camera
+				command_buffer_recording.start_region(&format!("Material: {}", name));
+				// No need for sync here, as each thread across all invocations will write to a different pixel
+				let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+				compute_pipeline_command.bind_descriptor_sets(&material_evaluation_pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
+				compute_pipeline_command.write_push_constant(&material_evaluation_pipeline_layout, 4, *index); // Set material index
+				compute_pipeline_command.indirect_dispatch(&material_evaluation_dispatches, *index as usize);
+				command_buffer_recording.end_region();
+			}
+
+			command_buffer_recording.end_region();
+
+			command_buffer_recording.end_region();
+		}))
 	}
 }
 
@@ -1298,17 +1296,17 @@ impl Listener<CreateEvent<point_light::PointLight>> for VisibilityWorldRenderDom
 		let handle = event.handle();
 		let light = handle.read();
 		let ghi = self.ghi.read();
-	
+
 		let lighting_data = ghi.get_mut_buffer_slice(self.light_data_buffer);
-	
+
 		let light_index = lighting_data.count as usize;
-	
+
 		lighting_data.lights[light_index].light_type = 'P' as u8;
 		lighting_data.lights[light_index].position = light.position;
 		lighting_data.lights[light_index].color = light.color;
-	
+
 		lighting_data.count += 1;
-	
+
 		assert!(lighting_data.count < MAX_LIGHTS as u32, "Light count exceeded");
 	}
 }
@@ -1392,27 +1390,35 @@ impl VisibilityPass {
 		}
 	}
 
-	pub fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, visibility_info: &VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) {
-		command_buffer_recording.start_region("Visibility Buffer");
+	pub fn prepare(&self, visibility_info: VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle, extent: Extent) -> RenderPassCommand {
+		let pipeline_layout = self.pipeline_layout;
+		let descriptor_set = self.descriptor_set;
+		let pipeline = self.visibility_pass_pipeline;
 
-		let attachments = [
-			ghi::AttachmentInformation::new(primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::AttachmentInformation::new(instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
-			ghi::AttachmentInformation::new(depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
-		];
+		let instances = instances.iter().map(|e| *e).collect::<Vec<_>>();
 
-		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
-		render_pass_command.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		let pipeline_bind = render_pass_command.bind_raster_pipeline(&self.visibility_pass_pipeline);
+		Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer_recording.start_region("Visibility Buffer");
 
-		for (i, instance) in instances.iter().enumerate() {
-			pipeline_bind.write_push_constant(&self.pipeline_layout, 0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
-			pipeline_bind.dispatch_meshes(instance.meshlet_count, 1, 1);
-		}
+			let attachments = [
+				ghi::AttachmentInformation::new(primitive_index,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+				ghi::AttachmentInformation::new(instance_id,ghi::Formats::U32,ghi::Layouts::RenderTarget,ghi::ClearValue::Integer(!0u32, 0, 0, 0),false,true,),
+				ghi::AttachmentInformation::new(depth_target,ghi::Formats::Depth32,ghi::Layouts::RenderTarget,ghi::ClearValue::Depth(0f32),false,true,),
+			];
 
-		render_pass_command.end_render_pass();
+			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+			render_pass_command.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+			let pipeline_bind = render_pass_command.bind_raster_pipeline(&pipeline);
 
-		command_buffer_recording.end_region();
+			for (i, instance) in instances.iter().enumerate() {
+				pipeline_bind.write_push_constant(&pipeline_layout, 0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
+				pipeline_bind.dispatch_meshes(instance.meshlet_count, 1, 1);
+			}
+
+			render_pass_command.end_render_pass();
+
+			command_buffer_recording.end_region();
+		})
 	}
 
 	fn resize(&self, _: Extent) {}
@@ -1451,23 +1457,26 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, extent: Extent) {
+	fn prepare(&self, extent: Extent) -> RenderPassCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.pipeline;
+		let material_count_buffer = self.material_count_buffer;
 
-		command_buffer_recording.start_region("Material Count");
+		Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer_recording.start_region("Material Count");
 
-		command_buffer_recording.clear_buffers(&[self.material_count_buffer.into()]);
+			command_buffer_recording.clear_buffers(&[material_count_buffer.into()]);
 
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_pass_descriptor_set]);
-		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_pass_descriptor_set]);
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
-		command_buffer_recording.end_region();
+			command_buffer_recording.end_region();
+		})
 	}
-	
+
 	fn get_material_count_buffer(&self) -> ghi::BaseBufferHandle {
 		self.material_count_buffer.into()
 	}
@@ -1513,26 +1522,31 @@ impl MaterialOffsetPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable) {
+	fn prepare(&self, extent: Extent) -> RenderPassCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.material_offset_pipeline;
+		let material_offset_buffer = self.material_offset_buffer;
+		let material_offset_scratch_buffer = self.material_offset_scratch_buffer;
+		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 
-		command_buffer_recording.start_region("Material Offset");
+		Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer_recording.start_region("Material Offset");
 
-		command_buffer_recording.clear_buffers(&[self.material_offset_buffer.into(), self.material_offset_scratch_buffer.into(), self.material_evaluation_dispatches.into()]);
+			command_buffer_recording.clear_buffers(&[material_offset_buffer.into(), material_offset_scratch_buffer.into(), material_evaluation_dispatches.into()]);
 
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
-		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
-		command_buffer_recording.end_region();
+			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+			command_buffer_recording.end_region();
+		})
 	}
-	
+
 	fn get_material_offset_buffer(&self) -> ghi::BaseBufferHandle {
 		self.material_offset_buffer.into()
 	}
-	
+
 	fn get_material_offset_scratch_buffer(&self) -> ghi::BaseBufferHandle {
 		self.material_offset_scratch_buffer.into()
 	}
@@ -1573,21 +1587,24 @@ impl PixelMappingPass {
 		}
 	}
 
-	fn render(&self, command_buffer_recording: &mut impl ghi::CommandBufferRecordable, extent: Extent) {
+	fn prepare(&self, extent: Extent) -> RenderPassCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
+		let material_xy = self.material_xy;
 
-		command_buffer_recording.start_region("Pixel Mapping");
+		Box::new(move |command_buffer_recording, attachments| {
+			command_buffer_recording.start_region("Pixel Mapping");
 
-		command_buffer_recording.clear_buffers(&[self.material_xy.into(),]);
+			command_buffer_recording.clear_buffers(&[material_xy.into(),]);
 
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
-		let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
-		compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set, visibility_passes_descriptor_set]);
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
-		command_buffer_recording.end_region();
+			command_buffer_recording.end_region();
+		})
 	}
 
 	fn resize(&self, extent: Extent, ghi: &mut ghi::Device) {

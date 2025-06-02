@@ -5,7 +5,10 @@ use crate::core::{entity::EntityBuilder, EntityHandle};
 use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device};
 use maths_rs::Vec2f;
 use resource_management::glsl;
-use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent};
+use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
+
+/// The type of a boxed function object that writes a render pass to a command buffer
+pub type RenderPassCommand = Box<dyn Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation])>;
 
 pub trait RenderPass {
 	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
@@ -16,8 +19,11 @@ pub trait RenderPass {
 		vec![]
 	}
 
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {}
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]);
+	/// Evaluates rendering condition and potentially prepares the render pass.
+	///
+	/// If the render pass is not needed, it returns `None`.
+	/// If it is needed, it may execute setup code and return a `RenderPassRecordCommand` that can be used to effectively record the render pass.
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand>;
 }
 
 pub struct FullScreenRenderPass {
@@ -53,12 +59,22 @@ impl FullScreenRenderPass {
 }
 
 impl RenderPass for FullScreenRenderPass {
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]) {
-		command_buffer_recording.region("Downsample", |command_buffer_recording: &mut ghi::CommandBufferRecording<'_>| {
-			command_buffer_recording.bind_compute_pipeline(&self.pipeline);
-			command_buffer_recording.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-			command_buffer_recording.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
-		});
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+		if extent.width() == 0 || extent.height() == 0 {
+			return None; // No need to record if the extent is zero.
+		}
+
+		let pipeline_layout = self.pipeline_layout;
+		let pipeline = self.pipeline;
+		let descriptor_set = self.descriptor_set;
+
+		Some(Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer_recording.region("Full Screen Pass", |command_buffer| {
+				let command_buffer = command_buffer.bind_compute_pipeline(&pipeline);
+				command_buffer.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+				command_buffer.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
+			});
+		}))
 	}
 }
 
@@ -78,28 +94,28 @@ impl BilateralBlurPass {
 	fn create(render_pass_builder: &mut RenderPassBuilder,) -> EntityBuilder<'static, Self> where Self: Sized {
 		todo!();
 		// let descriptor_set_template = ghi.create_descriptor_set_template(Some("SSGI Blur"), &[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING]);
-	
+
 		// let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_template], &[]);
-	
+
 		// let descriptor_set_x = ghi.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
 		// let descriptor_set_y = ghi.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
-	
+
 		// let read_depth = render_pass_builder.read_from("depth");
-	
+
 		// let sampler = ghi.build_sampler(ghi::sampler::Builder::new());
-	
+
 		// ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::combined_image_sampler(&BLUR_DEPTH_BINDING, read_depth.borrow().into(), read_depth.borrow().into(), ghi::Layouts::Read));
 		// ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source_map, sampler, ghi::Layouts::Read));
 		// ghi.create_descriptor_binding(descriptor_set_x, ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map, ghi::Layouts::General));
-	
+
 		// ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::combined_image_sampler(&BLUR_DEPTH_BINDING, depth_image, depth_sampler, ghi::Layouts::Read));
 		// ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, x_blur_map, sampler, ghi::Layouts::Read));
 		// ghi.create_descriptor_binding(descriptor_set_y, ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map, ghi::Layouts::General));
-	
+
 		// let shader = ghi.create_shader(Some("SSGI Blur"), ghi::ShaderSource::GLSL(BLUR_SHADER.into()), ghi::ShaderTypes::Compute, &vec![BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create the ray march shader.");
 		// let pipeline_x = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new::<Vec2f>(0, "vec2f".to_string(), Vec2f::new(1f32, 0f32))]));
 		// let pipeline_y = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[ghi::SpecializationMapEntry::new::<Vec2f>(0, "vec2f".to_string(), Vec2f::new(0f32, 1f32))]));
-	
+
 		// BilateralBlurPass {
 		// 	pipeline_x,
 		// 	pipeline_y,
@@ -111,15 +127,29 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
-		command_buffer.region("Blur", |command_buffer| {
-			let command_buffer = command_buffer.bind_compute_pipeline(&self.pipeline_x);
-			command_buffer.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set_x]);
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+		if extent.width() == 0 || extent.height() == 0 {
+			return None; // No need to record if the extent is zero.
+		}
+
+		let execute_in_axis = |command_buffer: &mut ghi::CommandBufferRecording, pipeline_layout: &ghi::PipelineLayoutHandle, pipeline: &ghi::PipelineHandle, descriptor_set: ghi::DescriptorSetHandle, extent: Extent| {
+			let command_buffer = command_buffer.bind_compute_pipeline(pipeline);
+			command_buffer.bind_descriptor_sets(pipeline_layout, &[descriptor_set]);
 			command_buffer.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-			let command_buffer = command_buffer.bind_compute_pipeline(&self.pipeline_y);
-			command_buffer.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set_y]);
-			command_buffer.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-		});
+		};
+
+		let pipeline_layout = self.pipeline_layout;
+		let pipeline_x = self.pipeline_x;
+		let pipeline_y = self.pipeline_y;
+		let descriptor_set_x = self.descriptor_set_x;
+		let descriptor_set_y = self.descriptor_set_y;
+
+		Some(Box::new(move |command_buffer: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer.region("Bilateral Blur", |command_buffer| {
+				execute_in_axis(command_buffer, &pipeline_layout, &pipeline_x, descriptor_set_x, extent);
+				execute_in_axis(command_buffer, &pipeline_layout, &pipeline_y, descriptor_set_y, extent);
+			});
+		}))
 	}
 }
 
@@ -236,12 +266,19 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {}
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+		if extent.width() == 0 || extent.height() == 0 {
+			return None; // No need to record if the extent is zero.
+		}
 
-	fn record(&self, command_buffer: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation],) {
-		command_buffer.region("Blit", |command_buffer| {
-			command_buffer.blit_image(self.source, ghi::Layouts::Transfer, self.destination, ghi::Layouts::Transfer);
-		});
+		let source = self.source;
+		let destination = self.destination;
+
+		Some(Box::new(move |command_buffer: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer.region("Blit", |command_buffer| {
+				command_buffer.blit_image(source, ghi::Layouts::Transfer, destination, ghi::Layouts::Transfer);
+			});
+		}))
 	}
 }
 

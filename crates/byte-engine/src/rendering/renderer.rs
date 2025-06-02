@@ -182,7 +182,7 @@ impl Renderer {
 
         let mut ghi = self.ghi.write();
 
-        self.root_render_pass.prepare(&mut ghi, extent);
+		let run = self.root_render_pass.render(&mut ghi, extent);
 
         let mut command_buffer_recording = ghi.create_command_buffer_recording(
             self.render_command_buffer,
@@ -192,8 +192,7 @@ impl Renderer {
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
 		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
-        self.root_render_pass
-            .record(&mut command_buffer_recording, extent);
+        run(&mut command_buffer_recording);
 
 		let result = self.targets.get("result").unwrap();
 
@@ -215,7 +214,7 @@ impl Renderer {
 impl Listener<CreateEvent<window_system::Window>> for Renderer {
     fn handle(&mut self, event: &CreateEvent<window_system::Window>) {
 		let handle = event.handle();
-		
+
         let os_handles = self.window_system.map(|e| {
             let e = e.read();
             e.get_os_handles(&handle)
@@ -269,27 +268,28 @@ impl RootRenderPass {
 		self.order.push(index);
     }
 
-    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) {
-        for (render_pass, _) in &self.render_passes {
-            render_pass.get_mut(|e| {
-                e.prepare(ghi, extent);
-            });
-        }
-    }
-
-    fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent) {
-        for index in &self.order {
+    fn render(&self, ghi: &mut ghi::Device, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) {
+		let commands = self.order.iter().map(|index| {
 			let (render_pass, consumed) = &self.render_passes[*index];
-
 			let attachments = consumed.iter().map(|c| {
 				let (image, format, layout) = self.images.get(c).unwrap();
 				ghi::AttachmentInformation::new(*image, *format, *layout, ghi::ClearValue::Color(RGBA::black()), false, true)
 			}).collect::<Vec<_>>();
 
-            render_pass.get_mut(|e| {
-                e.record(command_buffer_recording, extent, &attachments);
+            let command = render_pass.get_mut(|e| {
+                e.prepare(ghi, extent)
             });
-        }
+
+			(attachments, command)
+        }).collect::<Vec<_>>();
+
+		move |c: &mut ghi::CommandBufferRecording<'_>| {
+			for (attachments, command) in commands {
+				if let Some(command) = command {
+					command(c, &attachments);
+				}
+			}
+		}
     }
 }
 

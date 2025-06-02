@@ -4,11 +4,11 @@ use crate::core::EntityHandle;
 
 use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device};
 use resource_management::glsl;
-use utils::Extent;
+use utils::{Extent, Box};
 
 use crate::core::{orchestrator::{self,}, Entity, entity::EntityBuilder};
 
-use super::{render_pass::{RenderPass, RenderPassBuilder}, tonemap_render_pass};
+use super::{render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, tonemap_render_pass};
 
 pub struct AcesToneMapPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
@@ -66,12 +66,22 @@ impl RenderPass for AcesToneMapPass {
 		vec!["result"]
 	}
 
-	fn record(&self, command_buffer_recording: &mut ghi::CommandBufferRecording, extent: Extent, attachments: &[ghi::AttachmentInformation]) {
-		command_buffer_recording.start_region("Tonemap");
-		let r = command_buffer_recording.bind_compute_pipeline(&self.pipeline);
-		r.bind_descriptor_sets(&self.pipeline_layout, &[self.descriptor_set]);
-		r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-		command_buffer_recording.end_region();
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+		if extent.width() == 0 || extent.height() == 0 {
+			return None; // No need to record if the extent is zero.
+		}
+
+		let pipeline_layout = self.pipeline_layout;
+		let pipeline = self.pipeline;
+		let descriptor_set = self.descriptor_set;
+
+		Some(Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			command_buffer_recording.start_region("Tonemap");
+			let r = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			r.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+			r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			command_buffer_recording.end_region();
+		}))
 	}
 }
 

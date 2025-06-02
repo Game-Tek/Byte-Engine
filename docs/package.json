@@ -9,8 +9,8 @@
   "private": true,
   "dependencies": {
     "@fumadocs/mdx-remote": "1.3.2",
-    "@tanstack/react-router": "^1.120.12",
-    "@tanstack/react-start": "^1.120.12",
+    "@tanstack/react-router": "^1.120.13",
+    "@tanstack/react-start": "^1.120.13",
     "fumadocs-core": "15.4.2",
     "fumadocs-ui": "15.4.2",
     "gray-matter": "^4.0.3",

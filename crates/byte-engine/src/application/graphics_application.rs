@@ -58,7 +58,17 @@ impl Application for GraphicsApplication {
 
 		let window_system_handle = root_space_handle.spawn(window_system::WindowSystem::new_as_system());
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
-		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(window_system_handle.clone(), resource_manager.clone()).builder());
+		let renderer_handle = {
+			let settings = rendering::renderer::Settings::new();
+
+			let settings = if let Some(param) = application.get_parameter("BE_RENDER_DEBUG") {
+				settings.validation(param.value == "true" || param.value == "TRUE" || param.value == "1")
+			} else {
+				settings
+			};
+
+			root_space_handle.spawn(rendering::renderer::Renderer::new(window_system_handle.clone(), resource_manager.clone(), settings).builder())
+		};
 		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
 		let physics_system_handle = root_space_handle.spawn(physics::PhysicsWorld::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
@@ -158,7 +168,7 @@ impl Application for GraphicsApplication {
 
 				if let Some((device_handle, input_source_action, value)) = process_default_window_input(&mut input_system, event) {
 					input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
-				}					
+				}
 			});
 		}
 
@@ -271,7 +281,7 @@ impl GraphicsApplication {
 	pub fn get_renderer_handle(&self) -> &EntityHandle<Renderer> {
 		&self.renderer_handle
 	}
-	
+
 	pub fn do_loop(&mut self) {
 		while !self.close {
 			self.tick();
@@ -281,8 +291,8 @@ impl GraphicsApplication {
 	pub fn get_events_sender(&self) -> ApplicationEventsChannel {
 		ApplicationEventsChannel(self.application_events.0.clone())
 	}
-	
-	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {		
+
+	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {
 		&self.resource_manager
 	}
 }
@@ -335,7 +345,7 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// - MeshAssetHandler
 /// - ImageAssetHandler
 /// - AudioAssetHandler
-/// 
+///
 /// The default material asset handler is set up with a shader generator.
 /// The shader generator is passed as a parameter to this function.
 /// The resources folder path is taken from the `resources-path` parameter and defaults to `resources`.

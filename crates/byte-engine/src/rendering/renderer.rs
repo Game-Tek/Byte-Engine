@@ -37,15 +37,10 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>,) -> Self {
-		let enable_validation = std::env::vars()
-			.find(|(k, _)| k == "BE_RENDER_DEBUG")
-			.is_some()
-			|| true;
-
+    pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
 		let ghi_instance = Rc::new(RwLock::new(ghi::create(
 			ghi::Features::new()
-				.validation(enable_validation)
+				.validation(settings.validation)
 				.api_dump(false)
 				.gpu_validation(false)
 				.debug_log_function(|message| {
@@ -311,4 +306,25 @@ impl RootRenderPass {
 struct Attachment {
 	name: String,
 	image: ghi::ImageHandle,
+}
+
+/// This struct holds the settings to configure a `Renderer` during it's creation.
+pub struct Settings {
+	/// Controls whether validation layers will be enabled or not on the GHI device.
+	validation: bool,
+}
+
+impl Settings {
+	/// Creates a new `Settings` struct.
+	/// - `validation` is true by default in debug builds and false in release.
+	pub fn new() -> Self {
+		Self {
+			validation: cfg!(debug_assertions),
+		}
+	}
+
+	pub fn validation(mut self, value: bool) -> Self {
+		self.validation = true;
+		self
+	}
 }

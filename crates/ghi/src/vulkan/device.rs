@@ -2289,7 +2289,7 @@ impl graphics_hardware_interface::Device for Device {
 			#[cfg(debug_assertions)]
 			let Image { ref name, image: vk_image, image_view, format_, uses, layers, .. } = self.images[image_handle.0 as usize];
 			#[cfg(not(debug_assertions))]
-			let Image { image: vk_image, image_view, format_, uses, .. } = self.images[image_handle.0 as usize];
+			let Image { image: vk_image, image_view, format_, uses, layers, .. } = self.images[image_handle.0 as usize];
 
 			unsafe {
 				self.device.destroy_image(vk_image, None);
@@ -2303,7 +2303,7 @@ impl graphics_hardware_interface::Device for Device {
 			#[cfg(debug_assertions)]
 			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
 			#[cfg(not(debug_assertions))]
-			let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, graphics_hardware_interface::DeviceAccesses::GpuRead, graphics_hardware_interface::AccessPolicies::WRITE, 1, layers);
+			let r = self.create_vulkan_texture(None, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
 
 			let (allocation_handle, _) = self.create_allocation_internal(r.size, r.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 

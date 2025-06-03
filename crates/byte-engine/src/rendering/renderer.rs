@@ -14,6 +14,8 @@ use crate::{
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
 
+/// The `Renderer` class centralizes the management of the rendering tasks and state.
+/// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
     ghi: Rc<RwLock<ghi::Device>>,
 
@@ -149,14 +151,18 @@ impl Renderer {
 		self.root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
+	/// This function renders a frame to defined swapchains by invoking multiple render passes.
+	/// If no swapchains are available no rendering/execution is performed.
+	/// If some swapchain surface is 0 sized along some dimension no rendering/execution is performed.
     pub fn render(&mut self) {
-        if self.swapchain_handles.is_empty() {
-            return;
-        }
+        let swapchain_handle = if let Some(&sh) = self.swapchain_handles.first() {
+        	sh
+        } else {
+        	log::warn!("No swapchain available to present to. Skipping rendering!");
+        	return;
+        };
 
         let mut ghi = self.ghi.write();
-
-        let swapchain_handle = self.swapchain_handles[0];
 
 		let frame_key = ghi.start_frame(self.rendered_frame_count as u32);
 
@@ -170,6 +176,11 @@ impl Renderer {
 
         drop(ghi);
 
+        if extent.width() == 0 || extent.height() == 0 {
+        	log::info!("Swapchain extent is zero in either or both dimension. Skipping rendering!");
+         	return;
+        }
+
         if extent != self.extent {
             let mut ghi = self.ghi.write();
 
@@ -182,7 +193,7 @@ impl Renderer {
 
         let mut ghi = self.ghi.write();
 
-		let run = self.root_render_pass.render(&mut ghi, extent);
+		let execute = self.root_render_pass.prepare(&mut ghi, extent);
 
         let mut command_buffer_recording = ghi.create_command_buffer_recording(
             self.render_command_buffer,
@@ -192,7 +203,7 @@ impl Renderer {
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
 		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
-        run(&mut command_buffer_recording);
+        execute(&mut command_buffer_recording);
 
 		let result = self.targets.get("result").unwrap();
 
@@ -268,7 +279,11 @@ impl RootRenderPass {
 		self.order.push(index);
     }
 
-    fn render(&self, ghi: &mut ghi::Device, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) {
+    /// This function prepares every render pass for rendering.
+    /// Usually the preparation step involves writing to buffers, culling drawables, determining what to draw and whether to even draw at all.
+    /// Individual render pass prepare's can optionally return render pass execution functions which decide if a render pass gets executed.
+    /// This can be because the render pass may be disabled or because some other internal conditions are not satisfied.
+    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) {
 		let commands = self.order.iter().map(|index| {
 			let (render_pass, consumed) = &self.render_passes[*index];
 			let attachments = consumed.iter().map(|c| {
@@ -290,16 +305,6 @@ impl RootRenderPass {
 				}
 			}
 		}
-    }
-}
-
-struct RenderPassDriver {
-    render_pass: EntityHandle<dyn RenderPass>,
-}
-
-impl RenderPassDriver {
-    fn new(render_pass: EntityHandle<dyn RenderPass>) -> Self {
-        Self { render_pass }
     }
 }
 

@@ -10,61 +10,60 @@ pub struct AudioAsset {
 impl Asset for AudioAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> Result<(), String> {
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, id: ResourceId<'a>) -> Result<(), String> {
+    	let extension = id.get_extension();
+
+     	if extension == "wav" {
+     		self.load_wav(storage_backend)?;
+     	} else if extension == "ogg" {
+     		self.load_ogg(storage_backend)?;
+     	} else {
+     		return Err("Unsupported audio format".to_string());
+     	}
+
+        Ok(())
+    }
+}
+
+impl AudioAsset {
+    fn load_wav<'a>(&'a self, storage_backend: &'a (dyn resource::StorageBackend + 'static)) -> Result<(), String> {
         let data = &self.data;
-
         let riff = &data[0..4];
-
         if riff != b"RIFF" {
             return Err("Invalid RIFF header".to_string());
         }
-
         let format = &data[8..12];
-
         if format != b"WAVE" {
             return Err("Invalid WAVE format".to_string());
         }
-
         let audio_format = &data[20..22];
-
         if audio_format != b"\x01\x00" {
             return Err("Invalid audio format".to_string());
         }
-
         let subchunk_1_size = &data[16..20];
-
         let subchunk_1_size = u32::from_le_bytes([
             subchunk_1_size[0],
             subchunk_1_size[1],
             subchunk_1_size[2],
             subchunk_1_size[3],
         ]);
-
         if subchunk_1_size != 16 {
             return Err("Invalid subchunk 1 size".to_string());
         }
-
         let num_channels = &data[22..24];
-
         let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
-
         if num_channels != 1 && num_channels != 2 {
             return Err("Invalid number of channels".to_string());
         }
-
         let sample_rate = &data[24..28];
-
         let sample_rate = u32::from_le_bytes([
             sample_rate[0],
             sample_rate[1],
             sample_rate[2],
             sample_rate[3],
         ]);
-
         let bits_per_sample = &data[34..36];
-
         let bits_per_sample = u16::from_le_bytes([bits_per_sample[0], bits_per_sample[1]]);
-
         let bit_depth = match bits_per_sample {
             8 => BitDepths::Eight,
             16 => BitDepths::Sixteen,
@@ -74,32 +73,62 @@ impl Asset for AudioAsset {
                 return Err("Invalid bits per sample".to_string());
             }
         };
-
         let data_header = &data[36..40];
-
         if data_header != b"data" {
             return Err("Invalid data header".to_string());
         }
-
         let data_size = &data[40..44];
-
         let data_size =
             u32::from_le_bytes([data_size[0], data_size[1], data_size[2], data_size[3]]);
-
         let sample_count = data_size / (bits_per_sample / 8) as u32 / num_channels as u32;
-
         let data = &data[44..][..data_size as usize];
-
         let audio_resource = Audio {
             bit_depth,
             channel_count: num_channels,
             sample_rate,
             sample_count,
         };
+        let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
+        storage_backend.store(&resource, data.into()).map_err(|_| "Failed to store audio resource".to_string())?;
+        Ok(())
+    }
+
+    fn load_ogg<'a>(&self, storage_backend: &'a (dyn resource::StorageBackend + 'static)) -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(&self.data)).unwrap();
+
+        let sample_rate = decoder.sampling_frequency().get();
+        let channel_count = decoder.channels().get();
+
+        let mut data = Vec::with_capacity(channel_count as usize * sample_rate as usize * 4);
+
+        // Force bit depth to 8-bit, TODO: support other bit depths
+        let bit_depth = BitDepths::Eight;
+
+        while let Some(block) = decoder.decode_audio_block().unwrap() {
+        	let samples = block.samples();
+        	for &x in samples {
+        		for y in x {
+        			let sample = (y.clamp(-1.0, 1.0) * 127.0).round() as i8;
+        			data.push(sample.cast_unsigned());
+        		}
+        	}
+        }
+
+        let sample_count = (data.len() / (channel_count as usize)) as u32;
+        let channel_count = channel_count as u16;
+
+        let audio_resource = Audio {
+            bit_depth,
+            channel_count,
+            sample_rate,
+            sample_count,
+        };
 
         let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
 
-        storage_backend.store(&resource, data.into()).map_err(|_| "Failed to store audio resource".to_string())?;
+        storage_backend.store(&resource, &data).map_err(|_| "Failed to store audio asset".to_string())?;
 
         Ok(())
     }
@@ -115,19 +144,19 @@ impl AudioAssetHandler {
 
 impl AssetHandler for AudioAssetHandler {
     fn can_handle(&self, r#type: &str) -> bool {
-        r#type == "wav"
+        r#type == "wav" || r#type == "ogg"
     }
 
     fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
         if let Some(dt) = storage_backend.get_type(url) {
-            if dt != "wav" {
+            if dt != "wav" && dt != "ogg" {
                 return Err(LoadErrors::UnsupportedType);
             }
         }
 
         let (data, _, dt) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-        if dt != "wav" {
+        if dt != "wav" && dt != "ogg" {
             return Err(LoadErrors::UnsupportedType);
         }
 

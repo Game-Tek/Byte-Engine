@@ -53,20 +53,36 @@ impl AudioSystem for DefaultAudioSystem {
 			let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).unwrap();
 			let load_target = audio_resource_reference.load(ReadTargetsMut::create_buffer(&audio_resource_reference)).unwrap(); // Request resource be written into a managed buffer.
 
+			let audio_resource = audio_resource_reference.resource_mut();
+
 			let bytes = match load_target.buffer() {
 				Some(b) => {
-					b.chunks_exact(2).map(|chunk| {
-						let mut bytes = [0; 2];
-						bytes.copy_from_slice(chunk);
-						i16::from_le_bytes(bytes)
-					}).collect::<Vec<_>>()
+					match audio_resource.bit_depth {
+						BitDepths::Eight => {
+							if b.len() % 1 != 0 {
+								return; // Invalid length for 8-bit audio.
+							}
+
+							b.iter().map(|&byte| (byte as i8) as i16 * 256).collect::<Vec<_>>()
+						},
+						BitDepths::Sixteen => {
+							if b.len() % 2 != 0 {
+								return; // Invalid length for 16-bit audio.
+							}
+
+							b.chunks_exact(2).map(|chunk| {
+								let mut bytes = [0; 2];
+								bytes.copy_from_slice(chunk);
+								i16::from_le_bytes(bytes)
+							}).collect::<Vec<_>>()
+						},
+						_ => {
+							return; // Unsupported bit depth.
+						}
+					}
 				},
 				None => return,
 			};
-
-			let audio_resource = audio_resource_reference.resource_mut();
-
-			assert_eq!(audio_resource.bit_depth, BitDepths::Sixteen);
 
 			self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, bytes));
 

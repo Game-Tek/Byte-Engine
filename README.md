@@ -4,30 +4,8 @@
 
 ---
 
-# Features: :gear:  
-
-- **Current Features:**  :heavy_check_mark:
-  - Cache Conscious Design
-  - Heavily multithreaded task driven work distribution
-
-- **Features in development:**  :construction_worker:
-  - Multi-backend Raytraced Renderer
-  - Multi-backend Audio Engine
-  - Custom UI framework
-  - [Accompanying Editor](https://github.com/Game-Tek/Byte-Engine-Editor)
-  - Custom GPU font and vector rendering
-  - Extensible renderer
-  - Custom Physics Engine
-
-- **Intended features:**  :brain:
-  - Console support (Nintendo™ Switch, Sony™ PS5, Microsoft™ Xbox X)
-
-**You can check the project's roadmap [here](https://github.com/Game-Tek/Byte-Engine/projects).**
-
----
-
 # Documentation :book:
-**Ready to get started?** You can check out all of the documentation [here](https://game-tek.gitbook.io/byte-engine/)!
+**Ready to get started?** You can check out all of the documentation [here](https://byte-engine.0x44491229.dev/docs)!
 
 ---
 

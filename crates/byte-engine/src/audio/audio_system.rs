@@ -1,11 +1,13 @@
 use std::{collections::HashMap, f32::consts::PI};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
 
-use crate::core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle};
-use ahi::{audio_hardware_interface::AudioHardwareInterface, self};
+use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Positionable};
+use ahi::{self, audio_hardware_interface::{AudioDevice, AudioHardwareInterface, HardwareParameters}};
 
 use super::{sound::{self, Sound}, synthesizer::Synthesizer};
 
+/// The `AudioSystem` trait defines the interface for an audio system which handles audio playback and processing.
+/// It provides methods for playing audio assets, processing audio data, and managing audio channels.
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
 	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
@@ -16,9 +18,9 @@ pub trait AudioSystem: Entity {
 
 pub struct DefaultAudioSystem {
 	resource_manager: EntityHandle<ResourceManager>,
-	ahi: Box<dyn AudioHardwareInterface>,
+	ahi: AudioDevice,
 	audio_resources: HashMap<String, (Audio, Vec<i16>)>,
-	playing_audios: Vec<PlayingSound>,
+	sources: Vec<Source>,
 	channels: HashMap<String, Channel>,
 }
 
@@ -28,26 +30,30 @@ impl DefaultAudioSystem {
 
 		channels.insert("master".to_string(), Channel { samples: vec![0; 48000 / 60].into_boxed_slice(), gain: 1f32 });
 
+		let params = HardwareParameters::new().channels(1);
+
+		let ahi = AudioDevice::new(params).expect("Failed to create audio device");
+
 		Self {
 			resource_manager,
-			ahi: Box::new(ahi::audio_hardware_interface::create_ahi()),
+			ahi,
 			audio_resources: HashMap::with_capacity(1024),
-			playing_audios: Vec::with_capacity(32),
+			sources: Vec::with_capacity(32),
 			channels,
 		}
 	}
 
 	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(resource_manager)).listen_to::<CreateEvent<Sound>>().listen_to::<CreateEvent<Synthesizer>>()
+		EntityBuilder::new(Self::new(resource_manager))
+			.listen_to::<CreateEvent<Sound>>()
+			.listen_to::<CreateEvent<Synthesizer>>()
+			.listen_to::<CreateEvent<RoundRobin>>()
+			.listen_to::<CreateEvent<Emitter>>()
 	}
-}
 
-impl Entity for DefaultAudioSystem {}
-
-impl AudioSystem for DefaultAudioSystem {
-	fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
-		let data = if let Some(a) = self.audio_resources.get(audio_asset_url) {
-			Some(a)
+	fn load_asset<'a>(&'a mut self, audio_asset_url: &'a str) {
+		if let Some(a) = self.audio_resources.get(audio_asset_url) {
+			Some(a);
 		} else {
 			let resource_manager = self.resource_manager.read();
 			let mut audio_resource_reference: Reference<Audio> = resource_manager.request(audio_asset_url).unwrap();
@@ -86,12 +92,18 @@ impl AudioSystem for DefaultAudioSystem {
 
 			self.audio_resources.insert(audio_asset_url.to_string(), (*audio_resource, bytes));
 
-			Some(self.audio_resources.get(audio_asset_url).unwrap())
-		};
-
-		if let Some(_) = data {
-			self.playing_audios.push(PlayingSound { source: Sources::File { audio_asset_url: audio_asset_url.to_string() }, current_sample: 0, gain: 1f32 });
+			Some(self.audio_resources.get(audio_asset_url).unwrap());
 		}
+	}
+}
+
+impl Entity for DefaultAudioSystem {}
+
+impl AudioSystem for DefaultAudioSystem {
+	fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
+		self.load_asset(audio_asset_url);
+
+		self.sources.push(Source { generator: Generator::File { audio_asset_url: audio_asset_url.to_string() }, current_sample: 0, gain: 1f32 });
 	}
 
 	fn render(&mut self) {
@@ -99,55 +111,54 @@ impl AudioSystem for DefaultAudioSystem {
 
 		master_channel.samples.iter_mut().for_each(|sample| *sample = 0);
 
-		// let non_master_channels = self.channels.iter_mut().filter(|(name, _)| name.as_str() != "master");
-
 		{
 			let audio_buffer = master_channel.samples.as_mut();
 			let channel_gain = master_channel.gain;
 
-			for playing_sound in &self.playing_audios {
+			for playing_sound in &mut self.sources {
+				let current_sample = &mut playing_sound.current_sample;
 				let gain = channel_gain * playing_sound.gain;
 
-				match &playing_sound.source {
-					Sources::File { audio_asset_url } => {
-						let current_sample = &playing_sound.current_sample;
-		
-						let (_, audio_data) = self.audio_resources.get(audio_asset_url).unwrap();
-		
-						let audio_data = &audio_data[*current_sample as usize..];
-		
-						let audio_data = if audio_data.len() > audio_buffer.len() {
-							&audio_data[..audio_buffer.len()]
-						} else {
-							audio_data
-						};
-		
-						for (i, sample) in audio_data.iter().enumerate() {
-							audio_buffer[i] += ((((*sample as f32) / (65535f32 / 2f32)) * gain) * (65535f32 / 2f32)) as i16;
-						}
-					}
-					Sources::Synthesizer { pitch } => {
-						let current_sample = playing_sound.current_sample;
+				let mut play_sound = |url: &str| {
+					let (audio, audio_data) = self.audio_resources.get(url).unwrap();
 
-						for (i, sample) in audio_buffer.iter_mut().enumerate() {
-							let sample_index = (current_sample + i as u32) % 48000;
-							let t = sample_index as f32 / 48000f32;
-							*sample += ((((2f32 * PI * pitch * t)).sin() * gain) * (65535f32 / 2f32)) as i16;
+					let audio_data = &audio_data[*current_sample as usize..];
+
+					let audio_data = if audio_data.len() > audio_buffer.len() {
+						&audio_data[..audio_buffer.len()]
+					} else {
+						audio_data
+					};
+
+					for (i, sample) in audio_data.iter().enumerate() {
+						audio_buffer[i] += f32_to_i16(i16_to_f32(*sample) * gain);
+					}
+
+					*current_sample += audio_data.len() as u32 % audio.sample_count;
+				};
+
+				match &playing_sound.generator {
+					Generator::File { audio_asset_url } => {
+						play_sound(audio_asset_url);
+					}
+					Generator::RoundRobin(handle) => {
+						let mut rr = handle.write();
+						if let Some(e) = rr.get() {
+							play_sound(e);
 						}
 					}
+					_ => {}
 				}
 			}
 		}
 
 		let audio_buffer = master_channel.samples.as_mut();
 
-		self.ahi.play(&audio_buffer[..]);
-
-		for playing_sound in &mut self.playing_audios {
-			playing_sound.current_sample += audio_buffer.len() as u32;
-		}
-
-		// self.playing_audios.retain(|playing_sound| playing_sound.current_sample < self.audio_resources.get(&playing_sound.audio_asset_url).unwrap().0.sample_count as u32);
+		self.ahi.play(|| {
+			audio_buffer
+		}, |hw_buffer| {
+			hw_buffer.copy_from_slice(audio_buffer);
+		});
 	}
 }
 
@@ -156,17 +167,18 @@ struct Channel {
 	gain: f32,
 }
 
-enum Sources {
+enum Generator {
 	Synthesizer {
 		pitch: f32,
 	},
 	File {
 		audio_asset_url: String,
-	}
+	},
+	RoundRobin(EntityHandle<RoundRobin>),
 }
 
-struct PlayingSound {
-	source: Sources,
+struct Source {
+	generator: Generator,
 	current_sample: u32,
 	gain: f32,
 }
@@ -181,10 +193,56 @@ impl Listener<CreateEvent<Sound>> for DefaultAudioSystem {
 
 impl Listener<CreateEvent<Synthesizer>> for DefaultAudioSystem {
 	fn handle<'a>(&'a mut self, handle: &CreateEvent<Synthesizer>) -> () {
-		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 110f32 }, current_sample: 0, gain: 0.10f32 });
-		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 440f32 }, current_sample: 0, gain: 0.10f32 });
-		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 554f32 }, current_sample: 0, gain: 0.10f32 });
-		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 659f32 }, current_sample: 0, gain: 0.10f32 });
-		self.playing_audios.push(PlayingSound { source: Sources::Synthesizer { pitch: 830f32 }, current_sample: 0, gain: 0.10f32 });
+		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 110f32 }, current_sample: 0, gain: 0.10f32 });
+		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 440f32 }, current_sample: 0, gain: 0.10f32 });
+		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 554f32 }, current_sample: 0, gain: 0.10f32 });
+		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 659f32 }, current_sample: 0, gain: 0.10f32 });
+		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 830f32 }, current_sample: 0, gain: 0.10f32 });
 	}
+}
+
+impl Listener<CreateEvent<RoundRobin>> for DefaultAudioSystem {
+	fn handle<'a>(&'a mut self, event: &CreateEvent<RoundRobin>) -> () {
+		let handle = event.handle();
+
+		let rr = handle.read();
+		let sources = rr.get_assets();
+
+		for source in sources {
+			self.load_asset(&source);
+		}
+	}
+}
+
+impl Listener<CreateEvent<Emitter>> for DefaultAudioSystem {
+	fn handle<'a>(&'a mut self, event: &CreateEvent<Emitter>) -> () {
+		let handle = event.handle();
+
+		{
+			let emitter = handle.read();
+			let position = emitter.get_position();
+			let source = emitter.source();
+
+			if let Some(rr) = source.downcast::<RoundRobin>() {
+				{
+					let rr = rr.read();
+					let sources = rr.get_assets();
+
+					for source in sources {
+						self.load_asset(&source);
+					}
+				}
+
+				self.sources.push(Source { generator: Generator::RoundRobin(rr), current_sample: 0, gain: 1.0f32 });
+			}
+		}
+	}
+}
+
+fn i16_to_f32(sample: i16) -> f32 {
+	sample as f32 / 32768.0
+}
+
+fn f32_to_i16(sample: f32) -> i16 {
+	(sample * 32768.0) as i16
 }

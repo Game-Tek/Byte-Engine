@@ -1,4 +1,4 @@
-use crate::core::Entity;
+use crate::{audio::source::Source, core::Entity};
 
 /// A sound object you can spawn to play a sound.
 pub struct Sound {
@@ -15,3 +15,5 @@ impl Sound {
 }
 
 impl Entity for Sound {}
+
+impl Source for Sound {}

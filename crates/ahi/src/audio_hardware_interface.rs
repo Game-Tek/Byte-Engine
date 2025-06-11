@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, Mutex};
+
 #[cfg(target_os = "windows")]
 use windows::{core::GUID, Win32::{Media::{Audio::WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, KernelStreaming::{SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE}, Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT}, System::Com::CoTaskMemFree}};
 #[cfg(target_os = "windows")]
@@ -15,6 +18,8 @@ pub trait CopyPlayFunction<'a> = FnOnce(&'a mut [i16]);
 pub trait AudioHardwareInterface {
 	fn new(params: HardwareParameters) -> Option<Self> where Self: Sized;
 
+	fn get_period_size(&self) -> usize;
+
 	/// Sends audio data to the hardware.
 	///
 	/// This function takes two functions as arguments:
@@ -26,7 +31,9 @@ pub trait AudioHardwareInterface {
 	///
 	/// Only one of the two functions will be called for each call to `play`.
 	/// The play function used may change if the hardware parameters change.
-	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, cpf: impl CopyPlayFunction<'a>);
+	///
+	/// Returns the number of frames played.
+	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, cpf: impl CopyPlayFunction<'a>) -> Result<usize, ()>;
 
 	/// Notifies the hardware that playback has been paused.
 	/// This may be used to improve performance by reducing CPU usage.
@@ -70,14 +77,9 @@ impl HardwareParameters {
 	}
 }
 
-enum PlayOperation<'a, B: FnOnce(&'a [i16]), C: FnOnce() -> &'a [i16]> {
-	Buffer(B),
-	Copy(C),
-}
-
 #[cfg(target_os = "linux")]
 pub struct ALSAAudioHardwareInterface {
-	pcm: Option<alsa::pcm::PCM>,
+	pcm: Mutex<alsa::pcm::PCM>,
 }
 
 #[cfg(target_os = "linux")]
@@ -98,6 +100,8 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 				_ => return None,
 			}).ok()?;
 			hwp.set_access(alsa::pcm::Access::RWInterleaved).ok()?;
+			let effective_period_size = hwp.set_period_size_near(256, alsa::ValueOr::Nearest).ok()?;
+			let _ = hwp.set_buffer_size_near(effective_period_size * 2 * 2);
 
 			pcm.hw_params(&hwp).ok()?;
 		}
@@ -110,22 +114,30 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 		}
 
 		ALSAAudioHardwareInterface {
-			pcm: Some(pcm),
+			pcm: Mutex::new(pcm),
 		}.into()
 	}
 
-	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, _: impl CopyPlayFunction<'a>) {
-		let pcm = if let Some(pcm) = &self.pcm { pcm } else { return; };
+	fn get_period_size(&self) -> usize {
+		let pcm = &self.pcm.lock().unwrap();
+		let hwp = pcm.hw_params_current().ok().unwrap();
+		hwp.get_period_size().ok().unwrap() as usize
+	}
 
-		let io = pcm.io_i16().unwrap();
+	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, _: impl CopyPlayFunction<'a>) -> Result<usize, ()> {
+		let pcm = &self.pcm.lock().unwrap();
+
+		let io = pcm.io_i16().or(Err(()))?;
 
 		let client_buffer = bpf();
 
-		io.writei(client_buffer).unwrap();
+		let frames = io.writei(client_buffer).or(Err(()))?;
+
+		Ok(frames)
 	}
 
 	fn pause(&self) {
-		let pcm = if let Some(pcm) = &self.pcm { pcm } else { return; };
+		let pcm = &self.pcm.lock().unwrap();
 
 		pcm.pause(true).unwrap();
 	}
@@ -193,14 +205,14 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 		}.into()
 	}
 
-	fn play(&self, audio_data: &[i16]) {
+	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, _: impl CopyPlayFunction<'a>) -> Result<usize, ()> {
 		let buffer_size = unsafe { self.client.GetBufferSize().unwrap() };
 		let padding = unsafe { self.client.GetCurrentPadding().unwrap() };
 
 		let available_space = buffer_size - padding;
 
 		if available_space == 0 {
-			return;
+			return Err(());
 		}
 
 		let buffer = unsafe {
@@ -218,6 +230,8 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 		unsafe {
 			self.render_client.ReleaseBuffer(write_len as _, 0).unwrap();
 		}
+
+		Ok(write_len)
 	}
 
 	fn pause(&self) {

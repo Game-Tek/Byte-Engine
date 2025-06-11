@@ -33,6 +33,8 @@ pub struct GraphicsApplication {
 	task_executor_handle: EntityHandle<task::TaskExecutor>,
 	root_space_handle: EntityHandle<dyn Domain>,
 
+	audio_thread: std::thread::JoinHandle<()>,
+
 	#[cfg(debug_assertions)]
 	ttff: std::time::Duration,
 	#[cfg(debug_assertions)]
@@ -82,6 +84,19 @@ impl Application for GraphicsApplication {
 
 		let application_events = std::sync::mpsc::channel();
 
+		let audio_thread = {
+			let audio_system_handle = audio_system_handle.clone();
+
+			std::thread::spawn(move || {
+				loop {
+					{
+						let mut audio_system = audio_system_handle.write();
+						audio_system.render();
+					}
+				}
+			})
+		};
+
 		GraphicsApplication {
 			application,
 
@@ -104,6 +119,8 @@ impl Application for GraphicsApplication {
 			tick_count: 0,
 			start_time,
 			last_tick_time: std::time::Instant::now(),
+
+			audio_thread,
 
 			#[cfg(debug_assertions)]
 			ttff: std::time::Duration::ZERO,
@@ -206,11 +223,6 @@ impl Application for GraphicsApplication {
 		});
 
 		self.renderer_handle.map(|handle| {
-			let mut e = handle.write();
-			e.render();
-		});
-
-		self.audio_system_handle.map(|handle| {
 			let mut e = handle.write();
 			e.render();
 		});

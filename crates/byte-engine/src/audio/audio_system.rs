@@ -111,8 +111,12 @@ impl AudioSystem for DefaultAudioSystem {
 
 		master_channel.samples.iter_mut().for_each(|sample| *sample = 0);
 
+		let hardware_period_size = self.ahi.get_period_size();
+
+		let audio_buffer = master_channel.samples.as_mut();
+		let audio_buffer = &mut audio_buffer[..hardware_period_size]; // Prepare audio buffer considering the AHI buffer size
+
 		{
-			let audio_buffer = master_channel.samples.as_mut();
 			let channel_gain = master_channel.gain;
 
 			for playing_sound in &mut self.sources {
@@ -152,16 +156,19 @@ impl AudioSystem for DefaultAudioSystem {
 			}
 		}
 
-		let audio_buffer = master_channel.samples.as_mut();
-
-		self.ahi.play(|| {
+		let frames = self.ahi.play(|| {
 			audio_buffer
 		}, |hw_buffer| {
 			hw_buffer.copy_from_slice(audio_buffer);
-		});
+		}).unwrap();
+
+		if frames != hardware_period_size {
+			log::warn!(" {} where written to hardware buffer but {} is the expected period size", frames, hardware_period_size);
+		}
 	}
 }
 
+/// The `Channel` struct represents a channel in the audio system.
 struct Channel {
 	samples: Box<[i16]>,
 	gain: f32,

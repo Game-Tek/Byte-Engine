@@ -180,3 +180,65 @@ impl Extract<Vector3> for Value {
 		}
 	}
 }
+
+/// The `ValueMapping` struct represents a how an input event value is mapped.
+/// It allows for the transformation of input values using various functions.
+///
+/// Blanket implementations for `Into<ValueMapping>` exist for all types that implement `Into<Value>`. This implementations create a mapping with no transformation of the value.
+#[derive(Copy, Clone, Debug)]
+pub struct ValueMapping {
+	pub(crate) function: Function,
+	pub(crate) value: Value,
+}
+
+impl ValueMapping {
+	pub fn new<V: Into<Value>>(function: Function, value: V) -> Self {
+		Self { function, value: value.into() }
+	}
+
+	pub fn function(mut self, function: Function) -> Self {
+		self.function = function;
+		self
+	}
+
+	pub fn value(mut self, value: Value) -> Self {
+		self.value = value;
+		self
+	}
+}
+
+impl Into<ValueMapping> for bool {
+	fn into(self) -> ValueMapping {
+		ValueMapping::new(Function::Linear, self)
+	}
+}
+
+impl Into<ValueMapping> for Vector2 {
+	fn into(self) -> ValueMapping {
+		ValueMapping::new(Function::Linear, self)
+	}
+}
+
+impl Into<ValueMapping> for Vector3 {
+	fn into(self) -> ValueMapping {
+		ValueMapping::new(Function::Linear, self)
+	}
+}
+
+impl Into<ValueMapping> for Quaternion {
+	fn into(self) -> ValueMapping {
+		ValueMapping::new(Function::Linear, self)
+	}
+}
+
+impl Into<ValueMapping> for f32 {
+	fn into(self) -> ValueMapping {
+		ValueMapping::new(Function::Linear, self)
+	}
+}
+
+impl Into<ValueMapping> for Value {
+	fn into(self) -> ValueMapping {
+		ValueMapping::new(Function::Linear, self)
+	}
+}

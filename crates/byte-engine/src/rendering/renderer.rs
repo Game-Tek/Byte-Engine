@@ -17,9 +17,11 @@ use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::Textu
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-    ghi: Rc<RwLock<ghi::Device>>,
+    ghi: Arc<RwLock<ghi::Device>>,
 
+    started_frame_count: usize,
     rendered_frame_count: usize,
+
     frame_queue_depth: usize,
 
     swapchain_handles: Vec<ghi::SwapchainHandle>,
@@ -38,7 +40,7 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
-		let ghi_instance = Rc::new(RwLock::new(ghi::create(
+		let ghi_instance = Arc::new(RwLock::new(ghi::create(
 			ghi::Features::new()
 				.validation(settings.validation)
 				.api_dump(false)
@@ -106,7 +108,9 @@ impl Renderer {
 		Renderer {
 			ghi: ghi_instance,
 
+			started_frame_count: 0,
 			rendered_frame_count: 0,
+
 			frame_queue_depth: 2,
 
 			swapchain_handles: vec![],
@@ -124,7 +128,7 @@ impl Renderer {
 		}
     }
 
-	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
+	pub fn add_render_pass<T: RenderPass + Entity + Send + Sync + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
 		let read_attachments = T::get_read_attachments();
 
 		if !read_attachments.iter().all(|a| self.targets.contains_key(*a)) {
@@ -146,34 +150,34 @@ impl Renderer {
 		self.root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
-	/// This function renders a frame to defined swapchains by invoking multiple render passes.
-	/// If no swapchains are available no rendering/execution is performed.
-	/// If some swapchain surface is 0 sized along some dimension no rendering/execution is performed.
-    pub fn render(&mut self) {
+	/// This function prepares a frame by invoking multiple render passes.
+	/// If no swapchains are available no rendering/execution will be performed.
+	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
+    pub fn prepare(&mut self) -> Option<RenderMessage> {
         let swapchain_handle = if let Some(&sh) = self.swapchain_handles.first() {
         	sh
         } else {
         	log::warn!("No swapchain available to present to. Skipping rendering!");
-        	return;
+        	return None;
         };
 
         let mut ghi = self.ghi.write();
 
-		let frame_key = ghi.start_frame(self.rendered_frame_count as u32);
+		let frame_key = ghi.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
 
-        ghi.wait(frame_key, self.render_finished_synchronizer);
+		self.started_frame_count += 1;
 
         ghi.start_frame_capture();
 
         let (present_key, extent) = ghi.acquire_swapchain_image(frame_key, swapchain_handle,);
 
-        assert!(extent.width() <= 65535 && extent.height() <= 65535, "The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits.", extent);
-
         drop(ghi);
+
+        assert!(extent.width() <= 65535 && extent.height() <= 65535, "The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits.", extent);
 
         if extent.width() == 0 || extent.height() == 0 {
         	log::info!("Swapchain extent is zero in either or both dimension. Skipping rendering!");
-         	return;
+         	return None;
         }
 
         if extent != self.extent {
@@ -189,6 +193,18 @@ impl Renderer {
         let mut ghi = self.ghi.write();
 
 		let execute = self.root_render_pass.prepare(&mut ghi, extent);
+
+		RenderMessage::new(swapchain_handle, frame_key, present_key, execute).into()
+    }
+
+	/// This function executes the prepared render frame.
+    pub fn render(&mut self, message: RenderMessage) {
+    	let mut ghi = self.ghi.write();
+
+		let frame_key = message.frame_key;
+		let present_key = message.present_key;
+		let swapchain_handle = message.swapchain_handle;
+		let execute = message.execute;
 
         let mut command_buffer_recording = ghi.create_command_buffer_recording(
             self.render_command_buffer,
@@ -214,6 +230,29 @@ impl Renderer {
         ghi.end_frame_capture();
 
         self.rendered_frame_count += 1;
+    }
+}
+
+pub struct RenderMessage {
+    swapchain_handle: ghi::SwapchainHandle,
+    frame_key: ghi::FrameKey,
+    present_key: ghi::PresentKey,
+    execute: Box<dyn FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync>,
+}
+
+impl RenderMessage {
+    fn new(
+        swapchain_handle: ghi::SwapchainHandle,
+        frame_key: ghi::FrameKey,
+        present_key: ghi::PresentKey,
+        execute: impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            swapchain_handle,
+            frame_key,
+            present_key,
+            execute: Box::new(execute),
+        }
     }
 }
 
@@ -246,7 +285,7 @@ impl Entity for Renderer {
 }
 
 struct RootRenderPass {
-    render_passes: Vec<(EntityHandle<dyn RenderPass>, Vec<String>)>,
+    render_passes: Vec<(EntityHandle<dyn RenderPass + Send + Sync>, Vec<String>)>,
 	images: HashMap<String, (ghi::ImageHandle, ghi::Formats, ghi::Layouts,)>,
 	order: Vec<usize>,
 }
@@ -268,7 +307,7 @@ impl RootRenderPass {
 		self.images.insert(name, (image, format, layout));
 	}
 
-    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>, render_pass_builder: RenderPassBuilder) {
+    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass + Send + Sync>, render_pass_builder: RenderPassBuilder) {
 		let index = self.render_passes.len();
         self.render_passes.push((render_pass, render_pass_builder.consumed_resources.iter().map(|e| e.0.to_string()).collect()));
 		self.order.push(index);
@@ -278,7 +317,7 @@ impl RootRenderPass {
     /// Usually the preparation step involves writing to buffers, culling drawables, determining what to draw and whether to even draw at all.
     /// Individual render pass prepare's can optionally return render pass execution functions which decide if a render pass gets executed.
     /// This can be because the render pass may be disabled or because some other internal conditions are not satisfied.
-    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) {
+    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
 		let commands = self.order.iter().map(|index| {
 			let (render_pass, consumed) = &self.render_passes[*index];
 			let attachments = consumed.iter().map(|c| {

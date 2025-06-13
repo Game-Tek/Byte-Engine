@@ -322,7 +322,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 	fn sync_buffers(&mut self) {
 		let copy_buffers = {
-			let mut dirty_buffers = self.ghi.buffer_writes_queue.borrow_mut();
+			let mut dirty_buffers = self.ghi.buffer_writes_queue.lock();
 
 			dirty_buffers.retain(|_, v| v.0 < self.ghi.frames as u32);
 			dirty_buffers.iter_mut().for_each(|(_, f)| f.0 += 1);
@@ -384,7 +384,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 	fn sync_textures(&mut self,) {
 		let image_handles = {
-			let mut dirty_images = self.ghi.image_writes_queue.borrow_mut();
+			let mut dirty_images = self.ghi.image_writes_queue.lock();
 
 			dirty_images.retain(|_, v| *v < self.ghi.frames as u32);
 			dirty_images.iter_mut().for_each(|(_, f)| *f += 1);
@@ -1175,19 +1175,19 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 		let wait_semaphores = wait_for_synchronizer_handles.iter().map(|synchronizer| {
 			vk::SemaphoreSubmitInfo::default()
-				.semaphore(self.get_synchronizer(*synchronizer).vk_semaphore)
+				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 				.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
 		}).chain(
 			presentations.iter().map(|presentation| {
 				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_swapchain(presentation.swapchain).semaphores[presentation.sequence_index as usize])
+					.semaphore(self.get_synchronizer(self.get_swapchain(presentation.swapchain).synchronizer).semaphore)
 					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
 			})
 		).collect::<Vec<_>>();
 
 		let signal_semaphores = signal_synchronizer_handles.iter().map(|synchronizer| {
 			vk::SemaphoreSubmitInfo::default()
-				.semaphore(self.get_synchronizer(*synchronizer).vk_semaphore)
+				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 				.stage_mask(self.stages)
 		}).collect::<Vec<_>>();
 
@@ -1209,12 +1209,19 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			let swapchain = self.get_swapchain(presentation.swapchain);
 			let wait_semaphores = signal_semaphores.iter().map(|signal| signal.semaphore).collect::<Vec<_>>();
 
+			let index = presentation.image_index;
+
 			let swapchains = [swapchain.swapchain];
 			let image_indices = [presentation.image_index as u32];
 
 			let mut results = [vk::Result::default()];
 
+			let present_fences = [self.get_synchronizer(swapchain.synchronizer).fence];
+
+			let mut present_fence_info = vk::SwapchainPresentFenceInfoEXT::default().fences(&present_fences);
+
   			let present_info = vk::PresentInfoKHR::default()
+     			.push_next(&mut present_fence_info)
 				.results(&mut results)
 				.swapchains(&swapchains)
 				.wait_semaphores(&wait_semaphores)
@@ -1222,6 +1229,10 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			;
 
 			let _ = unsafe { self.ghi.swapchain.queue_present(self.ghi.queue, &present_info).expect("No present") };
+
+			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
+				dbg!("Some error occurred during presentation");
+			}
 		}
 	}
 

@@ -2,6 +2,7 @@ use utils::RGBA;
 
 use crate::core::{property::Property, Entity, EntityHandle};
 
+use crate::input::ValueMapping;
 use crate::{Quaternion, Vector2, Vector3};
 
 use super::TriggerHandle;
@@ -81,22 +82,19 @@ impl <T: InputValue + Clone + 'static> Action<T> {
 #[derive(Copy, Clone, Debug)]
 pub struct ActionBindingDescription {
 	pub(crate) input_source: TriggerReference,
-	pub(crate) mapping: Value,
-	pub(crate) function: Option<Function>
+	pub(crate) mapping: ValueMapping,
 }
 
 impl ActionBindingDescription {
 	pub fn new(input_source: &'static str) -> Self {
 		ActionBindingDescription {
 			input_source: TriggerReference::Name(input_source),
-			mapping: Value::Bool(false),
-			function: None,
+			mapping: false.into(),
 		}
 	}
 
-	pub fn mapped(mut self, mapping: Value, function: Function) -> Self {
+	pub fn mapped(mut self, mapping: ValueMapping) -> Self {
 		self.mapping = mapping;
-		self.function = Some(function);
 		self
 	}
 }

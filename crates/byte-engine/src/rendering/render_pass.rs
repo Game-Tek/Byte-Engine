@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, rc::Rc};
+use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
@@ -8,7 +8,7 @@ use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 
 /// The type of a boxed function object that writes a render pass to a command buffer
-pub type RenderPassCommand = Box<dyn Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation])>;
+pub type RenderPassCommand = Box<dyn Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]) + Send + Sync>;
 
 pub trait RenderPass {
 	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
@@ -283,13 +283,13 @@ impl RenderPass for BlitPass {
 }
 
 pub struct RenderPassBuilder<'a> {
-	ghi: Rc<RwLock<ghi::Device>>,
+	ghi: Arc<RwLock<ghi::Device>>,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
 }
 
 impl <'a> RenderPassBuilder<'a> {
-	pub fn new(ghi: Rc<RwLock<ghi::Device>>) -> Self {
+	pub fn new(ghi: Arc<RwLock<ghi::Device>>) -> Self {
 		RenderPassBuilder {
 			ghi,
 			consumed_resources: Vec::new(),
@@ -313,8 +313,8 @@ impl <'a> RenderPassBuilder<'a> {
 		ReadFromResult { image, }
 	}
 
-	pub fn ghi(&mut self) -> Rc<RwLock<ghi::Device>> {
-		Rc::clone(&self.ghi)
+	pub fn ghi(&mut self) -> Arc<RwLock<ghi::Device>> {
+		Arc::clone(&self.ghi)
 	}
 }
 

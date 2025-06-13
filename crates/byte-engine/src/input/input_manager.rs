@@ -374,7 +374,7 @@ impl InputManager {
 		for record in &records {
 			if let Value::Bool(pressed) = record.value {
 				let actions = self.actions.iter_mut().filter(|a| a.trigger_mappings.iter().any(|tm| tm.trigger_handle == record.trigger_handle));
-	
+
 				if pressed {
 					for action in actions {
 						action.stack.push(record.clone());
@@ -391,7 +391,7 @@ impl InputManager {
 			let action_records = records.iter().filter(|r| action.trigger_mappings.iter().any(|tm| tm.trigger_handle == r.trigger_handle));
 
 			let most_recent_record = action_records.max_by_key(|r| r.time);
-			
+
 			let record = if let Some(record) = most_recent_record { record } else { continue; };
 
 			let value = if let Some(value) = Self::resolve_action_value_from_record(action, record) { value } else { continue; };
@@ -439,8 +439,8 @@ impl InputManager {
 			trigger_mappings: action_binding_descriptions.iter().map(|input_event| {
 				Some(TriggerMapping {
 					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
-					mapping: input_event.mapping,
-					function: input_event.function,
+					mapping: input_event.mapping.value,
+					function: Some(input_event.mapping.function),
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 			stack: Vec::new(),
@@ -452,7 +452,7 @@ impl InputManager {
 
 		handle
 	}
-	
+
 	/// Retrieves all device handles of a given device class identified by name.
 	pub fn get_devices_by_class_name(&self, class_name: &str) -> Option<Vec<DeviceHandle>> {
 		let device_class_handle = self.device_classes.iter().enumerate().find_map(|(i, d)| (d.name == class_name).then_some(DeviceClassHandle(i as u32)))?;
@@ -719,21 +719,21 @@ impl <T: InputValue> Listener<CreateEvent<Action<T>>> for InputManager where Ent
 		let action = handle.read();
 
 		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
-	
+
 		let input_event = InputAction {
 			name: name.to_string(),
 			r#type,
 			trigger_mappings: input_events.iter().map(|input_event| {
 				Some(TriggerMapping {
 					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
-					mapping: input_event.mapping,
-					function: input_event.function,
+					mapping: input_event.mapping.value,
+					function: Some(input_event.mapping.function),
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 			stack: Vec::new(),
 			handle: Some(handle.clone().into()),
 		};
-	
+
 		self.actions.push(input_event);
 	}
 }
@@ -750,7 +750,7 @@ impl Entity for InputManager {
 
 #[cfg(test)]
 mod tests {
-	use crate::{core::{spawn, spawn_as_child}, input::{input_trigger::TriggerDescription, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}};
+	use crate::{core::{spawn, spawn_as_child}, input::{input_trigger::TriggerDescription, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}, ValueMapping}};
 	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
 	use maths_rs::prelude::Base;
@@ -812,7 +812,7 @@ mod tests {
 
 		let x = register_keyboard_device_class(&mut input_manager);
 
-		let action = input_manager.create_action("MoveLongitudinally", Types::Float, &[ActionBindingDescription::new("Keyboard.Up").mapped(1f32.into(), Function::Boolean), ActionBindingDescription::new("Keyboard.Down").mapped((-1f32).into(), Function::Boolean)]);
+		let action = input_manager.create_action("MoveLongitudinally", Types::Float, &[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32)), ActionBindingDescription::new("Keyboard.Down").mapped(ValueMapping::new(Function::Boolean, -1f32))]);
 
 		let device = input_manager.create_device(&x);
 
@@ -1022,13 +1022,13 @@ mod tests {
 		record_and_assert_input_source_action_sequence(&mut input_manager, device, handle, RGBA { r: 0f32, g: 0f32, b: 0f32, a: 0f32 }, RGBA { r: 1f32, g: 1f32, b: 1f32, a: 1f32 }, true);
 	}
 
-	fn record_and_assert_boolean_input_source_action_interpolation<T>(input_manager: &mut InputManager, device: DeviceHandle, handle: TriggerReference, action_name: &str, input_source_name: &'static str, a: T, b: T) where T: InputValue + Into<Value> + Copy {
-		let action = input_manager.create_action(action_name, T::get_type(), &[ActionBindingDescription::new(input_source_name).mapped(b.into(), Function::Linear)]);
+	fn record_and_assert_boolean_input_source_action_interpolation<T>(input_manager: &mut InputManager, device: DeviceHandle, handle: TriggerReference, action_name: &str, input_source_name: &'static str, a: T, b: T) where T: InputValue + Into<Value> + Into<ValueMapping> + Copy {
+		let action = input_manager.create_action(action_name, T::get_type(), &[ActionBindingDescription::new(input_source_name).mapped(b.into())]);
 
 		assert_eq!(input_manager.get_action_state(action, device).value, a.into());
-		
+
 		input_manager.record_trigger_value_for_device(device, handle, true.into());
-		
+
 		input_manager.update();
 
 		assert_eq!(input_manager.get_action_state(action, device).value, b.into());
@@ -1105,12 +1105,12 @@ mod tests {
 
 		// Create the move action
 		let move_action_handle = spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
-			ActionBindingDescription::new("Keyboard.W").mapped(Value::Vector3(Vector3::new(0f32, 0f32, 1f32)), Function::Linear),
-			ActionBindingDescription::new("Keyboard.S").mapped(Value::Vector3(Vector3::new(0f32, 0f32, -1f32)), Function::Linear),
-			ActionBindingDescription::new("Keyboard.A").mapped(Value::Vector3(Vector3::new(-1f32, 0f32, 0f32)), Function::Linear),
-			ActionBindingDescription::new("Keyboard.D").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 0f32)), Function::Linear),
+			ActionBindingDescription::new("Keyboard.W").mapped(Vector3::new(0f32, 0f32, 1f32).into()),
+			ActionBindingDescription::new("Keyboard.S").mapped(Vector3::new(0f32, 0f32, -1f32).into()),
+			ActionBindingDescription::new("Keyboard.A").mapped(Vector3::new(-1f32, 0f32, 0f32).into()),
+			ActionBindingDescription::new("Keyboard.D").mapped(Vector3::new(1f32, 0f32, 0f32).into()),
 
-			ActionBindingDescription::new("Gamepad.LeftStick").mapped(Value::Vector3(Vector3::new(1f32, 0f32, 1f32)), Function::Linear),
+			ActionBindingDescription::new("Gamepad.LeftStick").mapped(Vector3::new(1f32, 0f32, 1f32).into()),
 		],).builder());
 
 		let input_queue = Rc::new(RefCell::new(Vec::new()));
@@ -1125,8 +1125,8 @@ mod tests {
 
 		// Create the jump action
 		let jump_action_handle = spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
-			ActionBindingDescription::new("Keyboard.Space").mapped(Value::Bool(true), Function::Linear),
-			ActionBindingDescription::new("Gamepad.A").mapped(Value::Bool(true), Function::Linear),
+			ActionBindingDescription::new("Keyboard.Space").mapped(true.into()),
+			ActionBindingDescription::new("Gamepad.A").mapped(true.into()),
 		],).builder());
 
 		{

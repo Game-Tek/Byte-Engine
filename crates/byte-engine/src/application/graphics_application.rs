@@ -1,4 +1,4 @@
-use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::time::Duration;
 
 use maths_rs::num::Base;
@@ -34,6 +34,9 @@ pub struct GraphicsApplication {
 	root_space_handle: EntityHandle<dyn Domain>,
 
 	audio_thread: std::thread::JoinHandle<()>,
+
+	graphics_channel_sender: std::sync::mpsc::Sender<renderer::RenderMessage>,
+	graphics_thread: std::thread::JoinHandle<()>,
 
 	#[cfg(debug_assertions)]
 	ttff: std::time::Duration,
@@ -87,14 +90,27 @@ impl Application for GraphicsApplication {
 		let audio_thread = {
 			let audio_system_handle = audio_system_handle.clone();
 
-			std::thread::spawn(move || {
+			std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
 				loop {
 					{
 						let mut audio_system = audio_system_handle.write();
 						audio_system.render();
 					}
 				}
-			})
+			}).unwrap()
+		};
+
+		let (graphics_channel_sender, graphics_channel_receiver) = std::sync::mpsc::channel();
+
+		let graphics_thread = {
+			let renderer_handle = renderer_handle.clone();
+
+			std::thread::Builder::new().name("Graphics".to_string()).spawn(move || {
+				while let Ok(frame) = graphics_channel_receiver.recv() {
+					let mut renderer = renderer_handle.write();
+					renderer.render(frame);
+				}
+			}).unwrap()
 		};
 
 		GraphicsApplication {
@@ -120,7 +136,10 @@ impl Application for GraphicsApplication {
 			start_time,
 			last_tick_time: std::time::Instant::now(),
 
+			graphics_channel_sender,
+
 			audio_thread,
+			graphics_thread,
 
 			#[cfg(debug_assertions)]
 			ttff: std::time::Duration::ZERO,
@@ -222,10 +241,14 @@ impl Application for GraphicsApplication {
 			e.update(time);
 		});
 
-		self.renderer_handle.map(|handle| {
+		let render_command = self.renderer_handle.map(|handle| {
 			let mut e = handle.write();
-			e.render();
+			e.prepare()
 		});
+
+		if let Some(render_command) = render_command {
+			self.graphics_channel_sender.send(render_command).unwrap();
+		}
 
 		self.tick_count += 1;
 

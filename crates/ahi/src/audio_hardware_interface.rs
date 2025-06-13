@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
 use windows::{core::GUID, Win32::{Media::{Audio::WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, KernelStreaming::{SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE}, Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT}, System::Com::CoTaskMemFree}};

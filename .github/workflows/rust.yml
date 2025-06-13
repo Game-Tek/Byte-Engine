@@ -10,20 +10,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-test-debug:
-    runs-on: ubuntu-latest
+  build-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    
     steps:
     - uses: actions/checkout@v4
-    - uses: rui314/setup-mold@v1
-    - name: Install Vulkan runtime dependencies
+    
+    # Linux-specific setup
+    - name: Setup mold linker (Linux)
+      if: matrix.platform == 'linux'
+      uses: rui314/setup-mold@v1
+      
+    - name: Install Vulkan runtime dependencies (Linux)
+      if: matrix.platform == 'linux'
       run: sudo add-apt-repository ppa:kisak/kisak-mesa && sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
-    - name: Install ALSA
+      
+    - name: Install ALSA development libraries (Linux)
+      if: matrix.platform == 'linux'
       run: sudo apt-get install libasound2-dev
+      
+    - name: Install additional Linux dependencies
+      if: matrix.platform == 'linux'
+      run: sudo apt-get install -y pkg-config libx11-dev libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+    
+    # Windows-specific setup
+    - name: Install Windows dependencies
+      if: matrix.platform == 'windows'
+      run: |
+        # Install Visual Studio Build Tools if needed
+        choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools"
+      shell: powershell
+    
+    # Cross-platform Vulkan SDK setup
     - name: Install Vulkan SDK
       uses: humbletim/setup-vulkan-sdk@v1.2.0
       with:
         vulkan-query-version: 1.3.204.0
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
+    
+    # Build and test
     - name: Build & Test
       run: cargo test --workspace -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.

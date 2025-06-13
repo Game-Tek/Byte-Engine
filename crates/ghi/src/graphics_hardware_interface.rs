@@ -626,7 +626,8 @@ pub trait Device where Self: Sized {
 	/// Multiple underlying synchronization primitives are created, one for each frame
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
 
-	fn start_frame(&self, index: u32) -> FrameKey;
+	/// Starts a new frame by waiting for these sequence frame's synchronizers.
+	fn start_frame(&self, index: u32, synchronizer_handle: SynchronizerHandle) -> FrameKey;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///
@@ -638,8 +639,6 @@ pub trait Device where Self: Sized {
 	/// A present key for future presentation and, if defined, the extent of the image.
 	/// # Errors
 	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
-
-	fn wait(&self, frame_key: FrameKey, synchronizer_handle: SynchronizerHandle);
 
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
 	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
@@ -1581,7 +1580,7 @@ pub(super) mod tests {
 
 		renderer.start_frame_capture();
 
-		let frame_key = renderer.start_frame(0);
+		let frame_key = renderer.start_frame(0, signal);
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
 
@@ -1603,7 +1602,7 @@ pub(super) mod tests {
 
 		renderer.end_frame_capture();
 
-		renderer.wait(frame_key, signal); // Wait for the render to finish before accessing the image data
+		todo!("Implement waiting");
 
 		assert!(!renderer.has_errors());
 
@@ -1669,7 +1668,7 @@ pub(super) mod tests {
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
-		let frame_key = renderer.start_frame(0);
+		let frame_key = renderer.start_frame(0, render_finished_synchronizer);
 
 		let (present_key, _) = renderer.acquire_swapchain_image(frame_key, swapchain,);
 
@@ -1694,8 +1693,6 @@ pub(super) mod tests {
 		command_buffer_recording.execute(&[], &[render_finished_synchronizer], &[present_key], render_finished_synchronizer);
 
 		renderer.end_frame_capture();
-
-		renderer.wait(frame_key, render_finished_synchronizer);
 
 		// TODO: assert rendering results
 
@@ -1749,9 +1746,7 @@ pub(super) mod tests {
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
 		for i in 0..2*64 {
-			let frame_key = renderer.start_frame(i);
-
-			renderer.wait(frame_key, render_finished_synchronizer);
+			let frame_key = renderer.start_frame(i, render_finished_synchronizer);
 
 			let (present_key, _) = renderer.acquire_swapchain_image(frame_key, swapchain,);
 
@@ -1830,7 +1825,7 @@ pub(super) mod tests {
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = renderer.start_frame(i as u32);
+			let frame_key = renderer.start_frame(i as u32, render_finished_synchronizer);
 
 			renderer.start_frame_capture();
 
@@ -1854,7 +1849,7 @@ pub(super) mod tests {
 
 			renderer.end_frame_capture();
 
-			renderer.wait(frame_key, render_finished_synchronizer);
+			todo!("Implement waiting");
 
 			assert!(!renderer.has_errors());
 
@@ -1917,7 +1912,7 @@ pub(super) mod tests {
 		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = renderer.start_frame(i as u32);
+			let frame_key = renderer.start_frame(i as u32, render_finished_synchronizer);
 
 			renderer.start_frame_capture();
 
@@ -1952,8 +1947,6 @@ pub(super) mod tests {
 			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
-
-			renderer.wait(frame_key, render_finished_synchronizer);
 
 			assert!(!renderer.has_errors());
 
@@ -2022,9 +2015,9 @@ pub(super) mod tests {
 
 		let command_buffer = renderer.create_command_buffer(None);
 
-		let signal = renderer.create_synchronizer(None, false);
+		let signal = renderer.create_synchronizer(None, true);
 
-		let frame_key = renderer.start_frame(0);
+		let frame_key = renderer.start_frame(0, signal);
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
@@ -2037,8 +2030,6 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(frame_key, signal);
-
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
 		assert_eq!(pixels[0], RGBAu8 { r: 127, g: 127, b: 127, a: 255 }); // Current frame image
@@ -2046,7 +2037,7 @@ pub(super) mod tests {
 
 		assert!(!renderer.has_errors());
 
-		let frame_key = renderer.start_frame(1);
+		let frame_key = renderer.start_frame(1, signal);
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
@@ -2059,8 +2050,6 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(frame_key, signal);
-
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
 		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
@@ -2068,15 +2057,13 @@ pub(super) mod tests {
 
 		assert!(!renderer.has_errors());
 
-		let frame_key = renderer.start_frame(2);
+		let frame_key = renderer.start_frame(2, signal);
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
-
-		renderer.wait(frame_key, signal);
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2085,7 +2072,7 @@ pub(super) mod tests {
 
 		assert!(!renderer.has_errors());
 
-		let frame_key = renderer.start_frame(3);
+		let frame_key = renderer.start_frame(3, signal);
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
 
@@ -2093,7 +2080,7 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.wait(frame_key, signal);
+		todo!("Implement wait for frame completion");
 
 		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
@@ -2104,7 +2091,7 @@ pub(super) mod tests {
 	}
 
 	pub(crate) fn descriptor_sets(renderer: &mut impl Device) {
-		let signal = renderer.create_synchronizer(None, false);
+		let signal = renderer.create_synchronizer(None, true);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -2209,7 +2196,7 @@ pub(super) mod tests {
 
 		renderer.start_frame_capture();
 
-		let frame_key = renderer.start_frame(0);
+		let frame_key = renderer.start_frame(0, signal);
 
 		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
@@ -2235,7 +2222,7 @@ pub(super) mod tests {
 
 		renderer.end_frame_capture();
 
-		renderer.wait(frame_key, signal); // Wait for the render to finish before accessing the texture data
+		todo!("Implement wait for frame completion");
 
 		// assert colored triangle was drawn to texture
 		let _pixels = renderer.get_image_data(texure_copy_handles[0]);
@@ -2409,7 +2396,7 @@ void main() {
 
 		let rendering_command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
@@ -2426,7 +2413,7 @@ void main() {
 		renderer.write_sbt_entry(hit_sbt_buffer.into(), 0, pipeline, closest_hit_shader);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = renderer.start_frame(i as u32);
+			let frame_key = renderer.start_frame(i as u32, render_finished_synchronizer);
 
 			renderer.start_frame_capture();
 
@@ -2516,8 +2503,6 @@ void main() {
 			renderer.end_frame_capture();
 
 			assert!(!renderer.has_errors());
-
-			renderer.wait(frame_key, render_finished_synchronizer);
 
 			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 

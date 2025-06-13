@@ -1,7 +1,7 @@
-use std::{borrow::Cow, cell::RefCell};
+use std::borrow::Cow;
 
-use ash::vk::{self, Handle as _};
-use utils::hash::{HashSet, HashSetExt};
+use ash::{ext::surface_maintenance1, vk::{self, Handle as _}};
+use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
 use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Size};
 
@@ -53,9 +53,11 @@ pub struct Device {
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 
-	pub(super) buffer_writes_queue: RefCell<HashMap<graphics_hardware_interface::BaseBufferHandle, (u32, vk::PipelineStageFlags2)>>,
-	pub(super) image_writes_queue: RefCell<HashMap<graphics_hardware_interface::ImageHandle, u32>>,
+	pub(super) buffer_writes_queue: Mutex<HashMap<graphics_hardware_interface::BaseBufferHandle, (u32, vk::PipelineStageFlags2)>>,
+	pub(super) image_writes_queue: Mutex<HashMap<graphics_hardware_interface::ImageHandle, u32>>,
 }
+
+unsafe impl Send for Device {}
 
 impl Device {
 	pub fn new(settings: graphics_hardware_interface::Features) -> Result<Device, &'static str> {
@@ -101,6 +103,18 @@ impl Device {
 			if is_instance_extension_available(ash::khr::win32_surface::NAME.to_str().unwrap()) {
 				extension_names.push(ash::khr::win32_surface::NAME.as_ptr());
 			}
+		}
+
+		if is_instance_extension_available(ash::khr::get_surface_capabilities2::NAME.to_str().unwrap()) {
+			extension_names.push(ash::khr::get_surface_capabilities2::NAME.as_ptr());
+		}
+
+		if is_instance_extension_available(ash::ext::surface_maintenance1::NAME.to_str().unwrap()) {
+			extension_names.push(ash::ext::surface_maintenance1::NAME.as_ptr());
+		}
+
+		if is_instance_extension_available(ash::ext::swapchain_maintenance1::NAME.to_str().unwrap()) {
+			extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
 		}
 
 		if settings.validation {
@@ -194,7 +208,10 @@ impl Device {
 
 				let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
 				let mut physical_device_barycentric_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
-				let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().push_next(&mut physical_device_vulkan_12_features).push_next(&mut physical_device_barycentric_features);
+				let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
+					.push_next(&mut physical_device_vulkan_12_features)
+					.push_next(&mut physical_device_barycentric_features)
+				;
 
 				unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
 
@@ -349,12 +366,17 @@ impl Device {
 			return Err("Mesh shader extension not available");
 		};
 
+		let mut swapchain_maintenance_features = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default().swapchain_maintenance1(true);
+
+		device_extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
+
 		let device_create_info = device_create_info
 			.push_next(&mut physical_device_vulkan_11_features)
 			.push_next(&mut physical_device_vulkan_12_features)
 			.push_next(&mut physical_device_vulkan_13_features)
 			.push_next(&mut shader_atomic_float_features)
 			.push_next(&mut barycentric_features)
+			.push_next(&mut swapchain_maintenance_features)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
 			.enabled_features(&enabled_physical_device_features)
@@ -443,8 +465,8 @@ impl Device {
 
 			states: HashMap::with_capacity(4096),
 
-			buffer_writes_queue: RefCell::new(HashMap::with_capacity(128)),
-			image_writes_queue: RefCell::new(HashMap::with_capacity(128)),
+			buffer_writes_queue: Mutex::new(HashMap::with_capacity(128)),
+			image_writes_queue: Mutex::new(HashMap::with_capacity(128)),
 		})
 	}
 
@@ -979,6 +1001,46 @@ impl Device {
 
 	fn get_descriptor_set(&self, descriptor_set_handle: DescriptorSetHandle) -> &DescriptorSet {
 		self.descriptor_sets.get(descriptor_set_handle.0 as usize).expect("No descriptor set with that handle.")
+	}
+}
+
+impl Drop for Device {
+	fn drop(&mut self) {
+		unsafe {
+			self.device.device_wait_idle().expect("Failed to wait for device idle");
+
+			self.synchronizers.iter().for_each(|synchronizer| {
+				self.device.destroy_semaphore(synchronizer.semaphore, None);
+				self.device.destroy_fence(synchronizer.fence, None);
+			});
+
+			self.swapchains.iter().for_each(|swapchain| {
+				self.swapchain.destroy_swapchain(swapchain.swapchain, None);
+				self.surface.destroy_surface(swapchain.surface, None);
+			});
+
+			self.descriptor_sets_layouts.iter().for_each(|descriptor_set_layout| {
+				self.device.destroy_descriptor_set_layout(descriptor_set_layout.descriptor_set_layout, None);
+			});
+
+			self.pipelines.iter().for_each(|pipeline| {
+				self.device.destroy_pipeline(pipeline.pipeline, None);
+			});
+
+			self.buffers.iter().for_each(|buffer| {
+				self.device.destroy_buffer(buffer.buffer, None);
+			});
+
+			self.images.iter().for_each(|image| {
+				self.device.destroy_image(image.image, None);
+			});
+
+			self.allocations.iter().for_each(|allocation| {
+				self.device.free_memory(allocation.memory, None);
+			});
+
+			self.device.destroy_device(None);
+		}
 	}
 }
 
@@ -1882,7 +1944,7 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'a mut T {
-		let mut buffer_writes = self.buffer_writes_queue.borrow_mut();
+		let mut buffer_writes = self.buffer_writes_queue.lock();
 		let mut entry = buffer_writes.entry(buffer_handle.into()).insert_entry((0, vk::PipelineStageFlags2::ALL_GRAPHICS));
 		entry.get_mut().0 = 0;
 
@@ -1910,7 +1972,7 @@ impl graphics_hardware_interface::Device for Device {
 
 		f(slice);
 
-		let mut texture_writes = self.image_writes_queue.borrow_mut();
+		let mut texture_writes = self.image_writes_queue.lock();
 		let mut entry = texture_writes.entry(texture_handle.into()).insert_entry(0);
 		*entry.get_mut() = 0;
 	}
@@ -2260,7 +2322,7 @@ impl graphics_hardware_interface::Device for Device {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
 		let shader_handles = pipeline.shader_handles.clone();
 
-		let mut buffer_writes = self.buffer_writes_queue.borrow_mut();
+		let mut buffer_writes = self.buffer_writes_queue.lock();
 		let mut entry = buffer_writes.entry(sbt_buffer_handle.into()).insert_entry((0, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR));
 
 		entry.get_mut().0 = 0;
@@ -2499,6 +2561,7 @@ impl graphics_hardware_interface::Device for Device {
 		};
 
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+    		.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
 			.surface(surface)
 			.min_image_count(min_image_count)
 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
@@ -2517,17 +2580,12 @@ impl graphics_hardware_interface::Device for Device {
 
 		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
-		let mut semaphores = [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT];
-
-		for i in 0..self.frames as usize {
-			semaphores[i] = unsafe { self.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).expect("No semaphore") };
-			self.set_name(semaphores[i], format!("Swapchain semaphore ({i})").as_str().into());
-		}
+		let synchronizer = self.create_synchronizer(Some("Swapchain sync"), true);
 
 		self.swapchains.push(Swapchain {
 			surface,
 			swapchain,
-			semaphores,
+			synchronizer,
 			extent,
 		});
 
@@ -2555,7 +2613,7 @@ impl graphics_hardware_interface::Device for Device {
 				self.synchronizers.push(Synchronizer {
 					next: None,
 					fence: self.create_vulkan_fence(signaled),
-					vk_semaphore: self.create_vulkan_semaphore(name, signaled),
+					semaphore: self.create_vulkan_semaphore(name, signaled),
 				});
 
 				if let Some(pr) = previous {
@@ -2569,26 +2627,37 @@ impl graphics_hardware_interface::Device for Device {
 		synchronizer_handle
 	}
 
-	fn start_frame(&self, index: u32) -> FrameKey {
-		FrameKey { frame_index: index, sequence_index: (index % self.frames as u32) as u8 }
+	fn start_frame(&self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> FrameKey {
+		let frame_index = index;
+		let sequence_index = (index % self.frames as u32) as u8;
+
+		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
+		let synchronizer = self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
+		unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect("No fence wait"); }
+		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
+
+		FrameKey { frame_index, sequence_index }
 	}
 
 	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Extent) {
-		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 
-		let semaphore = swapchain.semaphores[frame_key.sequence_index as usize];
+		let swapchain_synchronizer_handles = self.get_syncronizer_handles(swapchain.synchronizer);
+		let swapchain_synchronizer = self.synchronizers[swapchain_synchronizer_handles[frame_key.sequence_index as usize].0 as usize];
 
-		let timeout = if false {
-			std::time::Duration::from_secs(5).as_micros() as u64
-		} else {
-			u64::MAX
-		};
+		let semaphore = swapchain_synchronizer.semaphore;
+		let fence = swapchain_synchronizer.fence;
 
 		unsafe {
 			self.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
 		};
 
-		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, timeout, semaphore, vk::Fence::null()) };
+		unsafe { // Wait for presentation to have occurred
+			self.device.wait_for_fences(&[fence], true, u64::MAX).unwrap();
+			self.device.reset_fences(&[fence]).unwrap();
+		};
+
+		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, 0, semaphore, vk::Fence::default()) };
 
 		let (index, _) = if let Ok((index, is_suboptimal)) = acquisition_result {
 			if !is_suboptimal {
@@ -2602,52 +2671,17 @@ impl graphics_hardware_interface::Device for Device {
 
 		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities") };
 
-		// if swapchain_state == graphics_hardware_interface::SwapchainStates::Suboptimal || swapchain_state == graphics_hardware_interface::SwapchainStates::Invalid {
-
-		// 	unsafe { // TODO: consider deadlock https://vulkan-tutorial.com/Drawing_a_triangle/Swap_chain_recreation
-		// 		self.device.device_wait_idle().unwrap();
-
-		// 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-		// 			.surface(swapchain.surface)
-		// 			.min_image_count(surface_capabilities.min_image_count)
-		// 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
-		// 			.image_format(vk::Format::B8G8R8A8_SRGB)
-		// 			.image_extent(vk::Extent2D::default().width(1920).height(1080))
-		// 			.image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
-		// 			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-		// 			.pre_transform(surface_capabilities.current_transform)
-		// 			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-		// 			.present_mode(swapchain.surface_present_mode)
-		// 			.image_array_layers(1)
-		// 			.clipped(true)
-		// 		;
-
-		// 		let new_swapchain = self.swapchain.create_swapchain(&swapchain_create_info, None).expect("No swapchain");
-
-		// 		self.swapchain.destroy_swapchain(swapchain.swapchain, None);
-
-		// 		swapchain.swapchain = new_swapchain;
-		// 	}
-		// }
-
 		let extent = if surface_capabilities.current_extent.width != u32::MAX && surface_capabilities.current_extent.height != u32::MAX {
 			Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height)
 		} else {
 			Extent::rectangle(swapchain.extent.width, swapchain.extent.height)
 		};
 
-		(graphics_hardware_interface::PresentKey{
+		(graphics_hardware_interface::PresentKey {
 			image_index: index as u8,
 			sequence_index: frame_key.sequence_index,
 			swapchain: swapchain_handle,
 		}, extent)
-	}
-
-	fn wait(&self, frame_key: FrameKey, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
-		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
-		let synchronizer = self.synchronizers[synchronizer_handles[frame_key.sequence_index as usize].0 as usize];
-		unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect("No fence wait"); }
-		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
 	}
 
 	#[inline]

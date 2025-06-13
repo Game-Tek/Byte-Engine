@@ -5,10 +5,15 @@ use crate::graphics_hardware_interface;
 
 pub mod command_buffer;
 pub mod device;
+pub mod buffer;
+pub mod image;
+
 mod utils;
 
 pub use self::device::*;
 pub use self::command_buffer::*;
+pub use self::buffer::*;
+pub use self::image::*;
 
 pub(super) enum Descriptor {
 	Image {
@@ -77,7 +82,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 3;
 pub(crate) struct Swapchain {
 	surface: vk::SurfaceKHR,
 	swapchain: vk::SwapchainKHR,
-	semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+	synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	extent: vk::Extent2D,
 }
 
@@ -142,46 +147,14 @@ pub(crate) struct Allocation {
 }
 
 unsafe impl Send for Allocation {}
-
-#[derive(Clone, Copy)]
-pub(crate) struct Buffer {
-	next: Option<BufferHandle>,
-	staging: Option<BufferHandle>,
-	buffer: vk::Buffer,
-	size: usize,
-	device_address: vk::DeviceAddress,
-	pointer: *mut u8,
-	uses: graphics_hardware_interface::Uses,
-}
-
-unsafe impl Send for Buffer {}
+unsafe impl Sync for Allocation {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct Synchronizer {
 	next: Option<SynchronizerHandle>,
 	fence: vk::Fence,
-	vk_semaphore: vk::Semaphore,
+	semaphore: vk::Semaphore,
 }
-
-#[derive(Clone)]
-pub(crate) struct Image {
-	#[cfg(debug_assertions)]
-	name: Option<String>,
-	next: Option<ImageHandle>,
-	staging_buffer: Option<BufferHandle>,
-	image: vk::Image,
-	image_view: vk::ImageView,
-	image_views: [vk::ImageView; 8],
-	pointer: *const u8,
-	extent: vk::Extent3D,
-	format: vk::Format,
-	format_: graphics_hardware_interface::Formats,
-	size: usize,
-	uses: graphics_hardware_interface::Uses,
-	layers: u32,
-}
-
-unsafe impl Send for Image {}
 
 // #[derive(Clone, Copy)]
 // pub(crate) struct AccelerationStructure {

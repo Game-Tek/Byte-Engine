@@ -28,11 +28,11 @@ impl DefaultAudioSystem {
 	pub fn new(resource_manager: EntityHandle<ResourceManager>) -> Self {
 		let mut channels = HashMap::with_capacity(16);
 
-		channels.insert("master".to_string(), Channel { samples: vec![0; 48000 / 60].into_boxed_slice(), gain: 1f32 });
-
 		let params = HardwareParameters::new().channels(1);
 
 		let ahi = AudioDevice::new(params).expect("Failed to create audio device");
+
+		channels.insert("master".to_string(), Channel { samples: vec![0; ahi.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
 
 		Self {
 			resource_manager,

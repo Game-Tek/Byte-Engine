@@ -3,7 +3,7 @@
 //! It does not check if the sound is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer, gameplay::space::Spawner};
+use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer, core::Entity, gameplay::space::Spawner};
 
 #[test]
 fn sound() {
@@ -11,7 +11,7 @@ fn sound() {
 
     let space_handle = app.get_root_space_handle();
 
-	space_handle.spawn(Synthesizer::new());
+	space_handle.spawn(Synthesizer::new().builder());
 
 	app.do_loop();
 }

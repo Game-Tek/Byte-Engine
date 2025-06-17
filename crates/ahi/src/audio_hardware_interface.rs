@@ -2,17 +2,19 @@
 use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
-use windows::{core::GUID, Win32::{Media::{Audio::WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, KernelStreaming::{SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE}, Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT}, System::Com::CoTaskMemFree}};
-#[cfg(target_os = "windows")]
-use windows::{core::HRESULT, Win32::{Foundation::S_OK, Media::Audio::{eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX}, System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED}}};
+use windows::Win32::{
+	Foundation::S_OK,
+	Media::{
+		KernelStreaming::{WAVE_FORMAT_EXTENSIBLE, KSDATAFORMAT_SUBTYPE_PCM, SPEAKER_ALL, SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT},
+		Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+		Audio::{WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY},
+	},
+	System::Com::{CoCreateInstance, CoTaskMemFree, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,},
+};
 
-/// The `BufferPlayFunction` trait represents a function that returns a buffer of audio data.
-/// This buffer will be consumed by the hardware to play the client's audio.
-pub trait BufferPlayFunction<'a> = FnOnce() -> &'a [i16];
-
-/// The `CopyPlayFunction` trait represents a function that copies audio data into a buffer.
+/// The `WritePlayFunction` trait represents a function that writes audio data into a buffer.
 /// This buffer is owned by the hardware and the client writes to it.
-pub trait CopyPlayFunction<'a> = FnOnce(&'a mut [i16]);
+pub trait WritePlayFunction = FnOnce(&mut [i16]);
 
 /// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
 pub trait AudioHardwareInterface {
@@ -22,18 +24,10 @@ pub trait AudioHardwareInterface {
 
 	/// Sends audio data to the hardware.
 	///
-	/// This function takes two functions as arguments:
-	/// - `bpf`: A function that returns a buffer of client audio data.
-	/// - `cpf`: A function that copies client audio data into a buffer.
-	///
-	/// This is done as to optimize for each implementation because some hardware requires the client to provide a buffer of audio data,
-	/// while others require the client to copy audio data into a buffer owned by the hardware.
-	///
-	/// Only one of the two functions will be called for each call to `play`.
-	/// The play function used may change if the hardware parameters change.
+	/// This function takes a `WritePlayFunction` typed function object as argument that writes client audio data into a hardware buffer.
 	///
 	/// Returns the number of frames played.
-	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, cpf: impl CopyPlayFunction<'a>) -> Result<usize, ()>;
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()>;
 
 	/// Notifies the hardware that playback has been paused.
 	/// This may be used to improve performance by reducing CPU usage.
@@ -99,7 +93,7 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 				32 => alsa::pcm::Format::S32LE,
 				_ => return None,
 			}).ok()?;
-			hwp.set_access(alsa::pcm::Access::RWInterleaved).ok()?;
+			hwp.set_access(alsa::pcm::Access::MMapInterleaved).ok()?;
 			let effective_period_size = hwp.set_period_size_near(256, alsa::ValueOr::Nearest).ok()?;
 			let _ = hwp.set_buffer_size_near(effective_period_size * 2 * 2);
 
@@ -124,14 +118,12 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 		hwp.get_period_size().ok().unwrap() as usize
 	}
 
-	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, _: impl CopyPlayFunction<'a>) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
 		let pcm = &self.pcm.lock().unwrap();
 
 		let io = pcm.io_i16().or(Err(()))?;
 
-		let client_buffer = bpf();
-
-		let frames = io.writei(client_buffer).or(Err(()))?;
+		let frames = io.mmap(self.get_period_size(), |b| { let frames = b.len() / 2; wpf(b); frames }).or(Err(()))?;
 
 		Ok(frames)
 	}
@@ -151,6 +143,12 @@ pub struct WindowsAudioHardwareInterface {
 }
 
 #[cfg(target_os = "windows")]
+unsafe impl Send for WindowsAudioHardwareInterface {}
+
+#[cfg(target_os = "windows")]
+unsafe impl Sync for WindowsAudioHardwareInterface {}
+
+#[cfg(target_os = "windows")]
 impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 	fn new(params: HardwareParameters) -> Option<Self> {
 		if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) } != S_OK {
@@ -159,16 +157,22 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 
 		let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).unwrap() };
 
-		let device = unsafe {
+		let device: IMMDevice = unsafe {
 			enumerator.GetDefaultAudioEndpoint(eRender, eConsole).unwrap()
 		};
 
 		let client: IAudioClient = unsafe {
 			let client: IAudioClient = device.Activate(CLSCTX_ALL, None).unwrap();
 
-			let bits_per_sample = 32;
-			let samples_per_second = 48000;
-			let channels = 2;
+			let bits_per_sample = params.bit_depth;
+			let samples_per_second = params.sample_rate;
+			let channels = params.channels;
+
+			let dw_channel_mask = match channels {
+				1 => SPEAKER_FRONT_LEFT,
+				2 => SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT,
+				_ => SPEAKER_ALL,
+			};
 
 			let m_format = WAVEFORMATEXTENSIBLE_t {
 				Format: WAVEFORMATEX {
@@ -176,16 +180,46 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 					nSamplesPerSec: samples_per_second,
 					nBlockAlign: (channels * bits_per_sample / 8) as _,
 					nAvgBytesPerSec: samples_per_second * (channels * bits_per_sample / 8),
-					wBitsPerSample: bits_per_sample as _,
+					wBitsPerSample: bits_per_sample.next_multiple_of(8) as _,
 					wFormatTag: WAVE_FORMAT_EXTENSIBLE as _,
 					cbSize: 22,
 				},
 				Samples: windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE_0 { wValidBitsPerSample: bits_per_sample as _ },
-				dwChannelMask: SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT,
-				SubFormat: KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+				dwChannelMask: dw_channel_mask,
+				SubFormat: KSDATAFORMAT_SUBTYPE_PCM,
 			};
 
+			let mut m_closest_format: *const WAVEFORMATEXTENSIBLE_t = std::ptr::null();
+
+			if client.IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, std::mem::transmute(&m_format), Some(std::mem::transmute(&mut m_closest_format))).is_err() {
+				if !m_closest_format.is_null() {
+					let m_closest_format: &WAVEFORMATEXTENSIBLE_t = std::mem::transmute(m_closest_format);
+					let closest_channels = m_closest_format.Format.nChannels;
+					let closest_samples_per_second = m_closest_format.Format.nSamplesPerSec;
+					let closest_bits_per_sample = m_closest_format.Format.wBitsPerSample;
+					let closest_sub_format = m_closest_format.SubFormat;
+					panic!("Demanded audio format and/or parameters are not supported by the target audio device. Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}", closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format);
+				}
+
+				panic!("Demanded audio format and/or parameters are not supported by the target audio device.");
+			}
+
+			if !m_closest_format.is_null() {
+				let m_closest_format: &WAVEFORMATEXTENSIBLE_t = std::mem::transmute(m_closest_format);
+				let closest_channels = m_closest_format.Format.nChannels;
+				let closest_samples_per_second = m_closest_format.Format.nSamplesPerSec;
+				let closest_bits_per_sample = m_closest_format.Format.wBitsPerSample;
+				let closest_sub_format = m_closest_format.SubFormat;
+				println!("Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}", closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format);
+			}
+
+			let _ = ((1f32 / samples_per_second as f32) * 256f32) as i64 * 1_000_0000;
+
 			client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(&m_format), None).unwrap();
+
+			if !m_closest_format.is_null() {
+				CoTaskMemFree(Some(m_closest_format as _));
+			}
 
 			client
 		};
@@ -205,33 +239,35 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 		}.into()
 	}
 
-	fn play<'a>(&self, bpf: impl BufferPlayFunction<'a>, _: impl CopyPlayFunction<'a>) -> Result<usize, ()> {
+	fn get_period_size(&self) -> usize {
+		let period_size = unsafe {
+			self.client.GetBufferSize().unwrap()
+		};
+
+		period_size as usize
+	}
+
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
 		let buffer_size = unsafe { self.client.GetBufferSize().unwrap() };
 		let padding = unsafe { self.client.GetCurrentPadding().unwrap() };
 
 		let available_space = buffer_size - padding;
 
 		if available_space == 0 {
-			return Err(());
+			return Ok(0);
 		}
 
 		let buffer = unsafe {
-			std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap(), available_space as usize)
+			std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut i16, available_space as usize)
 		};
 
-		let audio_data = unsafe {
-			std::slice::from_raw_parts(audio_data.as_ptr() as *const u8, audio_data.len() * std::mem::size_of::<i16>())
-		};
-
-		let write_len = std::cmp::min(buffer.len(), audio_data.len());
-
-		buffer.copy_from_slice(&audio_data[..write_len]);
+		wpf(buffer);
 
 		unsafe {
-			self.render_client.ReleaseBuffer(write_len as _, 0).unwrap();
+			self.render_client.ReleaseBuffer(available_space as _, 0).unwrap();
 		}
 
-		Ok(write_len)
+		Ok(available_space as usize)
 	}
 
 	fn pause(&self) {

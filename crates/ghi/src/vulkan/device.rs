@@ -168,6 +168,10 @@ impl Device {
 			None
 		};
 
+		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
+			if required { feature != 0 } else { true }
+		};
+
 		let mut barycentric_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default()
 			.fragment_shader_barycentric(false)
 		;
@@ -217,16 +221,15 @@ impl Device {
 
 				let features = physical_device_features.features;
 
-				if features.sample_rate_shading == vk::FALSE { return false; }
-				if physical_device_vulkan_12_features.buffer_device_address_capture_replay != buffer_device_address_capture_replay as vk::Bool32 { return false; }
-				if physical_device_barycentric_features.fragment_shader_barycentric != barycentric_features.fragment_shader_barycentric { return false; }
-
+				features.sample_rate_shading != vk::FALSE &&
+				flag_required_or_available(physical_device_vulkan_12_features.buffer_device_address_capture_replay, buffer_device_address_capture_replay) &&
+				flag_required_or_available(physical_device_barycentric_features.fragment_shader_barycentric, barycentric_features.fragment_shader_barycentric != 0) &&
 				features.shader_storage_image_array_dynamic_indexing != vk::FALSE &&
 				features.shader_sampled_image_array_dynamic_indexing != vk::FALSE &&
 				features.shader_storage_buffer_array_dynamic_indexing != vk::FALSE &&
 				features.shader_uniform_buffer_array_dynamic_indexing != vk::FALSE &&
 				features.shader_storage_image_write_without_format != vk::FALSE &&
-				features.geometry_shader == settings.geometry_shader as vk::Bool32
+				flag_required_or_available(features.geometry_shader, settings.geometry_shader)
 			}).max_by_key(|physical_device| {
 				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
 
@@ -913,8 +916,8 @@ impl Device {
 				let win32_surface = ash::khr::win32_surface::Instance::new(&self.entry, &self.instance);
 
 				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
-					.hinstance(os_handles.hinstance.0)
-					.hwnd(os_handles.hwnd.0);
+					.hinstance(os_handles.hinstance.0 as isize)
+					.hwnd(os_handles.hwnd.0 as isize);
 
 				unsafe { win32_surface.create_win32_surface(&win32_surface_create_info, None).expect("No surface") }
 			}
@@ -2561,7 +2564,7 @@ impl graphics_hardware_interface::Device for Device {
 		};
 
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-    		.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
+			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
 			.surface(surface)
 			.min_image_count(min_image_count)
 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)

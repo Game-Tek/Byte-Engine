@@ -95,6 +95,42 @@ impl DefaultAudioSystem {
 			Some(self.audio_resources.get(audio_asset_url).unwrap());
 		}
 	}
+
+	fn rndr(&self, buffer: &mut [i16]) {
+		buffer.iter_mut().for_each(|s| *s = 0);
+
+		for playing_sound in &self.sources {
+			let current_sample = playing_sound.current_sample;
+			let gain = playing_sound.gain;
+
+			let mut play_sound = |url: &str| {
+				let (audio, audio_data) = self.audio_resources.get(url).unwrap();
+
+				if current_sample >= audio.sample_count { return; }
+
+				let current_sample = current_sample.min(audio.sample_count);
+
+				let audio_data = &audio_data[current_sample as usize..];
+
+				for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
+					*b += f32_to_i16(i16_to_f32(*s) * gain);
+				}
+			};
+
+			match &playing_sound.generator {
+				Generator::File { audio_asset_url } => {
+					play_sound(audio_asset_url);
+				}
+				Generator::RoundRobin(handle) => {
+					let mut rr = handle.write();
+					if let Some(e) = rr.get() {
+						play_sound(e);
+					}
+				}
+				_ => {}
+			}
+		}
+	}
 }
 
 impl Entity for DefaultAudioSystem {}
@@ -107,63 +143,12 @@ impl AudioSystem for DefaultAudioSystem {
 	}
 
 	fn render(&mut self) {
-		let master_channel = self.channels.get_mut("master").expect("No master channel was found.");
-
-		master_channel.samples.iter_mut().for_each(|sample| *sample = 0);
-
-		let hardware_period_size = self.ahi.get_period_size();
-
-		let audio_buffer = master_channel.samples.as_mut();
-		let audio_buffer = &mut audio_buffer[..hardware_period_size]; // Prepare audio buffer considering the AHI buffer size
-
-		{
-			let channel_gain = master_channel.gain;
-
-			for playing_sound in &mut self.sources {
-				let current_sample = &mut playing_sound.current_sample;
-				let gain = channel_gain * playing_sound.gain;
-
-				let mut play_sound = |url: &str| {
-					let (audio, audio_data) = self.audio_resources.get(url).unwrap();
-
-					let audio_data = &audio_data[*current_sample as usize..];
-
-					let audio_data = if audio_data.len() > audio_buffer.len() {
-						&audio_data[..audio_buffer.len()]
-					} else {
-						audio_data
-					};
-
-					for (i, sample) in audio_data.iter().enumerate() {
-						audio_buffer[i] += f32_to_i16(i16_to_f32(*sample) * gain);
-					}
-
-					*current_sample += audio_data.len() as u32 % audio.sample_count;
-				};
-
-				match &playing_sound.generator {
-					Generator::File { audio_asset_url } => {
-						play_sound(audio_asset_url);
-					}
-					Generator::RoundRobin(handle) => {
-						let mut rr = handle.write();
-						if let Some(e) = rr.get() {
-							play_sound(e);
-						}
-					}
-					_ => {}
-				}
-			}
-		}
-
-		let frames = self.ahi.play(|| {
-			audio_buffer
-		}, |hw_buffer| {
-			hw_buffer.copy_from_slice(audio_buffer);
+		let frames = self.ahi.play(|hw_buffer| {
+			self.rndr(hw_buffer);
 		}).unwrap();
 
-		if frames != hardware_period_size {
-			log::warn!(" {} where written to hardware buffer but {} is the expected period size", frames, hardware_period_size);
+		for e in &mut self.sources {
+			e.current_sample += frames as u32;
 		}
 	}
 }

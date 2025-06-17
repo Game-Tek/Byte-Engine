@@ -8,6 +8,9 @@ pub struct Win32Window {
 	hwnd: HWND,
 }
 
+unsafe impl Send for Win32Window {}
+unsafe impl Sync for Win32Window {}
+
 pub struct OSHandles {
 	pub hinstance: HINSTANCE,
 	pub hwnd: HWND,
@@ -32,7 +35,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(true as _)
 		}
 		WM_NCCALCSIZE => {
-			if wparam.0 == false as _ {
+			if wparam.0 == 0 {
 				LRESULT(0)
 			} else {
 				LRESULT(1)
@@ -98,7 +101,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			let x = (lparam.0 & 0xFFFF) as u32;
 			let y = (lparam.0 >> 16) as u32;
 
-			let (_, height) = unsafe {
+			let (width, height) = unsafe {
 				let mut lprect = RECT {
 					left: 0,
 					top: 0,
@@ -106,12 +109,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 					bottom: 0,
 				};
 
-				GetClientRect(hwnd, &mut lprect);
+				let _ = GetClientRect(hwnd, &mut lprect);
 
 				((lprect.right - lprect.left) as u32, (lprect.bottom - lprect.top) as u32)
 			};
 
 			let y = height - y;
+
+			let x = x as f32 / width as f32;
+			let y = y as f32 / height as f32;
+
+			let x = x * 2f32 - 1f32;
+			let y = y * 2f32 - 1f32;
 
 			window_data.payload = Some(WindowEvents::MouseMove {
 				x,
@@ -241,12 +250,9 @@ impl Win32Window {
 
 			SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).ok()?;
 
-			(class, CreateWindowExA(WINDOW_EX_STYLE::default(), PCSTR(id_name.as_ptr() as _), PCSTR(name.as_ptr() as _), window_style, CW_USEDEFAULT, CW_USEDEFAULT, width, height, HWND::default(), HMENU::default(), hinstance, None))
+			let hwnd = CreateWindowExA(WINDOW_EX_STYLE::default(), PCSTR(id_name.as_ptr() as _), PCSTR(name.as_ptr() as _), window_style, CW_USEDEFAULT, CW_USEDEFAULT, width, height, None, None, Some(hinstance.into()), None).ok()?;
+			(class, hwnd)
 		};
-
-		if hwnd.0 == 0 {
-			return None;
-		}
 
 		// Remove set WNDPROC, we don't want Windows to call this unless we are ready to handle messages
 		unsafe {
@@ -282,13 +288,9 @@ impl Win32Window {
 impl Drop for Win32Window {
 	fn drop(&mut self) {
 		unsafe {
-			if self.hwnd.0 != 0 {
-				DestroyWindow(self.hwnd);
-			}
+			DestroyWindow(self.hwnd);
 
-			if self.class_atom != 0 {
-				UnregisterClassA(PCSTR(self.class_atom as _), self.hinstance);
-			}
+			UnregisterClassA(PCSTR(self.class_atom as _), Some(self.hinstance));
 		}
 	}
 
@@ -317,7 +319,7 @@ impl Iterator for WindowIterator<'_> {
 		let res = unsafe {
 			SetWindowLongPtrA(self.window.hwnd, GWLP_USERDATA, &mut window_data as *mut _ as _);
 
-			let res = PeekMessageA(&mut msg, self.window.hwnd, 0, 0, PM_REMOVE);
+			let res = PeekMessageA(&mut msg, Some(self.window.hwnd), 0, 0, PM_REMOVE);
 
 			TranslateMessage(&msg);
 			DispatchMessageA(&msg);

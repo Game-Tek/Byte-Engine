@@ -20,9 +20,10 @@ pub mod vulkan;
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub use vulkan::Device as Device;
-#[cfg(target_os = "linux")]
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub use vulkan::CommandBufferRecording as CommandBufferRecording;
 
 pub mod image;

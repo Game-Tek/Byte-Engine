@@ -48,7 +48,7 @@ impl Renderer {
 				.debug_log_function(|message| {
 					log::error!("{}", message);
 				})
-				.geometry_shader(true)
+				.geometry_shader(false)
 		).unwrap()));
 
 		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.

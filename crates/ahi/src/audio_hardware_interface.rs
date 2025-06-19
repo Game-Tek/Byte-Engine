@@ -12,9 +12,74 @@ use windows::Win32::{
 	System::Com::{CoCreateInstance, CoTaskMemFree, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,},
 };
 
-/// The `WritePlayFunction` trait represents a function that writes audio data into a buffer.
+/// The `Mono16Bit` type represents a reference to a mono (single channel) audio buffer with signed 16-bit samples.
+pub type Mono16Bit<'a> = &'a [i16];
+/// The `Stereo16Bit` type represents a reference to a stereo (two channels) audio buffer with signed 16-bit samples.
+pub type Stereo16Bit<'a> = &'a [(i16, i16)];
+/// The `MonoFloat32` type represents a reference to a mono (single channel) audio buffer with 32-bit floating-point samples.
+pub type MonoFloat32<'a> = &'a [f32];
+/// The `StereoFloat32` type represents a reference to a stereo (two channels) audio buffer with 32-bit floating-point samples.
+pub type StereoFloat32<'a> = &'a [(f32, f32)];
+
+/// The `Mono16Bit` type represents a mutable reference to a mono (single channel) audio buffer with signed 16-bit samples.
+pub type Mono16BitMut<'a> = &'a mut [i16];
+/// The `Stereo16Bit` type represents a mutable reference to a stereo (two channels) audio buffer with signed 16-bit samples.
+pub type Stereo16BitMut<'a> = &'a mut [(i16, i16)];
+/// The `MonoFloat32` type represents a mutable reference to a mono (single channel) audio buffer with 32-bit floating-point samples.
+pub type MonoFloat32Mut<'a> = &'a mut [f32];
+/// The `StereoFloat32` type represents a mutable reference to a stereo (two channels) audio buffer with 32-bit floating-point samples.
+pub type StereoFloat32Mut<'a> = &'a mut [(f32, f32)];
+
+/// The `Streams` enum represents a buffer of audio in different formats.
+pub enum Streams<'a> {
+	/// Represents a mono (single channel) audio buffer with signed 16-bit samples.
+	Mono16Bit(Mono16BitMut<'a>),
+	/// Represents a stereo (two channels) audio buffer with signed 16-bit samples.
+	Stereo16Bit(Stereo16BitMut<'a>),
+	/// Represents a mono (single channel) audio buffer with 32-bit floating-point samples.
+	MonoFloat32(MonoFloat32Mut<'a>),
+	/// Represents a stereo (two channels) audio buffer with 32-bit floating-point samples.
+	StereoFloat32(StereoFloat32Mut<'a>),
+}
+
+impl Streams<'_> {
+	/// The `zero` method fills the buffer with zeros.
+	pub fn zero(&mut self) {
+		match self {
+			Self::Mono16Bit(buf) => buf.fill(0),
+			Self::Stereo16Bit(buf) => buf.fill((0, 0)),
+			Self::MonoFloat32(buf) => buf.fill(0.0),
+			Self::StereoFloat32(buf) => buf.fill((0.0, 0.0)),
+		}
+	}
+
+	pub fn frames(&self) -> usize {
+		match self {
+			Self::Mono16Bit(buf) => buf.len() / 2,
+			Self::Stereo16Bit(buf) => buf.len() / 2 / 2,
+			Self::MonoFloat32(buf) => buf.len() / 4,
+			Self::StereoFloat32(buf) => buf.len() / 4 / 2,
+		}
+	}
+}
+
+pub trait Mono16BitBufferPlayFunction = FnOnce(Mono16Bit);
+pub trait Stereo16BitBufferPlayFunction = FnOnce(Stereo16Bit);
+pub trait MonoFloat32BufferPlayFunction = FnOnce(MonoFloat32);
+pub trait StereoFloat32BufferPlayFunction = FnOnce(StereoFloat32);
+
+pub enum Writer<'a> {
+	Mono16Bit(Box<dyn Mono16BitBufferPlayFunction + 'a>),
+	Stereo16Bit(Box<dyn Stereo16BitBufferPlayFunction + 'a>),
+	MonoFloat32(Box<dyn MonoFloat32BufferPlayFunction + 'a>),
+	StereoFloat32(Box<dyn StereoFloat32BufferPlayFunction + 'a>),
+}
+
+/// The `WritePlayFunction` trait represents a function object that writes audio data into a buffer.
 /// This buffer is owned by the hardware and the client writes to it.
-pub trait WritePlayFunction = FnOnce(&mut [i16]);
+pub trait WritePlayFunction = FnOnce(Streams);
+
+pub trait BufferPlayFunction = FnOnce(Writer) -> usize;
 
 /// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
 pub trait AudioHardwareInterface {
@@ -27,16 +92,20 @@ pub trait AudioHardwareInterface {
 	/// This function takes a `WritePlayFunction` typed function object as argument that writes client audio data into a hardware buffer.
 	///
 	/// Returns the number of frames played.
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()>;
+	fn play(&self, wpf: impl WritePlayFunction, bpf: impl BufferPlayFunction) -> Result<usize, ()>;
 
 	/// Notifies the hardware that playback has been paused.
 	/// This may be used to improve performance by reducing CPU usage.
 	fn pause(&self);
 }
 
+/// The `HardwareParameters` struct represents the parameters for the audio hardware.
 pub struct HardwareParameters {
+	/// The sample rate of the audio hardware, in Hz.
 	sample_rate: u32,
+	/// The number of channels in the audio hardware.
 	channels: u32,
+	/// The bit depth of the audio hardware.
 	bit_depth: u32,
 }
 
@@ -74,6 +143,7 @@ impl HardwareParameters {
 #[cfg(target_os = "linux")]
 pub struct ALSAAudioHardwareInterface {
 	pcm: Mutex<alsa::pcm::PCM>,
+	parameters: HardwareParameters,
 }
 
 #[cfg(target_os = "linux")]
@@ -81,6 +151,9 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 	fn new(params: HardwareParameters) -> Option<Self> {
 		let name = std::ffi::CString::new("default").unwrap();
 		let pcm = alsa::pcm::PCM::open(&name, alsa::Direction::Playback, false).ok()?;
+
+		let sample_size = (params.bit_depth.next_multiple_of(8) / 8) as usize;
+		let channel_count = params.channels as usize;
 
 		{
 			let hwp = alsa::pcm::HwParams::any(&pcm).ok()?;
@@ -90,12 +163,12 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 				8 => alsa::pcm::Format::S8,
 				16 => alsa::pcm::Format::S16LE,
 				24 => return None,
-				32 => alsa::pcm::Format::S32LE,
+				32 => alsa::pcm::Format::FloatLE,
 				_ => return None,
 			}).ok()?;
-			hwp.set_access(alsa::pcm::Access::MMapInterleaved).ok()?;
-			let effective_period_size = hwp.set_period_size_near(256, alsa::ValueOr::Nearest).ok()?;
-			let _ = hwp.set_buffer_size_near(effective_period_size * 2 * 2);
+			hwp.set_access(alsa::pcm::Access::RWInterleaved).ok()?;
+			let effective_period_size = hwp.set_period_size_near(1024, alsa::ValueOr::Nearest).ok()?;
+			let _ = hwp.set_buffer_size_near(effective_period_size * sample_size as i64 * channel_count as i64);
 
 			pcm.hw_params(&hwp).ok()?;
 		}
@@ -109,6 +182,7 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 
 		ALSAAudioHardwareInterface {
 			pcm: Mutex::new(pcm),
+			parameters: params,
 		}.into()
 	}
 
@@ -118,14 +192,97 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 		hwp.get_period_size().ok().unwrap() as usize
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction, bpf: impl BufferPlayFunction) -> Result<usize, ()> {
 		let pcm = &self.pcm.lock().unwrap();
 
-		let io = pcm.io_i16().or(Err(()))?;
+		let hw_params = pcm.hw_params_current().unwrap();
+		let access = hw_params.get_access().unwrap();
 
-		let frames = io.mmap(self.get_period_size(), |b| { let frames = b.len() / 2; wpf(b); frames }).or(Err(()))?;
+		match self.parameters.bit_depth {
+			16 => {
+				let io = pcm.io_i16().or(Err(()))?;
 
-		Ok(frames)
+				let frames = match access {
+					alsa::pcm::Access::MMapInterleaved => {
+						io.mmap(self.get_period_size(), |b| {
+							match self.parameters.channels {
+								1 => {
+									let frames = b.len() / 2;
+									wpf(Streams::Mono16Bit(b));
+									frames
+								}
+								2 => {
+									let frames = b.len() / 4;
+									wpf(Streams::Stereo16Bit(unsafe { std::mem::transmute(b) }));
+									frames
+								}
+								_ => panic!(),
+							}
+						}).or(Err(()))?
+					}
+					alsa::pcm::Access::RWInterleaved => {
+						match self.parameters.channels {
+							1 => {
+								bpf(Writer::Mono16Bit(Box::new(|b| {
+									io.writei(b);
+								})))
+							}
+							2 => {
+								bpf(Writer::Stereo16Bit(Box::new(|b| {
+									io.writei(unsafe { std::mem::transmute(b) });
+								})))
+							}
+							_ => panic!("Unsupported channel count"),
+						}
+					}
+					_ => panic!("Unsupported access type"),
+				};
+
+				Ok(frames)
+			}
+			32 => {
+				let io = pcm.io_f32().or(Err(()))?;
+
+				let frames = match access {
+					alsa::pcm::Access::MMapInterleaved => {
+						io.mmap(self.get_period_size(), |b| {
+							match self.parameters.channels {
+								1 => {
+									let frames = b.len() / 4;
+									wpf(Streams::MonoFloat32(b));
+									frames
+								}
+								2 => {
+									let frames = b.len() / 8;
+									wpf(Streams::StereoFloat32(unsafe { std::mem::transmute(b) }));
+									frames
+								}
+								_ => panic!(),
+							}
+						}).or(Err(()))?
+					}
+					alsa::pcm::Access::RWInterleaved => {
+						match self.parameters.channels {
+							1 => {
+								bpf(Writer::MonoFloat32(Box::new(|b| {
+									io.writei(b);
+								})))
+							}
+							2 => {
+								bpf(Writer::StereoFloat32(Box::new(|b| {
+									io.writei(unsafe { std::mem::transmute(b) });
+								})))
+							}
+							_ => panic!("Unsupported channel count"),
+						}
+					}
+					_ => panic!("Unsupported access type"),
+				};
+
+				Ok(frames)
+			}
+			_ => Err(()),
+		}
 	}
 
 	fn pause(&self) {

@@ -2,7 +2,7 @@ use std::{collections::VecDeque, ffi::c_void};
 
 use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}};
+use wayland_protocols::{wp::{pointer_constraints::zv1::client::zwp_pointer_constraints_v1, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
 
 use crate::{Keys, MouseKeys, WindowEvents};
 
@@ -35,19 +35,19 @@ impl WaylandWindow {
 				xdg_wm_base: None,
 				wl_seat: None,
 				wl_output: None,
-	
+
 				scale: 1,
-	
+
 				wl_surface: None,
 				wl_callback: None,
-	
+
 				events: VecDeque::with_capacity(64),
 
 				extent: None,
 			};
 
 			event_queue.roundtrip(&mut app_data).unwrap();
-	
+
 			if let (Some(compositor), Some(wm_base)) = (app_data.compositor, app_data.xdg_wm_base) {
 				Ok((compositor, wm_base))
 			} else {
@@ -73,17 +73,17 @@ impl WaylandWindow {
 				xdg_wm_base: None,
 				wl_seat: None,
 				wl_output: None,
-	
+
 				scale: 1,
-	
+
 				wl_surface: None,
 				wl_callback: None,
-	
+
 				events: VecDeque::with_capacity(64),
 
 				extent: None,
 			};
-			
+
 			event_queue.roundtrip(&mut app_data).unwrap();
 
 			surface.set_buffer_scale(app_data.scale as _);
@@ -121,7 +121,7 @@ impl WaylandWindow {
 			surface: self.surface().id().as_ptr() as *mut c_void,
 		}
 	}
-	
+
 	pub fn poll(&mut self) -> WindowIterator {
 		let mut app_data = AppData {
 			compositor: None,
@@ -442,6 +442,17 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 			wl_output::Event::Name { .. } => {
 			}
 			wl_output::Event::Done => {
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for AppData {
+	fn event(this: &mut Self, _: &zwp_relative_pointer_v1::ZwpRelativePointerV1, event: zwp_relative_pointer_v1::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+		match event {
+			zwp_relative_pointer_v1::Event::RelativeMotion { utime_hi, utime_lo, dx, dy, dx_unaccel, dy_unaccel } => {
+				println!("Relative motion: dx={}, dy={}", dx, dy);
 			}
 			_ => {}
 		}

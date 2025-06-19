@@ -20,7 +20,7 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
-	application_events: (std::sync::mpsc::Sender<Events>, std::sync::mpsc::Receiver<Events>),
+	application_events: (std::sync::mpmc::Sender<Events>, std::sync::mpmc::Receiver<Events>),
 
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
 	input_system_handle: EntityHandle<input::InputManager>,
@@ -85,13 +85,21 @@ impl Application for GraphicsApplication {
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
 
-		let application_events = std::sync::mpsc::channel();
+		let application_events = std::sync::mpmc::channel();
 
 		let audio_thread = {
 			let audio_system_handle = audio_system_handle.clone();
 
+			let rx = application_events.1.clone();
+
 			std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
 				loop {
+					if let Ok(msg) = rx.try_recv() {
+						if let Events::Close = msg {
+							break;
+						}
+					}
+
 					{
 						let mut audio_system = audio_system_handle.write();
 						audio_system.render();
@@ -332,7 +340,7 @@ impl GraphicsApplication {
 	}
 }
 
-pub struct ApplicationEventsChannel(std::sync::mpsc::Sender<Events>);
+pub struct ApplicationEventsChannel(std::sync::mpmc::Sender<Events>);
 
 impl ApplicationEventsChannel {
 	/// Requests the application to close.

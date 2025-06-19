@@ -2,7 +2,7 @@ use std::{collections::HashMap, f32::consts::PI};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
 
 use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Positionable};
-use ahi::{self, audio_hardware_interface::{AudioDevice, AudioHardwareInterface, HardwareParameters}};
+use ahi::{self, audio_hardware_interface::{AudioDevice, AudioHardwareInterface, HardwareParameters, Streams, Writer}};
 
 use super::{sound::{self, Sound}, synthesizer::Synthesizer};
 
@@ -96,9 +96,7 @@ impl DefaultAudioSystem {
 		}
 	}
 
-	fn rndr(&self, buffer: &mut [i16]) {
-		buffer.iter_mut().for_each(|s| *s = 0);
-
+	fn rndr(&self, buffer: &mut [f32]) {
 		for playing_sound in &self.sources {
 			let current_sample = playing_sound.current_sample;
 			let gain = playing_sound.gain;
@@ -113,7 +111,7 @@ impl DefaultAudioSystem {
 				let audio_data = &audio_data[current_sample as usize..];
 
 				for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
-					*b += f32_to_i16(i16_to_f32(*s) * gain);
+					*b = i16_to_f32(*s) * gain;
 				}
 			};
 
@@ -143,8 +141,86 @@ impl AudioSystem for DefaultAudioSystem {
 	}
 
 	fn render(&mut self) {
-		let frames = self.ahi.play(|hw_buffer| {
-			self.rndr(hw_buffer);
+		let frames = self.ahi.get_period_size();
+
+		let frames = self.ahi.play(|streams| {
+			if let Streams::MonoFloat32(mut buffer) = streams { // Hardware is the same format as what we use for rendering
+				self.rndr(&mut buffer);
+			} else {
+				let mut buffer = vec![0f32; streams.frames()].into_boxed_slice();
+
+				self.rndr(&mut buffer);
+
+				match streams {
+					Streams::Mono16Bit(b) => {
+						for (b, s) in b.iter_mut().zip(buffer.iter()) {
+							*b = f32_to_i16(*s);
+						}
+					}
+					Streams::Stereo16Bit(b) => {
+						for ((dr, ds), s) in b.iter_mut().zip(buffer.iter()) {
+							*dr = f32_to_i16(*s);
+							*ds = f32_to_i16(*s);
+						}
+					}
+					Streams::MonoFloat32(b) => {
+						for (b, s) in b.iter_mut().zip(buffer.iter()) {
+							*b = *s;
+						}
+					}
+					Streams::StereoFloat32(b) => {
+						for ((dr, ds), s) in b.iter_mut().zip(buffer.iter()) {
+							*dr = *s;
+							*ds = *s;
+						}
+					}
+				}
+			}
+		}, |copier| {
+			let mut buffer = vec![0f32; frames].into_boxed_slice();
+
+			self.rndr(&mut buffer);
+
+			match copier {
+				Writer::Mono16Bit(c) => {
+					let mut conversion_buffer = vec![0; frames].into_boxed_slice();
+
+					buffer.iter().zip(conversion_buffer.iter_mut()).for_each(|(s, d)| {
+						*d = f32_to_i16(*s);
+					});
+
+					c(&conversion_buffer);
+
+					frames
+				}
+				Writer::Stereo16Bit(c) => {
+					let mut conversion_buffer = vec![(0, 0); frames].into_boxed_slice();
+
+					buffer.iter().zip(conversion_buffer.iter_mut()).for_each(|(s, d)| {
+						*d = (f32_to_i16(*s), f32_to_i16(*s));
+					});
+
+					c(&conversion_buffer);
+
+					frames
+				}
+				Writer::MonoFloat32(c) => {
+					c(&buffer); // Harware requested format is same as our format
+
+					frames
+				}
+				Writer::StereoFloat32(c) => {
+					let mut conversion_buffer = vec![(0f32, 0f32); frames].into_boxed_slice();
+
+					buffer.iter().zip(conversion_buffer.iter_mut()).for_each(|(s, d)| {
+						*d = (*s, *s);
+					});
+
+					c(&conversion_buffer);
+
+					frames
+				}
+			}
 		}).unwrap();
 
 		for e in &mut self.sources {

@@ -21,5 +21,5 @@ windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging", "Win
 [target.'cfg(target_os = "linux")'.dependencies]
 xcb = { version = "1.5.0", features=['xtest'] }
 wayland-client = "0.31.8"
-wayland-protocols = { version = "0.32.6", features = ['client'] }
+wayland-protocols = { version = "0.32.6", features = ['client', 'unstable'] }
 wayland-backend = { version = "0.3.8", features = ["client_system"] }

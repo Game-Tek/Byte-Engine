@@ -172,8 +172,57 @@ impl Device {
 			if required { feature != 0 } else { true }
 		};
 
-		let mut barycentric_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default()
+		let mut barycentric_required_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default()
 			.fragment_shader_barycentric(false)
+		;
+
+		let mut physical_device_vulkan_11_required_features = vk::PhysicalDeviceVulkan11Features::default()
+			.uniform_and_storage_buffer16_bit_access(true)
+			.storage_buffer16_bit_access(true)
+		;
+
+		let mut physical_device_vulkan_12_required_features = vk::PhysicalDeviceVulkan12Features::default()
+			.descriptor_indexing(true).descriptor_binding_partially_bound(true).runtime_descriptor_array(true).descriptor_binding_variable_descriptor_count(true)
+			.shader_sampled_image_array_non_uniform_indexing(true).shader_storage_image_array_non_uniform_indexing(true)
+			.scalar_block_layout(true)
+			.buffer_device_address(true)
+			.separate_depth_stencil_layouts(true)
+			.shader_buffer_int64_atomics(true).shader_float16(true).shader_int8(true)
+			.storage_buffer8_bit_access(true)
+			.uniform_and_storage_buffer8_bit_access(true)
+			.vulkan_memory_model(true)
+			.vulkan_memory_model_device_scope(true)
+			.sampler_filter_minmax(true)
+		;
+
+		let mut physical_device_vulkan_13_required_features = vk::PhysicalDeviceVulkan13Features::default()
+			.pipeline_creation_cache_control(true)
+			.subgroup_size_control(true)
+			.compute_full_subgroups(true)
+			.synchronization2(true)
+			.dynamic_rendering(true)
+			.maintenance4(true)
+		;
+
+		let enabled_physical_device_required_features = vk::PhysicalDeviceFeatures::default()
+			.shader_int16(true)
+			.shader_int64(true)
+			.shader_uniform_buffer_array_dynamic_indexing(true)
+			.shader_storage_buffer_array_dynamic_indexing(true)
+			.shader_storage_image_array_dynamic_indexing(true)
+			.shader_storage_image_write_without_format(true)
+			.texture_compression_bc(true)
+			.geometry_shader(settings.geometry_shader)
+		;
+
+		let mut shader_atomic_float_required_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+			.shader_buffer_float32_atomics(true)
+			.shader_image_float32_atomics(true)
+		;
+
+		let mut physical_device_mesh_shading_required_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
+			.task_shader(true)
+			.mesh_shader(true)
 		;
 
 		let physical_devices = unsafe { instance.enumerate_physical_devices().or(Err("Failed to enumerate physical devices"))? };
@@ -210,11 +259,13 @@ impl Device {
 					name.to_str().unwrap() == "RenderDoc"
 				});
 
+				let mut physical_device_mesh_shading_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default();
 				let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
 				let mut physical_device_barycentric_features = vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
 				let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
 					.push_next(&mut physical_device_vulkan_12_features)
 					.push_next(&mut physical_device_barycentric_features)
+					.push_next(&mut physical_device_mesh_shading_features)
 				;
 
 				unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
@@ -223,13 +274,15 @@ impl Device {
 
 				features.sample_rate_shading != vk::FALSE &&
 				flag_required_or_available(physical_device_vulkan_12_features.buffer_device_address_capture_replay, buffer_device_address_capture_replay) &&
-				flag_required_or_available(physical_device_barycentric_features.fragment_shader_barycentric, barycentric_features.fragment_shader_barycentric != 0) &&
+				flag_required_or_available(physical_device_barycentric_features.fragment_shader_barycentric, barycentric_required_features.fragment_shader_barycentric != 0) &&
 				features.shader_storage_image_array_dynamic_indexing != vk::FALSE &&
 				features.shader_sampled_image_array_dynamic_indexing != vk::FALSE &&
 				features.shader_storage_buffer_array_dynamic_indexing != vk::FALSE &&
 				features.shader_uniform_buffer_array_dynamic_indexing != vk::FALSE &&
 				features.shader_storage_image_write_without_format != vk::FALSE &&
-				flag_required_or_available(features.geometry_shader, settings.geometry_shader)
+				flag_required_or_available(features.geometry_shader, settings.geometry_shader) &&
+				flag_required_or_available(physical_device_mesh_shading_features.mesh_shader, physical_device_mesh_shading_required_features.mesh_shader != 0) &&
+				flag_required_or_available(physical_device_mesh_shading_features.task_shader, physical_device_mesh_shading_required_features.task_shader != 0)
 			}).max_by_key(|physical_device| {
 				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
 
@@ -297,49 +350,6 @@ impl Device {
 			.queue_priorities(&[1.0])
 		];
 
-		let mut physical_device_vulkan_11_features = vk::PhysicalDeviceVulkan11Features::default()
-			.uniform_and_storage_buffer16_bit_access(true)
-			.storage_buffer16_bit_access(true)
-		;
-
-		let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
-			.descriptor_indexing(true).descriptor_binding_partially_bound(true).runtime_descriptor_array(true).descriptor_binding_variable_descriptor_count(true)
-			.shader_sampled_image_array_non_uniform_indexing(true).shader_storage_image_array_non_uniform_indexing(true)
-			.scalar_block_layout(true)
-			.buffer_device_address(true)
-			.separate_depth_stencil_layouts(true)
-			.shader_buffer_int64_atomics(true).shader_float16(true).shader_int8(true)
-			.storage_buffer8_bit_access(true)
-			.uniform_and_storage_buffer8_bit_access(true)
-			.vulkan_memory_model(true)
-			.vulkan_memory_model_device_scope(true)
-			.sampler_filter_minmax(true)
-		;
-
-		let mut physical_device_vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
-			.pipeline_creation_cache_control(true)
-			.subgroup_size_control(true)
-			.compute_full_subgroups(true)
-			.synchronization2(true)
-			.dynamic_rendering(true)
-			.maintenance4(true)
-		;
-
-		let enabled_physical_device_features = vk::PhysicalDeviceFeatures::default()
-			.shader_int16(true)
-			.shader_int64(true)
-			.shader_uniform_buffer_array_dynamic_indexing(true)
-			.shader_storage_buffer_array_dynamic_indexing(true)
-			.shader_storage_image_array_dynamic_indexing(true)
-			.shader_storage_image_write_without_format(true)
-			.texture_compression_bc(true)
-			.geometry_shader(settings.geometry_shader)
-		;
-
-		let mut physical_device_mesh_shading_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
-			.task_shader(true)
-			.mesh_shader(true);
-
 		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) = if settings.ray_tracing {
 			let physical_device_acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
 				.acceleration_structure(true);
@@ -353,18 +363,13 @@ impl Device {
 			(vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(), vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default())
 		};
 
-		let mut shader_atomic_float_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
-			.shader_buffer_float32_atomics(true)
-			.shader_image_float32_atomics(true)
-		;
-
 		device_extension_names.push(ash::ext::shader_atomic_float::NAME.as_ptr());
 
 		let device_create_info = vk::DeviceCreateInfo::default();
 
 		let device_create_info = if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str()) {
 			device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
-			device_create_info.push_next(&mut physical_device_mesh_shading_features)
+			device_create_info.push_next(&mut physical_device_mesh_shading_required_features)
 		} else {
 			return Err("Mesh shader extension not available");
 		};
@@ -374,15 +379,15 @@ impl Device {
 		device_extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
 
 		let device_create_info = device_create_info
-			.push_next(&mut physical_device_vulkan_11_features)
-			.push_next(&mut physical_device_vulkan_12_features)
-			.push_next(&mut physical_device_vulkan_13_features)
-			.push_next(&mut shader_atomic_float_features)
-			.push_next(&mut barycentric_features)
+			.push_next(&mut physical_device_vulkan_11_required_features)
+			.push_next(&mut physical_device_vulkan_12_required_features)
+			.push_next(&mut physical_device_vulkan_13_required_features)
+			.push_next(&mut shader_atomic_float_required_features)
+			.push_next(&mut barycentric_required_features)
 			.push_next(&mut swapchain_maintenance_features)
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names)
-			.enabled_features(&enabled_physical_device_features)
+			.enabled_features(&enabled_physical_device_required_features)
 		;
 
 		let device_create_info = if settings.ray_tracing {

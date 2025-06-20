@@ -206,7 +206,7 @@ impl Application for GraphicsApplication {
 			let mut input_system = self.input_system_handle.write();
 
 			window_system.update_windows(|_, event| {
-				if let ghi::WindowEvents::Close { .. } = event {
+				if let ghi::Events::Close { .. } = event {
 					close = true;
 				}
 
@@ -435,12 +435,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	});
 }
 
-pub fn process_default_window_input(input_system: &mut input::InputManager, event: ghi::WindowEvents) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {
+pub fn process_default_window_input(input_system: &mut input::InputManager, event: ghi::Events) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {
 	let mouse_device_handle = input_system.get_devices_by_class_name("Mouse").unwrap().get(0).unwrap().clone();
 	let keyboard_device_handle = input_system.get_devices_by_class_name("Keyboard").unwrap().get(0).unwrap().clone();
 
 	let r = match event {
-		ghi::WindowEvents::Button { pressed, button } => {
+		ghi::Events::Button { pressed, button } => {
 			match button {
 				ghi::MouseKeys::Left => {
 					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed))
@@ -459,11 +459,11 @@ pub fn process_default_window_input(input_system: &mut input::InputManager, even
 				},
 			}
 		},
-		ghi::WindowEvents::MouseMove { x, y, time: _ } => {
+		ghi::Events::MouseMove { x, y, time: _ } => {
 			let vec = Vector2::new(x, y);
 			(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec))
 		},
-		ghi::WindowEvents::Key { pressed, key } => {
+		ghi::Events::Key { pressed, key } => {
 			match key {
 				ghi::Keys::W => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))

@@ -210,9 +210,9 @@ pub enum MouseKeys {
 	ScrollDown,
 }
 
-#[derive(Debug, Clone, Copy)]
 /// The events that can be received from a window.
-pub enum WindowEvents {
+#[derive(Debug, Clone, Copy)]
+pub enum Events {
 	/// The window has been resized.
 	Resize {
 		width: u32,
@@ -234,9 +234,13 @@ pub enum WindowEvents {
 		pressed: bool,
 		button: MouseKeys,
 	},
+	/// The mouse has moved.
+	/// Coordinates have no particular frame of reference but are normalized by the monitor size.
+	/// Coordinates may get wrapped to preserve precision.
 	MouseMove {
 		x: f32,
 		y: f32,
+		/// The time at which the event occurred.
 		time: u64,
 	},
 }
@@ -256,7 +260,7 @@ impl TryFrom<u8> for Keys {
 			0x54 => Ok(Keys::NumPad5), 0x55 => Ok(Keys::NumPad6), 79 => Ok(Keys::NumPad7), 80 => Ok(Keys::NumPad8), 81 => Ok(Keys::NumPad9),
 
 			113 => Ok(Keys::ArrowLeft), 116 => Ok(Keys::ArrowDown), 114 => Ok(Keys::ArrowRight), 111 => Ok(Keys::ArrowUp),
-			
+
 			9 => Ok(Keys::Escape), 23 => Ok(Keys::Tab), 50 => Ok(Keys::ShiftLeft), 37 => Ok(Keys::ControlLeft), 64 => Ok(Keys::AltLeft),
 			65 => Ok(Keys::Space), 108 => Ok(Keys::AltRight), 105 => Ok(Keys::ControlRight), 62 => Ok(Keys::ShiftRight), 36 => Ok(Keys::Enter),
 			22 => Ok(Keys::Backspace),
@@ -358,9 +362,9 @@ pub enum WindowIterator<'a> {
 }
 
 impl Iterator for WindowIterator<'_> {
-	type Item = WindowEvents;
+	type Item = Events;
 
-	fn next(&mut self) -> Option<WindowEvents> {
+	fn next(&mut self) -> Option<Events> {
 		match self {
 			#[cfg(target_os = "linux")]
 			WindowIterator::X11(window) => window.next(),

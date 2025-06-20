@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use utils::Extent;
 use xcb::{x, Xid};
 
-use crate::{Keys, MouseKeys, WindowEvents};
+use crate::{Keys, MouseKeys, Events};
 
 pub struct X11Window {
 	connection: xcb::Connection,
@@ -157,9 +157,9 @@ pub struct OSHandles {
 }
 
 impl Iterator for WindowIterator<'_> {
-	type Item = WindowEvents;
+	type Item = Events;
 
-	fn next(&mut self) -> Option<WindowEvents> {
+	fn next(&mut self) -> Option<Events> {
 		let connection = &self.window.connection;
 
 		loop {
@@ -178,7 +178,7 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<Keys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(WindowEvents::Key { pressed: true, key })
+								Some(Events::Key { pressed: true, key })
 							} else {
 								None
 							}
@@ -187,7 +187,7 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<Keys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(WindowEvents::Key { pressed: false, key })
+								Some(Events::Key { pressed: false, key })
 							} else {
 								None
 							}
@@ -196,7 +196,7 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<MouseKeys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(WindowEvents::Button { pressed: true, button: key })
+								Some(Events::Button { pressed: true, button: key })
 							} else {
 								None
 							}
@@ -205,7 +205,7 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<MouseKeys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(WindowEvents::Button { pressed: false, button: key })
+								Some(Events::Button { pressed: false, button: key })
 							} else {
 								None
 							}
@@ -223,7 +223,7 @@ impl Iterator for WindowIterator<'_> {
 							let x = (x - half_width) / half_width;
 							let y = (y - half_height) / half_height;
 
-							Some(WindowEvents::MouseMove { x, y, time: ev.time() as u64 })
+							Some(Events::MouseMove { x, y, time: ev.time() as u64 })
 						},
 						x::Event::ConfigureNotify(ev) => {
 							if ev.width() == 0 || ev.height() == 0 {
@@ -238,7 +238,7 @@ impl Iterator for WindowIterator<'_> {
 
 							self.window.extent = extent;
 
-							Some(WindowEvents::Resize{
+							Some(Events::Resize{
 								width: extent.0 as u32,
 								height: extent.1 as u32,
 							})
@@ -247,7 +247,7 @@ impl Iterator for WindowIterator<'_> {
 							// We have received a message from the server
 							if let x::ClientMessageData::Data32([atom, ..]) = ev.data() {
 								if atom == self.window.wm_del_window.resource_id() {
-									let event = WindowEvents::Close;
+									let event = Events::Close;
 									Some(event)
 								} else {
 									None

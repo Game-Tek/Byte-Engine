@@ -4,7 +4,7 @@ use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
 use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1}, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
 
-use crate::{Keys, MouseKeys, WindowEvents};
+use crate::{Keys, MouseKeys, Events};
 
 pub struct WaylandWindow {
 	connection: wayland_client::Connection,
@@ -150,7 +150,7 @@ impl WaylandWindow {
 
 	pub fn poll(&mut self) -> WindowIterator {
 		// This implementation first processes all events from the wayland event queue
-		// while producing `WindowEvents` which are then handed to an iterator
+		// while producing `Events` which are then handed to an iterator
 		// which is then returned
 
 		let mut app_data = AppData {
@@ -178,16 +178,16 @@ impl WaylandWindow {
 	}
 }
 
-/// The `WindowIterator` struct is used to iterate over `WindowEvents` produced by the `poll` method.
+/// The `WindowIterator` struct is used to iterate over `Events` produced by the `poll` method.
 /// Wayland events are first processed in the `poll` method which then copies it's own event list to the iterator.
 pub struct WindowIterator {
-	events: VecDeque<WindowEvents>,
+	events: VecDeque<Events>,
 }
 
 impl Iterator for WindowIterator {
-	type Item = WindowEvents;
+	type Item = Events;
 
-	fn next(&mut self) -> Option<WindowEvents> {
+	fn next(&mut self) -> Option<Events> {
 		self.events.pop_front()
 	}
 }
@@ -231,7 +231,7 @@ struct AppData {
 
 	state: WindowState,
 
-	events: VecDeque<WindowEvents>,
+	events: VecDeque<Events>,
 	requests: VecDeque<Requests>,
 }
 
@@ -244,9 +244,11 @@ struct WindowState {
 	/// The location of the pointer.
 	/// This gets calculated by accumulating the pointer motion events.
 	/// This is relative to no reference point.
-	pointer_location: Option<(f32, f32)>,
+	pointer_location: (f32, f32),
 	/// The extent of the window.
 	extent: Option<Extent>,
+	/// The extent of the monitor.
+	monitor_extent: Option<Extent>,
 	/// The focused pointer
 	focused_pointer: Option<wl_pointer::WlPointer>,
 	/// The focused keyboard
@@ -257,8 +259,9 @@ impl Default for WindowState {
 	fn default() -> Self {
 		Self {
 			scale: 1,
-			pointer_location: None,
+			pointer_location: (0.0, 0.0),
 			extent: None,
+			monitor_extent: None,
 			focused_pointer: None,
 			focused_keyboard: None,
 		}
@@ -435,7 +438,7 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 				}
 			}
 			xdg_toplevel::Event::Close => {
-				this.events.push_back(WindowEvents::Close);
+				this.events.push_back(Events::Close);
 			}
 			_ => {}
 		}
@@ -494,7 +497,7 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 					_ => return,
 				};
 
-				this.events.push_back(WindowEvents::Button { pressed, button });
+				this.events.push_back(Events::Button { pressed, button });
 			}
 			wl_pointer::Event::Axis { axis, value, .. } => {
 				let _ = match axis.into_result().unwrap() {
@@ -506,21 +509,21 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 				let _ = value > 0.0;
 			}
 			wl_pointer::Event::Motion { time, surface_x, surface_y } => {
-				if let Some(extent) = this.state.extent {
-					let x = surface_x as f32 * this.state.scale as f32;
-					let y = surface_y as f32 * this.state.scale as f32;
+				// if let Some(extent) = this.state.extent {
+				// 	let x = surface_x as f32 * this.state.scale as f32;
+				// 	let y = surface_y as f32 * this.state.scale as f32;
 
-					let width = extent.width() as f32;
-					let height = extent.height() as f32;
+				// 	let width = extent.width() as f32;
+				// 	let height = extent.height() as f32;
 
-					let half_width = width / 2.0;
-					let half_height = height / 2.0;
+				// 	let half_width = width / 2.0;
+				// 	let half_height = height / 2.0;
 
-					let x = (x - half_width) / half_width;
-					let y = (half_height - y) / half_height;
+				// 	let x = (x - half_width) / half_width;
+				// 	let y = (half_height - y) / half_height;
 
-					this.events.push_back(WindowEvents::MouseMove { x, y, time: time as u64 });
-				}
+				// 	this.events.push_back(WindowEvents::MouseMove { x, y, time: time as u64 });
+				// }
 			}
 			_ => {}
 		}
@@ -566,7 +569,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					_ => return,
 				};
 
-				this.events.push_back(WindowEvents::Key { pressed, key });
+				this.events.push_back(Events::Key { pressed, key });
 			}
 			wl_keyboard::Event::Keymap { .. } => {
 			}
@@ -597,7 +600,10 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 			}
 			wl_output::Event::Geometry { .. } => {
 			}
-			wl_output::Event::Mode { .. } => {
+			wl_output::Event::Mode { width, height, .. } => {
+				this.state.monitor_extent = Some(Extent::rectangle(width as _, height as _));
+
+				dbg!(this.state.monitor_extent);
 			}
 			wl_output::Event::Description { .. } => {
 			}
@@ -621,10 +627,20 @@ impl wayland_client::Dispatch<zwp_relative_pointer_manager_v1::ZwpRelativePointe
 impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for AppData {
 	fn event(this: &mut Self, _: &zwp_relative_pointer_v1::ZwpRelativePointerV1, event: zwp_relative_pointer_v1::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
 		match event {
-			zwp_relative_pointer_v1::Event::RelativeMotion { dx_unaccel, dy_unaccel, .. } => {
-				if let Some(location) = &mut this.state.pointer_location {
-					location.0 += dx_unaccel as f32;
-					location.1 += dy_unaccel as f32;
+			zwp_relative_pointer_v1::Event::RelativeMotion { utime_lo, utime_hi, dx_unaccel, dy_unaccel, .. } => {
+				let location = &mut this.state.pointer_location;
+
+				location.0 += dx_unaccel as f32;
+				location.1 += dy_unaccel as f32;
+
+				if let Some(extent) = this.state.extent {
+					let width = extent.width() as f32;
+					let height = extent.height() as f32;
+
+					let x = location.0 / width;
+					let y = location.1 / height;
+
+					this.events.push_back(Events::MouseMove { x, y, time: (utime_hi as u64) << 32 | utime_lo as u64 });
 				}
 			}
 			_ => {}

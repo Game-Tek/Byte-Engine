@@ -192,7 +192,7 @@ impl Renderer {
 
         let mut ghi = self.ghi.write();
 
-		let execute = self.root_render_pass.prepare(&mut ghi, extent);
+		let execute = self.root_render_pass.prepare(&mut ghi, extent, frame_key);
 
 		RenderMessage::new(swapchain_handle, frame_key, present_key, execute).into()
     }
@@ -317,7 +317,7 @@ impl RootRenderPass {
     /// Usually the preparation step involves writing to buffers, culling drawables, determining what to draw and whether to even draw at all.
     /// Individual render pass prepare's can optionally return render pass execution functions which decide if a render pass gets executed.
     /// This can be because the render pass may be disabled or because some other internal conditions are not satisfied.
-    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
+    fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: ghi::FrameKey) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
 		let commands = self.order.iter().map(|index| {
 			let (render_pass, consumed) = &self.render_passes[*index];
 			let attachments = consumed.iter().map(|c| {
@@ -326,7 +326,7 @@ impl RootRenderPass {
 			}).collect::<Vec<_>>();
 
             let command = render_pass.get_mut(|e| {
-                e.prepare(ghi, extent)
+                e.prepare(ghi, extent, frame_key)
             });
 
 			(attachments, command)

@@ -11,7 +11,6 @@ pub(crate) struct Image {
 	pub(crate) image: vk::Image,
 	pub(crate) image_view: vk::ImageView,
 	pub(crate) image_views: [vk::ImageView; 8],
-	pub(crate) pointer: *const u8,
 	pub(crate) extent: vk::Extent3D,
 	pub(crate) format: vk::Format,
 	pub(crate) format_: Formats,

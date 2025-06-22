@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::core::EntityHandle;
 
-use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device, FrameKey};
 use resource_management::glsl;
 use utils::{Extent, Box};
 
@@ -66,7 +66,7 @@ impl RenderPass for AcesToneMapPass {
 		vec!["result"]
 	}
 
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}

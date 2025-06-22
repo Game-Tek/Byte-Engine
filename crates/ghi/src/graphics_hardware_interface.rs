@@ -61,11 +61,17 @@ bitflags::bitflags! {
 
 // HANDLES
 
+/// The `BaseBufferHandle` allows addressing any static buffer irregardless of it's underlying type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 pub struct BaseBufferHandle(pub(super) u64);
 
+/// The `BufferHandle` allows addressing a buffer static buffer with a specific underlying type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct BufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T>);
+
+/// The `DynamicBufferHandle` allows addressing a dynamic buffer with a specific underlying type.
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+pub struct DynamicBufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T>);
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct TopLevelAccelerationStructureHandle(pub(super) u64);
@@ -119,6 +125,12 @@ pub struct AllocationHandle(pub(crate) u64);
 pub struct TextureCopyHandle(pub(crate) u64);
 
 impl <T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
+	fn into(self) -> BaseBufferHandle {
+		BaseBufferHandle(self.0)
+	}
+}
+
+impl <T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
 	fn into(self) -> BaseBufferHandle {
 		BaseBufferHandle(self.0)
 	}
@@ -567,7 +579,7 @@ pub trait Device where Self: Sized {
 
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording;
 
-	/// Creates a new buffer.\
+	/// Creates a new static buffer.\
 	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\
 	/// Staging buffers MAY be created if there's is not sufficient CPU writable, fast GPU readable memory.\
 	///
@@ -580,7 +592,9 @@ pub trait Device where Self: Sized {
 	/// # Returns
 	///
 	/// The handle of the buffer.
-	fn create_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases) -> BufferHandle<T>;
+	fn create_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses) -> BufferHandle<T>;
+
+	fn create_dynamic_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses) -> DynamicBufferHandle<T>;
 
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
 
@@ -588,6 +602,8 @@ pub trait Device where Self: Sized {
 
 	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: BufferHandle<T>) -> &'a mut T;
+
+	fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: DynamicBufferHandle<T>, frame_key: FrameKey) -> &'a mut T;
 
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 
@@ -1905,7 +1921,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let _buffer = renderer.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let _buffer = renderer.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
@@ -2152,7 +2168,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
 		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
-		let buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::DYNAMIC);
+		let buffer = renderer.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 
 		let sampled_texture = renderer.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, 1);
 
@@ -2258,9 +2274,9 @@ pub(super) mod tests {
 			0.0, 0.0, 1.0, 1.0,
 		];
 
-		let vertex_positions_buffer = renderer.create_buffer::<[f32; 8 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let vertex_positions_buffer = renderer.create_buffer::<[f32; 8 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 
 		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(&positions);
 		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(&colors);
@@ -2402,11 +2418,11 @@ void main() {
 
 		renderer.write_instance(instances_buffer, 0, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
 
-		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(None, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite, UseCases::STATIC);
+		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(None, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite,);
 
-		let raygen_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
-		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC);
+		let raygen_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 
 		renderer.write_sbt_entry(raygen_sbt_buffer.into(), 0, pipeline, raygen_shader);
 		renderer.write_sbt_entry(miss_sbt_buffer.into(), 0, pipeline, miss_shader);

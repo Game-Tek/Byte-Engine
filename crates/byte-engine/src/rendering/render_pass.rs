@@ -2,7 +2,7 @@ use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device};
+use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device, FrameKey};
 use maths_rs::Vec2f;
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
@@ -23,7 +23,7 @@ pub trait RenderPass {
 	///
 	/// If the render pass is not needed, it returns `None`.
 	/// If it is needed, it may execute setup code and return a `RenderPassRecordCommand` that can be used to effectively record the render pass.
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand>;
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand>;
 }
 
 pub struct FullScreenRenderPass {
@@ -59,7 +59,7 @@ impl FullScreenRenderPass {
 }
 
 impl RenderPass for FullScreenRenderPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}
@@ -127,7 +127,7 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}
@@ -266,7 +266,7 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent) -> Option<RenderPassCommand> {
+	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}

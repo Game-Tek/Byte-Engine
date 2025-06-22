@@ -17,10 +17,12 @@ pub struct CommandBufferRecording<'a> {
 
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
+
+	buffer_copies: Vec<BufferCopy>,
 }
 
 impl CommandBufferRecording<'_> {
-	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
+	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, buffer_copies: Vec<BufferCopy>, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
 		CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
@@ -32,6 +34,8 @@ impl CommandBufferRecording<'_> {
 
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
+
+			buffer_copies,
 
 			ghi,
 		}
@@ -321,19 +325,12 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 	}
 
 	fn sync_buffers(&mut self) {
-		let copy_buffers = {
-			let mut dirty_buffers = self.ghi.buffer_writes_queue.lock();
-
-			dirty_buffers.retain(|_, v| v.0 < self.ghi.frames as u32);
-			dirty_buffers.iter_mut().for_each(|(_, f)| f.0 += 1);
-
-			dirty_buffers.iter().map(|(&k, v)| (self.get_internal_buffer_handle(k), v.1)).filter(|(b, _)| { let b = self.get_buffer(*b); b.staging.is_some() && b.size != 0 }).collect::<Vec<_>>()
-		};
+		let copy_buffers = self.buffer_copies.drain(..).collect::<Vec<_>>();
 
 		unsafe {
-			self.vulkan_consume_resources(&copy_buffers.iter().map(|&(b, _)| {
+			self.vulkan_consume_resources(&copy_buffers.iter().map(|e| {
 				VulkanConsumption {
-					handle: Handle::Buffer(b),
+					handle: Handle::Buffer(e.dst_buffer),
 					stages: vk::PipelineStageFlags2::COPY,
 					access: vk::AccessFlags2::TRANSFER_WRITE,
 					layout: vk::ImageLayout::UNDEFINED,
@@ -341,42 +338,30 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			}).collect::<Vec<_>>());
 		}
 
-		for &(b, _) in &copy_buffers { // Copy all staging buffers to their respective buffers
-			let buffer = self.get_buffer(b);
+		for e in copy_buffers { // Copy all staging buffers to their respective buffers
+			let src_buffer = self.get_buffer(e.src_buffer);
+			let dst_buffer = self.get_buffer(e.dst_buffer);
 
-			let vk_buffer = buffer.buffer;
-			let staging_buffer_handle = buffer.staging.unwrap();
-			let staging_buffer = self.get_buffer(staging_buffer_handle).buffer;
+			let src_vk_buffer = src_buffer.buffer;
+			let dst_vk_buffer = dst_buffer.buffer;
 
 			let command_buffer = self.get_command_buffer();
 
 			let regions = [vk::BufferCopy2KHR::default()
-				.src_offset(0)
-				.dst_offset(0)
-				.size(buffer.size as u64)
+				.src_offset(e.src_offset)
+				.dst_offset(e.dst_offset)
+				.size(e.size as u64)
 			];
 
 			let copy_buffer_info = vk::CopyBufferInfo2KHR::default()
-				.src_buffer(staging_buffer)
-				.dst_buffer(vk_buffer)
+				.src_buffer(src_vk_buffer)
+				.dst_buffer(dst_vk_buffer)
 				.regions(&regions)
 			;
 
 			unsafe {
 				self.ghi.device.cmd_copy_buffer2(command_buffer.command_buffer, &copy_buffer_info);
 			}
-		}
-
-		// TODO: bad. remove this.
-		unsafe {
-			self.vulkan_consume_resources(&copy_buffers.iter().map(|&(b, p)| {
-				VulkanConsumption {
-					handle: Handle::Buffer(b),
-					stages: p,
-					access: vk::AccessFlags2::SHADER_READ,
-					layout: vk::ImageLayout::UNDEFINED,
-				}
-			}).collect::<Vec<_>>());
 		}
 
 		self.stages |= vk::PipelineStageFlags2::TRANSFER;
@@ -1433,6 +1418,26 @@ impl graphics_hardware_interface::BoundRayTracingPipelineMode for CommandBufferR
 
 		unsafe {
 			self.ghi.ray_tracing_pipeline.cmd_trace_rays(comamand_buffer_handle, &raygen_shader_binding_tables, &miss_shader_binding_tables, &hit_shader_binding_tables, &callable_shader_binding_tables, x, y, z)
+		}
+	}
+}
+
+pub(crate) struct BufferCopy {
+	pub src_buffer: BufferHandle,
+	pub src_offset: vk::DeviceSize,
+	pub dst_buffer: BufferHandle,
+	pub dst_offset: vk::DeviceSize,
+	pub size: usize,
+}
+
+impl BufferCopy {
+	pub fn new(src_buffer: BufferHandle, src_offset: vk::DeviceSize, dst_buffer: BufferHandle, dst_offset: vk::DeviceSize, size: usize) -> Self {
+		Self {
+			src_buffer,
+			src_offset,
+			dst_buffer,
+			dst_offset,
+			size,
 		}
 	}
 }

@@ -1,11 +1,13 @@
-use windows::{core::PCSTR, Win32::{Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::HBRUSH, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
+use windows::{core::PCSTR, Win32::{Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::{GetMonitorInfoA, MonitorFromWindow, HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST}, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, Input::{GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
 
-use crate::{Keys, MouseKeys, WindowEvents};
+use crate::{Keys, MouseKeys, Events};
 
 pub struct Win32Window {
 	class_atom: u16,
 	hinstance: HINSTANCE,
 	hwnd: HWND,
+
+	state: State,
 }
 
 unsafe impl Send for Win32Window {}
@@ -45,12 +47,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(0)
 		}
 		WM_CLOSE => {
-			window_data.payload = Some(WindowEvents::Close);
+			window_data.payload = Some(Events::Close);
 
 			LRESULT(0)
 		}
 		WM_LBUTTONDOWN => {
-			window_data.payload = Some(WindowEvents::Button {
+			window_data.payload = Some(Events::Button {
 				pressed: true,
 				button: MouseKeys::Left,
 			});
@@ -58,7 +60,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(0)
 		}
 		WM_LBUTTONUP => {
-			window_data.payload = Some(WindowEvents::Button {
+			window_data.payload = Some(Events::Button {
 				pressed: false,
 				button: MouseKeys::Left,
 			});
@@ -66,7 +68,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(0)
 		}
 		WM_MBUTTONDOWN => {
-			window_data.payload = Some(WindowEvents::Button {
+			window_data.payload = Some(Events::Button {
 				pressed: true,
 				button: MouseKeys::Middle,
 			});
@@ -74,7 +76,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(0)
 		}
 		WM_MBUTTONUP => {
-			window_data.payload = Some(WindowEvents::Button {
+			window_data.payload = Some(Events::Button {
 				pressed: false,
 				button: MouseKeys::Middle,
 			});
@@ -82,7 +84,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(0)
 		}
 		WM_RBUTTONDOWN => {
-			window_data.payload = Some(WindowEvents::Button {
+			window_data.payload = Some(Events::Button {
 				pressed: true,
 				button: MouseKeys::Right,
 			});
@@ -90,50 +92,104 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			LRESULT(0)
 		}
 		WM_RBUTTONUP => {
-			window_data.payload = Some(WindowEvents::Button {
+			window_data.payload = Some(Events::Button {
 				pressed: false,
 				button: MouseKeys::Right,
 			});
 
 			LRESULT(0)
 		}
-		WM_MOUSEMOVE => {
-			let x = (lparam.0 & 0xFFFF) as u32;
-			let y = (lparam.0 >> 16) as u32;
+		// WM_MOUSEMOVE => {
+		// 	let x = (lparam.0 & 0xFFFF) as u32;
+		// 	let y = (lparam.0 >> 16) as u32;
 
-			let (width, height) = unsafe {
-				let mut lprect = RECT {
-					left: 0,
-					top: 0,
-					right: 0,
-					bottom: 0,
-				};
+		// 	let (width, height) = unsafe {
+		// 		let mut lprect = RECT {
+		// 			left: 0,
+		// 			top: 0,
+		// 			right: 0,
+		// 			bottom: 0,
+		// 		};
 
-				let _ = GetClientRect(hwnd, &mut lprect);
+		// 		let _ = GetClientRect(hwnd, &mut lprect);
 
-				((lprect.right - lprect.left) as u32, (lprect.bottom - lprect.top) as u32)
+		// 		((lprect.right - lprect.left) as u32, (lprect.bottom - lprect.top) as u32)
+		// 	};
+
+		// 	let y = height - y;
+
+		// 	let x = x as f32 / width as f32;
+		// 	let y = y as f32 / height as f32;
+
+		// 	let x = x * 2f32 - 1f32;
+		// 	let y = y * 2f32 - 1f32;
+
+		// 	window_data.payload = Some(Events::MouseMove {
+		// 		x,
+		// 		y,
+		// 		time: 0,
+		// 	});
+
+		// 	LRESULT(0)
+		// }
+		WM_INPUT => {
+			let mut raw_input = [0u8; 1024];
+			let mut raw_input_size = std::mem::size_of_val(&raw_input) as u32;
+
+			let res = unsafe {
+				GetRawInputData(
+					HRAWINPUT(std::mem::transmute(lparam)),
+					RID_INPUT,
+					Some(std::mem::transmute(&mut raw_input)),
+					&mut raw_input_size,
+					std::mem::size_of::<RAWINPUTHEADER>() as u32
+				)
 			};
 
-			let y = height - y;
+			assert!(res >= std::mem::size_of::<RAWINPUT>() as u32, "Failed to get raw input data");
 
-			let x = x as f32 / width as f32;
-			let y = y as f32 / height as f32;
+			let raw_input = unsafe { &*(raw_input.as_ptr() as *const RAWINPUT) };
 
-			let x = x * 2f32 - 1f32;
-			let y = y * 2f32 - 1f32;
+			if raw_input.header.dwType == RIM_TYPEMOUSE.0 {
+				let mouse_data = &raw_input.data.mouse;
 
-			window_data.payload = Some(WindowEvents::MouseMove {
-				x,
-				y,
-				time: 0,
-			});
+				let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+
+				let mut lpmi = MONITORINFO::default();
+
+				if GetMonitorInfoA(monitor, &mut lpmi) == false {
+					return DefWindowProcA(hwnd, msg, wparam, lparam);
+				}
+
+				let width = lpmi.rcMonitor.right - lpmi.rcMonitor.left;
+				let height = lpmi.rcMonitor.bottom - lpmi.rcMonitor.top;
+
+				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
+					window_data.state.cursor_position.0 += mouse_data.lLastX as f32 / width as f32;
+					window_data.state.cursor_position.1 += mouse_data.lLastY as f32 / height as f32;
+
+					window_data.payload = Some(Events::MouseMove {
+						x: window_data.state.cursor_position.0,
+						y: window_data.state.cursor_position.1,
+						time: 0,
+					});
+				} else if (mouse_data.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) == MOUSE_MOVE_ABSOLUTE.0 {
+					window_data.state.cursor_position = (mouse_data.lLastX as f32 / width as f32, mouse_data.lLastY as f32 / height as f32);
+
+					window_data.payload = Some(Events::MouseMove {
+						x: window_data.state.cursor_position.0,
+						y: window_data.state.cursor_position.1,
+						time: 0,
+					});
+				}
+			}
 
 			LRESULT(0)
 		}
 		WM_MOUSEHWHEEL => {
 			let delta = (wparam.0 & 0xFFFF) as i16;
 
-			window_data.payload = Some(WindowEvents::Button { 
+			window_data.payload = Some(Events::Button {
 				pressed: true,
 				button: if delta > 0 { MouseKeys::ScrollUp } else { MouseKeys::ScrollDown },
 			});
@@ -147,7 +203,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 				return DefWindowProcA(hwnd, msg, wparam, lparam);
 			};
 
-			window_data.payload = Some(WindowEvents::Key {
+			window_data.payload = Some(Events::Key {
 				pressed: true,
 				key,
 			});
@@ -161,7 +217,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 				return DefWindowProcA(hwnd, msg, wparam, lparam);
 			};
 
-			window_data.payload = Some(WindowEvents::Key {
+			window_data.payload = Some(Events::Key {
 				pressed: false,
 				key,
 			});
@@ -172,7 +228,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			let width = lparam.0 as u32;
 			let height = (lparam.0 >> 16) as u32;
 
-			window_data.payload = Some(WindowEvents::Resize {
+			window_data.payload = Some(Events::Resize {
 				width,
 				height,
 			});
@@ -241,7 +297,7 @@ impl Win32Window {
 				lpszMenuName: PCSTR(std::ptr::null()),
 				lpszClassName: PCSTR(id_name.as_ptr() as _),
 			};
-			
+
 			let class = RegisterClassA(&wnd_class);
 
 			if class == 0 {
@@ -259,24 +315,41 @@ impl Win32Window {
 		 	SetWindowLongPtrA(hwnd, GWLP_WNDPROC, 0);
 		}
 
+		unsafe {
+			// ShowCursor(false);
+		}
+
+		unsafe {
+			let rid = RAWINPUTDEVICE {
+				usUsagePage: 0x01, // Generic desktop controls
+				usUsage: 0x02,     // Mouse
+				dwFlags: RIDEV_INPUTSINK, // Or 0 for focused-only input
+				hwndTarget: hwnd,
+			};
+
+			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).ok()?;
+		}
+
 		Win32Window {
 			class_atom: class,
 			hwnd,
 			hinstance: hinstance.into(),
+			state: State::default(),
 		}.into()
 	}
-	
-	pub(crate) fn poll(&self) -> WindowIterator {
+
+	pub(crate) fn poll(&mut self) -> WindowIterator {
 		// Set WNDPROC, we are ready to handle messages
 		unsafe {
 			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as _);
 	   }
 
 		WindowIterator {
+			state: self.state.clone(),
 			window: self,
 		}
 	}
-	
+
 	pub(crate) fn get_os_handles(&self) -> OSHandles {
 		OSHandles {
 			hwnd: self.hwnd,
@@ -298,21 +371,24 @@ impl Drop for Win32Window {
 
 struct WindowData<'a> {
 	window: &'a Win32Window,
-	payload: Option<WindowEvents>,
+	state: State,
+	payload: Option<Events>,
 }
 
 pub struct WindowIterator<'a> {
-	window: &'a Win32Window,
+	window: &'a mut Win32Window,
+	state: State,
 }
 
 impl Iterator for WindowIterator<'_> {
-	type Item = WindowEvents;
+	type Item = Events;
 
-	fn next(&mut self) -> Option<WindowEvents> {
+	fn next(&mut self) -> Option<Events> {
 		let mut msg = MSG::default();
 
 		let mut window_data = WindowData {
 			window: self.window,
+			state: self.state.clone(),
 			payload: None,
 		};
 
@@ -343,5 +419,13 @@ impl Drop for WindowIterator<'_> {
 			// We are done handling messages, remove WNDPROC
 			SetWindowLongPtrA(self.window.hwnd, GWLP_WNDPROC, 0);
 		}
+
+		self.window.state = self.state.clone();
 	}
+}
+
+/// Represents the state of the window, can be used to store additional data if needed.
+#[derive(Debug, Clone, Default)]
+struct State {
+	cursor_position: (f32, f32),
 }

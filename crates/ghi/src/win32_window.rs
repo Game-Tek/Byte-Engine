@@ -1,4 +1,4 @@
-use windows::{core::PCSTR, Win32::{Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::{GetMonitorInfoA, MonitorFromWindow, HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST}, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, Input::{GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
+use windows::{core::PCSTR, Win32::{Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC}, Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::{GetMonitorInfoA, MonitorFromWindow, HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST}, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, Input::{GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
 
 use crate::{Keys, MouseKeys, Events};
 
@@ -133,7 +133,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 		// 	LRESULT(0)
 		// }
 		WM_INPUT => {
-			let mut raw_input = [0u8; 1024];
+			let mut raw_input = [0u64; 1024 / 8]; // Buffer needs to be aligned to 8 bytes
 			let mut raw_input_size = std::mem::size_of_val(&raw_input) as u32;
 
 			let res = unsafe {
@@ -153,16 +153,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 			if raw_input.header.dwType == RIM_TYPEMOUSE.0 {
 				let mouse_data = &raw_input.data.mouse;
 
-				let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-
-				let mut lpmi = MONITORINFO::default();
-
-				if GetMonitorInfoA(monitor, &mut lpmi) == false {
-					return DefWindowProcA(hwnd, msg, wparam, lparam);
-				}
-
-				let width = lpmi.rcMonitor.right - lpmi.rcMonitor.left;
-				let height = lpmi.rcMonitor.bottom - lpmi.rcMonitor.top;
+				let width = 3840;
+				let height = 2160;
 
 				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
 					window_data.state.cursor_position.0 += mouse_data.lLastX as f32 / width as f32;
@@ -182,6 +174,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 						time: 0,
 					});
 				}
+			} else  {
+				return DefWindowProcA(hwnd, msg, wparam, lparam);
 			}
 
 			LRESULT(0)
@@ -321,9 +315,9 @@ impl Win32Window {
 
 		unsafe {
 			let rid = RAWINPUTDEVICE {
-				usUsagePage: 0x01, // Generic desktop controls
-				usUsage: 0x02,     // Mouse
-				dwFlags: RIDEV_INPUTSINK, // Or 0 for focused-only input
+				usUsagePage: HID_USAGE_PAGE_GENERIC, // Generic desktop controls
+				usUsage: HID_USAGE_GENERIC_MOUSE,     // Mouse
+				dwFlags: RAWINPUTDEVICE_FLAGS::default(), // Focused window only
 				hwndTarget: hwnd,
 			};
 

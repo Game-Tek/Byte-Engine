@@ -1,2 +1,3 @@
 - Test render frame with renderer but no elements
 - Test asset path
+- Support no audio endpoint

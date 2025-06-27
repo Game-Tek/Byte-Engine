@@ -269,7 +269,7 @@ impl Listener<CreateEvent<window_system::Window>> for Renderer {
 
         let swapchain_handle = ghi.bind_to_window(
             &os_handles,
-            ghi::PresentationModes::FIFO,
+            ghi::PresentationModes::Mailbox,
             Extent::rectangle(1920, 1080),
         );
 

@@ -16,7 +16,7 @@ renderdoc = "0.12.1"
 resource-management = { path = "../resource-management" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader"] }
+windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 xcb = { version = "1.5.0", features=['xtest'] }

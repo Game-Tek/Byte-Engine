@@ -297,6 +297,7 @@ pub struct WindowsAudioHardwareInterface {
 	device: IMMDevice,
 	client: IAudioClient,
 	render_client: IAudioRenderClient,
+	parameters: HardwareParameters,
 }
 
 #[cfg(target_os = "windows")]
@@ -318,7 +319,7 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 			enumerator.GetDefaultAudioEndpoint(eRender, eConsole).unwrap()
 		};
 
-		let client: IAudioClient = unsafe {
+		let (client, params) = unsafe {
 			let client: IAudioClient = device.Activate(CLSCTX_ALL, None).unwrap();
 
 			let bits_per_sample = params.bit_depth;
@@ -361,24 +362,36 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 				panic!("Demanded audio format and/or parameters are not supported by the target audio device.");
 			}
 
-			if !m_closest_format.is_null() {
+			let m_format = if !m_closest_format.is_null() {
 				let m_closest_format: &WAVEFORMATEXTENSIBLE_t = std::mem::transmute(m_closest_format);
 				let closest_channels = m_closest_format.Format.nChannels;
 				let closest_samples_per_second = m_closest_format.Format.nSamplesPerSec;
 				let closest_bits_per_sample = m_closest_format.Format.wBitsPerSample;
 				let closest_sub_format = m_closest_format.SubFormat;
 				println!("Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}", closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format);
-			}
 
-			let _ = ((1f32 / samples_per_second as f32) * 256f32) as i64 * 1_000_0000;
+				m_closest_format
+			} else {
+				&m_format
+			};
 
-			client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(&m_format), None).unwrap();
+			client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(m_format), None).unwrap();
+
+			let bit_depth = m_format.Format.wBitsPerSample as u32;
+			let sample_rate = m_format.Format.nSamplesPerSec as u32;
+			let channels = m_format.Format.nChannels as u32;
+
+			let params = HardwareParameters {
+				sample_rate,
+				channels,
+				bit_depth,
+			};
 
 			if !m_closest_format.is_null() {
 				CoTaskMemFree(Some(m_closest_format as _));
 			}
 
-			client
+			(client, params)
 		};
 
 		let render_client: IAudioRenderClient = unsafe {
@@ -393,6 +406,7 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 			device,
 			client,
 			render_client,
+			parameters: params,
 		}.into()
 	}
 
@@ -404,7 +418,7 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 		period_size as usize
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction, _: impl BufferPlayFunction) -> Result<usize, ()> {
 		let buffer_size = unsafe { self.client.GetBufferSize().unwrap() };
 		let padding = unsafe { self.client.GetCurrentPadding().unwrap() };
 
@@ -414,11 +428,47 @@ impl AudioHardwareInterface for WindowsAudioHardwareInterface {
 			return Ok(0);
 		}
 
-		let buffer = unsafe {
-			std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut i16, available_space as usize)
-		};
+		match self.parameters.bit_depth {
+			16 => {
+				match self.parameters.channels {
+					1 => {
+						let buffer = unsafe {
+							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut i16, available_space as usize)
+						};
 
-		wpf(buffer);
+						wpf(Streams::Mono16Bit(buffer))
+					}
+					2 => {
+						let buffer = unsafe {
+							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut (i16, i16), available_space as usize)
+						};
+
+						wpf(Streams::Stereo16Bit(buffer))
+					}
+					_ => panic!()
+				}
+			}
+			32 => {
+				match self.parameters.channels {
+					1 => {
+						let buffer = unsafe {
+							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut f32, available_space as usize)
+						};
+
+						wpf(Streams::MonoFloat32(buffer))
+					}
+					2 => {
+						let buffer = unsafe {
+							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut (f32, f32), available_space as usize)
+						};
+
+						wpf(Streams::StereoFloat32(buffer))
+					}
+					_ => panic!()
+				}
+			}
+			_ => panic!()
+		}
 
 		unsafe {
 			self.render_client.ReleaseBuffer(available_space as _, 0).unwrap();

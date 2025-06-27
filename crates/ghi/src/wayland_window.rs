@@ -631,7 +631,7 @@ impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()>
 				let location = &mut this.state.pointer_location;
 
 				location.0 += dx_unaccel as f32;
-				location.1 += dy_unaccel as f32;
+				location.1 += -dy_unaccel as f32;
 
 				if let Some(extent) = this.state.extent {
 					let width = extent.width() as f32;

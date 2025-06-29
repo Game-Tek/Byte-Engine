@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ffi::c_void};
+use std::{collections::VecDeque, ffi::c_void, marker::PhantomData};
 
 use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
@@ -174,17 +174,19 @@ impl WaylandWindow {
 
 		WindowIterator {
 			events: app_data.events,
+			_phantom: PhantomData,
 		}
 	}
 }
 
 /// The `WindowIterator` struct is used to iterate over `Events` produced by the `poll` method.
 /// Wayland events are first processed in the `poll` method which then copies it's own event list to the iterator.
-pub struct WindowIterator {
+pub struct WindowIterator<'a> {
 	events: VecDeque<Events>,
+	_phantom: PhantomData<&'a ()>,
 }
 
-impl Iterator for WindowIterator {
+impl <'a> Iterator for WindowIterator<'a> {
 	type Item = Events;
 
 	fn next(&mut self) -> Option<Events> {

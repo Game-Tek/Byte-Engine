@@ -432,6 +432,7 @@ impl ShaderBindingDescriptor {
 /// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
 /// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
 /// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Features {
 	pub(crate) validation: bool,
 	pub(crate) gpu_validation: bool,

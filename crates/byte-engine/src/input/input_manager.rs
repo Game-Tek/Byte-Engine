@@ -20,6 +20,8 @@
 use std::{collections::HashMap, default, f32::consts::PI};
 
 use log::warn;
+use math::normalize;
+use maths_rs::num::Base;
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
@@ -69,24 +71,6 @@ struct InputAction {
 	name: String,
 	r#type: Types,
 	trigger_mappings: Vec<TriggerMapping>,
-	/// The stack is a list of input source records that simultaneous, connected, and currently active.
-	/// The stack is used to determine the value of the input event.
-	/// The stack is ordered by the time the input source was first pressed.
-	/// An element is popped when it's corresponding input source is released.
-	/// Example:
-	/// 	- Input source `A` is pressed.
-	/// 		(Value is A)
-	/// 	- Input source `B` is pressed.
-	/// 		(Value is B)
-	/// 	- Input source `B` is released.
-	/// 		(Value is A)
-	/// 	- Input source `B` is pressed.
-	/// 		(Value is B)
-	/// 	- Input source `A` is released.
-	/// 		(Value is B)
-	/// 	- Input source `B` is released.
-	/// 		(Value is None)
-	stack: Vec<Record>,
 	handle: Option<TypedHandle>,
 }
 
@@ -332,8 +316,6 @@ impl InputManager {
 			return;
 		};
 
-		let device = &mut self.devices[device_handle.0 as usize];
-
 		let time = std::time::SystemTime::now();
 
 		let record = Record {
@@ -371,22 +353,6 @@ impl InputManager {
 			self.trigger_values.insert((device_handle, trigger_handle), record.clone());
 		}
 
-		for record in &records {
-			if let Value::Bool(pressed) = record.value {
-				let actions = self.actions.iter_mut().filter(|a| a.trigger_mappings.iter().any(|tm| tm.trigger_handle == record.trigger_handle));
-
-				if pressed {
-					for action in actions {
-						action.stack.push(record.clone());
-					}
-				} else {
-					for action in actions {
-						action.stack.retain(|r| (record.device_handle, record.trigger_handle) != (r.device_handle, r.trigger_handle));
-					}
-				}
-			}
-		}
-
 		for (i, action) in self.actions.iter().enumerate() {
 			let action_records = records.iter().filter(|r| action.trigger_mappings.iter().any(|tm| tm.trigger_handle == r.trigger_handle));
 
@@ -394,7 +360,7 @@ impl InputManager {
 
 			let record = if let Some(record) = most_recent_record { record } else { continue; };
 
-			let value = if let Some(value) = Self::resolve_action_value_from_record(action, record) { value } else { continue; };
+			let value = if let Some(value) = Self::resolve_action_value_from_record(action, record, &self.trigger_values) { value } else { continue; };
 
 			self.action_values.insert((record.device_handle, ActionHandle(i as u32)), value);
 
@@ -443,7 +409,6 @@ impl InputManager {
 					function: Some(input_event.mapping.function),
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-			stack: Vec::new(),
 			handle: None,
 		};
 
@@ -494,8 +459,30 @@ impl InputManager {
 		})
 	}
 
-	fn resolve_action_value_from_record(action: &InputAction, record: &Record) -> Option<Value> {
+	fn resolve_action_value_from_record(action: &InputAction, record: &Record, values: &HashMap<(DeviceHandle, TriggerHandle), Record>) -> Option<Value> {
 		let mapping = action.trigger_mappings.iter().find(|ied| ied.trigger_handle == record.trigger_handle)?;
+
+		// Returns the stack of boolean records for the given action, sorted ascending by time
+		let get_stack = || {
+			let mut records = action.trigger_mappings.iter().map(|tm| {
+				let h = tm.trigger_handle;
+
+				values.iter().filter(|(k, _)| k.1 == h).map(|(_, v)| v).filter_map(|e| {
+					match e.value {
+						Value::Bool(v) => if v { Some((tm.clone(), e.clone())) } else { None },
+						_ => None,
+					}
+				}).collect::<Vec<(TriggerMapping, Record)>>()
+			}).flatten().collect::<Vec<(TriggerMapping, Record)>>();
+
+			records.sort_by(|a, b| {
+				let a = a.1.time;
+				let b = b.1.time;
+				a.cmp(&b)
+			});
+
+			records
+		};
 
 		match action.r#type {
 			Types::Bool => {
@@ -517,11 +504,11 @@ impl InputManager {
 			Types::Float => {
 				let float: Option<f32> = match record.value {
 					Value::Bool(record_value) => {
-						if let Some(last) = action.stack.last() {
-							if let Value::Bool(pressed) = last.value { // Stack entry value does not really matter because if it is in the stack it _is_ pressed.
-								let trigger_mapping = action.trigger_mappings.iter().find(|description| description.trigger_handle == last.trigger_handle)?;
+						let stack = get_stack();
 
-								match trigger_mapping.mapping {
+						if let Some((mapping, last)) = stack.last() {
+							if let Value::Bool(pressed) = last.value { // Stack entry value does not really matter because if it is in the stack it _is_ pressed.
+								match mapping.mapping {
 									Value::Bool(value) => if value { 1f32 } else { 0f32 },
 									Value::Unicode(_) => 0f32,
 									Value::Float(value) => value,
@@ -560,12 +547,22 @@ impl InputManager {
 			}
 			Types::Vector2 => {
 				let vector2: Option<Vector2> = match record.value {
-					Value::Bool(record_value) => {
-						match mapping.mapping {
-							Value::Vector2(mapping_value) => (record_value as u32 as f32 * mapping_value).into(),
-							_ => None,
-						}
-					},
+					Value::Bool(_) => {
+						let stack = get_stack();
+
+						let res = stack.iter().fold(Vector2::zero(), |acc, &(mapping, record)| {
+							acc + match mapping.mapping {
+								Value::Vector2(mapping_value) => mapping_value, // Record value is not accessed because if record is in stack it necessarily is `true`
+								_ => Vector2::zero(),
+							}
+						});
+
+						if !(res.x == 0.0 && res.y == 0.0) { // Avoid division by zero
+							normalize(res)
+						} else {
+							Vector2::zero()
+						}.into()
+					}
 					Value::Unicode(_) => {
 						log::error!("Not implemented!");
 						return None;
@@ -594,11 +591,21 @@ impl InputManager {
 			}
 			Types::Vector3 => {
 				let vector3: Option<Vector3> = match record.value {
-					Value::Bool(record_value) => {
-						match mapping.mapping {
-							Value::Vector3(mapping_value) => (record_value as u32 as f32 * mapping_value).into(),
-							_ => None,
-						}
+					Value::Bool(_) => {
+						let stack = get_stack();
+
+						let res = stack.iter().fold(Vector3::zero(), |acc, &(mapping, record)| {
+							acc + match mapping.mapping {
+								Value::Vector3(mapping_value) => mapping_value, // Record value is not accessed because if record is in stack it necessarily is `true`
+								_ => Vector3::zero(),
+							}
+						});
+
+						if !(res.x == 0f32 && res.y == 0f32 && res.z == 0f32) {
+							normalize(res)
+						} else {
+							Vector3::zero()
+						}.into()
 					},
 					Value::Unicode(_) => {
 						log::error!("Not implemented!");
@@ -730,7 +737,6 @@ impl <T: InputValue> Listener<CreateEvent<Action<T>>> for InputManager where Ent
 					function: Some(input_event.mapping.function),
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-			stack: Vec::new(),
 			handle: Some(handle.clone().into()),
 		};
 
@@ -877,6 +883,45 @@ mod tests {
 		input_manager.update();
 
 		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
+	}
+
+	#[test]
+	fn test_boolean_trigger_2d_action_binding_combination() {
+		let mut input_manager = InputManager::new();
+
+		let x = register_keyboard_device_class(&mut input_manager);
+
+		let action = input_manager.create_action("Move", Types::Vector2, &[
+			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, Vector2::new(0f32, 1f32))),
+			ActionBindingDescription::new("Keyboard.Down").mapped(ValueMapping::new(Function::Boolean, Vector2::new(0f32, -1f32))),
+			ActionBindingDescription::new("Keyboard.Left").mapped(ValueMapping::new(Function::Boolean, Vector2::new(-1f32, 0f32))),
+			ActionBindingDescription::new("Keyboard.Right").mapped(ValueMapping::new(Function::Boolean, Vector2::new(1f32, 0f32)))
+		]);
+
+		let device = input_manager.create_device(&x);
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Vector2(Vector2::new(0f32, 0f32)));
+
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Right"), true.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Vector2(Vector2::new(1f32 / 2f32.sqrt(), 1f32 / 2f32.sqrt())));
+
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Right"), false.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Vector2(Vector2::new(0f32, 0f32)));
+
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Left"), true.into());
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Right"), true.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(action, device).value, Value::Vector2(Vector2::new(0f32, 0f32)));
 	}
 
 	fn record_and_assert_input_source_action_sequence<A, Z>(input_manager: &mut InputManager, device: DeviceHandle, trigger_reference: TriggerReference, a: A, b: A, z: Z) where A: Into<Value>, Z: Into<Value> {

@@ -17,7 +17,8 @@ use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::Textu
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-    ghi: Arc<RwLock<ghi::Device>>,
+	instance: ghi::Instance,
+    device: Arc<RwLock<ghi::Device>>,
 
     started_frame_count: usize,
     rendered_frame_count: usize,
@@ -40,16 +41,19 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
-		let ghi_instance = Arc::new(RwLock::new(ghi::create(
-			ghi::Features::new()
-				.validation(settings.validation)
-				.api_dump(false)
-				.gpu_validation(false)
-				.debug_log_function(|message| {
-					log::error!("{}", message);
-				})
-				.geometry_shader(false)
-		).unwrap()));
+		let features = ghi::Features::new()
+			.validation(settings.validation)
+			.api_dump(false)
+			.gpu_validation(false)
+			.debug_log_function(|message| {
+				log::error!("{}", message);
+			})
+			.geometry_shader(false)
+		;
+
+		let mut instance = ghi::Instance::new(features.clone()).unwrap();
+
+		let device = Arc::new(RwLock::new(instance.create_device(features.clone()).unwrap()));
 
 		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
@@ -59,7 +63,7 @@ impl Renderer {
 		let mut targets = HashMap::new();
 
 		{
-			let mut ghi = ghi_instance.write();
+			let mut ghi = device.write();
 
 			let result = ghi.create_image(
 				Some("result"),
@@ -106,7 +110,8 @@ impl Renderer {
 		root_render_pass.add_image("result".to_string(), targets.get("result").unwrap().clone(), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
 
 		Renderer {
-			ghi: ghi_instance,
+			instance,
+			device,
 
 			started_frame_count: 0,
 			rendered_frame_count: 0,
@@ -135,7 +140,7 @@ impl Renderer {
 			return;
 		}
 
-		let mut render_pass_builder = RenderPassBuilder::new(self.ghi.clone());
+		let mut render_pass_builder = RenderPassBuilder::new(self.device.clone());
 
 		let main_image = self.root_render_pass.images.get("main").unwrap().clone();
 		let depth_image = self.root_render_pass.images.get("depth").unwrap().clone();
@@ -161,7 +166,7 @@ impl Renderer {
         	return None;
         };
 
-        let mut ghi = self.ghi.write();
+        let mut ghi = self.device.write();
 
 		let frame_key = ghi.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
 
@@ -181,7 +186,7 @@ impl Renderer {
         }
 
         if extent != self.extent {
-            let mut ghi = self.ghi.write();
+            let mut ghi = self.device.write();
 
 			for (_, image) in self.targets.iter_mut() {
 				ghi.resize_image(*image, extent);
@@ -190,7 +195,7 @@ impl Renderer {
             self.extent = extent;
         }
 
-        let mut ghi = self.ghi.write();
+        let mut ghi = self.device.write();
 
 		let execute = self.root_render_pass.prepare(&mut ghi, extent, frame_key);
 
@@ -199,7 +204,7 @@ impl Renderer {
 
 	/// This function executes the prepared render frame.
     pub fn render(&mut self, message: RenderMessage) {
-    	let mut ghi = self.ghi.write();
+    	let mut ghi = self.device.write();
 
 		let frame_key = message.frame_key;
 		let present_key = message.present_key;
@@ -265,7 +270,7 @@ impl Listener<CreateEvent<window_system::Window>> for Renderer {
             e.get_os_handles(&handle)
         });
 
-        let mut ghi = self.ghi.write();
+        let mut ghi = self.device.write();
 
         let swapchain_handle = ghi.bind_to_window(
             &os_handles,

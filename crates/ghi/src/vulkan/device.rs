@@ -8,9 +8,6 @@ use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
 pub struct Device {
-	entry: ash::Entry,
-	instance: ash::Instance,
-
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
 	debug_data: Box<DebugCallbackData>,
 
@@ -23,6 +20,12 @@ pub struct Device {
 	pub(super) acceleration_structure: ash::khr::acceleration_structure::Device,
 	pub(super) ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device,
 	pub(super) mesh_shading: ash::ext::mesh_shader::Device,
+
+	#[cfg(target_os = "linux")]
+	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
+
+	#[cfg(target_os = "windows")]
+	pub(super) win32_surface: ash::khr::win32_surface::Instance,
 
 	#[cfg(debug_assertions)]
 	debugger: RenderDebugger,
@@ -59,96 +62,18 @@ pub struct Device {
 	/// Tracks pending buffer synchronization operations.
 	/// Buffer handle, pipeline stage
 	pub(super) pending_buffer_syncs: Mutex<VecDeque<BufferHandle>>,
+	memory_properties: vk::PhysicalDeviceMemoryProperties,
 }
 
 unsafe impl Send for Device {}
 
 impl Device {
-	pub fn new(settings: graphics_hardware_interface::Features) -> Result<Device, &'static str> {
-		let entry = ash::Entry::linked();
-
-		let available_instance_extensions = unsafe { entry.enumerate_instance_extension_properties(None).unwrap() };
-
-		let is_instance_extension_available = |name: &str| {
-			available_instance_extensions.iter().any(|extension| {
-				unsafe { std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()).to_str().unwrap() == name }
-			})
-		};
-
-		let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
-
-		let mut layer_names = Vec::new();
-
-		if settings.validation {
-			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
-		}
-
-		if settings.api_dump {
-			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
-		}
-
-		let mut extension_names = Vec::new();
-
-		extension_names.push(ash::khr::surface::NAME.as_ptr());
-
+	pub fn new(settings: graphics_hardware_interface::Features, entry: &ash::Entry, instance: &ash::Instance) -> Result<Device, &'static str> {
 		#[cfg(target_os = "linux")]
-		{
-			if is_instance_extension_available(ash::khr::xcb_surface::NAME.to_str().unwrap()) {
-				extension_names.push(ash::khr::xcb_surface::NAME.as_ptr());
-			}
-
-			if is_instance_extension_available(ash::khr::wayland_surface::NAME.to_str().unwrap()) {
-				extension_names.push(ash::khr::wayland_surface::NAME.as_ptr());
-			}
-		}
+		let wayland_surface = ash::khr::wayland_surface::Instance::new(entry, instance);
 
 		#[cfg(target_os = "windows")]
-		{
-			if is_instance_extension_available(ash::khr::win32_surface::NAME.to_str().unwrap()) {
-				extension_names.push(ash::khr::win32_surface::NAME.as_ptr());
-			}
-		}
-
-		if is_instance_extension_available(ash::khr::get_surface_capabilities2::NAME.to_str().unwrap()) {
-			extension_names.push(ash::khr::get_surface_capabilities2::NAME.as_ptr());
-		}
-
-		if is_instance_extension_available(ash::ext::surface_maintenance1::NAME.to_str().unwrap()) {
-			extension_names.push(ash::ext::surface_maintenance1::NAME.as_ptr());
-		}
-
-		if is_instance_extension_available(ash::ext::swapchain_maintenance1::NAME.to_str().unwrap()) {
-			extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
-		}
-
-		if settings.validation {
-			extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
-		}
-
-		let enabled_validation_features = {
-			let mut enabled_features = Vec::with_capacity(6);
-			enabled_features.push(vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION);
-			enabled_features.push(vk::ValidationFeatureEnableEXT::BEST_PRACTICES);
-			if settings.gpu_validation { enabled_features.push(vk::ValidationFeatureEnableEXT::GPU_ASSISTED); }
-			enabled_features
-		};
-
-		let mut validation_features = vk::ValidationFeaturesEXT::default()
-			.enabled_validation_features(&enabled_validation_features);
-
-		let instance_create_info = vk::InstanceCreateInfo::default()
-			.application_info(&application_info)
-			.enabled_layer_names(&layer_names)
-			.enabled_extension_names(&extension_names)
-		;
-
-		let instance_create_info = if settings.validation {
-			instance_create_info.push_next(&mut validation_features)
-		} else {
-			instance_create_info
-		};
-
-		let instance = unsafe { entry.create_instance(&instance_create_info, None).or(Err("Failed to create instance"))? };
+		let win32_surface = ash::khr::win32_surface::Instance::new(entry, instance);
 
 		let mut debug_data = Box::new(DebugCallbackData {
 			error_count: 0,
@@ -156,7 +81,7 @@ impl Device {
 		});
 
 		if settings.validation {
-			let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
+			let debug_utils = ash::ext::debug_utils::Instance::new(entry, instance);
 
 			let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
 				.message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,)
@@ -330,6 +255,8 @@ impl Device {
 			.expect("No queue family index found.")
 		;
 
+		let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
 		let available_device_extensions = unsafe { instance.enumerate_device_extension_properties(physical_device) }.expect("Could not get supported device extensions");
 
 		let is_device_extension_available = |name: &str| {
@@ -433,11 +360,16 @@ impl Device {
 		};
 
 		Ok(Device {
-			entry,
-			instance,
-
 			debug_utils,
 			debug_data,
+
+			memory_properties,
+
+			#[cfg(target_os = "linux")]
+			wayland_surface,
+
+			#[cfg(target_os = "windows")]
+			win32_surface,
 
 			physical_device,
 			device,
@@ -904,23 +836,11 @@ impl Device {
 		let surface = match window_os_handles {
 			#[cfg(target_os = "linux")]
 			window::OSHandles::Wayland(os_handles) => {
-				let wayland_surface = ash::khr::wayland_surface::Instance::new(&self.entry, &self.instance);
-
 				let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
 					.display(os_handles.display)
 					.surface(os_handles.surface);
 
-				unsafe { wayland_surface.create_wayland_surface(&wayland_surface_create_info, None).expect("No surface") }
-			}
-			#[cfg(target_os = "linux")]
-			window::OSHandles::X11(os_handles) => {
-				let xcb_surface = ash::khr::xcb_surface::Instance::new(&self.entry, &self.instance);
-
-				let xcb_surface_create_info = vk::XcbSurfaceCreateInfoKHR::default()
-					.connection(os_handles.xcb_connection)
-					.window(os_handles.xcb_window);
-
-				unsafe { xcb_surface.create_xcb_surface(&xcb_surface_create_info, None).expect("No surface") }
+				unsafe { self.wayland_surface.create_wayland_surface(&wayland_surface_create_info, None).expect("No surface") }
 			}
 			#[cfg(target_os = "windows")]
 			window::OSHandles::Win32(os_handles) => {
@@ -959,8 +879,6 @@ impl Device {
 
 	/// Allocates memory from the device.
 	fn create_allocation_internal(&mut self, size: usize, memory_bits: Option<u32>, device_accesses: graphics_hardware_interface::DeviceAccesses) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
-		let memory_properties = unsafe { self.instance.get_physical_device_memory_properties(self.physical_device) };
-
 		let memory_property_flags = {
 			let mut memory_property_flags = vk::MemoryPropertyFlags::empty();
 
@@ -971,6 +889,8 @@ impl Device {
 
 			memory_property_flags
 		};
+
+		let memory_properties = &self.memory_properties;
 
 		let memory_type_index = memory_properties
 			.memory_types
@@ -1056,14 +976,20 @@ impl Drop for Device {
 		unsafe {
 			self.device.device_wait_idle().expect("Failed to wait for device idle");
 
-			self.synchronizers.iter().for_each(|synchronizer| {
-				self.device.destroy_semaphore(synchronizer.semaphore, None);
-				self.device.destroy_fence(synchronizer.fence, None);
+			self.command_buffers.iter().for_each(|command_buffer| {
+				command_buffer.frames.iter().for_each(|command_buffer| {
+					self.device.destroy_command_pool(command_buffer.command_pool, None);
+				});
 			});
 
 			self.swapchains.iter().for_each(|swapchain| {
 				self.swapchain.destroy_swapchain(swapchain.swapchain, None);
 				self.surface.destroy_surface(swapchain.surface, None);
+			});
+
+			self.synchronizers.iter().for_each(|synchronizer| {
+				self.device.destroy_semaphore(synchronizer.semaphore, None);
+				self.device.destroy_fence(synchronizer.fence, None);
 			});
 
 			self.descriptor_sets_layouts.iter().for_each(|descriptor_set_layout| {

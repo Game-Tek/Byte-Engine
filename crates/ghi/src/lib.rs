@@ -21,6 +21,9 @@ pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+pub use vulkan::Instance as Instance;
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub use vulkan::Device as Device;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -29,7 +32,3 @@ pub use vulkan::CommandBufferRecording as CommandBufferRecording;
 pub mod image;
 pub mod sampler;
 pub mod raster_pipeline;
-
-pub fn create(settings: graphics_hardware_interface::Features) -> Result<Device, &'static str> {
-	vulkan::Device::new(settings)
-}

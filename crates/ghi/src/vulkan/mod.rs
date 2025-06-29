@@ -4,12 +4,14 @@ use ::utils::hash::HashMap;
 use crate::graphics_hardware_interface;
 
 pub mod command_buffer;
+pub mod instance;
 pub mod device;
 pub mod buffer;
 pub mod image;
 
 mod utils;
 
+pub use self::instance::*;
 pub use self::device::*;
 pub use self::command_buffer::*;
 pub use self::buffer::*;
@@ -202,49 +204,65 @@ mod tests {
 
 	#[test]
 	fn render_triangle() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::render_triangle(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::render_triangle(&mut device);
 	}
 
 	#[test]
 	fn render_present() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::present(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::present(&mut device);
 	}
 
 	#[test]
 	fn render_multiframe_present() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::multiframe_present(&mut ghi); // BUG: can see graphical artifacts, most likely synchronization issue
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::multiframe_present(&mut device); // BUG: can see graphical artifacts, most likely synchronization issue
 	}
 
 	#[test]
 	fn render_multiframe() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::multiframe_rendering(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::multiframe_rendering(&mut device);
 	}
 
 	#[test]
 	fn render_dynamic_data() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::dynamic_data(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::dynamic_data(&mut device);
 	}
 
 	#[test]
 	fn render_with_descriptor_sets() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::descriptor_sets(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::descriptor_sets(&mut device);
 	}
 
 	#[test]
 	fn render_with_multiframe_resources() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::multiframe_resources(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::multiframe_resources(&mut device);
 	}
 
 	#[test]
 	fn render_with_ray_tracing() {
-		let mut ghi = Device::new(graphics_hardware_interface::Features::new().validation(true).ray_tracing(true)).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::ray_tracing(&mut ghi);
+		let features = graphics_hardware_interface::Features::new().validation(true).ray_tracing(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::ray_tracing(&mut device);
 	}
 }

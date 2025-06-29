@@ -100,6 +100,7 @@ impl ActionBindingDescription {
 }
 
 /// A trigger mapping is a mapping of an input trigger to a value for an action.
+#[derive(Copy, Clone, Debug)]
 pub struct TriggerMapping {
 	/// The handle to the trigger that this mapping is for.
 	pub(crate) trigger_handle: TriggerHandle,

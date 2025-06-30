@@ -27,7 +27,7 @@ pub struct GraphicsApplication {
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer_handle: EntityHandle<Renderer>,
 	audio_system_handle: EntityHandle<DefaultAudioSystem>,
-	physics_system_handle: EntityHandle<physics::PhysicsWorld>,
+	physics_system_handle: EntityHandle<physics::World>,
 	anchor_system_handle: EntityHandle<AnchorSystem>,
 	tick_handle: EntityHandle<Property<Time>>,
 	task_executor_handle: EntityHandle<task::TaskExecutor>,
@@ -75,7 +75,7 @@ impl Application for GraphicsApplication {
 			root_space_handle.spawn(rendering::renderer::Renderer::new(window_system_handle.clone(), resource_manager.clone(), settings).builder())
 		};
 		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
-		let physics_system_handle = root_space_handle.spawn(physics::PhysicsWorld::new().builder());
+		let physics_system_handle = root_space_handle.spawn(physics::World::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
 
 		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new());
@@ -309,7 +309,7 @@ impl GraphicsApplication {
 		&self.audio_system_handle
 	}
 
-	pub fn get_physics_world_handle(&self) -> &EntityHandle<crate::physics::PhysicsWorld> {
+	pub fn get_physics_world_handle(&self) -> &EntityHandle<crate::physics::World> {
 		&self.physics_system_handle
 	}
 

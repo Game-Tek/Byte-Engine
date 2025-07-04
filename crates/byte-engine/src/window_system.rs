@@ -25,11 +25,11 @@ pub struct Window {
 }
 
 impl Window {
-	pub fn new(name: &str, extent: Extent) -> EntityBuilder<'static, Window> {
-		EntityBuilder::new(Window {
+	pub fn new(name: &str, extent: Extent) -> Self {
+		Window {
 			name: name.to_string(),
 			extent
-		}).r#as::<Window>()
+		}
 	}
 }
 

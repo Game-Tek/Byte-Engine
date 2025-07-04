@@ -100,7 +100,7 @@ impl Execution {
 							handler(event.as_ref());
 						}
 					} else {
-						eprintln!("No handlers for event type: {:?}", type_id);
+						eprintln!("No handlers for event type: {:#?}", type_id);
 					}
 				}
 			}
@@ -139,7 +139,7 @@ impl TaskExecutor {
 		self.tasks.push(task);
 	}
 
-	pub fn add_task_for_event<E: Event, T: Listener<E> + 'static>(&mut self, callee: EntityHandle<T>) {
+	pub fn add_task_for_event<E: Event + 'static, T: Listener<E> + 'static>(&mut self, callee: EntityHandle<T>) {
 		self.events.lock().entry(std::any::TypeId::of::<E>()).or_default().push(Box::new(move |event| {
 			let mut callee = callee.write();
 			let event = event.downcast_ref::<E>().expect("Event type mismatch");
@@ -148,8 +148,6 @@ impl TaskExecutor {
 	}
 
 	pub fn broadcast_event<E: Event + 'static>(&mut self, event: E) {
-		let type_id = std::any::TypeId::of::<E>();
-
 		self.to_run.push(Runnable::Event(Box::new(event)));
 	}
 
@@ -159,13 +157,13 @@ impl TaskExecutor {
 		let to_run = to_run.chain(self.tasks.iter().filter_map(|task| {
 			let run = {
 				let task = task.read();
-				
+
 				let interval = if let Some(interval) = &task.every {
 					interval.is_now(elapsed_time, dt, frame)
 				} else {
 					true
 				};
-	
+
 				let delay = if let Some(delay) = &task.delay {
 					match delay {
 						Interval::Time(duration) => {
@@ -178,7 +176,7 @@ impl TaskExecutor {
 				} else {
 					true
 				};
-	
+
 				interval && delay
 			};
 

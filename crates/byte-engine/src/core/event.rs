@@ -5,7 +5,7 @@ use super::{listener::Listener, Entity, EntityHandle};
 
 /// Trait for an event-like object.
 /// Allows an event object to be subscribed to and to be triggered.
-pub trait Event: Downcast {
+pub trait Event: Downcast + 'static {
 }
 
 impl_downcast!(Event);
@@ -31,7 +31,7 @@ impl EventRegistry {
 			subscriber.write().handle(event);
 		}));
 	}
-	
+
 	pub fn broadcast<T: Event + 'static>(&self, event: T) {
 		let type_id = std::any::TypeId::of::<T>();
 		let map = self.map.read();

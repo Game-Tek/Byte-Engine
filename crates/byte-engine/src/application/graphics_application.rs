@@ -1,5 +1,5 @@
-use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
-use std::time::Duration;
+use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::http::HttpInspectorServer, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use std::{net::{Ipv4Addr, Ipv6Addr}, time::Duration};
 
 use maths_rs::num::Base;
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler, FileStorageBackend}, resource::{resource_manager::ResourceManager, RedbStorageBackend}, resources::material::Material};
@@ -78,7 +78,7 @@ impl Application for GraphicsApplication {
 		let physics_system_handle = root_space_handle.spawn(physics::World::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
 
-		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new());
+		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new().builder());
 
 		let tick_handle = root_space_handle.spawn(Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }).builder());
 
@@ -120,6 +120,8 @@ impl Application for GraphicsApplication {
 				}
 			}).unwrap()
 		};
+
+		root_space_handle.spawn(HttpInspectorServer::new(application_events.0.clone()).builder());
 
 		GraphicsApplication {
 			application,
@@ -244,10 +246,10 @@ impl Application for GraphicsApplication {
 			e.update();
 		});
 
-		self.physics_system_handle.map(move |handle| {
-			let mut e = handle.write();
-			e.update(time);
-		});
+		// self.physics_system_handle.map(move |handle| {
+		// 	let mut e = handle.write();
+		// 	e.update(time);
+		// });
 
 		let render_command = self.renderer_handle.map(|handle| {
 			let mut e = handle.write();
@@ -378,7 +380,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 /// Creates a new window under the root space with the application name and an extent of 1920x1080.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
 	let root_space_handle = application.get_root_space_handle();
-	root_space_handle.spawn(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
+	root_space_handle.spawn(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)).builder());
 }
 
 /// Sets up the default resource and asset management for the application.

@@ -1,8 +1,10 @@
 use crate::core::entity::EntityBuilder;
-use crate::core::Entity;
+use crate::core::{Entity, EntityHandle};
 use crate::gameplay::{Positionable, Transformable};
+use crate::inspector::Inspectable;
 use crate::Vec3f;
 
+#[derive(Debug)]
 pub struct Camera {
 	position: Vec3f,
 	direction: Vec3f,
@@ -41,19 +43,35 @@ impl Camera {
 
 	pub fn get_position(&self) -> Vec3f { self.position }
 	pub fn set_position(&mut self, position: Vec3f) { self.position = position; }
-	
+
 	pub fn set_fov(&mut self, fov: f32) {
 		self.fov = fov;
 	}
 }
 
 impl Entity for Camera {
-	fn builder(self) -> crate::core::entity::EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).r#as::<Camera>()
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+    	EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Inspectable>)
 	}
 }
 
 impl Positionable for Camera {
 	fn get_position(&self) -> Vec3f { self.position }
 	fn set_position(&mut self, position: Vec3f) { self.position = position; }
+}
+
+impl Inspectable for Camera {
+	fn as_string(&self) -> String {
+    	format!("{:?}", self)
+	}
+
+	fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+    	match key {
+        	"fov" => {
+        		self.set_fov(value.parse().map_err(|e| format!("Invalid value: {}", e))?);
+          		Ok(())
+        	},
+        	_ => Err(format!("Unknown key: {}", key))
+    	}
+	}
 }

@@ -28,7 +28,7 @@ impl Object {
 				collision: CollisionEvent{},
 				body_type,
 			}
-		}).r#as::<Self>().r#as::<dyn Body>().r#as::<dyn mesh::RenderEntity>()
+		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn mesh::RenderEntity>)
 	}
 
 	pub fn get_transform_mut(&mut self) -> &mut Transform {

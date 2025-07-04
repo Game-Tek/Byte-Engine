@@ -21,7 +21,7 @@ impl Sphere {
 	}
 
 	pub fn create(radius: f32) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(radius)).r#as::<Self>().r#as::<dyn Body>()
+		EntityBuilder::new(Self::new(radius)).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>)
 	}
 }
 
@@ -33,7 +33,7 @@ impl Cube {
 	}
 
 	pub fn create(size: Vec3f) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(size)).r#as::<Self>().r#as::<dyn Body>()
+		EntityBuilder::new(Self::new(size)).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>)
 	}
 }
 

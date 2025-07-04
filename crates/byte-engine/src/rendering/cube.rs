@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::core::{entity::EntityBuilder, Entity};
+use crate::core::{entity::EntityBuilder, Entity, EntityHandle};
 
 use super::mesh::{MeshGenerator, MeshSource, RenderEntity};
 
@@ -12,7 +12,7 @@ impl Cube {
 	pub fn new() -> EntityBuilder<'static, Self> {
 		EntityBuilder::new(Self {
 			generator: MeshSource::Generated(Box::new(CubeMeshGenerator {})),
-		}).r#as::<Self>().r#as::<dyn RenderEntity>()
+		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn RenderEntity>)
 	}
 }
 

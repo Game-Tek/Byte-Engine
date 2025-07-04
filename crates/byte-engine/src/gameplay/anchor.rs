@@ -23,6 +23,10 @@ impl Default for Anchorage {
 	}
 }
 
+pub trait Anchoring: Positionable + Entity {
+	fn children(&self) -> Vec<(EntityHandle<dyn Positionable>, Anchorage)>;
+}
+
 pub struct Anchor {
 	transform: Transform,
 	children: Vec<(EntityHandle<dyn Positionable>, Anchorage)>,
@@ -72,28 +76,40 @@ impl Positionable for Anchor {
 	}
 }
 
-pub struct AnchorSystem {
-	anchors: Vec<EntityHandle<Anchor>>,
+impl Anchoring for Anchor {
+	fn children(&self) -> Vec<(EntityHandle<dyn Positionable>, Anchorage)> {
+		self.children.clone()
+	}
 }
 
-impl Entity for AnchorSystem {}
+pub struct AnchorSystem {
+	anchors: Vec<EntityHandle<dyn Anchoring>>,
+}
+
+impl Entity for AnchorSystem {
+	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+		EntityBuilder::new(self).listen_to::<CreateEvent<dyn Anchoring>>()
+	}
+}
 
 impl AnchorSystem {
-	pub fn new() -> EntityBuilder<'static, AnchorSystem> {
-		EntityBuilder::new(AnchorSystem{ anchors: Vec::with_capacity(1024) }).listen_to::<CreateEvent<Anchor>>()
+	pub fn new() -> AnchorSystem {
+		AnchorSystem { anchors: Vec::with_capacity(1024) }
 	}
 
 	pub fn update(&self,) {
 		for anchor in &self.anchors {
 			let anchor = anchor.read();
 
-			for (child, anchorage) in &anchor.children {
+			let children = anchor.children();
+
+			for (child, anchorage) in children {
 				let mut child = child.write();
 
 				match anchorage {
 					Anchorage::Default => {},
 					Anchorage::Offset { offset } => {
-						child.set_position(anchor.transform().get_position() + offset.get_position());
+						child.set_position(anchor.get_position() + offset.get_position());
 					},
 				}
 			}
@@ -101,8 +117,8 @@ impl AnchorSystem {
 	}
 }
 
-impl Listener<CreateEvent<Anchor>> for AnchorSystem {
-	fn handle(&mut self, event: &CreateEvent<Anchor>) {
+impl Listener<CreateEvent<dyn Anchoring>> for AnchorSystem {
+	fn handle(&mut self, event: &CreateEvent<dyn Anchoring>) {
 		let handle = event.handle();
 		self.anchors.push(handle.clone());
 	}

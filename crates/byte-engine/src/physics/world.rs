@@ -1,5 +1,5 @@
 use math::Vector3;
-use maths_rs::mag;
+use maths_rs::{mag, num::Base};
 
 use crate::{application::Time, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}}};
 
@@ -30,14 +30,19 @@ impl World {
 			match body.body_type {
 				BodyTypes::Static => continue,
 				BodyTypes::Kinematic => {
-					body.position = body.handle.write().get_position();
+					if let Some(b) = body.body.as_ref() {
+						let mut b = b.write();
+						body.position = b.get_position();
+					}
 				},
 				BodyTypes::Dynamic => {
 					let forces = Vector3::new(0f32, -9.81f32, 0f32);
 					body.acceleration = forces;
 					body.velocity += body.acceleration * dt;
 					body.position += body.velocity * dt;
-					body.handle.write().set_position(body.position);
+					if let Some(b) = body.body.as_ref() {
+						b.write().set_position(body.position);
+					}
 				}
 			}
 		}
@@ -90,11 +95,11 @@ impl World {
 
 			self.ongoing_collisions.push((i, j));
 
-			self.bodies[j].handle.map(|e| {
+			self.bodies[j].collider.map(|e| {
 				let mut e = e.write();
-				if let Some(collision_event) = e.on_collision() {
-					// collision_event.ocurred(&self.bodies[i].handle);
-				}
+				// if let Some(collision_event) = e.on_collision() {
+				// 	// collision_event.ocurred(&self.bodies[i].handle);
+				// }
 			});
 
 			log::info!("Collision between {:?} and {:?}", i, j);
@@ -108,7 +113,7 @@ impl World {
 
 impl Entity for World {
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn Body>>()
+		EntityBuilder::new(self).listen_to::<CreateEvent<dyn Body>>().listen_to::<CreateEvent<dyn Collider>>()
 	}
 }
 
@@ -116,7 +121,7 @@ impl Listener<CreateEvent<dyn Body>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
 		let handle = event.handle();
 		let body = handle.read();
-		self.add_body(PhysicsBody{ body_type: body.get_body_type(), position: body.get_position(), velocity: body.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), handle: handle.clone() });
+		self.add_body(PhysicsBody{ body_type: body.get_body_type(), position: body.get_position(), velocity: body.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), collider: handle.clone() as EntityHandle<dyn Collider>, body: Some(handle.clone()) });
 	}
 }
 
@@ -124,7 +129,7 @@ impl Listener<CreateEvent<dyn Collider>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Collider>) {
 		let handle = event.handle();
 		let collider = handle.read();
-		todo!();
+		self.add_body(PhysicsBody{ body_type: BodyTypes::Static, position: collider.get_position(), velocity: Vector3::zero(), acceleration: Vector3::zero(), collision_shape: collider.shape(), collider: handle.clone(), body: None });
 	}
 }
 
@@ -134,5 +139,6 @@ struct PhysicsBody {
 	position: Vector3,
 	acceleration: Vector3,
 	velocity: Vector3,
-	handle: EntityHandle<dyn Body>,
+	collider: EntityHandle<dyn Collider>,
+	body: Option<EntityHandle<dyn Body>>,
 }

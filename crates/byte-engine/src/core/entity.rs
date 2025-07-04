@@ -8,40 +8,32 @@ use crate::gameplay::space::{Space, Spawner};
 /// An entity is a type that can be spawned and managed by the engine.
 /// The trait provides some convenience methods to interact with the entity.
 pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
-	fn get_entity_trait(&self) -> EntityTrait {
-		EntityTrait {
-			trait_id: std::any::TypeId::of::<Self>(),
-		}
-	}
-
-	fn get_traits(&self) -> Vec<EntityTrait> { vec![] }
-
 	/// Create an entity builder for this entity.
 	/// This is a convenience method to create an entity builder with the current "unwrapped" entity as the base.
-	/// 
+	///
 	/// Implementations of this trait should override this method to provide a custom entity builder, such as one that listens to events, or produces creation events.
-	/// 
+	///
 	/// The default implementation will create a new `EntityBuilder` with the current entity as the base and will produce a creation event as the type of the entity itself.
-	/// 
+	///
 	/// # Examples
-	/// 
+	///
 	/// ```rust
 	/// use crate::core::{Entity, EntityBuilder};
-	/// 
+	///
 	/// struct MyEntity {}
-	/// 
+	///
 	/// impl MyEntity {
 	/// 	fn new() -> Self {
 	/// 		MyEntity {}
 	/// 	}
 	/// }
-	/// 
+	///
 	/// impl Entity for MyEntity {
 	/// 	fn builder(self) -> EntityBuilder<'static, Self> {
 	/// 		EntityBuilder::new(self).r#as::<MyEntity>() // Produces a creation event as `MyEntity`
 	/// 	}
 	/// }
-	/// 
+	///
 	/// fn main() {
 	/// 	let entity = MyEntity::new(); // Choose how to create the entity
 	/// 	let builder = entity.builder(); // Make a builder for extra functionality when spawning
@@ -49,7 +41,7 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 	/// }
 	/// ```
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).r#as::<Self>()
+		EntityBuilder::new(self).r#as(|h| h)
 	}
 }
 
@@ -256,20 +248,20 @@ impl <'c, T: 'c> EntityBuilder<'c, T> {
 		self
 	}
 
-	pub fn r#as<E: Entity + ?Sized>(mut self) -> Self where T: 'static {
-		self.events.push(EntityEvents::As { f: Box::new(|handle, events| {
+	pub fn r#as<E>(mut self, cast: fn(EntityHandle<T>) -> EntityHandle<E>) -> Self where E: Entity + ?Sized + 'static, T: Entity + 'static {
+		self.events.push(EntityEvents::As { f: Box::new(move |handle, events| {
 			events.push(DomainEvents::EntityCreated { f: Box::new(move |executor| {
-				executor.broadcast_event(CreateEvent::new(handle));
+				executor.broadcast_event(CreateEvent::<E>::new(cast(handle)));
 			}) });
 		}) });
 
 		self
 	}
 
-	pub fn listen_to<C: Event>(mut self) -> Self where T: Listener<C> + 'static {
+	pub fn listen_to<E: Event + 'static>(mut self) -> Self where T: Listener<E> + 'static {
 		self.events.push(EntityEvents::Listen { f: Box::new(move |handle, events| {
 			events.push(DomainEvents::StartListen { f: Box::new(move |executor| {
-				executor.add_task_for_event::<C, T>(handle);
+				executor.add_task_for_event::<E, T>(handle);
 			}) });
 		}) });
 
@@ -307,7 +299,7 @@ impl <T: ?Sized, U> MapAndCollectAsAvailable<T, U> for Vec<EntityHandle<T>> {
 				}
 			});
 		}
-	
+
 		res
 	}
 }

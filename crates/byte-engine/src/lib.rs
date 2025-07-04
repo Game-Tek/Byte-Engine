@@ -38,6 +38,8 @@ pub mod physics;
 #[cfg(not(feature = "headless"))]
 pub mod rendering;
 
+pub mod inspector;
+
 pub use maths_rs::{prelude::Base, Quatf, Vec2f, Vec3f};
 use serde::{Deserialize, Serialize};
 pub type Vector2 = Vec2f;

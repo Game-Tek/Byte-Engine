@@ -1,5 +1,6 @@
 //! Mesh component module
 
+use crate::core::EntityHandle;
 use crate::core::{entity::EntityBuilder, Entity};
 use crate::{core::orchestrator, gameplay::Transform, math};
 
@@ -55,7 +56,7 @@ impl Mesh {
 		EntityBuilder::new(Self {
 			source: MeshSource::Resource(resource_id),
 			transform,
-		}).r#as::<Self>().r#as::<dyn RenderEntity>()
+		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn RenderEntity>)
 	}
 
 	pub fn new_generated(generator: Box<dyn MeshGenerator>, transform: Transform) -> EntityBuilder<'static, Self> {

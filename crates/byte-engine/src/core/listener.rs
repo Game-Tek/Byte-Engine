@@ -6,17 +6,17 @@ use crate::gameplay::space::{Destroyer, Spawner};
 
 use super::{domain::Domain, entity::{get_entity_trait_for_type, EntityTrait}, event::Event, spawn_as_child, Entity, EntityHandle, SpawnHandler};
 
-pub trait Listener<T: Event>: Entity {
+pub trait Listener<T: Event + 'static>: Entity {
 	fn handle(&mut self, event: &T);
 }
 
 /// An event that is triggered when an entity of the type `T` is created in the domain.
 /// This event is sent to all listener/subscribers of the event.
-pub struct CreateEvent<T: ?Sized> {
+pub struct CreateEvent<T: ?Sized + 'static> {
 	handle: EntityHandle<T>,
 }
 
-impl <T: ?Sized> CreateEvent<T> {
+impl <T: ?Sized + 'static> CreateEvent<T> {
 	pub(crate) fn new(handle: EntityHandle<T>) -> Self {
 		CreateEvent { handle }
 	}
@@ -31,11 +31,11 @@ impl <T: ?Sized + 'static> Event for CreateEvent<T> {
 
 /// An event that is triggered when an entity of the type `T` is deleted in the domain.
 /// This event is sent to all listener/subscribers of the event.
-pub struct DeleteEvent<T: ?Sized> {
+pub struct DeleteEvent<T: ?Sized + 'static> {
 	handle: EntityHandle<T>,
 }
 
-impl <T: ?Sized> DeleteEvent<T> {
+impl <T: ?Sized + 'static> DeleteEvent<T> {
 	pub(crate) fn new(handle: EntityHandle<T>) -> Self {
 		DeleteEvent { handle }
 	}
@@ -63,17 +63,19 @@ mod tests {
 
 		impl Entity for Component {}
 
-		let _: EntityHandle<Component> = spawn(Component { name: "test".to_string(), value: 1 });
-
 		struct System {
 
 		}
 
-		impl Entity for System {}
+		impl Entity for System {
+			fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+				EntityBuilder::new(self).listen_to::<CreateEvent<Component>>()
+			}
+		}
 
 		impl System {
-			fn new<'c>() -> EntityBuilder<'c, System> {
-				EntityBuilder::new(System {}).listen_to::<CreateEvent<Component>>()
+			fn new<'c>() -> System {
+				System {}
 			}
 		}
 
@@ -97,11 +99,13 @@ mod tests {
 
 		let domain: EntityHandle<dyn Domain> = spawn(Space::new());
 
-		let _: EntityHandle<System> = domain.spawn(System::new());
+		let _: EntityHandle<System> = domain.spawn(System::new().builder());
 
 		assert_eq!(unsafe { COUNTER }, 0);
 
 		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), Component { name: "test".to_string(), value: 1 }.builder());
+
+		let events = domain.write().get_events();
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}
@@ -119,7 +123,9 @@ mod tests {
 		}
 
 		impl Entity for Component {
-			fn get_traits(&self) -> Vec<EntityTrait> { vec![unsafe { get_entity_trait_for_type::<dyn Boo>() }] }
+			fn builder(self) -> EntityBuilder<'static, Self> {
+				EntityBuilder::new(Component { name: String::new(), value: 0 }).r#as(|h| h as EntityHandle<dyn Boo>)
+			}
 		}
 
 		impl Boo for Component {
@@ -129,17 +135,19 @@ mod tests {
 
 		let domain: EntityHandle<dyn Domain> = spawn(Space::new());
 
-		let _: EntityHandle<Component> = domain.spawn(EntityBuilder::new(Component { name: "test".to_string(), value: 1 }).r#as::<dyn Boo>());
-
 		struct System {
 
 		}
 
-		impl Entity for System {}
+		impl Entity for System {
+			fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
+				EntityBuilder::new(self).listen_to::<CreateEvent<dyn Boo>>()
+			}
+		}
 
 		impl System {
-			fn new() -> EntityBuilder<'static, System> {
-				EntityBuilder::new(System {}).listen_to::<CreateEvent<dyn Boo>>()
+			fn new() -> System {
+				System {}
 			}
 		}
 
@@ -161,11 +169,13 @@ mod tests {
 			}
 		}
 
-		let _: EntityHandle<System> = spawn_as_child(domain.clone(), System::new());
+		let _: EntityHandle<System> = spawn_as_child(domain.clone(), System::new().builder());
 
 		assert_eq!(unsafe { COUNTER }, 0);
 
-		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), EntityBuilder::new(Component { name: "test".to_string(), value: 1 }));
+		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), Component { name: "test".to_string(), value: 1 }.builder());
+
+		let events = domain.write().get_events();
 
 		assert_eq!(unsafe { COUNTER }, 1);
 	}

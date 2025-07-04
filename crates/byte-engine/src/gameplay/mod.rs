@@ -71,7 +71,7 @@ impl Transform {
 		}
 	}
 
-	fn from_position(position: maths_rs::Vec3f) -> Self {
+	pub fn from_position(position: maths_rs::Vec3f) -> Self {
 		Self {
 			position,
 			scale: maths_rs::Vec3f::new(1.0, 1.0, 1.0),

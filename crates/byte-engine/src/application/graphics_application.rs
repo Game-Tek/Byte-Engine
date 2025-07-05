@@ -1,4 +1,4 @@
-use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::http::HttpInspectorServer, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, time::Duration};
 
 use maths_rs::num::Base;
@@ -121,7 +121,8 @@ impl Application for GraphicsApplication {
 			}).unwrap()
 		};
 
-		root_space_handle.spawn(HttpInspectorServer::new(application_events.0.clone()).builder());
+		let inspector = root_space_handle.spawn(Inspector::new(application_events.0.clone()).builder());
+		root_space_handle.spawn(HttpInspectorServer::new(inspector).builder());
 
 		GraphicsApplication {
 			application,

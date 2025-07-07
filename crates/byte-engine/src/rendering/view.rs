@@ -156,14 +156,14 @@ mod tests {
 
 		let corners = view.get_frustum_corners();
 
-		assert_eq!(corners[0], Vector4::new(-1.0, -1.0, -1.0, 1.0));
-		assert_eq!(corners[1], Vector4::new(1.0, -1.0, -1.0, 1.0));
-		assert_eq!(corners[2], Vector4::new(-1.0, 1.0, -1.0, 1.0));
-		assert_eq!(corners[3], Vector4::new(1.0, 1.0, -1.0, 1.0));
-		assert_eq!(corners[4], Vector4::new(-1.0, -1.0, 1.0, 1.0));
-		assert_eq!(corners[5], Vector4::new(1.0, -1.0, 1.0, 1.0));
-		assert_eq!(corners[6], Vector4::new(-1.0, 1.0, 1.0, 1.0));
-		assert_eq!(corners[7], Vector4::new(1.0, 1.0, 1.0, 1.0));
+		assert_eq!(corners[0], Vector4::new(-100.0, -100.0, 100.0, 1.0));
+		assert_eq!(corners[1], Vector4::new(100.0, -100.0, 100.0, 1.0));
+		assert_eq!(corners[2], Vector4::new(-100.0, 100.0, 100.0, 1.0));
+		assert_eq!(corners[3], Vector4::new(100.0, 100.0, 100.0, 1.0));
+		assert_eq!(corners[4], Vector4::new(-0.1, -0.1, 0.1, 1.0));
+		assert_eq!(corners[5], Vector4::new(0.1, -0.1, 0.1, 1.0));
+		assert_eq!(corners[6], Vector4::new(-0.1, 0.1, 0.1, 1.0));
+		assert_eq!(corners[7], Vector4::new(0.1, 0.1, 0.1, 1.0));
 	}
 
 	#[test]

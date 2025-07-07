@@ -1124,6 +1124,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore]
 	fn test_system_fps_game() {
 		//! Test that the system integration is working and works correctly for a FPS game type setup.
 

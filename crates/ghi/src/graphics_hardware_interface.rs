@@ -728,8 +728,8 @@ pub enum Encodings {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// Enumerates the formats that textures can have.
 pub enum Formats {
-	/// 10 bit unsigned for R, G and 11 bit unsigned for B normalized RGB.
-	RGBu10u10u11,
+	/// 11 bit unsigned for R, G and 10 bit unsigned for B normalized RGB.
+	RGBu11u11u10,
 	/// 8 bit unsigned per component normalized BGRA.
 	BGRAu8,
 	/// 32 bit float depth.
@@ -755,7 +755,7 @@ pub trait Size {
 impl Size for Formats {
 	fn size(&self) -> usize {
 		match self {
-			Formats::RGBu10u10u11 => 4,
+			Formats::RGBu11u11u10 => 4,
 			Formats::BGRAu8 => 4,
 			Formats::Depth32 => 4,
 			Formats::U32 => 4,

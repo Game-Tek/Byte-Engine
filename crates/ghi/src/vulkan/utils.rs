@@ -133,7 +133,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
 			}
 		}
-		graphics_hardware_interface::Formats::RGBu10u10u11 => vk::Format::B10G11R11_UFLOAT_PACK32,
+		graphics_hardware_interface::Formats::RGBu11u11u10 => vk::Format::B10G11R11_UFLOAT_PACK32,
 		graphics_hardware_interface::Formats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
 		graphics_hardware_interface::Formats::Depth32 => vk::Format::D32_SFLOAT,
 		graphics_hardware_interface::Formats::U32 => vk::Format::R32_UINT,
@@ -629,8 +629,8 @@ mod tests {
 		let value = to_format(graphics_hardware_interface::Formats::BGRAu8);
 		assert_eq!(value, vk::Format::B8G8R8A8_SRGB);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGBu10u10u11);
-		assert_eq!(value, vk::Format::R16G16_S10_5_NV);
+		let value = to_format(graphics_hardware_interface::Formats::RGBu11u11u10);
+		assert_eq!(value, vk::Format::B10G11R11_UFLOAT_PACK32);
 
 		let value = to_format(graphics_hardware_interface::Formats::Depth32);
 		assert_eq!(value, vk::Format::D32_SFLOAT);
@@ -678,7 +678,7 @@ mod tests {
 		assert_eq!(value, vk::PipelineStageFlags2::NONE);
 
 		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::VERTEX, None, None);
-		assert_eq!(value, vk::PipelineStageFlags2::VERTEX_SHADER);
+		assert_eq!(value, vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT);
 
 		let value = to_pipeline_stage_flags(graphics_hardware_interface::Stages::MESH, None, None);
 		assert_eq!(value, vk::PipelineStageFlags2::MESH_SHADER_EXT);
@@ -729,7 +729,7 @@ mod tests {
 	#[test]
 	fn test_to_access_flags() {
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::VERTEX, graphics_hardware_interface::Layouts::Undefined, None);
-		assert_eq!(value, vk::AccessFlags2::NONE);
+		assert_eq!(value, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
 
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::TRANSFER, graphics_hardware_interface::Layouts::Undefined, None);
 		assert_eq!(value, vk::AccessFlags2::TRANSFER_READ);

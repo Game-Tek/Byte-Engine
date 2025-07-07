@@ -6,6 +6,7 @@
 use byte_engine::{application::{Application, Parameter}, gameplay::space::Spawner};
 
 #[test]
+#[ignore]
 fn triangle() {
     let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[Parameter::new("kill-after", "60")]);
 

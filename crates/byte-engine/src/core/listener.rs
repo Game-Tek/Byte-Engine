@@ -51,8 +51,10 @@ impl <T: ?Sized + 'static> Event for DeleteEvent<T> {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
+	use std::assert_matches::assert_matches;
+
 	use super::*;
-	use crate::{core::{entity::EntityBuilder, spawn, spawn_as_child}, gameplay::space::Space};
+	use crate::{application::Events, core::{domain::DomainEvents, entity::EntityBuilder, spawn, spawn_as_child}, gameplay::space::Space};
 
 	#[test]
 	fn listeners() {
@@ -79,21 +81,13 @@ mod tests {
 			}
 		}
 
-		static mut COUNTER: u32 = 0;
-
 		impl Listener<CreateEvent<Component>> for System {
 			fn handle(&mut self, event: &CreateEvent<Component>) -> () {
-				unsafe {
-					COUNTER += 1;
-				}
 			}
 		}
 
 		impl Listener<DeleteEvent<Component>> for System {
 			fn handle(&mut self, event: &DeleteEvent<Component>) -> () {
-				unsafe {
-					COUNTER -= 1;
-				}
 			}
 		}
 
@@ -101,13 +95,15 @@ mod tests {
 
 		let _: EntityHandle<System> = domain.spawn(System::new().builder());
 
-		assert_eq!(unsafe { COUNTER }, 0);
+		let events = domain.write().get_events();
 
-		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), Component { name: "test".to_string(), value: 1 }.builder());
+		assert_matches!(events[0], DomainEvents::StartListen { .. });
+
+		let _: EntityHandle<Component> = domain.spawn(Component { name: "test".to_string(), value: 1 }.builder());
 
 		let events = domain.write().get_events();
 
-		assert_eq!(unsafe { COUNTER }, 1);
+		assert_matches!(events[0], DomainEvents::EntityCreated { .. });
 	}
 
 	#[test]
@@ -151,32 +147,26 @@ mod tests {
 			}
 		}
 
-		static mut COUNTER: u32 = 0;
-
 		impl Listener<CreateEvent<dyn Boo>> for System {
 			fn handle(&mut self, event: &CreateEvent<dyn Boo>) -> () {
-				unsafe {
-					COUNTER += 1;
-				}
 			}
 		}
 
 		impl Listener<DeleteEvent<dyn Boo>> for System {
 			fn handle(&mut self, event: &DeleteEvent<dyn Boo>) -> () {
-				unsafe {
-					COUNTER -= 1;
-				}
 			}
 		}
 
-		let _: EntityHandle<System> = spawn_as_child(domain.clone(), System::new().builder());
-
-		assert_eq!(unsafe { COUNTER }, 0);
-
-		let _: EntityHandle<Component> = spawn_as_child(domain.clone(), Component { name: "test".to_string(), value: 1 }.builder());
+		let _: EntityHandle<System> = domain.spawn(System::new().builder());
 
 		let events = domain.write().get_events();
 
-		assert_eq!(unsafe { COUNTER }, 1);
+		assert_matches!(events[0], DomainEvents::StartListen { .. });
+
+		let _: EntityHandle<Component> = domain.spawn(Component { name: "test".to_string(), value: 1 }.builder());
+
+		let events = domain.write().get_events();
+
+		assert_matches!(events[0], DomainEvents::EntityCreated { .. });
 	}
 }

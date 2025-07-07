@@ -24,11 +24,11 @@ pub trait Inspectable: Entity + Send + Sync {
 /// The inspector allows different implementations of the Byte Engine Inspection Protocol to interact an query the engine's internal state.
 pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
-	events: std::sync::mpmc::Sender<Events>,
+	events: std::sync::mpsc::Sender<Events>,
 }
 
 impl Inspector {
-	pub fn new(tx: std::sync::mpmc::Sender<Events>) -> Self {
+	pub fn new(tx: std::sync::mpsc::Sender<Events>) -> Self {
 		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
 
 		Self {

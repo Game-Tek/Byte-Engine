@@ -1,16 +1,16 @@
-use maths_rs::Vec3f;
+use math::Vector3;
 
 use crate::core::{Entity};
 
 use super::cct;
 
 pub struct PointLight {
-	pub position: Vec3f,
-	pub color: Vec3f,
+	pub position: Vector3,
+	pub color: Vector3,
 }
 
 impl PointLight {
-	pub fn new(position: Vec3f, cct: f32) -> Self {
+	pub fn new(position: Vector3, cct: f32) -> Self {
 		Self {
 			position,
 			color: cct::rgb_from_temperature(cct),

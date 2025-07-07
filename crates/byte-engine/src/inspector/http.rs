@@ -83,7 +83,7 @@ impl HttpInspectorServer {
 						Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap()
 					}
 				}
-				(&Method::POST, "/close") => {
+				(&Method::DELETE, "/") => {
 					i.read().close_application();
 					Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap()
 				}

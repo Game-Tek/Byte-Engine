@@ -15,12 +15,12 @@ use super::Parameter;
 /// It also contains the main loop of the engine.
 /// An application MUST be a singleton and created before any other engine functionality is used.\
 /// All state associated with the application/process should be stored in an application.
-/// 
+///
 /// ## Features
 /// ### Arguments
 /// The application can take arguments during startup.
 /// The arguments can be passed as OS environment variables in the form of `BE_NAME=value`, as command line arguments in the form of `--name=value`, or as parameters in code during the creation of the application.
-/// 
+///
 /// Parameters as command line arguments take precedence over environment variables which take precedence over parameters in code.
 /// Parameters < Environment variables < Command line arguments
 pub trait Application {
@@ -49,7 +49,7 @@ impl Application for BaseApplication {
 		let _ = simple_logger::SimpleLogger::new().env().init();
 
 		let parameters = parameters.to_vec();
-	
+
 		let environment_variables = std::env::vars().filter(|(k, v)| k.as_str().starts_with("BE_")).map(|(k, v)| Parameter::new_string(k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(), v.into())).collect::<Vec<Parameter>>();
 		// Take all arguments that have the form `--name=value` and convert them to parameters.
 		let arguments = std::env::args().filter(|a| a.starts_with("--")).map(|a| {
@@ -63,9 +63,23 @@ impl Application for BaseApplication {
 		parameter_set.extend(environment_variables);
 		parameter_set.extend(arguments);
 
+		if let Some(e) = parameter_set.iter().find(|e| e.name == "log-level") {
+			let level = match e.value.as_str() {
+				"trace" => log::LevelFilter::Trace,
+				"debug" => log::LevelFilter::Debug,
+				"info" => log::LevelFilter::Info,
+				"warn" => log::LevelFilter::Warn,
+				"error" => log::LevelFilter::Error,
+				"off" => log::LevelFilter::Off,
+				_ => log::LevelFilter::Off,
+			};
+
+			log::set_max_level(level);
+		}
+
 		info!("Byte-Engine");
 		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", name, parameter_set.iter().map(|p| format!("{}={}", p.name, p.value)).collect::<Vec<String>>().join(", "));
-	
+
 		trace!("Initialized base Byte-Engine application!");
 
 		BaseApplication { name: String::from(name), parameters: parameter_set }

@@ -1,4 +1,4 @@
-use crate::Vector3;
+use math::Vector3;
 
 /// A vector pointing to the right in the default coordinate system.
 /// That is the positive x-axis.

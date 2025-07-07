@@ -1,6 +1,5 @@
+use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
-
-use crate::{Quaternion, Vector2, Vector3};
 
 use super::{action::InputValue, device_class::DeviceClassHandle, Types, Value};
 

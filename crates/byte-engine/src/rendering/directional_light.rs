@@ -1,4 +1,4 @@
-use maths_rs::Vec3f;
+use math::Vector3;
 
 use crate::{core::{Entity, EntityHandle}, inspector::Inspectable};
 
@@ -6,12 +6,12 @@ use super::cct;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectionalLight {
-	pub direction: Vec3f,
-	pub color: Vec3f,
+	pub direction: Vector3,
+	pub color: Vector3,
 }
 
 impl DirectionalLight {
-	pub fn new(direction: Vec3f, cct: f32) -> Self {
+	pub fn new(direction: Vector3, cct: f32) -> Self {
 		Self {
 			direction,
 			color: cct::rgb_from_temperature(cct),

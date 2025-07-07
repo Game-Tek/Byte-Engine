@@ -1,8 +1,4 @@
-use maths_rs::Vec3f;
-
-use crate::{plane::Plane, sphere::Sphere};
-
-type Vector3 = Vec3f;
+use crate::{plane::Plane, sphere::Sphere, Vector3};
 
 /// Calculates the intersection point of a ray and an axis-aligned bounding box (AABB).
 pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, max: Vector3,) -> Option<f32> {
@@ -62,8 +58,7 @@ pub fn sphere_in_frustum(
 
 #[cfg(test)]
 mod tests {
-	use maths_rs::normalize;
-
+	use crate::{normalize, Vector3};
 	use super::*;
 
 	#[test]

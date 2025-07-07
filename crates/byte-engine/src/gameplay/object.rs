@@ -1,9 +1,11 @@
 use std::future::join;
 
-use maths_rs::mat::{MatScale, MatTranslate};
+#[cfg(not(feature = "headless"))]
+use math::Matrix4;
+use math::Vector3;
 use utils::BoxedFuture;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::mesh::MeshSource, Vector3};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::mesh::MeshSource};
 
 #[cfg(not(feature = "headless"))]
 use crate::rendering::mesh::{self};
@@ -58,13 +60,16 @@ impl Collider for Object {
 
 impl Body for Object {
 	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { Some(&mut self.collision) }
-	fn get_velocity(&self) -> maths_rs::Vec3f { self.velocity }
+	fn get_velocity(&self) -> Vector3 { self.velocity }
 	fn get_body_type(&self) -> BodyTypes { self.body_type }
+	fn get_mass(&self) -> f32 {
+    	1f32
+	}
 }
 
 #[cfg(not(feature = "headless"))]
 impl mesh::RenderEntity for Object {
-	fn get_transform(&self) -> maths_rs::Mat4f { (&self.transform).into() }
+	fn get_transform(&self) -> Matrix4 { (&self.transform).into() }
 	fn get_mesh(&self) -> &mesh::MeshSource {
 		&self.source
 	}

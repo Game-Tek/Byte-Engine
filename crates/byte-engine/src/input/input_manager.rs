@@ -20,12 +20,11 @@
 use std::{collections::HashMap, default, f32::consts::PI};
 
 use log::warn;
-use math::normalize;
-use maths_rs::num::Base;
+use math::{normalize, Base, Vector2, Vector3};
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
-use crate::{core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, Quaternion, Vector2, Vector3};
+use crate::{core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}};
 
 use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TriggerHandle, Types, Value};
 
@@ -756,10 +755,10 @@ impl Entity for InputManager {
 
 #[cfg(test)]
 mod tests {
+	use math::Quaternion;
+
 	use crate::{core::{spawn, spawn_as_child}, input::{input_trigger::TriggerDescription, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}, ValueMapping}};
 	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
-
-	use maths_rs::prelude::Base;
 
 	use crate::{gameplay::space::Space, input::ActionBindingDescription};
 

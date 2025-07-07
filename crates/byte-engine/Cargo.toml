@@ -17,10 +17,10 @@ math = { path = "../math" }
 
 serde_json = "1.0.140"
 dual_quaternion = "0.2.0"
-maths-rs = "0.2.6"
 serde = "1.0.219"
 log = "0.4.26"
 simple_logger = "5.0.0"
 colored = "3.0.0"
 downcast-rs = "2.0.1"
 oxhttp = { version = "0.3.1", default-features = false, features = ["server"] }
+tracing = { version = "0.1.41" }

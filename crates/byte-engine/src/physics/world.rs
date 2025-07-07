@@ -1,5 +1,4 @@
-use math::Vector3;
-use maths_rs::{mag, num::Base};
+use math::{magnitude, magnitude_squared, normalize, Base, Vector3};
 
 use crate::{application::Time, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}}};
 
@@ -47,18 +46,29 @@ impl World {
 			}
 		}
 
-		let mut collisions = Vec::new();
+		let static_bodies = self.bodies.iter().enumerate().filter(|(_, b)| b.body_type == BodyTypes::Static);
+		let dynamic_bodies = self.bodies.iter().enumerate().filter(|(_, b)| b.body_type == BodyTypes::Kinematic || b.body_type == BodyTypes::Dynamic);
 
-		for (i, a) in self.bodies.iter().enumerate() {
-			for (j, b) in self.bodies.iter().enumerate() {
+		struct Collision {
+			pair: (usize, usize),
+			normal: Vector3,
+			depth: f32,
+		}
+
+		let mut collisions: Vec<Collision> = Vec::new();
+
+		for (i, a) in static_bodies {
+			for (j, b) in dynamic_bodies.clone() {
 				if i == j { continue; }
 
-				if collisions.contains(&(j, i)) { continue; }
+				let pair = (i, j);
+
+				if collisions.iter().find(|c| c.pair == pair).is_some() { continue; }
 
 				match (&a.collision_shape, &b.collision_shape) {
 					(CollisionShapes::Sphere { radius: ra }, CollisionShapes::Sphere { radius: rb }) => {
-						if mag(a.position - b.position) < ra + rb {
-							collisions.push((i, j));
+						if magnitude_squared(a.position - b.position) < (ra + rb).powf(2f32) {
+							collisions.push(Collision{ pair, normal: normalize(b.position - a.position), depth: ra + rb - magnitude(a.position - b.position) });
 						}
 					},
 					(&CollisionShapes::Cube { size: sa }, &CollisionShapes::Cube { size: sb }) => {
@@ -70,7 +80,7 @@ impl World {
 						if a_min.x < b_max.x && a_max.x > b_min.x &&
 							a_min.y < b_max.y && a_max.y > b_min.y &&
 							a_min.z < b_max.z && a_max.z > b_min.z {
-							collisions.push((i, j));
+							collisions.push(Collision{ pair, normal: normalize(b.position - a.position), depth: 0.0 });
 						}
 					},
 					// Calculate collision between a sphere and a cube (cube size is half-size)
@@ -83,30 +93,40 @@ impl World {
 						if a_min.x < b_max.x && a_max.x > b_min.x &&
 							a_min.y < b_max.y && a_max.y > b_min.y &&
 							a_min.z < b_max.z && a_max.z > b_min.z {
-							collisions.push((i, j));
+							collisions.push(Collision{ pair, normal: normalize(b.position - a.position), depth: ra });
 						}
 					},
 				}
 			}
 		}
 
-		for &(i, j) in &collisions {
-			if self.ongoing_collisions.contains(&(i, j)) { continue; }
+		for c in &collisions {
+			let pair = c.pair;
+			if self.ongoing_collisions.contains(&pair) { continue; }
 
-			self.ongoing_collisions.push((i, j));
+			self.ongoing_collisions.push(pair);
 
-			self.bodies[j].collider.map(|e| {
+			self.bodies[pair.1].collider.map(|e| {
 				let mut e = e.write();
 				// if let Some(collision_event) = e.on_collision() {
 				// 	// collision_event.ocurred(&self.bodies[i].handle);
 				// }
 			});
 
-			log::info!("Collision between {:?} and {:?}", i, j);
+			log::info!("Collision between {:?} and {:?}", pair.0, pair.1);
 		}
 
-		self.ongoing_collisions.retain(|(i, j)| {
-			collisions.contains(&(*i, *j))
+		for c in &collisions {
+			let pair = c.pair;
+			self.bodies[pair.1].collider.map(|e| {
+				let mut e = e.write();
+				let position = e.get_position() + c.normal * c.depth;
+				e.set_position(position);
+			});
+		}
+
+		self.ongoing_collisions.retain(|p| {
+			collisions.iter().find(|c| c.pair == *p).is_some()
 		});
 	}
 }
@@ -121,7 +141,7 @@ impl Listener<CreateEvent<dyn Body>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
 		let handle = event.handle();
 		let body = handle.read();
-		self.add_body(PhysicsBody{ body_type: body.get_body_type(), position: body.get_position(), velocity: body.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), collider: handle.clone() as EntityHandle<dyn Collider>, body: Some(handle.clone()) });
+		self.add_body(PhysicsBody{ body_type: body.get_body_type(), position: body.get_position(), velocity: body.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), collider: handle.clone() as EntityHandle<dyn Collider>, body: Some(handle.clone()), inv_mass: 1f32 / body.get_mass() });
 	}
 }
 
@@ -129,7 +149,7 @@ impl Listener<CreateEvent<dyn Collider>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Collider>) {
 		let handle = event.handle();
 		let collider = handle.read();
-		self.add_body(PhysicsBody{ body_type: BodyTypes::Static, position: collider.get_position(), velocity: Vector3::zero(), acceleration: Vector3::zero(), collision_shape: collider.shape(), collider: handle.clone(), body: None });
+		self.add_body(PhysicsBody{ body_type: BodyTypes::Static, position: collider.get_position(), velocity: Vector3::zero(), acceleration: Vector3::zero(), collision_shape: collider.shape(), collider: handle.clone(), body: None, inv_mass: 0f32 });
 	}
 }
 
@@ -139,6 +159,8 @@ struct PhysicsBody {
 	position: Vector3,
 	acceleration: Vector3,
 	velocity: Vector3,
+	/// Reciprocal mass of the body.
+	inv_mass: f32,
 	collider: EntityHandle<dyn Collider>,
 	body: Option<EntityHandle<dyn Body>>,
 }

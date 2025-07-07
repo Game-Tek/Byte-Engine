@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use math::{Matrix4, Vector3, Vector4};
+
 use crate::core::{entity::EntityBuilder, Entity, EntityHandle};
 
 use super::mesh::{MeshGenerator, MeshSource, RenderEntity};
@@ -20,8 +22,8 @@ impl Entity for Cube {
 }
 
 impl RenderEntity for Cube {
-	fn get_transform(&self) -> maths_rs::Mat4f {
-		maths_rs::Mat4f::identity()
+	fn get_transform(&self) -> Matrix4 {
+		Matrix4::identity()
 	}
 
 	fn get_mesh(&self) -> &MeshSource {
@@ -58,29 +60,29 @@ impl MeshGenerator for CubeMeshGenerator {
 		])
 	}
 
-	fn tangents(&self) -> Cow<[maths_rs::Vec3f]> {
+	fn tangents(&self) -> Cow<[Vector3]> {
 		std::borrow::Cow::Owned(vec![
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
-			maths_rs::Vec3f::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
 		])
 	}
 
-	fn bitangents(&self) -> std::borrow::Cow<[maths_rs::Vec3f]> {
+	fn bitangents(&self) -> std::borrow::Cow<[Vector3]> {
 		std::borrow::Cow::Owned(vec![
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
-			maths_rs::Vec3f::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
 		])
 	}
 
@@ -97,16 +99,16 @@ impl MeshGenerator for CubeMeshGenerator {
 		])
 	}
 
-	fn colors(&self) -> Option<std::borrow::Cow<[maths_rs::Vec4f]>> {
+	fn colors(&self) -> Option<std::borrow::Cow<[Vector4]>> {
 		Some(std::borrow::Cow::Owned(vec![
-			maths_rs::Vec4f::new(1.0, 0.0, 0.0, 1.0),
-			maths_rs::Vec4f::new(0.0, 1.0, 0.0, 1.0),
-			maths_rs::Vec4f::new(0.0, 0.0, 1.0, 1.0),
-			maths_rs::Vec4f::new(1.0, 1.0, 1.0, 1.0),
-			maths_rs::Vec4f::new(1.0, 1.0, 1.0, 1.0),
-			maths_rs::Vec4f::new(1.0, 1.0, 1.0, 1.0),
-			maths_rs::Vec4f::new(1.0, 1.0, 1.0, 1.0),
-			maths_rs::Vec4f::new(1.0, 1.0, 1.0, 1.0),
+			Vector4::new(1.0, 0.0, 0.0, 1.0),
+			Vector4::new(0.0, 1.0, 0.0, 1.0),
+			Vector4::new(0.0, 0.0, 1.0, 1.0),
+			Vector4::new(1.0, 1.0, 1.0, 1.0),
+			Vector4::new(1.0, 1.0, 1.0, 1.0),
+			Vector4::new(1.0, 1.0, 1.0, 1.0),
+			Vector4::new(1.0, 1.0, 1.0, 1.0),
+			Vector4::new(1.0, 1.0, 1.0, 1.0),
 		]))
 	}
 

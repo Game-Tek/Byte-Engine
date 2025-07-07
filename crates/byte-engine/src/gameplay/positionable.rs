@@ -1,6 +1,6 @@
-use crate::core::Entity;
+use math::Vector3;
 
-use crate::Vector3;
+use crate::core::Entity;
 
 /// A trait for objects that have a position in 3D space.
 pub trait Positionable: Entity {

@@ -1,13 +1,14 @@
+use math::Vector3;
+
 use crate::core::entity::EntityBuilder;
 use crate::core::{Entity, EntityHandle};
 use crate::gameplay::{Positionable, Transformable};
 use crate::inspector::Inspectable;
-use crate::Vec3f;
 
 #[derive(Debug)]
 pub struct Camera {
-	position: Vec3f,
-	direction: Vec3f,
+	position: Vector3,
+	direction: Vector3,
 	fov: f32,
 	aspect_ratio: f32,
 	aperture: f32,
@@ -15,10 +16,10 @@ pub struct Camera {
 }
 
 impl Camera {
-	pub fn new(position: Vec3f) -> Self {
+	pub fn new(position: Vector3) -> Self {
 		Self {
 			position,
-			direction: Vec3f::new(0.0, 0.0, 1.0),
+			direction: Vector3::new(0.0, 0.0, 1.0),
 			fov: 45.0,
 			aspect_ratio: 1.0,
 			aperture: 0.0,
@@ -38,11 +39,11 @@ impl Camera {
 	/// Returns the focus distance of the camera
 	fn get_focus_distance(&self) -> f32 { self.focus_distance }
 
-	pub fn get_orientation(&self) -> Vec3f { self.direction }
-	pub fn set_orientation(&mut self, orientation: Vec3f) { self.direction = orientation; }
+	pub fn get_orientation(&self) -> Vector3 { self.direction }
+	pub fn set_orientation(&mut self, orientation: Vector3) { self.direction = orientation; }
 
-	pub fn get_position(&self) -> Vec3f { self.position }
-	pub fn set_position(&mut self, position: Vec3f) { self.position = position; }
+	pub fn get_position(&self) -> Vector3 { self.position }
+	pub fn set_position(&mut self, position: Vector3) { self.position = position; }
 
 	pub fn set_fov(&mut self, fov: f32) {
 		self.fov = fov;
@@ -56,8 +57,8 @@ impl Entity for Camera {
 }
 
 impl Positionable for Camera {
-	fn get_position(&self) -> Vec3f { self.position }
-	fn set_position(&mut self, position: Vec3f) { self.position = position; }
+	fn get_position(&self) -> Vector3 { self.position }
+	fn set_position(&mut self, position: Vector3) { self.position = position; }
 }
 
 impl Inspectable for Camera {

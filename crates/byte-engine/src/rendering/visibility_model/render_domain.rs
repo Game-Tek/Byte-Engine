@@ -7,14 +7,12 @@ use std::ops::DerefMut;
 use ghi::graphics_hardware_interface::Device as _;
 use ghi::{graphics_hardware_interface, raster_pipeline, ImageHandle};
 use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
-use maths_rs::swizz::Vec2Swizzle;
+use math::{Matrix4, Vector3};
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use log::error;
-use maths_rs::mat::{MatInverse, MatProjection, MatRotate2D, MatRotate3D};
-use maths_rs::{prelude::MatTranslate, Mat4f};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::{glsl, Reference};
@@ -39,8 +37,7 @@ use crate::rendering::view::View;
 use crate::rendering::visibility_shader_generator::VisibilityShaderGenerator;
 use crate::rendering::{csm, directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
-use crate::Vector2;
-use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, Vector3, camera::{self}, math};
+use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, camera::{self}};
 
 #[derive(Debug, Clone)]
 struct MeshPrimitive {
@@ -1015,8 +1012,8 @@ impl VisibilityWorldRenderDomain {
 		return Ok(material.index);
 	}
 
-	fn get_transform(&self) -> Mat4f { Mat4f::identity() }
-	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Mat4f) {
+	fn get_transform(&self) -> Matrix4 { Matrix4::identity() }
+	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Matrix4) {
 		let ghi = self.ghi.read();
 
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
@@ -1176,7 +1173,7 @@ struct ShaderMeshletData {
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct ShaderMesh {
-	model: Mat4f,
+	model: Matrix4,
 	material_index: u32,
 	/// The position into the vertex components data (positions, normals, uvs, ..) buffer this instance's data starts
 	/// Also, the position into the vertex indices buffer this instance's data starts
@@ -1196,12 +1193,12 @@ pub struct LightingData {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct ShaderViewData {
-	pub(crate) view: maths_rs::Mat4f,
-	pub(crate) projection: maths_rs::Mat4f,
-	pub(crate) view_projection: maths_rs::Mat4f,
-	pub(crate) inverse_view: maths_rs::Mat4f,
-	pub(crate) inverse_projection: maths_rs::Mat4f,
-	pub(crate) inverse_view_projection: maths_rs::Mat4f,
+	pub(crate) view: Matrix4,
+	pub(crate) projection: Matrix4,
+	pub(crate) view_projection: Matrix4,
+	pub(crate) inverse_view: Matrix4,
+	pub(crate) inverse_projection: Matrix4,
+	pub(crate) inverse_view_projection: Matrix4,
 	pub(crate) fov: [f32; 2],
 	pub(crate) near: f32,
 	pub(crate) far: f32,

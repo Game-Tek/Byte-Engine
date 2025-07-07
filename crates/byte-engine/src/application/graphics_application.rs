@@ -1,11 +1,12 @@
 use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, time::Duration};
 
-use maths_rs::num::Base;
+use math::Vector2;
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler, FileStorageBackend}, resource::{resource_manager::ResourceManager, RedbStorageBackend}, resources::material::Material};
+use tracing::{debug_span, instrument, span, Level};
 use utils::Extent;
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}, Vector2};
+use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}};
 
 use super::{application::{Application, BaseApplication}, Parameter, Time, Events};
 
@@ -20,7 +21,7 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
-	application_events: (std::sync::mpmc::Sender<Events>, std::sync::mpmc::Receiver<Events>),
+	application_events: (std::sync::mpsc::Sender<Events>, std::sync::mpsc::Receiver<Events>),
 
 	window_system_handle: EntityHandle<window_system::WindowSystem>,
 	input_system_handle: EntityHandle<input::InputManager>,
@@ -35,7 +36,7 @@ pub struct GraphicsApplication {
 
 	audio_thread: std::thread::JoinHandle<()>,
 
-	graphics_channel_sender: std::sync::mpsc::Sender<renderer::RenderMessage>,
+	graphics_channel_sender: Option<std::sync::mpsc::Sender<renderer::RenderMessage>>,
 	graphics_thread: std::thread::JoinHandle<()>,
 
 	#[cfg(debug_assertions)]
@@ -85,26 +86,20 @@ impl Application for GraphicsApplication {
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
 
-		let application_events = std::sync::mpmc::channel();
+		let application_events = std::sync::mpsc::channel();
 
 		let audio_thread = {
 			let audio_system_handle = audio_system_handle.clone();
 
-			let rx = application_events.1.clone();
-
 			std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
 				loop {
-					if let Ok(msg) = rx.try_recv() {
-						if let Events::Close = msg {
-							break;
-						}
-					}
-
-					{
-						let mut audio_system = audio_system_handle.write();
-						audio_system.render();
-					}
+					let mut audio_system = audio_system_handle.write();
+					let span = debug_span!("Render audio");
+					let _ = span.enter();
+					audio_system.render();
 				}
+
+				log::debug!("Exiting audio thread");
 			}).unwrap()
 		};
 
@@ -116,8 +111,12 @@ impl Application for GraphicsApplication {
 			std::thread::Builder::new().name("Graphics".to_string()).spawn(move || {
 				while let Ok(frame) = graphics_channel_receiver.recv() {
 					let mut renderer = renderer_handle.write();
+					let span = debug_span!("Render graphics");
+					let _ = span.enter();
 					renderer.render(frame);
 				}
+
+				log::debug!("Exiting graphics thread.");
 			}).unwrap()
 		};
 
@@ -147,7 +146,7 @@ impl Application for GraphicsApplication {
 			start_time,
 			last_tick_time: std::time::Instant::now(),
 
-			graphics_channel_sender,
+			graphics_channel_sender: Some(graphics_channel_sender),
 
 			audio_thread,
 			graphics_thread,
@@ -171,6 +170,9 @@ impl Application for GraphicsApplication {
 	fn get_name(&self) -> &str { self.application.get_name() }
 
 	fn tick(&mut self) {
+		let span = debug_span!("GraphicsApplication::tick");
+		let _enter = span.enter();
+
 		let now = std::time::Instant::now();
 		let dt = now - self.last_tick_time;
 		self.last_tick_time = now;
@@ -247,10 +249,10 @@ impl Application for GraphicsApplication {
 			e.update();
 		});
 
-		// self.physics_system_handle.map(move |handle| {
-		// 	let mut e = handle.write();
-		// 	e.update(time);
-		// });
+		self.physics_system_handle.map(move |handle| {
+			let mut e = handle.write();
+			e.update(time);
+		});
 
 		let render_command = self.renderer_handle.map(|handle| {
 			let mut e = handle.write();
@@ -258,7 +260,7 @@ impl Application for GraphicsApplication {
 		});
 
 		if let Some(render_command) = render_command {
-			self.graphics_channel_sender.send(render_command).unwrap();
+			self.graphics_channel_sender.as_ref().unwrap().send(render_command).unwrap();
 		}
 
 		self.tick_count += 1;
@@ -299,6 +301,8 @@ impl GraphicsApplication {
 	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.close = true;
+
+		let _ = self.graphics_channel_sender.take(); // Close channel to cause thread to exit
 
 		#[cfg(debug_assertions)]
 		log::debug!("Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed(), self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);
@@ -343,7 +347,7 @@ impl GraphicsApplication {
 	}
 }
 
-pub struct ApplicationEventsChannel(std::sync::mpmc::Sender<Events>);
+pub struct ApplicationEventsChannel(std::sync::mpsc::Sender<Events>);
 
 impl ApplicationEventsChannel {
 	/// Requests the application to close.

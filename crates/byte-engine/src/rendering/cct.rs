@@ -1,6 +1,6 @@
 //! Taken from https://github.com/m-lima/tempergb
 
-use crate::Vector3;
+use math::Vector3;
 
 /// Converts a color temperature to RBG [`Color`](struct.Color.html).
 ///
@@ -57,7 +57,7 @@ fn into_saturated_u8(float: f64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-	use crate::Vector3;
+	use math::Vector3;
 
 	use super::{rgb_from_temperature,};
 

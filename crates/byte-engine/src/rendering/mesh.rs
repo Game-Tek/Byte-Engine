@@ -2,11 +2,11 @@
 
 use crate::core::EntityHandle;
 use crate::core::{entity::EntityBuilder, Entity};
-use crate::{core::orchestrator, gameplay::Transform, math};
+use crate::{core::orchestrator, gameplay::Transform};
 
 use std::{borrow::Cow, future::join};
 
-use maths_rs::{mat::{MatRotate3D, MatScale, MatTranslate}, normalize};
+use math::{normalize, Vector3, Vector4, Matrix4};
 use utils::BoxedFuture;
 
 pub trait MeshGenerator {
@@ -14,9 +14,9 @@ pub trait MeshGenerator {
 	fn normals(&self) -> Cow<[(f32, f32, f32)]>;
 	fn uvs(&self) -> Cow<[(f32, f32)]>;
 	fn indices(&self) -> Cow<[u32]>;
-	fn tangents(&self) -> Cow<[maths_rs::Vec3f]>;
-	fn bitangents(&self) -> Cow<[maths_rs::Vec3f]>;
-	fn colors(&self) -> Option<Cow<[maths_rs::Vec4f]>> { None }
+	fn tangents(&self) -> Cow<[Vector3]>;
+	fn bitangents(&self) -> Cow<[Vector3]>;
+	fn colors(&self) -> Option<Cow<[Vector4]>> { None }
 	fn meshlet_indices(&self) -> Option<Cow<[u8]>> { None }
 }
 
@@ -26,7 +26,7 @@ pub enum MeshSource {
 }
 
 pub trait RenderEntity: Entity {
-	fn get_transform(&self) -> maths_rs::Mat4f;
+	fn get_transform(&self) -> Matrix4;
 	fn get_mesh(&self) -> &MeshSource;
 }
 
@@ -38,7 +38,7 @@ pub struct Mesh {
 impl Entity for Mesh {}
 
 impl RenderEntity for Mesh {
-	fn get_transform(&self) -> maths_rs::Mat4f { self.transform.get_matrix() }
+	fn get_transform(&self) -> Matrix4 { self.transform.get_matrix() }
 	fn get_mesh(&self) -> &MeshSource {
 		&self.source
 	}
@@ -66,7 +66,7 @@ impl Mesh {
 		}.into()
 	}
 
-	pub fn set_orientation(&mut self, orientation: maths_rs::Vec3f) {
+	pub fn set_orientation(&mut self, orientation: Vector3) {
 		self.transform.set_orientation(normalize(orientation));
 	}
 

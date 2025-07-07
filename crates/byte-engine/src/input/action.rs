@@ -1,9 +1,9 @@
+use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
 
 use crate::core::{property::Property, Entity, EntityHandle};
 
 use crate::input::ValueMapping;
-use crate::{Quaternion, Vector2, Vector3};
 
 use super::TriggerHandle;
 use super::{input_manager::TriggerReference, Function, Types, Value};
@@ -56,12 +56,12 @@ impl InputValue for Vector3 {
 	fn get_type() -> Types { Types::Vector3 }
 }
 
-impl InputValue for RGBA {
-	fn get_type() -> Types { Types::Rgba }
-}
-
 impl InputValue for Quaternion {
 	fn get_type() -> Types { Types::Quaternion }
+}
+
+impl InputValue for RGBA {
+	fn get_type() -> Types { Types::Rgba }
 }
 
 impl <T: InputValue + Clone + 'static> Action<T> {

@@ -3,7 +3,6 @@ use std::{borrow::Borrow, rc::Rc, sync::Arc};
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
 use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device, FrameKey};
-use maths_rs::Vec2f;
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 

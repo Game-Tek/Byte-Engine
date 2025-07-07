@@ -1,10 +1,10 @@
-use crate::Vector2;
+use math::Vector2;
 
 use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, InputManager};
 
 /// Registers a mouse device class with the input manager.
 /// This is the standard Byte-Engine mouse device definition.
-/// 
+///
 /// # Triggers
 /// - `Position`: The position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
 /// - `LeftButton`: The state of the left mouse button. This is a boolean.
@@ -23,7 +23,7 @@ pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceCl
 
 /// Registers a keyboard device class with the input manager.
 /// This is the standard Byte-Engine keyboard device definition.
-/// 
+///
 /// # Triggers
 /// - `W`: The state of the W key. This is a boolean.
 /// - `S`: The state of the S key. This is a boolean.
@@ -58,7 +58,7 @@ pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> Devic
 
 /// Registers a gamepad device class with the input manager.
 /// This is the standard Byte-Engine gamepad device definition.
-/// 
+///
 /// # Triggers
 /// - `LeftStick`: The position of the left stick. This is a 2D vector. In the range of -1 to 1.
 /// - `RightStick`: The position of the right stick. This is a 2D vector. In the range of -1 to 1.

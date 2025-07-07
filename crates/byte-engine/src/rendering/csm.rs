@@ -1,13 +1,13 @@
 //! This module contains logic for rendering cascaded shadow maps.
 
-use maths_rs::{mat::{MatProjection, MatTranslate}, num::Base, Mat4f, Vec3f, Vec4f};
+use math::{length, Base as _, Vector3, Vector4};
 
-use crate::math::look_down;
+use math::look_down;
 
 use super::view::View;
 
 /// Returns the views for cascaded shadow mapping.
-pub fn make_csm_views(camera_view: View, light_direction: Vec3f, num_cascades: usize) -> Vec<View> {
+pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades: usize) -> Vec<View> {
 	let near = camera_view.near();
 	let far = camera_view.far();
 	let range = far - near;
@@ -24,19 +24,19 @@ pub fn make_csm_views(camera_view: View, light_direction: Vec3f, num_cascades: u
 
 		let light_view = {
 			let camera_frustum_corners = camera_view.get_frustum_corners();
-			let center = camera_frustum_corners.iter().fold(Vec4f::zero(), |acc, x| acc + *x) / 8.0;
-		
-			let radius = camera_frustum_corners.iter().map(|x| maths_rs::length(x - center)).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-		
+			let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
+
+			let radius = camera_frustum_corners.iter().map(|x| length(x - center)).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+
 			let radius = (radius * 16.0).ceil() / 16.0;
-		
-			let min = Vec3f::new(-radius, -radius, -radius);
-			let max = Vec3f::new(radius, radius, radius);
-		
-			let center = Into::<Vec3f>::into(center);
-		
+
+			let min = Vector3::new(-radius, -radius, -radius);
+			let max = Vector3::new(radius, radius, radius);
+
+			let center: Vector3 = center.into();
+
 			let from = center - light_direction * min.z;
-		
+
 			View::new_orthographic(min[0], max[0], min[1], max[1], 0f32, max[2] - min[2], from, light_direction)
 		};
 

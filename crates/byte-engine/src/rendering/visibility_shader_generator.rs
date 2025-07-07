@@ -1,7 +1,6 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use besl::{Node, NodeReference};
-use maths_rs::vec;
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
@@ -84,16 +83,16 @@ impl VisibilityShaderGenerator {
 
 		uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
 		Meshlet meshlet = meshlets.meshlets[meshlet_index];
-	
+
 		SetMeshOutputsEXT(meshlet.primitive_count, meshlet.triangle_count);
 
 		uint primitive_index = gl_LocalInvocationID.x;
-	
+
 		if (primitive_index < uint(meshlet.primitive_count)) {
 			uint vertex_index = compute_vertex_index(mesh, meshlet, primitive_index);
 			gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
 		}
-		
+
 		if (primitive_index < uint(meshlet.triangle_count)) {
 			uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + primitive_index) * 3;
 			uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index + 0], primitive_indices.primitive_indices[triangle_index + 1], primitive_indices.primitive_indices[triangle_index + 2]);
@@ -110,7 +109,7 @@ impl VisibilityShaderGenerator {
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 2, 11, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
-		
+
 		let sample_function = Node::intrinsic("sample", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv)", &[], Vec::new())]), "vec4f");
 
 		let sample_normal_function = if true {
@@ -154,7 +153,7 @@ impl VisibilityShaderGenerator {
 			meshlet_struct,
 			light_struct,
 			material_struct,
-		
+
 			meshes,
 			positions,
 			normals,
@@ -196,7 +195,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let push_constant = self.push_constant.clone();
 
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
-		
+
 uint offset = material_offset.material_offset[push_constant.material_id];
 ivec2 pixel_coordinates = ivec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
 uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;

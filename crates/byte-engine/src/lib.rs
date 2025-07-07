@@ -33,15 +33,10 @@ pub mod window_system;
 pub mod constants;
 
 pub mod gameplay;
-pub mod math;
 pub mod physics;
 #[cfg(not(feature = "headless"))]
 pub mod rendering;
 
 pub mod inspector;
 
-pub use maths_rs::{prelude::Base, Quatf, Vec2f, Vec3f};
 use serde::{Deserialize, Serialize};
-pub type Vector2 = Vec2f;
-pub type Vector3 = Vec3f;
-pub type Quaternion = Quatf;

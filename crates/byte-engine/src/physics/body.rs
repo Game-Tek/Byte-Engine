@@ -8,10 +8,12 @@ pub trait Body: Collider + Positionable + Entity {
 	fn get_body_type(&self) -> BodyTypes;
 
 	fn get_velocity(&self) -> Vector3;
+
+	fn get_mass(&self) -> f32;
 }
 
 /// The type of body that an entity is.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyTypes {
 	/// Static bodies are not affected by forces or collisions.
 	Static,

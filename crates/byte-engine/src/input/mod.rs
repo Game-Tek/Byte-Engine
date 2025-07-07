@@ -1,5 +1,4 @@
 use super::utils::RGBA;
-use crate::{Quaternion, Vector2, Vector3};
 
 pub mod input_manager;
 
@@ -16,6 +15,9 @@ pub use input_manager::InputManager;
 pub use input_trigger::TriggerHandle;
 pub use device::DeviceHandle;
 pub use action::ActionHandle;
+use math::Quaternion;
+use math::Vector2;
+use math::Vector3;
 
 use self::action::InputValue;
 

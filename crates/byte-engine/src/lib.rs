@@ -19,6 +19,8 @@ extern crate besl;
 extern crate resource_management;
 extern crate utils;
 
+pub use math;
+
 pub mod core;
 pub mod application;
 #[cfg(not(feature = "headless"))]

@@ -568,6 +568,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					30 => Keys::A,
 					31 => Keys::S,
 					32 => Keys::D,
+					57 => Keys::Space,
 					_ => return,
 				};
 

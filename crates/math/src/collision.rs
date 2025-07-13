@@ -1,4 +1,4 @@
-use crate::{plane::Plane, sphere::Sphere, Vector3};
+use crate::{cube::Cube, magnitude_squared, plane::Plane, sphere::Sphere, Vector3, normalize};
 
 /// Calculates the intersection point of a ray and an axis-aligned bounding box (AABB).
 pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, max: Vector3,) -> Option<f32> {
@@ -54,6 +54,120 @@ pub fn sphere_in_frustum(
 
 	// Sphere is not completely outside any of the frustum planes, so it is considered visible.
 	true
+}
+
+pub struct Intersection {
+	pub normal: Vector3,
+	pub depth: f32,
+	pub point_on_a: Vector3,
+	pub point_on_b: Vector3,
+}
+
+pub fn sphere_vs_sphere(
+	sphere_a: &Sphere,
+	sphere_b: &Sphere,
+) -> Option<Intersection> {
+	let ab = sphere_b.center - sphere_a.center;
+	let m2 = magnitude_squared(ab);
+
+	if m2 < (sphere_a.radius + sphere_b.radius).powf(2f32) {
+		let ab_mag = m2.sqrt();
+		let normal = ab / ab_mag;
+
+		let depth = sphere_a.radius + sphere_b.radius - ab_mag;
+
+		let point_on_a = sphere_a.center + normal * sphere_a.radius;
+		let point_on_b = sphere_b.center - normal * sphere_b.radius;
+
+		Some(Intersection{ normal, depth, point_on_a, point_on_b })
+	} else {
+		None
+	}
+}
+
+pub fn cube_vs_cube(
+	a: &Cube,
+	b: &Cube,
+) -> Option<Intersection> {
+	let sa = a.half_size;
+	let sb = b.half_size;
+
+	let ab = a.center - b.center;
+	let abs_ab = Vector3::new(ab.x.abs(), ab.y.abs(), ab.z.abs());
+	let overlap = sa + sb - abs_ab;
+
+	if overlap.x <= 0.0 || overlap.y <= 0.0 || overlap.z <= 0.0 {
+		return None;
+	}
+
+	let mut min_depth = overlap.x;
+
+	let axis = if overlap.y < min_depth {
+		min_depth = overlap.y;
+		1
+	} else  if overlap.z < min_depth {
+		min_depth = overlap.z;
+		2
+	} else {
+		0
+	};
+
+	let depth = min_depth;
+
+	let sign = match axis {
+		0 => ab.x.signum(),
+		1 => ab.y.signum(),
+		2 => ab.z.signum(),
+		_ => unreachable!()
+	};
+
+	let normal = match axis {
+		0 => Vector3::new(sign, 0.0, 0.0),
+		1 => Vector3::new(0.0, sign, 0.0),
+		2 => Vector3::new(0.0, 0.0, sign),
+		_ => unreachable!()
+	};
+
+	let a_min = a.center - sa;
+	let a_max = a.center + sa;
+	let b_min = b.center - sb;
+	let b_max = b.center + sb;
+
+	let overlap_min = Vector3::new(
+		a_min.x.max(b_min.x),
+		a_min.y.max(b_min.y),
+		a_min.z.max(b_min.z),
+	);
+	let overlap_max = Vector3::new(
+		a_max.x.min(b_max.x),
+		a_max.y.min(b_max.y),
+		a_max.z.min(b_max.z),
+	);
+
+	let ox = (overlap_min.x + overlap_max.x) / 2f32;
+	let oy = (overlap_min.y + overlap_max.y) / 2f32;
+	let oz = (overlap_min.z + overlap_max.z) / 2f32;
+
+	let (contact_a, contact_b) = match axis {
+		0 => {
+			let (ax, bx) = if sign > 0f32 { (a_max.x, b_min.x) } else { (a_min.x, b_max.x) };
+
+			(Vector3::new(ax, oy, oz), Vector3::new(bx, oy, oz))
+		}
+		1 => {
+			let (ay, by) = if sign > 0f32 { (a_max.y, b_min.y) } else { (a_min.y, b_max.y) };
+
+			(Vector3::new(ox, ay, oz), Vector3::new(ox, by, oz))
+		}
+		2 => {
+			let (az, bz) = if sign > 0f32 { (a_max.z, b_min.z) } else { (a_min.z, b_max.z) };
+
+			(Vector3::new(ox, oy, az), Vector3::new(ox, oy, bz))
+		}
+		_ => unreachable!(),
+	};
+
+	Some(Intersection{ normal: normalize(ab), depth, point_on_a: contact_a, point_on_b: contact_b })
 }
 
 #[cfg(test)]
@@ -129,5 +243,35 @@ mod tests {
 		};
 
 		assert!(sphere_in_frustum(&edge_sphere_outside, &frustum_planes));
+	}
+
+	#[test]
+	fn test_sphere_vs_sphere() {
+		let sphere_a = Sphere {
+			center: Vector3::new(0.0, 0.0, 0.0),
+			radius: 1.0,
+		};
+
+		let sphere_b = Sphere {
+			center: Vector3::new(1.98, 0.0, 0.0),
+			radius: 1.0,
+		};
+
+		assert!(sphere_vs_sphere(&sphere_a, &sphere_b).is_some());
+	}
+
+	#[test]
+	fn test_cube_vs_cube() {
+		let cube_a = Cube {
+			center: Vector3::new(0.0, 0.0, 0.0),
+			half_size: Vector3::new(1.0, 1.0, 1.0),
+		};
+
+		let cube_b = Cube {
+			center: Vector3::new(1.0, 0.0, 0.0),
+			half_size: Vector3::new(1.0, 1.0, 1.0),
+		};
+
+		assert!(cube_vs_cube(&cube_a, &cube_b).is_some());
 	}
 }

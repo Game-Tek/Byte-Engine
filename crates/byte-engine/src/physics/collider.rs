@@ -9,7 +9,7 @@ pub trait Collider: Positionable {
 }
 
 /// The `CollisionShapes` enum represents the different shapes that a collider can have.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum CollisionShapes {
 	/// A sphere shaped collider.
 	Sphere {

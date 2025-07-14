@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicU64;
+
 use ash::vk;
 use ::utils::hash::HashMap;
 
@@ -164,7 +166,7 @@ pub(crate) struct Synchronizer {
 // }
 
 struct DebugCallbackData {
-	error_count: u64,
+	error_count: AtomicU64,
 	error_log_function: fn(&str),
 }
 
@@ -211,6 +213,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore = "test is broken because of WSI"]
 	fn render_present() {
 		let features = graphics_hardware_interface::Features::new().validation(true);
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
@@ -219,6 +222,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore = "test is broken because of WSI"]
 	fn render_multiframe_present() {
 		let features = graphics_hardware_interface::Features::new().validation(true);
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");

@@ -6,6 +6,11 @@ use crate::gameplay::Positionable;
 pub trait Collider: Positionable {
 	/// Returns the shape of the collider.
 	fn shape(&self) -> CollisionShapes;
+
+	/// Returns the elasticity of the body.
+	fn get_elasticity(&self) -> f32 {
+		0.5f32
+	}
 }
 
 /// The `CollisionShapes` enum represents the different shapes that a collider can have.

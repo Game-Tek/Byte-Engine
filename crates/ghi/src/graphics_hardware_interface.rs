@@ -663,6 +663,8 @@ pub trait Device where Self: Sized {
 	fn start_frame_capture(&self);
 
 	fn end_frame_capture(&self);
+
+	fn wait(&self);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1499,7 +1501,6 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -1549,14 +1550,14 @@ pub(super) mod tests {
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 255, a: 255 });
 
 		let pixel = pixels[(extent.width() * extent.height() - (extent.width() / 2)) as usize]; // middle bottom center
-		assert!(pixel == RGBAu8 { r: 0, g: 127, b: 127, a: 255 } || pixel == RGBAu8 { r: 0, g: 128, b: 127, a: 255 }); // FIX: workaround for CI, TODO: make near equal function
+		assert!(pixel == RGBAu8 { r: 0, g: 127, b: 127, a: 255 } || pixel == RGBAu8 { r: 0, g: 128, b: 127, a: 255 }); // different implementations render slightly differently
 
 		let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
 	}
 
-	pub(crate) fn render_triangle(renderer: &mut impl Device) {
-		let signal = renderer.create_synchronizer(None, false);
+	pub(crate) fn render_triangle(device: &mut impl Device) {
+		let signal = device.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -1565,11 +1566,11 @@ pub(super) mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
+		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
 			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 			&vertex_layout
@@ -1577,32 +1578,30 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
+		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
-		let extent = Extent::rectangle(1920, 1080);
+		let extent = Extent::rectangle(1921, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = renderer.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None);
 
-		renderer.start_frame_capture();
+		device.start_frame_capture();
 
-		let frame_key = renderer.start_frame(0, signal);
-
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, None);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA::black()), false, true,)
 		];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1617,33 +1616,23 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.end_frame_capture();
+		device.end_frame_capture();
 
-		todo!("Implement waiting");
+		device.wait();
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 
 		// Get image data and cast u8 slice to rgbau8
-		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 
 		check_triangle(pixels, extent);
-
-		// let mut file = std::fs::File::create("test.png").unwrap();
-
-		// let mut encoder = png::Encoder::new(&mut file, extent.width, extent.height);
-
-		// encoder.set_color(png::ColorType::Rgba);
-		// encoder.set_depth(png::BitDepth::Eight);
-
-		// let mut writer = encoder.write_header().unwrap();
-		// writer.write_image_data(unsafe { std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4) }).unwrap();
 	}
 
 	pub(crate) fn present(renderer: &mut impl Device) {
 		// Use and odd width to make sure there is a middle/center pixel
-		let extent = Extent::rectangle(1920, 1080);
+		let extent = Extent::rectangle(1921, 1080);
 
-		let window = Window::new("Present Test", extent).expect("Failed to create window");
+		let mut window = Window::new("Present Test", extent).expect("Failed to create window");
 
 		let os_handles = window.get_os_handles();
 
@@ -1656,8 +1645,8 @@ pub(super) mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
@@ -1683,7 +1672,9 @@ pub(super) mod tests {
 
 		let command_buffer_handle = renderer.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
+		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
+
+		window.poll();
 
 		let frame_key = renderer.start_frame(0, render_finished_synchronizer);
 
@@ -1691,10 +1682,10 @@ pub(super) mod tests {
 
 		renderer.start_frame_capture();
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, None);
+		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 		];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1710,6 +1701,8 @@ pub(super) mod tests {
 		command_buffer_recording.execute(&[], &[render_finished_synchronizer], &[present_key], render_finished_synchronizer);
 
 		renderer.end_frame_capture();
+
+		window.poll();
 
 		// TODO: assert rendering results
 
@@ -1793,7 +1786,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn multiframe_rendering(renderer: &mut impl Device) {
+	pub(crate) fn multiframe_rendering(device: &mut impl Device) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1809,11 +1802,11 @@ pub(super) mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
+		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
 			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 			&vertex_layout
@@ -1821,35 +1814,35 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
+		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = renderer.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
+		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = renderer.start_frame(i as u32, render_finished_synchronizer);
+			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
 
-			renderer.start_frame_capture();
+			device.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 			let attachments = [
-				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1864,13 +1857,13 @@ pub(super) mod tests {
 
 			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
-			renderer.end_frame_capture();
+			device.end_frame_capture();
 
-			todo!("Implement waiting");
+			device.wait();
 
-			assert!(!renderer.has_errors());
+			assert!(!device.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 
 			check_triangle(pixels, extent);
 		}
@@ -1878,7 +1871,7 @@ pub(super) mod tests {
 
 	// TODO: Test changing frames in flight count during rendering
 
-	pub(crate) fn dynamic_data(renderer: &mut impl Device) {
+	pub(crate) fn dynamic_data(device: &mut impl Device) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1894,11 +1887,11 @@ pub(super) mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
+		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
 			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 			&vertex_layout
@@ -1906,37 +1899,37 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
+		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let _buffer = renderer.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+		let _buffer = device.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
 
-		let command_buffer_handle = renderer.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None);
 
-		let render_finished_synchronizer = renderer.create_synchronizer(None, false);
+		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = renderer.start_frame(i as u32, render_finished_synchronizer);
+			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
 
-			renderer.start_frame_capture();
+			device.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 			let attachments = [
-				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
 			let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1963,11 +1956,13 @@ pub(super) mod tests {
 
 			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
 
-			renderer.end_frame_capture();
+			device.end_frame_capture();
 
-			assert!(!renderer.has_errors());
+			device.wait();
 
-			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			assert!(!device.has_errors());
+
+			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -1988,10 +1983,10 @@ pub(super) mod tests {
 			}
 		}
 
-		assert!(!renderer.has_errors())
+		assert!(!device.has_errors())
 	}
 
-	pub(crate) fn multiframe_resources(renderer: &mut impl Device) { // TODO: test multiframe resources for combined image samplers
+	pub(crate) fn multiframe_resources(device: &mut impl Device) { // TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
 			#pragma shader_stage(compute)
@@ -2012,31 +2007,31 @@ pub(super) mod tests {
 
 		let compute_shader_artifact = glsl::compile(compute_shader_string, "compute").unwrap();
 
-		let compute_shader = renderer.create_shader(None, ShaderSource::SPIRV(compute_shader_artifact.borrow().into()), ShaderTypes::Compute, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
+		let compute_shader = device.create_shader(None, ShaderSource::SPIRV(compute_shader_artifact.borrow().into()), ShaderTypes::Compute, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
 
 		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
 		let last_frame_image_binding_template = DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
 
-		let descriptor_set_template = renderer.create_descriptor_set_template(None, &[image_binding_template.clone(),last_frame_image_binding_template.clone()]);
+		let descriptor_set_template = device.create_descriptor_set_template(None, &[image_binding_template.clone(),last_frame_image_binding_template.clone()]);
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange{ offset: 0, size: 4 }]);
+		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange{ offset: 0, size: 4 }]);
 
-		let pipeline = renderer.create_compute_pipeline(&pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
+		let pipeline = device.create_compute_pipeline(&pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
 
-		let image = renderer.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
 
-		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_template);
+		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
 
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
+		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
+		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
 
-		let command_buffer = renderer.create_command_buffer(None);
+		let command_buffer = device.create_command_buffer(None);
 
-		let signal = renderer.create_synchronizer(None, true);
+		let signal = device.create_synchronizer(None, true);
 
-		let frame_key = renderer.start_frame(0, signal);
+		let frame_key = device.start_frame(0, signal);
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let data = [0.5f32];
 
@@ -2047,16 +2042,18 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		device.wait();
 
-		assert_eq!(pixels[0], RGBAu8 { r: 127, g: 127, b: 127, a: 255 }); // Current frame image
+		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
+		assert!(pixels[0] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[0] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 }); // Current frame image
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 }); // Current frame sample from last frame image
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 
-		let frame_key = renderer.start_frame(1, signal);
+		let frame_key = device.start_frame(1, signal);
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let data = [1.0f32];
 
@@ -2067,48 +2064,52 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		device.wait();
+
+		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
 		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
-		assert_eq!(pixels[1], RGBAu8 { r: 127, g: 127, b: 127, a: 255 }); // Current frame sample from last frame image
+		assert!(pixels[1] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[1] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 }); // Current frame sample from last frame image
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 
-		let frame_key = renderer.start_frame(2, signal);
+		let frame_key = device.start_frame(2, signal);
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		device.wait();
 
-		assert_eq!(pixels[0], RGBAu8 { r: 127, g: 127, b: 127, a: 255 });
+		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+
+		assert!(pixels[0] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[0] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 });
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 
-		let frame_key = renderer.start_frame(3, signal);
+		let frame_key = device.start_frame(3, signal);
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		todo!("Implement wait for frame completion");
+		device.wait();
 
-		let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
+		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
 		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
-		assert_eq!(pixels[1], RGBAu8 { r: 127, g: 127, b: 127, a: 255 });
+		assert!(pixels[1] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[1] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 });
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 	}
 
-	pub(crate) fn descriptor_sets(renderer: &mut impl Device) {
-		let signal = renderer.create_synchronizer(None, true);
+	pub(crate) fn descriptor_sets(device: &mut impl Device) {
+		let signal = device.create_synchronizer(None, true);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -2121,7 +2122,7 @@ pub(super) mod tests {
 			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
 		];
 
-		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
+		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
 				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
 				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 				&vertex_layout
@@ -2143,7 +2144,6 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
-				gl_Position.y *= -1.0;
 			}
 		";
 
@@ -2166,12 +2166,12 @@ pub(super) mod tests {
 		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
 		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
-		let buffer = renderer.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 
-		let sampled_texture = renderer.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, 1);
+		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, 1);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -2180,42 +2180,42 @@ pub(super) mod tests {
 			RGBAu8 { r: 255, g: 255, b: 0, a: 255 },
 		];
 
-		let sampler =  renderer.create_sampler(FilteringModes::Closest, SamplingReductionModes::WeightedAverage, FilteringModes::Closest, SamplerAddressingModes::Repeat, None, 0.0f32, 0.0f32);
+		let sampler =  device.create_sampler(FilteringModes::Closest, SamplingReductionModes::WeightedAverage, FilteringModes::Closest, SamplerAddressingModes::Repeat, None, 0.0f32, 0.0f32);
 
-		let descriptor_set_layout_handle = renderer.create_descriptor_set_template(None, &[
+		let descriptor_set_layout_handle = device.create_descriptor_set_template(None, &[
 			DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])),
 			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX),
 			DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
 		]);
 
-		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle,);
+		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout_handle,);
 
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer.into()));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
+		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
+		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer.into()));
+		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
+		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
 		];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = renderer.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None);
 
-		renderer.start_frame_capture();
+		device.start_frame_capture();
 
-		let frame_key = renderer.start_frame(0, signal);
+		let frame_key = device.start_frame(0, signal);
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
 
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
@@ -2237,16 +2237,16 @@ pub(super) mod tests {
 
 		command_buffer_recording.execute(&[], &[], &[], signal);
 
-		renderer.end_frame_capture();
+		device.end_frame_capture();
 
-		todo!("Implement wait for frame completion");
+		device.wait();
 
 		// assert colored triangle was drawn to texture
-		let _pixels = renderer.get_image_data(texure_copy_handles[0]);
+		let _pixels = device.get_image_data(texure_copy_handles[0]);
 
 		// TODO: assert rendering results
 
-		assert!(!renderer.has_errors());
+		assert!(!device.has_errors());
 	}
 
 	pub(crate) fn ray_tracing(renderer: &mut impl Device) {

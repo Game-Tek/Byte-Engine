@@ -1,9 +1,16 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use ash::vk::{self};
-use crate::graphics_hardware_interface;
+use crate::{graphics_hardware_interface, vulkan::DebugCallbackData};
 
 pub struct Instance {
-	instance: ash::Instance,
-	entry: ash::Entry,
+	pub(crate) instance: ash::Instance,
+	pub(crate) entry: ash::Entry,
+
+	pub(crate) debug_data: Box<DebugCallbackData>,
+
+	debug_utils: Option<ash::ext::debug_utils::Instance>,
+	debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
 }
 
 unsafe impl Send for Instance {}
@@ -91,21 +98,84 @@ impl Instance {
 
 		let instance = unsafe { entry.create_instance(&instance_create_info, None).or(Err("Failed to create instance"))? };
 
+		let mut debug_data = Box::new(DebugCallbackData {
+			error_count: AtomicU64::new(0),
+			error_log_function: settings.debug_log_function.unwrap_or(|message| { println!("{}", message); }),
+		});
+
+		let (debug_utils, debug_utils_messenger) = if settings.validation {
+			let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
+
+			let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+				.message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,)
+				.message_type(vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,)
+				.pfn_user_callback(Some(vulkan_debug_utils_callback))
+				.user_data(debug_data.as_mut() as *mut DebugCallbackData as *mut std::ffi::c_void)
+			;
+
+			let debug_utils_messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None).or(Err("Failed to enable debug utils messanger"))? };
+
+			(Some(debug_utils), Some(debug_utils_messenger))
+		} else {
+			(None, None)
+		};
+
 		Ok(Instance {
 			instance,
 			entry,
+
+			debug_utils,
+			debug_utils_messenger,
+
+			debug_data,
 		})
 	}
 
 	pub fn create_device(&mut self, settings: graphics_hardware_interface::Features) -> Result<crate::vulkan::Device, &'static str> {
-		crate::vulkan::Device::new(settings, &self.entry, &self.instance)
+		crate::vulkan::Device::new(settings, &self)
 	}
 }
 
 impl Drop for Instance {
 	fn drop(&mut self) {
 		unsafe {
+			if let Some(debug_utils) = &self.debug_utils {
+				if let Some(messenger) = self.debug_utils_messenger {
+					debug_utils.destroy_debug_utils_messenger(messenger, None);
+				}
+			}
+
 			self.instance.destroy_instance(None);
 		}
 	}
+}
+
+unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::DebugUtilsMessageSeverityFlagsEXT, _message_type: vk::DebugUtilsMessageTypeFlagsEXT, p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT, p_user_data: *mut std::ffi::c_void,) -> vk::Bool32 {
+	let callback_data = if let Some(callback_data) = p_callback_data.as_ref() { callback_data } else { return vk::FALSE; };
+
+	if callback_data.p_message.is_null() {
+		return vk::FALSE;
+	}
+
+	let message = std::ffi::CStr::from_ptr(callback_data.p_message);
+
+	let message = if let Some(message) = message.to_str().ok() { message } else { return vk::FALSE; };
+
+	let user_data = if let Some(p_user_data) = (p_user_data as *mut DebugCallbackData).as_mut() { p_user_data } else { return vk::FALSE; };
+
+	match message_severity {
+		vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
+			// debug!("{}", message.to_str().unwrap());
+		}
+		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
+			// warn!("{}", message.to_str().unwrap());
+		}
+		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
+			(user_data.error_log_function)(message);
+			user_data.error_count.fetch_add(10, Ordering::SeqCst);
+		}
+		_ => {}
+	}
+
+	vk::FALSE
 }

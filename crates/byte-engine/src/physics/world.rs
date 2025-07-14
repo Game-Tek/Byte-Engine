@@ -125,7 +125,7 @@ impl Listener<CreateEvent<dyn Body>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
 		let handle = event.handle();
 		let body = handle.read();
-		self.add_body(PhysicsBody{ body_type: body.get_body_type(), position: body.get_position(), velocity: body.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), collider: handle.clone() as EntityHandle<dyn Collider>, body: Some(handle.clone()), inv_mass: 1f32 / body.get_mass(), elasticity: 0.5 });
+		self.add_body(PhysicsBody{ body_type: body.get_body_type(), position: body.get_position(), velocity: body.get_velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), collider: handle.clone() as EntityHandle<dyn Collider>, body: Some(handle.clone()), inv_mass: 1f32 / body.get_mass(), elasticity: body.get_elasticity() });
 	}
 }
 
@@ -133,7 +133,7 @@ impl Listener<CreateEvent<dyn Collider>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Collider>) {
 		let handle = event.handle();
 		let collider = handle.read();
-		self.add_body(PhysicsBody{ body_type: BodyTypes::Static, position: collider.get_position(), velocity: Vector3::zero(), acceleration: Vector3::zero(), collision_shape: collider.shape(), collider: handle.clone(), body: None, inv_mass: 0f32, elasticity: 0.5 });
+		self.add_body(PhysicsBody{ body_type: BodyTypes::Static, position: collider.get_position(), velocity: Vector3::zero(), acceleration: Vector3::zero(), collision_shape: collider.shape(), collider: handle.clone(), body: None, inv_mass: 0f32, elasticity: collider.get_elasticity() });
 	}
 }
 

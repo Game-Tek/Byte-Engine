@@ -484,7 +484,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		for image_handle in image_handles {
 			let internal_image_handle = self.get_internal_image_handle(*image_handle);
 			let image = self.get_image(internal_image_handle);
-			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
 			if let Some(_) = image.staging_buffer {
 				texture_copies.push(graphics_hardware_interface::TextureCopyHandle(internal_image_handle.0));
 			}

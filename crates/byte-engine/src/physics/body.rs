@@ -9,7 +9,10 @@ pub trait Body: Collider + Positionable + Entity {
 
 	fn get_velocity(&self) -> Vector3;
 
-	fn get_mass(&self) -> f32;
+	/// Returns the mass of the body in kilograms.
+	fn get_mass(&self) -> f32 {
+		1f32
+	}
 }
 
 /// The type of body that an entity is.

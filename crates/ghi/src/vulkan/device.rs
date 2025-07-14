@@ -3,13 +3,14 @@ use std::{borrow::Cow, collections::VecDeque};
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{BufferCopy, Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{BufferCopy, Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
 pub struct Device {
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
-	debug_data: Box<DebugCallbackData>,
+
+	debug_data: *const DebugCallbackData,
 
 	physical_device: vk::PhysicalDevice,
 	pub(super) device: ash::Device,
@@ -66,36 +67,18 @@ pub struct Device {
 }
 
 unsafe impl Send for Device {}
+unsafe impl Sync for Device {}
 
 impl Device {
-	pub fn new(settings: graphics_hardware_interface::Features, entry: &ash::Entry, instance: &ash::Instance) -> Result<Device, &'static str> {
+	pub fn new(settings: graphics_hardware_interface::Features, instance: &Instance) -> Result<Device, &'static str> {
+		let vk_entry = &instance.entry;
+		let vk_instance = &instance.instance;
+
 		#[cfg(target_os = "linux")]
-		let wayland_surface = ash::khr::wayland_surface::Instance::new(entry, instance);
+		let wayland_surface = ash::khr::wayland_surface::Instance::new(vk_entry, vk_instance);
 
 		#[cfg(target_os = "windows")]
 		let win32_surface = ash::khr::win32_surface::Instance::new(entry, instance);
-
-		let mut debug_data = Box::new(DebugCallbackData {
-			error_count: 0,
-			error_log_function: settings.debug_log_function.unwrap_or(|message| { println!("{}", message); }),
-		});
-
-		if settings.validation {
-			let debug_utils = ash::ext::debug_utils::Instance::new(entry, instance);
-
-			let debug_utils_create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-				.message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,)
-				.message_type(vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,)
-				.pfn_user_callback(Some(vulkan_debug_utils_callback))
-				.user_data(debug_data.as_mut() as *mut DebugCallbackData as *mut std::ffi::c_void)
-			;
-
-			let debug_utils_messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None).or(Err("Failed to enable debug utils messanger"))? };
-
-			Some(debug_utils_messenger)
-		} else {
-			None
-		};
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
 			if required { feature != 0 } else { true }
@@ -154,11 +137,11 @@ impl Device {
 			.mesh_shader(true)
 		;
 
-		let physical_devices = unsafe { instance.enumerate_physical_devices().or(Err("Failed to enumerate physical devices"))? };
+		let physical_devices = unsafe { vk_instance.enumerate_physical_devices().or(Err("Failed to enumerate physical devices"))? };
 
 		let physical_device = if let Some(gpu_name) = settings.gpu {
 			let physical_device = physical_devices.into_iter().find(|physical_device| {
-				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+				let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
 
 				let name = properties.device_name_as_c_str();
 
@@ -167,7 +150,7 @@ impl Device {
 
 			#[cfg(debug_assertions)]
 			{
-				let _ = unsafe { instance.get_physical_device_properties(physical_device) };
+				let _ = unsafe { vk_instance.get_physical_device_properties(physical_device) };
 			}
 
 			physical_device
@@ -176,11 +159,11 @@ impl Device {
 				let mut tools = [vk::PhysicalDeviceToolProperties::default(); 8];
 
 				let tool_count = unsafe {
-					instance.get_physical_device_tool_properties_len(*physical_device).unwrap()
+					vk_instance.get_physical_device_tool_properties_len(*physical_device).unwrap()
 				};
 
 				unsafe {
-					instance.get_physical_device_tool_properties(*physical_device, &mut tools[0..tool_count]).unwrap();
+					vk_instance.get_physical_device_tool_properties(*physical_device, &mut tools[0..tool_count]).unwrap();
 				};
 
 				let buffer_device_address_capture_replay = tools.iter().take(tool_count as usize).any(|tool| {
@@ -197,7 +180,7 @@ impl Device {
 					.push_next(&mut physical_device_mesh_shading_features)
 				;
 
-				unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
+				unsafe { vk_instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
 
 				let features = physical_device_features.features;
 
@@ -213,7 +196,7 @@ impl Device {
 				flag_required_or_available(physical_device_mesh_shading_features.mesh_shader, physical_device_mesh_shading_required_features.mesh_shader != 0) &&
 				flag_required_or_available(physical_device_mesh_shading_features.task_shader, physical_device_mesh_shading_required_features.task_shader != 0)
 			}).max_by_key(|physical_device| {
-				let properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+				let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
 
 				let mut device_score = 0u64;
 
@@ -230,13 +213,13 @@ impl Device {
 
 			#[cfg(debug_assertions)]
 			{
-				let _ = unsafe { instance.get_physical_device_properties(physical_device) };
+				let _ = unsafe { vk_instance.get_physical_device_properties(physical_device) };
 			}
 
 			physical_device
 		};
 
-		let queue_family_properties = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
 		let queue_family_index = queue_family_properties
 			.iter()
@@ -255,9 +238,9 @@ impl Device {
 			.expect("No queue family index found.")
 		;
 
-		let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
 
-		let available_device_extensions = unsafe { instance.enumerate_device_extension_properties(physical_device) }.expect("Could not get supported device extensions");
+		let available_device_extensions = unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }.expect("Could not get supported device extensions");
 
 		let is_device_extension_available = |name: &str| {
 			available_device_extensions.iter().any(|extension| {
@@ -329,7 +312,7 @@ impl Device {
 			device_create_info
 		};
 
-		let device: ash::Device = unsafe { instance.create_device(physical_device, &device_create_info, None).map_err(|e| {
+		let device: ash::Device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None).map_err(|e| {
 				match e {
 					vk::Result::ERROR_OUT_OF_HOST_MEMORY => "Out of host memory",
 					vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => "Out of device memory",
@@ -345,23 +328,23 @@ impl Device {
 
 		let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
-		let acceleration_structure = ash::khr::acceleration_structure::Device::new(&instance, &device);
-		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::new(&instance, &device);
+		let acceleration_structure = ash::khr::acceleration_structure::Device::new(&vk_instance, &device);
+		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::new(&vk_instance, &device);
 
-		let swapchain = ash::khr::swapchain::Device::new(&instance, &device);
-		let surface = ash::khr::surface::Instance::new(&entry, &instance);
+		let swapchain = ash::khr::swapchain::Device::new(&vk_instance, &device);
+		let surface = ash::khr::surface::Instance::new(&vk_entry, &vk_instance);
 
-		let mesh_shading = ash::ext::mesh_shader::Device::new(&instance, &device);
+		let mesh_shading = ash::ext::mesh_shader::Device::new(&vk_instance, &device);
 
 		let debug_utils = if settings.validation {
-			Some(ash::ext::debug_utils::Device::new(&instance, &device))
+			Some(ash::ext::debug_utils::Device::new(&vk_instance, &device))
 		} else {
 			None
 		};
 
 		Ok(Device {
 			debug_utils,
-			debug_data,
+			debug_data: instance.debug_data.as_ref() as *const DebugCallbackData,
 
 			memory_properties,
 
@@ -417,7 +400,10 @@ impl Device {
 	}
 
 	#[cfg(debug_assertions)]
-	fn get_log_count(&self) -> u64 { self.debug_data.error_count }
+	fn get_log_count(&self) -> u64 {
+		use std::sync::atomic::Ordering;
+		unsafe { &(*self.debug_data) }.error_count.load(Ordering::SeqCst)
+	}
 
 	pub(super) fn get_syncronizer_handles(&self, synchroizer_handle: graphics_hardware_interface::SynchronizerHandle) -> Vec<SynchronizerHandle> {
 		let mut synchronizer_handles = Vec::with_capacity(3);
@@ -2645,36 +2631,10 @@ impl graphics_hardware_interface::Device for Device {
 		#[cfg(debug_assertions)]
 		self.debugger.end_frame_capture();
 	}
-}
 
-unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::DebugUtilsMessageSeverityFlagsEXT, _message_type: vk::DebugUtilsMessageTypeFlagsEXT, p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT, p_user_data: *mut std::ffi::c_void,) -> vk::Bool32 {
-	let callback_data = if let Some(callback_data) = p_callback_data.as_ref() { callback_data } else { return vk::FALSE; };
-
-	if callback_data.p_message.is_null() {
-		return vk::FALSE;
+	fn wait(&self) {
+    	unsafe { self.device.device_wait_idle().unwrap(); }
 	}
-
-	let message = std::ffi::CStr::from_ptr(callback_data.p_message);
-
-	let message = if let Some(message) = message.to_str().ok() { message } else { return vk::FALSE; };
-
-	let user_data = if let Some(p_user_data) = (p_user_data as *mut DebugCallbackData).as_mut() { p_user_data } else { return vk::FALSE; };
-
-	match message_severity {
-		vk::DebugUtilsMessageSeverityFlagsEXT::INFO => {
-			// debug!("{}", message.to_str().unwrap());
-		}
-		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
-			// warn!("{}", message.to_str().unwrap());
-		}
-		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
-			(user_data.error_log_function)(message);
-			user_data.error_count += 1;
-		}
-		_ => {}
-	}
-
-	vk::FALSE
 }
 
 struct StableVec<T: Default, const N: usize> {

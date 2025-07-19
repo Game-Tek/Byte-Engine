@@ -153,9 +153,13 @@ pub(crate) struct Allocation {
 unsafe impl Send for Allocation {}
 unsafe impl Sync for Allocation {}
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Synchronizer {
 	next: Option<SynchronizerHandle>,
+
+	name: Option<String>,
+	signaled: bool,
+
 	fence: vk::Fence,
 	semaphore: vk::Semaphore,
 }
@@ -165,7 +169,7 @@ pub(crate) struct Synchronizer {
 // 	acceleration_structure: vk::AccelerationStructureKHR,
 // }
 
-struct DebugCallbackData {
+pub(crate) struct DebugCallbackData {
 	error_count: AtomicU64,
 	error_log_function: fn(&str),
 }
@@ -236,6 +240,14 @@ mod tests {
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
 		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::multiframe_rendering(&mut device);
+	}
+
+	#[test]
+	fn render_change_frames() {
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::change_frames(&mut device);
 	}
 
 	#[test]

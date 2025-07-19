@@ -541,6 +541,8 @@ pub trait Device where Self: Sized {
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
 
+	fn set_frames_in_flight(&mut self, frames: u8);
+
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
 	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle;
 
@@ -1869,7 +1871,92 @@ pub(super) mod tests {
 		}
 	}
 
-	// TODO: Test changing frames in flight count during rendering
+	pub(crate) fn change_frames(device: &mut impl Device) {
+		//! Tests that the render system can perform rendering while changing the amount of frames in flight.
+		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
+
+		const FRAMES_IN_FLIGHT: usize = 3;
+
+		// Use and odd width to make sure there is a middle/center pixel
+		let _extent = Extent::rectangle(1920, 1080);
+
+		let floats: [f32;21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
+			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		];
+
+		let vertex_layout = [
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
+		];
+
+		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
+
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
+
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+
+		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
+
+		// Use and odd width to make sure there is a middle/center pixel
+		let extent = Extent::rectangle(1920, 1080);
+
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+
+		let attachments = [
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+		];
+
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+
+		let command_buffer_handle = device.create_command_buffer(None);
+
+		let render_finished_synchronizer = device.create_synchronizer(None, true);
+
+		for i in 0..FRAMES_IN_FLIGHT * 10 {
+			if i == 2 {
+				device.set_frames_in_flight(3); // Change from default 2 to 3
+			}
+
+			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
+
+			device.start_frame_capture();
+
+			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+
+			let attachments = [
+				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+			];
+
+			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+
+			raster_pipeline_command.draw_mesh(&mesh);
+
+			raster_pipeline_command.end_render_pass();
+
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+
+			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
+
+			device.end_frame_capture();
+
+			device.wait();
+
+			assert!(!device.has_errors());
+
+			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+
+			check_triangle(pixels, extent);
+		}
+	}
 
 	pub(crate) fn dynamic_data(device: &mut impl Device) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.

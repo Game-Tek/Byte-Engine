@@ -72,18 +72,15 @@ pub struct EntityHandle<T: ?Sized> {
 
 pub struct WeakEntityHandle<T: ?Sized> {
 	pub(super) container: std::sync::Weak<RwLock<T>>,
-	// pub(super) internal_id: u32,
+	pub(super) internal_id: u32,
 }
 
 impl <T: ?Sized> WeakEntityHandle<T> {
-	pub fn read_sync(&self) -> Option<RwLockReadGuard<T>> where T: Sized {
-		// self.container.upgrade().map(|c| c.blocking_read())
-		None
-	}
-
-	pub fn write_sync(&self) -> Option<RwLockWriteGuard<T>> {
-		// self.container.upgrade().map(|c| c.blocking_write())
-		None
+	pub fn upgrade(&self) -> Option<EntityHandle<T>> where T: Sized {
+		self.container.upgrade().map(|c| EntityHandle {
+			container: c,
+			internal_id: self.internal_id,
+		})
 	}
 }
 
@@ -91,7 +88,7 @@ impl <T: ?Sized> From<EntityHandle<T>> for WeakEntityHandle<T> {
 	fn from(handle: EntityHandle<T>) -> Self {
 		Self {
 			container: std::sync::Arc::downgrade(&handle.container),
-			// internal_id: handle.internal_id,
+			internal_id: handle.internal_id,
 		}
 	}
 }
@@ -123,7 +120,7 @@ impl <T: ?Sized> EntityHandle<T> {
 	pub fn weak(&self) -> WeakEntityHandle<T> {
 		WeakEntityHandle {
 			container: std::sync::Arc::downgrade(&self.container),
-			// internal_id: self.internal_id,
+			internal_id: self.internal_id,
 		}
 	}
 }

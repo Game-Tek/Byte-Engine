@@ -955,6 +955,85 @@ impl Device {
 
 	    buffer_handle
 	}
+
+	fn build_image_internal(&mut self, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: u32, size: usize, extent: vk::Extent3D, resource_uses: crate::Uses,) -> Image {
+		let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, 1, array_layers);
+
+		let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead) {
+			graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::GpuWrite
+		} else {
+			device_accesses
+		};
+
+		let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, texture_creation_result.memory_flags.into(), m_device_accesses);
+
+		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
+
+		let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
+
+		let staging_buffer = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+			let staging_buffer_handle = self.create_buffer_internal(name, crate::Uses::TransferDestination, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuRead);
+
+			Some(staging_buffer_handle)
+		} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+			let staging_buffer_handle = self.create_buffer_internal(name, crate::Uses::TransferSource, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite);
+
+			Some(staging_buffer_handle)
+		} else {
+			None
+		};
+
+		let image_views = {
+			let mut image_views = [vk::ImageView::null(); 8];
+
+			for i in 0..array_layers {
+				image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, 1);
+			}
+
+			image_views
+		};
+
+		Image {
+			#[cfg(debug_assertions)]
+			name: name.map(|name| name.to_string()),
+			next: None,
+			size: texture_creation_result.size,
+			staging_buffer,
+			image: texture_creation_result.resource,
+			image_view,
+			image_views,
+			extent,
+			access: device_accesses,
+			format: to_format(format),
+			format_: format,
+			uses: resource_uses,
+			layers: array_layers,
+		}
+	}
+
+	fn create_image_internal(&mut self, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: u32, size: usize, extent: vk::Extent3D, resource_uses: crate::Uses,) -> ImageHandle {
+		let texture_handle = ImageHandle(self.images.len() as u64);
+
+		let image = self.build_image_internal(name, format, device_accesses, array_layers, size, extent, resource_uses,);
+
+		self.images.push(image);
+
+		texture_handle
+	}
+
+	fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
+		let synchronizer_handle = SynchronizerHandle(self.synchronizers.len() as u64);
+
+		self.synchronizers.push(Synchronizer {
+			next: None,
+			name: name.map(|name| name.to_string()),
+			signaled,
+			fence: self.create_vulkan_fence(signaled),
+			semaphore: self.create_vulkan_semaphore(name, signaled),
+		});
+
+		synchronizer_handle
+	}
 }
 
 impl Drop for Device {
@@ -986,12 +1065,30 @@ impl Drop for Device {
 				self.device.destroy_pipeline(pipeline.pipeline, None);
 			});
 
+			self.meshes.iter().for_each(|mesh| {
+				self.device.destroy_buffer(mesh.buffer, None);
+			});
+
 			self.buffers.iter().for_each(|buffer| {
 				self.device.destroy_buffer(buffer.buffer, None);
 			});
 
 			self.images.iter().for_each(|image| {
 				self.device.destroy_image(image.image, None);
+
+				self.device.destroy_image_view(image.image_view, None);
+
+				for vk_image_view in image.image_views {
+					self.device.destroy_image_view(vk_image_view, None);
+				}
+			});
+
+			self.shaders.iter().for_each(|shader| {
+				self.device.destroy_shader_module(shader.shader, None);
+			});
+
+			self.pipeline_layouts.iter().for_each(|pipeline_layout| {
+				self.device.destroy_pipeline_layout(pipeline_layout.pipeline_layout, None);
 			});
 
 			self.allocations.iter().for_each(|allocation| {
@@ -1007,6 +1104,100 @@ impl graphics_hardware_interface::Device for Device {
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
 		self.get_log_count() > 0
+	}
+
+	fn set_frames_in_flight(&mut self, frames: u8) {
+		if self.frames == frames { return; }
+
+		if frames > MAX_FRAMES_IN_FLIGHT as u8 {
+			panic!("Cannot set frames in flight to more than {}", MAX_FRAMES_IN_FLIGHT);
+		}
+
+		let current_frames = self.frames;
+		let target_frames = frames;
+		let delta_frames = target_frames as i8 - current_frames as i8;
+
+		if delta_frames > 0 {
+			let to_extend = self.images.iter().filter_map(|image| {
+				let next = image.next?;
+
+				let mut handle = next;
+
+				while let Some(h) = self.images[handle.0 as usize].next {
+					handle = h;
+				}
+
+				handle.into()
+			}).collect::<Vec<_>>();
+
+			for image_handle in to_extend {
+				let current_image = &self.images[image_handle.0 as usize];
+
+				let name = current_image.name.clone();
+				let name = name.as_ref().map(|s| s.as_str());
+				let format = current_image.format_;
+				let access = current_image.access;
+				let array_layers = current_image.layers;
+				let size = current_image.size;
+				let extent = current_image.extent;
+				let resource_uses = current_image.uses;
+
+				let new_image = self.create_image_internal(name, format, access, array_layers, size, extent, resource_uses);
+
+				let current_image = &mut self.images[image_handle.0 as usize];
+				current_image.next = Some(new_image);
+			}
+
+			let to_extend = self.synchronizers.iter().filter_map(|synchronizer| {
+				let next = synchronizer.next?;
+
+				let mut handle = next;
+
+				while let Some(h) = self.synchronizers[handle.0 as usize].next {
+					handle = h;
+				}
+
+				handle.into()
+			}).collect::<Vec<_>>();
+
+			for synchronizer_handle in to_extend {
+				let current_synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
+
+				let name = current_synchronizer.name.clone();
+				let name = name.as_ref().map(|s| s.as_str());
+				let signaled = current_synchronizer.signaled;
+
+				let new_synchronizer = self.create_synchronizer_internal(name, signaled);
+
+				let current_synchronizer = &mut self.synchronizers[synchronizer_handle.0 as usize];
+				current_synchronizer.next = Some(new_synchronizer);
+			}
+
+			for command_buffer in &mut self.command_buffers {
+				let command_pool_create_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family_index);
+
+				let command_pool = unsafe { self.device.create_command_pool(&command_pool_create_info, None).expect("No command pool") };
+
+				let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+					.command_pool(command_pool)
+					.level(vk::CommandBufferLevel::PRIMARY)
+					.command_buffer_count(1)
+				;
+
+				let command_buffers = unsafe { self.device.allocate_command_buffers(&command_buffer_allocate_info).expect("No command buffer") };
+
+				let vk_command_buffer = command_buffers[0];
+
+				// self.set_name(vk_command_buffer, name);
+
+				command_buffer.frames.push(CommandBufferInternal { command_pool, command_buffer: vk_command_buffer, });
+			}
+
+		} else {
+			unimplemented!()
+		}
+
+		self.frames = target_frames;
 	}
 
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
@@ -1960,61 +2151,11 @@ impl graphics_hardware_interface::Device for Device {
 		for _ in 0..(match use_case { graphics_hardware_interface::UseCases::DYNAMIC => { self.frames } graphics_hardware_interface::UseCases::STATIC => { 1 }}) {
 			let resource_uses = resource_uses | if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) { graphics_hardware_interface::Uses::TransferDestination } else { graphics_hardware_interface::Uses::empty() };
 
-			let texture_handle = ImageHandle(self.images.len() as u64);
-
-			if extent.width != 0 && extent.height != 0 && extent.depth != 0 {
-				let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead) {
-					graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::GpuWrite
-				} else {
-					device_accesses
-				};
-
-				let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, 1, array_layers);
-
-				let (allocation_handle, _) = self.create_allocation_internal(texture_creation_result.size, texture_creation_result.memory_flags.into(), m_device_accesses);
-
-				let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
-
-				let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
-
-				let staging_buffer = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-					let staging_buffer_handle = self.create_buffer_internal(name, crate::Uses::TransferDestination, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuRead);
-
-					Some(staging_buffer_handle)
-				} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-					let staging_buffer_handle = self.create_buffer_internal(name, crate::Uses::TransferSource, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite);
-
-					Some(staging_buffer_handle)
-				} else {
-					None
-				};
-
-				let image_views = {
-					let mut image_views = [vk::ImageView::null(); 8];
-
-					for i in 0..array_layers {
-						image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, 1);
-					}
-
-					image_views
-				};
-
-				self.images.push(Image {
-					#[cfg(debug_assertions)]
-					name: name.map(|name| name.to_string()),
-					next: None,
-					size: texture_creation_result.size,
-					staging_buffer,
-					image: texture_creation_result.resource,
-					image_view,
-					image_views,
-					extent,
-					format: to_format(format),
-					format_: format,
-					uses: resource_uses,
-					layers: array_layers,
-				});
+			let texture_handle = if extent.width != 0 && extent.height != 0 && extent.depth != 0 {
+				self.create_image_internal(name, format, device_accesses, array_layers, size, extent, resource_uses,)
 			} else {
+				let texture_handle = ImageHandle(self.images.len() as u64);
+
 				self.images.push(Image {
 					#[cfg(debug_assertions)]
 					name: name.map(|name| name.to_string()),
@@ -2025,12 +2166,15 @@ impl graphics_hardware_interface::Device for Device {
 					image_view: vk::ImageView::null(),
 					image_views: [vk::ImageView::null(); 8],
 					extent,
+					access: device_accesses,
 					format: to_format(format),
 					format_: format,
 					uses: resource_uses,
 					layers: array_layers,
 				});
-			}
+
+				texture_handle
+			};
 
 			if let Some(previous_texture_handle) = previous_texture_handle {
 				self.images[previous_texture_handle.0 as usize].next = Some(texture_handle);
@@ -2544,13 +2688,7 @@ impl graphics_hardware_interface::Device for Device {
 			let mut previous: Option<SynchronizerHandle> = None;
 
 			for _ in 0..self.frames {
-				let synchronizer_handle = SynchronizerHandle(self.synchronizers.len() as u64);
-
-				self.synchronizers.push(Synchronizer {
-					next: None,
-					fence: self.create_vulkan_fence(signaled),
-					semaphore: self.create_vulkan_semaphore(name, signaled),
-				});
+				let synchronizer_handle = self.create_synchronizer_internal(name, signaled);
 
 				if let Some(pr) = previous {
 					self.synchronizers[pr.0 as usize].next = Some(synchronizer_handle);
@@ -2568,7 +2706,7 @@ impl graphics_hardware_interface::Device for Device {
 		let sequence_index = (index % self.frames as u32) as u8;
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
-		let synchronizer = self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
+		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
 		unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect("No fence wait"); }
 		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
 
@@ -2579,7 +2717,7 @@ impl graphics_hardware_interface::Device for Device {
 		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 
 		let swapchain_synchronizer_handles = self.get_syncronizer_handles(swapchain.synchronizer);
-		let swapchain_synchronizer = self.synchronizers[swapchain_synchronizer_handles[frame_key.sequence_index as usize].0 as usize];
+		let swapchain_synchronizer = &self.synchronizers[swapchain_synchronizer_handles[frame_key.sequence_index as usize].0 as usize];
 
 		let semaphore = swapchain_synchronizer.semaphore;
 		let fence = swapchain_synchronizer.fence;

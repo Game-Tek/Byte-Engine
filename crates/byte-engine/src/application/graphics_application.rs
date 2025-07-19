@@ -89,10 +89,10 @@ impl Application for GraphicsApplication {
 		let application_events = std::sync::mpsc::channel();
 
 		let audio_thread = {
-			let audio_system_handle = audio_system_handle.clone();
+			let audio_system_handle = audio_system_handle.weak();
 
 			std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
-				loop {
+				while let Some(audio_system_handle) = audio_system_handle.upgrade() {
 					let mut audio_system = audio_system_handle.write();
 					let span = debug_span!("Render audio");
 					let _ = span.enter();

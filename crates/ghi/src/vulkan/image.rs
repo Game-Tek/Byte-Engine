@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{vulkan::{BufferHandle, ImageHandle}, Formats, Uses};
+use crate::{vulkan::{BufferHandle, ImageHandle}, DeviceAccesses, Formats, Uses};
 
 #[derive(Clone)]
 pub(crate) struct Image {
@@ -14,6 +14,7 @@ pub(crate) struct Image {
 	pub(crate) extent: vk::Extent3D,
 	pub(crate) format: vk::Format,
 	pub(crate) format_: Formats,
+	pub(crate) access: DeviceAccesses,
 	pub(crate) size: usize,
 	pub(crate) uses: Uses,
 	pub(crate) layers: u32,

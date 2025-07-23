@@ -107,8 +107,6 @@ pub(crate) struct DescriptorSet {
 	next: Option<DescriptorSetHandle>,
 	descriptor_set: vk::DescriptorSet,
 	descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
-
-	// resources: Vec<(graphics_hardware_interface::DescriptorSetBindingHandle, Handle)>,
 }
 
 #[derive(Clone)]
@@ -204,6 +202,21 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	memory_flags: u32,
 }
 
+pub(crate) enum Tasks {
+	DeleteVulkanImage {
+		handle: vk::Image,
+		frame: u8,
+	},
+	DeleteVulkanImageView {
+		handle: vk::ImageView,
+		frame: u8,
+	},
+	DeleteVulkanBuffer {
+		handle: vk::Buffer,
+		frame: u8,
+	},
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -248,6 +261,14 @@ mod tests {
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
 		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
 		graphics_hardware_interface::tests::change_frames(&mut device);
+	}
+
+	#[test]
+	fn render_resize() {
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
+		graphics_hardware_interface::tests::resize(&mut device);
 	}
 
 	#[test]

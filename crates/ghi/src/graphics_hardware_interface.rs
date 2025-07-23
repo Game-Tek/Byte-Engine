@@ -646,7 +646,7 @@ pub trait Device where Self: Sized {
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
 
 	/// Starts a new frame by waiting for these sequence frame's synchronizers.
-	fn start_frame(&self, index: u32, synchronizer_handle: SynchronizerHandle) -> FrameKey;
+	fn start_frame(&mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> FrameKey;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///
@@ -1877,10 +1877,7 @@ pub(super) mod tests {
 
 		const FRAMES_IN_FLIGHT: usize = 3;
 
-		// Use and odd width to make sure there is a middle/center pixel
-		let _extent = Extent::rectangle(1920, 1080);
-
-		let floats: [f32;21] = [
+		let floats: [f32; 21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
 			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
 			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
@@ -1892,7 +1889,7 @@ pub(super) mod tests {
 		];
 
 		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
 			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
 			&vertex_layout
 		) };
@@ -1904,7 +1901,6 @@ pub(super) mod tests {
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
-		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
 		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
@@ -1953,6 +1949,91 @@ pub(super) mod tests {
 			assert!(!device.has_errors());
 
 			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+
+			check_triangle(pixels, extent);
+		}
+	}
+
+	pub(crate) fn resize(device: &mut impl Device) {
+		//! Tests that the render system can perform rendering while resize the render targets.
+
+		const FRAMES_IN_FLIGHT: usize = 3;
+
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
+			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		];
+
+		let vertex_layout = [
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
+		];
+
+		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
+			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+			&vertex_layout
+		) };
+
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
+
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+
+		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
+
+		let mut extent = Extent::rectangle(1280, 720);
+
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+
+		let attachments = [
+			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+		];
+
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+
+		let command_buffer_handle = device.create_command_buffer(None);
+
+		let render_finished_synchronizer = device.create_synchronizer(None, true);
+
+		for i in 0..FRAMES_IN_FLIGHT * 10 {
+			if i == 2 {
+				extent = Extent::rectangle(1920, 1080);
+				device.resize_image(render_target, extent);
+			}
+
+			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
+
+			device.start_frame_capture();
+
+			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+
+			let attachments = [
+				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+			];
+
+			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+
+			raster_pipeline_command.draw_mesh(&mesh);
+
+			raster_pipeline_command.end_render_pass();
+
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+
+			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
+
+			device.end_frame_capture();
+
+			device.wait();
+
+			assert!(!device.has_errors());
+
+			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+
+			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
 			check_triangle(pixels, extent);
 		}

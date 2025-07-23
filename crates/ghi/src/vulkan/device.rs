@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::VecDeque};
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{BufferCopy, Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle}, window, CommandBufferRecording, FrameKey, Instance, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{BufferCopy, Descriptor, DescriptorSetBindingHandle, Handle, ImageHandle, Tasks}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -64,6 +64,8 @@ pub struct Device {
 	/// Buffer handle, pipeline stage
 	pub(super) pending_buffer_syncs: Mutex<VecDeque<BufferHandle>>,
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
+
+	tasks: VecDeque<Tasks>,
 }
 
 unsafe impl Send for Device {}
@@ -155,16 +157,28 @@ impl Device {
 
 			physical_device
 		} else {
-			let physical_device = physical_devices.into_iter().filter(|physical_device| {
+			let physical_device = physical_devices.into_iter().filter(|&physical_device| {
 				let mut tools = [vk::PhysicalDeviceToolProperties::default(); 8];
 
 				let tool_count = unsafe {
-					vk_instance.get_physical_device_tool_properties_len(*physical_device).unwrap()
+					vk_instance.get_physical_device_tool_properties_len(physical_device).unwrap()
 				};
 
 				unsafe {
-					vk_instance.get_physical_device_tool_properties(*physical_device, &mut tools[0..tool_count]).unwrap();
+					vk_instance.get_physical_device_tool_properties(physical_device, &mut tools[0..tool_count]).unwrap();
 				};
+
+				let mut vk_physical_device_memory_properties2 = vk::PhysicalDeviceMemoryProperties2::default();
+
+				unsafe {
+					vk_instance.get_physical_device_memory_properties2(physical_device, &mut vk_physical_device_memory_properties2);
+				}
+
+				for heap in &vk_physical_device_memory_properties2.memory_properties.memory_heaps[..vk_physical_device_memory_properties2.memory_properties.memory_heap_count as usize] {
+					if heap.size == 0 {
+						return false;
+					}
+				}
 
 				let buffer_device_address_capture_replay = tools.iter().take(tool_count as usize).any(|tool| {
 					let name = unsafe { std::ffi::CStr::from_ptr(tool.name.as_ptr()) };
@@ -180,7 +194,7 @@ impl Device {
 					.push_next(&mut physical_device_mesh_shading_features)
 				;
 
-				unsafe { vk_instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
+				unsafe { vk_instance.get_physical_device_features2(physical_device, &mut physical_device_features) };
 
 				let features = physical_device_features.features;
 
@@ -396,6 +410,8 @@ impl Device {
 			image_writes_queue: Mutex::new(HashMap::with_capacity(128)),
 
 			pending_buffer_syncs: Mutex::new(VecDeque::with_capacity(128)),
+
+			tasks: VecDeque::with_capacity(128),
 		})
 	}
 
@@ -643,17 +659,6 @@ impl Device {
 	fn destroy_vulkan_buffer(&self, buffer: &graphics_hardware_interface::BaseBufferHandle) {
 		let buffer = self.buffers.get(buffer.0 as usize).expect("No buffer with that handle.").buffer.clone();
 		unsafe { self.device.destroy_buffer(buffer, None) };
-	}
-
-	fn create_vulkan_allocation(&self, size: usize,) -> vk::DeviceMemory {
-		let memory_allocate_info = vk::MemoryAllocateInfo::default()
-			.allocation_size(size as u64)
-			.memory_type_index(0)
-		;
-
-		let memory = unsafe { self.device.allocate_memory(&memory_allocate_info, None).expect("No memory") };
-
-		memory
 	}
 
 	fn get_vulkan_buffer_address(&self, buffer: &graphics_hardware_interface::BaseBufferHandle, _allocation: &graphics_hardware_interface::AllocationHandle) -> u64 {
@@ -923,37 +928,45 @@ impl Device {
 		self.descriptor_sets.get(descriptor_set_handle.0 as usize).expect("No descriptor set with that handle.")
 	}
 
-	fn create_buffer_internal(&mut self, name: Option<&str>, resource_uses: crate::Uses, size: usize, vk_buffer_usage_flags: vk::BufferUsageFlags, device_accesses: graphics_hardware_interface::DeviceAccesses) -> BufferHandle {
+	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
+	fn build_buffer_internal(&mut self, name: Option<&str>, resource_uses: crate::Uses, size: usize, vk_buffer_usage_flags: vk::BufferUsageFlags, device_accesses: graphics_hardware_interface::DeviceAccesses) -> Buffer {
 		let buffer = if size != 0 {
-		    let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
-		    let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_accesses);
-		    let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-		    Buffer {
-			    next: None,
-			    staging: None,
-			    buffer: buffer_creation_result.resource,
-			    size,
-			    device_address,
-			    pointer,
-			    uses: resource_uses,
-		    }
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
+			let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_accesses);
+			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+			Buffer {
+				next: None,
+				staging: None,
+				buffer: buffer_creation_result.resource,
+				size,
+				device_address,
+				pointer,
+				uses: resource_uses,
+			}
 		} else {
-		    Buffer {
-			    next: None,
-			    staging: None,
-			    buffer: vk::Buffer::null(),
-			    size: 0,
-			    device_address: 0,
-			    pointer: std::ptr::null_mut(),
-			    uses: resource_uses,
-		    }
+			Buffer {
+				next: None,
+				staging: None,
+				buffer: vk::Buffer::null(),
+				size: 0,
+				device_address: 0,
+				pointer: std::ptr::null_mut(),
+				uses: resource_uses,
+			}
 		};
 
-	    let buffer_handle = BufferHandle(self.buffers.len() as u64);
+		buffer
+	}
 
-	    self.buffers.push(buffer);
+	/// Builds a buffer and returns its handle.
+	fn create_buffer_internal(&mut self, name: Option<&str>, resource_uses: crate::Uses, size: usize, vk_buffer_usage_flags: vk::BufferUsageFlags, device_accesses: graphics_hardware_interface::DeviceAccesses) -> BufferHandle {
+		let buffer = self.build_buffer_internal(name, resource_uses, size, vk_buffer_usage_flags, device_accesses);
 
-	    buffer_handle
+		let buffer_handle = BufferHandle(self.buffers.len() as u64);
+
+		self.buffers.push(buffer);
+
+		buffer_handle
 	}
 
 	fn build_image_internal(&mut self, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: u32, size: usize, extent: vk::Extent3D, resource_uses: crate::Uses,) -> Image {
@@ -1033,6 +1046,86 @@ impl Device {
 		});
 
 		synchronizer_handle
+	}
+
+	fn resize_buffer_internal(&mut self, buffer_handle: BufferHandle, size: usize) {
+		let current_buffer = &self.buffers[buffer_handle.0 as usize];
+
+		if current_buffer.size != 0 {
+			let current_vk_buffer = current_buffer.buffer;
+
+			self.tasks.push_back(Tasks::DeleteVulkanBuffer { handle: current_vk_buffer, frame: 0 });
+
+			// TODO: copy data from old buffer to new buffer
+		}
+
+		if current_buffer.size >= size {
+			return;
+		}
+
+		let new_buffer = self.build_buffer_internal(None, current_buffer.uses, size, uses_to_vk_usage_flags(current_buffer.uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
+
+		self.buffers[buffer_handle.0 as usize] = new_buffer;
+
+		let mut entries = Vec::new();
+
+		if let Some(bindings) = self.resource_to_descriptor.get(&Handle::Buffer(buffer_handle)) {
+			for &(binding_handle, descriptor_index) in bindings {
+				let binding = &self.bindings[binding_handle.0 as usize];
+
+				let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
+
+				let descriptor_type = binding.descriptor_type;
+				let binding_index = binding.index;
+
+				let descriptor_set_handles = {
+					let mut descriptor_set_handles = Vec::with_capacity(3);
+
+					let mut descriptor_set_handle_option = Some(descriptor_set_handle);
+
+					while let Some(descriptor_set_handle) = descriptor_set_handle_option {
+						descriptor_set_handles.push(descriptor_set_handle);
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+						descriptor_set_handle_option = descriptor_set.next;
+					}
+
+					descriptor_set_handles
+				};
+
+				for &descriptor_set_handle in descriptor_set_handles.iter() {
+					let descriptor = self.descriptors.get(&descriptor_set_handle).unwrap().get(&binding_index).unwrap().get(&descriptor_index).unwrap();
+
+					let buffer = self.buffers[buffer_handle.0 as usize];
+
+					let buffers = match descriptor {
+						Descriptor::Buffer { size, .. } => {
+							[
+								vk::DescriptorBufferInfo::default().buffer(buffer.buffer).range(match size { graphics_hardware_interface::Ranges::Size(size) => { *size as u64 } graphics_hardware_interface::Ranges::Whole => { vk::WHOLE_SIZE } })
+							]
+						}
+						_ => { panic!("Invalid descriptor type"); }
+					};
+
+					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+
+					let write_info = vk::WriteDescriptorSet::default()
+						.dst_set(descriptor_set.descriptor_set)
+						.dst_binding(binding_index)
+						.dst_array_element(descriptor_index)
+						.descriptor_type(descriptor_type)
+						.buffer_info(&buffers)
+					;
+
+					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
+				}
+
+				entries.push((Handle::Buffer(buffer_handle), (binding_handle, descriptor_index))); // Write into entries instead of straight into map because of borrow rules
+			}
+		}
+
+		for (k, v) in entries {
+			self.resource_to_descriptor.entry(k).or_insert_with(HashSet::new).insert(v);
+		}
 	}
 }
 
@@ -2428,20 +2521,32 @@ impl graphics_hardware_interface::Device for Device {
 			image_handles
 		};
 
-		for image_handle in &image_handles {
+		for (index, image_handle) in image_handles.iter().enumerate() {
+			#[cfg(debug_assertions)]
+			let Image { format_, staging_buffer, .. } = self.images[image_handle.0 as usize];
+
+			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
+
+			if let Some(staging_buffer_handle) = staging_buffer {
+				self.resize_buffer_internal(staging_buffer_handle, size);
+			}
+
 			#[cfg(debug_assertions)]
 			let Image { ref name, image: vk_image, image_view, format_, uses, layers, .. } = self.images[image_handle.0 as usize];
 			#[cfg(not(debug_assertions))]
 			let Image { image: vk_image, image_view, format_, uses, layers, .. } = self.images[image_handle.0 as usize];
 
-			unsafe {
-				self.device.destroy_image(vk_image, None);
-				self.device.destroy_image_view(image_view, None);
+			self.tasks.push_back(Tasks::DeleteVulkanImageView {
+				handle: image_view,
+				frame: index as u8,
+			});
 
-				// TODO: release memory/allocation
-			}
+			self.tasks.push_back(Tasks::DeleteVulkanImage {
+				handle: vk_image,
+				frame: index as u8,
+			});
 
-			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
+			// TODO: release memory/allocation
 
 			#[cfg(debug_assertions)]
 			let r = self.create_vulkan_texture(name.as_ref().map(|s| s.as_str()), vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
@@ -2459,6 +2564,10 @@ impl graphics_hardware_interface::Device for Device {
 			image.extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
 			image.image_view = image_view;
 			image.image = r.resource;
+
+			if let Some(state) = self.states.get_mut(&Handle::Image(*image_handle)) {
+				state.layout = vk::ImageLayout::UNDEFINED;
+			}
 		}
 
 		let mut entries = Vec::new();
@@ -2537,88 +2646,7 @@ impl graphics_hardware_interface::Device for Device {
 	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
 		let buffer_handle = BufferHandle(buffer_handle.0);
 
-		let buffer = &self.buffers[buffer_handle.0 as usize];
-
-		if buffer.size != 0 {
-			todo!("Resize staging buffer");
-		}
-
-		if buffer.size >= size {
-			return;
-		}
-
-		let buffer_creation_result = self.create_vulkan_buffer(None, size, uses_to_vk_usage_flags(buffer.uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
-
-		let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
-
-		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-
-		let buffer = &mut self.buffers[buffer_handle.0 as usize];
-
-		buffer.buffer = buffer_creation_result.resource;
-		buffer.size = buffer_creation_result.size;
-		buffer.device_address = address;
-		buffer.pointer = pointer;
-
-		let mut entries = Vec::new();
-
-		if let Some(bindings) = self.resource_to_descriptor.get(&Handle::Buffer(buffer_handle)) {
-			for &(binding_handle, descriptor_index) in bindings {
-				let binding = &self.bindings[binding_handle.0 as usize];
-
-				let descriptor_set_handle = DescriptorSetHandle(binding.descriptor_set_handle.0);
-
-				let descriptor_type = binding.descriptor_type;
-				let binding_index = binding.index;
-
-				let descriptor_set_handles = {
-					let mut descriptor_set_handles = Vec::with_capacity(3);
-
-					let mut descriptor_set_handle_option = Some(descriptor_set_handle);
-
-					while let Some(descriptor_set_handle) = descriptor_set_handle_option {
-						descriptor_set_handles.push(descriptor_set_handle);
-						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-						descriptor_set_handle_option = descriptor_set.next;
-					}
-
-					descriptor_set_handles
-				};
-
-				for &descriptor_set_handle in descriptor_set_handles.iter() {
-					let descriptor = self.descriptors.get(&descriptor_set_handle).unwrap().get(&binding_index).unwrap().get(&descriptor_index).unwrap();
-
-					let buffer = self.buffers[buffer_handle.0 as usize];
-
-					let buffers = match descriptor {
-						Descriptor::Buffer { size, .. } => {
-							[
-								vk::DescriptorBufferInfo::default().buffer(buffer.buffer).range(match size { graphics_hardware_interface::Ranges::Size(size) => { *size as u64 } graphics_hardware_interface::Ranges::Whole => { vk::WHOLE_SIZE } })
-							]
-						}
-						_ => { panic!("Invalid descriptor type"); }
-					};
-
-					let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-
-					let write_info = vk::WriteDescriptorSet::default()
-						.dst_set(descriptor_set.descriptor_set)
-						.dst_binding(binding_index)
-						.dst_array_element(descriptor_index)
-						.descriptor_type(descriptor_type)
-						.buffer_info(&buffers)
-					;
-
-					unsafe { self.device.update_descriptor_sets(&[write_info], &[]) };
-				}
-
-				entries.push((Handle::Buffer(buffer_handle), (binding_handle, descriptor_index))); // Write into entries instead of straight into map because of borrow rules
-			}
-		}
-
-		for (k, v) in entries {
-			self.resource_to_descriptor.entry(k).or_insert_with(HashSet::new).insert(v);
-		}
+		self.resize_buffer_internal(buffer_handle, size);
 	}
 
 	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent) -> graphics_hardware_interface::SwapchainHandle {
@@ -2701,7 +2729,7 @@ impl graphics_hardware_interface::Device for Device {
 		synchronizer_handle
 	}
 
-	fn start_frame(&self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> FrameKey {
+	fn start_frame(&mut self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> FrameKey {
 		let frame_index = index;
 		let sequence_index = (index % self.frames as u32) as u8;
 
@@ -2709,6 +2737,35 @@ impl graphics_hardware_interface::Device for Device {
 		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
 		unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect("No fence wait"); }
 		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
+
+		self.tasks.retain(|e| {
+			match e {
+				Tasks::DeleteVulkanImage { handle, frame } => {
+					if *frame == sequence_index {
+						unsafe { self.device.destroy_image(*handle, None); }
+						false
+					} else {
+						true
+					}
+				}
+				Tasks::DeleteVulkanImageView { handle, frame } => {
+					if *frame == sequence_index {
+						unsafe { self.device.destroy_image_view(*handle, None); }
+						false
+					} else {
+						true
+					}
+				}
+				Tasks::DeleteVulkanBuffer { handle, frame } => {
+					if *frame == sequence_index {
+						unsafe { self.device.destroy_buffer(*handle, None); }
+						false
+					} else {
+						true
+					}
+				}
+			}
+		});
 
 		FrameKey { frame_index, sequence_index }
 	}

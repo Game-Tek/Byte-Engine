@@ -102,7 +102,7 @@ fn main() -> Result<(), i32> {
 				let mut material_asset_handler = material_asset_handler::MaterialAssetHandler::new();
 				let shader_generator = {
 					// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
-					let visibility_shader_generation = byte_engine::rendering::visibility_shader_generator::VisibilityShaderGenerator::new();
+					let visibility_shader_generation = byte_engine::rendering::visibility_shader_generator::VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
 					visibility_shader_generation
 				};
 				material_asset_handler.set_shader_generator(shader_generator);

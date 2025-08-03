@@ -257,7 +257,7 @@ fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &st
 		}
 	};
 
-	let main_node = root_node.borrow().get_main().ok_or(())?;
+	let main_node = root_node.get_main().ok_or(())?;
 
 	let settings = match stage {
 		"Vertex" => ShaderGenerationSettings::vertex(),
@@ -386,7 +386,7 @@ pub mod tests {
 
 		let root = besl::lex(root).unwrap();
 
-		let main_node = root.borrow().get_main().unwrap();
+		let main_node = root.get_main().unwrap();
 
 		let glsl = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::fragment(), &main_node).expect("Failed to generate GLSL");
 

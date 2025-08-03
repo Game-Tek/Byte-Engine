@@ -1,10 +1,10 @@
-use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, visibility_model::render_domain::VisibilityWorldRenderDomain}};
-use std::{net::{Ipv4Addr, Ipv6Addr}, time::Duration};
+use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, texture_manager::TextureManager, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler, FileStorageBackend}, resource::{resource_manager::ResourceManager, RedbStorageBackend}, resources::material::Material};
 use tracing::{debug_span, instrument, span, Level};
-use utils::Extent;
+use utils::{sync::RwLock, Extent};
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}};
 
@@ -367,8 +367,7 @@ impl ApplicationEventsChannel {
 pub fn default_setup(application: &mut GraphicsApplication) {
 	{
 		let generator = {
-			let common_shader_generator = CommonShaderGenerator::new();
-			let visibility_shader_generation = VisibilityShaderGenerator::new();
+			let visibility_shader_generation = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
 			visibility_shader_generation
 		};
 
@@ -436,6 +435,11 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	let mut renderer = application.renderer_handle.write();
+
+	renderer.add_render_pass(|c| {
+		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
+		application.root_space_handle.spawn(VisibilityWorldRenderDomain::new(c, application.resource_manager.clone(), texture_manager).builder())
+	});
 
 	renderer.add_render_pass(|c| {
 		application.root_space_handle.spawn(AcesToneMapPass::create(c))

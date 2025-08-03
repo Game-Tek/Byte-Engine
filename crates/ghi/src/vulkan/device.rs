@@ -456,18 +456,24 @@ impl Device {
 			offset_per_binding[vertex_element.binding as usize] += vertex_element.format.size() as u32;
 		}
 
-		let max_binding = builder.vertex_elements.iter().map(|ve| ve.binding).max().unwrap() + 1;
+		let vertex_binding_descriptions = if let Some(max_binding) = builder.vertex_elements.iter().map(|ve| ve.binding).max() {
+			let max_binding = max_binding as usize + 1;
 
-		let mut vertex_binding_descriptions = Vec::with_capacity(max_binding as usize);
+			let mut vertex_binding_descriptions = Vec::with_capacity(max_binding);
+	
+			for i in 0..max_binding {
+				vertex_binding_descriptions.push(
+					vk::VertexInputBindingDescription::default()
+					.binding(i as u32)
+					.stride(offset_per_binding[i as usize])
+					.input_rate(vk::VertexInputRate::VERTEX)
+				)
+			}
 
-		for i in 0..max_binding {
-			vertex_binding_descriptions.push(
-				vk::VertexInputBindingDescription::default()
-				.binding(i)
-				.stride(offset_per_binding[i as usize])
-				.input_rate(vk::VertexInputRate::VERTEX)
-			)
-		}
+			vertex_binding_descriptions
+		} else {
+			Vec::new()
+		};
 
 		let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
 			.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
@@ -2735,7 +2741,25 @@ impl graphics_hardware_interface::Device for Device {
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
 		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
-		unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect("No fence wait"); }
+
+		let per_cycle_wait_ms = 1;
+		let wait_warning_time_threshold = 8;
+		let mut timeout_count = 0;
+
+		loop {
+			match unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, per_cycle_wait_ms * 1000000) } {
+				Ok(_) => break,
+				Err(vk::Result::TIMEOUT) => {
+					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold && timeout_count % 500 == 0 {
+						println!("Stuck waiting for fences for {} ms. There is a potential issue with synchronization.", per_cycle_wait_ms * timeout_count);
+					}
+					timeout_count += 1;
+					continue;
+				},
+				Err(_) => panic!("Failed to wait for fence"),
+			}
+		}
+
 		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
 
 		self.tasks.retain(|e| {

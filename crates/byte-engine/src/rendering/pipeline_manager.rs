@@ -1,11 +1,11 @@
-use std::{cell::OnceCell, hash::Hash, rc::Rc};
+use std::{cell::OnceCell, hash::Hash, rc::Rc, sync::{Arc, OnceLock}};
 
 use ghi::{graphics_hardware_interface::Device as _, Device};
 use resource_management::{resources::material::{Material, Shader, Variant, VariantVariable}, types::ShaderTypes, Reference};
 use utils::{hash::{HashMap, HashMapExt}, stale_map::{Entry, StaleHashMap}, sync::{RwLock, RwLockUpgradableReadGuard}};
 
 pub struct PipelineManager {
-	pipelines: RwLock<HashMap<String, OnceCell<ghi::PipelineHandle>>>,
+	pipelines: RwLock<HashMap<String, OnceLock<ghi::PipelineHandle>>>,
 	shaders: RwLock<StaleHashMap<String, u64, (ghi::ShaderHandle, ghi::ShaderTypes)>>,
 }
 
@@ -17,11 +17,11 @@ impl PipelineManager {
 		}
 	}
 
-	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, ghi: Rc<RwLock<ghi::Device>>) -> Option<ghi::PipelineHandle> {
+	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, ghi: Arc<RwLock<ghi::Device>>) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
-			let v = pipelines.entry(resource_id).or_insert_with(|| OnceCell::new()).clone();
+			let v = pipelines.entry(resource_id).or_insert_with(|| OnceLock::new()).clone();
 			v
 		};
 
@@ -78,11 +78,11 @@ impl PipelineManager {
 		r.ok().map(|v| *v)
 	}
 
-	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Rc<RwLock<ghi::Device>>,) -> Option<ghi::PipelineHandle> {
+	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Arc<RwLock<ghi::Device>>,) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
-			let v = pipelines.entry(resource_id).or_insert_with(|| OnceCell::new()).clone();
+			let v = pipelines.entry(resource_id).or_insert_with(|| OnceLock::new()).clone();
 			v
 		};
 

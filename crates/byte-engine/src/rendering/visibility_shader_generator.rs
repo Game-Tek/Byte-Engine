@@ -1,55 +1,34 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
-use besl::{Node, NodeReference};
+use besl::{parser::Node, NodeReference};
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
+use crate::rendering::common_shader_generator::CommonShaderScope;
+
 use super::common_shader_generator::CommonShaderGenerator;
 
+pub struct VisibilityShaderScope {
+}
+
 pub struct VisibilityShaderGenerator {
-	views_binding: besl::parser::Node,
-	mesh_struct: besl::parser::Node,
-	view_struct: besl::parser::Node,
-	meshlet_struct: besl::parser::Node,
-	light_struct: besl::parser::Node,
-	material_struct: besl::parser::Node,
-
-	meshes: besl::parser::Node,
-	positions: besl::parser::Node,
-	normals: besl::parser::Node,
-	uvs: besl::parser::Node,
-	vertex_indices: besl::parser::Node,
-	primitive_indices: besl::parser::Node,
-	meshlets: besl::parser::Node,
-	textures: besl::parser::Node,
-	material_count: besl::parser::Node,
-	material_offset: besl::parser::Node,
-	material_offset_scratch: besl::parser::Node,
-	material_evaluation_dispatches: besl::parser::Node,
-	pixel_mapping: besl::parser::Node,
-	triangle_index: besl::parser::Node,
-	instance_index: besl::parser::Node,
-	compute_vertex_index: besl::parser::Node,
-	process_meshlet: besl::parser::Node,
-
-	diffuse_map: besl::parser::Node,
-	specular_map: besl::parser::Node,
-	lighting_data: besl::parser::Node,
-	materials: besl::parser::Node,
-	ao: besl::parser::Node,
-	depth_shadow_map: besl::parser::Node,
-	push_constant: besl::parser::Node,
-	sample_function: besl::parser::Node,
-	sample_normal_function: besl::parser::Node,
-	sample_shadow: besl::parser::Node,
+	scope: Node,
 }
 
 impl VisibilityShaderGenerator {
-	pub fn new() -> Self {
+	pub fn new(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
+		Self {
+			scope: VisibilityShaderScope::new_with_params(material_count_read, material_count_write, material_offset_read, material_offset_write, material_offset_scratch_read, material_offset_scratch_write, pixel_mapping_read, pixel_mapping_write),
+		}
+	}
+}
+
+impl VisibilityShaderScope {
+	pub fn new() -> besl::parser::Node {
 		Self::new_with_params(true, true, true, true, true, true, true, true)
 	}
 
-	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
+	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> besl::parser::Node {
 		use besl::parser::Node;
 
 		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_primitive_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
@@ -146,10 +125,10 @@ impl VisibilityShaderGenerator {
 
 			return surface_depth < closest_depth ? 0.0 : 1.0", &["views"], Vec::new())]);
 
-		Self {
+		Node::scope("Visibility", vec![
+			view_struct,
 			views_binding,
 			mesh_struct,
-			view_struct,
 			meshlet_struct,
 			light_struct,
 			material_struct,
@@ -172,115 +151,109 @@ impl VisibilityShaderGenerator {
 			compute_vertex_index,
 			process_meshlet,
 
-			diffuse_map: set2_binding0,
-			specular_map: set2_binding2,
-			lighting_data: set2_binding4,
-			materials: set2_binding5,
-			ao: set2_binding10,
-			depth_shadow_map: set2_binding11,
+			set2_binding0,
+			set2_binding2,
+			set2_binding4,
+			set2_binding5,
+			set2_binding10,
+			set2_binding11,
 			push_constant,
 			sample_function,
 			sample_normal_function,
 			sample_shadow,
-		}
+		])
 	}
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
-		let set2_binding4 = self.lighting_data.clone();
-		let set2_binding5 = self.materials.clone();
-		let set2_binding10 = self.ao.clone();
-		let set2_binding11 = self.depth_shadow_map.clone();
-		let push_constant = self.push_constant.clone();
-
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
-uint offset = material_offset.material_offset[push_constant.material_id];
-ivec2 pixel_coordinates = ivec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
-uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;
-uint instance_index = imageLoad(instance_index_render_target, pixel_coordinates).r;
-uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
-uint meshlet_index = triangle_meshlet_indices >> 8;
+		uint offset = material_offset.material_offset[push_constant.material_id];
+		ivec2 pixel_coordinates = ivec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
+		uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;
+		uint instance_index = imageLoad(instance_index_render_target, pixel_coordinates).r;
+		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
+		uint meshlet_index = triangle_meshlet_indices >> 8;
 
-Meshlet meshlet = meshlets.meshlets[meshlet_index];
+		Meshlet meshlet = meshlets.meshlets[meshlet_index];
 
-Mesh mesh = meshes.meshes[instance_index];
+		Mesh mesh = meshes.meshes[instance_index];
 
-Material material = materials.materials[push_constant.material_id];
+		Material material = materials.materials[push_constant.material_id];
 
-uint primitive_indices[3] = uint[3](
-	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 0],
-	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 1],
-	primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 2]
-);
+		uint primitive_indices[3] = uint[3](
+			primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 0],
+			primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 1],
+			primitive_indices.primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 2]
+		);
 
-uint vertex_indices[3] = uint[3](
-	compute_vertex_index(mesh, meshlet, primitive_indices[0]),
-	compute_vertex_index(mesh, meshlet, primitive_indices[1]),
-	compute_vertex_index(mesh, meshlet, primitive_indices[2])
-);
+		uint vertex_indices[3] = uint[3](
+			compute_vertex_index(mesh, meshlet, primitive_indices[0]),
+			compute_vertex_index(mesh, meshlet, primitive_indices[1]),
+			compute_vertex_index(mesh, meshlet, primitive_indices[2])
+		);
 
-vec4 model_space_vertex_positions[3] = vec4[3](
-	vec4(vertex_positions.positions[vertex_indices[0]], 1.0),
-	vec4(vertex_positions.positions[vertex_indices[1]], 1.0),
-	vec4(vertex_positions.positions[vertex_indices[2]], 1.0)
-);
+		vec4 model_space_vertex_positions[3] = vec4[3](
+			vec4(vertex_positions.positions[vertex_indices[0]], 1.0),
+			vec4(vertex_positions.positions[vertex_indices[1]], 1.0),
+			vec4(vertex_positions.positions[vertex_indices[2]], 1.0)
+		);
 
-vec4 vertex_normals[3] = vec4[3](
-	vec4(vertex_normals.normals[vertex_indices[0]], 0.0),
-	vec4(vertex_normals.normals[vertex_indices[1]], 0.0),
-	vec4(vertex_normals.normals[vertex_indices[2]], 0.0)
-);
+		vec4 vertex_normals[3] = vec4[3](
+			vec4(vertex_normals.normals[vertex_indices[0]], 0.0),
+			vec4(vertex_normals.normals[vertex_indices[1]], 0.0),
+			vec4(vertex_normals.normals[vertex_indices[2]], 0.0)
+		);
 
-vec2 vertex_uvs[3] = vec2[3](
-	vertex_uvs.uvs[vertex_indices[0]],
-	vertex_uvs.uvs[vertex_indices[1]],
-	vertex_uvs.uvs[vertex_indices[2]]
-);
+		vec2 vertex_uvs[3] = vec2[3](
+			vertex_uvs.uvs[vertex_indices[0]],
+			vertex_uvs.uvs[vertex_indices[1]],
+			vertex_uvs.uvs[vertex_indices[2]]
+		);
 
-vec2 image_extent = imageSize(triangle_index);
+		vec2 image_extent = imageSize(triangle_index);
 
-vec2 normalized_xy = pixel_coordinates / image_extent;
+		vec2 normalized_xy = pixel_coordinates / image_extent;
 
-vec2 nc = normalized_xy * 2 - 1;
+		vec2 nc = normalized_xy * 2 - 1;
 
-View view = views.views[0];
+		View view = views.views[0];
 
-vec4 world_space_vertex_positions[3] = vec4[3](mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]);
-vec4 clip_space_vertex_positions[3] = vec4[3](view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]);
+		vec4 world_space_vertex_positions[3] = vec4[3](mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]);
+		vec4 clip_space_vertex_positions[3] = vec4[3](view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]);
 
-vec4 world_space_vertex_normals[3] = vec4[3](normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2]));
+		vec4 world_space_vertex_normals[3] = vec4[3](normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2]));
 
-BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, image_extent);
-vec3 barycenter = barycentric_deriv.lambda;
-vec3 ddx = barycentric_deriv.ddx;
-vec3 ddy = barycentric_deriv.ddy;
+		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, image_extent);
+		vec3 barycenter = barycentric_deriv.lambda;
+		vec3 ddx = barycentric_deriv.ddx;
+		vec3 ddy = barycentric_deriv.ddy;
 
-vec3 world_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
-vec3 clip_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, clip_space_vertex_positions[0].xyz, clip_space_vertex_positions[1].xyz, clip_space_vertex_positions[2].xyz);
-vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycenter, world_space_vertex_normals[0].xyz, world_space_vertex_normals[1].xyz, world_space_vertex_normals[2].xyz));
-vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
+		vec3 world_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
+		vec3 clip_space_vertex_position = interpolate_vec3f_with_deriv(barycenter, clip_space_vertex_positions[0].xyz, clip_space_vertex_positions[1].xyz, clip_space_vertex_positions[2].xyz);
+		vec3 world_space_vertex_normal = normalize(interpolate_vec3f_with_deriv(barycenter, world_space_vertex_normals[0].xyz, world_space_vertex_normals[1].xyz, world_space_vertex_normals[2].xyz));
+		vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
-vec3 N = world_space_vertex_normal;
-// vec3 V = normalize(view.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
-vec3 V = normalize(-(view.view[3].xyz - world_space_vertex_position));
+		vec3 N = world_space_vertex_normal;
+		// vec3 V = normalize(view.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
+		vec3 V = normalize(-(view.view[3].xyz - world_space_vertex_position));
 
-vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
-vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
+		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
+		vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
 
-vec2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
-vec2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
+		vec2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
+		vec2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
-float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
-vec3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
-vec3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
-mat3 TBN = mat3(T, B, N);
+		float f = 1.0 / (uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y);
+		vec3 T = normalize(f * (uv_dy.y * pos_dx - uv_dx.y * pos_dy));
+		vec3 B = normalize(f * (-uv_dy.x * pos_dx + uv_dx.x * pos_dy));
+		mat3 TBN = mat3(T, B, N);
 
-vec4 albedo = vec4(1, 0, 0, 1);
-vec3 normal = vec3(0, 0, 1);
-float metalness = 0;
-float roughness = float(0.5);";
+		vec4 albedo = vec4(1, 0, 0, 1);
+		vec3 normal = vec3(0, 0, 1);
+		float metalness = 0;
+		float roughness = float(0.5);".trim();
 
 		let mut extra = Vec::new();
 
@@ -305,111 +278,74 @@ float roughness = float(0.5);";
 		}
 
 		let b = "
-vec3 diffuse = vec3(0.0);
-vec3 specular = vec3(0.0);
+		vec3 diffuse = vec3(0.0);
+		vec3 specular = vec3(0.0);
 
-float ao_factor = texture(ao, normalized_xy).r;
+		float ao_factor = texture(ao, normalized_xy).r;
 
-normal = normalize(TBN * normal);
+		normal = normalize(TBN * normal);
 
-for (uint i = 0; i < lighting_data.light_count; ++i) {
-	Light light = lighting_data.lights[i];
+		for (uint i = 0; i < lighting_data.light_count; ++i) {
+			Light light = lighting_data.lights[i];
 
-	vec3 L = vec3(0.0);
+			vec3 L = vec3(0.0);
 
-	if (light.type == 68) { // Infinite
-		L = normalize(-light.position);
-	} else {
-		L = normalize(light.position - world_space_vertex_position);
-	}
+			if (light.type == 68) { // Infinite
+				L = normalize(-light.position);
+			} else {
+				L = normalize(light.position - world_space_vertex_position);
+			}
 
-	float NdotL = max(dot(normal, L), 0.0);
+			float NdotL = max(dot(normal, L), 0.0);
 
-	if (NdotL <= 0.0) { continue; }
+			if (NdotL <= 0.0) { continue; }
 
-	float occlusion_factor = 1.0;
-	float attenuation = 1.0;
+			float occlusion_factor = 1.0;
+			float attenuation = 1.0;
 
-	if (light.type == 68) { // Infinite
-		vec4 view_space_vertex_position = view.view * vec4(world_space_vertex_position, 1.0);
-		float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_vertex_position.xyz, normal, vec2( 0.00,  0.00));
+			if (light.type == 68) { // Infinite
+				vec4 view_space_vertex_position = view.view * vec4(world_space_vertex_position, 1.0);
+				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_vertex_position.xyz, normal, vec2( 0.00,  0.00));
 
-		occlusion_factor = c_occlusion_factor;
+				occlusion_factor = c_occlusion_factor;
 
-		if (occlusion_factor == 0.0) { continue; }
+				if (occlusion_factor == 0.0) { continue; }
 
-		// attenuation = occlusion_factor;
-		attenuation = 1.0;
-	} else {
-		float distance = length(light.position - world_space_vertex_position);
-		attenuation = 1.0 / (distance * distance);
-	}
+				// attenuation = occlusion_factor;
+				attenuation = 1.0;
+			} else {
+				float distance = length(light.position - world_space_vertex_position);
+				attenuation = 1.0 / (distance * distance);
+			}
 
-	vec3 H = normalize(V + L);
+			vec3 H = normalize(V + L);
 
-	vec3 radiance = light.color * attenuation;
+			vec3 radiance = light.color * attenuation;
 
-	vec3 F0 = vec3(0.04);
-	F0 = mix(F0, albedo.xyz, metalness);
-	vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
+			vec3 F0 = vec3(0.04);
+			F0 = mix(F0, albedo.xyz, metalness);
+			vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
-	float NDF = distribution_ggx(normal, H, roughness);
-	float G = geometry_smith(normal, V, L, roughness);
-	vec3 local_specular = (NDF * G * F) / (4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.000001);
+			float NDF = distribution_ggx(normal, H, roughness);
+			float G = geometry_smith(normal, V, L, roughness);
+			vec3 local_specular = (NDF * G * F) / (4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.000001);
 
-	vec3 kS = F;
-	vec3 kD = vec3(1.0) - kS;
+			vec3 kS = F;
+			vec3 kD = vec3(1.0) - kS;
 
-	kD *= 1.0 - metalness;
+			kD *= 1.0 - metalness;
 
-	vec3 local_diffuse = kD * albedo.xyz / PI;
+			vec3 local_diffuse = kD * albedo.xyz / PI;
 
-	diffuse += local_diffuse * radiance * NdotL * occlusion_factor;
-	specular += local_specular * radiance * NdotL * occlusion_factor;
-}
+			diffuse += local_diffuse * radiance * NdotL * occlusion_factor;
+			specular += local_specular * radiance * NdotL * occlusion_factor;
+		}
 
-diffuse *= ao_factor;
+		diffuse *= ao_factor;
 
-imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
-imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0));
-";
-
-		let push_constant = self.push_constant.clone();
-
-		let lighting_data = self.lighting_data.clone();
-
-		let diffuse_map = self.diffuse_map.clone();
-		let specular_map = self.specular_map.clone();
-
-		let mesh_struct = self.mesh_struct.clone();
-		let view_struct = self.view_struct.clone();
-		let meshlet_struct = self.meshlet_struct.clone();
-		let light_struct = self.light_struct.clone();
-		let material_struct = self.material_struct.clone();
-
-		let camera_binding = self.views_binding.clone();
-		let material_offset = self.material_offset.clone();
-		let material_offset_scratch = self.material_offset_scratch.clone();
-		let material_evaluation_dispatches = self.material_evaluation_dispatches.clone();
-		let meshes = self.meshes.clone();
-		let material_count = self.material_count.clone();
-		let uvs = self.uvs.clone();
-		let textures = self.textures.clone();
-		let pixel_mapping = self.pixel_mapping.clone();
-		let triangle_index = self.triangle_index.clone();
-		let instance_index = self.instance_index.clone();
-		let meshlets = self.meshlets.clone();
-		let primitive_indices = self.primitive_indices.clone();
-		let vertex_indices = self.vertex_indices.clone();
-		let positions = self.positions.clone();
-		let normals = self.normals.clone();
-
-		let compute_vertex_index = self.compute_vertex_index.clone();
-		let process_meshlet = self.process_meshlet.clone();
-
-		let common_shader_generator = CommonShaderGenerator::new();
-
-		root = common_shader_generator.transform(root, material);
+		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
+		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0));
+		".trim();
 
 		let m = root.get_mut("main").unwrap();
 
@@ -421,10 +357,8 @@ imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0));
 			_ => {}
 		}
 
-		root.add(vec![mesh_struct, view_struct, meshlet_struct, light_struct, material_struct,]);
-		root.add(vec![camera_binding, material_offset, material_offset_scratch, material_evaluation_dispatches, meshes, material_count, uvs, textures, pixel_mapping, triangle_index, meshlets, primitive_indices, vertex_indices, positions, normals, instance_index]);
-		root.add(vec![compute_vertex_index, process_meshlet,]);
-		root.add(vec![self.lighting_data.clone(), push_constant, set2_binding11, set2_binding5, set2_binding10, lighting_data, diffuse_map, specular_map, self.sample_function.clone(), self.sample_normal_function.clone(), self.sample_shadow.clone()]);
+		root.add(vec![CommonShaderScope::new(), self.scope.clone()]);
+
 		root.add(extra);
 
 		root

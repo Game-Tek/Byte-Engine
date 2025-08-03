@@ -8,102 +8,26 @@ use crate::besl::lexer;
 ///
 /// # Functions
 /// - `get_view_space_position_from_depth(depth_map: Texture2D, coords: vec2u, inverse_projection_matrix: mat4f) -> vec3f`
+pub struct CommonShaderScope {
+}
+
 pub struct CommonShaderGenerator {
-	uv_derivatives_struct: besl::parser::Node,
-	distribution_ggx: besl::parser::Node,
-	geometry_schlick_ggx: besl::parser::Node,
-	geometry_smith: besl::parser::Node,
-	fresnel_schlick: besl::parser::Node,
-	barycentric_deriv: besl::parser::Node,
-	calculate_full_bary: besl::parser::Node,
-	unit_vector_from_xy: besl::parser::Node,
-	interpolate_vec3f_with_deriv: besl::parser::Node,
-	interpolate_vec2f_with_deriv: besl::parser::Node,
-	sin_from_tan: besl::parser::Node,
-	make_uv: besl::parser::Node,
-	snap_uv: besl::parser::Node,
-	tangent: besl::parser::Node,
-	min_diff: besl::parser::Node,
-	interleaved_gradient_noise: besl::parser::Node,
-	make_perpendicular_vector: besl::parser::Node,
-	make_cosine_hemisphere_sample: besl::parser::Node,
-	square_vec2: besl::parser::Node,
-	square_vec3: besl::parser::Node,
-	square_vec4: besl::parser::Node,
-	make_world_space_position_from_depth: besl::parser::Node,
-	get_world_space_position_from_depth: besl::parser::Node,
-	get_view_space_position_from_depth: besl::parser::Node,
-	rotate_directions: besl::parser::Node,
-	make_normal_from_positions: besl::parser::Node,
-	make_normal_from_depth_map: besl::parser::Node,
+}
+
+impl CommonShaderGenerator {
+	pub fn new() -> Self {
+		Self {}
+	}
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
 	fn transform(&self, mut root: besl::parser::Node, _: &json::Object) -> besl::parser::Node {
-		let code = "vec4 colors[16] = vec4[16](
-	vec4(0.16863, 0.40392, 0.77647, 1),
-	vec4(0.32941, 0.76863, 0.21961, 1),
-	vec4(0.81961, 0.16078, 0.67451, 1),
-	vec4(0.96863, 0.98824, 0.45490, 1),
-	vec4(0.75294, 0.09020, 0.75686, 1),
-	vec4(0.30588, 0.95686, 0.54510, 1),
-	vec4(0.66667, 0.06667, 0.75686, 1),
-	vec4(0.78824, 0.91765, 0.27451, 1),
-	vec4(0.40980, 0.12745, 0.48627, 1),
-	vec4(0.89804, 0.28235, 0.20784, 1),
-	vec4(0.93725, 0.67843, 0.33725, 1),
-	vec4(0.95294, 0.96863, 0.00392, 1),
-	vec4(1.00000, 0.27843, 0.67843, 1),
-	vec4(0.29020, 0.90980, 0.56863, 1),
-	vec4(0.30980, 0.70980, 0.27059, 1),
-	vec4(0.69804, 0.16078, 0.39216, 1)
-);
-
-return colors[i % 16];";
-
-	let barycentric_deriv = self.barycentric_deriv.clone();
-		let uv_derivatives_struct = self.uv_derivatives_struct.clone();
-		let distribution_ggx = self.distribution_ggx.clone();
-		let geometry_schlick_ggx = self.geometry_schlick_ggx.clone();
-		let geometry_smith = self.geometry_smith.clone();
-		let fresnel_schlick = self.fresnel_schlick.clone();
-		let calculate_full_bary = self.calculate_full_bary.clone();
-		let interpolate_vec2f_with_deriv = self.interpolate_vec2f_with_deriv.clone();
-		let interpolate_vec3f_with_deriv = self.interpolate_vec3f_with_deriv.clone();
-		let unit_vector_from_xy = self.unit_vector_from_xy.clone();
-		let sin_from_tan = self.sin_from_tan.clone();
-		let snap_uv = self.snap_uv.clone();
-		let tangent = self.tangent.clone();
-		let min_diff = self.min_diff.clone();
-		let interleaved_gradient_noise = self.interleaved_gradient_noise.clone();
-		let make_perpendicular_vector = self.make_perpendicular_vector.clone();
-		let make_cosine_hemisphere_sample = self.make_cosine_hemisphere_sample.clone();
-		let make_uv = self.make_uv.clone();
-		let square_vec2 = self.square_vec2.clone();
-		let square_vec3 = self.square_vec3.clone();
-		let square_vec4 = self.square_vec4.clone();
-
-		let make_world_space_position_from_depth = self.make_world_space_position_from_depth.clone();
-		let get_world_space_position_from_depth = self.get_world_space_position_from_depth.clone();
-		let get_view_space_position_from_depth = self.get_view_space_position_from_depth.clone();
-		let rotate_directions = self.rotate_directions.clone();
-		let make_normal_from_positions = self.make_normal_from_positions.clone();
-		let make_normal_from_depth_map = self.make_normal_from_depth_map.clone();
-
-		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
-
-		root.add(vec![distribution_ggx, geometry_schlick_ggx, geometry_smith, fresnel_schlick, calculate_full_bary, interpolate_vec2f_with_deriv, interpolate_vec3f_with_deriv, unit_vector_from_xy, sin_from_tan, snap_uv, tangent, square_vec2, square_vec3, square_vec4, min_diff, uv_derivatives_struct, barycentric_deriv,]);
-		root.add(vec![make_uv, interleaved_gradient_noise, make_perpendicular_vector, make_cosine_hemisphere_sample, make_world_space_position_from_depth, get_world_space_position_from_depth, get_view_space_position_from_depth, rotate_directions, make_normal_from_positions, make_normal_from_depth_map]);
-		root.add(vec![get_debug_color]);
-
 		root
 	}
 }
 
-impl CommonShaderGenerator {
-	pub const SCOPE: &'static str = "Common";
-
-	pub fn new() -> Self {
+impl CommonShaderScope {
+	pub fn new() -> besl::parser::Node {
 		use besl::parser::Node;
 
 		let uv_derivatives_struct = Node::r#struct("UVDerivatives", vec![Node::member("du", "vec3f"), Node::member("dv", "vec3f")]);
@@ -189,7 +113,30 @@ impl CommonShaderGenerator {
 
 		let unit_vector_from_xy = Node::function("unit_vector_from_xy", vec![Node::member("v", "vec2f")], "vec3f", vec![Node::glsl("v = v * 2.0f - 1.0f; return normalize(vec3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));", &[], Vec::new())]);
 
-		Self {
+		let code = "vec4 colors[16] = vec4[16](
+			vec4(0.16863, 0.40392, 0.77647, 1),
+			vec4(0.32941, 0.76863, 0.21961, 1),
+			vec4(0.81961, 0.16078, 0.67451, 1),
+			vec4(0.96863, 0.98824, 0.45490, 1),
+			vec4(0.75294, 0.09020, 0.75686, 1),
+			vec4(0.30588, 0.95686, 0.54510, 1),
+			vec4(0.66667, 0.06667, 0.75686, 1),
+			vec4(0.78824, 0.91765, 0.27451, 1),
+			vec4(0.40980, 0.12745, 0.48627, 1),
+			vec4(0.89804, 0.28235, 0.20784, 1),
+			vec4(0.93725, 0.67843, 0.33725, 1),
+			vec4(0.95294, 0.96863, 0.00392, 1),
+			vec4(1.00000, 0.27843, 0.67843, 1),
+			vec4(0.29020, 0.90980, 0.56863, 1),
+			vec4(0.30980, 0.70980, 0.27059, 1),
+			vec4(0.69804, 0.16078, 0.39216, 1)
+		);
+
+		return colors[i % 16];".trim();
+
+		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
+
+		Node::scope("Common", vec![
 			uv_derivatives_struct,
 
 			distribution_ggx,
@@ -204,14 +151,16 @@ impl CommonShaderGenerator {
 			sin_from_tan,
 			snap_uv,
 			tangent,
+
+			square_vec2,
+			square_vec3,
+			square_vec4,
+
 			min_diff,
 			interleaved_gradient_noise,
 			make_perpendicular_vector,
 			make_cosine_hemisphere_sample,
 			make_uv,
-			square_vec2,
-			square_vec3,
-			square_vec4,
 			make_world_space_position_from_depth,
 			get_world_space_position_from_depth,
 			get_view_space_position_from_depth,
@@ -219,6 +168,8 @@ impl CommonShaderGenerator {
 			rotate_directions,
 
 			make_normal_from_depth_map,
-		}
+
+			get_debug_color,
+		])
 	}
 }

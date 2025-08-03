@@ -364,10 +364,12 @@ impl GLSLShaderGenerator {
 			besl::Nodes::Specialization { name, r#type } => {
 				let mut members = Vec::new();
 
-				let t = &r#type.borrow().get_name().unwrap();
+				let r#type = r#type.borrow();
+
+				let t = r#type.get_name().unwrap();
 				let type_name = Self::translate_type(t);
 
-				match r#type.borrow().node() {
+				match r#type.node() {
 					besl::Nodes::Struct { fields, .. } => {
 						for (i, field) in fields.iter().enumerate() {
 							match field.borrow().node() {
@@ -387,7 +389,7 @@ impl GLSLShaderGenerator {
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = Self::translate_type(type_name.as_str());
+					let type_name = Self::translate_type(type_name);
 
 					string.push_str(type_name);
 					string.push(' ');

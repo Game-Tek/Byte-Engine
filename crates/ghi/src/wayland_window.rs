@@ -320,8 +320,6 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 
 		match event {
 			wayland_client::protocol::wl_registry::Event::Global { name, interface, version } => {
-				dbg!(&interface);
-
 				match interface.as_str() {
 					"wl_compositor" => {
 						this.compositor = Some(registry.bind(name, version, qh, ()));
@@ -605,8 +603,6 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 			}
 			wl_output::Event::Mode { width, height, .. } => {
 				this.state.monitor_extent = Some(Extent::rectangle(width as _, height as _));
-
-				dbg!(this.state.monitor_extent);
 			}
 			wl_output::Event::Description { .. } => {
 			}

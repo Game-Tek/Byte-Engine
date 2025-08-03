@@ -3,6 +3,7 @@ use std::borrow::Borrow;
 use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
 use std::ops::DerefMut;
+use std::sync::OnceLock;
 
 use ghi::graphics_hardware_interface::Device as _;
 use ghi::{graphics_hardware_interface, raster_pipeline, ImageHandle};
@@ -28,13 +29,13 @@ use utils::{Extent, RGBA, Box};
 use crate::core::entity::EntityBuilder;
 use crate::core::listener::{CreateEvent, Listener};
 use crate::core::{Entity, EntityHandle};
-use crate::rendering::common_shader_generator::CommonShaderGenerator;
+use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
 use crate::rendering::directional_light::DirectionalLight;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
-use crate::rendering::visibility_shader_generator::VisibilityShaderGenerator;
+use crate::rendering::visibility_shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{csm, directional_light, mesh, point_light, world_render_domain};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, camera::{self}};
@@ -135,15 +136,15 @@ struct Image {
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
-	ghi: Rc<RwLock<ghi::Device>>,
+	ghi: Arc<RwLock<ghi::Device>>,
 
 	resource_manager: EntityHandle<ResourceManager>,
 
 	visibility_info: world_render_domain::VisibilityInfo,
 
-	camera: Option<EntityHandle<crate::camera::Camera>>,
+	camera: Option<EntityHandle<camera::Camera>>,
 
-	render_entities: Vec<((usize, usize), EntityHandle<dyn mesh::RenderEntity>)>,
+	render_entities: Vec<((usize, usize), EntityHandle<dyn mesh::RenderEntity + Send + Sync>)>,
 
 	meshes: Vec<MeshData>,
 	meshes_by_resource: HashMap<String, usize>,
@@ -154,7 +155,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	mesh_resources: HashMap<String, u32>,
 
-	material_evaluation_materials: RwLock<HashMap<String, Arc<OnceCell<RenderDescription>>>>,
+	material_evaluation_materials: RwLock<HashMap<String, Arc<OnceLock<RenderDescription>>>>,
 
 	occlusion_map: ghi::ImageHandle,
 
@@ -244,7 +245,8 @@ pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTempl
 pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(ghi: Rc<RwLock<ghi::Device>>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
+		let ghi = render_pass_builder.ghi();
 		let mut ghi_instance = ghi.write();
 
 		// Initialize the extent to 0 to allocate memory lazily.
@@ -726,7 +728,7 @@ impl VisibilityWorldRenderDomain {
 			let (index, v) = {
 				let mut material_evaluation_materials = self.material_evaluation_materials.write();
 				let i = material_evaluation_materials.len() as u32;
-				(i, material_evaluation_materials.entry("heyyy".to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone())
+				(i, material_evaluation_materials.entry("heyyy".to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone())
 			};
 
 			let material = v.get_or_try_init(|| {
@@ -740,8 +742,7 @@ impl VisibilityWorldRenderDomain {
 
 				let root_node = besl::Node::root();
 				let shader_generator = {
-					let common_shader_generator = CommonShaderGenerator::new();
-					let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(false, true, false, true, false, true, false, false);
+					let visibility_shader_generator = VisibilityShaderGenerator::new(false, true, false, true, false, true, false, false);
 					visibility_shader_generator
 				};
 
@@ -753,7 +754,7 @@ impl VisibilityWorldRenderDomain {
 
 				let root = besl::lex(root).unwrap();
 
-				let main_node = RefCell::borrow(&root).get_main().ok_or(())?;
+				let main_node = root.get_main().ok_or(())?;
 
 				let shader = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|_| ())?;
 
@@ -816,7 +817,7 @@ impl VisibilityWorldRenderDomain {
 		let (index, v) = {
 			let mut material_evaluation_materials = self.material_evaluation_materials.write();
 			let i = material_evaluation_materials.len() as u32;
-			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone())
+			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone())
 		};
 
 		let material = v.get_or_try_init(|| {
@@ -912,7 +913,7 @@ impl VisibilityWorldRenderDomain {
 		let (index, v) = {
 			let mut material_evaluation_materials = self.material_evaluation_materials.write();
 			let i = material_evaluation_materials.len() as u32;
-			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone())
+			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone())
 		};
 
 		let material = v.get_or_try_init(|| {
@@ -1039,7 +1040,7 @@ impl Entity for VisibilityWorldRenderDomain {
 			.listen_to::<CreateEvent<camera::Camera>>()
 			.listen_to::<CreateEvent<directional_light::DirectionalLight>>()
 			.listen_to::<CreateEvent<point_light::PointLight>>()
-			.listen_to::<CreateEvent<dyn mesh::RenderEntity>>()
+			.listen_to::<CreateEvent<dyn mesh::RenderEntity + Send + Sync>>()
 	}
 }
 
@@ -1219,8 +1220,8 @@ struct MaterialData {
 	textures: [u32; 16],
 }
 
-impl Listener<CreateEvent<dyn mesh::RenderEntity>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<dyn mesh::RenderEntity>) {
+impl Listener<CreateEvent<dyn mesh::RenderEntity + Send + Sync>> for VisibilityWorldRenderDomain {
+	fn handle(&mut self, event: &CreateEvent<dyn mesh::RenderEntity + Send + Sync>) {
 		let handle = event.handle();
 		let mesh = handle.read();
 
@@ -1629,29 +1630,24 @@ const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
 
 pub fn get_visibility_pass_mesh_source() -> String {
-	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
-		common_shader_generator
-	};
-
 	let main_code = r#"
 	View view = views.views[0];
 	process_meshlet(push_constant.instance_index, view.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["views", "push_constant", "process_meshlet"], Vec::new())]);
-
-	let root_node = besl::parser::Node::root();
-
-	let mut root = shader_generator.transform(root_node, &object! {});
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["View", "views", "push_constant", "process_meshlet"], Vec::new())]);
 
 	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 
-	root.add(vec![push_constant, main]);
+	let shader = besl::parser::Node::scope("Shader", vec![push_constant, main]);
+
+	let mut root = besl::parser::Node::root();
+
+	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
+	let main_node = root_node.get_main().unwrap();
 
 	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node).unwrap();
 
@@ -1681,12 +1677,6 @@ void main() {
 "#;
 
 pub fn get_material_count_source() -> String {
-	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
-		let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(false, true, false, true, false, true, false, false);
-		visibility_shader_generator
-	};
-
 	let main_code = r#"
 	// If thread is out of bound respect to the material_id texture, return
 	ivec2 extent = imageSize(instance_index_render_target);
@@ -1703,15 +1693,15 @@ pub fn get_material_count_source() -> String {
 
 	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_count", "instance_index_render_target"], Vec::new())]);
 
-	let root_node = besl::parser::Node::root();
+	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
-	let mut root = shader_generator.transform(root_node, &object! {});
+	let mut root = besl::parser::Node::root();
 
-	root.add(vec![main]);
+	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
+	let main_node = root_node.get_main().unwrap();
 
 	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
 
@@ -1719,12 +1709,6 @@ pub fn get_material_count_source() -> String {
 }
 
 pub fn get_material_offset_source() -> String {
-	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
-		let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(true, false, false, true, false, true, false, false);
-		visibility_shader_generator
-	};
-
 	let main_code = r#"
 	uint sum = 0;
 
@@ -1738,15 +1722,15 @@ pub fn get_material_offset_source() -> String {
 
 	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["material_offset", "material_offset_scratch", "material_count", "material_evaluation_dispatches",], Vec::new())]);
 
-	let root_node = besl::parser::Node::root();
+	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
-	let mut root = shader_generator.transform(root_node, &object! {});
+	let mut root = besl::parser::Node::root();
 
-	root.add(vec![main]);
+	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
+	let main_node = root_node.get_main().unwrap();
 
 	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node).unwrap();
 
@@ -1754,12 +1738,6 @@ pub fn get_material_offset_source() -> String {
 }
 
 pub fn get_pixel_mapping_source() -> String {
-	let shader_generator = {
-		let common_shader_generator = CommonShaderGenerator::new();
-		let visibility_shader_generator = VisibilityShaderGenerator::new_with_params(false, false, false, false, false, true, false, true);
-		visibility_shader_generator
-	};
-
 	let main_code = r#"
 	ivec2 extent = imageSize(instance_index_render_target);
 	// If thread is out of bound respect to the material_id texture, return
@@ -1778,15 +1756,15 @@ pub fn get_pixel_mapping_source() -> String {
 
 	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_offset_scratch", "pixel_mapping", "instance_index_render_target",], Vec::new())]);
 
-	let root_node = besl::parser::Node::root();
+	let mut root = besl::parser::Node::root();
 
-	let mut root = shader_generator.transform(root_node, &object! {});
+	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
-	root.add(vec![main]);
+	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
 
 	let root_node = besl::lex(root).unwrap();
 
-	let main_node = RefCell::borrow(&root_node).get_main().unwrap();
+	let main_node = root_node.get_main().unwrap();
 
 	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
 

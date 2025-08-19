@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{vulkan::BufferHandle, Uses};
+use crate::{vulkan::{BufferHandle, Next}, Uses};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Buffer {
@@ -15,3 +15,11 @@ pub(crate) struct Buffer {
 
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
+
+impl Next for Buffer {
+	type Handle = BufferHandle;
+
+	fn next(&self) -> Option<Self::Handle> {
+		self.next
+	}
+}

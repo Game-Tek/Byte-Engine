@@ -296,7 +296,7 @@ impl VisibilityWorldRenderDomain {
 		let vertex_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer_handle.into()));
 		let primitive_indices_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer_handle.into()));
 		let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()));
-		let textures_binding = ghi_instance.create_descriptor_binding_array(descriptor_set, &TEXTURES_BINDING);
+		let textures_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING,));
 
 		let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 		let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
@@ -1048,6 +1048,8 @@ impl RenderPass for VisibilityWorldRenderDomain {
 	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: ghi::FrameKey) -> Option<RenderPassCommand> {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
+		ghi.resize_image(self.instance_id, extent);
+
 		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
 
 		let (camera_position, camera_orientation, fov_y) = camera_handle.map(|camera| { let camera = camera.read(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
@@ -1148,6 +1150,8 @@ impl RenderPass for VisibilityWorldRenderDomain {
 			command_buffer_recording.end_region();
 		}))
 	}
+
+
 }
 
 #[derive(Copy, Clone)]

@@ -43,13 +43,15 @@ impl Renderer {
     pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
 		let features = ghi::Features::new()
 			.validation(settings.validation)
-			.api_dump(false)
-			.gpu_validation(false)
+			.api_dump(settings.api_dump)
+			.gpu_validation(settings.extended_validation)
 			.debug_log_function(|message| {
 				log::error!("{}", message);
 			})
 			.geometry_shader(false)
 		;
+
+		dbg!(&features);
 
 		let mut instance = ghi::Instance::new(features.clone()).unwrap();
 
@@ -356,19 +358,37 @@ struct Attachment {
 pub struct Settings {
 	/// Controls whether validation layers will be enabled or not on the GHI device.
 	validation: bool,
+	/// Controls whether to enable or not writing out the parameters sent to the underlaying graphics API. Depends on `validation` being enabled.
+	api_dump: bool,
+	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
+	extended_validation: bool,
 }
 
 impl Settings {
 	/// Creates a new `Settings` struct.
 	/// - `validation` is true by default in debug builds and false in release.
+	/// - `api_dump` is false by default.
+	/// - `extended_validation` is false by default.
 	pub fn new() -> Self {
 		Self {
 			validation: cfg!(debug_assertions),
+			api_dump: false,
+			extended_validation: false,
 		}
 	}
 
 	pub fn validation(mut self, value: bool) -> Self {
 		self.validation = true;
+		self
+	}
+
+	pub fn api_dump(mut self, value: bool) -> Self {
+		self.api_dump = value;
+		self
+	}
+
+	pub fn extended_validation(mut self, value: bool) -> Self {
+		self.extended_validation = value;
 		self
 	}
 }

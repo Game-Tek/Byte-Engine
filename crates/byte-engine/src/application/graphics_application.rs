@@ -67,8 +67,20 @@ impl Application for GraphicsApplication {
 		let renderer_handle = {
 			let settings = rendering::renderer::Settings::new();
 
-			let settings = if let Some(param) = application.get_parameter("BE_RENDER_DEBUG") {
-				settings.validation(param.value == "true" || param.value == "TRUE" || param.value == "1")
+			let settings = if let Some(param) = application.get_parameter("render-debug") {
+				settings.validation(param.as_bool_simple())
+			} else {
+				settings
+			};
+
+			let settings = if let Some(param) = application.get_parameter("render-api-dump") {
+				settings.api_dump(param.as_bool_simple())
+			} else {
+				settings
+			};
+
+			let settings = if let Some(param) = application.get_parameter("render-extended-validation") {
+				settings.extended_validation(param.as_bool_simple())
 			} else {
 				settings
 			};

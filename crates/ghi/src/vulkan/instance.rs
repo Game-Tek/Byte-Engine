@@ -19,7 +19,14 @@ impl Instance {
 	pub fn new(settings: graphics_hardware_interface::Features) -> Result<Instance, &'static str> {
 		let entry = ash::Entry::linked();
 
+		let available_instance_layers = unsafe { entry.enumerate_instance_layer_properties().unwrap() };
 		let available_instance_extensions = unsafe { entry.enumerate_instance_extension_properties(None).unwrap() };
+
+		let is_instance_layer_available = |name: &str| {
+			available_instance_layers.iter().any(|layer| {
+				unsafe { std::ffi::CStr::from_ptr(layer.layer_name.as_ptr()).to_str().unwrap() == name }
+			})
+		};
 
 		let is_instance_extension_available = |name: &str| {
 			available_instance_extensions.iter().any(|extension| {
@@ -32,11 +39,19 @@ impl Instance {
 		let mut layer_names = Vec::new();
 
 		if settings.validation {
-			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
+			if is_instance_layer_available("VK_LAYER_KHRONOS_validation") {
+				layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
+			} else {
+				println!("Warning: VK_LAYER_KHRONOS_validation is not available");
+			}
 		}
 
 		if settings.api_dump {
-			layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
+			if is_instance_layer_available("VK_LAYER_LUNARG_api_dump") {
+				layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
+			} else {
+				println!("Warning: VK_LAYER_LUNARG_api_dump is not available");
+			}
 		}
 
 		let mut extension_names = Vec::new();

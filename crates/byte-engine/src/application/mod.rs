@@ -45,6 +45,24 @@ impl Parameter {
 	pub fn is(&self, name: &str) -> bool {
 		self.name == name
 	}
+
+	/// Parses the parameter's value as a bool.
+	/// Some(True) if param equals "true", "TRUE", "1"
+	/// Some(False) if param equals "false", "FALSE", "0"
+	/// Else None
+	pub fn as_bool(&self) -> Option<bool> {
+		match self.value.as_str() {
+			"true" | "TRUE" | "1" => Some(true),
+			"false" | "FALSE" | "0" => Some(false),
+			_ => None,
+		}
+	}
+
+	/// Parses the parameter's value as bool using `as_bool` but return false if it could not be parsed.
+	/// This is provided as a convenience.
+	pub fn as_bool_simple(&self) -> bool {
+		self.as_bool().unwrap_or(false)
+	}
 }
 
 /// Event that can be sent to an application. Mostly used to control the application life cycle.

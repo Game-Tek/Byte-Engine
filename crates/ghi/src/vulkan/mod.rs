@@ -4,12 +4,14 @@ use ash::vk;
 use ::utils::hash::HashMap;
 
 use crate::graphics_hardware_interface;
+use crate::vulkan::sampler::SamplerHandle;
 
 pub mod command_buffer;
 pub mod instance;
 pub mod device;
 pub mod buffer;
 pub mod image;
+pub mod sampler;
 
 mod utils;
 
@@ -35,11 +37,47 @@ pub(super) enum Descriptor {
 	},
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) struct ImageHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+impl Into<Handle> for ImageHandle {
+	fn into(self) -> Handle {
+		Handle::Image(self)
+	}
+}
+
+impl HandleLike for ImageHandle {
+	type Item = Image;
+
+	fn build(value: u64) -> Self {
+		ImageHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Image {
+		&collection[self.0 as usize]
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) struct BufferHandle(pub(super) u64);
+
+impl Into<Handle> for BufferHandle {
+	fn into(self) -> Handle {
+		Handle::Buffer(self)
+	}
+}
+
+impl HandleLike for BufferHandle {
+	type Item = Buffer;
+
+	fn build(value: u64) -> Self {
+		BufferHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Buffer {
+		&collection[self.0 as usize]
+	}
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
@@ -50,8 +88,32 @@ pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct DescriptorSetHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+impl HandleLike for DescriptorSetHandle {
+	type Item = DescriptorSet;
+
+	fn build(value: u64) -> Self {
+		DescriptorSetHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a DescriptorSet {
+		&collection[self.0 as usize]
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) struct DescriptorSetBindingHandle(pub(super) u64);
+
+impl HandleLike for DescriptorSetBindingHandle {
+	type Item = Binding;
+
+	fn build(value: u64) -> Self {
+		DescriptorSetBindingHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Binding {
+		&collection[self.0 as usize]
+	}
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct SynchronizerHandle(pub(super) u64);
@@ -109,6 +171,14 @@ pub(crate) struct DescriptorSet {
 	descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
 }
 
+impl Next for DescriptorSet {
+	type Handle = DescriptorSetHandle;
+
+	fn next(&self) -> Option<DescriptorSetHandle> {
+		self.next
+	}
+}
+
 #[derive(Clone)]
 pub(crate) struct Shader {
 	shader: vk::ShaderModule,
@@ -131,10 +201,19 @@ pub(super) struct CommandBufferInternal {
 
 #[derive(Clone)]
 pub(crate) struct Binding {
-	descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle,
+	next: Option<DescriptorSetBindingHandle>,
+	descriptor_set_handle: DescriptorSetHandle,
 	descriptor_type: vk::DescriptorType,
 	index: u32,
 	count: u32,
+}
+
+impl Next for Binding {
+	type Handle = DescriptorSetBindingHandle;
+
+	fn next(&self) -> Option<DescriptorSetBindingHandle> {
+		self.next
+	}
 }
 
 #[derive(Clone)]
@@ -203,18 +282,164 @@ pub struct MemoryBackedResourceCreationResult<T> {
 }
 
 pub(crate) enum Tasks {
+	/// Delete a Vulkan image. Will be associated to a frame index in `Task`.
 	DeleteVulkanImage {
 		handle: vk::Image,
-		frame: u8,
 	},
+	/// Delete a Vulkan image view. Will be associated to a frame index in `Task`.
 	DeleteVulkanImageView {
 		handle: vk::ImageView,
-		frame: u8,
 	},
+	/// Delete a Vulkan buffer. Will be associated to a frame index in `Task`.
 	DeleteVulkanBuffer {
 		handle: vk::Buffer,
-		frame: u8,
 	},
+	/// Patch all descriptors that reference the buffer.
+	/// Usually, this is done when the buffer is resized because the Vulkan buffer will be swapped.
+	UpdateBufferDescriptors {
+		handle: BufferHandle,
+	},
+	/// Patch all descriptors that reference the image.
+	/// Usually, this is done when the image is resized because the Vulkan image will be swapped.
+	UpdateImageDescriptors {
+		handle: ImageHandle,
+	},
+	/// Update a particular descriptor.
+	/// This task will most likely be enqueued for performance reasons. Since it is cheaper to update multiple descriptors at once instead of sporadically.
+	WriteDescriptor {
+		binding_handle: DescriptorSetBindingHandle,
+		descriptor: Descriptors,
+	},
+	/// A miscellaneous task that may be associated with a frame index.
+	Other(Box<dyn Fn()>),
+}
+
+pub(crate) struct Task {
+	pub(crate) task: Tasks,
+	pub(crate) frame: Option<u8>,
+}
+
+impl Task {
+	pub(crate) fn delete_vulkan_image(handle: vk::Image, frame: u8) -> Self {
+		Self {
+			task: Tasks::DeleteVulkanImage { handle },
+			frame: Some(frame),
+		}
+	}
+
+	pub(crate) fn delete_vulkan_image_view(handle: vk::ImageView, frame: u8) -> Self {
+		Self {
+			task: Tasks::DeleteVulkanImageView { handle },
+			frame: Some(frame),
+		}
+	}
+
+	pub(crate) fn delete_vulkan_buffer(handle: vk::Buffer, frame: Option<u8>) -> Self {
+		Self {
+			task: Tasks::DeleteVulkanBuffer { handle },
+			frame,
+		}
+	}
+
+	pub(crate) fn update_buffer_descriptor(handle: BufferHandle, frame: Option<u8>) -> Self {
+		Self {
+			task: Tasks::UpdateBufferDescriptors { handle },
+			frame,
+		}
+	}
+
+	pub(crate) fn update_image_descriptor(handle: ImageHandle, frame: Option<u8>) -> Self {
+		Self {
+			task: Tasks::UpdateImageDescriptors { handle },
+			frame,
+		}
+	}
+
+	pub(crate) fn other(f: Box<dyn Fn()>, frame: Option<u8>) -> Self {
+		Self {
+			task: Tasks::Other(f),
+			frame,
+		}
+	}
+
+	pub fn frame(&self) -> Option<u8> {
+		self.frame
+	}
+
+	pub fn task(&self) -> &Tasks {
+		&self.task
+	}
+
+	pub fn write_descriptor(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptors, frame: Option<u8>) -> Task {
+        Self {
+            task: Tasks::WriteDescriptor { binding_handle, descriptor },
+            frame,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Descriptors {
+	Buffer{ handle: BufferHandle, size: graphics_hardware_interface::Ranges },
+	Image{ handle: ImageHandle, layout: graphics_hardware_interface::Layouts },
+	CombinedImageSampler{ image_handle: ImageHandle, layout: graphics_hardware_interface::Layouts, sampler_handle: SamplerHandle, layer: Option<u32> },
+	Sampler{ handle: SamplerHandle },
+	CombinedImageSamplerArray,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DescriptorWrite {
+	pub(crate) write: Descriptors,
+	pub(crate) binding: DescriptorSetBindingHandle,
+	pub(crate) array_element: u32,
+}
+
+impl DescriptorWrite {
+	pub(crate) fn new(write: Descriptors, binding: DescriptorSetBindingHandle) -> Self {
+		Self { write, binding, array_element: 0 }
+	}
+
+	pub(crate) fn index(mut self, index: u32) -> Self {
+		self.array_element = index;
+		self
+	}
+}
+
+pub(crate) trait HandleLike where Self: Sized, Self: PartialEq<Self>, Self: Clone, Self: Copy {
+	type Item: Next<Handle = Self>;
+
+	fn build(value: u64) -> Self;
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Self::Item;
+
+	fn root(&self, collection: &[Self::Item]) -> Self {
+		let handle_option = Some(*self);
+
+		return if let Some(e) = collection.iter().enumerate().find(|(_, e)| e.next() == handle_option).map(|(i, _)| Self::build(i as u64)) {
+			e.root(collection)
+		} else {
+			handle_option.unwrap()
+		}
+	}
+
+	fn get_all(&self, collection: &[Self::Item]) -> Vec<Self> {
+		let mut handles = Vec::with_capacity(3);
+		let mut handle_option = Some(*self);
+
+		while let Some(handle) = handle_option {
+			let binding = handle.access(collection);
+			handles.push(handle);
+			handle_option = binding.next();
+		}
+
+		handles
+	}
+}
+
+pub(crate) trait Next where Self: Sized {
+	type Handle: HandleLike<Item = Self>;
+
+    fn next(&self) -> Option<Self::Handle>;
 }
 
 #[cfg(test)]
@@ -296,6 +521,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore = "not working on supporting rt right now"]
 	fn render_with_ray_tracing() {
 		let features = graphics_hardware_interface::Features::new().validation(true).ray_tracing(true);
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");

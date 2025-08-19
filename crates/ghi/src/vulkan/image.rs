@@ -1,11 +1,9 @@
 use ash::vk;
 
-use crate::{vulkan::{BufferHandle, ImageHandle}, DeviceAccesses, Formats, Uses};
+use crate::{vulkan::{BufferHandle, ImageHandle, Next}, DeviceAccesses, Formats, Uses};
 
 #[derive(Clone)]
 pub(crate) struct Image {
-	#[cfg(debug_assertions)]
-	pub(crate) name: Option<String>,
 	pub(crate) next: Option<ImageHandle>,
 	pub(crate) staging_buffer: Option<BufferHandle>,
 	pub(crate) image: vk::Image,
@@ -22,3 +20,11 @@ pub(crate) struct Image {
 
 unsafe impl Send for Image {}
 unsafe impl Sync for Image {}
+
+impl Next for Image {
+	type Handle = ImageHandle;
+
+	fn next(&self) -> Option<Self::Handle> {
+		self.next
+	}
+}

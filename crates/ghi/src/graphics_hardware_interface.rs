@@ -374,6 +374,7 @@ pub enum Ranges {
 	Whole,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Descriptor {
 	Buffer {
 		handle: BaseBufferHandle,
@@ -395,6 +396,7 @@ pub enum Descriptor {
 	Swapchain(SwapchainHandle),
 	Sampler(SamplerHandle),
 	StaticSamplers,
+	CombinedImageSamplerArray,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -566,7 +568,6 @@ pub trait Device where Self: Sized {
 	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_template_handle: &DescriptorSetTemplateHandle) -> DescriptorSetHandle;
 
 	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding_constructor: BindingConstructor) -> DescriptorSetBindingHandle;
-	fn create_descriptor_binding_array(&mut self, descriptor_set: DescriptorSetHandle, binding_template: &DescriptorSetBindingTemplate) -> DescriptorSetBindingHandle;
 
 	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
 
@@ -1137,7 +1138,7 @@ pub struct BindingConstructor<'a> {
 	pub(super) array_element: u32,
 	/// Information describing the descriptor.
 	pub(super) descriptor: Descriptor,
-	pub(super) frame_offset: Option<i32>,
+	pub(super) frame_offset: Option<i8>,
 }
 
 impl <'a> BindingConstructor<'a> {
@@ -1188,6 +1189,15 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
+	pub fn combined_image_sampler_array(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: Descriptor::CombinedImageSamplerArray,
+			frame_offset: None,
+		}
+	}
+
 	pub fn combined_image_sampler_layer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts, layer_index: u32) -> Self {
 		Self {
 			descriptor_set_binding_template,
@@ -1222,7 +1232,7 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn frame(mut self, frame_offset: i32) -> Self {
+	pub fn frame(mut self, frame_offset: i8) -> Self {
 		self.frame_offset = Some(frame_offset);
 		self
 	}
@@ -1503,6 +1513,45 @@ pub(super) mod tests {
 			void main() {
 				out_color = in_color;
 				gl_Position = vec4(in_position, 1.0);
+			}
+		";
+
+		let fragment_shader_code = "
+			#version 450
+			#pragma shader_stage(fragment)
+
+			layout(location = 0) in vec4 in_color;
+
+			layout(location = 0) out vec4 out_color;
+
+			void main() {
+				out_color = in_color;
+			}
+		";
+
+		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
+		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+
+		(vertex_shader_artifact, fragment_shader_artifact)
+	}
+
+	fn compile_shaders_with_model_matrix() -> (glsl::CompiledShader, glsl::CompiledShader) {
+		let vertex_shader_code = "
+			#version 450
+			#pragma shader_stage(vertex)
+
+			layout(location = 0) in vec3 in_position;
+			layout(location = 1) in vec4 in_color;
+
+			layout(location = 0) out vec4 out_color;
+
+			layout(push_constant) uniform ModelMatrix {
+				mat4 model_matrix;
+			} push_constants;
+
+			void main() {
+				out_color = in_color;
+				gl_Position = push_constants.model_matrix * vec4(in_position, 1.0);
 			}
 		";
 
@@ -2045,9 +2094,6 @@ pub(super) mod tests {
 
 		const FRAMES_IN_FLIGHT: usize = 2;
 
-		// Use and odd width to make sure there is a middle/center pixel
-		let _extent = Extent::rectangle(1920, 1080);
-
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
 			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
@@ -2065,7 +2111,7 @@ pub(super) mod tests {
 			&vertex_layout
 		) };
 
-		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
+		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
 
 		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
 		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
@@ -2138,16 +2184,16 @@ pub(super) mod tests {
 
 			if i % 4 == 0 {
 				let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
+				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at bottom right corner did not match expected green color in frame: {i}");
 			} else if i % 4 == 1 {
-				let pixel = pixels[(extent.width() - 1) as usize]; // top right
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
+				let pixel = pixels[(extent.width()  * (extent.height() - 1)) as usize]; // bottom left
+				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at bottom left corner did not match expected green color in frame: {i}");
 			} else if i % 4 == 2 {
 				let pixel = pixels[0]; // top left
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
+				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at top left corner did not match expected green color in frame: {i}");
 			} else if i % 4 == 3 {
-				let pixel = pixels[(extent.width()  * (extent.height() - 1)) as usize]; // bottom left
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
+				let pixel = pixels[(extent.width() - 1) as usize]; // top right
+				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at top right corner did not match expected green color in frame: {i}");
 			}
 		}
 
@@ -2443,7 +2489,7 @@ pub(super) mod tests {
 			0.0, 0.0, 1.0, 1.0,
 		];
 
-		let vertex_positions_buffer = renderer.create_buffer::<[f32; 8 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let vertex_positions_buffer = renderer.create_buffer::<[f32; 3 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 

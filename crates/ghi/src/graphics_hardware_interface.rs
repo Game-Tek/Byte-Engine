@@ -871,6 +871,8 @@ bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	/// Bit flags for the available access policies.
 	pub struct AccessPolicies : u8 {
+		/// Will perform no access.
+		const NONE = 0b00000000;
 		/// Will perform read access.
 		const READ = 0b00000001;
 		/// Will perform write access.
@@ -936,6 +938,8 @@ bitflags::bitflags! {
 		const CALLABLE = 1 << 16;
 		/// The acceleration structure build stage.
 		const ACCELERATION_STRUCTURE_BUILD = 1 << 17;
+		/// The last or bottom stage.
+		const LAST = 1 << 63;
 	}
 }
 

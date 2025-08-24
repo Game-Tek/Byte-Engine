@@ -183,7 +183,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(message_severity: vk::Debu
 			// debug!("{}", message.to_str().unwrap());
 		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => {
-			// warn!("{}", message.to_str().unwrap());
+			println!("{}", message);
 		}
 		vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => {
 			(user_data.error_log_function)(message);

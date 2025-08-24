@@ -226,12 +226,13 @@ pub(super) fn to_pipeline_stage_flags(stages: graphics_hardware_interface::Stage
 	if stages.contains(graphics_hardware_interface::Stages::MISS) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
 	if stages.contains(graphics_hardware_interface::Stages::CALLABLE) { pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR; }
 	if stages.contains(graphics_hardware_interface::Stages::ACCELERATION_STRUCTURE_BUILD) { pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR; }
+	if stages.contains(graphics_hardware_interface::Stages::LAST) { pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE; }
 
 	pipeline_stage_flags
 }
 
 pub(super) fn to_access_flags(accesses: graphics_hardware_interface::AccessPolicies, stages: graphics_hardware_interface::Stages, layout: graphics_hardware_interface::Layouts, format: Option<graphics_hardware_interface::Formats>) -> vk::AccessFlags2 {
-	let mut access_flags = vk::AccessFlags2::empty();
+	let mut access_flags = vk::AccessFlags2::NONE;
 
 	if accesses.contains(graphics_hardware_interface::AccessPolicies::READ) {
 		if stages.intersects(graphics_hardware_interface::Stages::VERTEX) {

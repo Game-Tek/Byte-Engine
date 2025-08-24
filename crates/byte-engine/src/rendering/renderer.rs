@@ -51,8 +51,6 @@ impl Renderer {
 			.geometry_shader(false)
 		;
 
-		dbg!(&features);
-
 		let mut instance = ghi::Instance::new(features.clone()).unwrap();
 
 		let device = Arc::new(RwLock::new(instance.create_device(features.clone()).unwrap()));
@@ -229,7 +227,7 @@ impl Renderer {
 
         command_buffer_recording.execute(
             &[],
-            &[self.render_finished_synchronizer],
+            &[],
             &[present_key],
             self.render_finished_synchronizer,
         );

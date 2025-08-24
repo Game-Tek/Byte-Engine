@@ -118,6 +118,18 @@ impl HandleLike for DescriptorSetBindingHandle {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct SynchronizerHandle(pub(super) u64);
 
+impl HandleLike for SynchronizerHandle {
+	type Item = Synchronizer;
+
+	fn build(value: u64) -> Self {
+		SynchronizerHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Synchronizer {
+		&collection[self.0 as usize]
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Handle {
 	Image(ImageHandle),
@@ -148,8 +160,10 @@ const MAX_FRAMES_IN_FLIGHT: usize = 3;
 pub(crate) struct Swapchain {
 	surface: vk::SurfaceKHR,
 	swapchain: vk::SwapchainKHR,
-	synchronizer: graphics_hardware_interface::SynchronizerHandle,
+	acquire_synchronizers: [SynchronizerHandle; MAX_FRAMES_IN_FLIGHT],
+	submit_synchronizers: [SynchronizerHandle; 8],
 	extent: vk::Extent2D,
+	sync_stage: vk::PipelineStageFlags2,
 }
 
 #[derive(Clone)]
@@ -239,6 +253,14 @@ pub(crate) struct Synchronizer {
 
 	fence: vk::Fence,
 	semaphore: vk::Semaphore,
+}
+
+impl Next for Synchronizer {
+	type Handle = SynchronizerHandle;
+
+	fn next(&self) -> Option<SynchronizerHandle> {
+		self.next
+	}
 }
 
 // #[derive(Clone, Copy)]

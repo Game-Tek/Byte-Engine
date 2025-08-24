@@ -1389,6 +1389,8 @@ impl graphics_hardware_interface::Device for Device {
 			panic!("Cannot set frames in flight to more than {}", MAX_FRAMES_IN_FLIGHT);
 		}
 
+		todo!("Update swapchain synchronizers");
+
 		let current_frames = self.frames;
 		let target_frames = frames;
 		let delta_frames = target_frames as i8 - current_frames as i8;
@@ -2579,7 +2581,14 @@ impl graphics_hardware_interface::Device for Device {
 			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
 		};
 
+		let presentation_modes = [presentation_mode];
+
+		let mut present_modes_create_info = vk::SwapchainPresentModesCreateInfoEXT::default()
+    		.present_modes(&presentation_modes)
+		;
+
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+    		.push_next(&mut present_modes_create_info)
 			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
 			.surface(surface)
 			.min_image_count(min_image_count)
@@ -2599,13 +2608,27 @@ impl graphics_hardware_interface::Device for Device {
 
 		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
-		let synchronizer = self.create_synchronizer(Some("Swapchain sync"), true);
+		let mut acquire_synchronizers = [SynchronizerHandle(!0u64); MAX_FRAMES_IN_FLIGHT];
+
+		for i in 0..self.frames {
+			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
+			acquire_synchronizers[i as usize] = synchronizer;
+		}
+
+		let mut submit_synchronizers = [SynchronizerHandle(!0u64); 8];
+
+		for i in 0..min_image_count {
+			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
+			submit_synchronizers[i as usize] = synchronizer;
+		}
 
 		self.swapchains.push(Swapchain {
 			surface,
 			swapchain,
-			synchronizer,
+			acquire_synchronizers,
+			submit_synchronizers,
 			extent,
+			sync_stage: vk::PipelineStageFlags2::TRANSFER,
 		});
 
 		swapchain_handle
@@ -2656,7 +2679,7 @@ impl graphics_hardware_interface::Device for Device {
 				Ok(_) => break,
 				Err(vk::Result::TIMEOUT) => {
 					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold && timeout_count % 500 == 0 {
-						println!("Stuck waiting for fences for {} ms. There is a potential issue with synchronization.", per_cycle_wait_ms * timeout_count);
+						println!("Stuck waiting for fences for {} ms at frame {index}. There is a potential issue with synchronization.", per_cycle_wait_ms * timeout_count);
 					}
 					timeout_count += 1;
 					continue;
@@ -2675,20 +2698,9 @@ impl graphics_hardware_interface::Device for Device {
 	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Extent) {
 		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 
-		let swapchain_synchronizer_handles = self.get_syncronizer_handles(swapchain.synchronizer);
-		let swapchain_synchronizer = &self.synchronizers[swapchain_synchronizer_handles[frame_key.sequence_index as usize].0 as usize];
+		let swapchain_frame_synchronizer = swapchain.acquire_synchronizers[frame_key.sequence_index as usize].access(&self.synchronizers);
 
-		let semaphore = swapchain_synchronizer.semaphore;
-		let fence = swapchain_synchronizer.fence;
-
-		unsafe {
-			self.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
-		};
-
-		unsafe { // Wait for presentation to have occurred
-			self.device.wait_for_fences(&[fence], true, u64::MAX).unwrap();
-			self.device.reset_fences(&[fence]).unwrap();
-		};
+		let semaphore = swapchain_frame_synchronizer.semaphore;
 
 		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, 0, semaphore, vk::Fence::default()) };
 

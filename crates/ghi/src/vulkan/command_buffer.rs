@@ -1,7 +1,7 @@
 use ash::vk::{self, Handle as _};
 use utils::{hash::HashMap, partition, Extent};
 
-use crate::{graphics_hardware_interface, FrameKey};
+use crate::{graphics_hardware_interface, vulkan::HandleLike as _, FrameKey};
 
 use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption};
 
@@ -12,8 +12,6 @@ pub struct CommandBufferRecording<'a> {
 	sequence_index: u8,
 	states: HashMap<Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
-
-	stages: vk::PipelineStageFlags2,
 
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
@@ -29,8 +27,6 @@ impl CommandBufferRecording<'_> {
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
 			in_render_pass: false,
 			states: ghi.states.clone(),
-
-			stages: vk::PipelineStageFlags2::empty(),
 
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
@@ -257,6 +253,8 @@ impl CommandBufferRecording<'_> {
 					.offset(0)
 					.size(vk::WHOLE_SIZE);
 
+					// self.stages = self.stages & !new_stage_mask; // Remove now synced stages from final await
+
 					buffer_memory_barriers.push(buffer_memory_barrier);
 				},
 				Handle::TopLevelAccelerationStructure(_) | Handle::BottomLevelAccelerationStructure(_)=> {
@@ -363,8 +361,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				self.ghi.device.cmd_copy_buffer2(command_buffer.command_buffer, &copy_buffer_info);
 			}
 		}
-
-		self.stages |= vk::PipelineStageFlags2::TRANSFER;
 	}
 
 	fn sync_textures(&mut self,) {
@@ -427,8 +423,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
 			}
 		).collect::<Vec<_>>()) };
-
-		self.stages |= vk::PipelineStageFlags2::TRANSFER;
 	}
 
 	fn transfer_textures(&mut self, image_handles: &[graphics_hardware_interface::ImageHandle]) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
@@ -604,8 +598,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 		let build_range_infos = build_range_infos.iter().map(|build_range_info| build_range_info.as_slice()).collect::<Vec<_>>();
 
-		self.stages |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR;
-
 		unsafe {
 			self.ghi.acceleration_structure.cmd_build_acceleration_structures(vk_command_buffer, &infos, &build_range_infos)
 		}
@@ -702,8 +694,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		}
 
 		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new(),);
-
-		self.stages |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR;
 	}
 
 	fn bind_shader(&self, _: graphics_hardware_interface::ShaderHandle) {
@@ -995,11 +985,11 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		let image_memory_barriers = [
 			vk::ImageMemoryBarrier2KHR::default()
 				.old_layout(vk::ImageLayout::UNDEFINED)
-				.src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE) // This is needed to correctly synchronize presentation when submitting the command buffer.
+				.src_stage_mask(swapchain.sync_stage)
 				.src_access_mask(vk::AccessFlags2KHR::NONE)
 				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.dst_stage_mask(vk::PipelineStageFlags2::BLIT)
+				.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
 				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.image(swapchain_image)
@@ -1044,8 +1034,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			.regions(&image_blits)
 		;
 
-		self.stages |= vk::PipelineStageFlags2::BLIT;
-
 		unsafe { self.ghi.device.cmd_blit_image2(vk_command_buffer, &copy_image_info); }
 
 		// Transition swapchain image to present layout
@@ -1053,11 +1041,11 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		let image_memory_barriers = [
 			vk::ImageMemoryBarrier2KHR::default()
 				.old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.src_stage_mask(vk::PipelineStageFlags2::BLIT)
+				.src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
 				.src_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
 				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-				.dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+				.dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE) // Or NONE
 				.dst_access_mask(vk::AccessFlags2KHR::NONE)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.image(swapchain_image)
@@ -1078,8 +1066,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		unsafe {
 			self.ghi.device.cmd_pipeline_barrier2(vk_command_buffer, &dependency_info);
 		}
-
-		self.stages |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE; // This is needed to correctly synchronize presentation when submitting the command buffer.
 	}
 
 	fn end(&mut self) {
@@ -1145,6 +1131,41 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 	}
 
 	fn execute(mut self, wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], presentations: &[graphics_hardware_interface::PresentKey], execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
+		// Transition all resources which where written to but not consumed by any previous command
+		// If this is skipped validation layers (correctly) complain about missing sync even no "read" operation was performed, except for the following commands
+		{
+			// let consumptions = self.states.iter().filter_map(|(handle, ts)| {
+			// 	match ts.access {
+			// 		vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption { access: graphics_hardware_interface::AccessPolicies::NONE, layout: graphics_hardware_interface::Layouts::Undefined, stages: graphics_hardware_interface::Stages::LAST, handle: *handle }),
+			// 		_ => None
+			// 	}
+			// }).collect::<Vec<_>>();
+
+			// unsafe {
+			// 	self.consume_resources(&consumptions);
+			// }
+			//
+
+			let barriers = [
+				vk::MemoryBarrier2::default()
+					.src_access_mask(vk::AccessFlags2::NONE)
+					.src_stage_mask(vk::PipelineStageFlags2::COPY)
+					.dst_access_mask(vk::AccessFlags2::NONE)
+					.dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+			];
+
+			let dependency_info = vk::DependencyInfo::default()
+				.dependency_flags(vk::DependencyFlags::BY_REGION)
+				.memory_barriers(&barriers)
+			;
+
+			let command_buffer = self.get_command_buffer();
+
+			unsafe {
+				self.ghi.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
+			}
+		}
+
 		self.end();
 
 		let command_buffer = self.get_command_buffer();
@@ -1155,25 +1176,32 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])
 		];
 
-		// TODO: Take actual stage masks
-
 		let wait_semaphores = wait_for_synchronizer_handles.iter().map(|synchronizer| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 				.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
 		}).chain(
 			presentations.iter().map(|presentation| {
+				let swapchain = self.get_swapchain(presentation.swapchain);
+				let semaphore = swapchain.acquire_synchronizers[presentation.sequence_index as usize].access(&self.ghi.synchronizers).semaphore;
+
 				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(self.get_swapchain(presentation.swapchain).synchronizer).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+					.semaphore(semaphore)
+					.stage_mask(swapchain.sync_stage)
 			})
 		).collect::<Vec<_>>();
 
 		let signal_semaphores = signal_synchronizer_handles.iter().map(|synchronizer| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
-				.stage_mask(self.stages)
-		}).collect::<Vec<_>>();
+				.stage_mask(vk::PipelineStageFlags2::empty())
+		}).chain(
+			presentations.iter().map(|present_key| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize].access(&self.ghi.synchronizers).semaphore)
+					.stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+			})
+		).collect::<Vec<_>>();
 
 		let submit_info = vk::SubmitInfo2::default()
 			.command_buffer_infos(&command_buffer_infos)
@@ -1191,21 +1219,21 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 		for presentation in presentations {
 			let swapchain = self.get_swapchain(presentation.swapchain);
-			let wait_semaphores = signal_semaphores.iter().map(|signal| signal.semaphore).collect::<Vec<_>>();
 
-			let index = presentation.image_index;
+			let wait_semaphores = signal_synchronizer_handles.iter().map(|synchronizer| {
+				self.get_synchronizer(*synchronizer).semaphore
+			}).chain(
+				presentations.iter().map(|present_key| {
+					self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize].access(&self.ghi.synchronizers).semaphore
+				})
+			).collect::<Vec<_>>();
 
 			let swapchains = [swapchain.swapchain];
 			let image_indices = [presentation.image_index as u32];
 
 			let mut results = [vk::Result::default()];
 
-			let present_fences = [self.get_synchronizer(swapchain.synchronizer).fence];
-
-			let mut present_fence_info = vk::SwapchainPresentFenceInfoEXT::default().fences(&present_fences);
-
   			let present_info = vk::PresentInfoKHR::default()
-     			.push_next(&mut present_fence_info)
 				.results(&mut results)
 				.swapchains(&swapchains)
 				.wait_semaphores(&wait_semaphores)
@@ -1338,8 +1366,6 @@ impl graphics_hardware_interface::BoundRasterizationPipelineMode for CommandBuff
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
-		self.stages |= vk::PipelineStageFlags2::MESH_SHADER_EXT;
-
 		unsafe {
 			self.ghi.mesh_shading.cmd_draw_mesh_tasks(command_buffer_handle, x, y, z);
 		}
@@ -1364,8 +1390,6 @@ impl graphics_hardware_interface::BoundComputePipelineMode for CommandBufferReco
 
 		self.consume_resources_current(&[]);
 
-		self.stages |= vk::PipelineStageFlags2::COMPUTE_SHADER;
-
 		unsafe {
 			self.ghi.device.cmd_dispatch(command_buffer_handle, x, y, z);
 		}
@@ -1376,8 +1400,6 @@ impl graphics_hardware_interface::BoundComputePipelineMode for CommandBufferReco
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
-
-		self.stages |= vk::PipelineStageFlags2::COMPUTE_SHADER;
 
 		self.consume_resources_current(&[
 			graphics_hardware_interface::Consumption{

@@ -19,7 +19,7 @@ resource-management = { path = "../resource-management" }
 windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-xcb = { version = "1.5.0", features=['xtest'] }
+xcb = { version = "1.6.0", features=['xtest'] }
 wayland-client = "0.31.8"
 wayland-protocols = { version = "0.32.6", features = ['client', 'unstable'] }
 wayland-backend = { version = "0.3.8", features = ["client_system"] }

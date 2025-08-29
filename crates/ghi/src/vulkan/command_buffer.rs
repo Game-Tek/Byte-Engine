@@ -17,10 +17,11 @@ pub struct CommandBufferRecording<'a> {
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 
 	buffer_copies: Vec<BufferCopy>,
+	image_copies: Vec<ImageCopy>,
 }
 
 impl CommandBufferRecording<'_> {
-	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, buffer_copies: Vec<BufferCopy>, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
+	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, buffer_copies: Vec<BufferCopy>, image_copies: Vec<ImageCopy>, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
 		CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
@@ -32,6 +33,7 @@ impl CommandBufferRecording<'_> {
 			bound_descriptor_set_handles: Vec::new(),
 
 			buffer_copies,
+			image_copies,
 
 			ghi,
 		}
@@ -364,18 +366,11 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 	}
 
 	fn sync_textures(&mut self,) {
-		let image_handles = {
-			let mut dirty_images = self.ghi.image_writes_queue.lock();
+		let copy_textures = self.image_copies.drain(..).collect::<Vec<_>>();
 
-			dirty_images.retain(|_, v| *v < self.ghi.frames as u32);
-			dirty_images.iter_mut().for_each(|(_, f)| *f += 1);
-
-			dirty_images.keys().map(|&b| self.get_internal_image_handle(b)).filter(|b| { let b = self.get_image(*b); b.staging_buffer.is_some() && b.size != 0 }).collect::<Vec<_>>()
-		};
-
-		unsafe { self.vulkan_consume_resources(&image_handles.iter().map(|image_handle|
+		unsafe { self.vulkan_consume_resources(&copy_textures.iter().map(|e|
 			VulkanConsumption {
-				handle: Handle::Image(*image_handle),
+				handle: Handle::Image(e.dst_texture),
 				stages: vk::PipelineStageFlags2::TRANSFER,
 				access: vk::AccessFlags2::TRANSFER_WRITE,
 				layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -384,8 +379,8 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 		let command_buffer = self.get_command_buffer();
 
-		for image_handle in &image_handles {
-			let image = self.get_image(*image_handle);
+		for copy_texture in &copy_textures {
+			let image = self.get_image(copy_texture.dst_texture);
 
 			let regions = [vk::BufferImageCopy2::default()
 				.buffer_offset(0)
@@ -413,16 +408,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				self.ghi.device.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
 			}
 		}
-
-		// TODO: bad. remove this.
-		unsafe { self.vulkan_consume_resources(&image_handles.iter().map(|image_handle|
-			VulkanConsumption {
-				handle: Handle::Image(*image_handle),
-				stages: vk::PipelineStageFlags2::FRAGMENT_SHADER,
-				access: vk::AccessFlags2::SHADER_SAMPLED_READ,
-				layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-			}
-		).collect::<Vec<_>>()) };
 	}
 
 	fn transfer_textures(&mut self, image_handles: &[graphics_hardware_interface::ImageHandle]) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
@@ -1146,24 +1131,24 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			// }
 			//
 
-			let barriers = [
-				vk::MemoryBarrier2::default()
-					.src_access_mask(vk::AccessFlags2::NONE)
-					.src_stage_mask(vk::PipelineStageFlags2::COPY)
-					.dst_access_mask(vk::AccessFlags2::NONE)
-					.dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
-			];
+			// let barriers = [
+			// 	vk::MemoryBarrier2::default()
+			// 		.src_access_mask(vk::AccessFlags2::NONE)
+			// 		.src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+			// 		.dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+			// 		.dst_stage_mask(vk::PipelineStageFlags2::COPY)
+			// ];
 
-			let dependency_info = vk::DependencyInfo::default()
-				.dependency_flags(vk::DependencyFlags::BY_REGION)
-				.memory_barriers(&barriers)
-			;
+			// let dependency_info = vk::DependencyInfo::default()
+			// 	.dependency_flags(vk::DependencyFlags::BY_REGION)
+			// 	.memory_barriers(&barriers)
+			// ;
 
-			let command_buffer = self.get_command_buffer();
+			// let command_buffer = self.get_command_buffer();
 
-			unsafe {
-				self.ghi.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
-			}
+			// unsafe {
+			// 	self.ghi.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
+			// }
 		}
 
 		self.end();
@@ -1187,7 +1172,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
-					.stage_mask(swapchain.sync_stage)
+					.stage_mask(swapchain.sync_stage | vk::PipelineStageFlags2::COPY)
 			})
 		).collect::<Vec<_>>();
 
@@ -1211,7 +1196,9 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 		let execution_completion_synchronizer = &self.get_synchronizer(execution_synchronizer_handle);
 
-		unsafe { self.ghi.device.queue_submit2(self.ghi.queue, &[submit_info], execution_completion_synchronizer.fence).expect("Failed to submit command buffer."); }
+		let vk_queue = command_buffer.vk_queue;
+
+		unsafe { self.ghi.device.queue_submit2(vk_queue, &[submit_info], execution_completion_synchronizer.fence).expect("Failed to submit command buffer."); }
 
 		for (&k, v) in &self.states {
 			self.ghi.states.insert(k, *v);
@@ -1240,7 +1227,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				.image_indices(&image_indices)
 			;
 
-			let _ = unsafe { self.ghi.swapchain.queue_present(self.ghi.queue, &present_info).expect("No present") };
+			let _ = unsafe { self.ghi.swapchain.queue_present(vk_queue, &present_info).expect("No present") };
 
 			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
 				dbg!("Some error occurred during presentation");
@@ -1457,6 +1444,26 @@ impl BufferCopy {
 			src_buffer,
 			src_offset,
 			dst_buffer,
+			dst_offset,
+			size,
+		}
+	}
+}
+
+pub(crate) struct ImageCopy {
+	pub src_texture: ImageHandle,
+	pub src_offset: vk::DeviceSize,
+	pub dst_texture: ImageHandle,
+	pub dst_offset: vk::DeviceSize,
+	pub size: usize,
+}
+
+impl ImageCopy {
+	pub fn new(src_texture: ImageHandle, src_offset: vk::DeviceSize, dst_texture: ImageHandle, dst_offset: vk::DeviceSize, size: usize) -> Self {
+		Self {
+			src_texture,
+			src_offset,
+			dst_texture,
 			dst_offset,
 			size,
 		}

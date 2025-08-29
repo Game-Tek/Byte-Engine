@@ -61,6 +61,9 @@ bitflags::bitflags! {
 
 // HANDLES
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct QueueHandle(pub(crate) u64);
+
 /// The `BaseBufferHandle` allows addressing any static buffer irregardless of it's underlying type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 pub struct BaseBufferHandle(pub(super) u64);
@@ -579,7 +582,7 @@ pub trait Device where Self: Sized {
 
 	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle;
 
-	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
+	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle;
 
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording;
 
@@ -1494,6 +1497,18 @@ pub enum AccelerationStructureTypes {
 	},
 }
 
+pub struct QueueSelection {
+	pub(crate) r#type: CommandBufferType,
+}
+
+impl QueueSelection {
+	pub fn new(r#type: CommandBufferType) -> Self {
+		Self {
+			r#type,
+		}
+	}
+}
+
 #[cfg(test)]
 pub(super) mod tests {
 	use std::borrow::Borrow;
@@ -1611,7 +1626,7 @@ pub(super) mod tests {
 		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
 	}
 
-	pub(crate) fn render_triangle(device: &mut impl Device) {
+	pub(crate) fn render_triangle(device: &mut impl Device, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, false);
 
 		let floats: [f32;21] = [
@@ -1649,7 +1664,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = device.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
 		device.start_frame_capture();
 
@@ -1683,7 +1698,7 @@ pub(super) mod tests {
 		check_triangle(pixels, extent);
 	}
 
-	pub(crate) fn present(renderer: &mut impl Device) {
+	pub(crate) fn present(renderer: &mut impl Device, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
@@ -1725,7 +1740,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = renderer.create_command_buffer(None);
+		let command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
@@ -1764,7 +1779,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_present(renderer: &mut impl Device) {
+	pub(crate) fn multiframe_present(renderer: &mut impl Device, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1806,7 +1821,7 @@ pub(super) mod tests {
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = renderer.create_command_buffer(None);
+		let command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
@@ -1841,7 +1856,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn multiframe_rendering(device: &mut impl Device) {
+	pub(crate) fn multiframe_rendering(device: &mut impl Device, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1885,7 +1900,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = device.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
@@ -1924,7 +1939,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn change_frames(device: &mut impl Device) {
+	pub(crate) fn change_frames(device: &mut impl Device, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while changing the amount of frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1964,7 +1979,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = device.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
@@ -2007,7 +2022,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn resize(device: &mut impl Device) {
+	pub(crate) fn resize(device: &mut impl Device, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while resize the render targets.
 
 		const FRAMES_IN_FLIGHT: usize = 3;
@@ -2046,7 +2061,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = device.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
@@ -2092,7 +2107,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn dynamic_data(device: &mut impl Device) {
+	pub(crate) fn dynamic_data(device: &mut impl Device, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -2135,7 +2150,7 @@ pub(super) mod tests {
 
 		let _buffer = device.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
 
-		let command_buffer_handle = device.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
@@ -2204,7 +2219,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors())
 	}
 
-	pub(crate) fn multiframe_resources(device: &mut impl Device) { // TODO: test multiframe resources for combined image samplers
+	pub(crate) fn multiframe_resources(device: &mut impl Device, queue_handle: QueueHandle) { // TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
 			#pragma shader_stage(compute)
@@ -2243,7 +2258,7 @@ pub(super) mod tests {
 		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
 		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
 
-		let command_buffer = device.create_command_buffer(None);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
 
 		let signal = device.create_synchronizer(None, true);
 
@@ -2326,7 +2341,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	pub(crate) fn descriptor_sets(device: &mut impl Device) {
+	pub(crate) fn descriptor_sets(device: &mut impl Device, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, true);
 
 		let floats: [f32;21] = [
@@ -2427,7 +2442,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let command_buffer_handle = device.create_command_buffer(None);
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
 		device.start_frame_capture();
 
@@ -2467,7 +2482,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	pub(crate) fn ray_tracing(renderer: &mut impl Device) {
+	pub(crate) fn ray_tracing(renderer: &mut impl Device, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -2629,7 +2644,7 @@ void main() {
 			&[ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen,), ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit,), ShaderParameter::new(&miss_shader, ShaderTypes::Miss,)],
 		);
 
-		let rendering_command_buffer_handle = renderer.create_command_buffer(None);
+		let rendering_command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 

@@ -6,6 +6,7 @@ use ::utils::hash::HashMap;
 use crate::graphics_hardware_interface;
 use crate::vulkan::sampler::SamplerHandle;
 
+pub mod queue;
 pub mod command_buffer;
 pub mod instance;
 pub mod device;
@@ -209,6 +210,7 @@ pub(crate) struct Pipeline {
 
 #[derive(Clone, Copy)]
 pub(super) struct CommandBufferInternal {
+	vk_queue: vk::Queue,
 	command_pool: vk::CommandPool,
 	command_buffer: vk::CommandBuffer,
 }
@@ -232,6 +234,7 @@ impl Next for Binding {
 
 #[derive(Clone)]
 pub(crate) struct CommandBuffer {
+	queue_handle: graphics_hardware_interface::QueueHandle,
 	frames: Vec<CommandBufferInternal>,
 }
 
@@ -468,86 +471,78 @@ pub(crate) trait Next where Self: Sized {
 mod tests {
 	use super::*;
 
+	fn create_default_device_setup() -> (Device, graphics_hardware_interface::QueueHandle) {
+		let features = graphics_hardware_interface::Features::new().validation(true);
+		create_default_device_setup_with_features(features)
+	}
+
+	fn create_default_device_setup_with_features(features: graphics_hardware_interface::Features) -> (Device, graphics_hardware_interface::QueueHandle) {
+		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
+		let mut queue_handle = None;
+		let device = instance.create_device(features.clone(), &mut [(graphics_hardware_interface::QueueSelection::new(graphics_hardware_interface::CommandBufferType::GRAPHICS), &mut queue_handle)]).expect("Failed to create VulkanGHI.");
+		(device, queue_handle.unwrap())
+	}
+
 	#[test]
 	fn render_triangle() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::render_triangle(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[ignore = "test is broken because of WSI"]
 	fn render_present() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::present(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::present(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[ignore = "test is broken because of WSI"]
 	fn render_multiframe_present() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::multiframe_present(&mut device); // BUG: can see graphical artifacts, most likely synchronization issue
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::multiframe_present(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_multiframe() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::multiframe_rendering(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_change_frames() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::change_frames(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_resize() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::resize(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::resize(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_dynamic_data() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::dynamic_data(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_with_descriptor_sets() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::descriptor_sets(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_with_multiframe_resources() {
-		let features = graphics_hardware_interface::Features::new().validation(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::multiframe_resources(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[ignore = "not working on supporting rt right now"]
 	fn render_with_ray_tracing() {
-		let features = graphics_hardware_interface::Features::new().validation(true).ray_tracing(true);
-		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
-		let mut device = instance.create_device(features.clone()).expect("Failed to create VulkanGHI.");
-		graphics_hardware_interface::tests::ray_tracing(&mut device);
+		let (mut device, queue_handle) = create_default_device_setup_with_features(graphics_hardware_interface::Features::new().validation(true).ray_tracing(true));
+		graphics_hardware_interface::tests::ray_tracing(&mut device, queue_handle);
 	}
 }

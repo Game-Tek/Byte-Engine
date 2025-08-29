@@ -53,7 +53,11 @@ impl Renderer {
 
 		let mut instance = ghi::Instance::new(features.clone()).unwrap();
 
-		let device = Arc::new(RwLock::new(instance.create_device(features.clone()).unwrap()));
+		let mut queue_handle = None;
+
+		let device = Arc::new(RwLock::new(instance.create_device(features.clone(), &mut [(ghi::QueueSelection::new(ghi::CommandBufferType::GRAPHICS), &mut queue_handle)]).unwrap()));
+
+		let queue_handle = queue_handle.unwrap();
 
 		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
@@ -97,7 +101,7 @@ impl Renderer {
 			targets.insert("depth".to_string(), depth);
 			targets.insert("result".to_string(), result);
 
-			render_command_buffer = ghi.create_command_buffer(Some("Render"));
+			render_command_buffer = ghi.create_command_buffer(Some("Render"), queue_handle);
 			render_finished_synchronizer = ghi.create_synchronizer(Some("Render Finisished"), true);
 		};
 
@@ -219,7 +223,7 @@ impl Renderer {
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
 		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
-        execute(&mut command_buffer_recording);
+        // execute(&mut command_buffer_recording);
 
 		let result = self.targets.get("result").unwrap();
 

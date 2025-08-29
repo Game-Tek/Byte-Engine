@@ -159,9 +159,6 @@ pub struct VisibilityWorldRenderDomain {
 
 	occlusion_map: ghi::ImageHandle,
 
-	transfer_synchronizer: ghi::SynchronizerHandle,
-	transfer_command_buffer: ghi::CommandBufferHandle,
-
 	// Visibility
 
 	pipeline_layout_handle: ghi::PipelineLayoutHandle,
@@ -364,9 +361,6 @@ impl VisibilityWorldRenderDomain {
 
 		let material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 + 4 }]);
 
-		let transfer_synchronizer = ghi_instance.create_synchronizer(Some("Transfer Synchronizer"), false);
-		let transfer_command_buffer = ghi_instance.create_command_buffer(Some("Transfer"));
-
 		drop(ghi_instance);
 
 		Self {
@@ -398,9 +392,6 @@ impl VisibilityWorldRenderDomain {
 			material_evaluation_materials: RwLock::new(HashMap::new()),
 
 			occlusion_map,
-
-			transfer_synchronizer,
-			transfer_command_buffer,
 
 			// Visibility
 
@@ -1020,10 +1011,6 @@ impl VisibilityWorldRenderDomain {
 		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
 
 		meshes_data_slice[0].model = value;
-	}
-
-	pub fn get_transfer_synchronizer(&self) -> ghi::SynchronizerHandle {
-		self.transfer_synchronizer
 	}
 }
 

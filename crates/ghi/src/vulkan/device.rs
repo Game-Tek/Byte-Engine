@@ -1,9 +1,9 @@
-use std::{borrow::Cow, collections::VecDeque, ops::Deref};
+use std::{borrow::Cow, collections::VecDeque};
 
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{sampler::SamplerHandle, BufferCopy, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageHandle, Next, Task, Tasks}, window, CommandBufferRecording, FrameKey, Instance, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -14,8 +14,6 @@ pub struct Device {
 
 	physical_device: vk::PhysicalDevice,
 	pub(super) device: ash::Device,
-	queue_family_index: u32,
-	pub(super) queue: vk::Queue,
 	pub(super) swapchain: ash::khr::swapchain::Device,
 	surface: ash::khr::surface::Instance,
 	pub(super) acceleration_structure: ash::khr::acceleration_structure::Device,
@@ -33,6 +31,7 @@ pub struct Device {
 
 	pub(super) frames: u8,
 
+	pub(super) queues: Vec<Queue>,
 	pub(super) buffers: Vec<Buffer>,
 	pub(super) images: Vec<Image>,
 	pub(super) allocations: Vec<Allocation>,
@@ -57,12 +56,11 @@ pub struct Device {
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 
-	pub(super) buffer_writes_queue: Mutex<HashMap<graphics_hardware_interface::BaseBufferHandle, (u32, vk::PipelineStageFlags2)>>,
-	pub(super) image_writes_queue: Mutex<HashMap<graphics_hardware_interface::ImageHandle, u32>>,
-
 	/// Tracks pending buffer synchronization operations.
 	/// Buffer handle, pipeline stage
 	pub(super) pending_buffer_syncs: Mutex<VecDeque<BufferHandle>>,
+	pub(super) pending_image_syncs: Mutex<VecDeque<ImageHandle>>,
+
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
 
 	#[cfg(debug_assertions)]
@@ -77,7 +75,7 @@ unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
 impl Device {
-	pub fn new(settings: graphics_hardware_interface::Features, instance: &Instance) -> Result<Device, &'static str> {
+	pub fn new(settings: graphics_hardware_interface::Features, instance: &Instance, queues: &mut [(graphics_hardware_interface::QueueSelection, &mut Option<graphics_hardware_interface::QueueHandle>)]) -> Result<Device, &'static str> {
 		let vk_entry = &instance.entry;
 		let vk_instance = &instance.instance;
 
@@ -240,22 +238,36 @@ impl Device {
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
-		let queue_family_index = queue_family_properties
-			.iter()
-			.enumerate()
-			.find_map(|(index, info)| {
-				let supports_graphics = info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-				let supports_compute = info.queue_flags.contains(vk::QueueFlags::COMPUTE);
-				let supports_transfer = info.queue_flags.contains(vk::QueueFlags::TRANSFER);
+		let queue_create_infos = queues.iter().map(|(d, _)| {
+			let mut queue_family_index = queue_family_properties
+				.iter()
+				.enumerate()
+				.filter_map(|(index, info)| {
+					let mask = match d.r#type {
+						graphics_hardware_interface::CommandBufferType::COMPUTE => vk::QueueFlags::COMPUTE,
+						graphics_hardware_interface::CommandBufferType::GRAPHICS => vk::QueueFlags::GRAPHICS,
+						graphics_hardware_interface::CommandBufferType::TRANSFER => vk::QueueFlags::TRANSFER,
+					};
 
-				if supports_graphics && supports_compute && supports_transfer {
-					Some(index as u32)
-				} else {
-					None
-				}
-			})
-			.expect("No queue family index found.")
-		;
+					if info.queue_flags.contains(mask) {
+						Some((index as u32, info.queue_flags.as_raw().count_ones()))
+					} else {
+						None
+					}
+				})
+				.collect::<Vec<_>>()
+			;
+
+			queue_family_index.sort_by(|(_, a_bit_count), (_, b_bit_count)| {
+				a_bit_count.cmp(b_bit_count)
+			});
+
+			let least_bits_queue_family_index = queue_family_index.first().unwrap().0;
+
+			vk::DeviceQueueCreateInfo::default()
+				.queue_family_index(least_bits_queue_family_index)
+				.queue_priorities(&[1.0])
+		}).collect::<Vec<_>>();
 
 		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
 
@@ -277,11 +289,6 @@ impl Device {
 			device_extension_names.push(ash::khr::ray_tracing_pipeline::NAME.as_ptr());
 			device_extension_names.push(ash::khr::ray_tracing_maintenance1::NAME.as_ptr());
 		}
-
-		let queue_create_infos = [vk::DeviceQueueCreateInfo::default()
-			.queue_family_index(queue_family_index)
-			.queue_priorities(&[1.0])
-		];
 
 		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) = if settings.ray_tracing {
 			let physical_device_acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
@@ -345,7 +352,17 @@ impl Device {
 			})?
 		};
 
-		let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+		let queues = queues.iter_mut().zip(queue_create_infos.iter()).enumerate().map(|(index, ((_, queue_handle), create_info))| {
+			let vk_queue = unsafe { device.get_device_queue(create_info.queue_family_index, 0) };
+
+			**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
+
+			Queue {
+				queue_family_index: create_info.queue_family_index,
+				queue_index: 0,
+				vk_queue,
+			}
+		}).collect::<Vec<_>>();
 
 		let acceleration_structure = ash::khr::acceleration_structure::Device::new(&vk_instance, &device);
 		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::new(&vk_instance, &device);
@@ -375,8 +392,6 @@ impl Device {
 
 			physical_device,
 			device,
-			queue_family_index,
-			queue,
 			swapchain,
 			surface,
 			acceleration_structure,
@@ -388,6 +403,7 @@ impl Device {
 
 			frames: 2, // Assuming double buffering
 
+			queues,
 			allocations: Vec::new(),
 			buffers: Vec::with_capacity(1024),
 			images: Vec::with_capacity(512),
@@ -411,10 +427,8 @@ impl Device {
 
 			states: HashMap::with_capacity(4096),
 
-			buffer_writes_queue: Mutex::new(HashMap::with_capacity(128)),
-			image_writes_queue: Mutex::new(HashMap::with_capacity(128)),
-
 			pending_buffer_syncs: Mutex::new(VecDeque::with_capacity(128)),
+			pending_image_syncs: Mutex::new(VecDeque::with_capacity(128)),
 
 			tasks: VecDeque::with_capacity(128),
 
@@ -1457,7 +1471,8 @@ impl graphics_hardware_interface::Device for Device {
 			}
 
 			for command_buffer in &mut self.command_buffers {
-				let command_pool_create_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family_index);
+				let queue = &self.queues[command_buffer.queue_handle.0 as usize];
+				let command_pool_create_info = vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
 				let command_pool = unsafe { self.device.create_command_pool(&command_pool_create_info, None).expect("No command pool") };
 
@@ -1473,7 +1488,7 @@ impl graphics_hardware_interface::Device for Device {
 
 				// self.set_name(vk_command_buffer, name);
 
-				command_buffer.frames.push(CommandBufferInternal { command_pool, command_buffer: vk_command_buffer, });
+				command_buffer.frames.push(CommandBufferInternal { vk_queue: queue.vk_queue, command_pool, command_buffer: vk_command_buffer, });
 			}
 
 		} else {
@@ -1739,18 +1754,7 @@ impl graphics_hardware_interface::Device for Device {
 
 			match descriptor_set_write.descriptor {
 				graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
-					let buffer_handles = {
-						let mut buffer_handles = Vec::with_capacity(3);
-						let mut buffer_handle_option = Some(BufferHandle(handle.0));
-
-						while let Some(buffer_handle) = buffer_handle_option {
-							buffer_handles.push(buffer_handle);
-							let buffer = &self.buffers[buffer_handle.0 as usize];
-							buffer_handle_option = buffer.next;
-						}
-
-						buffer_handles
-					};
+					let buffer_handles = BufferHandle(handle.0).get_all(&self.buffers);
 
 					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
@@ -1765,19 +1769,7 @@ impl graphics_hardware_interface::Device for Device {
 					Some(writes)
 				},
 				graphics_hardware_interface::Descriptor::Image{ handle, layout } => {
-					let image_handles = {
-						let mut image_handles = Vec::with_capacity(3);
-						let mut image_handle_option = Some(ImageHandle(handle.0));
-
-						while let Some(image_handle) = image_handle_option {
-							image_handles.push(image_handle);
-							let image = &self.images[image_handle.0 as usize];
-							image_handle_option = image.next;
-						}
-
-						image_handles
-					};
-
+					let image_handles = ImageHandle(handle.0).get_all(&self.images);
 					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
 					for (i, &binding_handle) in binding_handles.iter().enumerate() {
@@ -1791,19 +1783,7 @@ impl graphics_hardware_interface::Device for Device {
 					Some(writes)
 				},
 				graphics_hardware_interface::Descriptor::CombinedImageSampler{ image_handle, sampler_handle, layout, layer } => {
-					let image_handles = {
-						let mut image_handles = Vec::with_capacity(3);
-						let mut image_handle_option = Some(ImageHandle(image_handle.0));
-
-						while let Some(image_handle) = image_handle_option {
-							image_handles.push(image_handle);
-							let image = &self.images[image_handle.0 as usize];
-							image_handle_option = image.next;
-						}
-
-						image_handles
-					};
-
+					let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
 					let sampler_handle = SamplerHandle(sampler_handle.0);
 
 					let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -2041,13 +2021,15 @@ impl graphics_hardware_interface::Device for Device {
 		handle
 	}
 
-	fn create_command_buffer(&mut self, name: Option<&str>) -> graphics_hardware_interface::CommandBufferHandle {
+	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: graphics_hardware_interface::QueueHandle) -> graphics_hardware_interface::CommandBufferHandle {
 		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
+
+		let queue = &self.queues[queue_handle.0 as usize];
 
 		let command_buffers = (0..self.frames).map(|_| {
 			let _ = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
-			let command_pool_create_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family_index);
+			let command_pool_create_info = vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
 			let command_pool = unsafe { self.device.create_command_pool(&command_pool_create_info, None).expect("No command pool") };
 
@@ -2063,10 +2045,11 @@ impl graphics_hardware_interface::Device for Device {
 
 			self.set_name(command_buffer, name);
 
-			CommandBufferInternal { command_pool, command_buffer, }
+			CommandBufferInternal { vk_queue: queue.vk_queue, command_pool, command_buffer, }
 		}).collect::<Vec<_>>();
 
 		self.command_buffers.push(CommandBuffer {
+			queue_handle,
 			frames: command_buffers,
 		});
 
@@ -2081,7 +2064,7 @@ impl graphics_hardware_interface::Device for Device {
 		let buffer_copies = pending_buffers.drain(..).map(|e| {
 			let dst_buffer_handle = e;
 
-			let dst_buffer = self.buffers[dst_buffer_handle.0 as usize];
+			let dst_buffer = &self.buffers[dst_buffer_handle.0 as usize];
 
 			let src_buffer_handle = dst_buffer.staging.unwrap();
 
@@ -2090,9 +2073,21 @@ impl graphics_hardware_interface::Device for Device {
 
 		drop(pending_buffers);
 
+		let mut pending_images = self.pending_image_syncs.lock();
+
+		let image_copies = pending_images.drain(..).map(|e| {
+			let dst_image_handle = e;
+
+			let dst_image = &self.images[dst_image_handle.0 as usize];
+
+			ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
+		}).collect();
+
+		drop(pending_images);
+
 		self.process_tasks(frame_key.map(|e| e.sequence_index).unwrap_or(0));
 
-		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, buffer_copies, frame_key);
+		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, buffer_copies, image_copies, frame_key);
 
 		recording.begin();
 
@@ -2193,17 +2188,14 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: crate::DynamicBufferHandle<T>, frame_key: FrameKey) -> &'a mut T {
-		let mut handle = BufferHandle(buffer_handle.0);
+		let handles = BufferHandle(buffer_handle.0).get_all(&self.buffers);
 
-		for _ in 0..frame_key.sequence_index {
-			let buffer = self.buffers[handle.0 as usize];
-			handle = buffer.next.unwrap();
-		}
+		let handle = handles[frame_key.sequence_index as usize];
 
 		self.pending_buffer_syncs.lock().push_back(handle);
 
-		let buffer = self.buffers[handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+		let buffer = handle.access(&self.buffers);
+		let buffer = buffer.staging.unwrap().access(&self.buffers);
 
 		unsafe {
 			std::mem::transmute(buffer.pointer)
@@ -2219,9 +2211,13 @@ impl graphics_hardware_interface::Device for Device {
 		}
 	}
 
-	fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let texture = &self.images[texture_handle.0 as usize];
-		let buffer = &self.buffers[texture.staging_buffer.unwrap().0 as usize];
+	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
+		let handles = ImageHandle(image_handle.0).get_all(&self.images);
+
+		let handle = handles[0];
+
+		let texture = handle.access(&self.images);
+		let buffer = texture.staging_buffer.unwrap().access(&self.buffers);
 
 		let slice = unsafe {
 			std::slice::from_raw_parts_mut(buffer.pointer, texture.size)
@@ -2229,9 +2225,7 @@ impl graphics_hardware_interface::Device for Device {
 
 		f(slice);
 
-		let mut texture_writes = self.image_writes_queue.lock();
-		let mut entry = texture_writes.entry(texture_handle.into()).insert_entry(0);
-		*entry.get_mut() = 0;
+		self.pending_image_syncs.lock().push_back(handle);
 	}
 
 	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases, array_layers: u32) -> graphics_hardware_interface::ImageHandle {
@@ -2497,11 +2491,6 @@ impl graphics_hardware_interface::Device for Device {
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: graphics_hardware_interface::PipelineHandle, shader_handle: graphics_hardware_interface::ShaderHandle) {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
 		let shader_handles = pipeline.shader_handles.clone();
-
-		let mut buffer_writes = self.buffer_writes_queue.lock();
-		let mut entry = buffer_writes.entry(sbt_buffer_handle.into()).insert_entry((0, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR));
-
-		entry.get_mut().0 = 0;
 
 		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];

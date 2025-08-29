@@ -146,8 +146,8 @@ impl Instance {
 		})
 	}
 
-	pub fn create_device(&mut self, settings: graphics_hardware_interface::Features) -> Result<crate::vulkan::Device, &'static str> {
-		crate::vulkan::Device::new(settings, &self)
+	pub fn create_device(&mut self, settings: graphics_hardware_interface::Features, queues: &mut [(graphics_hardware_interface::QueueSelection, &mut Option<graphics_hardware_interface::QueueHandle>)]) -> Result<crate::vulkan::Device, &'static str> {
+		crate::vulkan::Device::new(settings, &self, queues)
 	}
 }
 

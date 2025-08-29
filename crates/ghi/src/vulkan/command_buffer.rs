@@ -1172,7 +1172,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
-					.stage_mask(swapchain.sync_stage | vk::PipelineStageFlags2::COPY)
+					.stage_mask(swapchain.sync_stage)
 			})
 		).collect::<Vec<_>>();
 

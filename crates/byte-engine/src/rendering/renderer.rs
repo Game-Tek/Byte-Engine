@@ -223,7 +223,7 @@ impl Renderer {
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
 		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
-        // execute(&mut command_buffer_recording);
+        execute(&mut command_buffer_recording);
 
 		let result = self.targets.get("result").unwrap();
 

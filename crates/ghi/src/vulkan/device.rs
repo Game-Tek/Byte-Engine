@@ -1102,8 +1102,6 @@ impl Device {
 
 		let mut buffers: StableVec<vk::DescriptorBufferInfo, 1024> = StableVec::new();
 		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
-		let mut acceleration_structures: StableVec<vk::AccelerationStructureKHR, 1024> = StableVec::new();
-		let mut acceleration_structures_writes: StableVec<vk::WriteDescriptorSetAccelerationStructureKHR, 1024> = StableVec::new();
 
 		let writes = writes.iter().filter_map(|descriptor_set_write| {
 			let binding_handle = descriptor_set_write.binding;
@@ -1248,7 +1246,7 @@ impl Device {
 			}
 
 			// Helps debug issues related to use after delete cases.
-			let disable_deletions = true;
+			let disable_deletions = false;
 
 			match e.task() {
 				Tasks::DeleteVulkanImage { handle, } => {
@@ -1763,7 +1761,7 @@ impl graphics_hardware_interface::Device for Device {
 
 						let buffer_handle = buffer_handles[((i as i32 - offset) % buffer_handles.len() as i32) as usize];
 
-						writes.push(DescriptorWrite::new(Descriptors::Buffer { handle: buffer_handle, size: size }, binding_handle));
+						writes.push(DescriptorWrite::new(Descriptors::Buffer { handle: buffer_handle, size: size }, binding_handle).index(descriptor_set_write.array_element));
 					}
 
 					Some(writes)
@@ -1777,7 +1775,7 @@ impl graphics_hardware_interface::Device for Device {
 
 						let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
 
-						writes.push(DescriptorWrite::new(Descriptors::Image { handle: image_handle, layout }, binding_handle));
+						writes.push(DescriptorWrite::new(Descriptors::Image { handle: image_handle, layout }, binding_handle).index(descriptor_set_write.array_element));
 					}
 
 					Some(writes)
@@ -1793,7 +1791,7 @@ impl graphics_hardware_interface::Device for Device {
 
 						let image_handle = image_handles[((i as i32 - offset) % image_handles.len() as i32) as usize];
 
-						writes.push(DescriptorWrite::new(Descriptors::CombinedImageSampler { image_handle, layout, sampler_handle, layer }, binding_handle));
+						writes.push(DescriptorWrite::new(Descriptors::CombinedImageSampler { image_handle, layout, sampler_handle, layer }, binding_handle).index(descriptor_set_write.array_element));
 					}
 
 					Some(writes)
@@ -1804,8 +1802,7 @@ impl graphics_hardware_interface::Device for Device {
 					let sampler_handle = SamplerHandle(handle.0);
 
 					for (_, &binding_handle) in binding_handles.iter().enumerate() {
-
-						writes.push(DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle));
+						writes.push(DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle).index(descriptor_set_write.array_element));
 					}
 
 					Some(writes)

@@ -10,8 +10,5 @@ utils = { path = "../utils" }
 resource-management = { path = "../resource-management" }
 
 clap = { version = "4.5.32", features = ["derive"] }
-futures = "0.3.31"
-tokio = { version = "1.44.1", features = ["rt-multi-thread"] }
-tokio-stream = "0.1.17"
 simple_logger = "5.0.0"
 log = "0.4.26"

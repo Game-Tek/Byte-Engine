@@ -1119,17 +1119,17 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		// Transition all resources which where written to but not consumed by any previous command
 		// If this is skipped validation layers (correctly) complain about missing sync even no "read" operation was performed, except for the following commands
 		{
-			// let consumptions = self.states.iter().filter_map(|(handle, ts)| {
-			// 	match ts.access {
-			// 		vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption { access: graphics_hardware_interface::AccessPolicies::NONE, layout: graphics_hardware_interface::Layouts::Undefined, stages: graphics_hardware_interface::Stages::LAST, handle: *handle }),
-			// 		_ => None
-			// 	}
-			// }).collect::<Vec<_>>();
+			let consumptions = self.states.iter().filter_map(|(handle, ts)| {
+				match ts.access {
+					vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption { access: graphics_hardware_interface::AccessPolicies::NONE, layout: graphics_hardware_interface::Layouts::Undefined, stages: graphics_hardware_interface::Stages::TRANSFER, handle: *handle }),
+					_ => None
+				}
+			}).collect::<Vec<_>>();
 
-			// unsafe {
-			// 	self.consume_resources(&consumptions);
-			// }
-			//
+			unsafe {
+				self.consume_resources(&consumptions);
+			}
+
 
 			// let barriers = [
 			// 	vk::MemoryBarrier2::default()

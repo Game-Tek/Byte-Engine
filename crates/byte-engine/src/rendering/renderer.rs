@@ -2,7 +2,7 @@ use std::{
     borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
-use ghi::{graphics_hardware_interface::Device as _, raster_pipeline, BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
+use ghi::{graphics_hardware_interface::Device as _, raster_pipeline, vulkan::command_buffer, BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
 use resource_management::resource::resource_manager::ResourceManager;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
@@ -34,7 +34,7 @@ pub struct Renderer {
 
 	targets: HashMap<String, ghi::ImageHandle>,
 
-    root_render_pass: RootRenderPass,
+    root_render_pass: RwLock<RootRenderPass>,
 
     extent: Extent,
 }
@@ -131,13 +131,13 @@ impl Renderer {
 
 			targets,
 
-			root_render_pass,
+			root_render_pass: RwLock::new(root_render_pass),
 
 			extent,
 		}
     }
 
-	pub fn add_render_pass<T: RenderPass + Entity + Send + Sync + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
+	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
 		let read_attachments = T::get_read_attachments();
 
 		if !read_attachments.iter().all(|a| self.targets.contains_key(*a)) {
@@ -146,9 +146,11 @@ impl Renderer {
 
 		let mut render_pass_builder = RenderPassBuilder::new(self.device.clone());
 
-		let main_image = self.root_render_pass.images.get("main").unwrap().clone();
-		let depth_image = self.root_render_pass.images.get("depth").unwrap().clone();
-		let result_image = self.root_render_pass.images.get("result").unwrap().clone();
+		let mut root_render_pass = self.root_render_pass.write();
+
+		let main_image = root_render_pass.images.get("main").unwrap().clone();
+		let depth_image = root_render_pass.images.get("depth").unwrap().clone();
+		let result_image = root_render_pass.images.get("result").unwrap().clone();
 
 		render_pass_builder.images.insert("main".to_string(), (main_image.0, main_image.1, 0));
 		render_pass_builder.images.insert("depth".to_string(), (depth_image.0, depth_image.1, 0));
@@ -156,7 +158,7 @@ impl Renderer {
 
 		let render_pass = creator(&mut render_pass_builder,);
 
-		self.root_render_pass.add_render_pass(render_pass, render_pass_builder);
+		root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
 	/// This function prepares a frame by invoking multiple render passes.
@@ -201,22 +203,63 @@ impl Renderer {
 
         let mut ghi = self.device.write();
 
-		let execute = self.root_render_pass.prepare(&mut ghi, extent, frame_key);
+		let execute = self.root_render_pass.write().prepare(&mut ghi, extent, frame_key);
 
-		RenderMessage::new(swapchain_handle, frame_key, present_key, execute).into()
+		let result = self.targets.get("result").unwrap();
+
+		drop(ghi);
+
+		RenderMessage::new(self.device.clone(), self.render_command_buffer, self.render_finished_synchronizer, *result, swapchain_handle, frame_key, present_key, execute).into()
+    }
+}
+
+pub struct RenderMessage {
+	device: Arc<RwLock<ghi::Device>>,
+	command_buffer: ghi::CommandBufferHandle,
+	synchronizer: ghi::SynchronizerHandle,
+    swapchain_handle: ghi::SwapchainHandle,
+	result_target: ghi::ImageHandle,
+    frame_key: ghi::FrameKey,
+    present_key: ghi::PresentKey,
+    execute: Box<dyn FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync>,
+}
+
+impl RenderMessage {
+    fn new(
+		device: Arc<RwLock<ghi::Device>>,
+		command_buffer: ghi::CommandBufferHandle,
+		synchronizer: ghi::SynchronizerHandle,
+		result_target: ghi::ImageHandle,
+        swapchain_handle: ghi::SwapchainHandle,
+        frame_key: ghi::FrameKey,
+        present_key: ghi::PresentKey,
+        execute: impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+			device,
+			command_buffer,
+			synchronizer,
+            swapchain_handle,
+			result_target,
+            frame_key,
+            present_key,
+            execute: Box::new(execute),
+        }
     }
 
-	/// This function executes the prepared render frame.
-    pub fn render(&mut self, message: RenderMessage) {
-    	let mut ghi = self.device.write();
+	pub fn render(self) {
+    	let mut device = self.device.write();
 
-		let frame_key = message.frame_key;
-		let present_key = message.present_key;
-		let swapchain_handle = message.swapchain_handle;
-		let execute = message.execute;
+		let frame_key = self.frame_key;
+		let present_key = self.present_key;
+		let swapchain_handle = self.swapchain_handle;
+		let command_buffer = self.command_buffer;
+		let synchronizer = self.synchronizer;
+		let result = self.result_target;
+		let execute = self.execute;
 
-        let mut command_buffer_recording = ghi.create_command_buffer_recording(
-            self.render_command_buffer,
+        let mut command_buffer_recording = device.create_command_buffer_recording(
+            command_buffer,
             frame_key.into(),
         );
 
@@ -225,44 +268,17 @@ impl Renderer {
 
         execute(&mut command_buffer_recording);
 
-		let result = self.targets.get("result").unwrap();
-
-        command_buffer_recording.copy_to_swapchain(*result, present_key, swapchain_handle);
+        command_buffer_recording.copy_to_swapchain(result, present_key, swapchain_handle);
 
         command_buffer_recording.execute(
             &[],
             &[],
             &[present_key],
-            self.render_finished_synchronizer,
+            synchronizer,
         );
 
-        ghi.end_frame_capture();
-
-        self.rendered_frame_count += 1;
-    }
-}
-
-pub struct RenderMessage {
-    swapchain_handle: ghi::SwapchainHandle,
-    frame_key: ghi::FrameKey,
-    present_key: ghi::PresentKey,
-    execute: Box<dyn FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync>,
-}
-
-impl RenderMessage {
-    fn new(
-        swapchain_handle: ghi::SwapchainHandle,
-        frame_key: ghi::FrameKey,
-        present_key: ghi::PresentKey,
-        execute: impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            swapchain_handle,
-            frame_key,
-            present_key,
-            execute: Box::new(execute),
-        }
-    }
+        device.end_frame_capture();
+	}
 }
 
 impl Listener<CreateEvent<window_system::Window>> for Renderer {
@@ -294,7 +310,7 @@ impl Entity for Renderer {
 }
 
 struct RootRenderPass {
-    render_passes: Vec<(EntityHandle<dyn RenderPass + Send + Sync>, Vec<String>)>,
+    render_passes: Vec<(EntityHandle<dyn RenderPass>, Vec<String>)>,
 	images: HashMap<String, (ghi::ImageHandle, ghi::Formats, ghi::Layouts,)>,
 	order: Vec<usize>,
 }
@@ -316,7 +332,7 @@ impl RootRenderPass {
 		self.images.insert(name, (image, format, layout));
 	}
 
-    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass + Send + Sync>, render_pass_builder: RenderPassBuilder) {
+    fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>, render_pass_builder: RenderPassBuilder) {
 		let index = self.render_passes.len();
         self.render_passes.push((render_pass, render_pass_builder.consumed_resources.iter().map(|e| e.0.to_string()).collect()));
 		self.order.push(index);

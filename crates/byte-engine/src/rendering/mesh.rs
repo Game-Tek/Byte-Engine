@@ -9,7 +9,7 @@ use std::{borrow::Cow, future::join};
 use math::{normalize, Vector3, Vector4, Matrix4};
 use utils::BoxedFuture;
 
-pub trait MeshGenerator {
+pub trait MeshGenerator: Send {
 	fn vertices(&self) -> Cow<[(f32, f32, f32)]>;
 	fn normals(&self) -> Cow<[(f32, f32, f32)]>;
 	fn uvs(&self) -> Cow<[(f32, f32)]>;
@@ -181,7 +181,7 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 }
 
-pub trait RenderEntity: Entity {
+pub trait RenderEntity: Entity + Send {
 	fn get_transform(&self) -> Matrix4;
 	fn get_mesh(&self) -> &MeshSource;
 }

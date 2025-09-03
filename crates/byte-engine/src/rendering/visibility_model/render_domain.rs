@@ -144,7 +144,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	camera: Option<EntityHandle<camera::Camera>>,
 
-	render_entities: Vec<((usize, usize), EntityHandle<dyn mesh::RenderEntity + Send + Sync>)>,
+	render_entities: Vec<(EntityHandle<dyn mesh::RenderEntity>, ShaderMesh)>,
 
 	meshes: Vec<MeshData>,
 	meshes_by_resource: HashMap<String, usize>,
@@ -176,7 +176,7 @@ pub struct VisibilityWorldRenderDomain {
 	specular: ghi::ImageHandle,
 	depth_target: ghi::ImageHandle,
 
-	views_data_buffer_handle: ghi::BufferHandle<[ShaderViewData; 8]>,
+	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
@@ -184,7 +184,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	textures_binding: ghi::DescriptorSetBindingHandle,
 
-	meshes_data_buffer: ghi::BufferHandle<[ShaderMesh; MAX_INSTANCES]>,
+	meshes_data_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
 	meshlets_data_buffer: ghi::BufferHandle<[ShaderMeshletData; MAX_MESHLETS]>,
 
 	visibility_pass_pipeline_layout: ghi::PipelineLayoutHandle,
@@ -260,9 +260,9 @@ impl VisibilityWorldRenderDomain {
 		let specular = ghi_instance.create_image(Some("specular"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 		let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
 
-		let views_data_buffer_handle = ghi_instance.create_buffer::<[ShaderViewData; 8]>(Some("Visibility Views Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
+		let views_data_buffer_handle = ghi_instance.create_dynamic_buffer::<[ShaderViewData; 8]>(Some("Visibility Views Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
 
-		let meshes_data_buffer = ghi_instance.create_buffer::<[ShaderMesh; MAX_INSTANCES]>(Some("Visibility Meshes Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
+		let meshes_data_buffer = ghi_instance.create_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(Some("Visibility Meshes Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
 
 		let bindings = [
 			VIEWS_DATA_BINDING,
@@ -1003,15 +1003,6 @@ impl VisibilityWorldRenderDomain {
 
 		return Ok(material.index);
 	}
-
-	fn get_transform(&self) -> Matrix4 { Matrix4::identity() }
-	fn set_transform(&mut self, orchestrator: OrchestratorReference, value: Matrix4) {
-		let ghi = self.ghi.read();
-
-		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
-
-		meshes_data_slice[0].model = value;
-	}
 }
 
 impl Listener<CreateEvent<camera::Camera>> for VisibilityWorldRenderDomain {
@@ -1027,7 +1018,7 @@ impl Entity for VisibilityWorldRenderDomain {
 			.listen_to::<CreateEvent<camera::Camera>>()
 			.listen_to::<CreateEvent<directional_light::DirectionalLight>>()
 			.listen_to::<CreateEvent<point_light::PointLight>>()
-			.listen_to::<CreateEvent<dyn mesh::RenderEntity + Send + Sync>>()
+			.listen_to::<CreateEvent<dyn mesh::RenderEntity>>()
 	}
 }
 
@@ -1037,7 +1028,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 
 		ghi.resize_image(self.instance_id, extent);
 
-		let views_data_buffer = ghi.get_mut_buffer_slice(self.views_data_buffer_handle);
+		let views_data_buffer = ghi.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle, frame_key);
 
 		let (camera_position, camera_orientation, fov_y) = camera_handle.map(|camera| { let camera = camera.read(); (camera.get_position(), camera.get_orientation(), camera.get_fov()) });
 
@@ -1061,14 +1052,12 @@ impl RenderPass for VisibilityWorldRenderDomain {
 		views_data_buffer[0] = camera;
 
 		{
-			let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
-			let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
+			let meshes_data_slice = ghi.get_mut_dynamic_buffer_slice(self.meshes_data_buffer, frame_key);
 
-			for ((b, e), m) in self.render_entities.iter() {
+			for (index, (m, smd)) in self.render_entities.iter().enumerate() {
 				let mesh = m.write();
-				meshes_data_slice[*b..*e].iter_mut().for_each(|m| {
-					m.model = mesh.get_transform();
-				});
+				meshes_data_slice[index] = *smd;
+				meshes_data_slice[index].model = mesh.get_transform();
 			}
 		}
 
@@ -1211,8 +1200,8 @@ struct MaterialData {
 	textures: [u32; 16],
 }
 
-impl Listener<CreateEvent<dyn mesh::RenderEntity + Send + Sync>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<dyn mesh::RenderEntity + Send + Sync>) {
+impl Listener<CreateEvent<dyn mesh::RenderEntity>> for VisibilityWorldRenderDomain {
+	fn handle(&mut self, event: &CreateEvent<dyn mesh::RenderEntity>) {
 		let handle = event.handle();
 		let mesh = handle.read();
 
@@ -1223,11 +1212,7 @@ impl Listener<CreateEvent<dyn mesh::RenderEntity + Send + Sync>> for VisibilityW
 
 		let mut ghi = self.ghi.write();
 
-		let meshes_data_slice = ghi.get_mut_buffer_slice(self.meshes_data_buffer);
-
 		let mesh_data = self.meshes.get(mesh_id).expect("Mesh not loaded");
-
-		let meshes_data_slice = unsafe { std::slice::from_raw_parts_mut(meshes_data_slice.as_mut_ptr() as *mut ShaderMesh, MAX_INSTANCES) };
 
 		self.render_info.instances.extend(mesh_data.primitives.iter().map(|p| Instance {
 			meshlet_count: p.meshlet_count,
@@ -1245,7 +1230,7 @@ impl Listener<CreateEvent<dyn mesh::RenderEntity + Send + Sync>> for VisibilityW
 				base_meshlet_index: mesh_data.meshlet_offset + p.meshlet_offset, // Add the mesh relative meshlet offset and the primitive relative meshlet offset to get the absolute meshlet offset
 			};
 
-			meshes_data_slice[instance_base_index as usize + i] = shader_mesh_data;
+			self.render_entities.push((handle.clone(), shader_mesh_data));
 		}
 
 		if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
@@ -1261,8 +1246,6 @@ impl Listener<CreateEvent<dyn mesh::RenderEntity + Send + Sync>> for VisibilityW
 		}
 
 		self.visibility_info.instance_count += mesh_data.primitives.len() as u32;
-
-		self.render_entities.push(((instance_base_index, instance_base_index + mesh_data.primitives.len()), handle.clone()));
 
 		assert!((self.visibility_info.meshlet_count as usize) < MAX_MESHLETS, "Meshlet count exceeded");
 		assert!((self.visibility_info.instance_count as usize) < MAX_INSTANCES, "Instance count exceeded");

@@ -115,17 +115,14 @@ impl Application for GraphicsApplication {
 			}).unwrap()
 		};
 
-		let (graphics_channel_sender, graphics_channel_receiver) = std::sync::mpsc::channel();
+		let (graphics_channel_sender, graphics_channel_receiver) = std::sync::mpsc::channel::<renderer::RenderMessage>();
 
 		let graphics_thread = {
-			let renderer_handle = renderer_handle.clone();
-
 			std::thread::Builder::new().name("Graphics".to_string()).spawn(move || {
 				while let Ok(frame) = graphics_channel_receiver.recv() {
-					let mut renderer = renderer_handle.write();
 					let span = debug_span!("Render graphics");
 					let _ = span.enter();
-					renderer.render(frame);
+					frame.render();
 				}
 
 				log::debug!("Exiting graphics thread.");

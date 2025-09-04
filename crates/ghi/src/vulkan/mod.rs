@@ -156,15 +156,20 @@ pub(super) struct VulkanConsumption {
 }
 
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
+const MAX_SWAPCHAIN_IMAGES: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
 	surface: vk::SurfaceKHR,
 	swapchain: vk::SwapchainKHR,
 	acquire_synchronizers: [SynchronizerHandle; MAX_FRAMES_IN_FLIGHT],
-	submit_synchronizers: [SynchronizerHandle; 8],
+	submit_synchronizers: [SynchronizerHandle; MAX_SWAPCHAIN_IMAGES],
+	images: [vk::Image; MAX_SWAPCHAIN_IMAGES],
 	extent: vk::Extent2D,
 	sync_stage: vk::PipelineStageFlags2,
+	vk_present_mode: vk::PresentModeKHR,
+	min_image_count: u32,
+	max_image_count: u32,
 }
 
 #[derive(Clone)]

@@ -123,6 +123,7 @@ impl Application for GraphicsApplication {
 					let span = debug_span!("Render graphics");
 					let _ = span.enter();
 					frame.render();
+					log::debug!("Submitted render!");
 				}
 
 				log::debug!("Exiting graphics thread.");
@@ -179,6 +180,8 @@ impl Application for GraphicsApplication {
 	fn get_name(&self) -> &str { self.application.get_name() }
 
 	fn tick(&mut self) {
+		log::debug!("============= Frame {} =============", self.tick_count);
+
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 

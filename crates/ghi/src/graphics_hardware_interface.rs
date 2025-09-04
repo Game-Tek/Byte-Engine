@@ -534,8 +534,9 @@ pub struct FrameKey {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PresentKey {
-	/// The index corresponding to the frame index.
+	/// The index of the acquired swapchain image.
 	pub(crate) image_index: u8,
+	/// The index corresponding to the frame index.
 	pub(crate) sequence_index: u8,
 	/// The swapchain handle corresponding to the presentation request that this key is associated with.
 	pub(crate) swapchain: SwapchainHandle,

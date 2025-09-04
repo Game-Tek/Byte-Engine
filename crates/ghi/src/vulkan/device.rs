@@ -1,9 +1,9 @@
-use std::{borrow::Cow, collections::VecDeque};
+use std::{borrow::Cow, collections::VecDeque, u64};
 
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks}, window, CommandBufferRecording, FrameKey, Instance, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -19,6 +19,7 @@ pub struct Device {
 	pub(super) acceleration_structure: ash::khr::acceleration_structure::Device,
 	pub(super) ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device,
 	pub(super) mesh_shading: ash::ext::mesh_shader::Device,
+	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
 
 	#[cfg(target_os = "linux")]
 	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
@@ -30,6 +31,8 @@ pub struct Device {
 	debugger: RenderDebugger,
 
 	pub(super) frames: u8,
+
+	pub(super) acquired_image_count: u32,
 
 	pub(super) queues: Vec<Queue>,
 	pub(super) buffers: Vec<Buffer>,
@@ -83,7 +86,9 @@ impl Device {
 		let wayland_surface = ash::khr::wayland_surface::Instance::new(vk_entry, vk_instance);
 
 		#[cfg(target_os = "windows")]
-		let win32_surface = ash::khr::win32_surface::Instance::new(entry, instance);
+		let win32_surface = ash::khr::win32_surface::Instance::new(vk_entry, vk_instance);
+
+		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
 			if required { feature != 0 } else { true }
@@ -390,6 +395,8 @@ impl Device {
 			#[cfg(target_os = "windows")]
 			win32_surface,
 
+			surface_capabilities,
+
 			physical_device,
 			device,
 			swapchain,
@@ -402,6 +409,8 @@ impl Device {
 			debugger: RenderDebugger::new(),
 
 			frames: 2, // Assuming double buffering
+
+			acquired_image_count: 0,
 
 			queues,
 			allocations: Vec::new(),
@@ -1277,8 +1286,6 @@ impl Device {
 								}
 							}
 						}
-					} else {
-						println!("No binding found for buffer handle ({:#?}#{})", handle, sequence_index);
 					}
 				}
 				Tasks::UpdateImageDescriptors { handle } => {
@@ -1299,13 +1306,6 @@ impl Device {
 									}
 								}
 							}
-						}
-					} else {
-						#[cfg(debug_assertions)]
-						{
-							let identifier = self.names.get(&graphics_hardware_interface::Handle::Image(graphics_hardware_interface::ImageHandle(handle.root(&self.images).0))).map(|s| s.clone()).unwrap_or_else(|| format!("{:#?}", handle));
-
-							println!("No binding found for image ({}#{})", identifier, sequence_index);
 						}
 					}
 				}
@@ -2549,48 +2549,74 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent) -> graphics_hardware_interface::SwapchainHandle {
-		let surface = self.create_vulkan_surface(window_os_handles);
+		let vk_surface = self.create_vulkan_surface(window_os_handles);
 
-		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, surface).expect("No surface capabilities") };
-
-		let min_image_count = surface_capabilities.min_image_count;
-
-		let extent = if surface_capabilities.current_extent.width != u32::MAX && surface_capabilities.current_extent.height != u32::MAX {
-			surface_capabilities.current_extent
-		} else {
-			vk::Extent2D::default().width(fallback_extent.width()).height(fallback_extent.height())
-		};
-
-		let presentation_mode = match presentation_mode {
+		let vk_present_mode = match presentation_mode {
 			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
 			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
 			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
 		};
 
-		let presentation_modes = [presentation_mode];
+		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
+
+		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
+    		.push_next(&mut vk_surface_present_mode)
+			.surface(vk_surface)
+		;
+
+		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
+
+		let mut vk_surface_present_mode_compatibility = vk::SurfacePresentModeCompatibilityEXT::default()
+    		.present_modes(&mut vk_presentation_modes)
+		;
+
+		let mut vk_surface_capabilities = vk::SurfaceCapabilities2KHR::default()
+			.push_next(&mut vk_surface_present_mode_compatibility)
+		;
+
+		unsafe { self.surface_capabilities.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities).expect("No surface capabilities") };
+
+		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
+
+		let min_image_count = vk_surface_capabilities.min_image_count;
+		let max_image_count = vk_surface_capabilities.max_image_count;
+
+		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX && vk_surface_capabilities.current_extent.height != u32::MAX {
+			vk_surface_capabilities.current_extent
+		} else {
+			vk::Extent2D::default().width(fallback_extent.width()).height(fallback_extent.height())
+		};
+
+		let presentation_modes = [vk_present_mode];
 
 		let mut present_modes_create_info = vk::SwapchainPresentModesCreateInfoEXT::default()
     		.present_modes(&presentation_modes)
 		;
 
+		let image_count = if max_image_count != 0 {
+			max_image_count.max(min_image_count)
+		} else {
+			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
+		};
+
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
     		.push_next(&mut present_modes_create_info)
 			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
-			.surface(surface)
-			.min_image_count(min_image_count)
+			.surface(vk_surface)
+			.min_image_count(image_count)
 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
 			.image_format(vk::Format::B8G8R8A8_SRGB)
 			.image_extent(extent)
 			.image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
 			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.pre_transform(surface_capabilities.current_transform)
+			.pre_transform(vk_surface_capabilities.current_transform)
 			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-			.present_mode(presentation_mode)
+			.present_mode(vk_present_mode)
 			.image_array_layers(1)
 			.clipped(true)
 		;
 
-		let swapchain = unsafe { self.swapchain.create_swapchain(&swapchain_create_info, None).expect("No swapchain") };
+		let vk_swapchain = unsafe { self.swapchain.create_swapchain(&swapchain_create_info, None).expect("No swapchain") };
 
 		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
@@ -2603,18 +2629,32 @@ impl graphics_hardware_interface::Device for Device {
 
 		let mut submit_synchronizers = [SynchronizerHandle(!0u64); 8];
 
-		for i in 0..min_image_count {
+		for i in 0..image_count {
 			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
 			submit_synchronizers[i as usize] = synchronizer;
 		}
 
+		let vk_images = unsafe {
+			self.swapchain.get_swapchain_images(vk_swapchain).expect("No swapchain images found.")
+		};
+
+		let mut images = [vk::Image::null(); 8];
+
+		for (i, vk_image) in vk_images.iter().enumerate() {
+			images[i] = *vk_image;
+		}
+
 		self.swapchains.push(Swapchain {
-			surface,
-			swapchain,
+			surface: vk_surface,
+			swapchain: vk_swapchain,
 			acquire_synchronizers,
 			submit_synchronizers,
 			extent,
+			images,
 			sync_stage: vk::PipelineStageFlags2::TRANSFER,
+			min_image_count,
+			max_image_count: image_count,
+			vk_present_mode,
 		});
 
 		swapchain_handle
@@ -2676,19 +2716,67 @@ impl graphics_hardware_interface::Device for Device {
 
 		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
 
-		// self.process_tasks(sequence_index);
-
 		FrameKey { frame_index, sequence_index }
 	}
 
 	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Extent) {
 		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 
+		let s = swapchain.images.iter().filter(|e| !e.is_null()).count() as u64;
+		let m = swapchain.min_image_count as u64;
+
 		let swapchain_frame_synchronizer = swapchain.acquire_synchronizers[frame_key.sequence_index as usize].access(&self.synchronizers);
 
 		let semaphore = swapchain_frame_synchronizer.semaphore;
 
-		let acquisition_result = unsafe { self.swapchain.acquire_next_image(swapchain.swapchain, 0, semaphore, vk::Fence::default()) };
+		// Use our own waiting technique if only one image (s - m == 0) can be acquired at a time, since
+		let use_vulkan_timeout = s - m != 0;
+
+		let acquire_info = vk::AcquireNextImageInfoKHR::default()
+			.swapchain(swapchain.swapchain)
+			.timeout(if use_vulkan_timeout { u64::MAX } else { 0 })
+			.semaphore(semaphore)
+			.device_mask(1)
+			.fence(swapchain_frame_synchronizer.fence)
+		;
+
+		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(swapchain.vk_present_mode);
+
+		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
+    		.push_next(&mut vk_surface_present_mode)
+			.surface(swapchain.surface)
+		;
+
+		let mut vk_present_modes = [swapchain.vk_present_mode];
+
+		let mut vk_surface_present_mode_compatibility = vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_present_modes);
+
+		let mut vk_surface_capabilities = vk::SurfaceCapabilities2KHR::default()
+			.push_next(&mut vk_surface_present_mode_compatibility)
+		;
+
+		unsafe { self.surface_capabilities.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities).expect("No surface capabilities") };
+
+		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
+
+		unsafe {
+			let _ = self.device.wait_for_fences(&[swapchain_frame_synchronizer.fence], true, u64::MAX);
+			let _ = self.device.reset_fences(&[swapchain_frame_synchronizer.fence]);
+		}
+
+		let acquisition_result = if !use_vulkan_timeout {
+			loop {
+				let acquisition_result = unsafe { self.swapchain.acquire_next_image2(&acquire_info) };
+
+				match acquisition_result {
+					Ok(_) => break acquisition_result,
+					Err(vk::Result::NOT_READY) => std::thread::sleep(std::time::Duration::from_millis(1)),
+					_ => panic!("Failed to acquire next image"),
+				}
+			}
+		} else {
+			unsafe { self.swapchain.acquire_next_image2(&acquire_info) }
+		};
 
 		let (index, _) = if let Ok((index, is_suboptimal)) = acquisition_result {
 			if !is_suboptimal {
@@ -2700,13 +2788,13 @@ impl graphics_hardware_interface::Device for Device {
 			(0, graphics_hardware_interface::SwapchainStates::Invalid)
 		};
 
-		let surface_capabilities = unsafe { self.surface.get_physical_device_surface_capabilities(self.physical_device, swapchain.surface).expect("No surface capabilities") };
-
-		let extent = if surface_capabilities.current_extent.width != u32::MAX && surface_capabilities.current_extent.height != u32::MAX {
-			Extent::rectangle(surface_capabilities.current_extent.width, surface_capabilities.current_extent.height)
+		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX && vk_surface_capabilities.current_extent.height != u32::MAX {
+			Extent::rectangle(vk_surface_capabilities.current_extent.width, vk_surface_capabilities.current_extent.height)
 		} else {
 			Extent::rectangle(swapchain.extent.width, swapchain.extent.height)
 		};
+
+		self.acquired_image_count += 1;
 
 		(graphics_hardware_interface::PresentKey {
 			image_index: index as u8,

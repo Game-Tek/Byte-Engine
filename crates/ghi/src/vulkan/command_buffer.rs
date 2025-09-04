@@ -957,11 +957,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		let source_texture = self.get_image(source_image_internal_handle);
 		let swapchain = &self.ghi.swapchains[swapchain_handle.0 as usize];
 
-		let swapchain_images = unsafe {
-			self.ghi.swapchain.get_swapchain_images(swapchain.swapchain).expect("No swapchain images found.")
-		};
-
-		let swapchain_image = swapchain_images[present_key.image_index as usize];
+		let swapchain_image = swapchain.images[present_key.image_index as usize];
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 
@@ -1030,7 +1026,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				.src_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
 				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-				.dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE) // Or NONE
+				.dst_stage_mask(swapchain.sync_stage)
 				.dst_access_mask(vk::AccessFlags2KHR::NONE)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 				.image(swapchain_image)
@@ -1129,26 +1125,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			unsafe {
 				self.consume_resources(&consumptions);
 			}
-
-
-			// let barriers = [
-			// 	vk::MemoryBarrier2::default()
-			// 		.src_access_mask(vk::AccessFlags2::NONE)
-			// 		.src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-			// 		.dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-			// 		.dst_stage_mask(vk::PipelineStageFlags2::COPY)
-			// ];
-
-			// let dependency_info = vk::DependencyInfo::default()
-			// 	.dependency_flags(vk::DependencyFlags::BY_REGION)
-			// 	.memory_barriers(&barriers)
-			// ;
-
-			// let command_buffer = self.get_command_buffer();
-
-			// unsafe {
-			// 	self.ghi.device.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info);
-			// }
 		}
 
 		self.end();
@@ -1182,9 +1158,11 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				.stage_mask(vk::PipelineStageFlags2::empty())
 		}).chain(
 			presentations.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+
 				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize].access(&self.ghi.synchronizers).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+					.semaphore(swapchain.submit_synchronizers[present_key.image_index as usize].access(&self.ghi.synchronizers).semaphore)
+					.stage_mask(swapchain.sync_stage)
 			})
 		).collect::<Vec<_>>();
 
@@ -1228,6 +1206,8 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			;
 
 			let _ = unsafe { self.ghi.swapchain.queue_present(vk_queue, &present_info).expect("No present") };
+
+			self.ghi.acquired_image_count -= 1;
 
 			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
 				dbg!("Some error occurred during presentation");

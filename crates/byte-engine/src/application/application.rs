@@ -7,6 +7,7 @@
 use log::{info, trace};
 //use utils::hash::HashSet; // Triggers address sanitation error
 use std::collections::HashSet;
+use tracing_subscriber;
 
 use super::Parameter;
 
@@ -46,6 +47,8 @@ pub struct BaseApplication {
 
 impl Application for BaseApplication {
 	fn new(name: &str, parameters: &[Parameter],) -> BaseApplication {
+		let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).finish();
+
 		let _ = simple_logger::SimpleLogger::new().env().init();
 
 		let parameters = parameters.to_vec();
@@ -63,7 +66,9 @@ impl Application for BaseApplication {
 		parameter_set.extend(environment_variables);
 		parameter_set.extend(arguments);
 
-		if let Some(e) = parameter_set.iter().find(|e| e.name == "log-level") {
+		let application = BaseApplication { name: String::from(name), parameters: parameter_set };
+
+		if let Some(e) = application.get_parameter("log-level") {
 			let level = match e.value.as_str() {
 				"trace" => log::LevelFilter::Trace,
 				"debug" => log::LevelFilter::Debug,
@@ -77,12 +82,17 @@ impl Application for BaseApplication {
 			log::set_max_level(level);
 		}
 
+		if let Some(e) = application.get_parameter("trace") {
+			tracing_subscriber::fmt::init();
+		}
+
 		info!("Byte-Engine");
-		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", name, parameter_set.iter().map(|p| format!("{}={}", p.name, p.value)).collect::<Vec<String>>().join(", "));
+		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", name, application.parameters.iter().map(|p| format!("{}={}", p.name, p.value)).collect::<Vec<String>>().join(", "));
 
 		trace!("Initialized base Byte-Engine application!");
 
-		BaseApplication { name: String::from(name), parameters: parameter_set }
+		application
+
 	}
 
 	fn tick(&mut self) {}

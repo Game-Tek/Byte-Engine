@@ -21,7 +21,6 @@ pub struct Renderer {
     device: Arc<RwLock<ghi::Device>>,
 
     started_frame_count: usize,
-    rendered_frame_count: usize,
 
     frame_queue_depth: usize,
 
@@ -118,7 +117,6 @@ impl Renderer {
 			device,
 
 			started_frame_count: 0,
-			rendered_frame_count: 0,
 
 			frame_queue_depth: 2,
 
@@ -165,9 +163,7 @@ impl Renderer {
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
     pub fn prepare(&mut self) -> Option<RenderMessage> {
-        let swapchain_handle = if let Some(&sh) = self.swapchain_handles.first() {
-        	sh
-        } else {
+        let Some(&swapchain_handle) = self.swapchain_handles.first() else {
         	log::warn!("No swapchain available to present to. Skipping rendering!");
         	return None;
         };
@@ -266,7 +262,7 @@ impl RenderMessage {
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
 		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
-        execute(&mut command_buffer_recording);
+        // execute(&mut command_buffer_recording);
 
         command_buffer_recording.copy_to_swapchain(result, present_key, swapchain_handle);
 

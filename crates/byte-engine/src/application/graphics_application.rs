@@ -12,6 +12,13 @@ use super::{application::{Application, BaseApplication}, Parameter, Time, Events
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
+///
+/// # Parameters
+/// - `resources-path`: The path to the resources directory.
+/// - `render-debug`: Enables validation layers for debugging.
+/// - `render-api-dump`: Enables API dump for debugging.
+/// - `render-extended-validation`: Enables extended validation for debugging.
+/// - `kill-after`: The number of ticks after which the application should be killed.
 pub struct GraphicsApplication {
 	application: BaseApplication,
 
@@ -35,9 +42,6 @@ pub struct GraphicsApplication {
 	root_space_handle: EntityHandle<dyn Domain>,
 
 	audio_thread: std::thread::JoinHandle<()>,
-
-	graphics_channel_sender: Option<std::sync::mpsc::Sender<renderer::RenderMessage>>,
-	graphics_thread: std::thread::JoinHandle<()>,
 
 	#[cfg(debug_assertions)]
 	ttff: std::time::Duration,
@@ -115,21 +119,6 @@ impl Application for GraphicsApplication {
 			}).unwrap()
 		};
 
-		let (graphics_channel_sender, graphics_channel_receiver) = std::sync::mpsc::channel::<renderer::RenderMessage>();
-
-		let graphics_thread = {
-			std::thread::Builder::new().name("Graphics".to_string()).spawn(move || {
-				while let Ok(frame) = graphics_channel_receiver.recv() {
-					let span = debug_span!("Render graphics");
-					let _ = span.enter();
-					frame.render();
-					log::debug!("Submitted render!");
-				}
-
-				log::debug!("Exiting graphics thread.");
-			}).unwrap()
-		};
-
 		let inspector = root_space_handle.spawn(Inspector::new(application_events.0.clone()).builder());
 		root_space_handle.spawn(HttpInspectorServer::new(inspector).builder());
 
@@ -156,10 +145,7 @@ impl Application for GraphicsApplication {
 			start_time,
 			last_tick_time: std::time::Instant::now(),
 
-			graphics_channel_sender: Some(graphics_channel_sender),
-
 			audio_thread,
-			graphics_thread,
 
 			#[cfg(debug_assertions)]
 			ttff: std::time::Duration::ZERO,
@@ -180,8 +166,6 @@ impl Application for GraphicsApplication {
 	fn get_name(&self) -> &str { self.application.get_name() }
 
 	fn tick(&mut self) {
-		log::debug!("============= Frame {} =============", self.tick_count);
-
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
@@ -272,7 +256,7 @@ impl Application for GraphicsApplication {
 		});
 
 		if let Some(render_command) = render_command {
-			self.graphics_channel_sender.as_ref().unwrap().send(render_command).unwrap();
+			render_command.render();
 		}
 
 		self.tick_count += 1;
@@ -313,8 +297,6 @@ impl GraphicsApplication {
 	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.close = true;
-
-		let _ = self.graphics_channel_sender.take(); // Close channel to cause thread to exit
 
 		#[cfg(debug_assertions)]
 		log::debug!("Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed(), self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);

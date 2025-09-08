@@ -33,13 +33,16 @@ impl MeshSource {
 
 pub struct SphereMeshGenerator {
 	radius: f32,
+	segments: u32,
+	rings: u32,
 	vertex_positions: Vec<(f32, f32, f32)>,
 }
 
 impl SphereMeshGenerator {
 	pub fn new(radius: f32) -> Self {
-		let segments = 32;
-		let rings = 16;
+		let segments = 4;
+		let rings = 4;
+
 		let mut vertices = Vec::new();
 
 		for ring in 0..=rings {
@@ -62,6 +65,8 @@ impl SphereMeshGenerator {
 
 		SphereMeshGenerator {
 			radius,
+			segments,
+			rings,
 			vertex_positions: vertices,
 		}
 	}
@@ -73,8 +78,8 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn indices(&self) -> Cow<[u32]> {
-		let segments = 32;
-		let rings = 16;
+		let segments = self.segments;
+		let rings = self.rings;
 		let mut indices = Vec::new();
 
 		for ring in 0..rings {
@@ -96,8 +101,8 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn normals(&self) -> Cow<[(f32, f32, f32)]> {
-		let segments = 32;
-		let rings = 16;
+		let segments = self.segments as usize;
+		let rings = self.rings as usize;
 		let mut normals = Vec::new();
 
 		let vertices = &self.vertex_positions;
@@ -116,8 +121,8 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn tangents(&self) -> Cow<[Vector3]> {
-		let segments = 32;
-		let rings = 16;
+		let segments = self.segments;
+		let rings = self.rings;
 		let mut tangents = Vec::new();
 
 		for ring in 0..=rings {
@@ -136,8 +141,8 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn bitangents(&self) -> Cow<[Vector3]> {
-    	let segments = 32;
-		let rings = 16;
+    	let segments = self.segments;
+		let rings = self.rings;
 		let mut bitangents = Vec::new();
 
 		for ring in 0..=rings {
@@ -160,12 +165,31 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn meshlet_indices(&self) -> Option<Cow<[u8]>> {
-    	None
+    	let segments = self.segments;
+		let rings = self.rings;
+		let mut indices = Vec::new();
+
+		for ring in 0..rings {
+			for segment in 0..segments {
+				let i = (ring * (segments + 1) + segment) as u8;
+				let j = ((ring + 1) * (segments + 1) + segment) as u8;
+
+				indices.push(i);
+				indices.push(j);
+				indices.push(i + 1);
+
+				indices.push(j);
+				indices.push(j + 1);
+				indices.push(i + 1);
+			}
+		}
+
+		Some(Cow::Owned(indices))
 	}
 
 	fn uvs(&self) -> Cow<[(f32, f32)]> {
-		let segments = 32;
-		let rings = 16;
+		let segments = self.segments;
+		let rings = self.rings;
 		let mut uvs = Vec::new();
 
 		for ring in 0..=rings {

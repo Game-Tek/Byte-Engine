@@ -664,7 +664,13 @@ pub trait Device where Self: Sized {
 	/// # Errors
 	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
 
+	/// Resizes an image to the specified extent.
+	/// Does nothing if the image is already the specified extent.
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
+
+	/// Resizes a buffer to the specified size.
+	/// Does nothing if the buffer is already the specified size.
+	/// May not resize the buffer if a smaller size is requested.
 	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
 
 	fn start_frame_capture(&self);

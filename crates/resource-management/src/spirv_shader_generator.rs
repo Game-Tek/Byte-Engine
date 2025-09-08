@@ -66,6 +66,8 @@ impl SPIRVShaderGenerator {
 			Ok(binary) => { binary }
 			Err(err) => {
 				let error_string = err.to_string();
+				dbg!(&error_string);
+				println!("{}", &glsl_shader);
 				return Err(glsl::pretty_format_glslang_error_string(&error_string, &shader_compilation_settings.name, &glsl_shader));
 			}
 		};
@@ -83,7 +85,7 @@ impl SPIRVShaderGenerator {
 				_ => panic!("Root node must be a function node."),
 			}
 		}
-		
+
 		self.build_graph(&mut bindings, main_function_node);
 
 		bindings.sort_by(|a, b| {

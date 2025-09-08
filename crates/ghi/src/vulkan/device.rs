@@ -72,6 +72,8 @@ pub struct Device {
 	names: HashMap<graphics_hardware_interface::Handle, String>,
 
 	tasks: VecDeque<Task>,
+
+	pub(crate) semaphores: [vk::Semaphore; 2],
 }
 
 unsafe impl Send for Device {}
@@ -115,6 +117,7 @@ impl Device {
 			.vulkan_memory_model(true)
 			.vulkan_memory_model_device_scope(true)
 			.sampler_filter_minmax(true)
+			.timeline_semaphore(true)
 		;
 
 		let mut physical_device_vulkan_13_required_features = vk::PhysicalDeviceVulkan13Features::default()
@@ -383,9 +386,18 @@ impl Device {
 			None
 		};
 
+		let semaphores = unsafe {
+			[
+				device.create_semaphore(&vk::SemaphoreCreateInfo::default().push_next(&mut vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE).initial_value(0)), None).unwrap(),
+				device.create_semaphore(&vk::SemaphoreCreateInfo::default().push_next(&mut vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE).initial_value(1)), None).unwrap(),
+			]
+		};
+
 		Ok(Device {
 			debug_utils,
 			debug_data: instance.debug_data.as_ref() as *const DebugCallbackData,
+
+			semaphores,
 
 			memory_properties,
 
@@ -2499,16 +2511,19 @@ impl graphics_hardware_interface::Device for Device {
 		let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
 
 		for (index, handle) in image_handles.iter().enumerate() {
-			#[cfg(debug_assertions)]
-			let Image { format_, staging_buffer, .. } = self.images[handle.0 as usize];
+			let Image { image: vk_image, image_view, uses, layers, format_, staging_buffer, extent: image_extent, .. } = self.images[handle.0 as usize];
 
 			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
+
+			let extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
+
+			if image_extent == extent {
+				continue;
+			}
 
 			if let Some(staging_buffer_handle) = staging_buffer {
 				self.resize_buffer_internal(staging_buffer_handle, size);
 			}
-
-			let Image { image: vk_image, image_view, format_, uses, layers, .. } = self.images[handle.0 as usize];
 
 			self.tasks.push_back(Task::delete_vulkan_image_view(image_view, index as u8));
 			self.tasks.push_back(Task::delete_vulkan_image(vk_image, index as u8));
@@ -2522,7 +2537,7 @@ impl graphics_hardware_interface::Device for Device {
 			#[cfg(not(debug_assertions))]
 			let name = None;
 
-			let r = self.create_vulkan_texture(name, vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth()), format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
+			let r = self.create_vulkan_texture(name, extent, format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
 
 			let (allocation_handle, _) = self.create_allocation_internal(r.size, r.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 
@@ -2532,7 +2547,7 @@ impl graphics_hardware_interface::Device for Device {
 
 			let image = &mut self.images[handle.0 as usize];
 			image.size = size;
-			image.extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
+			image.extent = extent;
 			image.image_view = image_view;
 			image.image = r.resource;
 
@@ -2692,6 +2707,10 @@ impl graphics_hardware_interface::Device for Device {
 	fn start_frame(&mut self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> FrameKey {
 		let frame_index = index;
 		let sequence_index = (index % self.frames as u32) as u8;
+
+		unsafe {
+			let _ = self.device.wait_semaphores(&vk::SemaphoreWaitInfo::default().semaphores(&[self.semaphores[sequence_index as usize]]).values(&[frame_index as u64]), u64::MAX);
+		}
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
 		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];

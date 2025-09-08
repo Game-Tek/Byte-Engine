@@ -262,7 +262,7 @@ impl RenderMessage {
 		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
 		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
-        // execute(&mut command_buffer_recording);
+        execute(&mut command_buffer_recording);
 
         command_buffer_recording.copy_to_swapchain(result, present_key, swapchain_handle);
 
@@ -392,7 +392,7 @@ impl Settings {
 	}
 
 	pub fn validation(mut self, value: bool) -> Self {
-		self.validation = true;
+		self.validation = value;
 		self
 	}
 

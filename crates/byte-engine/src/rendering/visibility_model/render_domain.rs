@@ -2,7 +2,7 @@ use ::core::slice::SlicePattern;
 use std::borrow::Borrow;
 use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 use std::sync::OnceLock;
 
 use ghi::graphics_hardware_interface::Device as _;
@@ -674,33 +674,36 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	fn create_mesh_from_generator<'a>(&'a mut self, generator: &dyn mesh::MeshGenerator) -> Result<usize, ()> {
-		panic!();
-
 		let vertices = generator.vertices();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
 		let indices = generator.indices().iter().map(|&i| i as u16).collect::<Vec<_>>();
-		let meshlet_indices = generator.meshlet_indices().expect("Need mesh to contain meshlet indices to be used with this render domain").iter().map_windows(|&[a, b, c]| [*a, *b, *c]).collect::<Vec<_>>();
+		let Some(meshlet_indices) = generator.meshlet_indices() else {
+			log::warn!("Need mesh to contain meshlet indices to be used with this render domain");
+			return Err(());
+		};
 
-		let mut ghi = self.ghi.write();
+		if meshlet_indices.len() > 192 {
+			log::warn!("Meshlet indices exceed maximum limit");
+			return Err(());
+		}
 
-		let mut vertex_positions_buffer = ghi.get_mut_buffer_slice(self.vertex_positions_buffer);
-		let mut vertex_normals_buffer = ghi.get_mut_buffer_slice(self.vertex_normals_buffer);
-		let mut vertex_uv_buffer = ghi.get_mut_buffer_slice(self.vertex_uvs_buffer);
+		let meshlet_indices = meshlet_indices.iter().map_windows(|&[a, b, c]| [*a, *b, *c]).collect::<Vec<_>>();
 
-		drop(ghi);
+		let ghi = self.ghi.read();
 
-		vertex_positions_buffer[self.visibility_info.vertex_count as usize..vertices.len()].copy_from_slice(vertices.as_slice());
-		// vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals.len()].copy_from_slice(normals.as_slice());
-		// vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs.len()].copy_from_slice(uvs.as_slice());
-		// indices_buffer.copy_from_slice(&indices);
-		// primitive_indices_buffer.copy_from_slice(&meshlet_indices);
-
-		let mut ghi = self.ghi.write();
-
+		let vertex_positions_buffer = ghi.get_mut_buffer_slice(self.vertex_positions_buffer);
+		let vertex_normals_buffer = ghi.get_mut_buffer_slice(self.vertex_normals_buffer);
+		let vertex_uv_buffer = ghi.get_mut_buffer_slice(self.vertex_uvs_buffer);
+		let indices_buffer = ghi.get_mut_buffer_slice(self.vertex_indices_buffer);
+		let primitive_indices_buffer = ghi.get_mut_buffer_slice(self.primitive_indices_buffer);
 		let meshlets_data_slice = ghi.get_mut_buffer_slice(self.meshlets_data_buffer);
 
-		let meshlets_data_slice = unsafe { std::slice::from_raw_parts_mut(meshlets_data_slice.as_mut_ptr() as *mut ShaderMeshletData, MAX_MESHLETS) };
+		vertex_positions_buffer[self.visibility_info.vertex_count as usize..vertices.len()].copy_from_slice(vertices.as_slice());
+		vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals.len()].copy_from_slice(normals.as_slice());
+		vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs.len()].copy_from_slice(uvs.as_slice());
+		indices_buffer[self.visibility_info.vertex_count as usize..indices.len()].copy_from_slice(&indices);
+		primitive_indices_buffer[self.visibility_info.primitives_count as usize..meshlet_indices.len()].copy_from_slice(&meshlet_indices);
 
 		let meshlets = [
 			ShaderMeshletData {
@@ -727,27 +730,21 @@ impl VisibilityWorldRenderDomain {
 
 				let materials_buffer_slice = ghi.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
-				let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+				let material_data = materials_buffer_slice[index as usize];
 
-				let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
-
-				let root_node = besl::Node::root();
-				let shader_generator = {
-					let visibility_shader_generator = VisibilityShaderGenerator::new(false, true, false, true, false, true, false, false);
-					visibility_shader_generator
-				};
-
-				let root_node = besl::parse(&"main: fn () -> void {
+				let root = besl::parse(&"main: fn () -> void {
 	albedo = vec4f(1.0, 1.0, 1.0, 1.0);
 }").unwrap();
 
-				let root = shader_generator.transform(root_node, &json::object!{ "variables": [] });
+				let shader_generator = VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+
+				let root = shader_generator.transform(root, &json::object! { "variables": [] });
 
 				let root = besl::lex(root).unwrap();
 
 				let main_node = root.get_main().ok_or(())?;
 
-				let shader = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|_| ())?;
+				let shader = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|e| { log::error!("{}", e); () })?;
 
 				let bindings = shader.bindings().iter().map(|b| {
 					ghi::ShaderBindingDescriptor::new(b.set, b.binding, if b.read { ghi::AccessPolicies::READ } else { ghi::AccessPolicies::empty() } | if b.write { ghi::AccessPolicies::WRITE } else { ghi::AccessPolicies::empty() })
@@ -773,6 +770,7 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		let mesh_id = self.meshes.len();
+
 		self.meshes.push(MeshData {
 			vertex_offset: self.visibility_info.vertex_count,
 			primitive_offset: self.visibility_info.primitives_count,
@@ -1205,9 +1203,12 @@ impl Listener<CreateEvent<dyn mesh::RenderEntity>> for VisibilityWorldRenderDoma
 		let handle = event.handle();
 		let mesh = handle.read();
 
-		let mesh_id = match mesh.get_mesh() {
-			mesh::MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id).unwrap(),
-			mesh::MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref()).unwrap(),
+		let Ok(mesh_id) = (match mesh.get_mesh() {
+			mesh::MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id),
+			mesh::MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref()),
+		}) else {
+			log::warn!("Failed to create mesh for render entity");
+			return;
 		};
 
 		let mut ghi = self.ghi.write();

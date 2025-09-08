@@ -59,10 +59,10 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 		}).map(|(error_line_number_string, error)|
 			(error_line_number_string.trim().parse::<usize>().unwrap() - 1, error)
 	).collect::<Vec<_>>();
-	
+
 	// Collect errors by line number
 	let mut errors_by_line_number = std::collections::HashMap::<usize, Vec<(&'a str, &'a str)>>::new();
-	
+
 	for (error_line_number, error) in errors {
 		if let Some(errors) = errors_by_line_number.get_mut(&error_line_number) {
 			errors.push(error);
@@ -70,10 +70,10 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 			errors_by_line_number.insert(error_line_number, vec![error]);
 		}
 	}
-	
+
 	// Sort errors by line number
 	let mut errors = errors_by_line_number.into_iter().collect::<Vec<_>>();
-	
+
 	errors.sort_by(|(line_number_a, _), (line_number_b, _)| line_number_a.cmp(line_number_b));
 
 	errors.into_iter().map(|(line_number, errors)| Line {
@@ -109,6 +109,8 @@ pub fn pretty_format_glsl_error_lines(error_lines: &[Line]) -> String {
 }
 
 pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> Option<String> {
+	let mut source_code_lines = source_code.lines();
+
 	let mut error_string = String::new();
 
 	for error_line in error_lines {
@@ -120,12 +122,12 @@ pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> 
 
 		let lines = (-window_size..window_size).filter_map(|delta| {
 			let line_index = error_line_index as i32 + delta;
-			if line_index < 0 { None } else { Some(line_index as usize) }
-		}).map(|line_index| {
-			if line_index == error_line_index {
-				format!("{}| {} {} {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").bold(), "←".red().bold(), line_errors.red())
+			source_code_lines.nth(line_index as usize).map(|e| (e, line_index == 0))
+		}).map(|(line, is_error_line)| {
+			if is_error_line {
+				format!("{}| {} {} {}", error_line_index + 1, line.bold(), "←".red().bold(), line_errors.red())
 			} else {
-				format!("{}| {}", error_line_index + 1, source_code.lines().nth(error_line_index).unwrap_or("").dimmed())
+				format!("{}| {}", error_line_index + 1, line.dimmed())
 			}
 		});
 
@@ -162,7 +164,31 @@ shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
 		assert_eq!(error[0].source_code, "void main() {}");
 		assert_eq!(error[0].errors.len(), 5);
 		assert_eq!(error[0].errors[0].symbol, "fresnel_schlick");
-		assert_eq!(error[0].errors[0].error, "no matching overloaded function found");		
+		assert_eq!(error[0].errors[0].error, "no matching overloaded function found");
+
+		println!("{}", pretty_format_glsl_error_lines(&error));
+	}
+
+	#[test]
+	fn test_other_glsl_error() {
+		let shader_name = "shader";
+		let error_string = "2 compilation errors:\nshader:145: error: '>=' : can't read from writeonly object:\nshader:147: error: 'initializer' : can't read from writeonly object:\n";
+		let source_code = "";
+
+		let error = process_glslc_error(shader_name, source_code, error_string);
+
+		assert_eq!(error.len(), 2);
+		assert_eq!(error[0].line_number, 145);
+		assert_eq!(error[0].source_code, "");
+		assert_eq!(error[0].errors.len(), 1);
+		assert_eq!(error[0].errors[0].symbol, ">");
+		assert_eq!(error[0].errors[0].error, "can't read from writeonly object");
+
+		assert_eq!(error[1].line_number, 147);
+		assert_eq!(error[1].source_code, "");
+		assert_eq!(error[1].errors.len(), 1);
+		assert_eq!(error[1].errors[0].symbol, "initializer");
+		assert_eq!(error[1].errors[0].error, "can't read from writeonly object");
 
 		println!("{}", pretty_format_glsl_error_lines(&error));
 	}

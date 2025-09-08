@@ -10,6 +10,7 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
 	in_render_pass: bool,
 	sequence_index: u8,
+	frame_index: u32,
 	states: HashMap<Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
@@ -26,6 +27,7 @@ impl CommandBufferRecording<'_> {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
+			frame_index: frame_key.map(|f| f.frame_index).unwrap_or(0),
 			in_render_pass: false,
 			states: ghi.states.clone(),
 
@@ -1129,6 +1131,9 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 		self.end();
 
+		let sequence_index = self.sequence_index;
+		let frame_index = self.frame_index;
+
 		let command_buffer = self.get_command_buffer();
 
 		let command_buffers = [command_buffer.command_buffer];
@@ -1212,6 +1217,10 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
 				dbg!("Some error occurred during presentation");
 			}
+		}
+
+		unsafe {
+			let _ = self.ghi.device.signal_semaphore(&vk::SemaphoreSignalInfo::default().semaphore(self.ghi.semaphores[sequence_index as usize]).value(frame_index as u64 + 2));
 		}
 	}
 

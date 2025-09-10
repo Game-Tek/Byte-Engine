@@ -1,9 +1,9 @@
-use std::{borrow::Cow, collections::VecDeque, u64};
+use std::{borrow::Cow, collections::VecDeque, num::NonZeroU32, u64};
 
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, BuildImage, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -715,13 +715,13 @@ impl Device {
 		unsafe { self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)) }
 	}
 
-	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, mip_levels: u32, array_layers: u32) -> MemoryBackedResourceCreationResult<vk::Image> {
+	fn create_vulkan_texture(&self, name: Option<&str>, extent: vk::Extent3D, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, mip_levels: u32, array_layers: Option<NonZeroU32>) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_create_info = vk::ImageCreateInfo::default()
 			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format))
 			.extent(extent)
 			.mip_levels(mip_levels)
-			.array_layers(array_layers)
+			.array_layers(array_layers.map(|e| e.get()).unwrap_or(1))
 			.samples(vk::SampleCountFlags::TYPE_1)
 			.tiling(vk::ImageTiling::OPTIMAL)
 			.usage(into_vk_image_usage_flags(resource_uses, format))
@@ -782,9 +782,9 @@ impl Device {
 			graphics_hardware_interface::ImageSubresourceLayout {
 				offset: 0,
 				size: texture.size,
-				row_pitch: texture.extent.width as usize * texture.format_.size(),
-				array_pitch: texture.extent.width as usize * texture.extent.height as usize * texture.format_.size(),
-				depth_pitch: texture.extent.width as usize * texture.extent.height as usize * texture.extent.depth as usize * texture.format_.size(),
+				row_pitch: texture.extent.width() as usize * texture.format_.size(),
+				array_pitch: texture.extent.width() as usize * texture.extent.height() as usize * texture.format_.size(),
+				depth_pitch: texture.extent.width() as usize * texture.extent.height() as usize * texture.extent.depth() as usize * texture.format_.size(),
 			}
 		} else {
 			let image_subresource_layout = unsafe { self.device.get_image_subresource_layout(texture.image, image_subresource) };
@@ -845,10 +845,10 @@ impl Device {
 		handle
 	}
 
-	fn create_vulkan_image_view(&self, name: Option<&str>, texture: &vk::Image, format: graphics_hardware_interface::Formats, _mip_levels: u32, base_layer: u32, layer_count: u32) -> vk::ImageView {
+	fn create_vulkan_image_view(&self, name: Option<&str>, texture: &vk::Image, format: graphics_hardware_interface::Formats, _mip_levels: u32, base_layer: u32, layer_count: Option<NonZeroU32>) -> vk::ImageView {
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
-			.view_type(if layer_count == 1 { vk::ImageViewType::TYPE_2D } else { vk::ImageViewType::TYPE_2D_ARRAY })
+			.view_type(if layer_count.is_none() { vk::ImageViewType::TYPE_2D } else { vk::ImageViewType::TYPE_2D_ARRAY })
 			.format(to_format(format))
 			.components(vk::ComponentMapping {
 				r: vk::ComponentSwizzle::IDENTITY,
@@ -861,7 +861,7 @@ impl Device {
 				base_mip_level: 0,
 				level_count: 1,
 				base_array_layer: base_layer,
-				layer_count: layer_count,
+				layer_count: layer_count.map(|e| e.get()).unwrap_or(1),
 			})
 		;
 
@@ -1018,8 +1018,33 @@ impl Device {
 		buffer_handle
 	}
 
-	fn build_image_internal(&mut self, next: Option<ImageHandle>, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: u32, size: usize, extent: vk::Extent3D, resource_uses: crate::Uses,) -> Image {
-		let texture_creation_result = self.create_vulkan_texture(name, extent, format, resource_uses | graphics_hardware_interface::Uses::TransferSource, 1, array_layers);
+	fn build_image_internal(&mut self, next: Option<ImageHandle>, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: Option<NonZeroU32>, extent: Extent, resource_uses: crate::Uses,) -> Image {
+		let size = extent.width() as usize * extent.height() as usize * extent.depth() as usize * format.size();
+
+		if size == 0 {
+			return Image {
+				next,
+				size: 0,
+				staging_buffer: None,
+				image: vk::Image::null(),
+				image_view: vk::ImageView::null(),
+				image_views: [vk::ImageView::null(); 8],
+				extent,
+				access: device_accesses,
+				format: to_format(format),
+				format_: format,
+				uses: resource_uses,
+				layers: array_layers,
+			};
+		}
+
+		let vk_extent = vk::Extent3D {
+			width: extent.width(),
+			height: extent.height(),
+			depth: extent.depth(),
+		};
+
+		let texture_creation_result = self.create_vulkan_texture(name, vk_extent, format, resource_uses, 1, array_layers);
 
 		let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead) {
 			graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::GpuWrite
@@ -1048,8 +1073,8 @@ impl Device {
 		let image_views = {
 			let mut image_views = [vk::ImageView::null(); 8];
 
-			for i in 0..array_layers {
-				image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, 1);
+			for i in 0..array_layers.map(|e| e.get()).unwrap_or(1) {
+				image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, NonZeroU32::new(1));
 			}
 
 			image_views
@@ -1071,10 +1096,14 @@ impl Device {
 		}
 	}
 
-	fn create_image_internal(&mut self, next: Option<ImageHandle>, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: u32, size: usize, extent: vk::Extent3D, resource_uses: crate::Uses,) -> ImageHandle {
+	fn create_image_internal(&mut self, next: Option<ImageHandle>, previous: Option<ImageHandle>, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: Option<NonZeroU32>, extent: Extent, resource_uses: crate::Uses,) -> ImageHandle {
 		let texture_handle = ImageHandle(self.images.len() as u64);
 
-		let image = self.build_image_internal(next, name, format, device_accesses, array_layers, size, extent, resource_uses,);
+		let image = self.build_image_internal(next, name, format, device_accesses, array_layers, extent, resource_uses,);
+
+		if let Some(previous) = previous {
+			self.images[previous.0 as usize].next = Some(texture_handle);
+		}
 
 		self.images.push(image);
 
@@ -1259,7 +1288,9 @@ impl Device {
 	fn process_tasks(&mut self, sequence_index: u8) {
 		let mut descriptor_writes = Vec::with_capacity(32);
 
-		self.tasks.retain(|e| {
+		let mut tasks = self.tasks.split_off(0);
+
+		tasks.retain(|e| {
 			if let Some(e) = e.frame() {
 				if e != sequence_index {
 					return true;
@@ -1324,6 +1355,17 @@ impl Device {
 				Tasks::WriteDescriptor { binding_handle, descriptor } => {
 					descriptor_writes.push(DescriptorWrite::new(*descriptor, *binding_handle));
 				}
+				Tasks::BuildImage(builder) => {
+					#[cfg(debug_assertions)]
+					let name = self.names.get(&graphics_hardware_interface::Handle::Image(builder.master)).map(|e| e.clone());
+
+					#[cfg(not(debug_assertions))]
+					let name = None;
+
+					let previous_image = builder.previous.access(&self.images);
+
+					self.create_image_internal(None, Some(builder.previous), name.as_ref().map(|e| e.as_str()), previous_image.format_, previous_image.access, previous_image.layers, previous_image.extent, previous_image.uses);
+				}
 				Tasks::Other(f) => {
 					f();
 				}
@@ -1333,6 +1375,8 @@ impl Device {
 		});
 
 		self.write_internal(&descriptor_writes);
+
+		self.tasks = tasks;
 	}
 }
 
@@ -1445,11 +1489,10 @@ impl graphics_hardware_interface::Device for Device {
 				let format = current_image.format_;
 				let access = current_image.access;
 				let array_layers = current_image.layers;
-				let size = current_image.size;
 				let extent = current_image.extent;
 				let resource_uses = current_image.uses;
 
-				let new_image = self.create_image_internal(next, name, format, access, array_layers, size, extent, resource_uses);
+				let new_image = self.create_image_internal(next, None, name, format, access, array_layers, extent, resource_uses);
 
 				let current_image = &mut self.images[image_handle.0 as usize];
 				current_image.next = Some(new_image);
@@ -2237,43 +2280,17 @@ impl graphics_hardware_interface::Device for Device {
 		self.pending_image_syncs.lock().push_back(handle);
 	}
 
-	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases, array_layers: u32) -> graphics_hardware_interface::ImageHandle {
-		let size = (extent.width() * extent.height() * extent.depth()) as usize * format.size();
+	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: graphics_hardware_interface::Formats, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses, use_case: graphics_hardware_interface::UseCases, array_layers: Option<NonZeroU32>) -> graphics_hardware_interface::ImageHandle {
+		let image_handle = self.create_image_internal(None, None, name, format, device_accesses, array_layers, extent, resource_uses,);
+		let handle = graphics_hardware_interface::ImageHandle(image_handle.0);
 
-		let mut next: Option<ImageHandle> = None;
-
-		let extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
-
-		for _ in 0..(match use_case { graphics_hardware_interface::UseCases::DYNAMIC => { self.frames } graphics_hardware_interface::UseCases::STATIC => { 1 }}) {
-			let resource_uses = resource_uses | if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) { graphics_hardware_interface::Uses::TransferDestination } else { graphics_hardware_interface::Uses::empty() };
-
-			let texture_handle = if extent.width != 0 && extent.height != 0 && extent.depth != 0 {
-				self.create_image_internal(next, name, format, device_accesses, array_layers, size, extent, resource_uses,)
-			} else {
-				let texture_handle = ImageHandle(self.images.len() as u64);
-
-				self.images.push(Image {
-					next,
-					size: 0,
-					staging_buffer: None,
-					image: vk::Image::null(),
-					image_view: vk::ImageView::null(),
-					image_views: [vk::ImageView::null(); 8],
-					extent,
-					access: device_accesses,
-					format: to_format(format),
-					format_: format,
-					uses: resource_uses,
-					layers: array_layers,
-				});
-
-				texture_handle
-			};
-
-			next = Some(texture_handle);
+		for i in 1..(match use_case { graphics_hardware_interface::UseCases::DYNAMIC => { self.frames } graphics_hardware_interface::UseCases::STATIC => { 1 }}) {
+			assert!(i < 2, "This does not support more than one deferred image!");
+			self.tasks.push_back(Task::new(Tasks::BuildImage(BuildImage {
+				previous: image_handle,
+				master: handle,
+			}), Some(i)));
 		}
-
-		let handle = graphics_hardware_interface::ImageHandle(next.unwrap().0);
 
 		#[cfg(debug_assertions)] {
 			if let Some(name) = name {
@@ -2507,49 +2524,35 @@ impl graphics_hardware_interface::Device for Device {
 		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32].copy_from_slice(shader_handles.get(&shader_handle).unwrap());
 	}
 
-	fn resize_image(&mut self, image_handle: graphics_hardware_interface::ImageHandle, extent: Extent) {
+	fn resize_image(&mut self, image_handle: graphics_hardware_interface::ImageHandle, new_extent: Extent) {
 		let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
 
 		for (index, handle) in image_handles.iter().enumerate() {
-			let Image { image: vk_image, image_view, uses, layers, format_, staging_buffer, extent: image_extent, .. } = self.images[handle.0 as usize];
+			let image = &self.images[handle.0 as usize];
 
-			let size = (extent.width() * extent.height() * extent.depth()) as usize * format_.size();
-
-			let extent = vk::Extent3D::default().width(extent.width()).height(extent.height()).depth(extent.depth());
-
-			if image_extent == extent {
+			if image.extent == new_extent { // Requested extent matches current extent, no resize needed
 				continue;
 			}
 
-			if let Some(staging_buffer_handle) = staging_buffer {
-				self.resize_buffer_internal(staging_buffer_handle, size);
+			if let Some(staging_buffer_handle) = image.staging_buffer {
+				todo!("Not implemented!");
 			}
 
-			self.tasks.push_back(Task::delete_vulkan_image_view(image_view, index as u8));
-			self.tasks.push_back(Task::delete_vulkan_image(vk_image, index as u8));
+			self.tasks.push_back(Task::delete_vulkan_image_view(image.image_view, index as u8));
+			self.tasks.push_back(Task::delete_vulkan_image(image.image, index as u8));
 			self.tasks.push_back(Task::update_image_descriptor(*handle, Some(index as u8)));
 
 			// TODO: release memory/allocation
 
 			#[cfg(debug_assertions)]
-			let name = self.names.get(&graphics_hardware_interface::Handle::Image(image_handle)).as_ref().map(|s| s.as_str());
+			let name = self.names.get(&graphics_hardware_interface::Handle::Image(image_handle)).map(|s| s.clone());
 
 			#[cfg(not(debug_assertions))]
 			let name = None;
 
-			let r = self.create_vulkan_texture(name, extent, format_, uses | graphics_hardware_interface::Uses::TransferSource, 1, layers);
+			let new_image = self.build_image_internal(image.next, name.as_ref().map(|e| e.as_str()), image.format_, image.access, image.layers, new_extent, image.uses);
 
-			let (allocation_handle, _) = self.create_allocation_internal(r.size, r.memory_flags.into(), graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
-
-			let (_, _) = self.bind_vulkan_texture_memory(&r, allocation_handle, 0);
-
-			let image_view = self.create_vulkan_image_view(None, &r.resource, format_, 0, 0, layers);
-
-			let image = &mut self.images[handle.0 as usize];
-			image.size = size;
-			image.extent = extent;
-			image.image_view = image_view;
-			image.image = r.resource;
+			self.images[handle.0 as usize] = new_image;
 
 			if let Some(state) = self.states.get_mut(&Handle::Image(*handle)) {
 				state.layout = vk::ImageLayout::UNDEFINED;
@@ -2680,7 +2683,7 @@ impl graphics_hardware_interface::Device for Device {
 		let buffer_handle = image.staging_buffer.expect("No staging buffer");
 		let buffer = &self.buffers[buffer_handle.0 as usize];
 		if buffer.pointer.is_null() { panic!("Texture data was requested but texture has no memory associated."); }
-		let slice = unsafe { std::slice::from_raw_parts::<'static, u8>(buffer.pointer, (image.extent.width * image.extent.height * image.extent.depth) as usize) };
+		let slice = unsafe { std::slice::from_raw_parts::<'static, u8>(buffer.pointer, image.extent.width() as usize * image.extent.height() as usize * image.extent.depth() as usize) };
 		slice
 	}
 
@@ -2734,6 +2737,9 @@ impl graphics_hardware_interface::Device for Device {
 		}
 
 		unsafe { self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset"); }
+
+		// Build lazy objects for this frame
+		self.process_tasks(sequence_index);
 
 		FrameKey { frame_index, sequence_index }
 	}

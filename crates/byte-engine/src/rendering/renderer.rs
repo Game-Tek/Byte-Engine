@@ -45,7 +45,7 @@ impl Renderer {
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
 			.debug_log_function(|message| {
-				log::error!("{}", message);
+				log::error!("{}\n{}", message, std::backtrace::Backtrace::force_capture());
 			})
 			.geometry_shader(false)
 		;
@@ -72,10 +72,10 @@ impl Renderer {
 				Some("result"),
 				extent,
 				ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-				ghi::Uses::Storage | ghi::Uses::TransferDestination,
+				ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
 				ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
 				ghi::UseCases::DYNAMIC,
-				1,
+				None,
 			);
 			let main = ghi.create_image(
 				Some("main"),
@@ -84,7 +84,7 @@ impl Renderer {
 				ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
 				ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
 				ghi::UseCases::DYNAMIC,
-				1,
+				None,
 			);
 			let depth = ghi.create_image(
 				Some("depth"),
@@ -93,7 +93,7 @@ impl Renderer {
 				ghi::Uses::RenderTarget | ghi::Uses::Image,
 				ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
 				ghi::UseCases::DYNAMIC,
-				1,
+				None,
 			);
 
 			targets.insert("main".to_string(), main);

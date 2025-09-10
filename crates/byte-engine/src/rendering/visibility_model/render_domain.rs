@@ -2,6 +2,7 @@ use ::core::slice::SlicePattern;
 use std::borrow::Borrow;
 use std::cell::{OnceCell, RefCell};
 use std::mem::transmute;
+use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::OnceLock;
 
@@ -256,9 +257,9 @@ impl VisibilityWorldRenderDomain {
 		let primitive_indices_buffer_handle = ghi_instance.create_buffer(Some("Visibility Primitive Indices Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
 		let meshlets_data_buffer = ghi_instance.create_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(Some("Visibility Meshlets Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
 
-		let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
-		let specular = ghi_instance.create_image(Some("specular"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
-		let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+		let diffuse = ghi_instance.create_image(Some("diffuse"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
+		let specular = ghi_instance.create_image(Some("specular"), extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
+		let depth_target = ghi_instance.create_image(Some("depth_target"), extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image, ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
 
 		let views_data_buffer_handle = ghi_instance.create_dynamic_buffer::<[ShaderViewData; 8]>(Some("Visibility Views Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
 
@@ -295,8 +296,8 @@ impl VisibilityWorldRenderDomain {
 		let meshlets_data_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()));
 		let textures_binding = ghi_instance.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING,));
 
-		let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
-		let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+		let primitive_index = ghi_instance.create_image(Some("primitive index"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
+		let instance_id = ghi_instance.create_image(Some("instance_id"), extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
 
 		let bindings = [
 			MATERIAL_COUNT_BINDING,
@@ -341,12 +342,12 @@ impl VisibilityWorldRenderDomain {
 			ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 			ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 			ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
+			ghi::DescriptorSetBindingTemplate::new_array(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 1),
 		];
 
 		let sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 		let depth_sampler = ghi_instance.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
-		let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, 1);
+		let occlusion_map = ghi_instance.create_image(Some("Occlusion Map"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
 
 		let material_evaluation_descriptor_set_layout = ghi_instance.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 		let material_evaluation_descriptor_set = ghi_instance.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
@@ -357,7 +358,9 @@ impl VisibilityWorldRenderDomain {
 		let light_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], light_data_buffer.into()));
 		let materials_data_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], materials_data_buffer_handle.into()));
 		let occlussion_texture_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[6], occlusion_map, sampler, ghi::Layouts::Read));
-		let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], occlusion_map, depth_sampler, ghi::Layouts::Read));
+		let shadow_map_binding = ghi_instance.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler_array(&bindings[7]));
+
+		ghi_instance.write(&[ghi::DescriptorWrite::combined_image_sampler_array(shadow_map_binding, occlusion_map, depth_sampler, ghi::Layouts::Read, 0)]);
 
 		let material_evaluation_pipeline_layout = ghi_instance.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 + 4 }]);
 
@@ -1025,6 +1028,11 @@ impl RenderPass for VisibilityWorldRenderDomain {
 		let camera_handle = if let Some(camera_handle) = &self.camera { camera_handle } else { return None; };
 
 		ghi.resize_image(self.instance_id, extent);
+		ghi.resize_image(self.diffuse, extent);
+		ghi.resize_image(self.occlusion_map, extent);
+		ghi.resize_image(self.primitive_index, extent);
+		ghi.resize_image(self.specular, extent);
+		ghi.resize_image(self.depth_target, extent);
 
 		let views_data_buffer = ghi.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle, frame_key);
 

@@ -2,6 +2,8 @@
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 
+use std::num::NonZeroU32;
+
 use utils::{Extent, RGBA};
 
 use crate::{image, sampler, window, raster_pipeline};
@@ -625,7 +627,7 @@ pub trait Device where Self: Sized {
 	///
 	/// * `extent` - The size of the image. Can be 0 to skip eager allocation, such as for framebuffers.
 	/// * `format` - The format of the image.
-	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases, array_layers: u32) -> ImageHandle;
+	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases, array_layers: Option<NonZeroU32>) -> ImageHandle;
 
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;
 
@@ -1663,7 +1665,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1739,7 +1741,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1820,7 +1822,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC, 1);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1899,7 +1901,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1978,7 +1980,7 @@ pub(super) mod tests {
 
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -2060,7 +2062,7 @@ pub(super) mod tests {
 
 		let mut extent = Extent::rectangle(1280, 720);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -2147,7 +2149,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -2258,7 +2260,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_compute_pipeline(&pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
 
-		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
 
 		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
 
@@ -2411,7 +2413,7 @@ pub(super) mod tests {
 
 		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 
-		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, 1);
+		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, None);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -2441,7 +2443,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, 1);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -2636,7 +2638,7 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, 1);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
 
 		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
 		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));

@@ -14,11 +14,13 @@ use super::{application::{Application, BaseApplication}, Parameter, Time, Events
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
 ///
 /// # Parameters
-/// - `resources-path`: The path to the resources directory.
-/// - `render-debug`: Enables validation layers for debugging.
-/// - `render-api-dump`: Enables API dump for debugging.
-/// - `render-extended-validation`: Enables extended validation for debugging.
-/// - `kill-after`: The number of ticks after which the application should be killed.
+/// - `kill-after`: The number of ticks after which the application should be killed. Defaults to None.
+/// - `resources-path`: The path to the resources directory. Defaults to "./resources".
+/// ## Render
+/// ### Render > Debug
+/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
+/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
+/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
 pub struct GraphicsApplication {
 	application: BaseApplication,
 
@@ -71,19 +73,19 @@ impl Application for GraphicsApplication {
 		let renderer_handle = {
 			let settings = rendering::renderer::Settings::new();
 
-			let settings = if let Some(param) = application.get_parameter("render-debug") {
+			let settings = if let Some(param) = application.get_parameter("render.debug") {
 				settings.validation(param.as_bool_simple())
 			} else {
 				settings
 			};
 
-			let settings = if let Some(param) = application.get_parameter("render-api-dump") {
+			let settings = if let Some(param) = application.get_parameter("render.debug.dump") {
 				settings.api_dump(param.as_bool_simple())
 			} else {
 				settings
 			};
 
-			let settings = if let Some(param) = application.get_parameter("render-extended-validation") {
+			let settings = if let Some(param) = application.get_parameter("render.debug.extended") {
 				settings.extended_validation(param.as_bool_simple())
 			} else {
 				settings

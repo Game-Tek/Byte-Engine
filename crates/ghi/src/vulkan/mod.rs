@@ -1,7 +1,9 @@
+use std::num::NonZeroU32;
 use std::sync::atomic::AtomicU64;
 
 use ash::vk;
 use ::utils::hash::HashMap;
+use ::utils::Extent;
 
 use crate::graphics_hardware_interface;
 use crate::vulkan::sampler::SamplerHandle;
@@ -311,6 +313,11 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	memory_flags: u32,
 }
 
+struct BuildImage {
+	previous: ImageHandle,
+	master: graphics_hardware_interface::ImageHandle,
+}
+
 pub(crate) enum Tasks {
 	/// Delete a Vulkan image. Will be associated to a frame index in `Task`.
 	DeleteVulkanImage {
@@ -340,6 +347,7 @@ pub(crate) enum Tasks {
 		binding_handle: DescriptorSetBindingHandle,
 		descriptor: Descriptors,
 	},
+	BuildImage(BuildImage),
 	/// A miscellaneous task that may be associated with a frame index.
 	Other(Box<dyn Fn()>),
 }
@@ -350,6 +358,13 @@ pub(crate) struct Task {
 }
 
 impl Task {
+	pub(crate) fn new(task: Tasks, frame: Option<u8>) -> Self {
+		Self {
+			task,
+			frame,
+		}
+	}
+
 	pub(crate) fn delete_vulkan_image(handle: vk::Image, frame: u8) -> Self {
 		Self {
 			task: Tasks::DeleteVulkanImage { handle },

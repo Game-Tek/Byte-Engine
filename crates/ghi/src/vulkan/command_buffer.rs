@@ -395,7 +395,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 					.layer_count(1)
 				)
 				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(vk::Extent3D::default().width(image.extent.width).height(image.extent.height).depth(image.extent.depth))];
+				.image_extent(vk::Extent3D::default().width(image.extent.width()).height(image.extent.height()).depth(image.extent.depth()))];
 
 			let buffer = self.get_buffer(image.staging_buffer.expect("No staging buffer"));
 
@@ -444,7 +444,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 					.buffer_image_height(0)
 					.image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
 					.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-					.image_extent(image.extent)
+					.image_extent(vk::Extent3D::default().width(image.extent.width()).height(image.extent.height()).depth(image.extent.depth()))
 				];
 
 				let copy_image_to_buffer_info = vk::CopyImageToBufferInfo2KHR::default()
@@ -740,7 +740,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			})
 			.src_offsets([
 				vk::Offset3D { x: 0, y: 0, z: 0 },
-				vk::Offset3D { x: source_image.extent.width as i32, y: source_image.extent.height as i32, z: 1 },
+				vk::Offset3D { x: source_image.extent.width() as i32, y: source_image.extent.height() as i32, z: 1 },
 			])
 			.dst_subresource(vk::ImageSubresourceLayers {
 				aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -750,7 +750,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			})
 			.dst_offsets([
 				vk::Offset3D { x: 0, y: 0, z: 0 },
-				vk::Offset3D { x: destination_image.extent.width as i32, y: destination_image.extent.height as i32, z: 1 },
+				vk::Offset3D { x: destination_image.extent.width() as i32, y: destination_image.extent.height() as i32, z: 1 },
 			]);
 
 			let blits = [blit];
@@ -891,7 +891,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		let subresource_layout = self.ghi.get_image_subresource_layout(&image_handle, 0);
 
 		if pointer.is_null() {
-			for i in data.len()..texture.extent.width as usize * texture.extent.height as usize * texture.extent.depth as usize {
+			for i in data.len()..texture.extent.width() as usize * texture.extent.height() as usize * texture.extent.depth() as usize {
 				unsafe {
 					std::ptr::write(pointer.offset(i as isize), if i % 4 == 0 { 255 } else { 0 });
 				}
@@ -899,11 +899,11 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		} else {
 			let pointer = unsafe { pointer.offset(subresource_layout.offset as isize) };
 
-			for i in 0..texture.extent.height {
+			for i in 0..texture.extent.height() {
 				let pointer = unsafe { pointer.offset(subresource_layout.row_pitch as isize * i as isize) };
 
 				unsafe {
-					std::ptr::copy_nonoverlapping((data.as_ptr().add(i as usize * texture.extent.width as usize)) as *mut u8, pointer, texture.extent.width as usize * 4);
+					std::ptr::copy_nonoverlapping((data.as_ptr().add(i as usize * texture.extent.width() as usize)) as *mut u8, pointer, texture.extent.width() as usize * 4);
 				}
 			}
 		}
@@ -919,7 +919,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				.layer_count(1)
 			)
 			.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-			.image_extent(vk::Extent3D::default().width(texture.extent.width).height(texture.extent.height).depth(texture.extent.depth))];
+			.image_extent(vk::Extent3D::default().width(texture.extent.width()).height(texture.extent.height()).depth(texture.extent.depth()))];
 
 		// Copy to images from staging buffer
 		let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
@@ -1000,12 +1000,12 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			.src_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
 			.src_offsets([
 				vk::Offset3D::default().x(0).y(0).z(0),
-				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1),
+				vk::Offset3D::default().x(source_texture.extent.width() as i32).y(source_texture.extent.height() as i32).z(1),
 			])
 			.dst_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(0).base_array_layer(0).layer_count(1))
 			.dst_offsets([
 				vk::Offset3D::default().x(0).y(0).z(0),
-				vk::Offset3D::default().x(source_texture.extent.width as i32).y(source_texture.extent.height as i32).z(1),
+				vk::Offset3D::default().x(source_texture.extent.width() as i32).y(source_texture.extent.height() as i32).z(1),
 			])
 		];
 
@@ -1119,7 +1119,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		{
 			let consumptions = self.states.iter().filter_map(|(handle, ts)| {
 				match ts.access {
-					vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption { access: graphics_hardware_interface::AccessPolicies::NONE, layout: graphics_hardware_interface::Layouts::Undefined, stages: graphics_hardware_interface::Stages::TRANSFER, handle: *handle }),
+					vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption { access: graphics_hardware_interface::AccessPolicies::NONE, layout: graphics_hardware_interface::Layouts::General, stages: graphics_hardware_interface::Stages::TRANSFER, handle: *handle }),
 					_ => None
 				}
 			}).collect::<Vec<_>>();

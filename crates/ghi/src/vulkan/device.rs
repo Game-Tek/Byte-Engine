@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::VecDeque, num::NonZeroU32, u64};
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, BuildImage, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, BuildImage, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -978,40 +978,112 @@ impl Device {
 	}
 
 	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
-	fn build_buffer_internal(&mut self, name: Option<&str>, resource_uses: crate::Uses, size: usize, vk_buffer_usage_flags: vk::BufferUsageFlags, device_accesses: graphics_hardware_interface::DeviceAccesses) -> Buffer {
-		let buffer = if size != 0 {
-			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
-			let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_accesses);
-			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-			Buffer {
-				next: None,
-				staging: None,
-				buffer: buffer_creation_result.resource,
-				size,
-				device_address,
-				pointer,
-				uses: resource_uses,
-			}
-		} else {
-			Buffer {
-				next: None,
+	fn build_buffer_internal(&mut self, next: Option<BufferHandle>, name: Option<&str>, resource_uses: crate::Uses, size: usize, device_accesses: graphics_hardware_interface::DeviceAccesses) -> Buffer {
+		if size == 0 {
+			return Buffer {
+				next,
 				staging: None,
 				buffer: vk::Buffer::null(),
 				size: 0,
 				device_address: 0,
 				pointer: std::ptr::null_mut(),
 				uses: resource_uses,
-			}
+				access: device_accesses,
+			};
+		}
+
+		let vk_usage_flags = uses_to_vk_usage_flags(resource_uses);
+
+		// Remove acceleration structure usage flags if ray tracing is disabled (causes validation errors)
+		let vk_usage_flags = if !self.settings.ray_tracing {
+			vk_usage_flags & !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+		} else {
+			vk_usage_flags
 		};
 
-		buffer
+		// Add shader device address usage flag as all buffers are guaranteed to be accessible by addressing
+		let vk_usage_flags = vk_usage_flags | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+
+		let vk_usage_flags = vk_usage_flags | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+			vk::BufferUsageFlags::TRANSFER_DST
+		} else {
+			vk::BufferUsageFlags::empty()
+		} | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+			vk::BufferUsageFlags::TRANSFER_SRC
+		} else {
+			vk::BufferUsageFlags::empty()
+		};
+
+		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
+		let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_accesses & !(graphics_hardware_interface::DeviceAccesses::CpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite));
+		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+		let staging = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+			let buffer_handle = BufferHandle(self.buffers.len() as u64);
+
+			let vk_usage_flags = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+				vk::BufferUsageFlags::TRANSFER_DST
+			} else {
+				vk::BufferUsageFlags::empty()
+			} | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+				vk::BufferUsageFlags::TRANSFER_SRC
+			} else {
+				vk::BufferUsageFlags::empty()
+			} | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+
+			let device_access = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+				graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead
+			} else {
+				graphics_hardware_interface::DeviceAccesses::empty()
+			} | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+				graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite
+			} else {
+				graphics_hardware_interface::DeviceAccesses::empty()
+			};
+
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
+			let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_access);
+			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+			let staging_buffer = Buffer {
+				next,
+				staging: None,
+				buffer: buffer_creation_result.resource,
+				size,
+				device_address,
+				pointer,
+				uses: resource_uses,
+				access: device_accesses,
+			};
+
+			self.buffers.push(staging_buffer);
+
+			Some(buffer_handle)
+		} else {
+			None
+		};
+
+		Buffer {
+			next,
+			staging,
+			buffer: buffer_creation_result.resource,
+			size,
+			device_address,
+			pointer,
+			uses: resource_uses,
+			access: device_accesses,
+		}
 	}
 
 	/// Builds a buffer and returns its handle.
-	fn create_buffer_internal(&mut self, name: Option<&str>, resource_uses: crate::Uses, size: usize, vk_buffer_usage_flags: vk::BufferUsageFlags, device_accesses: graphics_hardware_interface::DeviceAccesses) -> BufferHandle {
-		let buffer = self.build_buffer_internal(name, resource_uses, size, vk_buffer_usage_flags, device_accesses);
+	fn create_buffer_internal(&mut self, next: Option<BufferHandle>, previous: Option<BufferHandle>, name: Option<&str>, resource_uses: crate::Uses, size: usize, device_accesses: graphics_hardware_interface::DeviceAccesses) -> BufferHandle {
+		let buffer = self.build_buffer_internal(next, name, resource_uses, size, device_accesses);
 
 		let buffer_handle = BufferHandle(self.buffers.len() as u64);
+
+		if let Some(previous) = previous {
+			self.buffers[previous.0 as usize].next = Some(buffer_handle);
+		}
 
 		self.buffers.push(buffer);
 
@@ -1059,11 +1131,11 @@ impl Device {
 		let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
 
 		let staging_buffer = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-			let staging_buffer_handle = self.create_buffer_internal(name, crate::Uses::TransferDestination, size, vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuRead);
+			let staging_buffer_handle = self.create_buffer_internal(None, None, name, crate::Uses::TransferDestination, size, graphics_hardware_interface::DeviceAccesses::CpuRead);
 
 			Some(staging_buffer_handle)
 		} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-			let staging_buffer_handle = self.create_buffer_internal(name, crate::Uses::TransferSource, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite);
+			let staging_buffer_handle = self.create_buffer_internal(None, None, name, crate::Uses::TransferSource, size, graphics_hardware_interface::DeviceAccesses::CpuWrite);
 
 			Some(staging_buffer_handle)
 		} else {
@@ -1142,7 +1214,7 @@ impl Device {
 			// todo!("copy data from old buffer to new buffer");
 		}
 
-		let new_buffer = self.build_buffer_internal(None, current_buffer.uses, size, uses_to_vk_usage_flags(current_buffer.uses) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
+		let new_buffer = self.build_buffer_internal(None, None, current_buffer.uses, size, graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead);
 
 		self.buffers[buffer_handle.0 as usize] = new_buffer;
 	}
@@ -1365,6 +1437,17 @@ impl Device {
 					let previous_image = builder.previous.access(&self.images);
 
 					self.create_image_internal(None, Some(builder.previous), name.as_ref().map(|e| e.as_str()), previous_image.format_, previous_image.access, previous_image.layers, previous_image.extent, previous_image.uses);
+				}
+				Tasks::BuildBuffer(builder) => {
+					#[cfg(debug_assertions)]
+					let name = self.names.get(&graphics_hardware_interface::Handle::Buffer(builder.master)).map(|e| e.clone());
+
+					#[cfg(not(debug_assertions))]
+					let name = None;
+
+					let previous_buffer = builder.previous.access(&self.buffers);
+
+					self.create_buffer_internal(None, Some(builder.previous), name.as_ref().map(|e| e.as_str()), previous_buffer.uses, previous_buffer.size, previous_buffer.access);
 				}
 				Tasks::Other(f) => {
 					f();
@@ -2147,71 +2230,29 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	fn create_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses,) -> graphics_hardware_interface::BufferHandle<T> {
-		let mut uses = uses_to_vk_usage_flags(resource_uses);
 		let size = std::mem::size_of::<T>();
 
-		if !self.settings.ray_tracing {
-			// Remove acc struct build flag
-			uses &= !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
-		}
+		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
+		let handle = graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T>{});
 
-		let buffer_handle = graphics_hardware_interface::BufferHandle::<T>(self.buffers.len() as u64, std::marker::PhantomData::<T>{});
-
-		let handle = self.create_buffer_internal(name, resource_uses, size, uses | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::GpuWrite);
-
-		let staging_buffer_handle_option = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-			let buffer_handle = self.create_buffer_internal(name, resource_uses, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite);
-
-			Some(buffer_handle)
-		} else {
-			None
-		};
-
-		if let Some(staging_buffer_handle) = staging_buffer_handle_option {
-			self.buffers[handle.0 as usize].staging = Some(staging_buffer_handle);
-		}
-
-		return buffer_handle;
+		return handle;
 	}
 
 	fn create_dynamic_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: crate::Uses, device_accesses: crate::DeviceAccesses) -> crate::DynamicBufferHandle<T> {
-		let buffer_count = self.frames;
-
-		let mut uses = uses_to_vk_usage_flags(resource_uses);
 		let size = std::mem::size_of::<T>();
 
-		if !self.settings.ray_tracing {
-			// Remove acc struct build flag
-			uses &= !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
+		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
+		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T>{});
+
+		for i in 1..self.frames {
+			assert!(i < 2, "This does not support more than one deferred buffer!");
+			self.tasks.push_back(Task::new(Tasks::BuildBuffer(BuildBuffer {
+				previous: buffer_handle,
+				master: handle.into(),
+			}), Some(i)));
 		}
 
-		let buffer_handle = graphics_hardware_interface::DynamicBufferHandle::<T>(self.buffers.len() as u64, std::marker::PhantomData::<T>{});
-
-		let mut previous: Option<BufferHandle> = None;
-
-		for _ in 0..buffer_count {
-			let handle = self.create_buffer_internal(name, resource_uses, size, uses | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::GpuWrite);
-
-			let staging_buffer_handle_option = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-				let buffer_handle = self.create_buffer_internal(name, resource_uses, size, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, graphics_hardware_interface::DeviceAccesses::CpuWrite);
-
-				Some(buffer_handle)
-			} else {
-				None
-			};
-
-			if let Some(staging_buffer_handle) = staging_buffer_handle_option {
-				self.buffers[handle.0 as usize].staging = Some(staging_buffer_handle);
-			}
-
-			if let Some(p) = previous {
-				self.buffers[p.0 as usize].next = Some(handle);
-			}
-
-			previous = Some(handle);
-		}
-
-		return buffer_handle;
+		handle
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -2355,6 +2396,7 @@ impl graphics_hardware_interface::Device for Device {
 			device_address: address,
 			pointer,
 			uses: graphics_hardware_interface::Uses::empty(),
+			access: graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead,
 		});
 
 		buffer_handle

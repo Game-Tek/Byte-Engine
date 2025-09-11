@@ -318,6 +318,11 @@ struct BuildImage {
 	master: graphics_hardware_interface::ImageHandle,
 }
 
+struct BuildBuffer {
+	previous: BufferHandle,
+	master: graphics_hardware_interface::BaseBufferHandle,
+}
+
 pub(crate) enum Tasks {
 	/// Delete a Vulkan image. Will be associated to a frame index in `Task`.
 	DeleteVulkanImage {
@@ -348,6 +353,7 @@ pub(crate) enum Tasks {
 		descriptor: Descriptors,
 	},
 	BuildImage(BuildImage),
+	BuildBuffer(BuildBuffer),
 	/// A miscellaneous task that may be associated with a frame index.
 	Other(Box<dyn Fn()>),
 }

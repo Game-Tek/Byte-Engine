@@ -11,6 +11,7 @@ pub(crate) struct Buffer {
 	pub(crate) device_address: vk::DeviceAddress,
 	pub(crate) pointer: *mut u8,
 	pub(crate) uses: Uses,
+	pub(crate) access: crate::DeviceAccesses,
 }
 
 unsafe impl Send for Buffer {}

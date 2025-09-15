@@ -1,4 +1,4 @@
-use crate::{graphics_hardware_interface::Device, FilteringModes, SamplerAddressingModes, SamplerHandle, SamplingReductionModes};
+use crate::{device::Device, FilteringModes, SamplerAddressingModes, SamplerHandle, SamplingReductionModes};
 
 pub struct Builder {
 	pub(crate) filtering_mode: FilteringModes,
@@ -12,7 +12,7 @@ pub struct Builder {
 
 impl Builder {
 	/// Creates a new sampler builder.
-	/// 
+	///
 	/// Default values:
 	/// - `filtering_mode`: `FilteringModes::Linear`
 	/// - `reduction_mode`: `SamplingReductionModes::WeightedAverage`

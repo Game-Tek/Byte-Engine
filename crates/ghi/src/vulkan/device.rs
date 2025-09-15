@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::VecDeque, num::NonZeroU32, u64};
 use ash::{vk::{self, Handle as _}};
 use utils::{hash::{HashSet, HashSetExt}, sync::Mutex};
 use ::utils::{hash::{HashMap, HashMapExt}, Extent};
-use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, BuildImage, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
+use crate::{graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, vulkan::{queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, BuildImage, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Handle, HandleLike, ImageCopy, ImageHandle, Next, Task, Tasks, Frame, MAX_SWAPCHAIN_IMAGES}, window, CommandBufferRecording, FrameKey, Instance, Size};
 
 use super::{utils::{image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags, uses_to_vk_usage_flags}, AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT};
 
@@ -12,7 +12,7 @@ pub struct Device {
 
 	debug_data: *const DebugCallbackData,
 
-	physical_device: vk::PhysicalDevice,
+	pub(crate) physical_device: vk::PhysicalDevice,
 	pub(super) device: ash::Device,
 	pub(super) swapchain: ash::khr::swapchain::Device,
 	surface: ash::khr::surface::Instance,
@@ -1357,7 +1357,7 @@ impl Device {
 		unsafe { self.device.update_descriptor_sets(&writes, &[]) };
 	}
 
-	fn process_tasks(&mut self, sequence_index: u8) {
+	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut descriptor_writes = Vec::with_capacity(32);
 
 		let mut tasks = self.tasks.split_off(0);
@@ -1527,7 +1527,7 @@ impl Drop for Device {
 	}
 }
 
-impl graphics_hardware_interface::Device for Device {
+impl crate::device::Device for Device {
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
 		self.get_log_count() > 0
@@ -1671,7 +1671,7 @@ impl graphics_hardware_interface::Device for Device {
 	}
 
 	/// Creates a shader.
-	fn create_shader(&mut self, name: Option<&str>, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: &[graphics_hardware_interface::ShaderBindingDescriptor],) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
+	fn create_shader(&mut self, name: Option<&str>, shader_source_type: graphics_hardware_interface::ShaderSource, stage: graphics_hardware_interface::ShaderTypes, shader_binding_descriptors: impl IntoIterator<Item = graphics_hardware_interface::ShaderBindingDescriptor>) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let shader = match shader_source_type {
 			graphics_hardware_interface::ShaderSource::SPIRV(spirv) => {
 				if !spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
@@ -1692,7 +1692,7 @@ impl graphics_hardware_interface::Device for Device {
 		self.shaders.push(Shader {
 			shader: shader_module,
 			stage: stage.into(),
-			shader_binding_descriptors: shader_binding_descriptors.to_vec(),
+			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
 		});
 
 		self.set_name(shader_module, name);
@@ -2191,7 +2191,7 @@ impl graphics_hardware_interface::Device for Device {
 		command_buffer_handle
 	}
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording {
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle) -> crate::CommandBufferRecording {
 		use graphics_hardware_interface::CommandBufferRecordable;
 
 		let mut pending_buffers = self.pending_buffer_syncs.lock();
@@ -2220,9 +2220,7 @@ impl graphics_hardware_interface::Device for Device {
 
 		drop(pending_images);
 
-		self.process_tasks(frame_key.map(|e| e.sequence_index).unwrap_or(0));
-
-		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, buffer_copies, image_copies, frame_key);
+		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, buffer_copies, image_copies, None);
 
 		recording.begin();
 
@@ -2274,21 +2272,6 @@ impl graphics_hardware_interface::Device for Device {
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 
 		self.pending_buffer_syncs.lock().push_back(handle);
-
-		unsafe {
-			std::mem::transmute(buffer.pointer)
-		}
-	}
-
-	fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: crate::DynamicBufferHandle<T>, frame_key: FrameKey) -> &'a mut T {
-		let handles = BufferHandle(buffer_handle.0).get_all(&self.buffers);
-
-		let handle = handles[frame_key.sequence_index as usize];
-
-		self.pending_buffer_syncs.lock().push_back(handle);
-
-		let buffer = handle.access(&self.buffers);
-		let buffer = buffer.staging.unwrap().access(&self.buffers);
 
 		unsafe {
 			std::mem::transmute(buffer.pointer)
@@ -2749,7 +2732,7 @@ impl graphics_hardware_interface::Device for Device {
 		synchronizer_handle
 	}
 
-	fn start_frame(&mut self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> FrameKey {
+	fn start_frame(&mut self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> Frame {
 		let frame_index = index;
 		let sequence_index = (index % self.frames as u32) as u8;
 
@@ -2783,91 +2766,9 @@ impl graphics_hardware_interface::Device for Device {
 		// Build lazy objects for this frame
 		self.process_tasks(sequence_index);
 
-		FrameKey { frame_index, sequence_index }
-	}
+		let frame_key = FrameKey { frame_index, sequence_index };
 
-	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle,) -> (graphics_hardware_interface::PresentKey, Extent) {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-
-		let s = swapchain.images.iter().filter(|e| !e.is_null()).count() as u64;
-		let m = swapchain.min_image_count as u64;
-
-		let swapchain_frame_synchronizer = swapchain.acquire_synchronizers[frame_key.sequence_index as usize].access(&self.synchronizers);
-
-		let semaphore = swapchain_frame_synchronizer.semaphore;
-
-		// Use our own waiting technique if only one image (s - m == 0) can be acquired at a time, since
-		let use_vulkan_timeout = s - m != 0;
-
-		let acquire_info = vk::AcquireNextImageInfoKHR::default()
-			.swapchain(swapchain.swapchain)
-			.timeout(if use_vulkan_timeout { u64::MAX } else { 0 })
-			.semaphore(semaphore)
-			.device_mask(1)
-			.fence(swapchain_frame_synchronizer.fence)
-		;
-
-		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(swapchain.vk_present_mode);
-
-		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-    		.push_next(&mut vk_surface_present_mode)
-			.surface(swapchain.surface)
-		;
-
-		let mut vk_present_modes = [swapchain.vk_present_mode];
-
-		let mut vk_surface_present_mode_compatibility = vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_present_modes);
-
-		let mut vk_surface_capabilities = vk::SurfaceCapabilities2KHR::default()
-			.push_next(&mut vk_surface_present_mode_compatibility)
-		;
-
-		unsafe { self.surface_capabilities.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities).expect("No surface capabilities") };
-
-		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
-
-		unsafe {
-			let _ = self.device.wait_for_fences(&[swapchain_frame_synchronizer.fence], true, u64::MAX);
-			let _ = self.device.reset_fences(&[swapchain_frame_synchronizer.fence]);
-		}
-
-		let acquisition_result = if !use_vulkan_timeout {
-			loop {
-				let acquisition_result = unsafe { self.swapchain.acquire_next_image2(&acquire_info) };
-
-				match acquisition_result {
-					Ok(_) => break acquisition_result,
-					Err(vk::Result::NOT_READY) => std::thread::sleep(std::time::Duration::from_millis(1)),
-					_ => panic!("Failed to acquire next image"),
-				}
-			}
-		} else {
-			unsafe { self.swapchain.acquire_next_image2(&acquire_info) }
-		};
-
-		let (index, _) = if let Ok((index, is_suboptimal)) = acquisition_result {
-			if !is_suboptimal {
-				(index, graphics_hardware_interface::SwapchainStates::Ok)
-			} else {
-				(index, graphics_hardware_interface::SwapchainStates::Suboptimal)
-			}
-		} else {
-			(0, graphics_hardware_interface::SwapchainStates::Invalid)
-		};
-
-		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX && vk_surface_capabilities.current_extent.height != u32::MAX {
-			Extent::rectangle(vk_surface_capabilities.current_extent.width, vk_surface_capabilities.current_extent.height)
-		} else {
-			Extent::rectangle(swapchain.extent.width, swapchain.extent.height)
-		};
-
-		self.acquired_image_count += 1;
-
-		(graphics_hardware_interface::PresentKey {
-			image_index: index as u8,
-			sequence_index: frame_key.sequence_index,
-			swapchain: swapchain_handle,
-		}, extent)
+		Frame::new(self, frame_key)
 	}
 
 	#[inline]

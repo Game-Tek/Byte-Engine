@@ -27,8 +27,14 @@ pub use vulkan::Instance as Instance;
 pub use vulkan::Device as Device;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+pub use vulkan::Frame as Frame;
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub use vulkan::CommandBufferRecording as CommandBufferRecording;
 
+pub mod device;
+pub mod frame;
+pub mod command_buffer;
 pub mod image;
 pub mod sampler;
 pub mod raster_pipeline;

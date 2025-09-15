@@ -17,7 +17,7 @@ impl PipelineManager {
 		}
 	}
 
-	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, ghi: Arc<RwLock<ghi::Device>>) -> Option<ghi::PipelineHandle> {
+	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, device: &mut ghi::Device) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
@@ -62,15 +62,14 @@ impl PipelineManager {
 					return Err(());
 				};
 
-
-				let new_shader = ghi.write().create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, &shader_binding_descriptors).unwrap();
+				let new_shader = device.create_shader(Some(shader.id()), ghi::ShaderSource::SPIRV(buffer), stage, shader_binding_descriptors).unwrap();
 
 				self.shaders.write().insert(shader.id().to_string(), shader.get_hash(), (new_shader, stage));
 
 				Ok((new_shader, stage))
 			}).collect::<Result<Vec<_>, ()>>()?;
 
-			let pipeline_handle = ghi.write().create_compute_pipeline(pipeline_layout_handle, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute));
+			let pipeline_handle = device.create_compute_pipeline(pipeline_layout_handle, ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute));
 
 			Ok(pipeline_handle)
 		});
@@ -78,7 +77,7 @@ impl PipelineManager {
 		r.ok().map(|v| *v)
 	}
 
-	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, ghi: Arc<RwLock<ghi::Device>>,) -> Option<ghi::PipelineHandle> {
+	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, device: &mut ghi::Device,) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
@@ -87,7 +86,7 @@ impl PipelineManager {
 		};
 
 		let r: Result<&ghi::PipelineHandle, ()> = v.get_or_try_init(|| {
-			self.load_material(pipeline_layout_handle, &mut reference.resource_mut().material, ghi.clone()).unwrap();
+			self.load_material(pipeline_layout_handle, &mut reference.resource_mut().material, device).unwrap();
 
 			let variant = reference.resource_mut();
 
@@ -100,7 +99,7 @@ impl PipelineManager {
 
 			let shader_handle = shader_handle.unwrap().unwrap();
 
-			let pipeline_handle = ghi.write().create_compute_pipeline(pipeline_layout_handle, ghi::ShaderParameter::new(&shader_handle, ghi::ShaderTypes::Compute).with_specialization_map(specilization_map_entries));
+			let pipeline_handle = device.create_compute_pipeline(pipeline_layout_handle, ghi::ShaderParameter::new(&shader_handle, ghi::ShaderTypes::Compute).with_specialization_map(specilization_map_entries));
 
 			Ok(pipeline_handle)
 		});

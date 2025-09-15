@@ -1,7 +1,7 @@
 use ash::vk::{self, Handle as _};
 use utils::{hash::HashMap, partition, Extent};
 
-use crate::{graphics_hardware_interface, vulkan::HandleLike as _, FrameKey};
+use crate::{device::Device as _, graphics_hardware_interface, vulkan::HandleLike as _, FrameKey};
 
 use super::{utils::{texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation}, AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption};
 
@@ -532,8 +532,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 	}
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild) {
-		use graphics_hardware_interface::Device;
-
 		let (acceleration_structure_handle, acceleration_structure) = self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
 		let (as_geometries, offsets) = match acceleration_structure_build.description {

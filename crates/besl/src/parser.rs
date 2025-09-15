@@ -1,18 +1,18 @@
 //! The parser module contains all code related to the parsing of the BESL language and the generation of the JSPD.
-//! 
+//!
 //! # Example beShader
-//! 
+//!
 //! ```glsl
 //! Light: struct {
 //! 	position: vec3,
 //! 	color: vec3,
 //! }
-//! 
+//!
 //! main: fn () -> void {
 //! 	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
 //! }
 //! ```
-//! 
+//!
 //! The `parse` function is the entry point.
 //! The parser consumes an stream of tokens and creates nodes with Nodes.
 //! All nodes which have cross references only do so by name.
@@ -100,6 +100,10 @@ impl Node {
 
 	pub fn function(name: &str, params: Vec<Node>, return_type: &str, statements: Vec<Node>) -> Node {
 		make_function(name, params, return_type, statements)
+	}
+
+	pub fn main_function(statements: Vec<Node>) -> Node {
+		make_function("main", Vec::new(), "void", statements)
 	}
 
 	pub fn binding(name: &str, r#type: Node, set: u32, descriptor: u32, read: bool, write: bool) -> Node {
@@ -278,10 +282,10 @@ impl Node {
 			Nodes::Null => None,
 		}
 	}
-	
+
 	pub(crate) fn sort(&mut self) {
 		// Place main function node at the end
-		
+
 		match &mut self.node {
 			Nodes::Scope { children, .. } => { // Only sort scopes
 				// Place main function node at the end
@@ -745,10 +749,10 @@ fn parse_statement<'a>(iterator: std::slice::Iter<'a, String>,) -> FeatureParser
 		if let Some((i, e)) = max_precedence_item {
 			match e {
 				Atoms::Keyword => { Node { node: Nodes::Expression(Expressions::Return) } }
-				Atoms::Operator { name } => {		
+				Atoms::Operator { name } => {
 					let left = dandc(&atoms[..i]);
 					let right = dandc(&atoms[i + 1..]);
-		
+
 					Node {
 						node: Nodes::Expression(Expressions::Operator{ name: name.clone(), left: left.into(), right: right.into() }),
 					}
@@ -796,7 +800,7 @@ fn parse_function<'a>(mut iterator: std::slice::Iter<'a, String>,) -> FeaturePar
 	loop {
 		if let Some(Ok((expression, new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone(),) {
 			iterator = new_iterator;
-	
+
 			statements.push(expression);
 		} else {
 			if iterator.clone().peekable().peek().unwrap().as_str() == "}" {

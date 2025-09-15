@@ -4,7 +4,7 @@ use crate::{PipelineAttachmentInformation, PipelineLayoutHandle, ShaderParameter
 
 pub struct Builder<'a> {
 	pub(super) layout: PipelineLayoutHandle,
-	pub(super) vertex_elements: Cow<'a, [VertexElement]>,
+	pub(super) vertex_elements: Cow<'a, [VertexElement<'a>]>,
 	pub(super) render_targets: Cow<'a, [PipelineAttachmentInformation]>,
 	pub(super) shaders: Cow<'a, [ShaderParameter<'a>]>,
 }

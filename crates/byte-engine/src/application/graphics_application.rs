@@ -1,4 +1,4 @@
-use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, texture_manager::TextureManager, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, simple::SimpleRenderModel, texture_manager::TextureManager, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -6,7 +6,7 @@ use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handl
 use tracing::{debug_span, instrument, span, Level};
 use utils::{sync::RwLock, Extent};
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}};
+use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_model::visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}};
 
 use super::{application::{Application, BaseApplication}, Parameter, Time, Events};
 
@@ -15,7 +15,8 @@ use super::{application::{Application, BaseApplication}, Parameter, Time, Events
 ///
 /// # Parameters
 /// - `kill-after`: The number of ticks after which the application should be killed. Defaults to None.
-/// - `resources-path`: The path to the resources directory. Defaults to "./resources".
+/// ## Resources
+/// - `resources.path`: The path to the resources directory. Defaults to "./resources".
 /// ## Render
 /// ### Render > Debug
 /// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
@@ -64,7 +65,7 @@ impl Application for GraphicsApplication {
 
 		let root_space_handle: EntityHandle<dyn Domain> = spawn(Space::new());
 
-		let resources_path: std::path::PathBuf = application.get_parameter("resources-path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
+		let resources_path: std::path::PathBuf = application.get_parameter("resources.path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 
 		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
@@ -252,13 +253,12 @@ impl Application for GraphicsApplication {
 			e.update(time);
 		});
 
-		let render_command = self.renderer_handle.map(|handle| {
-			let mut e = handle.write();
-			e.prepare()
-		});
-
-		if let Some(render_command) = render_command {
-			render_command.render();
+		{
+			let mut e = self.renderer_handle.write();
+			let render_command = e.prepare();
+			if let Some(render_command) = render_command {
+				render_command.render();
+			}
 		}
 
 		self.tick_count += 1;
@@ -427,6 +427,19 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 	input_system.create_device(&mouse_device_class_handle);
 	input_system.create_device(&keyboard_device_class_handle);
 	input_system.create_device(&gamepad_device_class_handle);
+}
+
+pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
+	let mut renderer = application.renderer_handle.write();
+
+	renderer.add_render_pass(|c| {
+		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
+		application.root_space_handle.spawn(SimpleRenderModel::new(c).builder())
+	});
+
+	renderer.add_render_pass(|c| {
+		application.root_space_handle.spawn(AcesToneMapPass::create(c))
+	});
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {

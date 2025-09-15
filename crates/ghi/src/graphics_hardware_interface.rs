@@ -2,11 +2,10 @@
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 
-use std::num::NonZeroU32;
+pub use crate::device::Device;
+pub use crate::command_buffer::*;
 
 use utils::{Extent, RGBA};
-
-use crate::{image, sampler, window, raster_pipeline};
 
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
@@ -35,16 +34,16 @@ pub enum DataTypes {
 }
 
 #[derive(Clone, Hash)]
-pub struct VertexElement {
-	pub(crate) name: String,
+pub struct VertexElement<'a> {
+	pub(crate) name: &'a str,
 	pub(crate) format: DataTypes,
 	pub(crate) binding: u32,
 }
 
-impl VertexElement {
-	pub fn new(name: &str, format: DataTypes, binding: u32) -> Self {
+impl <'a> VertexElement<'a> {
+	pub const fn new(name: &'a str, format: DataTypes, binding: u32) -> Self {
 		Self {
-			name: name.to_string(),
+			name,
 			format,
 			binding,
 		}
@@ -58,6 +57,9 @@ bitflags::bitflags! {
 		const CpuWrite = 1 << 1;
 		const GpuRead = 1 << 2;
 		const GpuWrite = 1 << 3;
+
+		const HostToDevice = 1 << 1 | 1 << 2;
+		const DeviceToHost = 1 << 0 | 1 << 3;
 	}
 }
 
@@ -286,93 +288,6 @@ pub struct BottomLevelAccelerationStructure {
 	pub description: BottomLevelAccelerationStructureDescriptions,
 }
 
-pub trait CommandBufferRecordable where Self: Sized {
-	/// Enables recording on the command buffer.
-	fn begin(&mut self);
-
-	fn sync_buffers(&mut self);
-	fn sync_textures(&mut self,);
-
-	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
-	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
-
-	/// Starts a render pass on the GPU.
-	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
-	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]) -> &mut impl RasterizationRenderPassMode;
-
-	/// Binds a shader to the GPU.
-	fn bind_shader(&self, shader_handle: ShaderHandle);
-
-	/// Writes to the push constant register.
-	fn write_to_push_constant(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: &[u8]);
-
-	fn write_push_constant<T: Copy + 'static>(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized;
-
-	unsafe fn consume_resources(&mut self, handles: &[Consumption]);
-
-	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
-	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
-
-	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
-
-	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
-	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
-
-	fn bind_compute_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundComputePipelineMode;
-
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
-
-	fn blit_image(&mut self, source_image: ImageHandle, source_layout: Layouts, destination_image: ImageHandle, destination_layout: Layouts);
-
-	/// Ends recording on the command buffer.
-	fn end(&mut self);
-
-	/// Binds a decriptor set on the GPU.
-	fn bind_descriptor_sets(&mut self, pipeline_layout: &PipelineLayoutHandle, sets: &[DescriptorSetHandle]) -> &mut impl CommandBufferRecordable;
-
-	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
-
-	fn start_region(&self, name: &str);
-
-	fn end_region(&self);
-
-	/// Starts a debug region on the GPU and executes the closure.
-	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self));
-
-	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], presentations: &[PresentKey], execution_synchronizer_handle: SynchronizerHandle);
-}
-
-pub trait RasterizationRenderPassMode: CommandBufferRecordable {
-	/// Binds a pipeline to the GPU.
-	fn bind_raster_pipeline(&mut self, pipeline_handle: &PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
-
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
-
-	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
-
-	/// Ends a render pass on the GPU.
-	fn end_render_pass(&mut self);
-}
-
-pub trait BoundRasterizationPipelineMode: RasterizationRenderPassMode {
-	/// Draws a render system mesh.
-	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
-
-	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
-
-	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
-}
-
-pub trait BoundComputePipelineMode: CommandBufferRecordable {
-	fn dispatch(&mut self, dispatch: DispatchExtent);
-
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: &BufferHandle<[(u32, u32, u32); N]>, entry_index: usize);
-}
-
-pub trait BoundRayTracingPipelineMode: CommandBufferRecordable {
-	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Ranges {
 	Size(usize),
@@ -410,7 +325,7 @@ pub enum UseCases {
 	DYNAMIC
 }
 
-#[derive(Clone,)]
+#[derive(Clone,Copy)]
 pub struct ShaderBindingDescriptor {
 	pub(crate) set: u32,
 	pub(crate) binding: u32,
@@ -542,144 +457,6 @@ pub struct PresentKey {
 	pub(crate) sequence_index: u8,
 	/// The swapchain handle corresponding to the presentation request that this key is associated with.
 	pub(crate) swapchain: SwapchainHandle,
-}
-
-pub trait Device where Self: Sized {
-	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
-	#[cfg(debug_assertions)]
-	fn has_errors(&self) -> bool;
-
-	fn set_frames_in_flight(&mut self, frames: u8);
-
-	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
-	fn create_allocation(&mut self, size: usize, _resource_uses: Uses, resource_device_accesses: DeviceAccesses) -> AllocationHandle;
-
-	fn add_mesh_from_vertices_and_indices(&mut self, vertex_count: u32, index_count: u32, vertices: &[u8], indices: &[u8], vertex_layout: &[VertexElement]) -> MeshHandle;
-
-	/// Creates a shader.
-	/// # Arguments
-	/// * `name` - The name of the shader.
-	/// * `shader_source_type` - The type of the shader source.
-	/// * `stage` - The stage of the shader.
-	/// * `shader_binding_descriptors` - The binding descriptors of the shader.
-	/// # Returns
-	/// The handle of the shader.
-	/// # Errors
-	/// Returns an error if the shader source was GLSL source code and could not be compiled.
-	/// Returns an error if the shader source was SPIR-V binary and could not aligned to 4 bytes.
-	fn create_shader(&mut self, name: Option<&str>, shader_source_type: ShaderSource, stage: ShaderTypes, shader_binding_descriptors: &[ShaderBindingDescriptor],) -> Result<ShaderHandle, ()>;
-
-	fn create_descriptor_set_template(&mut self, name: Option<&str>, binding_templates: &[DescriptorSetBindingTemplate]) -> DescriptorSetTemplateHandle;
-
-	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_template_handle: &DescriptorSetTemplateHandle) -> DescriptorSetHandle;
-
-	fn create_descriptor_binding(&mut self, descriptor_set: DescriptorSetHandle, binding_constructor: BindingConstructor) -> DescriptorSetBindingHandle;
-
-	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
-
-	fn create_pipeline_layout(&mut self, descriptor_set_template_handles: &[DescriptorSetTemplateHandle], push_constant_ranges: &[PushConstantRange]) -> PipelineLayoutHandle;
-
-	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> PipelineHandle;
-
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shader_parameter: ShaderParameter) -> PipelineHandle;
-
-	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &PipelineLayoutHandle, shaders: &[ShaderParameter]) -> PipelineHandle;
-
-	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle;
-
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle, frame_key: Option<FrameKey>) -> crate::CommandBufferRecording;
-
-	/// Creates a new static buffer.\
-	/// If the access includes [`DeviceAccesses::CpuWrite`] and [`DeviceAccesses::GpuRead`] then multiple buffers will be created, one for each frame.\
-	/// Staging buffers MAY be created if there's is not sufficient CPU writable, fast GPU readable memory.\
-	///
-	/// # Arguments
-	///
-	/// * `size` - The size of the buffer in elements.
-	/// * `resource_uses` - The uses of the buffer.
-	/// * `device_accesses` - The accesses of the buffer.
-	///
-	/// # Returns
-	///
-	/// The handle of the buffer.
-	fn create_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses) -> BufferHandle<T>;
-
-	fn create_dynamic_buffer<T: Copy>(&mut self, name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses) -> DynamicBufferHandle<T>;
-
-	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
-
-	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
-
-	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: BufferHandle<T>) -> &'a mut T;
-
-	fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: DynamicBufferHandle<T>, frame_key: FrameKey) -> &'a mut T;
-
-	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
-
-	/// Enables writing to a texture and queues a copy operation for it.
-	/// Texture must still be synchronized by calling `sync` on a command buffer.
-	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
-
-	/// Creates an image.
-	///
-	/// # Arguments
-	///
-	/// * `extent` - The size of the image. Can be 0 to skip eager allocation, such as for framebuffers.
-	/// * `format` - The format of the image.
-	fn create_image(&mut self, name: Option<&str>, extent: Extent, format: Formats, resource_uses: Uses, device_accesses: DeviceAccesses, use_case: UseCases, array_layers: Option<NonZeroU32>) -> ImageHandle;
-
-	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;
-
-	fn create_sampler(&mut self, filtering_mode: FilteringModes, reduction_mode: SamplingReductionModes, mip_map_mode: FilteringModes, addressing_mode: SamplerAddressingModes, anisotropy: Option<f32>, min_lod: f32, max_lod: f32) -> SamplerHandle;
-
-	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle;
-
-	fn create_acceleration_structure_instance_buffer(&mut self, name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle;
-
-	fn create_top_level_acceleration_structure(&mut self, name: Option<&str>, max_instance_count: u32) -> TopLevelAccelerationStructureHandle;
-	fn create_bottom_level_acceleration_structure(&mut self, description: &BottomLevelAccelerationStructure) -> BottomLevelAccelerationStructureHandle;
-
-	fn write_instance(&mut self, instances_buffer_handle: BaseBufferHandle, instance_index: usize, transform: [[f32; 4]; 3], custom_index: u16, mask: u8, sbt_record_offset: usize, acceleration_structure: BottomLevelAccelerationStructureHandle);
-
-	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
-
-	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: PresentationModes, fallback_extent: Extent) -> SwapchainHandle;
-
-	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
-
-	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
-	/// Multiple underlying synchronization primitives are created, one for each frame
-	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
-
-	/// Starts a new frame by waiting for these sequence frame's synchronizers.
-	fn start_frame(&mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> FrameKey;
-
-	/// Acquires an image from the swapchain as to have it ready for presentation.
-	///
-	/// # Arguments
-	///
-	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
-	///
-	/// # Returns
-	/// A present key for future presentation and, if defined, the extent of the image.
-	/// # Errors
-	fn acquire_swapchain_image(&mut self, frame_key: FrameKey, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
-
-	/// Resizes an image to the specified extent.
-	/// Does nothing if the image is already the specified extent.
-	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
-
-	/// Resizes a buffer to the specified size.
-	/// Does nothing if the buffer is already the specified size.
-	/// May not resize the buffer if a smaller size is requested.
-	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
-
-	fn start_frame_capture(&self);
-
-	fn end_frame_capture(&self);
-
-	fn wait(&self);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1522,7 +1299,7 @@ impl QueueSelection {
 pub(super) mod tests {
 	use std::borrow::Borrow;
 
-	use crate::window::Window;
+	use crate::{device::Device, frame::Frame as _, raster_pipeline, window::Window};
 
 	use resource_management::glsl;
 
@@ -1657,8 +1434,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
@@ -1677,7 +1454,7 @@ pub(super) mod tests {
 
 		device.start_frame_capture();
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, None);
+		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [
 			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA::black()), false, true,)
@@ -1736,8 +1513,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1755,13 +1532,13 @@ pub(super) mod tests {
 
 		window.poll();
 
-		let frame_key = renderer.start_frame(0, render_finished_synchronizer);
-
-		let (present_key, _) = renderer.acquire_swapchain_image(frame_key, swapchain,);
-
 		renderer.start_frame_capture();
 
-		let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+		let mut frame = renderer.start_frame(0, render_finished_synchronizer);
+
+		let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+
+		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [
 			AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
@@ -1805,8 +1582,8 @@ pub(super) mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
 		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
@@ -1817,8 +1594,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
@@ -1835,13 +1612,13 @@ pub(super) mod tests {
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
 		for i in 0..2*64 {
-			let frame_key = renderer.start_frame(i, render_finished_synchronizer);
-
-			let (present_key, _) = renderer.acquire_swapchain_image(frame_key, swapchain,);
-
 			renderer.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut frame = renderer.start_frame(i, render_finished_synchronizer);
+
+			let (present_key, _) = frame.acquire_swapchain_image(swapchain,);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
 				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
@@ -1893,8 +1670,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
@@ -1914,11 +1691,11 @@ pub(super) mod tests {
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
-
 			device.start_frame_capture();
 
-			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
 				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
@@ -1973,8 +1750,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
@@ -1997,11 +1774,11 @@ pub(super) mod tests {
 				device.set_frames_in_flight(3); // Change from default 2 to 3
 			}
 
-			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
-
 			device.start_frame_capture();
 
-			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
 				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
@@ -2055,8 +1832,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
@@ -2080,11 +1857,11 @@ pub(super) mod tests {
 				device.resize_image(render_target, extent);
 			}
 
-			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
-
 			device.start_frame_capture();
 
-			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
 				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
@@ -2141,8 +1918,8 @@ pub(super) mod tests {
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
 
@@ -2164,11 +1941,11 @@ pub(super) mod tests {
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = device.start_frame(i as u32, render_finished_synchronizer);
-
 			device.start_frame_capture();
 
-			let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
 				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
@@ -2249,7 +2026,7 @@ pub(super) mod tests {
 
 		let compute_shader_artifact = glsl::compile(compute_shader_string, "compute").unwrap();
 
-		let compute_shader = device.create_shader(None, ShaderSource::SPIRV(compute_shader_artifact.borrow().into()), ShaderTypes::Compute, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
+		let compute_shader = device.create_shader(None, ShaderSource::SPIRV(compute_shader_artifact.borrow().into()), ShaderTypes::Compute, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
 
 		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
 		let last_frame_image_binding_template = DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
@@ -2271,9 +2048,9 @@ pub(super) mod tests {
 
 		let signal = device.create_synchronizer(None, true);
 
-		let frame_key = device.start_frame(0, signal);
+		let mut frame = device.start_frame(0, signal);
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
 
 		let data = [0.5f32];
 
@@ -2293,9 +2070,9 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let frame_key = device.start_frame(1, signal);
+		let mut frame = device.start_frame(1, signal);
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
 
 		let data = [1.0f32];
 
@@ -2315,9 +2092,9 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let frame_key = device.start_frame(2, signal);
+		let mut frame = device.start_frame(2, signal);
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2332,9 +2109,9 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let frame_key = device.start_frame(3, signal);
+		let mut frame = device.start_frame(3, signal);
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer, frame_key.into());
+		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2360,8 +2137,8 @@ pub(super) mod tests {
 		];
 
 		let vertex_layout = [
-			VertexElement{ name: "POSITION".to_string(), format: DataTypes::Float3, binding: 0 },
-			VertexElement{ name: "COLOR".to_string(), format: DataTypes::Float4, binding: 0 },
+			VertexElement::new("POSITION", DataTypes::Float3, 0),
+			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
 		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
@@ -2408,8 +2185,8 @@ pub(super) mod tests {
 		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
 		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, &[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
+		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, [ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
+		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
 		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
 
@@ -2455,9 +2232,9 @@ pub(super) mod tests {
 
 		device.start_frame_capture();
 
-		let frame_key = device.start_frame(0, signal);
+		let mut frame = device.start_frame(0, signal);
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle, frame_key.into());
+		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
@@ -2612,9 +2389,9 @@ void main() {
 		let closest_hit_shader_artifact = glsl::compile(closest_hit_shader_code, "closest_hit").unwrap();
 		let miss_shader_artifact = glsl::compile(miss_shader_code, "miss").unwrap();
 
-		let raygen_shader = renderer.create_shader(None, ShaderSource::SPIRV(raygen_shader_artifact.borrow().into()), ShaderTypes::RayGen, &[ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]).expect("Failed to create raygen shader");
-		let closest_hit_shader = renderer.create_shader(None, ShaderSource::SPIRV(closest_hit_shader_artifact.borrow().into()), ShaderTypes::ClosestHit, &[ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
-		let miss_shader = renderer.create_shader(None, ShaderSource::SPIRV(miss_shader_artifact.borrow().into()), ShaderTypes::Miss, &[]).expect("Failed to create miss shader");
+		let raygen_shader = renderer.create_shader(None, ShaderSource::SPIRV(raygen_shader_artifact.borrow().into()), ShaderTypes::RayGen, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]).expect("Failed to create raygen shader");
+		let closest_hit_shader = renderer.create_shader(None, ShaderSource::SPIRV(closest_hit_shader_artifact.borrow().into()), ShaderTypes::ClosestHit, [ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
+		let miss_shader = renderer.create_shader(None, ShaderSource::SPIRV(miss_shader_artifact.borrow().into()), ShaderTypes::Miss, []).expect("Failed to create miss shader");
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"), 1);
 		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{
@@ -2672,11 +2449,11 @@ void main() {
 		renderer.write_sbt_entry(hit_sbt_buffer.into(), 0, pipeline, closest_hit_shader);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			let frame_key = renderer.start_frame(i as u32, render_finished_synchronizer);
-
 			renderer.start_frame_capture();
 
-			let mut command_buffer_recording = renderer.create_command_buffer_recording(rendering_command_buffer_handle, frame_key.into());
+			let mut frame = renderer.start_frame(i as u32, render_finished_synchronizer);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(rendering_command_buffer_handle);
 
 			{
 				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {

@@ -1,9 +1,7 @@
-use std::num::NonZeroU32;
 use std::sync::atomic::AtomicU64;
 
 use ash::vk;
 use ::utils::hash::HashMap;
-use ::utils::Extent;
 
 use crate::graphics_hardware_interface;
 use crate::vulkan::sampler::SamplerHandle;
@@ -12,6 +10,7 @@ pub mod queue;
 pub mod command_buffer;
 pub mod instance;
 pub mod device;
+pub mod frame;
 pub mod buffer;
 pub mod image;
 pub mod sampler;
@@ -21,6 +20,7 @@ mod utils;
 pub use self::instance::*;
 pub use self::device::*;
 pub use self::command_buffer::*;
+pub use self::frame::*;
 pub use self::buffer::*;
 pub use self::image::*;
 

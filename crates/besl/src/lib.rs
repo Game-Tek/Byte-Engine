@@ -12,6 +12,9 @@ pub use lexer::Nodes;
 pub use crate::lexer::NodeReference;
 pub use crate::lexer::BindingTypes;
 
+/// Useful type alias for the parser's node type.
+pub type ParserNode = parser::Node;
+
 /// Parses BESL source code.
 /// It first tokenizes the input then feeds it to the parser to build a syntax tree.
 /// The syntax tree is just another representation of the source code.

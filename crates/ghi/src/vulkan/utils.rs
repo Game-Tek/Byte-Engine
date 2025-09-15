@@ -414,7 +414,7 @@ impl Size for graphics_hardware_interface::DataTypes {
 	}
 }
 
-impl Size for &[graphics_hardware_interface::VertexElement] {
+impl Size for &[graphics_hardware_interface::VertexElement<'_>] {
 	fn size(&self) -> usize {
 		let mut size = 0;
 

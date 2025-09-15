@@ -35,6 +35,9 @@ impl GeneratedShader {
 	}
 }
 
+/// The `SPIRVShaderGenerator` generates SPIR-V shaders from Byte Engine Shader Language program descriptions.
+/// > [!IMPORTANT]
+/// > Creating an instance of `SPIRVShaderGenerator` is an expensive operation, and as such, it should be reused whenever possible.
 pub struct SPIRVShaderGenerator {}
 
 impl ShaderGenerator for SPIRVShaderGenerator {}

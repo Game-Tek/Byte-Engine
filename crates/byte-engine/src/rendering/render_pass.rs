@@ -22,7 +22,7 @@ pub trait RenderPass {
 	///
 	/// If the render pass is not needed, it returns `None`.
 	/// If it is needed, it may execute setup code and return a `RenderPassRecordCommand` that can be used to effectively record the render pass.
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand>;
+	fn prepare(&mut self, frame: &mut ghi::Frame, extent: Extent) -> Option<RenderPassCommand>;
 }
 
 pub struct FullScreenRenderPass {
@@ -45,7 +45,7 @@ impl FullScreenRenderPass {
 
 		let shader_artifact = glsl::compile(shader, "shader").unwrap();
 
-		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::SPIRV(shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, &[bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
+		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::SPIRV(shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
 
 		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
 
@@ -58,7 +58,7 @@ impl FullScreenRenderPass {
 }
 
 impl RenderPass for FullScreenRenderPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, extent: Extent) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}
@@ -126,7 +126,7 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, extent: Extent) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}
@@ -265,7 +265,7 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, extent: Extent) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}
@@ -282,15 +282,15 @@ impl RenderPass for BlitPass {
 }
 
 pub struct RenderPassBuilder<'a> {
-	ghi: Arc<RwLock<ghi::Device>>,
+	device: &'a mut ghi::Device,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
 }
 
 impl <'a> RenderPassBuilder<'a> {
-	pub fn new(ghi: Arc<RwLock<ghi::Device>>) -> Self {
+	pub fn new(device: &'a mut ghi::Device) -> Self {
 		RenderPassBuilder {
-			ghi,
+			device,
 			consumed_resources: Vec::new(),
 			images: HashMap::new(),
 		}
@@ -312,8 +312,8 @@ impl <'a> RenderPassBuilder<'a> {
 		ReadFromResult { image, }
 	}
 
-	pub fn ghi(&mut self) -> Arc<RwLock<ghi::Device>> {
-		Arc::clone(&self.ghi)
+	pub fn device(&mut self) -> &'_ mut ghi::Device {
+		self.device
 	}
 }
 

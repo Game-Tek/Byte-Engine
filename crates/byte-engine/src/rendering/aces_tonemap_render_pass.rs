@@ -27,26 +27,25 @@ impl AcesToneMapPass {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to("result");
 
-		let ghi = render_pass_builder.ghi();
-		let mut ghi = ghi.write();
+		let device = render_pass_builder.device();
 
-		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
+		let descriptor_set_layout = device.create_descriptor_set_template(Some("Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
 
-		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
+		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
-		let descriptor_set = ghi.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
+		let descriptor_set = device.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
 
-		let source_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
-		let destination_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
+		let source_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
+		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
 
 		let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "ACES Tonemapping").unwrap();
 
-		let tone_mapping_shader = ghi.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, &[
+		let tone_mapping_shader = device.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [
 			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create tone mapping shader");
 
-		let tone_mapping_pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
+		let tone_mapping_pipeline = device.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
 
 		AcesToneMapPass {
 			descriptor_set_layout,
@@ -66,7 +65,7 @@ impl RenderPass for AcesToneMapPass {
 		vec!["result"]
 	}
 
-	fn prepare(&self, ghi: &mut ghi::Device, extent: Extent, frame_key: FrameKey) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, extent: Extent) -> Option<RenderPassCommand> {
 		if extent.width() == 0 || extent.height() == 0 {
 			return None; // No need to record if the extent is zero.
 		}

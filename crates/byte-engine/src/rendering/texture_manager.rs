@@ -31,7 +31,7 @@ impl TextureManager {
 		}
 	}
 
-	pub fn load(&mut self, reference: &mut Reference<Image>, ghi: Arc<RwLock<ghi::Device>>) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
+	pub fn load(&mut self, reference: &mut Reference<Image>, device: &mut ghi::Device) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
 		if let Some(r) = self.textures.get(reference.id()) {
 			return Some((reference.id().to_string(), r.0, r.1));
 		}
@@ -50,14 +50,8 @@ impl TextureManager {
 
 		let extent = Extent::from(texture.extent);
 
-		let image;
-		let target_buffer;
-
-		{
-			let mut ghi = ghi.write();
-			image = ghi.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC, None);
-			target_buffer = ghi.get_texture_slice_mut(image);
-		}
+		let image = device.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC, None);
+		let target_buffer = device.get_texture_slice_mut(image);
 
 		let load_target = reference.load(target_buffer.into()).unwrap();
 
@@ -89,10 +83,7 @@ impl TextureManager {
 		// 	new_texture
 		// };
 
-		let sampler = {
-			let mut ghi = ghi.write();
-			self.create_sampler(&mut ghi)
-		};
+		let sampler = self.create_sampler(device);
 
 		let v = (image, sampler);
 
@@ -103,7 +94,7 @@ impl TextureManager {
 		Some((reference.id().to_string(), v.0, v.1))
 	}
 
-	fn create_sampler(&mut self, ghi: &mut ghi::Device) -> ghi::SamplerHandle {
+	fn create_sampler(&mut self, device: &mut ghi::Device) -> ghi::SamplerHandle {
 		let sampler_state = SamplerState {
 			filtering_mode: ghi::FilteringModes::Linear,
 			reduction_mode: ghi::SamplingReductionModes::WeightedAverage,
@@ -117,7 +108,7 @@ impl TextureManager {
 		match self.samplers.entry(sampler_state) {
 			Entry::Occupied(v) => v.get().clone(),
 			Entry::Vacant(v) => {
-				let sampler_handler = ghi.create_sampler(sampler_state.filtering_mode, sampler_state.reduction_mode, sampler_state.mip_map_mode, sampler_state.addressing_mode, sampler_state.anisotropy.map(|v| v.get() as f32), sampler_state.min_lod as f32, sampler_state.max_lod as f32);
+				let sampler_handler = device.create_sampler(sampler_state.filtering_mode, sampler_state.reduction_mode, sampler_state.mip_map_mode, sampler_state.addressing_mode, sampler_state.anisotropy.map(|v| v.get() as f32), sampler_state.min_lod as f32, sampler_state.max_lod as f32);
 				v.insert(sampler_handler);
 				sampler_handler
 			}

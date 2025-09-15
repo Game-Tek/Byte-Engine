@@ -6,7 +6,7 @@ use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
 
-use super::common_shader_generator::CommonShaderGenerator;
+use super::super::common_shader_generator::CommonShaderGenerator;
 
 pub struct VisibilityShaderScope {
 }

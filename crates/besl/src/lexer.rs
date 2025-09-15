@@ -430,6 +430,26 @@ impl Node {
 		}
 	}
 
+	pub fn input(name: &str, format: NodeReference, location: u8) -> Node {
+		Node {
+			node: Nodes::Input {
+				name: name.to_string(),
+				format,
+				location,
+			},
+		}
+	}
+
+	pub fn output(name: &str, format: NodeReference, location: u8) -> Node {
+		Node {
+			node: Nodes::Output {
+				name: name.to_string(),
+				format,
+				location,
+			},
+		}
+	}
+
 	pub fn new(node: Nodes) -> Node {
 		Node {
 			node,
@@ -476,6 +496,9 @@ impl Node {
 	pub fn get_name(&self) -> Option<&str> {
 		match &self.node {
 			Nodes::Scope { name, .. } | Nodes::Function { name, .. } | Nodes::Member { name, .. } | Nodes::Struct { name, .. } | Nodes::Intrinsic { name, .. } | Nodes::Binding { name, .. } | Nodes::Parameter { name, .. } => {
+				Some(name)
+			}
+			Nodes::Input { name, .. } | Nodes::Output { name, .. } => {
 				Some(name)
 			}
 			Nodes::PushConstant { .. } => Some("push_constant"),
@@ -600,6 +623,16 @@ pub enum Nodes {
 		elements: Vec<NodeReference>,
 		r#return: NodeReference,
 	},
+	Input {
+		name: String,
+		format: NodeReference,
+		location: u8,
+	},
+	Output {
+		name: String,
+		format: NodeReference,
+		location: u8,
+	},
 	Parameter {
 		name: String,
 		r#type: NodeReference,
@@ -610,6 +643,27 @@ pub enum Nodes {
 	},
 }
 
+impl Nodes {
+	pub fn is_leaf(&self) -> bool {
+		match self {
+			Nodes::Function { .. } => false,
+			Nodes::Struct { .. } => false,
+			Nodes::Binding { .. } => false,
+			Nodes::PushConstant { .. } => false,
+			Nodes::Input { .. } | Nodes::Output { .. } => false,
+			Nodes::Specialization { .. } => false,
+			Nodes::Literal { .. } => true,
+			Nodes::Parameter { .. } => true,
+			Nodes::Null => true,
+			Nodes::Scope { .. } => true,
+			Nodes::Intrinsic { .. } => true,
+			Nodes::Member { .. } => true,
+			Nodes::Expression { .. } => true,
+			Nodes::GLSL { .. } => true,
+		}
+	}
+}
+
 impl std::fmt::Debug for Node {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match &self.node {
@@ -617,7 +671,7 @@ impl std::fmt::Debug for Node {
 			Nodes::Scope { name, children } => { write!(f, "Scope {{ name: {}, children: {:#?} }}", name, children.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Struct { name, fields, .. } => { write!(f, "Struct {{ name: {}, fields: {:?} }}", name, fields.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Member { name, r#type, .. } => { write!(f, "Member {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name().map(|e| e.to_string())) }
-			Nodes::Function { name, .. } => { write!(f, "Function {{ name: {}  }}", name) }
+			Nodes::Function { name, params, statements, .. } => { write!(f, "Function {{ name: {}, parameters: {:?}, statements: {:?} }}", name, params.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), statements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Specialization { name, r#type } => { write!(f, "Specialization {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name().map(|e| e.to_string())) }
 			Nodes::Expression(expression) => { write!(f, "Expression {{ {:?} }}", expression) }
 			Nodes::GLSL { code, input, output } => { write!(f, "GLSL {{ code: {}, input: {:?}, output: {:?} }}", code, input.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), output.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
@@ -625,6 +679,8 @@ impl std::fmt::Debug for Node {
 			Nodes::PushConstant { members } => { write!(f, "PushConstant {{ members: {:?} }}", members.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Intrinsic { name, elements, r#return } => { write!(f, "Intrinsic {{ name: {}, elements: {:?}, return: {:?} }}", name, elements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), r#return.0.borrow().get_name().map(|e| e.to_string())) }
 			Nodes::Parameter { name, r#type } => { write!(f, "Parameter {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name().map(|e| e.to_string())) }
+			Nodes::Input { name, format, location } => { write!(f, "Input {{ name: {}, format: {:?}, location: {} }}", name, format.0.borrow().get_name().map(|e| e.to_string()), location) }
+			Nodes::Output { name, format, location } => { write!(f, "Output {{ name: {}, format: {:?}, location: {} }}", name, format.0.borrow().get_name().map(|e| e.to_string()), location) }
 			Nodes::Literal { name, value } => { write!(f, "Literal {{ name: {}, value: {:?} }}", name, value.0.borrow().get_name().map(|e| e.to_string())) }
 		}
 	}
@@ -819,6 +875,28 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			let this = Node::new(Nodes::Parameter {
 				name: name.clone(),
 				r#type: t,
+			});
+
+			this.into()
+		}
+		parser::Nodes::Input { name, format, location } => {
+			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType { type_name: format.clone() })?;
+
+			let this = Node::new(Nodes::Input {
+				name: name.clone(),
+				format: t,
+				location: location.clone(),
+			});
+
+			this.into()
+		}
+		parser::Nodes::Output { name, format, location } => {
+			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType { type_name: format.clone() })?;
+
+			let this = Node::new(Nodes::Output {
+				name: name.clone(),
+				format: t,
+				location: location.clone(),
 			});
 
 			this.into()

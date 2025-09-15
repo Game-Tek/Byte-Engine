@@ -96,8 +96,7 @@ impl GLSLShaderGenerator {
 		let graph = self.build_graph(main_function_node.clone());
 
 		let order = topological_sort(&graph);
-		// Generate only direct definition to non leaf nodes
-		let order = order.into_iter().filter(|n| matches!(n.borrow().node(), besl::Nodes::Function { .. }) || matches!(n.borrow().node(), besl::Nodes::Struct { .. }) || matches!(n.borrow().node(), besl::Nodes::Binding { .. }) || matches!(n.borrow().node(), besl::Nodes::PushConstant { .. }) || matches!(n.borrow().node(), besl::Nodes::Specialization { .. }));
+		let order = order.into_iter().filter(|n| !n.borrow().node().is_leaf());
 
 		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
 
@@ -242,11 +241,7 @@ impl GLSLShaderGenerator {
 					}
 					besl::Expressions::Member { source, .. } => {
 						match source.borrow().node() {
-							besl::Nodes::Expression { .. } => {}
-							besl::Nodes::Literal { .. } => {
-								self.build_graph_inner(node.clone(), source.clone(), graph);
-							}
-							besl::Nodes::Member { .. } => {}
+							besl::Nodes::Expression { .. } | besl::Nodes::Member { .. } => {}
 							_ => {
 								self.build_graph_inner(node.clone(), source.clone(), graph);
 							}
@@ -276,6 +271,9 @@ impl GLSLShaderGenerator {
 					besl::BindingTypes::CombinedImageSampler { .. } => {}
 				}
 			}
+			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
+				self.build_graph_inner(node.clone(), format.clone(), graph);
+			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
 					self.build_graph_inner(node.clone(), element.clone(), graph);
@@ -287,8 +285,15 @@ impl GLSLShaderGenerator {
 		}
 	}
 
+	// This function appends to the `string` parameter the string representation of the node.
+	//
+	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
+	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(&this_node);
+
+		let break_char = if self.minified { "" } else { "\n" };
+		let space_char = if self.minified { "" } else { " " };
 
 		match node.node() {
 			besl::Nodes::Null => {}
@@ -406,6 +411,15 @@ impl GLSLShaderGenerator {
 			}
 			besl::Nodes::Parameter { name, r#type } => {
 				string.push_str(&format!("{} {}", Self::translate_type(&r#type.borrow().get_name().unwrap()), name));
+			}
+			besl::Nodes::Input { name, location, format } => {
+				let format = format.borrow();
+				let type_name = Self::translate_type(&format.get_name().unwrap());
+				let is_flat = type_name == "uint";
+				string.push_str(&format!("layout(location={}){space_char}{}in {} {};{break_char}", location, if is_flat { &format!("flat{space_char}") } else { "" }, type_name, name));
+			}
+			besl::Nodes::Output { name, location, format } => {
+				string.push_str(&format!("layout(location={}){space_char}out {} {};{break_char}", location, Self::translate_type(&format.borrow().get_name().unwrap()), name));
 			}
 			besl::Nodes::Expression(expression) => {
 				match expression {
@@ -633,12 +647,30 @@ mod tests {
 	}
 
 	#[test]
-	fn test_specializtions() {
+	fn specializtions() {
 		let main = shader_generator::tests::specializations();
 
 		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "layout(constant_id=0)const float color_x=1.0f;layout(constant_id=1)const float color_y=1.0f;layout(constant_id=2)const float color_z=1.0f;const vec3 color=vec3(color_x,color_y,color_z);void main(){color;}");
+	}
+
+	#[test]
+	fn input() {
+		let main = shader_generator::tests::input();
+
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "layout(location=0)in vec3 color;void main(){color;}");
+	}
+
+	#[test]
+	fn output() {
+		let main = shader_generator::tests::output();
+
+		let shader = GLSLShaderGenerator::new().minified(true).generate(&ShaderGenerationSettings::vertex(), &main).expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "layout(location=0)out vec3 color;void main(){color;}");
 	}
 
 	#[test]

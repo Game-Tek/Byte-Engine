@@ -187,6 +187,9 @@ impl SPIRVShaderGenerator {
 			besl::Nodes::Member { r#type, .. } => {
 				self.build_graph(bindings, r#type);
 			}
+			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
+				self.build_graph(bindings, format);
+			}
 			besl::Nodes::Null { .. } => {
 				// Do nothing
 			}

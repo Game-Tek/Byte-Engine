@@ -126,6 +126,50 @@ pub mod tests {
 		main
 	}
 
+	pub fn input() -> besl::NodeReference {
+		let script = r#"
+		main: fn () -> void {
+			color;
+		}
+		"#;
+
+		let mut root_node = besl::Node::root();
+
+		let vec3f_type = root_node.get_child("vec3f").unwrap();
+
+		root_node.add_children(vec![
+			besl::Node::input("color", vec3f_type, 0).into(),
+		]);
+
+		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
+
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		main
+	}
+
+	pub fn output() -> besl::NodeReference {
+		let script = r#"
+		main: fn () -> void {
+			color;
+		}
+		"#;
+
+		let mut root_node = besl::Node::root();
+
+		let vec3f_type = root_node.get_child("vec3f").unwrap();
+
+		root_node.add_children(vec![
+			besl::Node::output("color", vec3f_type, 0).into(),
+		]);
+
+		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
+
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		main
+	}
+
 	pub fn fragment_shader() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {

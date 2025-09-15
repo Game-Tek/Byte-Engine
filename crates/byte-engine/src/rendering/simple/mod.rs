@@ -57,7 +57,9 @@ impl SimpleRenderModel {
 			let cameras_binding = ParserNode::binding("cameras", ParserNode::buffer("CamerasBuffer", vec![ParserNode::member("cameras", "Camera[8]")]), 0, 0, true, false);
 			let instances_binding = ParserNode::binding("instances", ParserNode::buffer("InstancesBuffer", vec![ParserNode::member("instances", "Instance[8]")]), 1, 0, true, false);
 
-			let shader = besl::ParserNode::scope("Shader", vec![camera, instance, cameras_binding, instances_binding, main]);
+			let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
+
+			let shader = besl::ParserNode::scope("Shader", vec![camera, instance, cameras_binding, instances_binding, instance_index_output, main]);
 
 			root.add(vec![CommonShaderScope::new(), shader]);
 
@@ -80,7 +82,9 @@ impl SimpleRenderModel {
 
 			let mut root = besl::ParserNode::root();
 
-			let shader = besl::ParserNode::scope("Shader", vec![main]);
+			let instance_index_input = ParserNode::input("in_instance_index", "u32", 0);
+
+			let shader = besl::ParserNode::scope("Shader", vec![instance_index_input, main]);
 
 			root.add(vec![CommonShaderScope::new(), shader]);
 

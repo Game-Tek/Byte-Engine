@@ -218,6 +218,26 @@ impl Node {
 		}
 	}
 
+	pub fn input(name: &str, format: &str, location: u8) -> Node {
+		Node {
+			node: Nodes::Input {
+				name: name.to_string(),
+				format: format.to_string(),
+				location,
+			},
+		}
+	}
+
+	pub fn output(name: &str, format: &str, location: u8) -> Node {
+		Node {
+			node: Nodes::Output {
+				name: name.to_string(),
+				format: format.to_string(),
+				location,
+			},
+		}
+	}
+
 	pub fn intrinsic(name: &str, parameters: Node, body: Node, r#return: &str) -> Node {
 		Node {
 			node: Nodes::Intrinsic {
@@ -279,6 +299,7 @@ impl Node {
 			Nodes::Literal { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => None,
+			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
 			Nodes::Null => None,
 		}
 	}
@@ -372,6 +393,16 @@ pub enum Nodes {
 		name: String,
 		elements: Vec<Node>,
 		r#return: String,
+	},
+	Input {
+		name: String,
+		format: String,
+		location: u8,
+	},
+	Output {
+		name: String,
+		format: String,
+		location: u8,
 	},
 	Literal {
 		name: String,

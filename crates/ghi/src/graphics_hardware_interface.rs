@@ -1185,10 +1185,19 @@ pub struct BufferDescriptor {
 }
 
 impl BufferDescriptor {
-	pub fn new<T: Copy, const N: usize>(buffer: BufferHandle<[T; N]>, offset: usize, range: usize, slot: u32) -> Self {
+	pub fn new<T: Copy, const N: usize>(buffer: BufferHandle<[T; N]>) -> Self {
 		Self {
 			buffer: buffer.into(),
-			offset: std::mem::size_of::<T>() * offset,
+			offset: 0,
+		}
+	}
+}
+
+impl <T: Copy> Into<BufferDescriptor> for BufferHandle<T> {
+	fn into(self) -> BufferDescriptor {
+		BufferDescriptor {
+			buffer: self.into(),
+			offset: 0,
 		}
 	}
 }
@@ -1462,7 +1471,9 @@ pub(super) mod tests {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+
+		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1546,7 +1557,9 @@ pub(super) mod tests {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+
+		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1626,7 +1639,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1703,7 +1718,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1786,7 +1803,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1869,7 +1888,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(&pipeline);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1945,15 +1966,15 @@ pub(super) mod tests {
 
 			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+			let mut cb = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
 				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
-			let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+			let c = cb.start_render_pass(extent, &attachments);
 
-			let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(&pipeline);
+			let c = c.bind_pipeline_layout(&pipeline_layout);
 
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
@@ -1965,15 +1986,17 @@ pub(super) mod tests {
 					0f32, 0f32, 0f32, 1f32,
 				];
 
-			raster_pipeline_command.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(matrix.as_ptr() as *const u8, 16 * 4) });
+			c.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(matrix.as_ptr() as *const u8, 16 * 4) });
 
-			raster_pipeline_command.draw_mesh(&mesh);
+			let c = c.bind_raster_pipeline(&pipeline);
 
-			raster_render_pass_command.end_render_pass();
+			c.draw_mesh(&mesh);
 
-			let copy_texture_handles = command_buffer_recording.transfer_textures(&[render_target]);
+			c.end_render_pass();
 
-			command_buffer_recording.execute(&[], &[], &[], render_finished_synchronizer);
+			let copy_texture_handles = cb.transfer_textures(&[render_target]);
+
+			cb.execute(&[], &[], &[], render_finished_synchronizer);
 
 			device.end_frame_capture();
 
@@ -2054,8 +2077,10 @@ pub(super) mod tests {
 
 		let data = [0.5f32];
 
-		command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(&pipeline_layout);
+
+		pipeline_layout_command.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
+		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2076,8 +2101,10 @@ pub(super) mod tests {
 
 		let data = [1.0f32];
 
-		command_buffer_recording.write_to_push_constant(&pipeline_layout, 0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
-		command_buffer_recording.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(&pipeline_layout);
+
+		pipeline_layout_command.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
+		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2244,9 +2271,11 @@ pub(super) mod tests {
 
 		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(&pipeline);
+		let pipeline_layout_command = raster_render_pass_command.bind_pipeline_layout(&pipeline_layout);
 
-		raster_pipeline_command.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]);
+
+		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -2466,7 +2495,7 @@ void main() {
 						index_format: DataTypes::U16,
 						triangle_count: 1,
 					},
-					scratch_buffer: BufferDescriptor::new(scratch_buffer, 0, 1024 * 512, 0),
+					scratch_buffer: BufferDescriptor::new(scratch_buffer),
 				}]);
 
 				unsafe { command_buffer_recording.consume_resources(&[
@@ -2484,13 +2513,15 @@ void main() {
 						instances_buffer,
 						instance_count: 1,
 					},
-					scratch_buffer: BufferDescriptor::new(scratch_buffer, 1024 * 512, 1024 * 512, 0),
+					scratch_buffer: BufferDescriptor::new(scratch_buffer),
 				});
 			}
 
-			let ray_tracing_pipeline_command = command_buffer_recording.bind_ray_tracing_pipeline(&pipeline);
+			let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(&pipeline_layout);
 
-			ray_tracing_pipeline_command.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
+			let ray_tracing_pipeline_command = pipeline_layout_command.bind_ray_tracing_pipeline(&pipeline);
+
+			ray_tracing_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
 
 			unsafe { ray_tracing_pipeline_command.consume_resources(&[
 				Consumption {

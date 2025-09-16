@@ -32,8 +32,6 @@ pub struct Device {
 
 	pub(super) frames: u8,
 
-	pub(super) acquired_image_count: u32,
-
 	pub(super) queues: Vec<Queue>,
 	pub(super) buffers: Vec<Buffer>,
 	pub(super) images: Vec<Image>,
@@ -59,18 +57,19 @@ pub struct Device {
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 
-	/// Tracks pending buffer synchronization operations.
-	/// Buffer handle, pipeline stage
+	/// Tracks pending buffer host to device, or device to host synchronization operations.
 	pub(super) pending_buffer_syncs: Mutex<VecDeque<BufferHandle>>,
+	/// Tracks pending image host to device, or device to host synchronization operations.
 	pub(super) pending_image_syncs: Mutex<VecDeque<ImageHandle>>,
 
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
 
-	#[cfg(debug_assertions)]
 	/// Stores the debug names for resources.
 	/// Used when inspecting resources from a rendering debugger such as RenderDoc.
+	#[cfg(debug_assertions)]
 	names: HashMap<graphics_hardware_interface::Handle, String>,
 
+	/// A queue of deferred tasks. Usually object deletions and resource updates.
 	tasks: VecDeque<Task>,
 
 	pub(crate) semaphores: [vk::Semaphore; 2],
@@ -421,8 +420,6 @@ impl Device {
 			debugger: RenderDebugger::new(),
 
 			frames: 2, // Assuming double buffering
-
-			acquired_image_count: 0,
 
 			queues,
 			allocations: Vec::new(),
@@ -2192,8 +2189,6 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle) -> crate::CommandBufferRecording {
-		use graphics_hardware_interface::CommandBufferRecordable;
-
 		let mut pending_buffers = self.pending_buffer_syncs.lock();
 
 		let buffer_copies = pending_buffers.drain(..).map(|e| {
@@ -2220,9 +2215,7 @@ impl crate::device::Device for Device {
 
 		drop(pending_images);
 
-		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, buffer_copies, image_copies, None);
-
-		recording.begin();
+		let recording = CommandBufferRecording::new(self, command_buffer_handle, buffer_copies, image_copies, None);
 
 		recording
 	}

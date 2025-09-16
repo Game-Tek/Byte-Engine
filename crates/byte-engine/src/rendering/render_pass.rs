@@ -1,8 +1,9 @@
+
 use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device, FrameKey};
+use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, BoundPipelineLayoutMode as _, CommandBufferRecordable, CommonCommandBufferMode as _, Device, FrameKey};
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 
@@ -69,9 +70,10 @@ impl RenderPass for FullScreenRenderPass {
 
 		Some(Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
 			command_buffer_recording.region("Full Screen Pass", |command_buffer| {
-				let command_buffer = command_buffer.bind_compute_pipeline(&pipeline);
-				command_buffer.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
-				command_buffer.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
+				let c = command_buffer.bind_pipeline_layout(&pipeline_layout);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				let c = c.bind_compute_pipeline(&pipeline);
+				c.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
 			});
 		}))
 	}
@@ -132,9 +134,10 @@ impl RenderPass for BilateralBlurPass {
 		}
 
 		let execute_in_axis = |command_buffer: &mut ghi::CommandBufferRecording, pipeline_layout: &ghi::PipelineLayoutHandle, pipeline: &ghi::PipelineHandle, descriptor_set: ghi::DescriptorSetHandle, extent: Extent| {
-			let command_buffer = command_buffer.bind_compute_pipeline(pipeline);
-			command_buffer.bind_descriptor_sets(pipeline_layout, &[descriptor_set]);
-			command_buffer.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
+			let c = command_buffer.bind_pipeline_layout(pipeline_layout);
+			c.bind_descriptor_sets(&[descriptor_set]);
+			let c = c.bind_compute_pipeline(pipeline);
+			c.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
 		};
 
 		let pipeline_layout = self.pipeline_layout;

@@ -148,9 +148,7 @@ impl crate::frame::Frame for Frame<'_> {
 
 		self.device.process_tasks(frame_key.sequence_index);
 
-		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
-
-		recording.begin();
+		let recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
 
 		recording
 	}

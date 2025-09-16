@@ -358,6 +358,8 @@ pub(crate) enum Tasks {
 	Other(Box<dyn Fn()>),
 }
 
+/// The `Task` struct represents a deferred task that needs to be executed at a later time.
+/// This is because some tasks need to be executed at a particular time or frame.
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: Option<u8>,

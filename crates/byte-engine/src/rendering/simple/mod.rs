@@ -4,7 +4,7 @@ use core::slice::SlicePattern;
 use std::{collections::VecDeque, sync::Arc};
 
 use besl::ParserNode;
-use ghi::{frame::Frame, graphics_hardware_interface::Device, BoundRasterizationPipelineMode, CommandBufferRecordable, RasterizationRenderPassMode};
+use ghi::{frame::Frame, graphics_hardware_interface::Device, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode, CommandBufferRecordable, CommonCommandBufferMode as _, RasterizationRenderPassMode};
 use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
@@ -12,12 +12,18 @@ use utils::{json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::Rw
 use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh::{MeshSource, RenderEntity}, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}}};
 
 pub struct SimpleRenderModel {
-	meshes: Vec<ghi::MeshHandle>,
+	meshes: Vec<u32>,
 	camera: Option<EntityHandle<Camera>>,
+
+	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
+	indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
 
 	instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
 	camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 
+	descriptor_set: ghi::DescriptorSetHandle,
+
+	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 
 	pending_entities: VecDeque<EntityHandle<dyn RenderEntity>>,
@@ -29,37 +35,59 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 
 impl SimpleRenderModel {
 	pub fn new<'a>(render_pass_builder: &mut RenderPassBuilder<'a>) -> Self {
+		let render_to = render_pass_builder.render_to("main");
+
 		let device = render_pass_builder.device();
+
+		let vertex_positions_buffer = device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
+		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
 
 		let instance_data_buffer = device.create_dynamic_buffer(Some("Instance Data Buffer"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
 		let camera_data_buffer = device.create_dynamic_buffer(Some("Camera Data Buffer"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
+		let instance_data_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
+		let camera_data_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
+
+		let descriptor_set_layout = device.create_descriptor_set_template(None, &[
+			instance_data_binding_template.clone(),
+			camera_data_binding_template.clone(),
+		]);
+
+		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout);
+
+		device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer.into()));
+		device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer.into()));
+
+		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4)]);
 
 		let mut shader_generator = SPIRVShaderGenerator::new();
 
 		let generated_vertex_shader = {
 			let main_code = r#"
 			Camera camera = cameras.cameras[0];
+			uint instance_index = push_constant.instance_index;
 			Instance instance = instances.instances[instance_index];
 
-			gl_Position = camera.view_projection * instance.transform * vec4(position, 1.0);
+			gl_Position = camera.view_projection * instance.transform * vec4(in_position, 1.0);
 			out_instance_index = instance_index;
 			"#.trim();
 
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["cameras", "instances"], Vec::new())]);
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["cameras", "instances", "push_constant", "in_position", "out_instance_index"], Vec::new())]);
 
 			let mut root = besl::ParserNode::root();
+
+			let push_constant = ParserNode::push_constant(vec![ParserNode::member("instance_index", "u32")]);
 
 			let camera = ParserNode::r#struct("Camera", vec![ParserNode::member("view_projection", "mat4f")]);
 			let instance = ParserNode::r#struct("Instance", vec![ParserNode::member("transform", "mat4f")]);
 
 			let cameras_binding = ParserNode::binding("cameras", ParserNode::buffer("CamerasBuffer", vec![ParserNode::member("cameras", "Camera[8]")]), 0, 0, true, false);
-			let instances_binding = ParserNode::binding("instances", ParserNode::buffer("InstancesBuffer", vec![ParserNode::member("instances", "Instance[8]")]), 1, 0, true, false);
+			let instances_binding = ParserNode::binding("instances", ParserNode::buffer("InstancesBuffer", vec![ParserNode::member("instances", "Instance[8]")]), 0, 1, true, false);
 
+			let position_input = ParserNode::input("in_position", "vec3f", 0);
 			let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
 
-			let shader = besl::ParserNode::scope("Shader", vec![camera, instance, cameras_binding, instances_binding, instance_index_output, main]);
+			let shader = besl::ParserNode::scope("Shader", vec![camera, instance, cameras_binding, instances_binding, position_input, instance_index_output, push_constant, main]);
 
 			root.add(vec![CommonShaderScope::new(), shader]);
 
@@ -75,16 +103,17 @@ impl SimpleRenderModel {
 		let generated_fragment_shader = {
 			let main_code = r#"
 			uint instance_index = in_instance_index;
-			output = get_debug_color(instance_index);
+			out_albedo = get_debug_color(instance_index);
 			"#.trim();
 
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["get_debug_color"], Vec::new())]);
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["in_instance_index", "out_albedo", "get_debug_color"], Vec::new())]);
 
 			let mut root = besl::ParserNode::root();
 
 			let instance_index_input = ParserNode::input("in_instance_index", "u32", 0);
+			let albedo_output = ParserNode::output("out_albedo", "vec4f", 0);
 
-			let shader = besl::ParserNode::scope("Shader", vec![instance_index_input, main]);
+			let shader = besl::ParserNode::scope("Shader", vec![instance_index_input, albedo_output, main]);
 
 			root.add(vec![CommonShaderScope::new(), shader]);
 
@@ -100,15 +129,21 @@ impl SimpleRenderModel {
 		let vertex_shader = device.create_shader(Some("Vertex Shader"), ghi::ShaderSource::SPIRV(generated_vertex_shader.binary()), ghi::ShaderTypes::Vertex, generated_vertex_shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor)).unwrap();
 		let fragment_shader = device.create_shader(Some("Fragment Shader"), ghi::ShaderSource::SPIRV(generated_fragment_shader.binary()), ghi::ShaderTypes::Fragment, generated_fragment_shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor)).unwrap();
 
-		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(pipeline_layout, &VERTEX_LAYOUT, &[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)], &[ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBu11u11u10)]));
+		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(pipeline_layout, &VERTEX_LAYOUT, &[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)], &[render_to.into()]));
 
 		Self {
 			meshes: Vec::new(),
 			camera: None,
 
+			vertex_positions_buffer,
+			indeces_buffer,
+
+			descriptor_set,
+
 			instance_data_buffer,
 			camera_data_buffer,
 
+			pipeline_layout,
 			pipeline,
 
 			pending_entities: VecDeque::with_capacity(64),
@@ -158,11 +193,20 @@ impl RenderPass for SimpleRenderModel {
 					MeshSource::Generated(generator) => {
 						let vertices = generator.vertices();
 						let indices = generator.indices();
+						let indices = indices.iter().map(|&index| index as u16);
 
 						let vertex_count = vertices.len();
 						let index_count = indices.len();
 
-						let mesh = frame.device().add_mesh_from_vertices_and_indices(vertex_count as u32, index_count as u32, unsafe { std::mem::transmute(vertices.as_slice()) }, unsafe { std::mem::transmute(indices.as_slice()) }, &VERTEX_LAYOUT);
+						let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
+
+						vertex_buffer[0..vertex_count].copy_from_slice(vertices.as_slice());
+
+						let index_buffer = frame.device().get_mut_buffer_slice(self.indeces_buffer);
+
+						index_buffer[0..index_count].iter_mut().zip(indices).for_each(|(dst, src)| {
+							*dst = src;
+						});
 
 						mesh
 					}
@@ -172,7 +216,7 @@ impl RenderPass for SimpleRenderModel {
 					}
 				};
 
-				self.meshes.push(mesh);
+				self.meshes.push(0);
 			}
 		}
 
@@ -194,14 +238,24 @@ impl RenderPass for SimpleRenderModel {
 		}
 
 		let meshes = self.meshes.clone();
+		let pipeline_layout = self.pipeline_layout;
 		let pipeline = self.pipeline.clone();
+		let descriptor_set = self.descriptor_set;
+		let vertex_buffer = self.vertex_positions_buffer;
+		let index_buffer = self.indeces_buffer;
 
 		Some(Box::new(move |c, t| {
-			let render_pass = c.start_render_pass(extent, t);
-			let pipeline = render_pass.bind_raster_pipeline(&pipeline);
+			c.bind_vertex_buffers(&[vertex_buffer.into()]);
+			c.bind_index_buffer(&index_buffer.into());
+			let c = c.start_render_pass(extent, t);
+			let c = c.bind_pipeline_layout(&pipeline_layout);
+			c.bind_descriptor_sets(&[descriptor_set]);
+			let c = c.bind_raster_pipeline(&pipeline);
 			for mesh in &meshes {
-				pipeline.draw_mesh(&mesh);
+				c.write_push_constant(0, 0 as u32);
+				c.draw_indexed(384, 1, 0, 0, 0);
 			}
+			c.end_render_pass();
 		}))
 	}
 }

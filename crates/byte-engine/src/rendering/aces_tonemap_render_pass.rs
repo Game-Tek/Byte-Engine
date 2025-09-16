@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::core::EntityHandle;
 
-use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, CommandBufferRecordable, Device, FrameKey};
+use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, BoundPipelineLayoutMode as _, CommandBufferRecordable, CommonCommandBufferMode as _, Device, FrameKey};
 use resource_management::glsl;
 use utils::{Extent, Box};
 
@@ -74,12 +74,13 @@ impl RenderPass for AcesToneMapPass {
 		let pipeline = self.pipeline;
 		let descriptor_set = self.descriptor_set;
 
-		Some(Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
-			command_buffer_recording.start_region("Tonemap");
-			let r = command_buffer_recording.bind_compute_pipeline(&pipeline);
-			r.bind_descriptor_sets(&pipeline_layout, &[descriptor_set]);
-			r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-			command_buffer_recording.end_region();
+		Some(Box::new(move |c: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+			c.region("Tonemap", |c| {
+				let c = c.bind_pipeline_layout(&pipeline_layout);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				let r = c.bind_compute_pipeline(&pipeline);
+				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			});
 		}))
 	}
 }

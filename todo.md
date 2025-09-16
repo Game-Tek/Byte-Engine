@@ -1,3 +1,5 @@
 - Test render frame with renderer but no elements
 - Test asset path
 - Support no audio endpoint
+- Add support for perprimitiveEXT qualifier in shader outputs
+	- remove them from mesh shader header

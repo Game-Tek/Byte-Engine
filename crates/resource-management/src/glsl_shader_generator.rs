@@ -1,3 +1,4 @@
+
 use std::{cell::RefCell, collections::{HashMap, HashSet}};
 
 use crate::shader_generator::{MatrixLayouts, ShaderGenerationSettings, ShaderGenerator, Stages};
@@ -415,7 +416,7 @@ impl GLSLShaderGenerator {
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
 				let type_name = Self::translate_type(&format.get_name().unwrap());
-				let is_flat = type_name == "uint";
+				let is_flat = type_name == "int8_t" || type_name == "uint8_t" || type_name == "int16_t" || type_name == "uint16_t" || type_name == "int" || type_name == "int32_t" || type_name == "uint" || type_name == "uint32_t" || type_name == "int64_t" || type_name == "uint64_t";
 				string.push_str(&format!("layout(location={}){space_char}{}in {} {};{break_char}", location, if is_flat { &format!("flat{space_char}") } else { "" }, type_name, name));
 			}
 			besl::Nodes::Output { name, location, format } => {

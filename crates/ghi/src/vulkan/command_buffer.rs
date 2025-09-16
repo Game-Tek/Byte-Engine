@@ -14,6 +14,7 @@ pub struct CommandBufferRecording<'a> {
 	states: HashMap<Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
+	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 
@@ -23,7 +24,7 @@ pub struct CommandBufferRecording<'a> {
 
 impl CommandBufferRecording<'_> {
 	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, buffer_copies: Vec<BufferCopy>, image_copies: Vec<ImageCopy>, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
-		CommandBufferRecording {
+		let command_buffer = CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
@@ -31,6 +32,7 @@ impl CommandBufferRecording<'_> {
 			in_render_pass: false,
 			states: ghi.states.clone(),
 
+			bound_pipeline_layout: None,
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
 
@@ -38,7 +40,21 @@ impl CommandBufferRecording<'_> {
 			image_copies,
 
 			ghi,
-		}
+		};
+
+		command_buffer.begin();
+
+		command_buffer
+	}
+
+	fn begin(&self) {
+		let command_buffer = self.get_command_buffer();
+
+		unsafe { self.ghi.device.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty()).expect("No command pool reset") };
+
+		let command_buffer_begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+		unsafe { self.ghi.device.begin_command_buffer(command_buffer.command_buffer, &command_buffer_begin_info).expect("No command buffer begin") };
 	}
 
 	fn get_buffer(&self, buffer_handle: BufferHandle) -> &Buffer {
@@ -316,16 +332,6 @@ impl CommandBufferRecording<'_> {
 }
 
 impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecording<'_> {
-	fn begin(&mut self) {
-		let command_buffer = self.get_command_buffer();
-
-		unsafe { self.ghi.device.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty()).expect("No command pool reset") };
-
-		let command_buffer_begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-		unsafe { self.ghi.device.begin_command_buffer(command_buffer.command_buffer, &command_buffer_begin_info).expect("No command buffer begin") };
-	}
-
 	fn sync_buffers(&mut self) {
 		let copy_buffers = self.buffer_copies.drain(..).collect::<Vec<_>>();
 
@@ -681,30 +687,44 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new(),);
 	}
 
-	fn bind_shader(&self, _: graphics_hardware_interface::ShaderHandle) {
-		panic!("Not implemented");
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
+		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| {
+			VulkanConsumption {
+				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+				stages: vk::PipelineStageFlags2::VERTEX_INPUT,
+				access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+				layout: vk::ImageLayout::UNDEFINED,
+			}
+		}).collect::<Vec<_>>();
+
+		unsafe {
+			self.vulkan_consume_resources(&consumptions);
+		}
+
+		let command_buffer = self.get_command_buffer();
+
+		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)).buffer).collect::<Vec<_>>();
+		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
+
+		// TODO: implent slot splitting
+		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets.iter().map(|&e| e as _).collect::<Vec<_>>()); }
 	}
 
-	fn bind_compute_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundComputePipelineMode {
+	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+		unsafe {
+			self.vulkan_consume_resources(&[VulkanConsumption {
+				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+				stages: vk::PipelineStageFlags2::INDEX_INPUT,
+				access: vk::AccessFlags2::INDEX_READ,
+				layout: vk::ImageLayout::UNDEFINED,
+			}]);
+		}
+
 		let command_buffer = self.get_command_buffer();
-		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
-		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline); }
 
-		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
-		self.bound_pipeline = Some(*pipeline_handle);
+		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
 
-		self
-	}
-
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundRayTracingPipelineMode {
-		let command_buffer = self.get_command_buffer();
-		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
-		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline); }
-
-		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
-		self.bound_pipeline = Some(*pipeline_handle);
-
-		self
+		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset as _, vk::IndexType::UINT16); }
 	}
 
 	fn blit_image(&mut self, source_image: crate::ImageHandle, source_layout: crate::Layouts, destination_image: crate::ImageHandle, destination_layout: crate::Layouts) {
@@ -760,18 +780,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 				.filter(vk::Filter::LINEAR);
 			self.ghi.device.cmd_blit_image2(command_buffer.command_buffer, &blit_info);
 		}
-	}
-
-	fn write_to_push_constant(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, offset: u32, data: &[u8]) {
-		let command_buffer = self.get_command_buffer();
-		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
-		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
-	}
-
-	fn write_push_constant<T: Copy + 'static>(&mut self, pipeline_layout_handle: &crate::PipelineLayoutHandle, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized {
-		let command_buffer = self.get_command_buffer();
-		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
-		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>())); }
 	}
 
 	fn clear_images(&mut self, textures: &[(graphics_hardware_interface::ImageHandle, graphics_hardware_interface::ClearValue)]) {
@@ -1049,68 +1057,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		}
 	}
 
-	fn end(&mut self) {
-		let command_buffer = self.get_command_buffer();
-
-		if self.in_render_pass {
-			unsafe {
-				self.ghi.device.cmd_end_render_pass(command_buffer.command_buffer);
-			}
-		}
-
-		unsafe {
-			self.ghi.device.end_command_buffer(command_buffer.command_buffer).expect("Failed to end command buffer.");
-		}
-	}
-
-	fn bind_descriptor_sets(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut impl graphics_hardware_interface::CommandBufferRecordable {
-		if sets.is_empty() { return self; }
-
-		let pipeline_layout = &self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize];
-
-		let s = sets.iter().map(|descriptor_set_handle| {
-			let internal_descriptor_set_handle = self.get_internal_descriptor_set_handle(*descriptor_set_handle);
-			let descriptor_set = self.get_descriptor_set(&internal_descriptor_set_handle);
-			let index_in_layout = pipeline_layout.descriptor_set_template_indices.get(&descriptor_set.descriptor_set_layout).unwrap();
-			(*index_in_layout, internal_descriptor_set_handle, descriptor_set.descriptor_set)
-		}).collect::<Vec<_>>();
-
-		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
-
-		for (descriptor_set_index, descriptor_set_handle, _) in s {
-			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
-				self.bound_descriptor_set_handles[descriptor_set_index as usize] = (descriptor_set_index, descriptor_set_handle);
-				self.bound_descriptor_set_handles.truncate(descriptor_set_index as usize + 1);
-			} else {
-				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
-				self.bound_descriptor_set_handles.push((descriptor_set_index, descriptor_set_handle));
-			}
-		}
-
-		let command_buffer = self.get_command_buffer();
-
-		let partitions = partition(&self.bound_descriptor_set_handles, |e| e.0 as usize);
-
-		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change
-		for (base_index, descriptor_sets) in partitions {
-			let base_index = base_index as u32;
-
-			let descriptor_sets = descriptor_sets.iter().map(|(_, descriptor_set)| self.get_descriptor_set(descriptor_set).descriptor_set).collect::<Vec<_>>();
-
-			unsafe {
-				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] { // TODO: do this for all needed bind points
-					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, bp, vulkan_pipeline_layout_handle, base_index, &descriptor_sets, &[]);
-				}
-
-				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
-					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, vulkan_pipeline_layout_handle, base_index, &descriptor_sets, &[]);
-				}
-			}
-		}
-
-		self
-	}
-
 	fn execute(mut self, wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], presentations: &[graphics_hardware_interface::PresentKey], execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		// Transition all resources which where written to but not consumed by any previous command
 		// If this is skipped validation layers (correctly) complain about missing sync even no "read" operation was performed, except for the following commands
@@ -1127,7 +1073,19 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 			}
 		}
 
-		self.end();
+		{
+			let command_buffer = self.get_command_buffer();
+
+			if self.in_render_pass {
+				unsafe {
+					self.ghi.device.cmd_end_render_pass(command_buffer.command_buffer);
+				}
+			}
+
+			unsafe {
+				self.ghi.device.end_command_buffer(command_buffer.command_buffer).expect("Failed to end command buffer.");
+			}
+		}
 
 		let sequence_index = self.sequence_index;
 		let frame_index = self.frame_index;
@@ -1210,8 +1168,6 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 
 			let _ = unsafe { self.ghi.swapchain.queue_present(vk_queue, &present_info).expect("No present") };
 
-			self.ghi.acquired_image_count -= 1;
-
 			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
 				dbg!("Some error occurred during presentation");
 			}
@@ -1220,6 +1176,13 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		unsafe {
 			let _ = self.ghi.device.signal_semaphore(&vk::SemaphoreSignalInfo::default().semaphore(self.ghi.semaphores[sequence_index as usize]).value(frame_index as u64 + 2));
 		}
+	}
+}
+
+impl graphics_hardware_interface::CommonCommandBufferMode for CommandBufferRecording<'_> {
+	fn bind_pipeline_layout(&mut self, pipeline_layout: &crate::PipelineLayoutHandle) -> &mut impl crate::BoundPipelineLayoutMode {
+    	self.bound_pipeline_layout = Some(pipeline_layout.clone());
+    	self
 	}
 
 	fn start_region(&self, name: &str) {
@@ -1257,7 +1220,15 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 }
 
 impl graphics_hardware_interface::RasterizationRenderPassMode for CommandBufferRecording<'_> {
-	/// Binds a pipeline to the GPU.
+	/// Ends a render pass on the GPU.
+	fn end_render_pass(&mut self) {
+		let command_buffer = self.get_command_buffer();
+		unsafe { self.ghi.device.cmd_end_rendering(command_buffer.command_buffer); }
+		self.in_render_pass = false;
+	}
+}
+
+impl graphics_hardware_interface::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_raster_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundRasterizationPipelineMode {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
@@ -1269,51 +1240,90 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for CommandBufferR
 		self
 	}
 
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
-		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| {
-			VulkanConsumption {
-				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-				stages: vk::PipelineStageFlags2::VERTEX_INPUT,
-				access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-				layout: vk::ImageLayout::UNDEFINED,
-			}
+	fn bind_compute_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundComputePipelineMode {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
+		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline); }
+
+		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
+		self.bound_pipeline = Some(*pipeline_handle);
+
+		self
+	}
+
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: &graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundRayTracingPipelineMode {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
+		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline); }
+
+		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
+		self.bound_pipeline = Some(*pipeline_handle);
+
+		self
+	}
+
+	fn write_to_push_constant(&mut self, offset: u32, data: &[u8]) {
+		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
+		let command_buffer = self.get_command_buffer();
+		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
+		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
+	}
+
+	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized {
+		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
+		let command_buffer = self.get_command_buffer();
+		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
+		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>())); }
+	}
+
+	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
+		if sets.is_empty() { return self; }
+
+		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
+
+		let pipeline_layout = &self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize];
+
+		let s = sets.iter().map(|descriptor_set_handle| {
+			let internal_descriptor_set_handle = self.get_internal_descriptor_set_handle(*descriptor_set_handle);
+			let descriptor_set = self.get_descriptor_set(&internal_descriptor_set_handle);
+			let index_in_layout = pipeline_layout.descriptor_set_template_indices.get(&descriptor_set.descriptor_set_layout).unwrap();
+			(*index_in_layout, internal_descriptor_set_handle, descriptor_set.descriptor_set)
 		}).collect::<Vec<_>>();
 
-		unsafe {
-			self.vulkan_consume_resources(&consumptions);
+		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
+
+		for (descriptor_set_index, descriptor_set_handle, _) in s {
+			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
+				self.bound_descriptor_set_handles[descriptor_set_index as usize] = (descriptor_set_index, descriptor_set_handle);
+				self.bound_descriptor_set_handles.truncate(descriptor_set_index as usize + 1);
+			} else {
+				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
+				self.bound_descriptor_set_handles.push((descriptor_set_index, descriptor_set_handle));
+			}
 		}
 
 		let command_buffer = self.get_command_buffer();
 
-		let buffers = buffer_descriptors.iter().map(|buffer_descriptor| self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)).buffer).collect::<Vec<_>>();
-		let offsets = buffer_descriptors.iter().map(|buffer_descriptor| buffer_descriptor.offset).collect::<Vec<_>>();
+		let partitions = partition(&self.bound_descriptor_set_handles, |e| e.0 as usize);
 
-		// TODO: implent slot splitting
-		unsafe { self.ghi.device.cmd_bind_vertex_buffers(command_buffer.command_buffer, 0, &buffers, &offsets.iter().map(|&e| e as _).collect::<Vec<_>>()); }
-	}
+		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change
+		for (base_index, descriptor_sets) in partitions {
+			let base_index = base_index as u32;
 
-	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
-		unsafe {
-			self.vulkan_consume_resources(&[VulkanConsumption {
-				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-				stages: vk::PipelineStageFlags2::INDEX_INPUT,
-				access: vk::AccessFlags2::INDEX_READ,
-				layout: vk::ImageLayout::UNDEFINED,
-			}]);
+			let descriptor_sets = descriptor_sets.iter().map(|(_, descriptor_set)| self.get_descriptor_set(descriptor_set).descriptor_set).collect::<Vec<_>>();
+
+			unsafe {
+				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] { // TODO: do this for all needed bind points
+					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, bp, vulkan_pipeline_layout_handle, base_index, &descriptor_sets, &[]);
+				}
+
+				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
+					self.ghi.device.cmd_bind_descriptor_sets(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, vulkan_pipeline_layout_handle, base_index, &descriptor_sets, &[]);
+				}
+			}
 		}
 
-		let command_buffer = self.get_command_buffer();
-
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
-
-		unsafe { self.ghi.device.cmd_bind_index_buffer(command_buffer.command_buffer, buffer.buffer, buffer_descriptor.offset as _, vk::IndexType::UINT16); }
-	}
-
-	/// Ends a render pass on the GPU.
-	fn end_render_pass(&mut self) {
-		let command_buffer = self.get_command_buffer();
-		unsafe { self.ghi.device.cmd_end_rendering(command_buffer.command_buffer); }
-		self.in_render_pass = false;
+		self
 	}
 }
 

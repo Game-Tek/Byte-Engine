@@ -40,8 +40,8 @@ pub struct SphereMeshGenerator {
 
 impl SphereMeshGenerator {
 	pub fn new(radius: f32) -> Self {
-		let segments = 4;
-		let rings = 4;
+		let segments = 8;
+		let rings = 8;
 
 		let mut vertices = Vec::new();
 

@@ -1445,6 +1445,26 @@ impl Device {
 				Tasks::WriteDescriptor { binding_handle, descriptor } => {
 					descriptor_writes.push(DescriptorWrite::new(*descriptor, *binding_handle));
 				}
+				Tasks::UpdateDescriptor { descriptor_write } => {
+					let binding_handles = DescriptorSetBindingHandle(descriptor_write.binding_handle.0).get_all(&self.bindings);
+					let binding = binding_handles[sequence_index as usize];
+
+					let descriptor_write = match descriptor_write.descriptor {
+						graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
+							let handles = BufferHandle(handle.0).get_all(&self.buffers);
+							let handle = handles[sequence_index as usize];
+							DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding)
+						}
+						graphics_hardware_interface::Descriptor::Image { handle, layout } => {
+							let handles = ImageHandle(handle.0).get_all(&self.images);
+							let handle = handles[sequence_index as usize];
+							DescriptorWrite::new(Descriptors::Image { handle, layout }, binding)
+						}
+						_ => panic!("Unhandled descriptor update type"),
+					}.index(descriptor_write.array_element);
+
+					descriptor_writes.push(descriptor_write);
+				}
 				Tasks::BuildImage(builder) => {
 					#[cfg(debug_assertions)]
 					let name = self.names.get(&graphics_hardware_interface::Handle::Image(builder.master)).map(|e| e.clone());
@@ -1787,18 +1807,16 @@ impl crate::device::Device for Device {
 			graphics_hardware_interface::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
 		};
 
-		let offset = constructor.frame_offset.unwrap_or(0) as isize;
-
 		let descriptor_set_handles = DescriptorSetHandle(descriptor_set.0).get_all(&self.descriptor_sets);
 
 		let mut next = None;
 
-		for (i, &descriptor_set_handle) in descriptor_set_handles.iter().enumerate() {
+		for descriptor_set_handle in &descriptor_set_handles {
 			let binding_handle = DescriptorSetBindingHandle(self.bindings.len() as u64);
 
 			let created_binding = Binding {
 				next,
-				descriptor_set_handle,
+				descriptor_set_handle: *descriptor_set_handle,
 				descriptor_type,
 				count: binding.descriptor_count,
 				index: binding.binding,
@@ -1807,46 +1825,17 @@ impl crate::device::Device for Device {
 			self.bindings.push(created_binding);
 
 			next = Some(binding_handle);
-
-			let index = i as isize + offset;
-
-			let descriptor = match constructor.descriptor {
-				crate::Descriptor::Buffer { handle, size } => {
-					let handles = BufferHandle(handle.0).get_all(&self.buffers);
-
-					Descriptors::Buffer { handle: handles[index.rem_euclid(handles.len() as isize) as usize], size }
-				}
-				crate::Descriptor::Image { handle, layout } => {
-					let handles = ImageHandle(handle.0).get_all(&self.images);
-
-					Descriptors::Image { handle: handles[index.rem_euclid(handles.len() as isize) as usize], layout }
-				}
-				crate::Descriptor::CombinedImageSampler { image_handle, sampler_handle, layout, layer } => {
-					let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
-					let sampler_handles = vec![SamplerHandle(sampler_handle.0); 3];
-
-					Descriptors::CombinedImageSampler {
-						image_handle: image_handles[index.rem_euclid(image_handles.len() as isize) as usize],
-						sampler_handle: sampler_handles[index.rem_euclid(sampler_handles.len() as isize) as usize],
-						layout,
-						layer,
-					}
-				}
-				crate::Descriptor::Sampler(e) => {
-					let sampler_handles = vec![SamplerHandle(e.0); 3];
-
-					Descriptors::Sampler { handle: sampler_handles[index.rem_euclid(sampler_handles.len() as isize) as usize] }
-				}
-				crate::Descriptor::CombinedImageSamplerArray => {
-					Descriptors::CombinedImageSamplerArray {}
-				},
-				_ => panic!("Unsupported descriptor type")
-			};
-
-			self.tasks.push_back(Task::write_descriptor(binding_handle, descriptor, Some(i as u8)));
 		}
 
-		graphics_hardware_interface::DescriptorSetBindingHandle(next.expect("No next binding").0)
+		let handle = graphics_hardware_interface::DescriptorSetBindingHandle(next.expect("No next binding").0);
+
+		for (i, _) in descriptor_set_handles.iter().enumerate() {
+			let task = Task::update_resource_descriptor(graphics_hardware_interface::DescriptorWrite::new(handle, constructor.descriptor), Some(i as u8));
+
+			self.tasks.push_back(task);
+		}
+
+		handle
 	}
 
 	fn create_descriptor_set(&mut self, name: Option<&str>, descriptor_set_layout_handle: &graphics_hardware_interface::DescriptorSetTemplateHandle) -> graphics_hardware_interface::DescriptorSetHandle {

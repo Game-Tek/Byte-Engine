@@ -348,6 +348,9 @@ pub(crate) enum Tasks {
 	UpdateImageDescriptors {
 		handle: ImageHandle,
 	},
+	UpdateDescriptor {
+		descriptor_write: graphics_hardware_interface::DescriptorWrite,
+	},
 	/// Update a particular descriptor.
 	/// This task will most likely be enqueued for performance reasons. Since it is cheaper to update multiple descriptors at once instead of sporadically.
 	WriteDescriptor {
@@ -406,6 +409,13 @@ impl Task {
 	pub(crate) fn update_image_descriptor(handle: ImageHandle, frame: Option<u8>) -> Self {
 		Self {
 			task: Tasks::UpdateImageDescriptors { handle },
+			frame,
+		}
+	}
+
+	pub(crate) fn update_resource_descriptor(descriptor_write: graphics_hardware_interface::DescriptorWrite, frame: Option<u8>) -> Self {
+		Self {
+			task: Tasks::UpdateDescriptor { descriptor_write },
 			frame,
 		}
 	}

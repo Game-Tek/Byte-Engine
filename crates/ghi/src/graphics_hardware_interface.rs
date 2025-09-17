@@ -170,6 +170,18 @@ pub enum Handle {
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
+impl Into<Handle> for BaseBufferHandle {
+	fn into(self) -> Handle {
+		Handle::Buffer(self)
+	}
+}
+
+impl Into<Handle> for ImageHandle {
+	fn into(self) -> Handle {
+		Handle::Image(self)
+	}
+}
+
 // HANDLES
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -1075,6 +1087,15 @@ pub struct DescriptorWrite {
 }
 
 impl DescriptorWrite {
+	pub fn new(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptor) -> DescriptorWrite {
+		DescriptorWrite {
+			binding_handle,
+			array_element: 0,
+			descriptor,
+			frame_offset: None,
+		}
+	}
+
 	pub fn buffer(binding_handle: DescriptorSetBindingHandle, buffer_handle: BaseBufferHandle) -> DescriptorWrite {
 		DescriptorWrite {
 			binding_handle,

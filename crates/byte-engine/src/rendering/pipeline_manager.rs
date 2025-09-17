@@ -17,7 +17,7 @@ impl PipelineManager {
 		}
 	}
 
-	pub fn load_material(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, device: &mut ghi::Device) -> Option<ghi::PipelineHandle> {
+	pub fn load_material(&self, pipeline_layout_handle: ghi::PipelineLayoutHandle, reference: &mut Reference<Material>, device: &mut ghi::Device) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();
@@ -77,7 +77,7 @@ impl PipelineManager {
 		r.ok().map(|v| *v)
 	}
 
-	pub fn load_variant(&self, pipeline_layout_handle: &ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, device: &mut ghi::Device,) -> Option<ghi::PipelineHandle> {
+	pub fn load_variant(&self, pipeline_layout_handle: ghi::PipelineLayoutHandle, specilization_map_entries: &[ghi::SpecializationMapEntry], reference: &mut Reference<Variant>, device: &mut ghi::Device,) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
 			let resource_id = reference.id().to_string();

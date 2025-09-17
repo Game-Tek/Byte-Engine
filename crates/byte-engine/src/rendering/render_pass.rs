@@ -48,7 +48,7 @@ impl FullScreenRenderPass {
 
 		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::SPIRV(shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
 
-		let pipeline = ghi.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
+		let pipeline = ghi.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
 
 		FullScreenRenderPass {
 			pipeline,
@@ -70,9 +70,9 @@ impl RenderPass for FullScreenRenderPass {
 
 		Some(Box::new(move |command_buffer_recording: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
 			command_buffer_recording.region("Full Screen Pass", |command_buffer| {
-				let c = command_buffer.bind_pipeline_layout(&pipeline_layout);
+				let c = command_buffer.bind_pipeline_layout(pipeline_layout);
 				c.bind_descriptor_sets(&[descriptor_set]);
-				let c = c.bind_compute_pipeline(&pipeline);
+				let c = c.bind_compute_pipeline(pipeline);
 				c.dispatch(ghi::DispatchExtent::new(extent, Extent::square(16)));
 			});
 		}))
@@ -133,7 +133,7 @@ impl RenderPass for BilateralBlurPass {
 			return None; // No need to record if the extent is zero.
 		}
 
-		let execute_in_axis = |command_buffer: &mut ghi::CommandBufferRecording, pipeline_layout: &ghi::PipelineLayoutHandle, pipeline: &ghi::PipelineHandle, descriptor_set: ghi::DescriptorSetHandle, extent: Extent| {
+		let execute_in_axis = |command_buffer: &mut ghi::CommandBufferRecording, pipeline_layout: ghi::PipelineLayoutHandle, pipeline: ghi::PipelineHandle, descriptor_set: ghi::DescriptorSetHandle, extent: Extent| {
 			let c = command_buffer.bind_pipeline_layout(pipeline_layout);
 			c.bind_descriptor_sets(&[descriptor_set]);
 			let c = c.bind_compute_pipeline(pipeline);
@@ -148,8 +148,8 @@ impl RenderPass for BilateralBlurPass {
 
 		Some(Box::new(move |command_buffer: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
 			command_buffer.region("Bilateral Blur", |command_buffer| {
-				execute_in_axis(command_buffer, &pipeline_layout, &pipeline_x, descriptor_set_x, extent);
-				execute_in_axis(command_buffer, &pipeline_layout, &pipeline_y, descriptor_set_y, extent);
+				execute_in_axis(command_buffer, pipeline_layout, pipeline_x, descriptor_set_x, extent);
+				execute_in_axis(command_buffer, pipeline_layout, pipeline_y, descriptor_set_y, extent);
 			});
 		}))
 	}

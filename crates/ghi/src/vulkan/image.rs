@@ -3,12 +3,13 @@ use std::num::NonZeroU32;
 use ash::vk;
 use utils::Extent;
 
-use crate::{vulkan::{BufferHandle, ImageHandle, Next}, DeviceAccesses, Formats, Uses};
+use crate::{vulkan::{ImageHandle, Next}, DeviceAccesses, Formats, Uses};
 
 #[derive(Clone)]
 pub(crate) struct Image {
 	pub(crate) next: Option<ImageHandle>,
-	pub(crate) staging_buffer: Option<BufferHandle>,
+	pub(crate) staging_buffer: Option<vk::Buffer>,
+	pub(crate) pointer: Option<*mut u8>,
 	pub(crate) image: vk::Image,
 	pub(crate) image_view: vk::ImageView,
 	pub(crate) image_views: [vk::ImageView; 8],

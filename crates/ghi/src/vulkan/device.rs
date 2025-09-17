@@ -804,6 +804,15 @@ impl Device {
 		}
 	}
 
+	fn bind_host_vulkan_buffer_memory(&self, info: &MemoryBackedResourceCreationResult<vk::Buffer>, allocation_handle: graphics_hardware_interface::AllocationHandle, offset: usize) -> *mut u8 {
+		let buffer = info.resource;
+		let allocation = self.allocations.get(allocation_handle.0 as usize).expect("No allocation with that handle.");
+		unsafe { self.device.bind_buffer_memory(buffer, allocation.memory, offset as u64).expect("No buffer memory binding") };
+		unsafe {
+			allocation.pointer.add(offset)
+		}
+	}
+
 	fn bind_vulkan_texture_memory(&self, info: &MemoryBackedResourceCreationResult<vk::Image>, allocation_handle: graphics_hardware_interface::AllocationHandle, offset: usize) -> (u64, *mut u8) {
 		let image = info.resource;
 		let allocation = self.allocations.get(allocation_handle.0 as usize).expect("No allocation with that handle.");
@@ -1095,6 +1104,7 @@ impl Device {
 				next,
 				size: 0,
 				staging_buffer: None,
+				pointer: None,
 				image: vk::Image::null(),
 				image_view: vk::ImageView::null(),
 				image_views: [vk::ImageView::null(); 8],
@@ -1113,7 +1123,7 @@ impl Device {
 			depth: extent.depth(),
 		};
 
-		let texture_creation_result = self.create_vulkan_texture(name, vk_extent, format, resource_uses, 1, array_layers);
+		let texture_creation_result = self.create_vulkan_texture(name, vk_extent, format, resource_uses | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) { graphics_hardware_interface::Uses::TransferSource } else { graphics_hardware_interface::Uses::empty() } , 1, array_layers);
 
 		let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead) {
 			graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::GpuWrite
@@ -1127,16 +1137,26 @@ impl Device {
 
 		let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
 
-		let staging_buffer = if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-			let staging_buffer_handle = self.create_buffer_internal(None, None, name, crate::Uses::TransferDestination, size, graphics_hardware_interface::DeviceAccesses::CpuRead);
+		let (staging_buffer, pointer) = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+			let vk_buffer_usage_flags = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+				vk::BufferUsageFlags::TRANSFER_DST
+			} else {
+				vk::BufferUsageFlags::TRANSFER_SRC
+			};
 
-			Some(staging_buffer_handle)
-		} else if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-			let staging_buffer_handle = self.create_buffer_internal(None, None, name, crate::Uses::TransferSource, size, graphics_hardware_interface::DeviceAccesses::CpuWrite);
+			let device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+				graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead
+			} else {
+				graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead
+			};
 
-			Some(staging_buffer_handle)
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
+			let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_accesses);
+			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+			(Some(buffer_creation_result.resource), Some(pointer))
 		} else {
-			None
+			(None, None)
 		};
 
 		let image_views = {
@@ -1153,6 +1173,7 @@ impl Device {
 			next,
 			size: texture_creation_result.size,
 			staging_buffer,
+			pointer,
 			image: texture_creation_result.resource,
 			image_view,
 			image_views,
@@ -1974,7 +1995,7 @@ impl crate::device::Device for Device {
 		self.create_vulkan_pipeline(builder)
 	}
 
-	fn create_compute_pipeline(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, shader_parameter: graphics_hardware_interface::ShaderParameter) -> graphics_hardware_interface::PipelineHandle {
+	fn create_compute_pipeline(&mut self, pipeline_layout_handle: graphics_hardware_interface::PipelineLayoutHandle, shader_parameter: graphics_hardware_interface::ShaderParameter) -> graphics_hardware_interface::PipelineHandle {
 		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
 
 		let mut specialization_map_entries = Vec::with_capacity(48);
@@ -2058,7 +2079,7 @@ impl crate::device::Device for Device {
 		handle
 	}
 
-	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: &graphics_hardware_interface::PipelineLayoutHandle, shaders: &[graphics_hardware_interface::ShaderParameter]) -> graphics_hardware_interface::PipelineHandle {
+	fn create_ray_tracing_pipeline(&mut self, pipeline_layout_handle: graphics_hardware_interface::PipelineLayoutHandle, shaders: &[graphics_hardware_interface::ShaderParameter]) -> graphics_hardware_interface::PipelineHandle {
 		let mut groups = Vec::with_capacity(1024);
 
 		let stages = shaders.iter().map(|stage| {
@@ -2273,10 +2294,11 @@ impl crate::device::Device for Device {
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
 		let texture = &self.images[texture_handle.0 as usize];
-		let buffer  = &self.buffers[texture.staging_buffer.unwrap().0 as usize];
+		let size = texture.size;
+		let pointer = texture.pointer.unwrap();
 
 		unsafe {
-			std::slice::from_raw_parts_mut(buffer.pointer, texture.size)
+			std::slice::from_raw_parts_mut(pointer, size)
 		}
 	}
 
@@ -2286,10 +2308,12 @@ impl crate::device::Device for Device {
 		let handle = handles[0];
 
 		let texture = handle.access(&self.images);
-		let buffer = texture.staging_buffer.unwrap().access(&self.buffers);
+
+		let pointer = texture.pointer.unwrap();
+		let size = texture.size;
 
 		let slice = unsafe {
-			std::slice::from_raw_parts_mut(buffer.pointer, texture.size)
+			std::slice::from_raw_parts_mut(pointer, size)
 		};
 
 		f(slice);
@@ -2696,12 +2720,16 @@ impl crate::device::Device for Device {
 		swapchain_handle
 	}
 
-	fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
+	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
 		let image = &self.images[texture_copy_handle.0 as usize];
-		let buffer_handle = image.staging_buffer.expect("No staging buffer");
-		let buffer = &self.buffers[buffer_handle.0 as usize];
-		if buffer.pointer.is_null() { panic!("Texture data was requested but texture has no memory associated."); }
-		let slice = unsafe { std::slice::from_raw_parts::<'static, u8>(buffer.pointer, image.extent.width() as usize * image.extent.height() as usize * image.extent.depth() as usize) };
+
+		let pointer = image.pointer.unwrap();
+		let size = image.size;
+
+		if pointer.is_null() { panic!("Texture data was requested but texture has no memory associated."); }
+
+		let slice = unsafe { std::slice::from_raw_parts::<'a, u8>(pointer, size) };
+
 		slice
 	}
 
@@ -2725,7 +2753,7 @@ impl crate::device::Device for Device {
 		synchronizer_handle
 	}
 
-	fn start_frame(&mut self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> Frame {
+	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> Frame<'a> {
 		let frame_index = index;
 		let sequence_index = (index % self.frames as u32) as u8;
 

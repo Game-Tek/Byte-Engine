@@ -53,11 +53,17 @@ impl <'a> VertexElement<'a> {
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	pub struct DeviceAccesses: u16 {
+		#[deprecated]
 		const CpuRead = 1 << 0;
+		#[deprecated]
 		const CpuWrite = 1 << 1;
+		#[deprecated]
 		const GpuRead = 1 << 2;
+		#[deprecated]
 		const GpuWrite = 1 << 3;
 
+		const DeviceOnly = 1 << 2 | 1 << 3;
+		const HostOnly = 1 << 0 | 1 << 1;
 		const HostToDevice = 1 << 1 | 1 << 2;
 		const DeviceToHost = 1 << 0 | 1 << 3;
 	}
@@ -354,7 +360,7 @@ impl ShaderBindingDescriptor {
 /// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
 /// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
 /// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct Features {
 	pub(crate) validation: bool,
 	pub(crate) gpu_validation: bool,
@@ -1451,7 +1457,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1471,9 +1477,9 @@ pub(super) mod tests {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
 
-		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1529,7 +1535,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite, UseCases::STATIC, None);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceOnly, UseCases::STATIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1557,9 +1563,9 @@ pub(super) mod tests {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
 
-		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1612,7 +1618,7 @@ pub(super) mod tests {
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::GpuWrite | DeviceAccesses::CpuRead, UseCases::DYNAMIC, None);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1639,9 +1645,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
 
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1693,7 +1699,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1718,9 +1724,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
 
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1774,7 +1780,7 @@ pub(super) mod tests {
 
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1803,9 +1809,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
 
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1858,7 +1864,7 @@ pub(super) mod tests {
 
 		let mut extent = Extent::rectangle(1280, 720);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1888,9 +1894,9 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(&pipeline_layout);
+			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
 
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1947,7 +1953,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -1955,7 +1961,7 @@ pub(super) mod tests {
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
 
-		let _buffer = device.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead);
+		let _buffer = device.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::HostToDevice);
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -1974,7 +1980,7 @@ pub(super) mod tests {
 
 			let c = cb.start_render_pass(extent, &attachments);
 
-			let c = c.bind_pipeline_layout(&pipeline_layout);
+			let c = c.bind_pipeline_layout(pipeline_layout);
 
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
@@ -1988,7 +1994,7 @@ pub(super) mod tests {
 
 			c.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(matrix.as_ptr() as *const u8, 16 * 4) });
 
-			let c = c.bind_raster_pipeline(&pipeline);
+			let c = c.bind_raster_pipeline(pipeline);
 
 			c.draw_mesh(&mesh);
 
@@ -2058,9 +2064,9 @@ pub(super) mod tests {
 
 		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange{ offset: 0, size: 4 }]);
 
-		let pipeline = device.create_compute_pipeline(&pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
+		let pipeline = device.create_compute_pipeline(pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
 
-		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
+		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
 
@@ -2077,10 +2083,10 @@ pub(super) mod tests {
 
 		let data = [0.5f32];
 
-		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(&pipeline_layout);
+		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
 		pipeline_layout_command.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
-		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2101,10 +2107,10 @@ pub(super) mod tests {
 
 		let data = [1.0f32];
 
-		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(&pipeline_layout);
+		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
 		pipeline_layout_command.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
-		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(&pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2215,9 +2221,9 @@ pub(super) mod tests {
 		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, [ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
 		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
 
-		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::HostToDevice);
 
-		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead, UseCases::STATIC, None);
+		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::HostToDevice, UseCases::STATIC, None);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -2247,7 +2253,7 @@ pub(super) mod tests {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::STATIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
 
 		let attachments = [
 			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
@@ -2271,11 +2277,11 @@ pub(super) mod tests {
 
 		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let pipeline_layout_command = raster_render_pass_command.bind_pipeline_layout(&pipeline_layout);
+		let pipeline_layout_command = raster_render_pass_command.bind_pipeline_layout(pipeline_layout);
 
 		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]);
 
-		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(&pipeline);
+		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -2323,9 +2329,9 @@ pub(super) mod tests {
 			0.0, 0.0, 1.0, 1.0,
 		];
 
-		let vertex_positions_buffer = renderer.create_buffer::<[f32; 3 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
-		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
-		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let vertex_positions_buffer = renderer.create_buffer::<[f32; 3 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::HostToDevice,);
+		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::HostToDevice,);
+		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::HostToDevice,);
 
 		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(&positions);
 		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(&colors);
@@ -2444,7 +2450,7 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::CpuRead | DeviceAccesses::GpuWrite, UseCases::DYNAMIC, None);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
 		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));
@@ -2455,7 +2461,7 @@ void main() {
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
 		let pipeline = renderer.create_ray_tracing_pipeline(
-			&pipeline_layout,
+			pipeline_layout,
 			&[ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen,), ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit,), ShaderParameter::new(&miss_shader, ShaderTypes::Miss,)],
 		);
 
@@ -2467,11 +2473,11 @@ void main() {
 
 		renderer.write_instance(instances_buffer, 0, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
 
-		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(None, Uses::AccelerationStructureBuildScratch, DeviceAccesses::GpuWrite,);
+		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(None, Uses::AccelerationStructureBuildScratch, DeviceAccesses::DeviceOnly,);
 
-		let raygen_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
-		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
-		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::CpuWrite | DeviceAccesses::GpuRead,);
+		let raygen_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
+		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
+		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
 
 		renderer.write_sbt_entry(raygen_sbt_buffer.into(), 0, pipeline, raygen_shader);
 		renderer.write_sbt_entry(miss_sbt_buffer.into(), 0, pipeline, miss_shader);
@@ -2498,15 +2504,6 @@ void main() {
 					scratch_buffer: BufferDescriptor::new(scratch_buffer),
 				}]);
 
-				unsafe { command_buffer_recording.consume_resources(&[
-					Consumption {
-						handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
-						stages: Stages::ACCELERATION_STRUCTURE_BUILD,
-						access: AccessPolicies::READ,
-						layout: Layouts::General,
-					}
-				]) };
-
 				command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
 					acceleration_structure: top_level_acceleration_structure,
 					description: TopLevelAccelerationStructureBuildDescriptions::Instance {
@@ -2517,44 +2514,11 @@ void main() {
 				});
 			}
 
-			let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(&pipeline_layout);
+			let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
-			let ray_tracing_pipeline_command = pipeline_layout_command.bind_ray_tracing_pipeline(&pipeline);
+			let ray_tracing_pipeline_command = pipeline_layout_command.bind_ray_tracing_pipeline(pipeline);
 
 			ray_tracing_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
-
-			unsafe { ray_tracing_pipeline_command.consume_resources(&[
-				Consumption {
-					handle: Handle::TopLevelAccelerationStructure(top_level_acceleration_structure),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::BottomLevelAccelerationStructure(bottom_level_acceleration_structure),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::Buffer(raygen_sbt_buffer.into()),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::Buffer(miss_sbt_buffer.into()),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-				Consumption {
-					handle: Handle::Buffer(hit_sbt_buffer.into()),
-					stages: Stages::RAYGEN,
-					access: AccessPolicies::READ,
-					layout: Layouts::General,
-				},
-			]) };
 
 			ray_tracing_pipeline_command.trace_rays(BindingTables {
 				raygen: BufferStridedRange::new(raygen_sbt_buffer.into(), 0, 64, 64),

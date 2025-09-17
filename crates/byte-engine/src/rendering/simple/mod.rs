@@ -248,9 +248,9 @@ impl RenderPass for SimpleRenderModel {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
 			c.bind_index_buffer(&index_buffer.into());
 			let c = c.start_render_pass(extent, t);
-			let c = c.bind_pipeline_layout(&pipeline_layout);
+			let c = c.bind_pipeline_layout(pipeline_layout);
 			c.bind_descriptor_sets(&[descriptor_set]);
-			let c = c.bind_raster_pipeline(&pipeline);
+			let c = c.bind_raster_pipeline(pipeline);
 			for mesh in &meshes {
 				c.write_push_constant(0, 0 as u32);
 				c.draw_indexed(384, 1, 0, 0, 0);

@@ -730,6 +730,7 @@ dependencies = [
  "bitflags 2.9.4",
  "renderdoc",
  "resource-management",
+ "smallvec",
  "utils",
  "wayland-backend",
  "wayland-client",

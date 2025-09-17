@@ -737,7 +737,7 @@ impl VisibilityWorldRenderDomain {
 					bindings,
 				).unwrap();
 
-				let pipeline = device.create_compute_pipeline(&self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute));
+				let pipeline = device.create_compute_pipeline(self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute));
 
 				Ok(RenderDescription {
 					name: "heyyy".to_string(),
@@ -835,7 +835,7 @@ impl VisibilityWorldRenderDomain {
 				"Visibility" => {
 					match resource.resource().model.pass.as_str() {
 						"MaterialEvaluation" => {
-							let pipeline_handle = self.pipeline_manager.load_material(&self.material_evaluation_pipeline_layout, resource, device).unwrap();
+							let pipeline_handle = self.pipeline_manager.load_material(self.material_evaluation_pipeline_layout, resource, device).unwrap();
 
 							let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
@@ -898,7 +898,7 @@ impl VisibilityWorldRenderDomain {
 				}
 			}).collect();
 
-			let pipeline = self.pipeline_manager.load_variant(&self.material_evaluation_pipeline_layout, &specialization_constants, &mut resource, device);
+			let pipeline = self.pipeline_manager.load_variant(self.material_evaluation_pipeline_layout, &specialization_constants, &mut resource, device);
 
 			let pipeline = pipeline.unwrap();
 
@@ -1137,7 +1137,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 
 			c.clear_images(&[(diffuse, ghi::ClearValue::Color(RGBA::black())), (specular, ghi::ClearValue::Color(RGBA::black()))]);
 
-			let c = c.bind_pipeline_layout(&pipeline_layout_handle);
+			let c = c.bind_pipeline_layout(pipeline_layout_handle);
 
 			c.bind_descriptor_sets(&[descriptor_set]);
 
@@ -1145,7 +1145,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 
 			c.start_region("Opaque");
 
-			let c = c.bind_pipeline_layout(&material_evaluation_pipeline_layout);
+			let c = c.bind_pipeline_layout(material_evaluation_pipeline_layout);
 
 			c.write_push_constant(0, 0); // Set view index to 0 (camera)
 
@@ -1154,8 +1154,8 @@ impl RenderPass for VisibilityWorldRenderDomain {
 				// No need for sync here, as each thread across all invocations will write to a different pixel
 				c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
 				c.write_push_constant(4, *index); // Set material index
-				let c = c.bind_compute_pipeline(&pipeline);
-				c.indirect_dispatch(&material_evaluation_dispatches, *index as usize);
+				let c = c.bind_compute_pipeline(*pipeline);
+				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
 			}
 
@@ -1168,8 +1168,8 @@ impl RenderPass for VisibilityWorldRenderDomain {
 				// No need for sync here, as each thread across all invocations will write to a different pixel
 				c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
 				c.write_push_constant(4, *index); // Set material index
-				let c = c.bind_compute_pipeline(&pipeline);
-				c.indirect_dispatch(&material_evaluation_dispatches, *index as usize);
+				let c = c.bind_compute_pipeline(*pipeline);
+				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
 			}
 
@@ -1362,9 +1362,9 @@ impl VisibilityPass {
 
 			let c = c.start_render_pass(extent, &attachments);
 
-			let c = c.bind_pipeline_layout(&pipeline_layout);
+			let c = c.bind_pipeline_layout(pipeline_layout);
 			c.bind_descriptor_sets(&[descriptor_set]);
-			let c = c.bind_raster_pipeline(&pipeline);
+			let c = c.bind_raster_pipeline(pipeline);
 
 			for (i, instance) in instances.iter().enumerate() {
 				c.write_push_constant(0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
@@ -1400,7 +1400,7 @@ impl MaterialCountPass {
 			]
 		).expect("Failed to create shader");
 
-		let material_count_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute));
+		let material_count_pipeline = ghi_instance.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute));
 
 		let material_count_buffer = ghi_instance.create_buffer(Some("Material Count"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
 
@@ -1426,7 +1426,7 @@ impl MaterialCountPass {
 			command_buffer_recording.clear_buffers(&[material_count_buffer.into()]);
 
 			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 			command_buffer_recording.end_region();
@@ -1461,7 +1461,7 @@ impl MaterialOffsetPass {
 			]
 		).expect("Failed to create shader");
 
-		let material_offset_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute,));
+		let material_offset_pipeline = ghi_instance.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute,));
 
 		let material_evaluation_dispatches = ghi_instance.create_buffer(Some("Material Evaluation Dipatches"), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
 		let material_offset_buffer = ghi_instance.create_buffer(Some("Material Offset"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
@@ -1493,7 +1493,7 @@ impl MaterialOffsetPass {
 			command_buffer_recording.clear_buffers(&[material_offset_buffer.into(), material_offset_scratch_buffer.into(), material_evaluation_dispatches.into()]);
 
 			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
 			command_buffer_recording.end_region();
 		})
@@ -1530,7 +1530,7 @@ impl PixelMappingPass {
 			]
 		).expect("Failed to create shader");
 
-		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
+		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
 
 		let material_xy = ghi_instance.create_buffer(Some("Material XY"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,);
 
@@ -1556,7 +1556,7 @@ impl PixelMappingPass {
 			command_buffer_recording.clear_buffers(&[material_xy.into(),]);
 
 			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(&pipeline);
+			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 			command_buffer_recording.end_region();

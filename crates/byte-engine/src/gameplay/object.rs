@@ -47,7 +47,7 @@ impl Object {
 
 	pub fn new_sphere(radius: f32) -> Self {
 		Object {
-			source: MeshSource::Generated(Box::new(mesh::SphereMeshGenerator::new(0.1))),
+			source: MeshSource::Generated(Box::new(mesh::SphereMeshGenerator::new(radius))),
 			transform: Transform::default(),
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},

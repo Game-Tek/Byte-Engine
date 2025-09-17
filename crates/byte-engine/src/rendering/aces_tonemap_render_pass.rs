@@ -45,7 +45,7 @@ impl AcesToneMapPass {
 			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
 		]).expect("Failed to create tone mapping shader");
 
-		let tone_mapping_pipeline = device.create_compute_pipeline(&pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
+		let tone_mapping_pipeline = device.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
 
 		AcesToneMapPass {
 			descriptor_set_layout,
@@ -76,9 +76,9 @@ impl RenderPass for AcesToneMapPass {
 
 		Some(Box::new(move |c: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
 			c.region("Tonemap", |c| {
-				let c = c.bind_pipeline_layout(&pipeline_layout);
+				let c = c.bind_pipeline_layout(pipeline_layout);
 				c.bind_descriptor_sets(&[descriptor_set]);
-				let r = c.bind_compute_pipeline(&pipeline);
+				let r = c.bind_compute_pipeline(pipeline);
 				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 			});
 		}))

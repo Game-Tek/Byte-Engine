@@ -1,7 +1,7 @@
 use ash::vk::{self, Handle as _};
 use utils::Extent;
 
-use crate::{device::Device as _, graphics_hardware_interface, vulkan::{BufferCopy, BufferHandle, HandleLike as _, ImageCopy}, CommandBufferRecordable as _, CommandBufferRecording, Device, FrameKey};
+use crate::{device::Device as _, graphics_hardware_interface, vulkan::{BufferCopy, BufferHandle, HandleLike as _, ImageCopy, ImageHandle, Task, Tasks}, CommandBufferRecording, Device, FrameKey};
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,
@@ -110,11 +110,23 @@ impl crate::frame::Frame for Frame<'_> {
 	}
 
 	fn resize_image(&mut self, image_handle: crate::ImageHandle, extent: Extent) {
-    	self.device.resize_image(image_handle, extent);
+		let image_handles = ImageHandle(image_handle.0).get_all(&self.device.images);
+
+		let current_frame = self.frame_key.sequence_index;
+
+		let handle = image_handles[current_frame as usize];
+
+		self.device.resize_image_internal(handle, extent, current_frame);
+
+		self.device.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
 	}
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: crate::CommandBufferHandle) -> super::CommandBufferRecording {
+	fn create_command_buffer_recording<'a>(&'a mut self, command_buffer_handle: crate::CommandBufferHandle) -> super::CommandBufferRecording<'a> {
 		let frame_key = self.frame_key;
+
+		// Update descriptors before creating command buffer
+		self.device.process_tasks(frame_key.sequence_index);
+
 		let pending_buffer_syncs = &self.device.pending_buffer_syncs;
 		let buffers = &self.device.buffers;
 
@@ -145,8 +157,6 @@ impl crate::frame::Frame for Frame<'_> {
 		}).collect();
 
 		drop(pending_images);
-
-		self.device.process_tasks(frame_key.sequence_index);
 
 		let recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
 

@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{vulkan::{BufferHandle, Next}, Uses};
+use crate::{vulkan::{Handle, HandleLike, Next}, Uses};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Buffer {
@@ -16,6 +16,27 @@ pub(crate) struct Buffer {
 
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct BufferHandle(pub(crate) u64);
+
+impl Into<Handle> for BufferHandle {
+	fn into(self) -> Handle {
+		Handle::Buffer(self)
+	}
+}
+
+impl HandleLike for BufferHandle {
+	type Item = Buffer;
+
+	fn build(value: u64) -> Self {
+		BufferHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Buffer {
+		&collection[self.0 as usize]
+	}
+}
 
 impl Next for Buffer {
 	type Handle = BufferHandle;

@@ -10,6 +10,7 @@ pub trait Frame {
 
 	/// Resizes an image to the specified extent.
 	/// Does nothing if the image is already the specified extent.
+	/// May not reallocate if a smaller size is requested.
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.

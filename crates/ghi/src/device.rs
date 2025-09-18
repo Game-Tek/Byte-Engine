@@ -142,11 +142,6 @@ pub trait Device where Self: Sized {
 	/// The returned frame allows safe access to the frame's resources and it's operations.
 	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> Frame<'a>;
 
-	/// Resizes an image to the specified extent.
-	/// Does nothing if the image is already the specified extent.
-	/// May not reallocate if a smaller size is requested.
-	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
-
 	/// Resizes a buffer to the specified size.
 	/// Does nothing if the buffer is already the specified size.
 	/// May not reallocate if a smaller size is requested.

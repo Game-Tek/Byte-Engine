@@ -2,9 +2,6 @@
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 
-pub use crate::device::Device;
-pub use crate::command_buffer::*;
-
 use utils::{Extent, RGBA};
 
 /// Possible types of a shader source
@@ -149,6 +146,7 @@ impl <T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
 	}
 }
 
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handle {
 	Buffer(BaseBufferHandle),
@@ -179,6 +177,12 @@ impl Into<Handle> for BaseBufferHandle {
 impl Into<Handle> for ImageHandle {
 	fn into(self) -> Handle {
 		Handle::Image(self)
+	}
+}
+
+impl Into<Handle> for SynchronizerHandle {
+	fn into(self) -> Handle {
+		Handle::Synchronizer(self)
 	}
 }
 
@@ -1077,6 +1081,7 @@ pub enum DescriptorInfo {
 }
 
 /// Stores the information of a descriptor set write.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DescriptorWrite {
 	pub(super) binding_handle: DescriptorSetBindingHandle,
 	/// The index of the array element to write to in the binding(if the binding is an array).
@@ -1333,9 +1338,9 @@ impl QueueSelection {
 
 #[cfg(test)]
 pub(super) mod tests {
-	use std::borrow::Borrow;
+	use std::borrow::Borrow as _;
 
-	use crate::{device::Device, frame::Frame as _, raster_pipeline, window::Window};
+use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, BoundRayTracingPipelineMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _}, device::Device, frame::Frame as _, raster_pipeline, window::Window};
 
 	use resource_management::glsl;
 
@@ -1898,14 +1903,14 @@ pub(super) mod tests {
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
-			if i == 2 {
-				extent = Extent::rectangle(1920, 1080);
-				device.resize_image(render_target, extent);
-			}
-
 			device.start_frame_capture();
 
 			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+
+			if i == 2 {
+				extent = Extent::rectangle(1920, 1080);
+				frame.resize_image(render_target, extent);
+			}
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 

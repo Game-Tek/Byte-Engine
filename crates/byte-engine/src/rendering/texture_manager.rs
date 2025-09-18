@@ -4,7 +4,7 @@ use std::{collections::hash_map::Entry, num::NonZeroU8, sync::Arc};
 
 use resource_management::{resources::image::Image, Reference};
 use utils::{hash::{HashMap, HashMapExt}, sync::{Rc, RwLock}, Extent};
-use ghi::{graphics_hardware_interface::Device as _, Device};
+use ghi::device::Device as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SamplerState {

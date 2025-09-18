@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 use ash::vk;
 use smallvec::SmallVec;
 use ::utils::hash::HashMap;
+use ::utils::Extent;
 
 use crate::graphics_hardware_interface;
 use crate::vulkan::sampler::SamplerHandle;
@@ -15,6 +16,10 @@ pub mod frame;
 pub mod buffer;
 pub mod image;
 pub mod sampler;
+pub mod descriptor_set;
+pub mod swapchain;
+pub mod synchronizer;
+pub mod binding;
 
 mod utils;
 
@@ -24,6 +29,10 @@ pub use self::command_buffer::*;
 pub use self::frame::*;
 pub use self::buffer::*;
 pub use self::image::*;
+pub use self::descriptor_set::*;
+pub use self::swapchain::*;
+pub use self::synchronizer::*;
+pub use self::binding::*;
 
 pub(super) enum Descriptor {
 	Image {
@@ -41,98 +50,11 @@ pub(super) enum Descriptor {
 	},
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct ImageHandle(pub(super) u64);
-
-impl Into<Handle> for ImageHandle {
-	fn into(self) -> Handle {
-		Handle::Image(self)
-	}
-}
-
-impl HandleLike for ImageHandle {
-	type Item = Image;
-
-	fn build(value: u64) -> Self {
-		ImageHandle(value)
-	}
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Image {
-		&collection[self.0 as usize]
-	}
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct BufferHandle(pub(super) u64);
-
-impl Into<Handle> for BufferHandle {
-	fn into(self) -> Handle {
-		Handle::Buffer(self)
-	}
-}
-
-impl HandleLike for BufferHandle {
-	type Item = Buffer;
-
-	fn build(value: u64) -> Self {
-		BufferHandle(value)
-	}
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Buffer {
-		&collection[self.0 as usize]
-	}
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct DescriptorSetHandle(pub(super) u64);
-
-impl HandleLike for DescriptorSetHandle {
-	type Item = DescriptorSet;
-
-	fn build(value: u64) -> Self {
-		DescriptorSetHandle(value)
-	}
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a DescriptorSet {
-		&collection[self.0 as usize]
-	}
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct DescriptorSetBindingHandle(pub(super) u64);
-
-impl HandleLike for DescriptorSetBindingHandle {
-	type Item = Binding;
-
-	fn build(value: u64) -> Self {
-		DescriptorSetBindingHandle(value)
-	}
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Binding {
-		&collection[self.0 as usize]
-	}
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct SynchronizerHandle(pub(super) u64);
-
-impl HandleLike for SynchronizerHandle {
-	type Item = Synchronizer;
-
-	fn build(value: u64) -> Self {
-		SynchronizerHandle(value)
-	}
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Synchronizer {
-		&collection[self.0 as usize]
-	}
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Handle {
@@ -141,6 +63,7 @@ pub(super) enum Handle {
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 	VkBuffer(vk::Buffer),
+	Synchronizer(SynchronizerHandle),
 }
 
 #[derive(Clone, PartialEq,)]
@@ -163,20 +86,6 @@ const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const MAX_SWAPCHAIN_IMAGES: usize = 8;
 
 #[derive(Clone)]
-pub(crate) struct Swapchain {
-	surface: vk::SurfaceKHR,
-	swapchain: vk::SwapchainKHR,
-	acquire_synchronizers: [SynchronizerHandle; MAX_FRAMES_IN_FLIGHT],
-	submit_synchronizers: [SynchronizerHandle; MAX_SWAPCHAIN_IMAGES],
-	images: [vk::Image; MAX_SWAPCHAIN_IMAGES],
-	extent: vk::Extent2D,
-	sync_stage: vk::PipelineStageFlags2,
-	vk_present_mode: vk::PresentModeKHR,
-	min_image_count: u32,
-	max_image_count: u32,
-}
-
-#[derive(Clone)]
 pub(crate) struct DescriptorSetLayout {
 	bindings: Vec<(vk::DescriptorType, u32)>,
 	descriptor_set_layout: vk::DescriptorSetLayout,
@@ -186,21 +95,6 @@ pub(crate) struct DescriptorSetLayout {
 pub(crate) struct PipelineLayout {
 	pipeline_layout: vk::PipelineLayout,
 	descriptor_set_template_indices: HashMap<graphics_hardware_interface::DescriptorSetTemplateHandle, u32>,
-}
-
-#[derive(Clone)]
-pub(crate) struct DescriptorSet {
-	next: Option<DescriptorSetHandle>,
-	descriptor_set: vk::DescriptorSet,
-	descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
-}
-
-impl Next for DescriptorSet {
-	type Handle = DescriptorSetHandle;
-
-	fn next(&self) -> Option<DescriptorSetHandle> {
-		self.next
-	}
 }
 
 #[derive(Clone)]
@@ -225,23 +119,6 @@ pub(super) struct CommandBufferInternal {
 }
 
 #[derive(Clone)]
-pub(crate) struct Binding {
-	next: Option<DescriptorSetBindingHandle>,
-	descriptor_set_handle: DescriptorSetHandle,
-	descriptor_type: vk::DescriptorType,
-	index: u32,
-	count: u32,
-}
-
-impl Next for Binding {
-	type Handle = DescriptorSetBindingHandle;
-
-	fn next(&self) -> Option<DescriptorSetBindingHandle> {
-		self.next
-	}
-}
-
-#[derive(Clone)]
 pub(crate) struct CommandBuffer {
 	queue_handle: graphics_hardware_interface::QueueHandle,
 	frames: Vec<CommandBufferInternal>,
@@ -255,30 +132,6 @@ pub(crate) struct Allocation {
 
 unsafe impl Send for Allocation {}
 unsafe impl Sync for Allocation {}
-
-#[derive(Clone)]
-pub(crate) struct Synchronizer {
-	next: Option<SynchronizerHandle>,
-
-	name: Option<String>,
-	signaled: bool,
-
-	fence: vk::Fence,
-	semaphore: vk::Semaphore,
-}
-
-impl Next for Synchronizer {
-	type Handle = SynchronizerHandle;
-
-	fn next(&self) -> Option<SynchronizerHandle> {
-		self.next
-	}
-}
-
-// #[derive(Clone, Copy)]
-// pub(crate) struct AccelerationStructure {
-// 	acceleration_structure: vk::AccelerationStructureKHR,
-// }
 
 pub(crate) struct DebugCallbackData {
 	error_count: AtomicU64,
@@ -315,16 +168,19 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	memory_flags: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct BuildImage {
 	previous: ImageHandle,
 	master: graphics_hardware_interface::ImageHandle,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct BuildBuffer {
 	previous: BufferHandle,
 	master: graphics_hardware_interface::BaseBufferHandle,
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
 	/// Delete a Vulkan image. Will be associated to a frame index in `Task`.
 	DeleteVulkanImage {
@@ -348,6 +204,12 @@ pub(crate) enum Tasks {
 	UpdateImageDescriptors {
 		handle: ImageHandle,
 	},
+	/// Resize an image
+	ResizeImage {
+		handle: ImageHandle,
+		extent: Extent,
+	},
+	/// Update the frame-specific (specified in `Task`) descriptor with the given write information for the master resource and descriptor.
 	UpdateDescriptor {
 		descriptor_write: graphics_hardware_interface::DescriptorWrite,
 	},
@@ -359,12 +221,11 @@ pub(crate) enum Tasks {
 	},
 	BuildImage(BuildImage),
 	BuildBuffer(BuildBuffer),
-	/// A miscellaneous task that may be associated with a frame index.
-	Other(Box<dyn Fn()>),
 }
 
 /// The `Task` struct represents a deferred task that needs to be executed at a later time.
 /// This is because some tasks need to be executed at a particular time or frame.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: Option<u8>,
@@ -420,19 +281,16 @@ impl Task {
 		}
 	}
 
-	pub(crate) fn other(f: Box<dyn Fn()>, frame: Option<u8>) -> Self {
-		Self {
-			task: Tasks::Other(f),
-			frame,
-		}
-	}
-
 	pub fn frame(&self) -> Option<u8> {
 		self.frame
 	}
 
 	pub fn task(&self) -> &Tasks {
 		&self.task
+	}
+
+	pub fn into_task(self) -> Tasks {
+		self.task
 	}
 
 	pub fn write_descriptor(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptors, frame: Option<u8>) -> Task {
@@ -443,7 +301,7 @@ impl Task {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 enum Descriptors {
 	Buffer{ handle: BufferHandle, size: graphics_hardware_interface::Ranges },
 	Image{ handle: ImageHandle, layout: graphics_hardware_interface::Layouts },

@@ -7,10 +7,9 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::OnceLock;
 
+use ghi::device::Device as _;
 use ghi::frame::Frame as _;
-use ghi::graphics_hardware_interface::Device as _;
-use ghi::{graphics_hardware_interface, raster_pipeline, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _, ImageHandle};
-use ghi::{Device, CommandBufferRecordable, BoundComputePipelineMode, RasterizationRenderPassMode, BoundRasterizationPipelineMode};
+use ghi::{graphics_hardware_interface, raster_pipeline, command_buffer::{BoundPipelineLayoutMode as _, CommonCommandBufferMode as _, CommandBufferRecordable as _, BoundComputePipelineMode as _, RasterizationRenderPassMode as _, BoundRasterizationPipelineMode as _}, ImageHandle};
 use math::{Matrix4, Vector3};
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::spirv_shader_generator::SPIRVShaderGenerator;

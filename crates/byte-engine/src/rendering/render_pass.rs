@@ -3,7 +3,7 @@ use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use crate::core::{entity::EntityBuilder, EntityHandle};
 
-use ghi::{graphics_hardware_interface::Device as _, BoundComputePipelineMode, BoundPipelineLayoutMode as _, CommandBufferRecordable, CommonCommandBufferMode as _, Device, FrameKey};
+use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _};
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 
@@ -33,22 +33,22 @@ pub struct FullScreenRenderPass {
 }
 
 impl FullScreenRenderPass {
-	pub fn new(ghi: &mut ghi::Device, shader: &str, bindings: &[ghi::DescriptorSetBindingTemplate], (source_image, source_sampler): &(ghi::ImageHandle, ghi::SamplerHandle), destination_image: ghi::ImageHandle) -> FullScreenRenderPass {
-		let descriptor_set_layout = ghi.create_descriptor_set_template(Some("Fullscreen Pass Set Layout"), bindings);
-		let pipeline_layout = ghi.create_pipeline_layout(&[descriptor_set_layout], &[]);
+	pub fn new(device: &mut ghi::Device, shader: &str, bindings: &[ghi::DescriptorSetBindingTemplate], (source_image, source_sampler): &(ghi::ImageHandle, ghi::SamplerHandle), destination_image: ghi::ImageHandle) -> FullScreenRenderPass {
+		let descriptor_set_layout = device.create_descriptor_set_template(Some("Fullscreen Pass Set Layout"), bindings);
+		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
-		let descriptor_set = ghi.create_descriptor_set(Some("Fullscreen Pass Descriptor Set"), &descriptor_set_layout);
+		let descriptor_set = device.create_descriptor_set(Some("Fullscreen Pass Descriptor Set"), &descriptor_set_layout);
 
-		let source_image_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[0], *source_image, *source_sampler, ghi::Layouts::Read));
-		let destination_image_binding = ghi.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[1], destination_image, ghi::Layouts::General));
+		let source_image_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[0], *source_image, *source_sampler, ghi::Layouts::Read));
+		let destination_image_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&bindings[1], destination_image, ghi::Layouts::General));
 
-		ghi.write(&[ghi::DescriptorWrite::combined_image_sampler(source_image_binding, *source_image, *source_sampler, ghi::Layouts::Read), ghi::DescriptorWrite::image(destination_image_binding, destination_image, ghi::Layouts::General)]);
+		device.write(&[ghi::DescriptorWrite::combined_image_sampler(source_image_binding, *source_image, *source_sampler, ghi::Layouts::Read), ghi::DescriptorWrite::image(destination_image_binding, destination_image, ghi::Layouts::General)]);
 
 		let shader_artifact = glsl::compile(shader, "shader").unwrap();
 
-		let shader = ghi.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::SPIRV(shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
+		let shader = device.create_shader(Some("Fullscreen Pass Shader"), ghi::ShaderSource::SPIRV(shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [bindings[0].into_shader_binding_descriptor(0, ghi::AccessPolicies::READ), bindings[1].into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE)]).expect("Failed to create fullscreen shader");
 
-		let pipeline = ghi.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
+		let pipeline = device.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute,));
 
 		FullScreenRenderPass {
 			pipeline,

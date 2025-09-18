@@ -95,16 +95,8 @@ impl CommandBufferRecording<'_> {
 	}
 
 	fn get_internal_descriptor_set_handle(&self, descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle) -> DescriptorSetHandle {
-		let mut i = 0;
-		let mut handle = DescriptorSetHandle(descriptor_set_handle.0);
-		loop {
-			let descriptor_set = &self.ghi.descriptor_sets[handle.0 as usize];
-			if i == self.sequence_index {
-				return handle;
-			}
-			handle = descriptor_set.next.unwrap();
-			i += 1;
-		}
+		let handles = DescriptorSetHandle(descriptor_set_handle.0).get_all(&self.ghi.descriptor_sets);
+		handles[self.sequence_index as usize]
 	}
 
 	fn get_descriptor_set(&self, descriptor_set_handle: &DescriptorSetHandle) -> &DescriptorSet {
@@ -294,6 +286,7 @@ impl CommandBufferRecording<'_> {
 
 					memory_barriers.push(memory_barrier);
 				}
+				_ => {}
 			};
 
 			new_states.push((consumption.handle, transition_state));
@@ -341,7 +334,7 @@ impl CommandBufferRecording<'_> {
 	}
 }
 
-impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecording<'_> {
+impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'_> {
 	fn sync_buffers(&mut self) {
 		let copy_buffers = self.buffer_copies.drain(..).collect::<Vec<_>>();
 
@@ -491,7 +484,7 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 		texture_copies
 	}
 
-	fn start_render_pass(&mut self, extent: Extent, attachments: &[graphics_hardware_interface::AttachmentInformation]) -> &mut impl graphics_hardware_interface::RasterizationRenderPassMode {
+	fn start_render_pass(&mut self, extent: Extent, attachments: &[graphics_hardware_interface::AttachmentInformation]) -> &mut impl crate::command_buffer::RasterizationRenderPassMode {
 		unsafe {
 			self.consume_resources(attachments.iter().map(|attachment|
 				Consumption{
@@ -1185,8 +1178,8 @@ impl graphics_hardware_interface::CommandBufferRecordable for CommandBufferRecor
 	}
 }
 
-impl graphics_hardware_interface::CommonCommandBufferMode for CommandBufferRecording<'_> {
-	fn bind_pipeline_layout(&mut self, pipeline_layout: crate::PipelineLayoutHandle) -> &mut impl crate::BoundPipelineLayoutMode {
+impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'_> {
+	fn bind_pipeline_layout(&mut self, pipeline_layout: crate::PipelineLayoutHandle) -> &mut impl crate::command_buffer::BoundPipelineLayoutMode {
     	self.bound_pipeline_layout = Some(pipeline_layout);
     	self
 	}
@@ -1225,7 +1218,7 @@ impl graphics_hardware_interface::CommonCommandBufferMode for CommandBufferRecor
 	}
 }
 
-impl graphics_hardware_interface::RasterizationRenderPassMode for CommandBufferRecording<'_> {
+impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self) {
 		let command_buffer = self.get_command_buffer();
@@ -1234,8 +1227,8 @@ impl graphics_hardware_interface::RasterizationRenderPassMode for CommandBufferR
 	}
 }
 
-impl graphics_hardware_interface::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-	fn bind_raster_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundRasterizationPipelineMode {
+impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
+	fn bind_raster_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut impl crate::command_buffer::BoundRasterizationPipelineMode {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline); }
@@ -1246,7 +1239,7 @@ impl graphics_hardware_interface::BoundPipelineLayoutMode for CommandBufferRecor
 		self
 	}
 
-	fn bind_compute_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundComputePipelineMode {
+	fn bind_compute_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut impl crate::command_buffer::BoundComputePipelineMode {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline); }
@@ -1257,7 +1250,7 @@ impl graphics_hardware_interface::BoundPipelineLayoutMode for CommandBufferRecor
 		self
 	}
 
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut impl graphics_hardware_interface::BoundRayTracingPipelineMode {
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: graphics_hardware_interface::PipelineHandle) -> &mut impl crate::command_buffer::BoundRayTracingPipelineMode {
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe { self.ghi.device.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline); }
@@ -1333,7 +1326,7 @@ impl graphics_hardware_interface::BoundPipelineLayoutMode for CommandBufferRecor
 	}
 }
 
-impl graphics_hardware_interface::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
+impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		let command_buffer = self.get_command_buffer();
@@ -1371,7 +1364,7 @@ impl graphics_hardware_interface::BoundRasterizationPipelineMode for CommandBuff
 	}
 }
 
-impl graphics_hardware_interface::BoundComputePipelineMode for CommandBufferRecording<'_> {
+impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
@@ -1406,10 +1399,8 @@ impl graphics_hardware_interface::BoundComputePipelineMode for CommandBufferReco
 	}
 }
 
-impl graphics_hardware_interface::BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
+impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
-		use graphics_hardware_interface::Device;
-
 		let command_buffer = self.get_command_buffer();
 		let comamand_buffer_handle = command_buffer.command_buffer;
 

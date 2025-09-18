@@ -56,7 +56,7 @@ pub fn partition<T>(slice: &[T], key_fn: impl Fn(&T) -> usize) -> Vec<(usize, &[
 	partitions
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Extent {
 	width: u32,
 	height: u32,
@@ -118,7 +118,7 @@ impl Extent {
 	pub fn height(&self) -> u32 { self.height }
 	#[inline]
 	pub fn depth(&self) -> u32 { self.depth }
-	
+
 	pub fn aspect_ratio(&self) -> f32 {
 		(self.width as f32) / (self.height as f32)
 	}

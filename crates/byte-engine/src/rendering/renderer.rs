@@ -2,7 +2,7 @@ use std::{
 	borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
-use ghi::{frame::Frame as _, graphics_hardware_interface::Device as _, raster_pipeline, vulkan::command_buffer, BoundComputePipelineMode, BoundRasterizationPipelineMode, CommandBufferRecordable, Device, RasterizationRenderPassMode};
+use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecordable as _, RasterizationRenderPassMode as _}, device::Device as _, frame::Frame as _, raster_pipeline, vulkan::command_buffer};
 use resource_management::resource::resource_manager::ResourceManager;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
@@ -171,10 +171,8 @@ impl Renderer {
 
 		let (present_key, extent) = frame.acquire_swapchain_image(swapchain_handle);
 
-		assert!(extent.width() <= 65535 && extent.height() <= 65535, "The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits.", extent);
-
-		if extent.width() == 0 || extent.height() == 0 {
-			log::info!("Swapchain extent is zero in either or both dimension. Skipping rendering!");
+		if extent.width() >= 65535 || extent.height() >= 65535 {
+			log::warn!("The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.", extent);
 			return None;
 		}
 

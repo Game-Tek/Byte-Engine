@@ -1,6 +1,6 @@
 use std::{cell::OnceCell, hash::Hash, rc::Rc, sync::{Arc, OnceLock}};
 
-use ghi::{graphics_hardware_interface::Device as _, Device};
+use ghi::device::Device as _;
 use resource_management::{resources::material::{Material, Shader, Variant, VariantVariable}, types::ShaderTypes, Reference};
 use utils::{hash::{HashMap, HashMapExt}, stale_map::{Entry, StaleHashMap}, sync::{RwLock, RwLockUpgradableReadGuard}};
 

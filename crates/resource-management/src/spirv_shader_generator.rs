@@ -38,17 +38,21 @@ impl GeneratedShader {
 /// The `SPIRVShaderGenerator` generates SPIR-V shaders from Byte Engine Shader Language program descriptions.
 /// > [!IMPORTANT]
 /// > Creating an instance of `SPIRVShaderGenerator` is an expensive operation, and as such, it should be reused whenever possible.
-pub struct SPIRVShaderGenerator {}
+pub struct SPIRVShaderGenerator {
+	glsl_shader_generator: GLSLShaderGenerator,
+}
 
 impl ShaderGenerator for SPIRVShaderGenerator {}
 
 impl SPIRVShaderGenerator {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            glsl_shader_generator: GLSLShaderGenerator::new(),
+        }
     }
 
 	pub fn generate(&mut self, shader_compilation_settings: &ShaderGenerationSettings, main_function_node: &besl::NodeReference) -> Result<GeneratedShader, String> {
-		let glsl_shader = GLSLShaderGenerator::new().generate(shader_compilation_settings, main_function_node).map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
+		let glsl_shader = self.glsl_shader_generator.generate(shader_compilation_settings, main_function_node).map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
 
 		let compiler = shaderc::Compiler::new().unwrap();
 		let mut options = shaderc::CompileOptions::new().unwrap();

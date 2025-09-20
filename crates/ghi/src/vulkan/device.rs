@@ -49,9 +49,12 @@ pub struct Device {
 	pub(super) synchronizers: Vec<Synchronizer>,
 	pub(super) swapchains: Vec<Swapchain>,
 
+	/// Maps a resource to N descriptors that reference it.
 	resource_to_descriptor: HashMap<Handle, HashSet<(DescriptorSetBindingHandle, u32)>>,
 
 	pub(super) descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, Descriptor>>>,
+
+	/// Maps a descriptor set and binding to N resources that it references.
 	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
 
 	settings: graphics_hardware_interface::Features,
@@ -1255,13 +1258,13 @@ impl Device {
 
 		let new_image = self.build_image_internal(image.next, name.as_ref().map(|e| e.as_str()), image.format_, image.access, image.layers, extent, image.uses);
 
-		self.update_image_bindings(image_handle);
-
 		self.images[image_handle.0 as usize] = new_image;
 
 		if let Some(state) = self.states.get_mut(&image_handle.into()) {
 			state.layout = vk::ImageLayout::UNDEFINED;
 		}
+
+		self.update_image_bindings(image_handle);
 	}
 
 	/// Add the task to all frames
@@ -1575,6 +1578,11 @@ impl Device {
 							let handles = ImageHandle(handle.0).get_all(&self.images);
 							let handle = handles[sequence_index as usize];
 							DescriptorWrite::new(Descriptors::Image { handle, layout }, binding)
+						}
+						graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, sampler_handle, layout, layer } => {
+							let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
+							let image_handle = image_handles[sequence_index as usize];
+							DescriptorWrite::new(Descriptors::CombinedImageSampler { image_handle, sampler_handle: SamplerHandle(sampler_handle.0), layout, layer }, binding)
 						}
 						_ => panic!("Unhandled descriptor update type"),
 					}.index(descriptor_write.array_element);
@@ -1932,7 +1940,7 @@ impl crate::device::Device for Device {
 
 		let mut next = None;
 
-		for descriptor_set_handle in &descriptor_set_handles {
+		for descriptor_set_handle in descriptor_set_handles.iter().rev() {
 			let binding_handle = DescriptorSetBindingHandle(self.bindings.len() as u64);
 
 			let created_binding = Binding {

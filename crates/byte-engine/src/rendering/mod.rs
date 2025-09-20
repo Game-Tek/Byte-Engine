@@ -1,4 +1,4 @@
-use utils::Extent;
+use ::utils::Extent;
 
 use crate::{camera::Camera, rendering::view::View};
 
@@ -30,6 +30,8 @@ pub mod pipeline_manager;
 pub mod view;
 
 pub mod csm;
+
+pub mod utils;
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(b: &resource_management::spirv_shader_generator::Binding) -> ghi::ShaderBindingDescriptor {

@@ -9,7 +9,7 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh::{MeshSource, RenderEntity}, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}}};
+use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh::{MeshSource, RenderEntity}, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, utils::{MeshBuffersStats, MeshStats}}};
 
 pub struct SimpleRenderModel {
 	meshes: Vec<u32>,
@@ -67,7 +67,7 @@ impl SimpleRenderModel {
 		let generated_vertex_shader = {
 			let main_code = r#"
 			Camera camera = cameras.cameras[0];
-			uint instance_index = gl_InstanceIndex;
+			uint instance_index = push_constant.instance_index;
 			Instance instance = instances.instances[instance_index];
 
 			gl_Position = camera.view_projection * instance.transform * vec4(in_position, 1.0);
@@ -204,8 +204,10 @@ impl RenderPass for SimpleRenderModel {
 
 						let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
 
-						let vertex_buffer_offset = self.mesh_buffers_stats.vertex_count;
-						let index_buffer_offset = self.mesh_buffers_stats.index_count;
+						let mesh_pos = self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count));
+
+						let vertex_buffer_offset = mesh_pos.vertex_offset();
+						let index_buffer_offset = mesh_pos.index_offset();
 
 						vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(vertices.as_slice());
 
@@ -215,7 +217,7 @@ impl RenderPass for SimpleRenderModel {
 							*dst = src;
 						});
 
-						MeshStats::new(vertex_count, index_count, vertex_buffer_offset, index_buffer_offset)
+						mesh_pos
 					}
 					_ => {
 						log::warn!("SimpleRenderModel does not support non-generated meshes");
@@ -223,8 +225,7 @@ impl RenderPass for SimpleRenderModel {
 					}
 				};
 
-				let mesh_id = self.mesh_buffers_stats.add(mesh);
-				self.mesh_buffers_stats.add_instance(mesh_id);
+				self.mesh_buffers_stats.add_instance(mesh.id());
 			}
 		}
 
@@ -260,8 +261,8 @@ impl RenderPass for SimpleRenderModel {
 			c.bind_descriptor_sets(&[descriptor_set]);
 			let c = c.bind_raster_pipeline(pipeline);
 			for batch in &instance_batches {
-				c.write_push_constant(0, batch.base_instance as u32);
-				c.draw_indexed(batch.index_count as u32, batch.instance_count as u32, batch.base_index as _, batch.base_vertex as _, batch.base_instance as _);
+				c.write_push_constant(0, batch.base_instance() as u32);
+				c.draw_indexed(batch.index_count() as u32, batch.instance_count() as u32, batch.base_index() as _, batch.base_vertex() as _, batch.base_instance() as _);
 			}
 			c.end_render_pass();
 		}))
@@ -276,91 +277,4 @@ struct InstanceShaderData {
 #[derive(Debug, Clone, Copy)]
 struct CameraShaderData {
 	vp: Matrix4,
-}
-
-struct MeshStats {
-	vertex_count: usize,
-	index_count: usize,
-	base_index: usize,
-	base_vertex: usize,
-}
-
-impl MeshStats {
-	pub fn new(vertex_count: usize, index_count: usize, base_index: usize, base_vertex: usize) -> Self {
-		Self {
-			vertex_count,
-			index_count,
-			base_index,
-			base_vertex,
-		}
-	}
-}
-
-struct MeshBuffersStats {
-	vertex_count: usize,
-	index_count: usize,
-
-	meshes: Vec<MeshStats>,
-
-	instances: Vec<usize>,
-}
-
-struct InstanceBatch {
-	base_index: usize,
-	base_vertex: usize,
-	instance_count: usize,
-	index_count: usize,
-	base_instance: usize,
-}
-
-impl MeshBuffersStats {
-	pub fn add(&mut self, other: MeshStats) -> usize {
-		self.vertex_count += other.vertex_count;
-		self.index_count += other.index_count;
-
-		let mesh_id = self.meshes.len();
-		self.meshes.push(other);
-
-		mesh_id
-	}
-
-	pub fn add_instance(&mut self, mesh_id: usize) {
-		self.instances.push(mesh_id);
-	}
-
-	pub fn get_instance_batches(&self) -> Vec<InstanceBatch> {
-		let mut batches = HashMap::with_capacity(self.meshes.len());
-
-		for (instance_id, &mesh_id) in self.instances.iter().enumerate() {
-			let mesh = &self.meshes[mesh_id];
-
-			match batches.entry(mesh_id) {
-				Entry::Vacant(e) => {
-					e.insert(InstanceBatch {
-						index_count: mesh.index_count,
-						instance_count: 1,
-						base_vertex: mesh.base_vertex,
-						base_index: mesh.base_index,
-						base_instance: instance_id,
-					});
-				}
-				Entry::Occupied(mut e) => {
-					e.get_mut().instance_count += 1;
-				}
-			}
-		}
-
-		batches.into_values().collect::<Vec<_>>()
-	}
-}
-
-impl Default for MeshBuffersStats {
-	fn default() -> Self {
-		Self {
-			vertex_count: 0,
-			index_count: 0,
-			meshes: Vec::new(),
-			instances: Vec::new(),
-		}
-	}
 }

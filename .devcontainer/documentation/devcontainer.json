@@ -1,4 +1,11 @@
 {
 	"name": "📖 Docs",
-	"image": "oven/bun:1.2.14"
+	"image": "oven/bun:1.2.22",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"oven.bun-vscode"
+			]
+		}
+	}
 }

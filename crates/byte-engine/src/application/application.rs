@@ -68,7 +68,7 @@ impl Application for BaseApplication {
 
 		let application = BaseApplication { name: String::from(name), parameters: parameter_set };
 
-		if let Some(e) = application.get_parameter("log-level") {
+		if let Some(e) = application.get_parameter("log.level") {
 			let level = match e.value.as_str() {
 				"trace" => log::LevelFilter::Trace,
 				"debug" => log::LevelFilter::Debug,

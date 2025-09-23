@@ -3,6 +3,7 @@ import { tanstackStart } from '@tanstack/react-start/plugin/vite';
 import { defineConfig } from 'vite';
 import tsConfigPaths from 'vite-tsconfig-paths';
 import tailwindcss from '@tailwindcss/vite';
+import { cloudflare } from '@cloudflare/vite-plugin';
 import mdx from 'fumadocs-mdx/vite';
 
 export default defineConfig({
@@ -21,6 +22,7 @@ export default defineConfig({
 				enabled: true,
 			},
 		}),
+		cloudflare(),
 		react(),
 	],
 });

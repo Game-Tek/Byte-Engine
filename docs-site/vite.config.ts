@@ -10,6 +10,14 @@ export default defineConfig({
 	server: {
 		port: 3000,
 	},
+	// resolve: {
+	// 	alias: {
+	// 		'react-dom/server': 'react-dom/server.node'
+	// 	}
+	// },
+	// optimizeDeps: {
+	// 	include: ['react-dom/server']
+	// },
 	plugins: [
 		mdx(await import('./source.config')),
 		tailwindcss(),
@@ -17,12 +25,11 @@ export default defineConfig({
 			projects: ['./tsconfig.json'],
 		}),
 		tanstackStart({
-			customViteReactPlugin: true,
 			prerender: {
 				enabled: true,
 			},
 		}),
-		cloudflare(),
+		process.env.NODE_ENV === 'production' && cloudflare(),
 		react(),
 	],
 });

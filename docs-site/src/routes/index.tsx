@@ -9,11 +9,11 @@ export const Route = createFileRoute('/')({
 function Home() {
 	return (
 		<HomeLayout {...baseOptions()} className="text-center py-32 justify-center">
-			<h1 className="font-medium text-xl mb-4">Fumadocs on Tanstack Start.</h1>
+			<h1 className="font-medium text-xl mb-4">Byte Engine Docs</h1>
 			<Link
 				to="/docs/$"
 				params={{
-				_splat: '',
+					_splat: '',
 				}}
 				className="px-3 py-2 rounded-lg bg-fd-primary text-fd-primary-foreground font-medium text-sm mx-auto"
 			>

@@ -3,5 +3,6 @@
 	"name": "byte-engine",
 	"compatibility_date": "2025-09-02",
 	"compatibility_flags": ["nodejs_compat"],
-	"main": "@tanstack/react-start/server-entry",
+	// "main": "@tanstack/react-start/server-entry",
+	"main": "dist/server/server.js",
 }

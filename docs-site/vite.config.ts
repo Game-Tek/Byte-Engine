@@ -21,6 +21,7 @@ export default defineConfig({
 	plugins: [
 		mdx(await import('./source.config')),
 		tailwindcss(),
+		cloudflare(process.env.ENV === 'production' ? { viteEnvironment: { name: "ssr" } } : undefined),
 		tsConfigPaths({
 			projects: ['./tsconfig.json'],
 		}),
@@ -29,7 +30,6 @@ export default defineConfig({
 				enabled: true,
 			},
 		}),
-		process.env.NODE_ENV === 'production' && cloudflare(),
 		react(),
 	],
 });

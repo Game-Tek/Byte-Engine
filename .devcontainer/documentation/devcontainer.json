@@ -1,6 +1,6 @@
 {
 	"name": "📖 Docs",
-	"image": "oven/bun:1.2.22",
+	"image": "mcr.microsoft.com/devcontainers/typescript-node:24",
 	"customizations": {
 		"vscode": {
 			"extensions": [

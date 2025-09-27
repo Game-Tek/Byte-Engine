@@ -1,2 +1,0 @@
-[build]
-rustflags = ["-Ctarget-feature=+avx2,+aes,+pclmul"]

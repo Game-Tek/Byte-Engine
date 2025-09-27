@@ -306,15 +306,7 @@ impl Window {
 
 	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Option<Window> {
 		#[cfg(target_os = "linux")]
-		let window_impl = if let Some(_) = std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY") {
-			if let Some(_) = std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland") {
-				OSWindow::Wayland(WaylandWindow::try_new(name, extent, id_name).ok()?)
-			} else {
-				return None;
-			}
-		} else {
-			return None;
-		};
+		let window_impl = OSWindow::Wayland(WaylandWindow::try_new(name, extent, id_name).ok()?);
 
 		#[cfg(target_os = "windows")]
 		let window_impl = OSWindow::Windows(Win32Window::try_new(name, extent, id_name)?);

@@ -376,6 +376,7 @@ impl ShaderBindingDescriptor {
 /// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
 /// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
 /// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
+/// - `mesh_shading`: Whether to enable mesh shaders. This can provide more advanced rendering techniques. Default is `true`.
 #[derive(Debug, Clone, Copy)]
 pub struct Features {
 	pub(crate) validation: bool,
@@ -386,6 +387,7 @@ pub struct Features {
 	pub(crate) gpu: Option<&'static str>,
 	pub(crate) sparse: bool,
 	pub(crate) geometry_shader: bool,
+	pub(crate) mesh_shading: bool,
 }
 
 impl Features {
@@ -399,6 +401,7 @@ impl Features {
 			gpu: None,
 			sparse: false,
 			geometry_shader: false,
+			mesh_shading: true,
 		}
 	}
 
@@ -439,6 +442,11 @@ impl Features {
 
 	pub fn geometry_shader(mut self, value: bool) -> Self {
 		self.geometry_shader = value;
+		self
+	}
+
+	pub fn mesh_shading(mut self, value: bool) -> Self {
+		self.mesh_shading = value;
 		self
 	}
 }

@@ -149,8 +149,8 @@ impl Device {
 		;
 
 		let mut physical_device_mesh_shading_required_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
-			.task_shader(true)
-			.mesh_shader(true)
+			.task_shader(settings.mesh_shading)
+			.mesh_shader(settings.mesh_shading)
 		;
 
 		let physical_devices = unsafe { vk_instance.enumerate_physical_devices().or(Err("Failed to enumerate physical devices"))? };
@@ -212,17 +212,23 @@ impl Device {
 
 				let features = physical_device_features.features;
 
-				features.sample_rate_shading != vk::FALSE &&
-				flag_required_or_available(physical_device_vulkan_12_features.buffer_device_address_capture_replay, buffer_device_address_capture_replay) &&
-				flag_required_or_available(physical_device_barycentric_features.fragment_shader_barycentric, barycentric_required_features.fragment_shader_barycentric != 0) &&
-				features.shader_storage_image_array_dynamic_indexing != vk::FALSE &&
-				features.shader_sampled_image_array_dynamic_indexing != vk::FALSE &&
-				features.shader_storage_buffer_array_dynamic_indexing != vk::FALSE &&
-				features.shader_uniform_buffer_array_dynamic_indexing != vk::FALSE &&
-				features.shader_storage_image_write_without_format != vk::FALSE &&
-				flag_required_or_available(features.geometry_shader, settings.geometry_shader) &&
-				flag_required_or_available(physical_device_mesh_shading_features.mesh_shader, physical_device_mesh_shading_required_features.mesh_shader != 0) &&
-				flag_required_or_available(physical_device_mesh_shading_features.task_shader, physical_device_mesh_shading_required_features.task_shader != 0)
+				let feature_validation = [
+					(features.sample_rate_shading != vk::FALSE, "Sample Rate Shading"),
+					(flag_required_or_available(physical_device_vulkan_12_features.buffer_device_address_capture_replay, buffer_device_address_capture_replay), "Buffer Device Address Capture Replay"),
+					(flag_required_or_available(physical_device_barycentric_features.fragment_shader_barycentric, barycentric_required_features.fragment_shader_barycentric != 0), "Fragment Shader Barycentric"),
+					(features.shader_storage_image_array_dynamic_indexing != vk::FALSE, "Shader Storage Image Array Dynamic Indexing"),
+					(features.shader_sampled_image_array_dynamic_indexing != vk::FALSE, "Shader Sampled Image Array Dynamic Indexing"),
+					(features.shader_storage_buffer_array_dynamic_indexing != vk::FALSE, "Shader Storage Buffer Array Dynamic Indexing"),
+					(features.shader_uniform_buffer_array_dynamic_indexing != vk::FALSE, "Shader Uniform Buffer Array Dynamic Indexing"),
+					(features.shader_storage_image_write_without_format != vk::FALSE, "Shader Storage Image Write Without Format"),
+					(flag_required_or_available(features.geometry_shader, settings.geometry_shader), "Geometry Shader"),
+					(flag_required_or_available(physical_device_mesh_shading_features.mesh_shader, physical_device_mesh_shading_required_features.mesh_shader != 0), "Mesh Shader"),
+					(flag_required_or_available(physical_device_mesh_shading_features.task_shader, physical_device_mesh_shading_required_features.task_shader != 0), "Task Shader"),
+				];
+
+				let all_features_available = feature_validation.iter().all(|(available, _)| *available);
+
+				all_features_available
 			}).max_by_key(|physical_device| {
 				let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
 
@@ -318,11 +324,15 @@ impl Device {
 
 		let device_create_info = vk::DeviceCreateInfo::default();
 
-		let device_create_info = if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str()) {
-			device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
-			device_create_info.push_next(&mut physical_device_mesh_shading_required_features)
+		let device_create_info = if settings.mesh_shading {
+			if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str()) {
+				device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
+				device_create_info.push_next(&mut physical_device_mesh_shading_required_features)
+			} else {
+				return Err("Mesh shader extension not available");
+			}
 		} else {
-			return Err("Mesh shader extension not available");
+			device_create_info
 		};
 
 		let mut swapchain_maintenance_features = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default().swapchain_maintenance1(true);
@@ -1527,10 +1537,6 @@ impl Device {
 		let mut tasks = self.tasks.split_off(0);
 
 		// TODO: optimize consecutive tasks such as two resize tasks
-
-		if !tasks.is_empty() {
-			println!("Processing tasks: {:?}", tasks);
-		}
 
 		tasks.retain(|e| {
 			if let Some(e) = e.frame() {

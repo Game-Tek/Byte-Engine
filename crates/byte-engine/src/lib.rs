@@ -29,8 +29,6 @@ pub mod camera;
 pub mod input;
 #[cfg(not(feature = "headless"))]
 pub mod ui;
-#[cfg(not(feature = "headless"))]
-pub mod window_system;
 
 pub mod constants;
 

@@ -9,7 +9,7 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 use crate::{
 	core::{
 		entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle
-	}, window_system::{self, WindowSystem}
+	}, rendering::window::Window
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -24,14 +24,10 @@ pub struct Renderer {
 
 	frame_queue_depth: usize,
 
-	swapchain_handles: Vec<ghi::SwapchainHandle>,
+	windows: Vec<(ghi::Window, ghi::SwapchainHandle)>,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
-
-	window_system: EntityHandle<window_system::WindowSystem>,
-
-	targets: HashMap<String, ghi::ImageHandle>,
 
 	root_render_pass: RwLock<RootRenderPass>,
 
@@ -39,7 +35,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new(window_system_handle: EntityHandle<WindowSystem>, resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
+	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
 		let features = ghi::Features::new()
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)
@@ -48,6 +44,7 @@ impl Renderer {
 				log::error!("{}\n{}", message, std::backtrace::Backtrace::force_capture());
 			})
 			.geometry_shader(false)
+			.mesh_shading(settings.mesh_shading)
 		;
 
 		let mut instance = ghi::Instance::new(features.clone()).unwrap();
@@ -60,14 +57,12 @@ impl Renderer {
 
 		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
 
-		let mut targets = HashMap::new();
-
 		let result = device.create_image(
 			Some("result"),
 			extent,
 			ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
 			ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
-			ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+			ghi::DeviceAccesses::DeviceOnly,
 			ghi::UseCases::DYNAMIC,
 			None,
 		);
@@ -76,7 +71,7 @@ impl Renderer {
 			extent,
 			ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
 			ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
-			ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+			ghi::DeviceAccesses::DeviceOnly,
 			ghi::UseCases::DYNAMIC,
 			None,
 		);
@@ -85,14 +80,10 @@ impl Renderer {
 			extent,
 			ghi::Formats::Depth32,
 			ghi::Uses::RenderTarget | ghi::Uses::Image,
-			ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,
+			ghi::DeviceAccesses::DeviceOnly,
 			ghi::UseCases::DYNAMIC,
 			None,
 		);
-
-		targets.insert("main".to_string(), main);
-		targets.insert("depth".to_string(), depth);
-		targets.insert("result".to_string(), result);
 
 		let render_command_buffer = device.create_command_buffer(Some("Render"), queue_handle);
 		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
@@ -101,9 +92,9 @@ impl Renderer {
 
 		let mut root_render_pass = RootRenderPass::new();
 
-		root_render_pass.add_image("main".to_string(), targets.get("main").unwrap().clone(), ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
-		root_render_pass.add_image("depth".to_string(), targets.get("depth").unwrap().clone(), ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
-		root_render_pass.add_image("result".to_string(), targets.get("result").unwrap().clone(), ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("main".to_string(), main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("depth".to_string(), depth, ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("result".to_string(), result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
 
 		Renderer {
 			instance,
@@ -113,14 +104,10 @@ impl Renderer {
 
 			frame_queue_depth: 2,
 
-			swapchain_handles: vec![],
+			windows: Vec::with_capacity(16),
 
 			render_command_buffer,
 			render_finished_synchronizer,
-
-			window_system: window_system_handle,
-
-			targets,
 
 			root_render_pass: RwLock::new(root_render_pass),
 
@@ -131,13 +118,13 @@ impl Renderer {
 	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
 		let read_attachments = T::get_read_attachments();
 
-		if !read_attachments.iter().all(|a| self.targets.contains_key(*a)) {
+		let mut root_render_pass = self.root_render_pass.write();
+
+		if !read_attachments.iter().all(|a| root_render_pass.does_target_exist(a)) {
 			return;
 		}
 
 		let mut render_pass_builder = RenderPassBuilder::new(&mut self.device);
-
-		let mut root_render_pass = self.root_render_pass.write();
 
 		let main_image = root_render_pass.images.get("main").unwrap().clone();
 		let depth_image = root_render_pass.images.get("depth").unwrap().clone();
@@ -152,11 +139,17 @@ impl Renderer {
 		root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
+	pub fn update_windows(&mut self) -> impl Iterator<Item = ghi::WindowIterator> {
+		self.windows.iter_mut().map(|(window, _)| {
+			window.poll()
+		})
+	}
+
 	/// This function prepares a frame by invoking multiple render passes.
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
 	pub fn prepare(&'_ mut self) -> Option<RenderMessage<'_>> {
-		let Some(&swapchain_handle) = self.swapchain_handles.first() else {
+		let Some(&swapchain_handle) = self.windows.first().map(|(_, s)| s) else {
 			log::warn!("No swapchain available to present to. Skipping rendering!");
 			return None;
 		};
@@ -176,19 +169,21 @@ impl Renderer {
 			return None;
 		}
 
+		let root_render_pass = self.root_render_pass.read();
+
 		if extent != self.extent {
-			for (_, image) in self.targets.iter_mut() {
+			for image in root_render_pass.targets() {
 				frame.resize_image(*image, extent);
 			}
 
 			self.extent = extent;
 		}
 
-		let execute = self.root_render_pass.write().prepare(&mut frame, extent);
+		let execute = root_render_pass.prepare(&mut frame, extent);
 
-		let result = self.targets.get("result").unwrap();
+		let result = root_render_pass.get_target("result").unwrap();
 
-		RenderMessage::new(frame, self.render_command_buffer, self.render_finished_synchronizer, *result, swapchain_handle, present_key, execute).into()
+		RenderMessage::new(frame, self.render_command_buffer, self.render_finished_synchronizer, result, swapchain_handle, present_key, execute).into()
 	}
 }
 
@@ -252,31 +247,38 @@ impl <'a> RenderMessage<'a> {
 	}
 }
 
-impl Listener<CreateEvent<window_system::Window>> for Renderer {
-	fn handle(&mut self, event: &CreateEvent<window_system::Window>) {
-		let handle = event.handle();
-
-		let os_handles = self.window_system.map(|e| {
-			let e = e.read();
-			e.get_os_handles(&handle)
-		});
-
-		let device = &mut self.device;
-
-		let swapchain_handle = device.bind_to_window(
-			&os_handles,
-			ghi::PresentationModes::Mailbox,
-			Extent::rectangle(1920, 1080),
-		);
-
-		self.swapchain_handles.push(swapchain_handle);
-	}
-}
-
 impl Entity for Renderer {
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
 		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<window_system::Window>>()
+			.listen_to::<CreateEvent<Window>>()
+	}
+}
+
+impl Listener<CreateEvent<Window>> for Renderer {
+	fn handle(&mut self, event: &CreateEvent<Window>) {
+		let handle = event.handle();
+		let window = handle.read();
+
+		let name = window.name();
+		let extent = window.extent();
+
+		let window = ghi::Window::new_with_params(name, extent, "main_window");
+
+		if let Some(window) = window {
+			let os_handles = window.get_os_handles();
+
+			let device = &mut self.device;
+
+			let swapchain_handle = device.bind_to_window(
+				&os_handles,
+				ghi::PresentationModes::Mailbox,
+				extent,
+			);
+
+			self.windows.push((window, swapchain_handle));
+		} else {
+			log::error!("Failed to create GHI window");
+		}
 	}
 }
 
@@ -336,6 +338,18 @@ impl RootRenderPass {
 			}
 		}
 	}
+
+	fn does_target_exist(&self, name: &str) -> bool {
+		self.images.contains_key(name)
+	}
+
+	fn targets(&self) -> impl Iterator<Item = &ghi::ImageHandle> {
+		self.images.values().map(|(image, _, _)| image)
+	}
+
+	fn get_target(&self, name: &str) -> Option<ghi::ImageHandle> {
+		self.images.get(name).map(|(image, _, _)| *image)
+	}
 }
 
 struct Attachment {
@@ -351,6 +365,8 @@ pub struct Settings {
 	api_dump: bool,
 	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
 	extended_validation: bool,
+	/// Controls whether to enable or not mesh shading on the GHI device.
+	mesh_shading: bool,
 }
 
 impl Settings {
@@ -363,6 +379,7 @@ impl Settings {
 			validation: cfg!(debug_assertions),
 			api_dump: false,
 			extended_validation: false,
+			mesh_shading: true,
 		}
 	}
 
@@ -378,6 +395,11 @@ impl Settings {
 
 	pub fn extended_validation(mut self, value: bool) -> Self {
 		self.extended_validation = value;
+		self
+	}
+
+	pub fn mesh_shading(mut self, value: bool) -> Self {
+		self.mesh_shading = value;
 		self
 	}
 }

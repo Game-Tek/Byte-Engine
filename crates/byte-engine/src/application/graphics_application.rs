@@ -6,7 +6,7 @@ use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handl
 use tracing::{debug_span, instrument, span, Level};
 use utils::{sync::RwLock, Extent};
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, visibility_model::visibility_shader_generator::VisibilityShaderGenerator}, window_system::{self, Window}};
+use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, visibility_model::visibility_shader_generator::VisibilityShaderGenerator}};
 
 use super::{application::{Application, BaseApplication}, Parameter, Time, Events};
 
@@ -33,7 +33,6 @@ pub struct GraphicsApplication {
 
 	application_events: (std::sync::mpsc::Sender<Events>, std::sync::mpsc::Receiver<Events>),
 
-	window_system_handle: EntityHandle<window_system::WindowSystem>,
 	input_system_handle: EntityHandle<input::InputManager>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer_handle: EntityHandle<Renderer>,
@@ -69,7 +68,6 @@ impl Application for GraphicsApplication {
 
 		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
-		let window_system_handle = root_space_handle.spawn(window_system::WindowSystem::new_as_system());
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
 		let renderer_handle = {
 			let settings = rendering::renderer::Settings::new();
@@ -92,7 +90,13 @@ impl Application for GraphicsApplication {
 				settings
 			};
 
-			root_space_handle.spawn(rendering::renderer::Renderer::new(window_system_handle.clone(), resource_manager.clone(), settings).builder())
+			let settings = if let Some(param) = application.get_parameter("render.ghi.features.mesh_shading") {
+				settings.mesh_shading(param.as_bool_simple())
+			} else {
+				settings
+			};
+
+			root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), settings).builder())
 		};
 		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
 		let physics_system_handle = root_space_handle.spawn(physics::World::new().builder());
@@ -130,7 +134,6 @@ impl Application for GraphicsApplication {
 
 			application_events,
 
-			window_system_handle,
 			input_system_handle,
 			renderer_handle,
 			resource_manager,
@@ -206,18 +209,20 @@ impl Application for GraphicsApplication {
 		let mut close = false;
 
 		{
-			let mut window_system = self.window_system_handle.write();
+			let mut renderer = self.renderer_handle.write();
 			let mut input_system = self.input_system_handle.write();
 
-			window_system.update_windows(|_, event| {
-				if let ghi::Events::Close { .. } = event {
-					close = true;
-				}
+			for window_events in renderer.update_windows() {
+				for event in window_events {
+					if let ghi::Events::Close { .. } = event {
+						close = true;
+					}
 
-				if let Some((device_handle, input_source_action, value)) = process_default_window_input(&mut input_system, event) {
-					input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
+					if let Some((device_handle, input_source_action, value)) = process_default_window_input(&mut input_system, event) {
+						input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
+					}
 				}
-			});
+			}
 		}
 
 		let time = Time { elapsed, delta: dt };

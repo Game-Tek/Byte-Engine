@@ -4,6 +4,7 @@ use crate::{camera::Camera, rendering::view::View};
 
 pub mod common_shader_generator;
 
+pub mod window;
 pub mod lights;
 
 pub mod mesh;

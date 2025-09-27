@@ -3,10 +3,10 @@ use std::time::Duration;
 pub mod application;
 pub use application::{Application, BaseApplication};
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 pub mod graphics_application;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 pub use graphics_application::GraphicsApplication;
 
 /// [`Time`] is used to query information about time from an application.

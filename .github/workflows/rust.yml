@@ -14,8 +14,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        profile: [debug, release]
-        feature: [default, headless]
+        profile: [dev, release]
+        feature: [headed, network]
         include:
           - os: ubuntu-latest
             platform: linux
@@ -61,4 +61,4 @@ jobs:
         vulkan-components: Vulkan-Headers, Vulkan-Loader
         vulkan-use-cache: true
     - name: Build & Test
-      run: cargo test --workspace --profile ${{ matrix.profile }} --features ${{ matrix.feature }} -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.
+      run: cargo test --workspace --profile ${{ matrix.profile }} --no-default-features --features ${{ matrix.feature }} -- --skip render # All tests which require rendering are prefixed with "render" and are skipped here.

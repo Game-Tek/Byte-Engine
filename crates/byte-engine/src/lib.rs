@@ -11,9 +11,9 @@
 // #![warn(missing_docs)] # Disable now because we are writing a lot of code
 // #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 extern crate ahi;
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 extern crate ghi;
 extern crate besl;
 extern crate resource_management;
@@ -23,18 +23,18 @@ pub use math;
 
 pub mod core;
 pub mod application;
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 pub mod audio;
 pub mod camera;
 pub mod input;
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 pub mod ui;
 
 pub mod constants;
 
 pub mod gameplay;
 pub mod physics;
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 pub mod rendering;
 
 pub mod inspector;

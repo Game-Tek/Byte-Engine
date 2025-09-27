@@ -232,6 +232,7 @@ version = "0.1.0"
 dependencies = [
  "ahi",
  "besl",
+ "betp",
  "colored 3.0.0",
  "downcast-rs 2.0.2",
  "dual_quaternion",

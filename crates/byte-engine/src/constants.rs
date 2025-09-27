@@ -1,3 +1,5 @@
+//! The `constants` module contains commonly used constants such as world directions.
+
 use math::Vector3;
 
 /// A vector pointing to the right in the default coordinate system.

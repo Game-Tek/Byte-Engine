@@ -4,16 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-headless = []
-server = ["headless"]
+default = ["headed", "network"]
+headed = ["dep:ahi", "dep:ghi", "dep:besl"]
+network = ["client"]
+client = ["dep:betp"]
 
 [dependencies]
 utils = { path = "../utils" }
-ghi = { path = "../ghi" }
-ahi = { path = "../ahi" }
-besl = { path = "../besl" }
+ghi = { path = "../ghi", optional = true }
+ahi = { path = "../ahi", optional = true }
+besl = { path = "../besl", optional = true }
 resource-management = { path = "../resource-management" }
 math = { path = "../math" }
+betp = { path = "../betp", optional = true }
 
 serde_json = "1.0.140"
 dual_quaternion = "0.2.0"

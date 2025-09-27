@@ -1,13 +1,13 @@
 use std::future::join;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 use math::Matrix4;
 use math::Vector3;
 use utils::BoxedFuture;
 
 use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::mesh::{MeshGenerator, MeshSource}};
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 use crate::rendering::mesh::{self};
 
 use super::{Positionable, Transform, Transformable};
@@ -93,7 +93,7 @@ impl Body for Object {
 	}
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 impl mesh::RenderEntity for Object {
 	fn get_transform(&self) -> Matrix4 { (&self.transform).into() }
 	fn get_mesh(&self) -> &mesh::MeshSource {

@@ -898,13 +898,11 @@ impl Device {
 			}
 			#[cfg(target_os = "windows")]
 			window::OSHandles::Win32(os_handles) => {
-				let win32_surface = ash::khr::win32_surface::Instance::new(&self.entry, &self.instance);
-
 				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
 					.hinstance(os_handles.hinstance.0 as isize)
 					.hwnd(os_handles.hwnd.0 as isize);
 
-				unsafe { win32_surface.create_win32_surface(&win32_surface_create_info, None).expect("No surface") }
+				unsafe { self.win32_surface.create_win32_surface(&win32_surface_create_info, None).expect("No surface") }
 			}
 		};
 

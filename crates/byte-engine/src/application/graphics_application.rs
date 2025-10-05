@@ -1,4 +1,4 @@
-use crate::{core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, simple::SimpleRenderModel, texture_manager::TextureManager, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{application::parameters::Parameters, core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, simple::SimpleRenderModel, texture_manager::TextureManager, visibility_model::render_domain::VisibilityWorldRenderDomain}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -69,35 +69,7 @@ impl Application for GraphicsApplication {
 		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
-		let renderer_handle = {
-			let settings = rendering::renderer::Settings::new();
-
-			let settings = if let Some(param) = application.get_parameter("render.debug") {
-				settings.validation(param.as_bool_simple())
-			} else {
-				settings
-			};
-
-			let settings = if let Some(param) = application.get_parameter("render.debug.dump") {
-				settings.api_dump(param.as_bool_simple())
-			} else {
-				settings
-			};
-
-			let settings = if let Some(param) = application.get_parameter("render.debug.extended") {
-				settings.extended_validation(param.as_bool_simple())
-			} else {
-				settings
-			};
-
-			let settings = if let Some(param) = application.get_parameter("render.ghi.features.mesh_shading") {
-				settings.mesh_shading(param.as_bool_simple())
-			} else {
-				settings
-			};
-
-			root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), settings).builder())
-		};
+		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), &application).builder());
 		let audio_system_handle = root_space_handle.spawn(DefaultAudioSystem::new_as_system(resource_manager.clone()));
 		let physics_system_handle = root_space_handle.spawn(physics::World::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
@@ -163,10 +135,6 @@ impl Application for GraphicsApplication {
 			#[cfg(debug_assertions)]
 			kill_after,
 		}
-	}
-
-	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
-		self.application.get_parameter(name)
 	}
 
 	fn get_name(&self) -> &str { self.application.get_name() }
@@ -345,6 +313,12 @@ impl GraphicsApplication {
 
 	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {
 		&self.resource_manager
+	}
+}
+
+impl Parameters for GraphicsApplication {
+	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
+		self.application.get_parameter(name)
 	}
 }
 

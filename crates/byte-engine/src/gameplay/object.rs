@@ -5,10 +5,10 @@ use math::Matrix4;
 use math::Vector3;
 use utils::BoxedFuture;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::mesh::{MeshGenerator, MeshSource}};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::{mesh::generator::{MeshGenerator, SphereMeshGenerator}, RenderableMesh}};
 
 #[cfg(feature = "headed")]
-use crate::rendering::mesh::{self};
+use crate::rendering::{mesh::{self}, renderable::mesh::MeshSource};
 
 use super::{Positionable, Transform, Transformable};
 
@@ -32,12 +32,12 @@ impl Object {
 				collision: CollisionEvent{},
 				body_type,
 			}
-		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn mesh::RenderEntity>)
+		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn RenderableMesh>)
 	}
 
-	pub fn new_generated(mesh: Box<dyn MeshGenerator>) -> Self {
+	pub fn from_mesh_source(mesh_source: MeshSource) -> Self {
 		Object {
-			source: MeshSource::Generated(mesh),
+			source: mesh_source,
 			transform: Transform::default(),
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
@@ -45,9 +45,9 @@ impl Object {
 		}
 	}
 
-	pub fn new_sphere(radius: f32) -> Self {
+	pub fn new_generated(mesh: Box<dyn MeshGenerator>) -> Self {
 		Object {
-			source: MeshSource::Generated(Box::new(mesh::SphereMeshGenerator::new(radius))),
+			source: MeshSource::Generated(mesh),
 			transform: Transform::default(),
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
@@ -62,13 +62,8 @@ impl Object {
 
 impl Entity for Object {
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn mesh::RenderEntity>)
+		EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn RenderableMesh>)
 	}
-}
-
-impl Positionable for Object {
-	fn get_position(&self) -> Vector3 { self.transform.position }
-	fn set_position(&mut self, position: Vector3) { self.transform.position = position; }
 }
 
 impl Transformable for Object {
@@ -94,9 +89,8 @@ impl Body for Object {
 }
 
 #[cfg(feature = "headed")]
-impl mesh::RenderEntity for Object {
-	fn get_transform(&self) -> Matrix4 { (&self.transform).into() }
-	fn get_mesh(&self) -> &mesh::MeshSource {
+impl RenderableMesh for Object {
+	fn get_mesh(&self) -> &MeshSource {
 		&self.source
 	}
 }

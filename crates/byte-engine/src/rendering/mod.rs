@@ -8,7 +8,8 @@ pub mod window;
 pub mod lights;
 
 pub mod mesh;
-pub mod cube;
+
+pub mod renderable;
 
 pub mod cct;
 
@@ -33,6 +34,8 @@ pub mod view;
 pub mod csm;
 
 pub mod utils;
+
+pub use renderable::mesh::RenderableMesh;
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(b: &resource_management::spirv_shader_generator::Binding) -> ghi::ShaderBindingDescriptor {

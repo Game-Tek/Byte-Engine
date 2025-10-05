@@ -9,6 +9,8 @@ use log::{info, trace};
 use std::collections::HashSet;
 use tracing_subscriber;
 
+use crate::application::parameters::Parameters;
+
 use super::Parameter;
 
 /// The application trait is the main entry point of the engine.
@@ -30,8 +32,6 @@ pub trait Application {
 
 	/// Returns the name of the application.
 	fn get_name<'a>(&'a self) -> &'a str;
-
-	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
 
 	/// Performs a tick of the application.
 	fn tick(&mut self);
@@ -98,7 +98,9 @@ impl Application for BaseApplication {
 	fn tick(&mut self) {}
 
 	fn get_name(&self) -> &str { &self.name }
+}
 
+impl Parameters for BaseApplication {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter> {
 		self.parameters.iter().find(|p| p.name == name)
 	}

@@ -224,12 +224,12 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 						match self.parameters.channels {
 							1 => {
 								bpf(Writer::Mono16Bit(Box::new(|b| {
-									io.writei(b);
+									let _ = io.writei(b);
 								})))
 							}
 							2 => {
 								bpf(Writer::Stereo16Bit(Box::new(|b| {
-									io.writei(unsafe { std::mem::transmute(b) });
+									let _ = io.writei(unsafe { std::mem::transmute(b) });
 								})))
 							}
 							_ => panic!("Unsupported channel count"),
@@ -265,12 +265,12 @@ impl AudioHardwareInterface for ALSAAudioHardwareInterface {
 						match self.parameters.channels {
 							1 => {
 								bpf(Writer::MonoFloat32(Box::new(|b| {
-									io.writei(b);
+									let _ = io.writei(b);
 								})))
 							}
 							2 => {
 								bpf(Writer::StereoFloat32(Box::new(|b| {
-									io.writei(unsafe { std::mem::transmute(b) });
+									let _ = io.writei(unsafe { std::mem::transmute(b) });
 								})))
 							}
 							_ => panic!("Unsupported channel count"),

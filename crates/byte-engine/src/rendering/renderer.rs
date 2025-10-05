@@ -7,7 +7,7 @@ use resource_management::resource::resource_manager::ResourceManager;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
-	core::{
+	application::parameters::Parameters, core::{
 		entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle
 	}, rendering::window::Window
 };
@@ -35,7 +35,40 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
+	/// Creates a new renderer. Accepts a paramters interface.
+	///
+	/// # Paramters
+	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
+	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
+	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
+	/// - `render.ghi.features.mesh_shading`: Enables mesh shading features on the graphics device. Defaults to true.
+	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
+		let settings = Settings::new();
+
+		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
+			settings.validation(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let settings = if let Some(param) = parameters.get_parameter("render.debug.dump") {
+			settings.api_dump(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let settings = if let Some(param) = parameters.get_parameter("render.debug.extended") {
+			settings.extended_validation(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh_shading") {
+			settings.mesh_shading(param.as_bool_simple())
+		} else {
+			settings
+		};
+
 		let features = ghi::Features::new()
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)

@@ -9,10 +9,9 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh::{MeshSource, RenderEntity}, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, utils::{MeshBuffersStats, MeshStats}}};
+use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, renderable::mesh::MeshSource, utils::{MeshBuffersStats, MeshStats}, RenderableMesh}};
 
 pub struct SimpleRenderModel {
-	meshes: Vec<u32>,
 	camera: Option<EntityHandle<Camera>>,
 
 	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
@@ -21,14 +20,14 @@ pub struct SimpleRenderModel {
 	instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
 	camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 
-	mesh_buffers_stats: MeshBuffersStats,
+	mesh_buffers_stats: MeshBuffersStats<Matrix4>,
 
 	descriptor_set: ghi::DescriptorSetHandle,
 
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 
-	pending_entities: VecDeque<EntityHandle<dyn RenderEntity>>,
+	pending_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
@@ -38,6 +37,7 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 impl SimpleRenderModel {
 	pub fn new<'a>(render_pass_builder: &mut RenderPassBuilder<'a>) -> Self {
 		let render_to = render_pass_builder.render_to("main");
+		let depth_map = render_pass_builder.render_to("depth");
 
 		let device = render_pass_builder.device();
 
@@ -67,7 +67,7 @@ impl SimpleRenderModel {
 		let generated_vertex_shader = {
 			let main_code = r#"
 			Camera camera = cameras.cameras[0];
-			uint instance_index = push_constant.instance_index;
+			uint instance_index = gl_InstanceIndex;
 			Instance instance = instances.instances[instance_index];
 
 			gl_Position = camera.view_projection * instance.transform * vec4(in_position, 1.0);
@@ -131,10 +131,9 @@ impl SimpleRenderModel {
 		let vertex_shader = device.create_shader(Some("Vertex Shader"), ghi::ShaderSource::SPIRV(generated_vertex_shader.binary()), ghi::ShaderTypes::Vertex, generated_vertex_shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor)).unwrap();
 		let fragment_shader = device.create_shader(Some("Fragment Shader"), ghi::ShaderSource::SPIRV(generated_fragment_shader.binary()), ghi::ShaderTypes::Fragment, generated_fragment_shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor)).unwrap();
 
-		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(pipeline_layout, &VERTEX_LAYOUT, &[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)], &[render_to.into()]));
+		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(pipeline_layout, &VERTEX_LAYOUT, &[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)], &[render_to.into(), depth_map.into()]));
 
 		Self {
-			meshes: Vec::new(),
 			camera: None,
 
 			vertex_positions_buffer,
@@ -157,7 +156,7 @@ impl SimpleRenderModel {
 
 impl Entity for SimpleRenderModel {
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn RenderEntity>>().listen_to::<CreateEvent<Camera>>()
+		EntityBuilder::new(self).listen_to::<CreateEvent<dyn RenderableMesh>>().listen_to::<CreateEvent<Camera>>()
 	}
 }
 
@@ -167,8 +166,8 @@ impl Listener<CreateEvent<Camera>> for SimpleRenderModel {
 	}
 }
 
-impl Listener<CreateEvent<dyn RenderEntity>> for SimpleRenderModel {
-	fn handle(&mut self, event: &CreateEvent<dyn RenderEntity>) {
+impl Listener<CreateEvent<dyn RenderableMesh>> for SimpleRenderModel {
+	fn handle(&mut self, event: &CreateEvent<dyn RenderableMesh>) {
 		let entity = event.handle();
 
 		self.pending_entities.push_back(entity.clone());
@@ -195,11 +194,11 @@ impl RenderPass for SimpleRenderModel {
 
 				let mesh = match mesh {
 					MeshSource::Generated(generator) => {
-						let vertices = generator.vertices();
+						let positions = generator.positions();
 						let indices = generator.indices();
 						let indices = indices.iter().map(|&index| index as u16);
 
-						let vertex_count = vertices.len();
+						let vertex_count = positions.len();
 						let index_count = indices.len();
 
 						let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
@@ -209,7 +208,7 @@ impl RenderPass for SimpleRenderModel {
 						let vertex_buffer_offset = mesh_pos.vertex_offset();
 						let index_buffer_offset = mesh_pos.index_offset();
 
-						vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(vertices.as_slice());
+						vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(positions.as_slice());
 
 						let index_buffer = frame.device().get_mut_buffer_slice(self.indeces_buffer);
 
@@ -225,7 +224,7 @@ impl RenderPass for SimpleRenderModel {
 					}
 				};
 
-				self.mesh_buffers_stats.add_instance(mesh.id());
+				self.mesh_buffers_stats.add_instance(mesh.id(), entity.get_transform().get_matrix());
 			}
 		}
 
@@ -242,16 +241,21 @@ impl RenderPass for SimpleRenderModel {
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
-		for (index, mesh) in self.meshes.iter().enumerate() {
-			instance_data_buffer[index] = InstanceShaderData { instance_transform: Matrix4::identity() };
+		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
+
+		for batch in instance_batches.iter() {
+			for (index, instance_data) in batch {
+				instance_data_buffer[index] = InstanceShaderData { instance_transform: instance_data };
+			}
 		}
 
-		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 		let pipeline_layout = self.pipeline_layout;
 		let pipeline = self.pipeline.clone();
 		let descriptor_set = self.descriptor_set;
 		let vertex_buffer = self.vertex_positions_buffer;
 		let index_buffer = self.indeces_buffer;
+
+		let instance_batches = instance_batches.iter().into_vec();
 
 		Some(Box::new(move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);

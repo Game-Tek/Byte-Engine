@@ -1,35 +1,8 @@
-//! Mesh component module
+use std::borrow::Cow;
 
-use crate::core::EntityHandle;
-use crate::core::{entity::EntityBuilder, Entity};
-use crate::{core::orchestrator, gameplay::Transform};
+use math::{normalize, Vector3, Vector4};
 
-use std::{borrow::Cow, future::join};
-
-use math::{normalize, Vector3, Vector4, Matrix4};
-use utils::BoxedFuture;
-
-pub trait MeshGenerator: Send {
-	fn vertices(&self) -> Cow<[(f32, f32, f32)]>;
-	fn normals(&self) -> Cow<[(f32, f32, f32)]>;
-	fn uvs(&self) -> Cow<[(f32, f32)]>;
-	fn indices(&self) -> Cow<[u32]>;
-	fn tangents(&self) -> Cow<[Vector3]>;
-	fn bitangents(&self) -> Cow<[Vector3]>;
-	fn colors(&self) -> Option<Cow<[Vector4]>> { None }
-	fn meshlet_indices(&self) -> Option<Cow<[u8]>> { None }
-}
-
-pub enum MeshSource {
-	Resource(&'static str),
-	Generated(Box<dyn MeshGenerator>),
-}
-
-impl MeshSource {
-	pub fn sphere(radius: f32) -> Self {
-		MeshSource::Generated(Box::new(SphereMeshGenerator::new(radius)))
-	}
-}
+use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
 pub struct SphereMeshGenerator {
 	radius: f32,
@@ -39,7 +12,11 @@ pub struct SphereMeshGenerator {
 }
 
 impl SphereMeshGenerator {
-	pub fn new(radius: f32) -> Self {
+	pub fn new() -> Self {
+		SphereMeshGenerator::from_radius(1.0)
+	}
+
+	pub fn from_radius(radius: f32) -> Self {
 		let segments = 8;
 		let rings = 8;
 
@@ -73,7 +50,7 @@ impl SphereMeshGenerator {
 }
 
 impl MeshGenerator for SphereMeshGenerator {
-	fn vertices(&self) -> Cow<[(f32, f32, f32)]> {
+	fn positions(&self) -> Cow<[(f32, f32, f32)]> {
 		Cow::Borrowed(&self.vertex_positions)
 	}
 
@@ -205,56 +182,14 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 }
 
-pub trait RenderEntity: Entity + Send {
-	fn get_transform(&self) -> Matrix4;
-	fn get_mesh(&self) -> &MeshSource;
-}
-
-pub struct Mesh {
-	source: MeshSource,
-	transform: Transform,
-}
-
-impl Entity for Mesh {}
-
-impl RenderEntity for Mesh {
-	fn get_transform(&self) -> Matrix4 { self.transform.get_matrix() }
-	fn get_mesh(&self) -> &MeshSource {
-		&self.source
+impl Into<Box<dyn MeshGenerator>> for SphereMeshGenerator {
+	fn into(self) -> Box<dyn MeshGenerator> {
+		Box::new(self)
 	}
 }
 
-impl Mesh {
-	pub fn new(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
-		Self {
-			source: MeshSource::Resource(resource_id),
-			transform,
-		}.into()
-	}
-
-	pub fn create(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self {
-			source: MeshSource::Resource(resource_id),
-			transform,
-		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn RenderEntity>)
-	}
-
-	pub fn new_generated(generator: Box<dyn MeshGenerator>, transform: Transform) -> EntityBuilder<'static, Self> {
-		Self {
-			source: MeshSource::Generated(generator),
-			transform,
-		}.into()
-	}
-
-	pub fn set_orientation(&mut self, orientation: Vector3) {
-		self.transform.set_orientation(normalize(orientation));
-	}
-
-	pub fn transform(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn transform_mut(&mut self) -> &mut Transform {
-		&mut self.transform
+impl Into<MeshSource> for SphereMeshGenerator {
+	fn into(self) -> MeshSource {
+		Into::<Box<dyn MeshGenerator>>::into(self).into()
 	}
 }

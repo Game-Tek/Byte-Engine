@@ -4,8 +4,6 @@ use utils::Extent;
 use crate::wayland_window;
 #[cfg(target_os = "linux")]
 use crate::wayland_window::WaylandWindow;
-#[cfg(target_os = "linux")]
-use crate::x11_window::{self, X11Window};
 
 #[cfg(target_os = "windows")]
 use crate::win32_window::{self, Win32Window};
@@ -293,10 +291,10 @@ enum OSWindow {
 }
 
 pub struct Window {
-	pub name: String,
-	pub extent: Extent,
-	pub id_name: String,
-	pub os_window: OSWindow,
+	name: String,
+	extent: Extent,
+	id_name: String,
+	os_window: OSWindow,
 }
 
 impl Window {
@@ -319,7 +317,7 @@ impl Window {
 		})
 	}
 
-	pub fn poll(&mut self) -> WindowIterator {
+	pub fn poll<'a>(&'a mut self) -> WindowIterator<'a> {
 		match self.os_window {
 			#[cfg(target_os = "linux")]
 			OSWindow::Wayland(ref mut window) => WindowIterator::Wayland(window.poll()),

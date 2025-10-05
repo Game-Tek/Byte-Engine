@@ -33,13 +33,15 @@ use crate::core::listener::{CreateEvent, Listener};
 use crate::core::{Entity, EntityHandle};
 use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
 use crate::rendering::lights::{DirectionalLight, Light, PointLight};
-use crate::rendering::mesh::RenderEntity;
+use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand};
+use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
+use crate::gameplay::Transformable as _;
 use crate::rendering::visibility_model::visibility_shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::rendering::{csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain};
+use crate::rendering::{csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain, RenderableMesh};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, camera::{self}};
 
@@ -145,7 +147,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	camera: Option<EntityHandle<camera::Camera>>,
 
-	render_entities: Vec<(EntityHandle<dyn mesh::RenderEntity>, ShaderMesh)>,
+	render_entities: Vec<(EntityHandle<dyn RenderableMesh>, ShaderMesh)>,
 
 	meshes: Vec<MeshData>,
 	meshes_by_resource: HashMap<String, usize>,
@@ -211,7 +213,7 @@ pub struct VisibilityWorldRenderDomain {
 
 	render_info: RenderInfo,
 
-	pending_render_entities: VecDeque<EntityHandle<dyn RenderEntity>>,
+	pending_render_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
 }
 
 /* BASE */
@@ -660,8 +662,8 @@ impl VisibilityWorldRenderDomain {
 		Ok(mesh_id)
 	}
 
-	fn create_mesh_from_generator<'a>(&'a mut self, generator: &dyn mesh::MeshGenerator, device: &mut ghi::Device) -> Result<usize, ()> {
-		let vertices = generator.vertices();
+	fn create_mesh_from_generator<'a>(&'a mut self, generator: &dyn MeshGenerator, device: &mut ghi::Device) -> Result<usize, ()> {
+		let positions = generator.positions();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
 		let indices = generator.indices().iter().map(|&i| i as u16).collect::<Vec<_>>();
@@ -684,7 +686,7 @@ impl VisibilityWorldRenderDomain {
 		let primitive_indices_buffer = device.get_mut_buffer_slice(self.primitive_indices_buffer);
 		let meshlets_data_slice = device.get_mut_buffer_slice(self.meshlets_data_buffer);
 
-		vertex_positions_buffer[self.visibility_info.vertex_count as usize..vertices.len()].copy_from_slice(vertices.as_slice());
+		vertex_positions_buffer[self.visibility_info.vertex_count as usize..positions.len()].copy_from_slice(positions.as_slice());
 		vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals.len()].copy_from_slice(normals.as_slice());
 		vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs.len()].copy_from_slice(uvs.as_slice());
 		indices_buffer[self.visibility_info.vertex_count as usize..indices.len()].copy_from_slice(&indices);
@@ -768,7 +770,7 @@ impl VisibilityWorldRenderDomain {
 			]
 		});
 
-		let vertex_count = vertices.len();
+		let vertex_count = positions.len();
 		let primitive_count = indices.len();
 		let triangle_count = primitive_count / 3;
 		let total_meshlet_count = 1;
@@ -981,7 +983,7 @@ impl Entity for VisibilityWorldRenderDomain {
 		EntityBuilder::new(self)
 			.listen_to::<CreateEvent<camera::Camera>>()
 			.listen_to::<CreateEvent<dyn Light>>()
-			.listen_to::<CreateEvent<dyn mesh::RenderEntity>>()
+			.listen_to::<CreateEvent<dyn RenderableMesh>>()
 	}
 }
 
@@ -995,8 +997,8 @@ impl RenderPass for VisibilityWorldRenderDomain {
 			let mesh = entity.read();
 
 			let Ok(mesh_id) = (match mesh.get_mesh() {
-				mesh::MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id, device),
-				mesh::MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref(), device),
+				MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id, device),
+				MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref(), device),
 			}) else {
 				log::warn!("Failed to create mesh for render entity");
 				continue;
@@ -1012,7 +1014,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 
 			for (i, p) in mesh_data.primitives.iter().enumerate() {
 				let shader_mesh_data = ShaderMesh {
-					model: mesh.get_transform(),
+					model: mesh.get_transform().get_matrix(),
 					material_index: p.material_index,
 					base_vertex_index: mesh_data.vertex_offset + p.vertex_offset, // Add the mesh relative vertex offset and the primitive relative vertex offset to get the absolute vertex offset
 					base_primitive_index: mesh_data.primitive_offset + p.primitive_offset, // Add the mesh relative primitive offset and the primitive relative primitive offset to get the absolute primitive offset
@@ -1024,7 +1026,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 			}
 
 			if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
-				let mesh_transform = mesh.get_transform();
+				let mesh_transform = mesh.get_transform().get_matrix();
 
 				let transform = [
 					[mesh_transform[0], mesh_transform[1], mesh_transform[2], mesh_transform[3]],
@@ -1103,7 +1105,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 			for (index, (m, smd)) in self.render_entities.iter().enumerate() {
 				let mesh = m.write();
 				meshes_data_slice[index] = *smd;
-				meshes_data_slice[index].model = mesh.get_transform();
+				meshes_data_slice[index].model = mesh.get_transform().get_matrix();
 			}
 		}
 
@@ -1251,8 +1253,8 @@ struct MaterialData {
 	textures: [u32; 16],
 }
 
-impl Listener<CreateEvent<dyn mesh::RenderEntity>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<dyn mesh::RenderEntity>) {
+impl Listener<CreateEvent<dyn RenderableMesh>> for VisibilityWorldRenderDomain {
+	fn handle(&mut self, event: &CreateEvent<dyn RenderableMesh>) {
 		self.pending_render_entities.push_back(event.handle().clone());
 	}
 }

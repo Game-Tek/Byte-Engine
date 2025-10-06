@@ -192,8 +192,14 @@ impl RenderPass for SimpleRenderModel {
 
 				let mesh = entity.get_mesh();
 
-				let mesh = match mesh {
-					MeshSource::Generated(generator) => {
+				let mesh_id = match mesh {
+					MeshSource::Generated(generator) => 'a: {
+						let mesh_hash = generator.hash();
+
+						if let Some(mesh_id) = self.mesh_buffers_stats.does_mesh_exist(mesh_hash) {
+							break 'a mesh_id;
+						}
+
 						let positions = generator.positions();
 						let indices = generator.indices();
 						let indices = indices.iter().map(|&index| index as u16);
@@ -203,10 +209,10 @@ impl RenderPass for SimpleRenderModel {
 
 						let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
 
-						let mesh_pos = self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count));
+						let mesh_ref = self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
 
-						let vertex_buffer_offset = mesh_pos.vertex_offset();
-						let index_buffer_offset = mesh_pos.index_offset();
+						let vertex_buffer_offset = mesh_ref.vertex_offset();
+						let index_buffer_offset = mesh_ref.index_offset();
 
 						vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(positions.as_slice());
 
@@ -216,7 +222,7 @@ impl RenderPass for SimpleRenderModel {
 							*dst = src;
 						});
 
-						mesh_pos
+						mesh_ref.id()
 					}
 					_ => {
 						log::warn!("SimpleRenderModel does not support non-generated meshes");
@@ -224,7 +230,7 @@ impl RenderPass for SimpleRenderModel {
 					}
 				};
 
-				self.mesh_buffers_stats.add_instance(mesh.id(), entity.get_transform().get_matrix());
+				self.mesh_buffers_stats.add_instance(mesh_id, entity.get_transform().get_matrix());
 			}
 		}
 

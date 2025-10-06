@@ -1,4 +1,4 @@
-use std::{collections::hash_map::{Entry, Values}, marker::PhantomData, usize};
+use std::{collections::{hash_map::{Entry, Values}}, hash::Hash, marker::PhantomData, usize};
 
 use utils::hash::{HashMap, HashMapExt as _};
 
@@ -47,7 +47,7 @@ pub struct MeshBuffersStats<I: Copy> {
 	vertex_count: usize,
 	index_count: usize,
 
-	meshes: Vec<Mesh>,
+	meshes: HashMap<usize, Mesh>,
 
 	instances: Vec<(usize, I)>,
 }
@@ -84,16 +84,35 @@ impl InstanceBatch {
 }
 
 impl <I: Copy> MeshBuffersStats<I> {
-	pub fn add_mesh(&mut self, mesh: MeshStats) -> AddMeshResponse {
+	pub fn does_mesh_exist(&self, hash: u64) -> Option<usize> {
+		if self.meshes.contains_key(&(hash as usize)) {
+			Some(hash as usize)
+		} else {
+			None
+		}
+	}
+
+	pub fn add_mesh(&mut self, mesh: MeshStats, hash: u64) -> AddMeshResponse {
+		if let Some(existing_mesh) = self.meshes.get(&(hash as usize)) {
+			assert_eq!(existing_mesh.vertex_count, mesh.vertex_count, "Tried to add a mesh with a hash which already exists but their vertex counts don't match.");
+			assert_eq!(existing_mesh.index_count, mesh.index_count, "Tried to add a mesh with a hash which already exists but their index counts don't match.");
+
+			return AddMeshResponse {
+				id: hash as _,
+				base_vertex: existing_mesh.base_vertex,
+				base_index: existing_mesh.base_index,
+			};
+		}
+
 		let vertex_offset = self.vertex_offset();
 		let index_offset = self.index_offset();
 
 		self.vertex_count += mesh.vertex_count;
 		self.index_count += mesh.index_count;
 
-		let mesh_id = self.meshes.len();
+		let mesh_id = hash as usize;
 
-		self.meshes.push(Mesh {
+		self.meshes.insert(hash as usize, Mesh {
 			base_vertex: vertex_offset,
 			base_index: index_offset,
 			vertex_count: mesh.vertex_count,
@@ -108,6 +127,7 @@ impl <I: Copy> MeshBuffersStats<I> {
 	}
 
 	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) {
+		assert!(self.meshes.contains_key(&mesh_id), "Provided mesh_id for instance does not exist!");
 		self.instances.push((mesh_id, instance_data));
 	}
 
@@ -115,7 +135,7 @@ impl <I: Copy> MeshBuffersStats<I> {
 		let mut batches = HashMap::with_capacity(self.meshes.len());
 
 		for (instance_id, &(mesh_id, _)) in self.instances.iter().enumerate() {
-			let mesh = &self.meshes[mesh_id];
+			let mesh = &self.meshes.get(&mesh_id).unwrap();
 
 			match batches.entry(mesh_id) {
 				Entry::Vacant(e) => {
@@ -153,7 +173,7 @@ impl <I: Copy> Default for MeshBuffersStats<I> {
 		Self {
 			vertex_count: 0,
 			index_count: 0,
-			meshes: Vec::new(),
+			meshes: HashMap::with_capacity(4096),
 			instances: Vec::new(),
 		}
 	}
@@ -250,7 +270,7 @@ mod tests {
 	fn test_one_mesh_and_instance() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
+		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
 
 		assert_eq!(mesh.vertex_offset(), 0);
 		assert_eq!(mesh.index_offset(), 0);
@@ -272,7 +292,7 @@ mod tests {
 	fn test_one_mesh_and_two_instances() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
+		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
 
 		assert_eq!(mesh.vertex_offset(), 0);
 		assert_eq!(mesh.index_offset(), 0);
@@ -295,8 +315,8 @@ mod tests {
 	fn test_two_meshes_and_two_instances() {
 		let mut mesh_buffer_stats = MeshBuffersStats::default();
 
-		let mesh1 = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96));
-		let mesh2 = mesh_buffer_stats.add_mesh(MeshStats::new(64, 192));
+		let mesh1 = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
+		let mesh2 = mesh_buffer_stats.add_mesh(MeshStats::new(64, 192), 2);
 
 		assert_eq!(mesh1.vertex_offset(), 0);
 		assert_eq!(mesh1.index_offset(), 0);

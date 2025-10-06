@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use utils::Extent;
 use xcb::{x, Xid};
 
-use crate::{Keys, MouseKeys, Events};
+use crate::{window::{input::{Keys, MouseKeys}, Events}};
 
 pub struct X11Window {
 	connection: xcb::Connection,

@@ -439,47 +439,47 @@ pub fn process_default_window_input(input_system: &mut input::InputManager, even
 	let keyboard_device_handle = input_system.get_devices_by_class_name("Keyboard").unwrap().get(0).unwrap().clone();
 
 	let r = match event {
-		ghi::Events::Button { pressed, button } => {
+		ghi::window::Events::Button { pressed, button } => {
 			match button {
-				ghi::MouseKeys::Left => {
+				ghi::window::input::MouseKeys::Left => {
 					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed))
 				},
-				ghi::MouseKeys::Right => {
+				ghi::window::input::MouseKeys::Right => {
 					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed))
 				},
-				ghi::MouseKeys::ScrollUp => {
+				ghi::window::input::MouseKeys::ScrollUp => {
 					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32))
 				},
-				ghi::MouseKeys::ScrollDown => {
+				ghi::window::input::MouseKeys::ScrollDown => {
 					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32))
 				},
-				ghi::MouseKeys::Middle => {
+				ghi::window::input::MouseKeys::Middle => {
 					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.MiddleButton"), input::Value::Bool(pressed))
 				},
 			}
 		},
-		ghi::Events::MouseMove { x, y, time: _ } => {
+		ghi::window::Events::MouseMove { x, y, time: _ } => {
 			let vec = Vector2::new(x, y);
 			(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec))
 		},
-		ghi::Events::Key { pressed, key } => {
+		ghi::window::Events::Key { pressed, key } => {
 			match key {
-				ghi::Keys::W => {
+				ghi::window::input::Keys::W => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
 				},
-				ghi::Keys::S => {
+				ghi::window::input::Keys::S => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
 				},
-				ghi::Keys::A => {
+				ghi::window::input::Keys::A => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
 				},
-				ghi::Keys::D => {
+				ghi::window::input::Keys::D => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
 				},
-				ghi::Keys::Space => {
+				ghi::window::input::Keys::Space => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
 				},
-				ghi::Keys::Escape => {
+				ghi::window::input::Keys::Escape => {
 					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Escape"), input::Value::Bool(pressed))
 				},
 				_ => { return None; }

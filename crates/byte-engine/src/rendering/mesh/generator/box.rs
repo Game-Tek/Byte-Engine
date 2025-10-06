@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, hash::{Hash as _, Hasher}};
 
 use math::{Vector3, Vector4};
 
@@ -107,6 +107,14 @@ impl MeshGenerator for BoxMeshGenerator {
 			3, 0, 4,
 			3, 4, 7,
 		])
+	}
+
+	fn hash(&self) -> u64 {
+		let mut hasher = std::hash::DefaultHasher::new();
+		(self.size.x.to_bits()).hash(&mut hasher);
+		(self.size.y.to_bits()).hash(&mut hasher);
+		(self.size.z.to_bits()).hash(&mut hasher);
+		hasher.finish()
 	}
 }
 

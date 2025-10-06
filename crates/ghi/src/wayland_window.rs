@@ -4,7 +4,7 @@ use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
 use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1}, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
 
-use crate::{Keys, MouseKeys, Events};
+use crate::{window::{input::{Keys, MouseKeys}, Events}};
 
 pub struct WaylandWindow {
 	connection: wayland_client::Connection,

@@ -33,4 +33,7 @@ pub trait MeshGenerator: Send {
 
 	/// Returns the meshlet indices of the vertices.
 	fn meshlet_indices(&self) -> Option<Cow<[u8]>> { None }
+
+	/// Returns a hash that uniquely identifies the mesh. If the consumer of this generator already has a mesh whose id matches this it can safely reuse the existing mesh.
+	fn hash(&self) -> u64;
 }

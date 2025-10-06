@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, hash::{Hash, Hasher as _}};
 
 use math::{normalize, Vector3, Vector4};
 
@@ -179,6 +179,14 @@ impl MeshGenerator for SphereMeshGenerator {
 		}
 
 		Cow::Owned(uvs)
+	}
+
+	fn hash(&self) -> u64 {
+		let mut hasher = std::hash::DefaultHasher::new();
+		(self.radius.to_bits()).hash(&mut hasher);
+		self.rings.hash(&mut hasher);
+		self.segments.hash(&mut hasher);
+		hasher.finish()
 	}
 }
 

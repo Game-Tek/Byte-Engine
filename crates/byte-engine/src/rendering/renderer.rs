@@ -172,7 +172,7 @@ impl Renderer {
 		root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
-	pub fn update_windows(&mut self) -> impl Iterator<Item = ghi::WindowIterator> {
+	pub fn update_windows(&mut self) -> impl Iterator<Item = ghi::window::window::WindowIterator> {
 		self.windows.iter_mut().map(|(window, _)| {
 			window.poll()
 		})

@@ -16,9 +16,9 @@ pub struct Camera {
 }
 
 impl Camera {
-	pub fn new(position: Vector3) -> Self {
+	pub fn new() -> Self {
 		Self {
-			position,
+			position: Vector3::new(0.0, 0.0, 0.0),
 			direction: Vector3::new(0.0, 0.0, 1.0),
 			fov: 45.0,
 			aspect_ratio: 1.0,
@@ -42,9 +42,6 @@ impl Camera {
 	pub fn get_orientation(&self) -> Vector3 { self.direction }
 	pub fn set_orientation(&mut self, orientation: Vector3) { self.direction = orientation; }
 
-	pub fn get_position(&self) -> Vector3 { self.position }
-	pub fn set_position(&mut self, position: Vector3) { self.position = position; }
-
 	pub fn set_fov(&mut self, fov: f32) {
 		self.fov = fov;
 	}
@@ -57,7 +54,7 @@ impl Entity for Camera {
 }
 
 impl Positionable for Camera {
-	fn get_position(&self) -> Vector3 { self.position }
+	fn position(&self) -> Vector3 { self.position }
 	fn set_position(&mut self, position: Vector3) { self.position = position; }
 }
 

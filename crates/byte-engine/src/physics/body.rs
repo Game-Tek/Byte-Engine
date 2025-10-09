@@ -2,16 +2,24 @@ use math::Vector3;
 
 use crate::{core::Entity, gameplay::Positionable, physics::{collider::Collider, CollisionEvent}};
 
+/// The `Body` trait represents a physical body in the world.
 pub trait Body: Collider + Positionable + Entity {
 	fn on_collision(&mut self) -> Option<&mut CollisionEvent>;
 
-	fn get_body_type(&self) -> BodyTypes;
+	fn body_type(&self) -> BodyTypes;
 
-	fn get_velocity(&self) -> Vector3;
+	fn velocity(&self) -> Vector3;
 
 	/// Returns the mass of the body in kilograms.
-	fn get_mass(&self) -> f32 {
+	/// Default implementation returns 1 kilogram.
+	fn mass(&self) -> f32 {
 		1f32
+	}
+
+	/// Returns the center of mass of the body in body space.
+	/// Default implementation returns the origin.
+	fn center_of_mass(&self) -> Vector3 {
+		Vector3::new(0.0, 0.0, 0.0)
 	}
 }
 

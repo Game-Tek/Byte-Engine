@@ -24,7 +24,7 @@ impl Emitter {
 impl Entity for Emitter {}
 
 impl Positionable for Emitter {
-	fn get_position(&self) -> Vector3 {
+	fn position(&self) -> Vector3 {
 		self.position
 	}
 

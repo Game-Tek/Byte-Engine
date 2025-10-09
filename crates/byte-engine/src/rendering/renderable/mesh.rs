@@ -35,11 +35,11 @@ pub struct Mesh {
 impl Entity for Mesh {}
 
 impl Transformable for Mesh {
-	fn get_transform(&self) -> &Transform {
+	fn transform(&self) -> &Transform {
 		&self.transform
 	}
 
-	fn get_transform_mut(&mut self) -> &mut Transform {
+	fn transform_mut(&mut self) -> &mut Transform {
 		&mut self.transform
 	}
 }

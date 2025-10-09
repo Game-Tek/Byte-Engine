@@ -1014,7 +1014,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 
 			for (i, p) in mesh_data.primitives.iter().enumerate() {
 				let shader_mesh_data = ShaderMesh {
-					model: mesh.get_transform().get_matrix(),
+					model: mesh.transform().get_matrix(),
 					material_index: p.material_index,
 					base_vertex_index: mesh_data.vertex_offset + p.vertex_offset, // Add the mesh relative vertex offset and the primitive relative vertex offset to get the absolute vertex offset
 					base_primitive_index: mesh_data.primitive_offset + p.primitive_offset, // Add the mesh relative primitive offset and the primitive relative primitive offset to get the absolute primitive offset
@@ -1026,7 +1026,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 			}
 
 			if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
-				let mesh_transform = mesh.get_transform().get_matrix();
+				let mesh_transform = mesh.transform().get_matrix();
 
 				let transform = [
 					[mesh_transform[0], mesh_transform[1], mesh_transform[2], mesh_transform[3]],
@@ -1105,7 +1105,7 @@ impl RenderPass for VisibilityWorldRenderDomain {
 			for (index, (m, smd)) in self.render_entities.iter().enumerate() {
 				let mesh = m.write();
 				meshes_data_slice[index] = *smd;
-				meshes_data_slice[index].model = mesh.get_transform().get_matrix();
+				meshes_data_slice[index].model = mesh.transform().get_matrix();
 			}
 		}
 

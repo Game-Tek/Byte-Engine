@@ -1,6 +1,6 @@
 use ::utils::Extent;
 
-use crate::{camera::Camera, rendering::view::View};
+use crate::{camera::Camera, gameplay::Positionable as _, rendering::view::View};
 
 pub mod common_shader_generator;
 
@@ -43,7 +43,7 @@ pub fn map_shader_binding_to_shader_binding_descriptor(b: &resource_management::
 }
 
 pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {
-	let (camera_position, camera_orientation, fov_y) = (camera.get_position(), camera.get_orientation(), camera.get_fov());
+	let (camera_position, camera_orientation, fov_y) = (camera.position(), camera.get_orientation(), camera.get_fov());
 
 	let aspect_ratio = extent.width() as f32 / extent.height() as f32;
 

@@ -40,7 +40,7 @@ impl Cube {
 impl Entity for Sphere {}
 
 impl Positionable for Sphere {
-	fn get_position(&self) -> Vector3 {
+	fn position(&self) -> Vector3 {
 		todo!()
 	}
 
@@ -55,9 +55,9 @@ impl Collider for Sphere {
 
 impl Body for Sphere {
 	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { None }
-	fn get_velocity(&self) -> Vector3 { Vector3::new(0.0, 0.0, 0.0) }
-	fn get_body_type(&self) -> BodyTypes { BodyTypes::Static }
-	fn get_mass(&self) -> f32 {
+	fn velocity(&self) -> Vector3 { Vector3::new(0.0, 0.0, 0.0) }
+	fn body_type(&self) -> BodyTypes { BodyTypes::Static }
+	fn mass(&self) -> f32 {
 		1f32
 	}
 }
@@ -66,7 +66,7 @@ impl Entity for Cube {
 }
 
 impl Positionable for Cube {
-	fn get_position(&self) -> Vector3 {
+	fn position(&self) -> Vector3 {
 		todo!()
 	}
 
@@ -81,9 +81,9 @@ impl Collider for Cube {
 
 impl Body for Cube {
 	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { None }
-	fn get_velocity(&self) -> Vector3 { Vector3::new(0.0, 0.0, 0.0) }
-	fn get_body_type(&self) -> BodyTypes { BodyTypes::Static }
-	fn get_mass(&self) -> f32 {
+	fn velocity(&self) -> Vector3 { Vector3::new(0.0, 0.0, 0.0) }
+	fn body_type(&self) -> BodyTypes { BodyTypes::Static }
+	fn mass(&self) -> f32 {
 		1f32
 	}
 }

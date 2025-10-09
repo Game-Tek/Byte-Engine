@@ -43,7 +43,7 @@ struct Mesh {
 	base_vertex: usize,
 }
 
-pub struct MeshBuffersStats<I: Copy> {
+pub struct MeshBuffersStats<I> {
 	vertex_count: usize,
 	index_count: usize,
 
@@ -83,7 +83,7 @@ impl InstanceBatch {
 	}
 }
 
-impl <I: Copy> MeshBuffersStats<I> {
+impl <I> MeshBuffersStats<I> {
 	pub fn does_mesh_exist(&self, hash: u64) -> Option<usize> {
 		if self.meshes.contains_key(&(hash as usize)) {
 			Some(hash as usize)
@@ -168,7 +168,7 @@ impl <I: Copy> MeshBuffersStats<I> {
 	}
 }
 
-impl <I: Copy> Default for MeshBuffersStats<I> {
+impl <I> Default for MeshBuffersStats<I> {
 	fn default() -> Self {
 		Self {
 			vertex_count: 0,
@@ -179,12 +179,12 @@ impl <I: Copy> Default for MeshBuffersStats<I> {
 	}
 }
 
-pub struct InstanceBatches<'a, I: Copy> {
+pub struct InstanceBatches<'a, I> {
 	map: HashMap<usize, InstanceBatch>,
 	instances: &'a [(usize, I)],
 }
 
-impl <'a, I: Copy> InstanceBatches<'a, I> {
+impl <'a, I> InstanceBatches<'a, I> {
 	pub fn iter(&self) -> InstanceBatchesIterator<'_, I> {
 		InstanceBatchesIterator {
 			map: self.map.values(),
@@ -194,18 +194,18 @@ impl <'a, I: Copy> InstanceBatches<'a, I> {
 }
 
 #[derive(Clone)]
-pub struct InstanceBatchesIterator<'a, I: Copy> {
+pub struct InstanceBatchesIterator<'a, I> {
 	map: Values<'a, usize, InstanceBatch>,
 	instances: &'a [(usize, I)],
 }
 
-impl <'a, I: Copy> InstanceBatchesIterator<'a, I> {
+impl <'a, I> InstanceBatchesIterator<'a, I> {
 	pub fn into_vec(self) -> Vec<InstanceBatch> {
 		self.map.map(|e| *e).collect()
 	}
 }
 
-impl <'a, I: Copy> Iterator for InstanceBatchesIterator<'a, I> {
+impl <'a, I> Iterator for InstanceBatchesIterator<'a, I> {
 	type Item = BatchInstancesIterator<'a, I>;
 
 	fn next(&mut self) -> Option<Self::Item> {
@@ -219,13 +219,13 @@ impl <'a, I: Copy> Iterator for InstanceBatchesIterator<'a, I> {
 	}
 }
 
-pub struct BatchInstancesIterator<'a, I: Copy> {
+pub struct BatchInstancesIterator<'a, I> {
 	batch: InstanceBatch,
 	instances: &'a [(usize, I)],
 	index: usize,
 }
 
-impl <'a, I: Copy> BatchInstancesIterator<'a, I> {
+impl <'a, I> BatchInstancesIterator<'a, I> {
 	pub fn index_count(&self) -> usize {
 		self.batch.index_count()
 	}
@@ -247,15 +247,15 @@ impl <'a, I: Copy> BatchInstancesIterator<'a, I> {
 	}
 }
 
-impl <'a, I: Copy> Iterator for BatchInstancesIterator<'a, I> {
-	type Item = (usize, I);
+impl <'a, I> Iterator for BatchInstancesIterator<'a, I> {
+	type Item = (usize, &'a I);
 
 	fn next(&mut self) -> Option<Self::Item> {
 		if self.index < self.batch.instance_count {
 			let i = self.batch.base_instance + self.index;
-			let instance = self.instances[i];
+			let instance = &self.instances[i];
 			self.index += 1;
-			Some((i, instance.1))
+			Some((i, &instance.1))
 		} else {
 			None
 		}

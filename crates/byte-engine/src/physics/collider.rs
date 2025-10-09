@@ -8,8 +8,8 @@ pub trait Collider: Positionable {
 	fn shape(&self) -> CollisionShapes;
 
 	/// Returns the elasticity of the body.
-	fn get_elasticity(&self) -> f32 {
-		0.5f32
+	fn elasticity(&self) -> f32 {
+		0.1f32
 	}
 }
 

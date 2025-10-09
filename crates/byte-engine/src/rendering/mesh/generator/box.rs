@@ -25,9 +25,9 @@ impl BoxMeshGenerator {
 
 impl MeshGenerator for BoxMeshGenerator {
 	fn positions(&self) -> Cow<'_, [(f32, f32, f32)]> {
-		let x = self.size.x * 0.5;
-		let y = self.size.y * 0.5;
-		let z = self.size.z * 0.5;
+		let x = self.size.x;
+		let y = self.size.y;
+		let z = self.size.z;
 		std::borrow::Cow::Owned(vec![
 			(-x, -y, -z),
 			(x, -y, -z),

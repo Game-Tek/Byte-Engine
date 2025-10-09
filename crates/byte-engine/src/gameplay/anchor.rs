@@ -71,7 +71,7 @@ impl Positionable for Anchor {
 		self.transform.set_position(position);
 	}
 
-	fn get_position(&self) -> Vector3 {
+	fn position(&self) -> Vector3 {
 		self.transform.get_position()
 	}
 }
@@ -107,9 +107,11 @@ impl AnchorSystem {
 				let mut child = child.write();
 
 				match anchorage {
-					Anchorage::Default => {},
+					Anchorage::Default => {
+						child.set_position(anchor.position());
+					},
 					Anchorage::Offset { offset } => {
-						child.set_position(anchor.get_position() + offset.get_position());
+						child.set_position(anchor.position() + offset.get_position());
 					},
 				}
 			}

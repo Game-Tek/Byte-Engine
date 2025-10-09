@@ -20,6 +20,7 @@ pub struct Object {
 	velocity: Vector3,
 	collision: CollisionEvent,
 	body_type: BodyTypes,
+	collider: CollisionShapes,
 }
 
 impl Object {
@@ -31,8 +32,31 @@ impl Object {
 				velocity,
 				collision: CollisionEvent{},
 				body_type,
+				collider: CollisionShapes::Sphere { radius: 1.0 },
 			}
 		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn RenderableMesh>)
+	}
+
+	pub fn sphere(radius: f32) -> Self {
+		Object {
+			source: MeshSource::Generated(Box::new(SphereMeshGenerator::from_radius(radius))),
+			transform: Transform::default(),
+			velocity: Vector3::default(),
+			collision: CollisionEvent{},
+			body_type: BodyTypes::Dynamic,
+			collider: CollisionShapes::Sphere { radius },
+		}
+	}
+
+	pub fn r#box(size: Vector3) -> Self {
+		Object {
+			source: MeshSource::Generated(Box::new(mesh::generator::BoxMeshGenerator::from_size(size))),
+			transform: Transform::default(),
+			velocity: Vector3::default(),
+			collision: CollisionEvent{},
+			body_type: BodyTypes::Dynamic,
+			collider: CollisionShapes::Cube { size },
+		}
 	}
 
 	pub fn from_mesh_source(mesh_source: MeshSource) -> Self {
@@ -42,6 +66,7 @@ impl Object {
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
+			collider: CollisionShapes::Sphere { radius: 1.0 },
 		}
 	}
 
@@ -52,11 +77,16 @@ impl Object {
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
+			collider: CollisionShapes::Sphere { radius: 1.0 },
 		}
 	}
 
 	pub fn get_transform_mut(&mut self) -> &mut Transform {
 		&mut self.transform
+	}
+
+	pub fn body_type_mut(&mut self) -> &mut BodyTypes {
+		&mut self.body_type
 	}
 }
 
@@ -67,25 +97,20 @@ impl Entity for Object {
 }
 
 impl Transformable for Object {
-	fn get_transform(&self) -> &Transform { &self.transform }
-	fn get_transform_mut(&mut self) -> &mut Transform { &mut self.transform }
+	fn transform(&self) -> &Transform { &self.transform }
+	fn transform_mut(&mut self) -> &mut Transform { &mut self.transform }
 }
 
 impl Collider for Object {
 	fn shape(&self) -> CollisionShapes {
-		CollisionShapes::Sphere {
-			radius: 0.1,
-		}
+		self.collider
 	}
 }
 
 impl Body for Object {
 	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { Some(&mut self.collision) }
-	fn get_velocity(&self) -> Vector3 { self.velocity }
-	fn get_body_type(&self) -> BodyTypes { self.body_type }
-	fn get_mass(&self) -> f32 {
-    	1f32
-	}
+	fn velocity(&self) -> Vector3 { self.velocity }
+	fn body_type(&self) -> BodyTypes { self.body_type }
 }
 
 #[cfg(feature = "headed")]

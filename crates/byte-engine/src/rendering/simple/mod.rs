@@ -9,7 +9,7 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, renderable::mesh::MeshSource, utils::{MeshBuffersStats, MeshStats}, RenderableMesh}};
+use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Transformable, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, renderable::mesh::MeshSource, utils::{MeshBuffersStats, MeshStats}, RenderableMesh}};
 
 pub struct SimpleRenderModel {
 	camera: Option<EntityHandle<Camera>>,
@@ -20,7 +20,7 @@ pub struct SimpleRenderModel {
 	instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
 	camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 
-	mesh_buffers_stats: MeshBuffersStats<Matrix4>,
+	mesh_buffers_stats: MeshBuffersStats<EntityHandle<dyn Transformable>>,
 
 	descriptor_set: ghi::DescriptorSetHandle,
 
@@ -187,8 +187,8 @@ impl RenderPass for SimpleRenderModel {
 		{
 			let pending_entities = self.pending_entities.drain(..);
 
-			for entity in pending_entities {
-				let entity = entity.read();
+			for handle in pending_entities {
+				let entity = handle.read();
 
 				let mesh = entity.get_mesh();
 
@@ -230,7 +230,9 @@ impl RenderPass for SimpleRenderModel {
 					}
 				};
 
-				self.mesh_buffers_stats.add_instance(mesh_id, entity.get_transform().get_matrix());
+				drop(entity);
+
+				self.mesh_buffers_stats.add_instance(mesh_id, handle);
 			}
 		}
 
@@ -251,7 +253,7 @@ impl RenderPass for SimpleRenderModel {
 
 		for batch in instance_batches.iter() {
 			for (index, instance_data) in batch {
-				instance_data_buffer[index] = InstanceShaderData { instance_transform: instance_data };
+				instance_data_buffer[index] = InstanceShaderData { instance_transform: instance_data.read().transform().get_matrix() };
 			}
 		}
 

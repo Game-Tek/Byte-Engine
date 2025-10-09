@@ -288,7 +288,7 @@ impl Listener<CreateEvent<Emitter>> for DefaultAudioSystem {
 
 		{
 			let emitter = handle.read();
-			let position = emitter.get_position();
+			let position = emitter.position();
 			let source = emitter.source();
 
 			if let Some(rr) = source.downcast::<RoundRobin>() {

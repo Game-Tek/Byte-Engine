@@ -12,7 +12,7 @@ fn cube() {
 
     let space_handle = app.get_root_space_handle();
 
-	space_handle.spawn(Camera::new(Vector3::new(0.0, 0.0, -2.0)).builder());
+	space_handle.spawn(Camera::new().builder());
 	space_handle.spawn(PointLight::new(Vector3::new(0f32, 0f32, -2f32), 4500f32).builder());
 
 	app.do_loop();

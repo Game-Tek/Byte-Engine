@@ -1,3 +1,5 @@
+use maths_rs::dot;
+
 use crate::{cube::Cube, magnitude_squared, plane::Plane, sphere::Sphere, Vector3, normalize};
 
 /// Calculates the intersection point of a ray and an axis-aligned bounding box (AABB).
@@ -63,6 +65,17 @@ pub struct Intersection {
 	pub point_on_b: Vector3,
 }
 
+impl Intersection {
+	pub fn flip(self) -> Intersection {
+		Intersection {
+			normal: -self.normal,
+			depth: self.depth,
+			point_on_a: self.point_on_b,
+			point_on_b: self.point_on_a,
+		}
+	}
+}
+
 pub fn sphere_vs_sphere(
 	sphere_a: &Sphere,
 	sphere_b: &Sphere,
@@ -121,13 +134,6 @@ pub fn cube_vs_cube(
 		_ => unreachable!()
 	};
 
-	let normal = match axis {
-		0 => Vector3::new(sign, 0.0, 0.0),
-		1 => Vector3::new(0.0, sign, 0.0),
-		2 => Vector3::new(0.0, 0.0, sign),
-		_ => unreachable!()
-	};
-
 	let a_min = a.center - sa;
 	let a_max = a.center + sa;
 	let b_min = b.center - sb;
@@ -168,6 +174,47 @@ pub fn cube_vs_cube(
 	};
 
 	Some(Intersection{ normal: normalize(ab), depth, point_on_a: contact_a, point_on_b: contact_b })
+}
+
+pub fn sphere_vs_cube(
+	sphere_a: &Sphere,
+	cube_b: &Cube,
+) -> Option<Intersection> {
+	let delta = sphere_a.center - cube_b.center;
+
+	let clamped_delta = Vector3::new(
+		delta.x.clamp(-cube_b.half_size.x, cube_b.half_size.x),
+		delta.y.clamp(-cube_b.half_size.y, cube_b.half_size.y),
+		delta.z.clamp(-cube_b.half_size.z, cube_b.half_size.z),
+	);
+
+	let closest_point_on_cube = cube_b.center + clamped_delta;
+
+	let to_center = sphere_a.center - closest_point_on_cube;
+	let distance_squared = dot(to_center, to_center);
+
+	if distance_squared > sphere_a.radius * sphere_a.radius {
+		return None;
+	}
+
+	let distance = distance_squared.sqrt();
+	let depth = distance - sphere_a.radius;
+
+	let normal = if distance > 1e-6 {
+		normalize(to_center)
+	} else {
+		let normal = sphere_a.center - cube_b.center;
+		if dot(normal, normal) > 1e-6 {
+			normalize(normal)
+		} else {
+			Vector3::new(0.0, 1.0, 0.0)
+		}
+	};
+
+	let point_on_a = sphere_a.center + normal * sphere_a.radius;
+	let point_on_b = cube_b.center - normal * depth;
+
+	Some(Intersection{ normal, depth, point_on_a, point_on_b })
 }
 
 #[cfg(test)]
@@ -273,5 +320,32 @@ mod tests {
 		};
 
 		assert!(cube_vs_cube(&cube_a, &cube_b).is_some());
+	}
+
+	#[test]
+	fn test_sphere_vs_cube() {
+		let sphere = Sphere {
+			center: Vector3::new(0.0, 2.0, 0.0),
+			radius: 1.0,
+		};
+
+		let cube = Cube {
+			center: Vector3::new(0.0, 0.0, 0.0),
+			half_size: Vector3::new(1.0, 1.0, 1.0),
+		};
+
+		assert!(sphere_vs_cube(&sphere, &cube).is_some());
+
+		let sphere = Sphere {
+			center: Vector3::new(0.0, 3.0, 0.0),
+			radius: 1.0,
+		};
+
+		let cube = Cube {
+			center: Vector3::new(0.0, 0.0, 0.0),
+			half_size: Vector3::new(1.0, 1.0, 1.0),
+		};
+
+		assert!(sphere_vs_cube(&sphere, &cube).is_none());
 	}
 }

@@ -132,7 +132,25 @@ impl Listener<CreateEvent<dyn Body>> for World {
 	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
 		let handle = event.handle();
 		let body = handle.read();
-		self.add_body(PhysicsBody{ body_type: body.body_type(), position: body.position(), velocity: body.velocity(), acceleration: Vector3::new(0f32, 0f32, 0f32), collision_shape: body.shape(), collider: handle.clone() as EntityHandle<dyn Collider>, body: Some(handle.clone()), inv_mass: 1f32 / body.mass(), elasticity: body.elasticity() });
+
+		let body_type = body.body_type();
+
+		let inv_mass = match body_type {
+			BodyTypes::Dynamic => 1f32 / body.mass(),
+			_ => 0f32,
+		};
+
+		self.add_body(PhysicsBody{
+			body_type,
+			position: body.position(),
+			velocity: body.velocity(),
+			acceleration: Vector3::new(0f32, 0f32, 0f32),
+			collision_shape: body.shape(),
+			collider: handle.clone() as EntityHandle<dyn Collider>,
+			body: Some(handle.clone()),
+			inv_mass,
+			elasticity: body.elasticity()
+		});
 	}
 }
 

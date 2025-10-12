@@ -6,12 +6,6 @@
 #![feature(extend_one)]
 
 pub mod window;
-#[cfg(target_os = "linux")]
-pub mod x11_window;
-#[cfg(target_os = "linux")]
-pub mod wayland_window;
-#[cfg(target_os = "windows")]
-pub mod win32_window;
 
 pub mod graphics_hardware_interface;
 pub mod render_debugger;
@@ -21,16 +15,16 @@ pub mod vulkan;
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use vulkan::Instance as Instance;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use vulkan::Device as Device;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use vulkan::Frame as Frame;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use vulkan::CommandBufferRecording as CommandBufferRecording;
 
 pub mod device;

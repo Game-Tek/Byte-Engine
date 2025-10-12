@@ -2,7 +2,7 @@ use windows::{core::PCSTR, Win32::{Devices::HumanInterfaceDevice::{HID_USAGE_GEN
 
 use crate::{Keys, MouseKeys, Events};
 
-pub struct Win32Window {
+pub struct Window {
 	class_atom: u16,
 	hinstance: HINSTANCE,
 	hwnd: HWND,
@@ -10,10 +10,10 @@ pub struct Win32Window {
 	state: State,
 }
 
-unsafe impl Send for Win32Window {}
-unsafe impl Sync for Win32Window {}
+unsafe impl Send for Window {}
+unsafe impl Sync for Window {}
 
-pub struct OSHandles {
+pub struct Handles {
 	pub hinstance: HINSTANCE,
 	pub hwnd: HWND,
 }
@@ -264,8 +264,8 @@ fn wparam_to_key(wparam: WPARAM) -> Option<Keys> {
 	}
 }
 
-impl Win32Window {
-	pub(crate) fn try_new(name: &str, extent: utils::Extent, id_name: &str) -> Option<Win32Window> {
+impl WindowLike for Window {
+	fn try_new(name: &str, extent: utils::Extent, id_name: &str) -> Result<Window, String> {
 		let hinstance = unsafe {
 			GetModuleHandleA(PCSTR(std::ptr::null())).ok()?
 		};
@@ -324,7 +324,7 @@ impl Win32Window {
 			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).ok()?;
 		}
 
-		Win32Window {
+		Window {
 			class_atom: class,
 			hwnd,
 			hinstance: hinstance.into(),
@@ -332,11 +332,11 @@ impl Win32Window {
 		}.into()
 	}
 
-	pub(crate) fn poll(&mut self) -> WindowIterator {
+	fn poll(&mut self) -> WindowIterator {
 		// Set WNDPROC, we are ready to handle messages
 		unsafe {
 			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as _);
-	   }
+		}
 
 		WindowIterator {
 			state: self.state.clone(),
@@ -344,15 +344,15 @@ impl Win32Window {
 		}
 	}
 
-	pub(crate) fn get_os_handles(&self) -> OSHandles {
-		OSHandles {
+	fn os_handles(&self) -> Handles {
+		Handles {
 			hwnd: self.hwnd,
 			hinstance: self.hinstance,
 		}
 	}
 }
 
-impl Drop for Win32Window {
+impl Drop for Window {
 	fn drop(&mut self) {
 		unsafe {
 			DestroyWindow(self.hwnd);
@@ -364,13 +364,13 @@ impl Drop for Win32Window {
 }
 
 struct WindowData<'a> {
-	window: &'a Win32Window,
+	window: &'a Window,
 	state: State,
 	payload: Option<Events>,
 }
 
 pub struct WindowIterator<'a> {
-	window: &'a mut Win32Window,
+	window: &'a mut Window,
 	state: State,
 }
 

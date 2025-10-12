@@ -886,10 +886,10 @@ impl Device {
 		vk_image_view
 	}
 
-	fn create_vulkan_surface(&self, window_os_handles: &window::OSHandles) -> vk::SurfaceKHR {
-		let surface = match window_os_handles {
+	fn create_vulkan_surface(&self, window_os_handles: &window::Handles) -> vk::SurfaceKHR {
+		let surface = {
 			#[cfg(target_os = "linux")]
-			window::OSHandles::Wayland(os_handles) => {
+			{
 				let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
 					.display(os_handles.display)
 					.surface(os_handles.surface);
@@ -897,12 +897,16 @@ impl Device {
 				unsafe { self.wayland_surface.create_wayland_surface(&wayland_surface_create_info, None).expect("No surface") }
 			}
 			#[cfg(target_os = "windows")]
-			window::OSHandles::Win32(os_handles) => {
+			{
 				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
 					.hinstance(os_handles.hinstance.0 as isize)
 					.hwnd(os_handles.hwnd.0 as isize);
 
 				unsafe { self.win32_surface.create_win32_surface(&win32_surface_create_info, None).expect("No surface") }
+			}
+			#[cfg(target_os = "macos")]
+			{
+				vk::SurfaceKHR::null()
 			}
 		};
 
@@ -2691,7 +2695,7 @@ impl crate::device::Device for Device {
 		self.resize_buffer_internal(buffer_handle, size);
 	}
 
-	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent) -> graphics_hardware_interface::SwapchainHandle {
+	fn bind_to_window(&mut self, window_os_handles: &window::Handles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent) -> graphics_hardware_interface::SwapchainHandle {
 		let vk_surface = self.create_vulkan_surface(window_os_handles);
 
 		let vk_present_mode = match presentation_mode {

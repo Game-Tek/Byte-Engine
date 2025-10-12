@@ -8,10 +8,12 @@ use redb::ReadableTable;
 
 pub struct FileTracker {
 	db: redb::Database,
-	#[cfg(unix)]
+	#[cfg(target_os = "linux")]
 	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, NoCache>,
 	#[cfg(windows)]
 	debouncer: notify_debouncer_full::Debouncer<ReadDirectoryChangesWatcher, FileIdMap>,
+	#[cfg(target_os = "macos")]
+	debouncer: notify_debouncer_full::Debouncer<FsEventWatcher, FileIdMap>,
 	rx: std::sync::mpsc::Receiver<notify_debouncer_full::DebouncedEvent>,
 }
 

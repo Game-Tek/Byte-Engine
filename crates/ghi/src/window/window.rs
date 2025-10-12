@@ -1,11 +1,11 @@
-use crate::{input::{Keys, MouseKeys}, Events};
+use crate::{os::{self, WindowLike as _}, input::{Keys, MouseKeys}, Events};
 use utils::Extent;
 
 pub struct Window {
 	name: String,
 	extent: Extent,
 	id_name: String,
-	os_window: OSWindow,
+	os_window: os::Window,
 }
 
 impl Window {
@@ -14,81 +14,24 @@ impl Window {
 	}
 
 	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Option<Window> {
-		#[cfg(target_os = "linux")]
-		let window_impl = OSWindow::Wayland(WaylandWindow::try_new(name, extent, id_name).ok()?);
-
-		#[cfg(target_os = "windows")]
-		let window_impl = OSWindow::Windows(Win32Window::try_new(name, extent, id_name)?);
+		let os_window = os::Window::try_new(name, extent, id_name).ok()?;
 
 		Some(Window {
 			name: name.to_owned(),
 			extent,
 			id_name: id_name.to_owned(),
-			os_window: window_impl,
+			os_window,
 		})
 	}
 
-	pub fn poll<'a>(&'a mut self) -> WindowIterator<'a> {
-		match self.os_window {
-			#[cfg(target_os = "linux")]
-			OSWindow::Wayland(ref mut window) => WindowIterator::Wayland(window.poll()),
-			#[cfg(target_os = "windows")]
-			OSWindow::Windows(ref mut window) => WindowIterator::Win32(window.poll()),
-		}
+	pub fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
+		self.os_window.poll()
 	}
 
-	pub fn get_os_handles(&self) -> OSHandles {
-		match self.os_window {
-			#[cfg(target_os = "linux")]
-			OSWindow::Wayland(ref window) => OSHandles::Wayland(window.get_os_handles()),
-			#[cfg(target_os = "windows")]
-			OSWindow::Windows(ref window) => OSHandles::Win32(window.get_os_handles()),
-		}
+	pub fn os_handles(&self) -> os::Handles {
+		self.os_window.handles()
 	}
 }
-
-enum OSWindow {
-	#[cfg(target_os = "linux")]
-	Wayland(WaylandWindow),
-	#[cfg(target_os = "windows")]
-	Windows(Win32Window),
-}
-
-pub enum WindowIterator<'a> {
-	#[cfg(target_os = "linux")]
-	Wayland(wayland_window::WindowIterator<'a>),
-	#[cfg(target_os = "windows")]
-	Win32(win32_window::WindowIterator<'a>),
-}
-
-impl Iterator for WindowIterator<'_> {
-	type Item = Events;
-
-	fn next(&mut self) -> Option<Events> {
-		match self {
-			#[cfg(target_os = "linux")]
-			WindowIterator::Wayland(window) => window.next(),
-			#[cfg(target_os = "windows")]
-			WindowIterator::Win32(window) => window.next(),
-		}
-	}
-}
-
-/// The operating system handles for a window.
-pub enum OSHandles {
-	#[cfg(target_os = "linux")]
-	Wayland(wayland_window::OSHandles),
-	#[cfg(target_os = "windows")]
-	Win32(win32_window::OSHandles),
-}
-
-#[cfg(target_os = "linux")]
-use crate::wayland_window;
-#[cfg(target_os = "linux")]
-use crate::wayland_window::WaylandWindow;
-
-#[cfg(target_os = "windows")]
-use crate::win32_window::{self, Win32Window};
 
 impl TryFrom<u8> for Keys {
 	type Error = ();

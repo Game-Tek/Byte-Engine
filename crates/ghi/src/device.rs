@@ -131,7 +131,7 @@ pub trait Device where Self: Sized {
 	fn write_sbt_entry(&mut self, sbt_buffer_handle: BaseBufferHandle, sbt_record_offset: usize, pipeline_handle: PipelineHandle, shader_handle: ShaderHandle);
 
 	/// Associates a swapchain with a window.
-	fn bind_to_window(&mut self, window_os_handles: &window::OSHandles, presentation_mode: PresentationModes, fallback_extent: Extent) -> SwapchainHandle;
+	fn bind_to_window(&mut self, window_os_handles: &window::Handles, presentation_mode: PresentationModes, fallback_extent: Extent) -> SwapchainHandle;
 
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
 

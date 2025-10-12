@@ -6,7 +6,7 @@ use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_poi
 
 use crate::{window::{input::{Keys, MouseKeys}, Events}};
 
-pub struct WaylandWindow {
+pub struct Window {
 	connection: wayland_client::Connection,
 	event_queue: wayland_client::EventQueue<AppData>,
 	xdg_wm_base: xdg_wm_base::XdgWmBase,
@@ -35,8 +35,8 @@ enum Requests {
 	HidePointer,
 }
 
-impl WaylandWindow {
-	pub fn try_new(name: &str, extent: Extent, id_name: &str) -> Result<Self, String> {
+impl WindowLike for Window {
+	fn try_new(name: &str, extent: Extent, id_name: &str) -> Result<Self, String> {
 		let conn = wayland_client::Connection::connect_to_env().map_err(|e| e.to_string())?;
 
 		let mut configuration_event_queue: wayland_client::EventQueue<Configuration> = conn.new_event_queue();
@@ -133,22 +133,14 @@ impl WaylandWindow {
 		})
 	}
 
-	pub fn display(&self) -> wl_display::WlDisplay {
-		self.connection.display()
-	}
-
-	pub fn surface(&self) -> wl_surface::WlSurface {
-		self.surface.clone()
-	}
-
-	pub fn get_os_handles(&self) -> OSHandles {
-		OSHandles {
+	fn os_handles(&self) -> Handles {
+		Handles {
 			display: self.display().id().as_ptr() as *mut c_void,
 			surface: self.surface().id().as_ptr() as *mut c_void,
 		}
 	}
 
-	pub fn poll(&mut self) -> WindowIterator {
+	fn poll(&mut self) -> WindowIterator {
 		// This implementation first processes all events from the wayland event queue
 		// while producing `Events` which are then handed to an iterator
 		// which is then returned
@@ -179,6 +171,16 @@ impl WaylandWindow {
 	}
 }
 
+impl Window {
+	pub fn display(&self) -> wl_display::WlDisplay {
+		self.connection.display()
+	}
+
+	pub fn surface(&self) -> wl_surface::WlSurface {
+		self.surface.clone()
+	}
+}
+
 /// The `WindowIterator` struct is used to iterate over `Events` produced by the `poll` method.
 /// Wayland events are first processed in the `poll` method which then copies it's own event list to the iterator.
 pub struct WindowIterator<'a> {
@@ -194,7 +196,7 @@ impl <'a> Iterator for WindowIterator<'a> {
 	}
 }
 
-impl Drop for WaylandWindow {
+impl Drop for Window {
 	fn drop(&mut self) {
 		self.xdg_toplevel.destroy();
 		self.xdg_surface.destroy();
@@ -203,7 +205,7 @@ impl Drop for WaylandWindow {
 	}
 }
 
-pub struct OSHandles {
+pub struct Handles {
 	pub display: *mut c_void,
 	pub surface: *mut c_void,
 }
@@ -691,7 +693,7 @@ mod tests {
 	fn test_wayland_window() {
 		// Only run this test if we are on a Wayland session
 		if std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY").is_some() && std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland").is_some() {
-			let _ = WaylandWindow::try_new("My Test Wayland Window", Extent::rectangle(1920, 1080), "my_test_wayland_window.byte_engine").unwrap();
+			let _ = Window::try_new("My Test Wayland Window", Extent::rectangle(1920, 1080), "my_test_wayland_window.byte_engine").unwrap();
 		}
 	}
 }

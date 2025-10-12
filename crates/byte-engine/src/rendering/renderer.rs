@@ -172,7 +172,7 @@ impl Renderer {
 		root_render_pass.add_render_pass(render_pass, render_pass_builder);
 	}
 
-	pub fn update_windows(&mut self) -> impl Iterator<Item = ghi::window::window::WindowIterator> {
+	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
 		self.windows.iter_mut().map(|(window, _)| {
 			window.poll()
 		})
@@ -298,7 +298,7 @@ impl Listener<CreateEvent<Window>> for Renderer {
 		let window = ghi::Window::new_with_params(name, extent, "main_window");
 
 		if let Some(window) = window {
-			let os_handles = window.get_os_handles();
+			let os_handles = window.os_handles();
 
 			let device = &mut self.device;
 

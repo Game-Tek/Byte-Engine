@@ -1541,7 +1541,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let mut window = Window::new("Present Test", extent).expect("Failed to create window");
 
-		let os_handles = window.get_os_handles();
+		let os_handles = window.os_handles();
 
 		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent);
 
@@ -1624,7 +1624,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let window = Window::new("Present Test", extent).expect("Failed to create window");
 
-		let os_handles = window.get_os_handles();
+		let os_handles = window.os_handles();
 
 		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent);
 

@@ -10,8 +10,10 @@ utils = { path = "../utils" }
 
 ash = { version = "0.38.0", features=['linked'] }
 bitflags = "2.9.0"
-renderdoc = "0.12.1"
 smallvec = "1.15.1"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+renderdoc = "0.12.1"
 
 [dev-dependencies]
 resource-management = { path = "../resource-management" }

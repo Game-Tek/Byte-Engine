@@ -1,9 +1,11 @@
+//! The window module provides functionality for creating and managing windows on multiple platforms.
+
 pub mod input;
 pub mod window;
+pub(crate) mod os;
 
 pub use self::window::Window;
-
-pub use self::window::OSHandles;
+pub use self::os::Handles;
 
 /// The events that can be received from a window.
 #[derive(Debug, Clone, Copy)]

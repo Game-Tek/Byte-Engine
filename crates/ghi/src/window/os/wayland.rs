@@ -4,7 +4,7 @@ use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
 use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1}, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
 
-use crate::{window::{input::{Keys, MouseKeys}, Events}};
+use crate::{os::WindowLike, window::{input::{Keys, MouseKeys}, Events}};
 
 pub struct Window {
 	connection: wayland_client::Connection,
@@ -133,14 +133,14 @@ impl WindowLike for Window {
 		})
 	}
 
-	fn os_handles(&self) -> Handles {
+	fn handles(&self) -> Handles {
 		Handles {
 			display: self.display().id().as_ptr() as *mut c_void,
 			surface: self.surface().id().as_ptr() as *mut c_void,
 		}
 	}
 
-	fn poll(&mut self) -> WindowIterator {
+	fn poll<'a>(&'a mut self) -> WindowIterator<'a> {
 		// This implementation first processes all events from the wayland event queue
 		// while producing `Events` which are then handed to an iterator
 		// which is then returned

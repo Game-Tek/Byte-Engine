@@ -88,11 +88,11 @@ pub trait AudioHardwareInterface {
 /// The `HardwareParameters` struct represents the parameters for the audio hardware.
 pub struct HardwareParameters {
 	/// The sample rate of the audio hardware, in Hz.
-	sample_rate: u32,
+	pub(crate) sample_rate: u32,
 	/// The number of channels in the audio hardware.
-	channels: u32,
+	pub(crate) channels: u32,
 	/// The bit depth of the audio hardware.
-	bit_depth: u32,
+	pub(crate) bit_depth: u32,
 }
 
 impl HardwareParameters {

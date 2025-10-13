@@ -891,16 +891,16 @@ impl Device {
 			#[cfg(target_os = "linux")]
 			{
 				let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
-					.display(os_handles.display)
-					.surface(os_handles.surface);
+					.display(window_os_handles.display)
+					.surface(window_os_handles.surface);
 
 				unsafe { self.wayland_surface.create_wayland_surface(&wayland_surface_create_info, None).expect("No surface") }
 			}
 			#[cfg(target_os = "windows")]
 			{
 				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
-					.hinstance(os_handles.hinstance.0 as isize)
-					.hwnd(os_handles.hwnd.0 as isize);
+					.hinstance(window_os_handles.hinstance.0 as isize)
+					.hwnd(window_os_handles.hwnd.0 as isize);
 
 				unsafe { self.win32_surface.create_win32_surface(&win32_surface_create_info, None).expect("No surface") }
 			}

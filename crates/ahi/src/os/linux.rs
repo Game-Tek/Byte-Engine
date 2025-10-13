@@ -1,5 +1,7 @@
 use std::sync::Mutex;
 
+use crate::audio_hardware_interface::{BufferPlayFunction, HardwareParameters, Streams, WritePlayFunction, Writer};
+
 pub struct Device {
 	pcm: Mutex<alsa::pcm::PCM>,
 	parameters: HardwareParameters,

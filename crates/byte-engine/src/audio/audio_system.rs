@@ -2,7 +2,7 @@ use std::{collections::HashMap, f32::consts::PI};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
 
 use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Positionable};
-use ahi::{self, audio_hardware_interface::{AudioDevice, AudioHardwareInterface, HardwareParameters, Streams, Writer}};
+use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams, Writer}};
 
 use super::{sound::{self, Sound}, synthesizer::Synthesizer};
 
@@ -18,7 +18,7 @@ pub trait AudioSystem: Entity {
 
 pub struct DefaultAudioSystem {
 	resource_manager: EntityHandle<ResourceManager>,
-	ahi: AudioDevice,
+	device: Device,
 	audio_resources: HashMap<String, (Audio, Vec<i16>)>,
 	sources: Vec<Source>,
 	channels: HashMap<String, Channel>,
@@ -30,13 +30,13 @@ impl DefaultAudioSystem {
 
 		let params = HardwareParameters::new().channels(1);
 
-		let ahi = AudioDevice::new(params).expect("Failed to create audio device");
+		let device = Device::new(params).expect("Failed to create audio device");
 
-		channels.insert("master".to_string(), Channel { samples: vec![0; ahi.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
+		channels.insert("master".to_string(), Channel { samples: vec![0; device.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
 
 		Self {
 			resource_manager,
-			ahi,
+			device,
 			audio_resources: HashMap::with_capacity(1024),
 			sources: Vec::with_capacity(32),
 			channels,
@@ -141,9 +141,9 @@ impl AudioSystem for DefaultAudioSystem {
 	}
 
 	fn render(&mut self) {
-		let frames = self.ahi.get_period_size();
+		let frames = self.device.get_period_size();
 
-		let frames = self.ahi.play(|streams| {
+		let frames = self.device.play(|streams| {
 			if let Streams::MonoFloat32(mut buffer) = streams { // Hardware is the same format as what we use for rendering
 				self.rndr(&mut buffer);
 			} else {

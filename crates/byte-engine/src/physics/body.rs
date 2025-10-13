@@ -1,14 +1,31 @@
-use math::Vector3;
+use math::{mat::MatNew3 as _, Matrix3, Vector3};
 
-use crate::{core::Entity, gameplay::Positionable, physics::{collider::Collider, CollisionEvent}};
+use crate::{core::Entity, gameplay::{Positionable, Transformable}, physics::{collider::Collider, CollisionEvent}};
 
 /// The `Body` trait represents a physical body in the world.
-pub trait Body: Collider + Positionable + Entity {
+pub trait Body: Collider + Transformable + Entity {
 	fn on_collision(&mut self) -> Option<&mut CollisionEvent>;
 
 	fn body_type(&self) -> BodyTypes;
 
 	fn velocity(&self) -> Vector3;
+	fn inertia_tensor(&self) -> Matrix3 {
+		match self.shape() {
+			super::collider::Shapes::Sphere { radius } => {
+				let mass = self.mass();
+				let inertia = (2.0 / 5.0) * mass * radius * radius;
+				Matrix3::new(
+					inertia, 0.0, 0.0,
+					0.0, inertia, 0.0,
+					0.0, 0.0, inertia
+				)
+			}
+			super::collider::Shapes::Cube { size: half_size } => {
+				let mass = self.mass();
+				Matrix3::identity()
+			}
+		}
+	}
 
 	/// Returns the mass of the body in kilograms.
 	/// Default implementation returns 1 kilogram.

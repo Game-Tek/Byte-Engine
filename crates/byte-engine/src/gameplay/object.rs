@@ -5,7 +5,7 @@ use math::Matrix4;
 use math::Vector3;
 use utils::BoxedFuture;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::{mesh::generator::{MeshGenerator, SphereMeshGenerator}, RenderableMesh}};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, Shapes}, CollisionEvent}, rendering::{mesh::generator::{MeshGenerator, SphereMeshGenerator}, RenderableMesh}};
 
 #[cfg(feature = "headed")]
 use crate::rendering::{mesh::{self}, renderable::mesh::MeshSource};
@@ -20,7 +20,7 @@ pub struct Object {
 	velocity: Vector3,
 	collision: CollisionEvent,
 	body_type: BodyTypes,
-	collider: CollisionShapes,
+	collider: Shapes,
 }
 
 impl Object {
@@ -32,7 +32,7 @@ impl Object {
 				velocity,
 				collision: CollisionEvent{},
 				body_type,
-				collider: CollisionShapes::Sphere { radius: 1.0 },
+				collider: Shapes::Sphere { radius: 1.0 },
 			}
 		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn RenderableMesh>)
 	}
@@ -44,7 +44,7 @@ impl Object {
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
-			collider: CollisionShapes::Sphere { radius },
+			collider: Shapes::Sphere { radius },
 		}
 	}
 
@@ -55,7 +55,7 @@ impl Object {
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
-			collider: CollisionShapes::Cube { size },
+			collider: Shapes::Cube { size },
 		}
 	}
 
@@ -66,7 +66,7 @@ impl Object {
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
-			collider: CollisionShapes::Sphere { radius: 1.0 },
+			collider: Shapes::Sphere { radius: 1.0 },
 		}
 	}
 
@@ -77,7 +77,7 @@ impl Object {
 			velocity: Vector3::default(),
 			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
-			collider: CollisionShapes::Sphere { radius: 1.0 },
+			collider: Shapes::Sphere { radius: 1.0 },
 		}
 	}
 
@@ -87,6 +87,10 @@ impl Object {
 
 	pub fn body_type_mut(&mut self) -> &mut BodyTypes {
 		&mut self.body_type
+	}
+
+	pub fn set_velocity(&mut self, velocity: Vector3) {
+		self.velocity = velocity;
 	}
 }
 
@@ -102,7 +106,7 @@ impl Transformable for Object {
 }
 
 impl Collider for Object {
-	fn shape(&self) -> CollisionShapes {
+	fn shape(&self) -> Shapes {
 		self.collider
 	}
 }

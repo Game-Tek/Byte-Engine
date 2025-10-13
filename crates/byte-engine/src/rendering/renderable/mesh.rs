@@ -71,16 +71,4 @@ impl Mesh {
 			transform,
 		}.into()
 	}
-
-	pub fn set_orientation(&mut self, orientation: Vector3) {
-		self.transform.set_orientation(normalize(orientation));
-	}
-
-	pub fn transform(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn transform_mut(&mut self) -> &mut Transform {
-		&mut self.transform
-	}
 }

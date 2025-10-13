@@ -1,6 +1,6 @@
 use math::Vector3;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, gameplay::Positionable, physics::{body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}};
+use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, gameplay::{Positionable, Transformable}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, CollisionEvent}};
 
 use crate::physics;
 
@@ -21,7 +21,7 @@ impl Sphere {
 	}
 
 	pub fn create(radius: f32) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(radius)).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>)
+		EntityBuilder::new(Self::new(radius)).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Collider>)
 	}
 }
 
@@ -33,7 +33,7 @@ impl Cube {
 	}
 
 	pub fn create(size: Vector3) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(size)).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>)
+		EntityBuilder::new(Self::new(size)).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Collider>)
 	}
 }
 
@@ -50,19 +50,14 @@ impl Positionable for Sphere {
 }
 
 impl Collider for Sphere {
-	fn shape(&self) -> CollisionShapes { CollisionShapes::Sphere { radius: self.radius } }
-}
-
-impl Body for Sphere {
-	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { None }
-	fn velocity(&self) -> Vector3 { Vector3::new(0.0, 0.0, 0.0) }
-	fn body_type(&self) -> BodyTypes { BodyTypes::Static }
-	fn mass(&self) -> f32 {
-		1f32
-	}
+	fn shape(&self) -> Shapes { Shapes::Sphere { radius: self.radius } }
 }
 
 impl Entity for Cube {
+}
+
+impl Collider for Cube {
+	fn shape(&self) -> Shapes { Shapes::Cube { size: self.size } }
 }
 
 impl Positionable for Cube {
@@ -72,18 +67,5 @@ impl Positionable for Cube {
 
 	fn set_position(&mut self, position: Vector3) {
 		todo!()
-	}
-}
-
-impl Collider for Cube {
-	fn shape(&self) -> CollisionShapes { CollisionShapes::Cube { size: self.size } }
-}
-
-impl Body for Cube {
-	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { None }
-	fn velocity(&self) -> Vector3 { Vector3::new(0.0, 0.0, 0.0) }
-	fn body_type(&self) -> BodyTypes { BodyTypes::Static }
-	fn mass(&self) -> f32 {
-		1f32
 	}
 }

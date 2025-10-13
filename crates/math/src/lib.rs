@@ -1,6 +1,7 @@
 pub mod plane;
 pub mod sphere;
 pub mod cube;
+pub mod ray;
 
 pub mod collision;
 
@@ -22,6 +23,8 @@ pub use maths_rs::mag2 as magnitude_squared;
 pub use maths_rs::mag as magnitude;
 pub use maths_rs::length as length;
 pub use maths_rs::dot as dot;
+pub use maths_rs::cross as cross;
+pub use maths_rs::vec::Magnitude as Magnitude;
 
 #[macro_use]
 pub mod macros {

@@ -8,7 +8,7 @@ pub mod killer;
 pub mod timer;
 
 pub use anchor::Anchor;
-use math::{mat::{MatScale, MatTranslate}, Matrix4, Vector3};
+use math::{mat::{MatScale, MatTranslate}, Matrix4, Quaternion, Vector3, Vector4};
 pub use object::Object;
 pub use positionable::Positionable;
 pub use transformable::Transformable;
@@ -17,7 +17,7 @@ pub use transformable::Transformable;
 pub struct Transform {
 	position: Vector3,
 	scale: Vector3,
-	rotation: Vector3,
+	rotation: Quaternion,
 }
 
 impl Default for Transform {
@@ -25,7 +25,7 @@ impl Default for Transform {
 		Self {
 			position: Vector3::new(0.0, 0.0, 0.0),
 			scale: Vector3::new(1.0, 1.0, 1.0),
-			rotation: Vector3::new(0.0, 0.0, 1.0),
+			rotation: Quaternion::identity(),
 		}
 	}
 }
@@ -35,11 +35,11 @@ impl Transform {
 		Self {
 			position: Vector3::new(0.0, 0.0, 0.0),
 			scale: Vector3::new(1.0, 1.0, 1.0),
-			rotation: Vector3::new(0.0, 0.0, 1.0),
+			rotation: Quaternion::identity(),
 		}
 	}
 
-	pub fn new(position: Vector3, scale: Vector3, rotation: Vector3) -> Self {
+	pub fn new(position: Vector3, scale: Vector3, rotation: Quaternion) -> Self {
 		Self {
 			position,
 			scale,
@@ -61,7 +61,7 @@ impl Transform {
 		}
 	}
 
-	pub fn rotation(self, rotation: Vector3) -> Self {
+	pub fn rotation(self, rotation: Quaternion) -> Self {
 		Self {
 			rotation,
 			..self
@@ -72,7 +72,7 @@ impl Transform {
 		Self {
 			position,
 			scale: Vector3::new(1.0, 1.0, 1.0),
-			rotation: Vector3::new(0.0, 0.0, 1.0),
+			rotation: Quaternion::identity(),
 		}
 	}
 
@@ -80,7 +80,7 @@ impl Transform {
 		Self {
 			position,
 			scale: Vector3::new(1.0, 1.0, 1.0),
-			rotation: Vector3::new(0.0, 0.0, 1.0),
+			rotation: Quaternion::identity(),
 		}
 	}
 
@@ -88,11 +88,11 @@ impl Transform {
 		Self {
 			position: Vector3::new(0.0, 0.0, 0.0),
 			scale,
-			rotation: Vector3::new(0.0, 0.0, 1.0),
+			rotation: Quaternion::identity(),
 		}
 	}
 
-	fn from_rotation(rotation: Vector3) -> Self {
+	fn from_rotation(rotation: Quaternion) -> Self {
 		Self {
 			position: Vector3::new(0.0, 0.0, 0.0),
 			scale: Vector3::new(1.0, 1.0, 1.0),
@@ -101,7 +101,11 @@ impl Transform {
 	}
 
 	pub fn get_matrix(&self) -> Matrix4 {
-		Matrix4::from_translation(self.position) * math::from_normal(self.rotation) * Matrix4::from_scale(self.scale)
+		let rotation = self.rotation.get_matrix();
+		let x = Vector4::from((rotation.get_row(0), 0.0));
+		let y = Vector4::from((rotation.get_row(1), 0.0));
+		let z = Vector4::from((rotation.get_row(2), 0.0));
+		Matrix4::from_translation(self.position) * Matrix4::from((x, y, z, Vector4::new(0.0, 0.0, 0.0, 1.0))) * Matrix4::from_scale(self.scale)
 	}
 
 	pub fn set_position(&mut self, position: Vector3) {
@@ -114,10 +118,10 @@ impl Transform {
 	}
 	pub fn get_scale(&self) -> Vector3 { self.scale }
 
-	pub fn set_orientation(&mut self, orientation: Vector3) {
+	pub fn set_orientation(&mut self, orientation: Quaternion) {
 		self.rotation = orientation;
 	}
-	pub fn get_orientation(&self) -> Vector3 { self.rotation }
+	pub fn get_orientation(&self) -> Quaternion { self.rotation }
 }
 
 impl From<&Transform> for Matrix4 {

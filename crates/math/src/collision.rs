@@ -1,6 +1,6 @@
 use maths_rs::dot;
 
-use crate::{cube::Cube, magnitude_squared, plane::Plane, sphere::Sphere, Vector3, normalize};
+use crate::{cube::Cube, magnitude_squared, normalize, plane::Plane, ray::Ray, sphere::Sphere, Vector3};
 
 /// Calculates the intersection point of a ray and an axis-aligned bounding box (AABB).
 pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, max: Vector3,) -> Option<f32> {
@@ -61,7 +61,9 @@ pub fn sphere_in_frustum(
 pub struct Intersection {
 	pub normal: Vector3,
 	pub depth: f32,
+	/// Contact on A in world space coordinates.
 	pub point_on_a: Vector3,
+	/// Contact on B in world space coordinates.
 	pub point_on_b: Vector3,
 }
 
@@ -74,6 +76,14 @@ impl Intersection {
 			point_on_b: self.point_on_a,
 		}
 	}
+}
+
+pub struct DynamicIntersection {
+	pub toi: f32,
+	/// Contact on A in world space coordinates.
+	pub point_on_a: Vector3,
+	/// Contact on B in world space coordinates.
+	pub point_on_b: Vector3,
 }
 
 pub fn sphere_vs_sphere(
@@ -217,9 +227,79 @@ pub fn sphere_vs_cube(
 	Some(Intersection{ normal, depth, point_on_a, point_on_b })
 }
 
+fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
+	let m = sphere_b.center - ray_a.origin;
+	let a = dot(ray_a.direction, ray_a.direction);
+	let b = dot(m, ray_a.direction);
+	let c = dot(m, m) - sphere_b.radius * sphere_b.radius;
+
+	let delta = b * b - a * c;
+
+	if delta < 0.0 {
+		return false;
+	}
+
+	let inv_a = 1.0 / a;
+
+	let delta_root = delta.sqrt();
+	let t1 = inv_a * (b - delta_root);
+	let t2 = inv_a * (b + delta_root);
+
+	true
+}
+
+fn sphere_vs_sphere_dynamic(sphere_a: &Sphere, sphere_b: &Sphere, a_velocity: Vector3, b_velocity: Vector3, dt: f32) -> Option<DynamicIntersection> {
+	let relative_velocity = b_velocity - a_velocity;
+
+	let start = sphere_a.center;
+	let end = start + relative_velocity * dt;
+	let ray_dir = end - start;
+
+	if magnitude_squared(ray_dir) < 0.00001 {
+		let ab = sphere_b.center - sphere_a.center;
+		let radius = sphere_a.radius + sphere_b.radius + 0.00001;
+
+		if magnitude_squared(ab) > radius * radius {
+			return None;
+		}
+	}
+
+	let t0 = 0.0;
+	let t1 = 0.0;
+
+	if !ray_vs_sphere(&Ray::new(start, ray_dir), &Sphere::new(sphere_b.center, sphere_a.radius + sphere_b.radius)) {
+		return None;
+	}
+
+	let t0 = t0 * dt;
+	let t1 = t1 * dt;
+
+	if t1 < 0.0 {
+		return None;
+	}
+
+	let toi = 0f32.max(t0);
+
+	if toi > dt {
+		return None;
+	}
+
+	let new_pos_a = sphere_a.center + a_velocity * toi;
+	let new_pos_b = sphere_b.center + b_velocity * toi;
+	let ab = normalize(new_pos_b - new_pos_a);
+
+	Some(DynamicIntersection {
+		toi,
+		point_on_a: new_pos_a + ab * sphere_a.radius,
+		point_on_b: new_pos_b - ab * sphere_b.radius,
+	})
+}
+
 #[cfg(test)]
 mod tests {
-	use crate::{normalize, Vector3};
+	use maths_rs::num::Base;
+
+use crate::{normalize, Vector3};
 	use super::*;
 
 	#[test]
@@ -347,5 +427,22 @@ mod tests {
 		};
 
 		assert!(sphere_vs_cube(&sphere, &cube).is_none());
+	}
+
+	#[test]
+	fn test_ray_vs_sphere() {
+		let ray = Ray::new(Vector3::zero(), Vector3::new(0.0, 0.0, 1.0));
+		let sphere = Sphere::new(Vector3::new(0.0, 0.0, 10.0), 1.0);
+
+		let result = ray_vs_sphere(&ray, &sphere);
+
+		assert!(result);
+
+		let ray = Ray::new(Vector3::zero(), Vector3::new(0.0, 0.0, 1.0));
+		let sphere = Sphere::new(Vector3::new(0.0, 4.0, 10.0), 1.0);
+
+		let result = ray_vs_sphere(&ray, &sphere);
+
+		assert!(!result);
 	}
 }

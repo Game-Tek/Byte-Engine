@@ -13,7 +13,7 @@ jobs:
   build-test:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         profile: [dev, release]
         feature: [headed, network]
         include:
@@ -21,6 +21,8 @@ jobs:
             platform: linux
           - os: windows-latest
             platform: windows
+          - os: macos-latest
+            platform: macos
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4

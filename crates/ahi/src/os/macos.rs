@@ -4,7 +4,7 @@ pub struct Device {
 
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	fn new(params: crate::audio_hardware_interface::HardwareParameters) -> Option<Self> where Self: Sized {
-		Some(Device {})
+		None
 	}
 
 	fn get_period_size(&self) -> usize {

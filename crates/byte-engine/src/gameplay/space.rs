@@ -32,6 +32,9 @@ pub trait Spawner {
 
 	/// Spawns an entity in the domain.
 	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E>;
+
+	/// Spawns an entity in the domain.
+	fn try_spawn<E: Entity>(&self, result: Result<impl SpawnHandler<E>, &'static str>) -> Result<EntityHandle<E>, &'static str>;
 }
 
 /// This trait allows implementers to destroy entities.
@@ -44,9 +47,13 @@ pub trait Destroyer {
 
 impl Spawner for EntityHandle<dyn Domain> {
 	type Domain = dyn Domain;
-	
+
 	fn spawn<E: Entity>(&self, spawner: impl SpawnHandler<E>) -> EntityHandle<E> {
 		spawn_as_child(self.clone(), spawner)
+	}
+
+	fn try_spawn<E: Entity>(&self, result: Result<impl SpawnHandler<E>, &'static str>) -> Result<EntityHandle<E>, &'static str> {
+		result?.call(self.clone())
 	}
 }
 

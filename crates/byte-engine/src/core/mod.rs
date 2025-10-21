@@ -46,25 +46,24 @@ pub fn spawn_as_child<'a, E: Entity>(parent: EntityHandle<dyn Domain>, entity: i
 	e
 }
 
-/// Handles extractor pattern for most functions passed to the orchestrator.
-pub trait SpawnHandler<E: Entity> {
-	fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<E>> where Self: Sized;
+pub fn try_spawn_as_child<'a, E: Entity>(parent: EntityHandle<dyn Domain>, entity: impl SpawnHandler<E>) -> Result<EntityHandle<E>, &'static str> {
+	let e = entity.call(parent,);
+	e
 }
 
-// impl <R: Entity + 'static> SpawnHandler<R> for R {
-//     fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
-// 		self.builder().call(domain)
-//     }
-// }
+/// Handles extractor pattern for most functions passed to the orchestrator.
+pub trait SpawnHandler<E: Entity> {
+	fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Result<EntityHandle<E>, &'static str> where Self: Sized;
+}
 
 impl <'c, R: Entity + 'static, F> SpawnHandler<R> for F where F: FnOnce(EntityHandle<dyn Domain>) -> EntityBuilder<'c, R> {
-    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Result<EntityHandle<R>, &'static str> {
 		self(domain.clone()).call(domain)
 	}
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
-    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Result<EntityHandle<R>, &'static str> {
 		let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
 		let entity = (self.create)(domain.clone());
@@ -76,7 +75,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 		for f in self.post_creation_functions {
 			f(domain.clone(), handle.clone(),);
 		}
-		
+
 		let mut domain = domain.write();
 
 		let domain_events = domain.events_mut();
@@ -92,12 +91,12 @@ impl <R: Entity + 'static> SpawnHandler<R> for EntityBuilder<'_, R> {
 			}
 		}
 
-		Some(handle)
+		Ok(handle)
     }
 }
 
 impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
-    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Option<EntityHandle<R>> {
+    fn call<'a>(self, domain: EntityHandle<dyn Domain>,) -> Result<EntityHandle<R>, &'static str> {
 		let init = self.into_iter().map(|builder| {
 			let internal_id = unsafe { COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
 
@@ -135,7 +134,7 @@ impl <R: Entity + 'static> SpawnHandler<R> for Vec<EntityBuilder<'_, R>> {
 
 		let handles = post.collect::<Vec<_>>();
 
-		Some(handles[0].clone())
+		Ok(handles[0].clone())
     }
 }
 

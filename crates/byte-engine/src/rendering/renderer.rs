@@ -41,7 +41,7 @@ impl Renderer {
 	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
-	/// - `render.ghi.features.mesh_shading`: Enables mesh shading features on the graphics device. Defaults to true.
+	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics device. Defaults to true.
 	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
@@ -63,7 +63,7 @@ impl Renderer {
 			settings
 		};
 
-		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh_shading") {
+		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
 			settings.mesh_shading(param.as_bool_simple())
 		} else {
 			settings
@@ -297,20 +297,23 @@ impl Listener<CreateEvent<Window>> for Renderer {
 
 		let window = ghi::Window::new_with_params(name, extent, "main_window");
 
-		if let Some(window) = window {
-			let os_handles = window.os_handles();
+		match window {
+			Ok(window) => {
+				let os_handles = window.os_handles();
 
-			let device = &mut self.device;
+				let device = &mut self.device;
 
-			let swapchain_handle = device.bind_to_window(
-				&os_handles,
-				ghi::PresentationModes::Mailbox,
-				extent,
-			);
+				let swapchain_handle = device.bind_to_window(
+					&os_handles,
+					ghi::PresentationModes::FIFO,
+					extent,
+				);
 
-			self.windows.push((window, swapchain_handle));
-		} else {
-			log::error!("Failed to create GHI window");
+				self.windows.push((window, swapchain_handle));
+			}
+			Err(msg) => {
+				log::error!("Failed to create GHI window: {}", msg);
+			}
 		}
 	}
 }

@@ -25,30 +25,31 @@ pub struct DefaultAudioSystem {
 }
 
 impl DefaultAudioSystem {
-	pub fn new(resource_manager: EntityHandle<ResourceManager>) -> Self {
+	pub fn try_new(resource_manager: EntityHandle<ResourceManager>) -> Result<Self, &'static str> {
 		let mut channels = HashMap::with_capacity(16);
 
 		let params = HardwareParameters::new().channels(1);
 
-		let device = Device::new(params).expect("Failed to create audio device");
+		let device = Device::new(params).ok_or_else(|| "Failed to create audio device. Audio parameters may be invalid or device may not exist or be available.")?;
 
 		channels.insert("master".to_string(), Channel { samples: vec![0; device.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
 
-		Self {
+		Ok(Self {
 			resource_manager,
 			device,
 			audio_resources: HashMap::with_capacity(1024),
 			sources: Vec::with_capacity(32),
 			channels,
-		}
+		})
 	}
 
-	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self::new(resource_manager))
+	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> Result<EntityBuilder<'static, Self>, &'static str> {
+		Ok(EntityBuilder::new(Self::try_new(resource_manager)?)
 			.listen_to::<CreateEvent<Sound>>()
 			.listen_to::<CreateEvent<Synthesizer>>()
 			.listen_to::<CreateEvent<RoundRobin>>()
 			.listen_to::<CreateEvent<Emitter>>()
+		)
 	}
 
 	fn load_asset<'a>(&'a mut self, audio_asset_url: &'a str) {
@@ -141,9 +142,11 @@ impl AudioSystem for DefaultAudioSystem {
 	}
 
 	fn render(&mut self) {
-		let frames = self.device.get_period_size();
+		let device = &self.device;
 
-		let frames = self.device.play(|streams| {
+		let frames = device.get_period_size();
+
+		let frames = device.play(|streams| {
 			if let Streams::MonoFloat32(mut buffer) = streams { // Hardware is the same format as what we use for rendering
 				self.rndr(&mut buffer);
 			} else {

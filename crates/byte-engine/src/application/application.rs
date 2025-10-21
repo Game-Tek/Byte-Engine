@@ -92,7 +92,6 @@ impl Application for BaseApplication {
 		trace!("Initialized base Byte-Engine application!");
 
 		application
-
 	}
 
 	fn tick(&mut self) {}

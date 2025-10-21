@@ -28,6 +28,9 @@ pub struct Device {
 	#[cfg(target_os = "windows")]
 	pub(super) win32_surface: ash::khr::win32_surface::Instance,
 
+	#[cfg(target_os = "macos")]
+	pub(super) macos_surface: ash::mvk::macos_surface::Instance,
+
 	#[cfg(debug_assertions)]
 	debugger: RenderDebugger,
 
@@ -93,6 +96,9 @@ impl Device {
 		#[cfg(target_os = "windows")]
 		let win32_surface = ash::khr::win32_surface::Instance::new(vk_entry, vk_instance);
 
+		#[cfg(target_os = "macos")]
+		let macos_surface = ash::mvk::macos_surface::Instance::new(vk_entry, vk_instance);
+
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
@@ -114,12 +120,11 @@ impl Device {
 			.scalar_block_layout(true)
 			.buffer_device_address(true)
 			.separate_depth_stencil_layouts(true)
-			.shader_buffer_int64_atomics(true).shader_float16(true).shader_int8(true)
+			.shader_float16(true).shader_int8(true)
 			.storage_buffer8_bit_access(true)
 			.uniform_and_storage_buffer8_bit_access(true)
 			.vulkan_memory_model(true)
 			.vulkan_memory_model_device_scope(true)
-			.sampler_filter_minmax(true)
 			.timeline_semaphore(true)
 		;
 
@@ -145,7 +150,6 @@ impl Device {
 
 		let mut shader_atomic_float_required_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
 			.shader_buffer_float32_atomics(true)
-			.shader_image_float32_atomics(true)
 		;
 
 		let mut physical_device_mesh_shading_required_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
@@ -307,6 +311,11 @@ impl Device {
 			device_extension_names.push(ash::khr::ray_tracing_maintenance1::NAME.as_ptr());
 		}
 
+		#[cfg(target_os = "macos")]
+		{
+			device_extension_names.push(ash::khr::portability_subset::NAME.as_ptr());
+		}
+
 		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) = if settings.ray_tracing {
 			let physical_device_acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
 				.acceleration_structure(true);
@@ -419,6 +428,9 @@ impl Device {
 
 			#[cfg(target_os = "windows")]
 			win32_surface,
+
+			#[cfg(target_os = "macos")]
+			macos_surface,
 
 			surface_capabilities,
 
@@ -906,7 +918,18 @@ impl Device {
 			}
 			#[cfg(target_os = "macos")]
 			{
-				vk::SurfaceKHR::null()
+				let metal_layer = objc2_quartz_core::CAMetalLayer::new();
+
+				let view = &window_os_handles.view;
+
+				view.setWantsLayer(true);
+				view.setLayer(Some(&metal_layer));
+
+				let macos_surface_create_info = vk::MacOSSurfaceCreateInfoMVK::default()
+        			.view(objc2::rc::Retained::as_ptr(&view) as _)
+				;
+
+				unsafe { self.macos_surface.create_mac_os_surface(&macos_surface_create_info, None).expect("No surface") }
 			}
 		};
 

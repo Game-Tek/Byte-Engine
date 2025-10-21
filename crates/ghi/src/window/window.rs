@@ -9,14 +9,14 @@ pub struct Window {
 }
 
 impl Window {
-	pub fn new(name: &str, extent: Extent) -> Option<Window> {
+	pub fn new(name: &str, extent: Extent) -> Result<Window, String> {
 		Self::new_with_params(name, extent, name)
 	}
 
-	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Option<Window> {
-		let os_window = os::Window::try_new(name, extent, id_name).ok()?;
+	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Result<Window, String> {
+		let os_window = os::Window::try_new(name, extent, id_name)?;
 
-		Some(Window {
+		Ok(Window {
 			name: name.to_owned(),
 			extent,
 			id_name: id_name.to_owned(),

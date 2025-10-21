@@ -34,7 +34,7 @@ impl Instance {
 			})
 		};
 
-		let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
+		let application_info = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 4, 0));
 
 		let mut layer_names = Vec::new();
 
@@ -42,7 +42,7 @@ impl Instance {
 			if is_instance_layer_available("VK_LAYER_KHRONOS_validation") {
 				layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap().as_ptr());
 			} else {
-				println!("Warning: VK_LAYER_KHRONOS_validation is not available");
+				return Err("VK_LAYER_KHRONOS_validation is not available");
 			}
 		}
 
@@ -50,13 +50,17 @@ impl Instance {
 			if is_instance_layer_available("VK_LAYER_LUNARG_api_dump") {
 				layer_names.push(std::ffi::CStr::from_bytes_with_nul(b"VK_LAYER_LUNARG_api_dump\0").unwrap().as_ptr());
 			} else {
-				println!("Warning: VK_LAYER_LUNARG_api_dump is not available");
+				return Err("VK_LAYER_LUNARG_api_dump is not available");
 			}
 		}
 
 		let mut extension_names = Vec::new();
 
-		extension_names.push(ash::khr::surface::NAME.as_ptr());
+		if is_instance_extension_available(ash::khr::surface::NAME.to_str().unwrap()) {
+			extension_names.push(ash::khr::surface::NAME.as_ptr());
+		} else {
+			return Err("VK_KHR_surface extension is not available");
+		}
 
 		#[cfg(target_os = "linux")]
 		{
@@ -72,20 +76,45 @@ impl Instance {
 			}
 		}
 
+		#[cfg(target_os = "macos")]
+		{
+			if is_instance_extension_available(ash::mvk::macos_surface::NAME.to_str().unwrap()) {
+				extension_names.push(ash::mvk::macos_surface::NAME.as_ptr());
+			} else {
+				return Err("VK_MVK_macos_surface extension is not available");
+			}
+
+			if is_instance_extension_available(ash::khr::portability_enumeration::NAME.to_str().unwrap()) {
+				extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
+			} else {
+				return Err("VK_KHR_portability_enumeration extension is not available");
+			}
+		}
+
 		if is_instance_extension_available(ash::khr::get_surface_capabilities2::NAME.to_str().unwrap()) {
 			extension_names.push(ash::khr::get_surface_capabilities2::NAME.as_ptr());
+		} else {
+			return Err("VK_KHR_get_surface_capabilities2 extension is not available");
 		}
 
 		if is_instance_extension_available(ash::ext::surface_maintenance1::NAME.to_str().unwrap()) {
 			extension_names.push(ash::ext::surface_maintenance1::NAME.as_ptr());
+		} else {
+			return Err("VK_EXT_surface_maintenance1 extension is not available");
 		}
 
-		if is_instance_extension_available(ash::ext::swapchain_maintenance1::NAME.to_str().unwrap()) {
-			extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
-		}
+		// if is_instance_extension_available(ash::ext::swapchain_maintenance1::NAME.to_str().unwrap()) {
+		// 	extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
+		// } else {
+		// 	return Err("VK_EXT_swapchain_maintenance1 extension is not available");
+		// }
 
 		if settings.validation {
-			extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+			if is_instance_extension_available(ash::ext::debug_utils::NAME.to_str().unwrap()) {
+				extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+			} else {
+				return Err("VK_EXT_debug_utils extension is not available");
+			}
 		}
 
 		let enabled_validation_features = {
@@ -99,7 +128,14 @@ impl Instance {
 		let mut validation_features = vk::ValidationFeaturesEXT::default()
 			.enabled_validation_features(&enabled_validation_features);
 
+		let mut instance_flags = vk::InstanceCreateFlags::empty();
+
+		if cfg!(target_os = "macos") {
+			instance_flags |= vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
+		}
+
 		let instance_create_info = vk::InstanceCreateInfo::default()
+    		.flags(instance_flags)
 			.application_info(&application_info)
 			.enabled_layer_names(&layer_names)
 			.enabled_extension_names(&extension_names)
@@ -111,7 +147,24 @@ impl Instance {
 			instance_create_info
 		};
 
-		let instance = unsafe { entry.create_instance(&instance_create_info, None).or(Err("Failed to create instance"))? };
+		let instance_result = unsafe { entry.create_instance(&instance_create_info, None) };
+
+		let instance = match instance_result {
+			Err(err) => {
+				match err {
+					vk::Result::ERROR_EXTENSION_NOT_PRESENT => Err("Extension not present"),
+					vk::Result::ERROR_INCOMPATIBLE_DRIVER => Err("Incompatible driver"),
+					vk::Result::ERROR_INITIALIZATION_FAILED => Err("Initialization failed"),
+					vk::Result::ERROR_LAYER_NOT_PRESENT => Err("Layer not present"),
+					vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => Err("Out of device memory"),
+					vk::Result::ERROR_OUT_OF_HOST_MEMORY => Err("Out of host memory"),
+					vk::Result::ERROR_UNKNOWN => Err("Unknown error"),
+					vk::Result::ERROR_VALIDATION_FAILED_EXT => Err("Validation failed"),
+					_ => Err("Unknown error"),
+				}
+			},
+			Ok(instance) => Ok(instance),
+		}?;
 
 		let mut debug_data = Box::new(DebugCallbackData {
 			error_count: AtomicU64::new(0),

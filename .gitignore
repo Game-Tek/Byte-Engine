@@ -10,6 +10,7 @@
 /assets
 
 flamegraph.svg
+*.profraw
 perf.data
 perf.data.old
 .cargo

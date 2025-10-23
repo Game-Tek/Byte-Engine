@@ -17,7 +17,7 @@ pub use orchestrator::Orchestrator;
 use listener::Listener;
 
 use entity::DomainType;
-use entity::EntityBuilder;
+pub use entity::EntityBuilder;
 
 pub use entity::Entity;
 pub use entity::EntityHandle;

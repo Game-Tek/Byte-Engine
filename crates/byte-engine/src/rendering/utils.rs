@@ -327,6 +327,8 @@ mod tests {
 		let mesh2_instance2 = mesh_buffer_stats.add_instance(mesh2.id(), ());
 
 		let batches = mesh_buffer_stats.get_instance_batches();
+		let mut batches = batches.iter().collect::<Vec<_>>();
+		batches.sort_by_key(|e| e.batch.base_instance);
 		let mut batches = batches.iter();
 
 		let batch = batches.next().unwrap();

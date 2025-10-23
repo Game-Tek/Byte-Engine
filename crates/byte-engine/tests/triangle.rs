@@ -8,7 +8,10 @@ use byte_engine::{application::{Application, Parameter}, gameplay::space::Spawne
 #[test]
 #[ignore]
 fn triangle() {
-    let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[Parameter::new("kill-after", "60")]);
+    let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[
+		Parameter::new("kill-after", "60"),
+		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
+	]);
 
 	byte_engine::application::graphics_application::default_setup(&mut app);
 

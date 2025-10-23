@@ -9,7 +9,7 @@ use log::{info, trace};
 use std::collections::HashSet;
 use tracing_subscriber;
 
-use crate::application::parameters::Parameters;
+use crate::application::parameters::{parse_argument, Parameters};
 
 use super::Parameter;
 
@@ -55,12 +55,7 @@ impl Application for BaseApplication {
 
 		let environment_variables = std::env::vars().filter(|(k, v)| k.as_str().starts_with("BE_")).map(|(k, v)| Parameter::new_string(k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(), v.into())).collect::<Vec<Parameter>>();
 		// Take all arguments that have the form `--name=value` and convert them to parameters.
-		let arguments = std::env::args().filter(|a| a.starts_with("--")).map(|a| {
-			let mut split = a.split('=');
-			let name = split.next().unwrap().trim_start_matches("--");
-			let value = split.next().unwrap_or("");
-			Parameter::new(name, value)
-		}).collect::<Vec<Parameter>>();
+		let arguments = std::env::args().filter(|a| a.starts_with("--")).map(|a| parse_argument(&a)).try_collect::<Vec<Parameter>>().unwrap();
 
 		let mut parameter_set: HashSet<Parameter> = parameters.into_iter().collect();
 		parameter_set.extend(environment_variables);

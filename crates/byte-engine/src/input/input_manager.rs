@@ -122,14 +122,6 @@ impl InputManager {
 	/// # Arguments
 	///
 	/// * `name` - The name of the device type. **Should be pascalcase.**
-	///
-	/// # Example
-	///
-	/// ```
-	/// # use byte_engine::input::InputManager;
-	/// # let mut input_manager = InputManager::new();
-	/// input_manager.register_device_class("Keyboard");
-	/// ```
 	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
 		let device_class = DeviceClass {
 			name: name.to_string(),
@@ -150,15 +142,6 @@ impl InputManager {
 	/// * `device_handle` - The handle of the device.
 	/// * `name` - The name of the input source.
 	/// * `value_type` - The type of the value of the input source.
-	///
-	/// # Example
-	///
-	/// ```rust
-	/// # use byte_engine::input::{InputManager, input_manager::{InputTypes, InputSourceDescription}};
-	/// # let mut input_manager = InputManager::new();
-	/// # let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
-	/// input_manager.register_input_source(&keyboard_device_class_handle, "Up", InputTypes::Bool(InputSourceDescription::new(false, false, false, true)));
-	/// ```
 	pub fn register_trigger<T>(&mut self, device_handle: &DeviceClassHandle, name: &str, value_type: TriggerDescription<T>) -> TriggerHandle where T: InputValue + Into<Value> {
 		let default = value_type.default;
 
@@ -187,14 +170,6 @@ impl InputManager {
 	/// * `device_handle` - The handle of the device.
 	/// * `name` - The name of the input destination.
 	/// * `value_type` - The type of the value of the input destination.
-	///
-	/// # Example
-	/// ```rust
-	/// # use byte_engine::input::{InputManager, input_manager::{InputTypes, InputSourceDescription}};
-	/// # let mut input_manager = InputManager::new();
-	/// # let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
-	/// input_manager.register_input_destination(&gamepad_device_class_handle, "Rumble", InputTypes::Float(InputSourceDescription::new(0f32, 0f32, 0f32, 1f32)));
-	/// ```
 	pub fn register_input_destination<T: InputValue>(&mut self, _device_class_handle: &DeviceClassHandle, _name: &str, _value_type: TriggerDescription<T>) -> TriggerHandle {
 		TriggerHandle(0)
 	}
@@ -205,15 +180,6 @@ impl InputManager {
 	/// # Arguments
 	///
 	/// * `device_class_handle` - The handle of the device class.
-	///
-	/// # Example
-	///
-	/// ```rust
-	/// # use byte_engine::input::InputManager;
-	/// # let mut input_manager = InputManager::new();
-	/// # let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
-	/// let keyboard_device = input_manager.create_device(&keyboard_device_class_handle);
-	/// ```
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
 		let other_device = self.devices.iter().filter(|d| d.device_class_handle.0 == device_class_handle.0).min_by_key(|d| d.index);
 

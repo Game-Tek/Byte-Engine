@@ -18,7 +18,7 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 	/// # Examples
 	///
 	/// ```rust
-	/// use crate::core::{Entity, EntityBuilder};
+	/// use byte_engine::core::{Entity, EntityBuilder};
 	///
 	/// struct MyEntity {}
 	///
@@ -30,7 +30,7 @@ pub trait Entity: downcast_rs::Downcast + std::any::Any + 'static {
 	///
 	/// impl Entity for MyEntity {
 	/// 	fn builder(self) -> EntityBuilder<'static, Self> {
-	/// 		EntityBuilder::new(self).r#as::<MyEntity>() // Produces a creation event as `MyEntity`
+	/// 		EntityBuilder::new(self).r#as::<MyEntity>(|e| e) // Produces a creation event as `MyEntity`
 	/// 	}
 	/// }
 	///

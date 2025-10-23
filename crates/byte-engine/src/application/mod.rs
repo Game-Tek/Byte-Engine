@@ -64,6 +64,14 @@ impl Parameter {
 	pub fn as_bool_simple(&self) -> bool {
 		self.as_bool().unwrap_or(false)
 	}
+
+	pub fn name(&self) -> &str {
+		&self.name
+	}
+
+	pub fn value(&self) -> &str {
+		&self.value
+	}
 }
 
 /// Event that can be sent to an application. Mostly used to control the application life cycle.

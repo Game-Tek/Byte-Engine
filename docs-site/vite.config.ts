@@ -10,26 +10,18 @@ export default defineConfig({
 	server: {
 		port: 3000,
 	},
-	// resolve: {
-	// 	alias: {
-	// 		'react-dom/server': 'react-dom/server.node'
-	// 	}
-	// },
-	// optimizeDeps: {
-	// 	include: ['react-dom/server']
-	// },
 	plugins: [
 		mdx(await import('./source.config')),
 		tailwindcss(),
-		cloudflare(process.env.ENV === 'production' ? { viteEnvironment: { name: "ssr" } } : undefined),
+		// cloudflare({ viteEnvironment: { name: "ssr" } }),
 		tsConfigPaths({
 			projects: ['./tsconfig.json'],
 		}),
 		tanstackStart({
-			prerender: {
-				enabled: true,
-			},
-		}),
+      prerender: {
+        enabled: true,
+      },
+    }),
 		react(),
 	],
 });

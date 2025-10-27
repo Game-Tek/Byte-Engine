@@ -29,7 +29,7 @@ pub struct Device {
 	pub(super) win32_surface: ash::khr::win32_surface::Instance,
 
 	#[cfg(target_os = "macos")]
-	pub(super) macos_surface: ash::mvk::macos_surface::Instance,
+	pub(super) macos_surface: ash::ext::metal_surface::Instance,
 
 	#[cfg(debug_assertions)]
 	debugger: RenderDebugger,
@@ -97,7 +97,7 @@ impl Device {
 		let win32_surface = ash::khr::win32_surface::Instance::new(vk_entry, vk_instance);
 
 		#[cfg(target_os = "macos")]
-		let macos_surface = ash::mvk::macos_surface::Instance::new(vk_entry, vk_instance);
+		let macos_surface = ash::ext::metal_surface::Instance::new(vk_entry, vk_instance);
 
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
 
@@ -925,11 +925,11 @@ impl Device {
 				view.setWantsLayer(true);
 				view.setLayer(Some(&metal_layer));
 
-				let macos_surface_create_info = vk::MacOSSurfaceCreateInfoMVK::default()
-        			.view(objc2::rc::Retained::as_ptr(&view) as _)
+				let macos_surface_create_info = vk::MetalSurfaceCreateInfoEXT::default()
+        			.layer(objc2::rc::Retained::as_ptr(&metal_layer) as _)
 				;
 
-				unsafe { self.macos_surface.create_mac_os_surface(&macos_surface_create_info, None).expect("No surface") }
+				unsafe { self.macos_surface.create_metal_surface(&macos_surface_create_info, None).expect("No surface") }
 			}
 		};
 
@@ -2117,7 +2117,11 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_pipeline_layout(&mut self, descriptor_set_layout_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle], push_constant_ranges: &[graphics_hardware_interface::PushConstantRange]) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE)).collect::<Vec<_>>();
+		let push_constant_stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
+
+		let push_constant_stages = push_constant_stages | if self.settings.mesh_shading { vk::ShaderStageFlags::MESH_EXT } else { vk::ShaderStageFlags::empty() };
+
+		let push_constant_ranges = push_constant_ranges.iter().map(|push_constant_range| vk::PushConstantRange::default().size(push_constant_range.size).offset(push_constant_range.offset).stage_flags(push_constant_stages)).collect::<Vec<_>>();
 		let set_layouts = descriptor_set_layout_handles.iter().map(|set_layout| self.descriptor_sets_layouts[set_layout.0 as usize].descriptor_set_layout).collect::<Vec<_>>();
 
   		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()

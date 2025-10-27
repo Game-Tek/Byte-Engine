@@ -78,8 +78,8 @@ impl Instance {
 
 		#[cfg(target_os = "macos")]
 		{
-			if is_instance_extension_available(ash::mvk::macos_surface::NAME.to_str().unwrap()) {
-				extension_names.push(ash::mvk::macos_surface::NAME.as_ptr());
+			if is_instance_extension_available(ash::ext::metal_surface::NAME.to_str().unwrap()) {
+				extension_names.push(ash::ext::metal_surface::NAME.as_ptr());
 			} else {
 				return Err("VK_MVK_macos_surface extension is not available");
 			}

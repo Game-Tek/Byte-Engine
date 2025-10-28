@@ -1261,18 +1261,16 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		self
 	}
 
-	fn write_to_push_constant(&mut self, offset: u32, data: &[u8]) {
-		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
-		let command_buffer = self.get_command_buffer();
-		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
-		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, data); }
-	}
-
 	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized {
 		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
 		let command_buffer = self.get_command_buffer();
 		let pipeline_layout = self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
-		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE, offset, std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>())); }
+
+		let push_constant_stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
+
+		let push_constant_stages = push_constant_stages | if self.ghi.settings.mesh_shading { vk::ShaderStageFlags::MESH_EXT } else { vk::ShaderStageFlags::empty() };
+
+		unsafe { self.ghi.device.cmd_push_constants(command_buffer.command_buffer, pipeline_layout, push_constant_stages, offset, std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>())); }
 	}
 
 	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {

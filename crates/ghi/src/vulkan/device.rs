@@ -60,7 +60,7 @@ pub struct Device {
 	/// Maps a descriptor set and binding to N resources that it references.
 	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
 
-	settings: graphics_hardware_interface::Features,
+	pub settings: graphics_hardware_interface::Features,
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 

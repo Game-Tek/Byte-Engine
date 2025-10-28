@@ -57,9 +57,7 @@ pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
 	/// Binds a decriptor set on the GPU.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
-	/// Writes to the push constant register.
-	fn write_to_push_constant(&mut self, offset: u32, data: &[u8]);
-
+	/// Write data to the push constant register
 	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized;
 }
 

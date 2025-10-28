@@ -2026,7 +2026,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 					0f32, 0f32, 0f32, 1f32,
 				];
 
-			c.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(matrix.as_ptr() as *const u8, 16 * 4) });
+			c.write_push_constant(0, matrix);
 
 			let c = c.bind_raster_pipeline(pipeline);
 
@@ -2119,7 +2119,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
-		pipeline_layout_command.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
+		pipeline_layout_command.write_push_constant(0, data);
 		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
@@ -2143,7 +2143,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
-		pipeline_layout_command.write_to_push_constant(0, unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) });
+		pipeline_layout_command.write_push_constant(0, data);
 		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);

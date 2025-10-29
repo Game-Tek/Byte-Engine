@@ -176,6 +176,31 @@ pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
 	)
 }
 
+pub fn quaternion_from_direction(direction: Vector3) -> Quaternion {
+    // normalize input direction
+    let dir = normalize(direction);
+
+    // base forward vector (+Z)
+    let forward = Vector3::new(0.0, 0.0, 1.0);
+
+    // handle parallel and anti-parallel cases
+    let dot = dot(forward, dir);
+    if dot > 0.9999 {
+        return Quaternion::identity();
+    } else if dot < -0.9999 {
+        // rotate 180 degrees around any perpendicular axis (X is fine if not parallel)
+        return Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), std::f32::consts::PI);
+    }
+
+    // rotation axis is perpendicular to both vectors
+    let axis = normalize(cross(forward, dir));
+
+    // rotation angle is arccos of the dot product
+    let angle = dot.acos();
+
+    Quaternion::from_axis_angle(axis, angle)
+}
+
 /// Left handed row major 4x4 matrix inverse
 pub fn inverse(m: maths_rs::Mat4f) -> maths_rs::Mat4f {
 	let mut inv = maths_rs::Mat4f::default();
@@ -237,6 +262,8 @@ mod tests {
 	}
 
 	use maths_rs::mat::MatInverse;
+
+use crate::quaternion_from_direction;
 
 	#[test]
 	fn test_from_normal() {
@@ -329,5 +356,19 @@ mod tests {
 		assert!(nearly_equal(value[13], 5f32/169f32));
 		assert!(nearly_equal(value[14], 5f32/169f32));
 		assert!(nearly_equal(value[15], -8f32/169f32));
+	}
+
+	#[test]
+	fn test_quaternion_from_direction() {
+		let dir = maths_rs::Vec3f::from((0f32, 0f32, 1f32));
+		let quaternion = quaternion_from_direction(dir);
+		let s = quaternion.as_slice();
+
+		let nearly_equal = |a: f32, b: f32| (a - b).abs() < 0.0001f32;
+
+		assert!(nearly_equal(s[0], 0f32));
+		assert!(nearly_equal(s[1], 0f32));
+		assert!(nearly_equal(s[2], 0f32));
+		assert!(nearly_equal(s[3], 1f32));
 	}
 }

@@ -1,4 +1,4 @@
-use crate::input::Keys;
+use crate::input::{Keys, MouseKeys};
 use crate::{os::WindowLike, Events};
 use objc2::{rc::Retained, MainThreadMarker};
 use objc2::MainThreadOnly as _;
@@ -8,6 +8,7 @@ use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSBacki
 use objc2_foundation::{NSAutoreleasePool, NSDefaultRunLoopMode, NSPoint, NSRect, NSRunLoop, NSRunLoopMode, NSSize, NSString};
 
 pub struct Window {
+	mtm: MainThreadMarker,
 	app: Retained<NSApplication>,
 	window: Retained<NSWindow>,
 }
@@ -45,43 +46,57 @@ impl WindowLike for Window {
 		app.activate();
 
 		Ok(Window {
+			mtm,
 			window,
 			app,
 		})
 	}
 
 	fn poll(&mut self) -> impl Iterator<Item = Events> {
-		let event = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, None, unsafe { NSDefaultRunLoopMode }, true);
-
 		let mut events = Vec::new();
 
-		dbg!(&event);
+		while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, None, unsafe { NSDefaultRunLoopMode }, true) {
+			let time = (event.timestamp() * 1000.0) as u64;
 
-		if let Some(event) = event {
 			match event.r#type() {
 				NSEventType::MouseMoved => {
-					events.push(Events::MouseMove { x: event.absoluteX() as _, y: event.absoluteY() as _, time: event.timestamp().to_bits() });
+					let point = event.locationInWindow();
+
+					if let Some(window) = event.window(self.mtm) {
+						if window == self.window {
+							let screen = window.screen().unwrap();
+							let monitor_extent = screen.frame().size;
+							let window_extent = window.frame().size;
+							let width = window_extent.width as f32;
+							let height = window_extent.height as f32;
+							let half_width = width / 2.0;
+							let half_height = height / 2.0;
+							let (x, y) = (point.x as f32 - half_width, point.y as f32 - half_height);
+							let (x, y) = (x / half_width, y / half_height);
+							events.push(Events::MouseMove { x, y, time });
+						}
+					}
+				}
+				NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
+					let pressed = event.r#type() == NSEventType::LeftMouseDown;
+
+					events.push(Events::Button { pressed, button: MouseKeys::Left });
+				}
+				NSEventType::RightMouseDown | NSEventType::RightMouseUp => {
+					let pressed = event.r#type() == NSEventType::RightMouseDown;
+
+					events.push(Events::Button { pressed, button: MouseKeys::Right });
 				}
 				NSEventType::KeyDown | NSEventType::KeyUp => {
 					let pressed = event.r#type() == NSEventType::KeyDown;
 
 					let key = match event.keyCode() {
-						53 => {
-							Keys::Escape
-						}
-						13 => {
-							Keys::W
-						}
-						0 => {
-							Keys::A
-						}
-						1 => {
-							Keys::S
-						}
-						2 => {
-							Keys::D
-						}
-						_ => { Keys::Z }
+						53 => Keys::Escape,
+						13 => Keys::W,
+						0 => Keys::A,
+						1 => Keys::S,
+						2 => Keys::D,
+						_ => Keys::Z
 					};
 
 					events.push(Events::Key { pressed, key });

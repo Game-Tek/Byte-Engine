@@ -48,9 +48,9 @@ pub mod packets;
 pub use client::Client;
 pub use server::Server;
 
-use std::io::Write;
+use std::io::{Read as _, Write};
 
-use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
+use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// [`PacketInfo`] contains information about a packet.
@@ -123,4 +123,26 @@ pub(crate) fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 	}
 
 	Some(())
+}
+
+pub(crate) fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
+	let mut cursor = std::io::Cursor::new(buffer);
+
+	let mut protocol_id = [0u8; 4];
+
+	cursor.read(&mut protocol_id);
+
+	if protocol_id != ['B' as u8, 'E' as u8, 'T' as u8, 'P' as u8] {
+		return Err(());
+	}
+
+	let mut r#type = [0u8; 1];
+
+	cursor.read(&mut r#type);
+
+	let r#type = unsafe { std::mem::transmute(r#type[0]) };
+
+	Ok(PacketHeader {
+		protocol_id, r#type,
+	})
 }

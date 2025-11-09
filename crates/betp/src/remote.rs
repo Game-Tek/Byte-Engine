@@ -9,7 +9,7 @@ const PACKET_HISTORY: usize = 1024;
 
 /// Remote is used to keep track of the state of the communication with a remote.
 /// If we are the server, the remote is a client. If we are the client, the remote is the server.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Remote {
     /// The ack is the most recent acknoledged sequence number by the remote.
     ack: u16,

@@ -1,12 +1,12 @@
 use utils::bit_array::BitArray;
 
-use super::PacketInfo;
+use crate::PacketInfo;
 
 /// The packet history is the number of (last) packets that we keep track of.
 const PACKET_HISTORY: usize = 1024;
 
 /// Local is a state tracking structure to keep track of the state of the communication with a remote.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Local {
 	// The sequence is a 16-bit number that is incremented for each packet sent.
 	sequence: u16,

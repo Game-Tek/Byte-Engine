@@ -54,7 +54,7 @@ impl PacketHeader {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A connection request packet.
 pub struct ConnectionRequestPacket {
 	header: PacketHeader,
@@ -84,8 +84,14 @@ impl Packet for ConnectionRequestPacket {
 	}
 }
 
+impl Into<Packets> for ConnectionRequestPacket {
+	fn into(self) -> Packets {
+		Packets::ConnectionRequest(self)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A challenge packet.
 pub struct ChallengePacket {
 	header: PacketHeader,
@@ -121,8 +127,14 @@ impl Packet for ChallengePacket {
 	}
 }
 
+impl Into<Packets> for ChallengePacket {
+	fn into(self) -> Packets {
+		Packets::Challenge(self)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A challenge response packet.
 pub struct ChallengeResponsePacket {
 	header: PacketHeader,
@@ -145,6 +157,12 @@ impl Packet for ChallengeResponsePacket {
 
 	fn header(&self) -> PacketHeader {
 		self.header
+	}
+}
+
+impl Into<Packets> for ChallengeResponsePacket {
+	fn into(self) -> Packets {
+		Packets::ChallengeResponse(self)
 	}
 }
 
@@ -212,7 +230,7 @@ impl <const S: usize> Packet for DataPacket<S> {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A disconnect packet.
 pub struct DisconnectPacket {
 	header: PacketHeader,
@@ -242,8 +260,14 @@ impl Packet for DisconnectPacket {
 	}
 }
 
+impl Into<Packets> for DisconnectPacket {
+	fn into(self) -> Packets {
+		Packets::Disconnect(self)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// Represents all the possible BETP packets.
 pub enum Packets {
 	ConnectionRequest(ConnectionRequestPacket),

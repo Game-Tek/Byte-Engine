@@ -36,6 +36,7 @@ pub mod gameplay;
 pub mod physics;
 #[cfg(feature = "headed")]
 pub mod rendering;
+pub mod network;
 
 pub mod inspector;
 

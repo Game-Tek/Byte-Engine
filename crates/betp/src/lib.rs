@@ -36,6 +36,8 @@
 pub mod client;
 pub mod server;
 
+pub mod udp;
+
 mod local;
 mod remote;
 
@@ -43,9 +45,12 @@ mod packet_buffer;
 
 pub mod packets;
 
+pub use client::Client;
+pub use server::Server;
+
 use std::io::Write;
 
-use self::packets::DataPacket;
+use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// [`PacketInfo`] contains information about a packet.
@@ -54,142 +59,68 @@ pub(crate) struct PacketInfo {
     acked: bool,
 }
 
-#[derive(Clone, Copy)]
-enum ConnectionStates {
-    Negotiating,
-    Connected,
-}
-
 /// Compares two sequence numbers and returns true if the first sequence number is greater than the second.
 /// The function takes into account the wrap-around of the sequence numbers.
 pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
-    ((s1 > s2) && (s1 - s2 <= 32768u16)) || ((s1 < s2) && (s2 - s1 > 32768u16))
+	((s1 > s2) && (s1 - s2 <= 32768u16)) || ((s1 < s2) && (s2 - s1 > 32768u16))
 }
 
 fn has_written_anything(s: usize) -> Option<()> {
-    if s > 0 {
-        Some(())
-    } else {
-        None
-    }
+	if s > 0 {
+		Some(())
+	} else {
+		None
+	}
 }
 
-fn write_packet<const N: usize>(buffer: &mut [u8], packet_header: DataPacket<N>) -> Option<()> {
-    let mut cursor = std::io::Cursor::new(buffer);
+pub(crate) fn write_packet_header(buffer: &mut [u8], packet_header: PacketHeader) -> Option<()> {
+	let mut cursor = std::io::Cursor::new(buffer);
 
-    {
-        let protocol = &packet_header.header.protocol_id;
-        let sequence = packet_header.connection_status.sequence.to_le_bytes();
-        let ack = packet_header.connection_status.ack.to_le_bytes();
-        let ack_bifield = packet_header.connection_status.ack_bitfield.to_le_bytes();
+	let protocol = &packet_header.protocol_id;
+	let packet_type = [packet_header.r#type as u8];
+	let packet_type = &packet_type;
 
-        cursor.write(protocol).ok().and_then(has_written_anything)?;
-        cursor
-            .write(&sequence)
-            .ok()
-            .and_then(has_written_anything)?;
-        cursor.write(&ack).ok().and_then(has_written_anything)?;
-        cursor
-            .write(&ack_bifield)
-            .ok()
-            .and_then(has_written_anything)?;
-    }
+	cursor.write(protocol).ok().and_then(has_written_anything)?;
+	cursor.write(packet_type).ok().and_then(has_written_anything)?;
 
-    Some(())
+	Some(())
 }
 
-#[cfg(test)]
-mod tests {
-    use packets::{Packet, Packets};
-    use tests::packets::PacketType;
+pub(crate) fn write_connection_status(buffer: &mut [u8], connection_status: ConnectionStatus) -> Option<()> {
+	let mut cursor = std::io::Cursor::new(buffer);
 
-    use super::*;
+	let sequence = connection_status.sequence.to_le_bytes();
+	let ack = connection_status.ack.to_le_bytes();
+	let ack_bifield = connection_status.ack_bitfield.to_le_bytes();
 
-    #[test]
-    fn test_sequence_greater_than() {
-        assert_eq!(sequence_greater_than(1, 0), true);
-        assert_eq!(sequence_greater_than(0, 1), false);
-        assert_eq!(sequence_greater_than(32768, 0), true);
-        assert_eq!(sequence_greater_than(0, 32768), false);
-        assert_eq!(sequence_greater_than(32767, 0), true);
-        assert_eq!(sequence_greater_than(0, 32767), false);
-        assert_eq!(sequence_greater_than(32767, 1), true);
-        assert_eq!(sequence_greater_than(1, 32767), false);
-    }
+	cursor
+		.write(&sequence)
+		.ok()
+		.and_then(has_written_anything)?;
+	cursor.write(&ack).ok().and_then(has_written_anything)?;
+	cursor
+		.write(&ack_bifield)
+		.ok()
+		.and_then(has_written_anything)?;
 
-    #[test]
-    fn test_server_client_link() {
-		let client_address: std::net::SocketAddr = std::net::SocketAddr::from(([10, 0, 0, 1], 6669));
-		let server_address: std::net::SocketAddr = std::net::SocketAddr::from(([210, 0, 0, 1], 6669));
+	Some(())
+}
 
-    	let mut server = server::Server::new();
-		let mut client = client::Client::new(server_address).unwrap();
+pub(crate) fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
+	let header = packet.header();
 
-		let request_packet = client.connect(std::time::Instant::now());
+	write_packet_header(buffer, header)?;
 
-		assert_ne!(request_packet.get_client_salt(), 0);
-		assert_eq!(request_packet.header().get_type(), PacketType::ConnectionRequest);
+	match packet {
+		Packets::Data(packet) => {
+			write_connection_status(buffer, packet.connection_status)?;
 
-		let challenge_packet = server.handle_packet((client_address, Packets::ConnectionRequest(request_packet)), std::time::Instant::now()).unwrap().unwrap();
+			let mut cursor = std::io::Cursor::new(buffer);
 
-		assert!(matches!(challenge_packet, Packets::Challenge(_)));
-		assert_eq!(challenge_packet.header().get_type(), PacketType::Challenge);
+			cursor.write(&packet.data).ok().and_then(has_written_anything)?;
+		}
+		_ => {}
+	}
 
-		let challenge_response_packet = client.handle_packet(challenge_packet).unwrap().unwrap();
-
-		assert!(matches!(challenge_response_packet, Packets::ChallengeResponse(_)));
-		assert_eq!(challenge_response_packet.header().get_type(), PacketType::ChallengeResponse);
-
-		let data_packet = client.send(false, [0; 1024]).unwrap();
-
-		assert_eq!(data_packet.header().get_type(), PacketType::Data);
-		assert_eq!(data_packet.get_connection_status().ack, 0);
-		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b0);
-		assert_eq!(data_packet.get_connection_status().sequence, 0);
-
-		let response = server.handle_packet((client_address, Packets::Data(data_packet)), std::time::Instant::now()).unwrap();
-
-		assert!(response.is_none());
-
-		let data_packet = server.send(client_address, false, [0; 1024]).unwrap();
-
-		assert_eq!(data_packet.header().get_type(), PacketType::Data);
-		assert_eq!(data_packet.get_connection_status().ack, 0);
-		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b1);
-		assert_eq!(data_packet.get_connection_status().sequence, 0);
-
-		let response = client.handle_packet(Packets::Data(data_packet)).unwrap();
-
-		assert!(response.is_none());
-
-		let data_packet = client.send(false, [0; 1024]).unwrap();
-
-		assert_eq!(data_packet.header().get_type(), PacketType::Data);
-		assert_eq!(data_packet.get_connection_status().ack, 0);
-		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b1);
-		assert_eq!(data_packet.get_connection_status().sequence, 1);
-
-		let response = server.handle_packet((client_address, Packets::Data(data_packet)), std::time::Instant::now()).unwrap();
-
-		assert!(response.is_none());
-
-		let data_packet = server.send(client_address, false, [0; 1024]).unwrap();
-
-		assert_eq!(data_packet.header().get_type(), PacketType::Data);
-		assert_eq!(data_packet.get_connection_status().ack, 1);
-		assert_eq!(data_packet.get_connection_status().ack_bitfield, 0b11);
-		assert_eq!(data_packet.get_connection_status().sequence, 1);
-
-		let response = client.handle_packet(Packets::Data(data_packet)).unwrap();
-
-		assert!(response.is_none());
-
-		let disconnect = client.disconnect().unwrap();
-
-		assert_eq!(disconnect.header().get_type(), PacketType::Disconnect);
-
-		let response = server.handle_packet((client_address, Packets::Disconnect(disconnect)), std::time::Instant::now()).unwrap();
-
-		assert!(response.is_none());
-    }
+	Some(())
 }

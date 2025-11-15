@@ -10,7 +10,7 @@ use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrai
 #[cfg(feature = "headed")]
 use crate::rendering::{mesh::{self}, renderable::mesh::MeshSource};
 
-use super::{Positionable, Transform, Transformable};
+use super::{Positionable, transform::Transform, Transformable};
 
 /// An object represents a physical entity in the game world.
 /// It has physics and is rendered as a mesh.

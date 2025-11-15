@@ -43,7 +43,7 @@ use crate::gameplay::Transformable as _;
 use crate::rendering::visibility_model::visibility_shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain, RenderableMesh};
 use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
-use crate::{resource_management::{self, }, core::orchestrator::{self, OrchestratorReference}, camera::{self}};
+use crate::{resource_management::{self, }, camera::{self}};
 
 #[derive(Debug, Clone)]
 struct MeshPrimitive {

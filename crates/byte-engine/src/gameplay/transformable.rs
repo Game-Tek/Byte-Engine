@@ -2,7 +2,7 @@ use math::Vector3;
 
 use crate::core::Entity;
 
-use super::{Positionable, Transform};
+use super::{Positionable, transform::Transform};
 
 // [`Transformable`] represents an object that can be transformed in the game world.
 pub trait Transformable: Positionable + Entity {

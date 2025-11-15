@@ -1,6 +1,6 @@
 use math::{look_down, mat::{MatInverse as _, MatTranslate as _}, orthographic_matrix, plane::Plane, projection_matrix, Base as _, Matrix4, Vector3, Vector4};
 
-use crate::gameplay::Transform;
+use crate::gameplay::transform::Transform;
 
 /// A view represents a viewport into the world. It can be used to render a scene from a specific perspective.
 /// It's used to represent cameras, lights, and other objects that can be used to render a scene.

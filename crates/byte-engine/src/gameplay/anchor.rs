@@ -5,7 +5,7 @@ use math::Vector3;
 use crate::core::listener::{CreateEvent, Listener};
 use crate::core::{entity::EntityBuilder, Entity, EntityHandle};
 
-use super::{object::Object, Positionable, Transform};
+use super::{object::Object, Positionable, transform::Transform};
 
 #[derive(Debug, Clone)]
 pub enum Anchorage {

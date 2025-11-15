@@ -1,6 +1,6 @@
 use math::{normalize, Vector3};
 
-use crate::{core::{entity::EntityBuilder, Entity, EntityHandle}, gameplay::{Transform, Transformable}, rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator}};
+use crate::{core::{entity::EntityBuilder, Entity, EntityHandle}, gameplay::{transform::Transform, Transformable}, rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator}};
 
 pub trait RenderableMesh: Transformable + Entity + Send {
 	fn get_mesh(&self) -> &MeshSource;

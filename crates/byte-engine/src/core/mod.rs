@@ -1,5 +1,3 @@
-pub mod orchestrator;
-
 pub mod entity;
 pub mod domain;
 pub mod property;
@@ -13,7 +11,6 @@ use std::ops::Deref;
 use domain::Domain;
 use entity::EntityEvents;
 use listener::CreateEvent;
-pub use orchestrator::Orchestrator;
 use listener::Listener;
 
 use entity::DomainType;

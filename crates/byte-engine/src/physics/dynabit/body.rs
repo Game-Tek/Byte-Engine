@@ -1,5 +1,6 @@
-use math::{collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _}, normalize, sphere::Sphere, Base, Magnitude as _, Matrix3, Quaternion, Vector3};
+use math::{collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _, MatScale as _}, normalize, sphere::Sphere, Base, Magnitude as _, Matrix3, Quaternion, Vector3};
 use crate::{application::Time, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}}};
+use core::ops::Mul as _;
 
 pub struct PhysicsBody {
 	pub(crate) body_type: BodyTypes,
@@ -45,7 +46,8 @@ impl PhysicsBody {
 
 	pub fn inverse_world_space_inertia_tensor(&self) -> Matrix3 {
 		let inertia_tensor = self.inertia_tensor;
-		let inverse = inertia_tensor.inverse();
+		let inv_mass = self.inv_mass;
+		let inverse = inertia_tensor.inverse() * Matrix3::from((inv_mass, 0f32, 0f32, 0f32, inv_mass, 0f32, 0f32, 0f32, inv_mass));
 		let orientation = self.orientation.get_matrix();
 		orientation * inverse * orientation.transpose()
 	}
@@ -53,22 +55,25 @@ impl PhysicsBody {
 	pub fn update(&mut self, time: Time) {
 		let dt = time.delta();
 		let dt = dt.as_secs_f32();
+
 		self.position += self.linear_velocity * dt;
 
 		let world_space_center_of_mass = self.world_space_center_of_mass();
-		let cp = self.position - world_space_center_of_mass;
+		let delta = self.position - world_space_center_of_mass;
 
 		let orientation = self.orientation.get_matrix();
 		let inertia_tensor = orientation * self.inertia_tensor * orientation.transpose();
 		let alpha = inertia_tensor.inverse() * (cross(self.angular_velocity, inertia_tensor * self.angular_velocity));
+
 		self.angular_velocity += alpha * dt;
 
+		// Apply rotation
 		let d = self.angular_velocity * dt;
 		let dq = Quaternion::from_axis_angle(d, length(d));
 
-		self.orientation = Quaternion::normalize(self.orientation * dq);
+		self.orientation = Quaternion::normalize(dq * self.orientation);
 
-		self.position = world_space_center_of_mass + dq * cp;
+		self.position = world_space_center_of_mass + dq * delta;
 	}
 }
 
@@ -84,7 +89,7 @@ pub fn intersect(a: &PhysicsBody, b: &PhysicsBody) -> Option<Intersection> {
 			sphere_vs_cube(&Sphere::new(a.position, ra), &Cube::new(b.position, sb))
 		},
 		(Shapes::Cube { size: sa }, Shapes::Sphere { radius: rb }) => {
-			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa)).map(|e| e.flip())
+			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa)).map(|intersection| intersection.swap())
 		},
 	}
 }

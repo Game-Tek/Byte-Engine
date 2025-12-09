@@ -91,6 +91,7 @@ impl World {
 
 					contacts.push(Contact {
 						normal: intersection.normal,
+						depth: intersection.depth,
 						a: Side {
 							object: pair.0,
 							point: intersection.point_on_a,
@@ -206,15 +207,16 @@ impl World {
 		let b = &mut self.bodies[b_index];
 		b.apply_impulse(b_point, impulse_friction);
 
-		let ab = b_point - a_point;
+		let separation = n * contact.depth;
+		//let separation = b_point - a_point; // Book suggests this way but it causes orbiting around the world center
 		let t_a = a_inv_mass / (a_inv_mass + b_inv_mass);
 		let t_b = b_inv_mass / (a_inv_mass + b_inv_mass);
 
 		let a = &mut self.bodies[a_index];
-		a.position += ab * t_a;
+		a.position -= separation * t_a;
 
 		let b = &mut self.bodies[b_index];
-		b.position += ab * t_b;
+		b.position += separation * t_b;
 	}
 }
 

@@ -68,9 +68,10 @@ pub struct Intersection {
 }
 
 impl Intersection {
-	pub fn flip(self) -> Intersection {
+	/// Swap the intersection points.
+	pub fn swap(self) -> Intersection {
 		Intersection {
-			normal: -self.normal,
+			normal: self.normal,
 			depth: self.depth,
 			point_on_a: self.point_on_b,
 			point_on_b: self.point_on_a,
@@ -208,7 +209,7 @@ pub fn sphere_vs_cube(
 	}
 
 	let distance = distance_squared.sqrt();
-	let depth = distance - sphere_a.radius;
+	let depth = sphere_a.radius - distance;
 
 	let normal = if distance > 1e-6 {
 		normalize(to_center)
@@ -221,8 +222,8 @@ pub fn sphere_vs_cube(
 		}
 	};
 
-	let point_on_a = sphere_a.center + normal * sphere_a.radius;
-	let point_on_b = cube_b.center - normal * depth;
+	let point_on_a = sphere_a.center - normal * sphere_a.radius;
+	let point_on_b = cube_b.center + normal * depth;
 
 	Some(Intersection{ normal, depth, point_on_a, point_on_b })
 }

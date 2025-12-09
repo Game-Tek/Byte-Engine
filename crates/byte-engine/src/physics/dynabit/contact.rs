@@ -4,6 +4,7 @@ pub struct Contact {
 	pub(crate) a: Side,
 	pub(crate) b: Side,
 	pub(crate) normal: Vector3,
+	pub(crate) depth: f32,
 }
 
 pub struct Side {

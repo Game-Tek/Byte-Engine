@@ -5,6 +5,8 @@ pub mod ray;
 
 pub mod collision;
 
+use std::ops::Mul;
+
 pub use maths_rs::Vec2f as Vector2;
 pub use maths_rs::Vec3f as Vector3;
 pub use maths_rs::Vec4f as Vector4;
@@ -16,6 +18,7 @@ pub use maths_rs::Quatf as Quaternion;
 pub use maths_rs::normalize as normalize;
 
 pub use maths_rs::mat;
+pub use maths_rs::num::Number;
 pub use maths_rs::num::Base;
 pub use maths_rs::vec::VecN;
 

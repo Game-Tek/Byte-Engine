@@ -21,6 +21,8 @@ pub struct CommandBufferRecording<'a> {
 
 	buffer_copies: Vec<BufferCopy>,
 	image_copies: Vec<ImageCopy>,
+
+	present_keys: Vec<graphics_hardware_interface::PresentKey>,
 }
 
 impl CommandBufferRecording<'_> {
@@ -41,6 +43,8 @@ impl CommandBufferRecording<'_> {
 			image_copies,
 
 			ghi,
+
+			present_keys: Vec::with_capacity(8),
 		};
 
 		command_buffer.begin();
@@ -1056,6 +1060,10 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		}
 	}
 
+	fn present(&mut self, present_key: crate::PresentKey) {
+		self.present_keys.push(present_key);
+	}
+
 	fn execute(mut self, wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], presentations: &[graphics_hardware_interface::PresentKey], execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		// Transition all resources which where written to but not consumed by any previous command
 		// If this is skipped validation layers (correctly) complain about missing sync even no "read" operation was performed, except for the following commands
@@ -1097,12 +1105,14 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])
 		];
 
+		let presentations = presentations.iter().chain(self.present_keys.iter());
+
 		let wait_semaphores = wait_for_synchronizer_handles.iter().map(|synchronizer| {
 			vk::SemaphoreSubmitInfo::default()
 				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 				.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
 		}).chain(
-			presentations.iter().map(|presentation| {
+			presentations.clone().map(|presentation| {
 				let swapchain = self.get_swapchain(presentation.swapchain);
 				let semaphore = swapchain.acquire_synchronizers[presentation.sequence_index as usize].access(&self.ghi.synchronizers).semaphore;
 
@@ -1117,7 +1127,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 				.stage_mask(vk::PipelineStageFlags2::empty())
 		}).chain(
-			presentations.iter().map(|present_key| {
+			presentations.clone().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
 
 				vk::SemaphoreSubmitInfo::default()
@@ -1142,13 +1152,13 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			self.ghi.states.insert(k, *v);
 		}
 
-		for presentation in presentations {
+		for presentation in presentations.clone() {
 			let swapchain = self.get_swapchain(presentation.swapchain);
 
 			let wait_semaphores = signal_synchronizer_handles.iter().map(|synchronizer| {
 				self.get_synchronizer(*synchronizer).semaphore
 			}).chain(
-				presentations.iter().map(|present_key| {
+				presentations.clone().map(|present_key| {
 					self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize].access(&self.ghi.synchronizers).semaphore
 				})
 			).collect::<Vec<_>>();

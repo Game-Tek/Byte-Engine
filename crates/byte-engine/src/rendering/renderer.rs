@@ -8,8 +8,8 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
 	application::parameters::Parameters, core::{
-		entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle
-	}, rendering::window::Window
+		Entity, EntityHandle, entity::EntityBuilder, listener::{CreateEvent, Listener}
+	}, gameplay::space::Spawner, rendering::{View, Viewport, render_pass::RenderPassCommand, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -25,13 +25,14 @@ pub struct Renderer {
 	frame_queue_depth: usize,
 
 	windows: Vec<(ghi::Window, ghi::SwapchainHandle)>,
+	views: Vec<(usize, View)>,
+
+	render_targets: HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
+
+	render_passes: Vec<EntityHandle<dyn RenderPass>>,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
-
-	root_render_pass: RwLock<RootRenderPass>,
-
-	extent: Extent,
 }
 
 impl Renderer {
@@ -42,7 +43,7 @@ impl Renderer {
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics device. Defaults to true.
-	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
+	pub fn new(spawner: &mut impl Spawner, resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
 		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
@@ -88,46 +89,17 @@ impl Renderer {
 
 		let queue_handle = queue_handle.unwrap();
 
-		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
-
-		let result = device.create_image(
-			Some("result"),
-			extent,
-			ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
-			ghi::DeviceAccesses::DeviceOnly,
-			ghi::UseCases::DYNAMIC,
-			None,
-		);
-		let main = device.create_image(
-			Some("main"),
-			extent,
-			ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
-			ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
-			ghi::DeviceAccesses::DeviceOnly,
-			ghi::UseCases::DYNAMIC,
-			None,
-		);
-		let depth = device.create_image(
-			Some("depth"),
-			extent,
-			ghi::Formats::Depth32,
-			ghi::Uses::RenderTarget | ghi::Uses::Image,
-			ghi::DeviceAccesses::DeviceOnly,
-			ghi::UseCases::DYNAMIC,
-			None,
-		);
-
 		let render_command_buffer = device.create_command_buffer(Some("Render"), queue_handle);
 		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
 
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
-		let mut root_render_pass = RootRenderPass::new();
+		let root_render_pass = RootRenderPass::new();
+		let root_render_pass: EntityHandle<dyn RenderPass> = spawner.spawn(root_render_pass.builder());
 
-		root_render_pass.add_image("main".to_string(), main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
-		root_render_pass.add_image("depth".to_string(), depth, ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
-		root_render_pass.add_image("result".to_string(), result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		let mut render_passes = Vec::with_capacity(64);
+
+		render_passes.push(root_render_pass);
 
 		Renderer {
 			instance,
@@ -138,38 +110,33 @@ impl Renderer {
 			frame_queue_depth: 2,
 
 			windows: Vec::with_capacity(16),
+			views: Vec::with_capacity(16),
+
+			render_targets: HashMap::with_capacity(32),
+
+			render_passes,
 
 			render_command_buffer,
 			render_finished_synchronizer,
-
-			root_render_pass: RwLock::new(root_render_pass),
-
-			extent,
 		}
 	}
 
-	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
-		let read_attachments = T::get_read_attachments();
-
-		let mut root_render_pass = self.root_render_pass.write();
-
-		if !read_attachments.iter().all(|a| root_render_pass.does_target_exist(a)) {
-			return;
-		}
-
-		let mut render_pass_builder = RenderPassBuilder::new(&mut self.device);
-
-		let main_image = root_render_pass.images.get("main").unwrap().clone();
-		let depth_image = root_render_pass.images.get("depth").unwrap().clone();
-		let result_image = root_render_pass.images.get("result").unwrap().clone();
-
-		render_pass_builder.images.insert("main".to_string(), (main_image.0, main_image.1, 0));
-		render_pass_builder.images.insert("depth".to_string(), (depth_image.0, depth_image.1, 0));
-		render_pass_builder.images.insert("result".to_string(), (result_image.0, result_image.1, 0));
+	/// Adds a render pass to the renderer's pipeline.
+	/// All windows will use this render passes.
+	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl Fn(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
+		let mut render_pass_builder = RenderPassBuilder::new(&mut self.device, &mut self.render_targets);
 
 		let render_pass = creator(&mut render_pass_builder,);
 
-		root_render_pass.add_render_pass(render_pass, render_pass_builder);
+		{
+			let render_pass = render_pass.write();
+
+			for _ in &self.windows {
+				render_pass.create_view();
+			}
+		}
+
+		self.render_passes.push(render_pass);
 	}
 
 	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
@@ -182,8 +149,8 @@ impl Renderer {
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
 	pub fn prepare(&'_ mut self) -> Option<RenderMessage<'_>> {
-		let Some(&swapchain_handle) = self.windows.first().map(|(_, s)| s) else {
-			log::warn!("No swapchain available to present to. Skipping rendering!");
+		let Some(_) = self.windows.first() else {
+			log::warn!("No swapchains available to present to. Skipping rendering!");
 			return None;
 		};
 
@@ -195,28 +162,52 @@ impl Renderer {
 
 		self.started_frame_count += 1;
 
-		let (present_key, extent) = frame.acquire_swapchain_image(swapchain_handle);
+		let mut executions = Vec::with_capacity(8);
 
-		if extent.width() >= 65535 || extent.height() >= 65535 {
-			log::warn!("The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.", extent);
-			return None;
-		}
+		let swapchains = self.windows.iter().map(|(window, swapchain)| {
+			let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
 
-		let root_render_pass = self.root_render_pass.read();
-
-		if extent != self.extent {
-			for image in root_render_pass.targets() {
-				frame.resize_image(*image, extent);
+			if extent.width() == 0 || extent.height() == 0 {
+				log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+				return None;
 			}
 
-			self.extent = extent;
+			if extent.width() >= 65535 || extent.height() >= 65535 {
+				log::warn!("The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.", extent);
+				return None;
+			}
+
+			Some((present_key, extent, *swapchain))
+		}).collect::<Vec<_>>();
+
+		let views = self.views.iter();
+
+		let render_passes = self.render_passes.iter().map(|render_pass| {
+			let render_pass = render_pass.read();
+			let execute = render_pass.prepare(&mut frame);
+			execute
+		});
+
+		for (index, view) in views {
+			let Some((present_key, extent, swapchain)) = swapchains[*index] else {
+				continue;
+			};
+
+			let viewport = Viewport::new(*view, extent);
+
+			// We assume every view renders the same set of render passes
+			for render_pass in render_passes.clone() {
+				executions.push(execute);
+			}
 		}
 
-		let execute = root_render_pass.prepare(&mut frame, extent);
+		let execute = move |e: &mut ghi::CommandBufferRecording| {
+			for execute in executions {
+				execute(e);
+			}
+		};
 
-		let result = root_render_pass.get_target("result").unwrap();
-
-		RenderMessage::new(frame, self.render_command_buffer, self.render_finished_synchronizer, result, swapchain_handle, present_key, execute).into()
+		RenderMessage::new(frame, self.render_command_buffer, self.render_finished_synchronizer, execute).into()
 	}
 }
 
@@ -224,9 +215,6 @@ pub struct RenderMessage<'a> {
 	frame: ghi::Frame<'a>,
 	command_buffer: ghi::CommandBufferHandle,
 	synchronizer: ghi::SynchronizerHandle,
-	swapchain_handle: ghi::SwapchainHandle,
-	result_target: ghi::ImageHandle,
-	present_key: ghi::PresentKey,
 	execute: Box<dyn FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync>,
 }
 
@@ -235,29 +223,20 @@ impl <'a> RenderMessage<'a> {
 		frame: ghi::Frame<'a>,
 		command_buffer: ghi::CommandBufferHandle,
 		synchronizer: ghi::SynchronizerHandle,
-		result_target: ghi::ImageHandle,
-		swapchain_handle: ghi::SwapchainHandle,
-		present_key: ghi::PresentKey,
 		execute: impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync + 'static,
 	) -> Self {
 		Self {
 			frame,
 			command_buffer,
 			synchronizer,
-			swapchain_handle,
-			result_target,
-			present_key,
 			execute: Box::new(execute),
 		}
 	}
 
 	pub fn render(self) {
 		let mut frame = self.frame;
-		let present_key = self.present_key;
-		let swapchain_handle = self.swapchain_handle;
 		let command_buffer = self.command_buffer;
 		let synchronizer = self.synchronizer;
-		let result = self.result_target;
 		let execute = self.execute;
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(
@@ -269,12 +248,10 @@ impl <'a> RenderMessage<'a> {
 
 		execute(&mut command_buffer_recording);
 
-		command_buffer_recording.copy_to_swapchain(result, present_key, swapchain_handle);
-
 		command_buffer_recording.execute(
 			&[],
 			&[],
-			&[present_key],
+			&[],
 			synchronizer,
 		);
 	}
@@ -351,7 +328,9 @@ impl RootRenderPass {
 	/// Usually the preparation step involves writing to buffers, culling drawables, determining what to draw and whether to even draw at all.
 	/// Individual render pass prepare's can optionally return render pass execution functions which decide if a render pass gets executed.
 	/// This can be because the render pass may be disabled or because some other internal conditions are not satisfied.
-	fn prepare(&self, frame: &mut ghi::Frame, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
+	fn prepare(&self, frame: &mut ghi::Frame, extent: Extent, present_key: ghi::PresentKey, swapchain_handle: ghi::SwapchainHandle) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
+		let result = self.get_target("result");
+
 		let commands = self.order.iter().map(|index| {
 			let (render_pass, consumed) = &self.render_passes[*index];
 			let attachments = consumed.iter().map(|c| {
@@ -360,18 +339,26 @@ impl RootRenderPass {
 			}).collect::<Vec<_>>();
 
 			let command = render_pass.get_mut(|e| {
-				e.prepare(frame, extent)
+				e.prepare(frame)
 			});
 
 			(attachments, command)
 		}).collect::<Vec<_>>();
 
 		move |c: &mut ghi::CommandBufferRecording<'_>| {
+			let Some(result) = result else {
+				return;
+			};
+
 			for (attachments, command) in commands {
 				if let Some(command) = command {
-					command(c, &attachments);
+					command(c);
 				}
 			}
+
+			c.copy_to_swapchain(result, present_key, swapchain_handle);
+
+			c.present(present_key);
 		}
 	}
 
@@ -387,6 +374,14 @@ impl RootRenderPass {
 		self.images.get(name).map(|(image, _, _)| *image)
 	}
 }
+
+impl RenderPass for RootRenderPass {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+		None
+	}
+}
+
+impl Entity for RootRenderPass {}
 
 struct Attachment {
 	name: String,
@@ -437,5 +432,57 @@ impl Settings {
 	pub fn mesh_shading(mut self, value: bool) -> Self {
 		self.mesh_shading = value;
 		self
+	}
+}
+
+struct FrameBuffer {
+	root_render_pass: RwLock<RootRenderPass>,
+}
+
+impl FrameBuffer {
+	fn new(device: &mut ghi::Device) -> Self {
+		let mut root_render_pass = RootRenderPass::new();
+
+		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
+
+		let result = device.create_image(
+			Some("result"),
+			extent,
+			ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
+			ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
+			ghi::DeviceAccesses::DeviceOnly,
+			ghi::UseCases::DYNAMIC,
+			None,
+		);
+
+		let main = device.create_image(
+			Some("main"),
+			extent,
+			ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
+			ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
+			ghi::DeviceAccesses::DeviceOnly,
+			ghi::UseCases::DYNAMIC,
+			None,
+		);
+
+		let depth = device.create_image(
+			Some("depth"),
+			extent,
+			ghi::Formats::Depth32,
+			ghi::Uses::RenderTarget | ghi::Uses::Image,
+			ghi::DeviceAccesses::DeviceOnly,
+			ghi::UseCases::DYNAMIC,
+			None,
+		);
+
+		root_render_pass.add_image("main".to_string(), main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("depth".to_string(), depth, ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
+		root_render_pass.add_image("result".to_string(), result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+
+		let root_render_pass = RwLock::new(root_render_pass);
+
+		Self {
+			root_render_pass,
+		}
 	}
 }

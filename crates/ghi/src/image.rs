@@ -58,4 +58,12 @@ impl<'a> Builder<'a> {
 		self.array_layers = array_layers;
 		self
 	}
+
+	pub fn get_name(&self) -> Option<&'a str> {
+		self.name
+	}
+
+	pub fn get_format(&self) -> Formats {
+		self.format
+	}
 }

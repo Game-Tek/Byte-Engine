@@ -69,7 +69,7 @@ impl Application for GraphicsApplication {
 		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
-		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), &application).builder());
+		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(root_space_handle.write(), resource_manager.clone(), &application).builder());
 		let audio_system_handle = root_space_handle.try_spawn(DefaultAudioSystem::new_as_system(resource_manager.clone())).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn().ok();
 		let physics_system_handle = root_space_handle.spawn(physics::dynabit::World::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());

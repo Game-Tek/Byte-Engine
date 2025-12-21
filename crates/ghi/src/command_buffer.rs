@@ -29,6 +29,8 @@ pub trait CommandBufferRecordable where Self: Sized {
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
 
+	fn present(&mut self, present_key: PresentKey);
+
 	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], presentations: &[PresentKey], execution_synchronizer_handle: SynchronizerHandle);
 }
 

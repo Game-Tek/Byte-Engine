@@ -9,11 +9,9 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Transformable, rendering::{common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, renderable::mesh::MeshSource, utils::{MeshBuffersStats, MeshStats}, RenderableMesh}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{RenderPassCommand, RenderPassBuilder}, renderable::mesh::MeshSource, simple::SimpleRenderPass, utils::{MeshBuffersStats, MeshStats}, view::View}};
 
-pub struct SimpleRenderModel {
-	camera: Option<EntityHandle<Camera>>,
-
+pub struct RenderPass {
 	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
 	indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
 
@@ -34,7 +32,7 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 	ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
 ];
 
-impl SimpleRenderModel {
+impl RenderPass {
 	pub fn new<'a>(render_pass_builder: &mut RenderPassBuilder<'a>) -> Self {
 		let render_to = render_pass_builder.render_to("main");
 		let depth_map = render_pass_builder.render_to("depth");
@@ -134,8 +132,6 @@ impl SimpleRenderModel {
 		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(pipeline_layout, &VERTEX_LAYOUT, &[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)], &[render_to.into(), depth_map.into()]));
 
 		Self {
-			camera: None,
-
 			vertex_positions_buffer,
 			indeces_buffer,
 
@@ -154,19 +150,13 @@ impl SimpleRenderModel {
 	}
 }
 
-impl Entity for SimpleRenderModel {
+impl Entity for RenderPass {
 	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn RenderableMesh>>().listen_to::<CreateEvent<Camera>>()
+		EntityBuilder::new(self).listen_to::<CreateEvent<dyn RenderableMesh>>()
 	}
 }
 
-impl Listener<CreateEvent<Camera>> for SimpleRenderModel {
-	fn handle(&mut self, event: &CreateEvent<Camera>) {
-    	self.camera = Some(event.handle().clone());
-	}
-}
-
-impl Listener<CreateEvent<dyn RenderableMesh>> for SimpleRenderModel {
+impl Listener<CreateEvent<dyn RenderableMesh>> for RenderPass {
 	fn handle(&mut self, event: &CreateEvent<dyn RenderableMesh>) {
 		let entity = event.handle();
 
@@ -174,16 +164,8 @@ impl Listener<CreateEvent<dyn RenderableMesh>> for SimpleRenderModel {
 	}
 }
 
-impl RenderPass for SimpleRenderModel {
-	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
-		Vec::new()
-	}
-
-	fn get_write_attachments() -> Vec<&'static str> where Self: Sized {
-		Vec::new()
-	}
-
-	fn prepare(&mut self, frame: &mut ghi::Frame, extent: utils::Extent) -> Option<RenderPassCommand> {
+impl crate::rendering::RenderPass for RenderPass {
+	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
 		{
 			let pending_entities = self.pending_entities.drain(..);
 
@@ -236,16 +218,11 @@ impl RenderPass for SimpleRenderModel {
 			}
 		}
 
-		let Some(camera) = &self.camera else {
-			log::warn!("SimpleRenderModel requires a camera to be set");
-			return None;
-		};
-
 		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(self.camera_data_buffer);
 
-		let view = make_perspective_view_from_camera(&camera.read(), extent);
-
-		camera_data_buffer[0] = CameraShaderData { vp: view.view_projection() };
+		for (index, viewport) in viewports.iter().enumerate() {
+			camera_data_buffer[index] = CameraShaderData { vp: viewport.view_projection() };
+		}
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
@@ -265,20 +242,30 @@ impl RenderPass for SimpleRenderModel {
 
 		let instance_batches = instance_batches.iter().into_vec();
 
-		Some(Box::new(move |c, t| {
+		Some(Box::new(move |c, viewport, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
 			c.bind_index_buffer(&index_buffer.into());
+
+			let extent = viewport.extent();
+
 			let c = c.start_render_pass(extent, t);
+
 			let c = c.bind_pipeline_layout(pipeline_layout);
 			c.bind_descriptor_sets(&[descriptor_set]);
 			let c = c.bind_raster_pipeline(pipeline);
+
 			for batch in &instance_batches {
 				c.write_push_constant(0, batch.base_instance() as u32);
 				c.draw_indexed(batch.index_count() as u32, batch.instance_count() as u32, batch.base_index() as _, batch.base_vertex() as _, batch.base_instance() as _);
 			}
+
 			c.end_render_pass();
 		}))
 	}
+}
+
+pub struct RenderPassView {
+	descriptor_set: ghi::DescriptorSetHandle,
 }
 
 #[derive(Debug, Clone, Copy)]

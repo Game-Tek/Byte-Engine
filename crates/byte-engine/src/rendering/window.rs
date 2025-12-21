@@ -1,17 +1,19 @@
 use utils::Extent;
 
-use crate::core::Entity;
+use crate::{camera::Camera, core::{Entity, EntityHandle}};
 
 pub struct Window {
 	name: String,
 	extent: Extent,
+	camera: Option<EntityHandle<Camera>>,
 }
 
 impl Window {
 	pub fn new(name: &str, extent: Extent) -> Self {
 		Window {
 			name: name.to_string(),
-			extent
+			extent,
+			camera: None,
 		}
 	}
 
@@ -21,6 +23,10 @@ impl Window {
 
 	pub fn extent(&self) -> Extent {
 		self.extent
+	}
+
+	pub fn attach(&mut self, camera: EntityHandle<Camera>) {
+		self.camera = Some(camera);
 	}
 }
 

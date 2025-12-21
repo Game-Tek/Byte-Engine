@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use crate::core::EntityHandle;
+use crate::{core::EntityHandle, rendering::{Viewport, render_pass::RenderPassView, view::View}};
 
 use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _, FrameKey};
 use resource_management::glsl;
@@ -14,7 +14,6 @@ pub struct AcesToneMapPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
 }
 
 const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
@@ -33,11 +32,6 @@ impl AcesToneMapPass {
 
 		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
-		let descriptor_set = device.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &descriptor_set_layout);
-
-		let source_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
-		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
-
 		let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "ACES Tonemapping").unwrap();
 
 		let tone_mapping_shader = device.create_shader(Some("ACES Tone Mapping Compute Shader"), ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [
@@ -50,31 +44,54 @@ impl AcesToneMapPass {
 		AcesToneMapPass {
 			descriptor_set_layout,
 			pipeline_layout,
-			descriptor_set,
 			pipeline: tone_mapping_pipeline,
 		}.into()
 	}
 }
 
 impl RenderPass for AcesToneMapPass {
-	fn get_read_attachments() -> Vec<&'static str> where Self: Sized {
-		vec!["main"]
-	}
-
-	fn get_write_attachments() -> Vec<&'static str> where Self: Sized {
-		vec!["result"]
-	}
-
-	fn prepare(&mut self, frame: &mut ghi::Frame, extent: Extent) -> Option<RenderPassCommand> {
-		if extent.width() == 0 || extent.height() == 0 {
-			return None; // No need to record if the extent is zero.
-		}
-
+	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
 		let pipeline_layout = self.pipeline_layout;
 		let pipeline = self.pipeline;
 		let descriptor_set = self.descriptor_set;
 
-		Some(Box::new(move |c: &mut ghi::CommandBufferRecording, attachments: &[ghi::AttachmentInformation]| {
+		Some(Box::new(move |c, viewport, _| {
+			let extent = viewport.extent();
+			c.region("Tonemap", |c| {
+				let c = c.bind_pipeline_layout(pipeline_layout);
+				c.bind_descriptor_sets(&[descriptor_set]);
+				let r = c.bind_compute_pipeline(pipeline);
+				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+			});
+		}))
+	}
+}
+
+struct AcesToneMapPassView {
+	descriptor_set: ghi::DescriptorSetHandle,
+}
+
+impl AcesToneMapPassView {
+	fn new(device: &mut ghi::Device, render_pass: &AcesToneMapPass) -> Self {
+		let descriptor_set = device.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
+
+		let source_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
+		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
+
+		AcesToneMapPassView {
+			descriptor_set,
+		}
+	}
+}
+
+impl RenderPassView for AcesToneMapPassView {
+	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
+		let pipeline_layout = self.pipeline_layout;
+		let pipeline = self.pipeline;
+		let descriptor_set = self.descriptor_set;
+
+		Some(Box::new(move |c, viewport, _| {
+			let extent = viewport.extent();
 			c.region("Tonemap", |c| {
 				let c = c.bind_pipeline_layout(pipeline_layout);
 				c.bind_descriptor_sets(&[descriptor_set]);

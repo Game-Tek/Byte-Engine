@@ -35,7 +35,7 @@ use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonSha
 use crate::rendering::lights::{DirectionalLight, Light, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
-use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand, RenderPassView};
+use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassView, RenderPassViewCommand};
 use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
@@ -885,211 +885,37 @@ impl Entity for VisibilityWorldRenderDomain {
 }
 
 impl RenderPass for VisibilityWorldRenderDomain {
-	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
-		let device = frame.device();
+	fn create_view(&self) {
+		todo!()
+	}
 
-		let pending_render_entities = self.pending_render_entities.drain(..).collect::<Vec<_>>();
+	fn prepare(&mut self, frame: &mut ghi::Frame, params: FramePrepare) {
 
-		for entity in pending_render_entities {
-			let mesh = entity.read();
-
-			let Ok(mesh_id) = (match mesh.get_mesh() {
-				MeshSource::Resource(resource_id) => self.create_mesh_resources(resource_id, device),
-				MeshSource::Generated(generator) => self.create_mesh_from_generator(generator.as_ref(), device),
-			}) else {
-				log::warn!("Failed to create mesh for render entity");
-				continue;
-			};
-
-			let mesh_data = self.meshes.get(mesh_id).expect("Mesh not loaded");
-
-			self.render_info.instances.extend(mesh_data.primitives.iter().map(|p| Instance {
-				meshlet_count: p.meshlet_count,
-			}));
-
-			let instance_base_index = self.visibility_info.instance_count as usize;
-
-			for (i, p) in mesh_data.primitives.iter().enumerate() {
-				let shader_mesh_data = ShaderMesh {
-					model: mesh.transform().get_matrix(),
-					material_index: p.material_index,
-					base_vertex_index: mesh_data.vertex_offset + p.vertex_offset, // Add the mesh relative vertex offset and the primitive relative vertex offset to get the absolute vertex offset
-					base_primitive_index: mesh_data.primitive_offset + p.primitive_offset, // Add the mesh relative primitive offset and the primitive relative primitive offset to get the absolute primitive offset
-					base_triangle_index: mesh_data.triangle_offset + p.triangle_offset, // Add the mesh relative triangle offset and the primitive relative triangle offset to get the absolute triangle offset
-					base_meshlet_index: mesh_data.meshlet_offset + p.meshlet_offset, // Add the mesh relative meshlet offset and the primitive relative meshlet offset to get the absolute meshlet offset
-				};
-
-				self.render_entities.push((entity.clone(), shader_mesh_data));
-			}
-
-			if let (Some(ray_tracing), Some(acceleration_structure)) = (Option::<RayTracing>::None, mesh_data.acceleration_structure) {
-				let mesh_transform = mesh.transform().get_matrix();
-
-				let transform = [
-					[mesh_transform[0], mesh_transform[1], mesh_transform[2], mesh_transform[3]],
-					[mesh_transform[4], mesh_transform[5], mesh_transform[6], mesh_transform[7]],
-					[mesh_transform[8], mesh_transform[9], mesh_transform[10], mesh_transform[11]],
-				];
-
-				device.write_instance(ray_tracing.instances_buffer, self.visibility_info.instance_count as usize, transform, self.visibility_info.instance_count as u16, 0xFF, 0, acceleration_structure);
-			}
-
-			self.visibility_info.instance_count += mesh_data.primitives.len() as u32;
-
-			assert!((self.visibility_info.meshlet_count as usize) < MAX_MESHLETS, "Meshlet count exceeded");
-			assert!((self.visibility_info.instance_count as usize) < MAX_INSTANCES, "Instance count exceeded");
-			assert!((self.visibility_info.vertex_count as usize) < MAX_VERTICES, "Vertex count exceeded");
-			assert!((self.visibility_info.vertex_count as usize) < MAX_PRIMITIVE_TRIANGLES, "Primitive triangle count exceeded");
-			assert!((self.visibility_info.triangle_count as usize) < MAX_TRIANGLES, "Triangle count exceeded");
-		}
-
-		let Some(camera_handle) = &self.camera else { return None; };
-
-		{
-			let lights_data_slice = device.get_mut_buffer_slice(self.light_data_buffer);
-
-			for (index, l) in self.lights.iter().enumerate() {
-				let light_entry = &mut lights_data_slice.lights[index];
-
-				if let Some(d) = l.downcast::<DirectionalLight>() {
-					let light = d.read();
-
-					light_entry.light_type = 'D' as u8;
-					light_entry.cascades = [1; 8]; // Point to next view, this is a cheat
-					light_entry.position = light.direction;
-					light_entry.color = light.color;
-				}
-
-				if let Some(p) = l.downcast::<PointLight>() {
-					let light = p.read();
-
-					light_entry.light_type = 'P' as u8;
-					light_entry.position = light.position;
-					light_entry.color = light.color;
-				}
-			}
-		}
-
-		let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle);
-
-		let view = camera_handle.map(|camera| { let camera = camera.read(); make_perspective_view_from_camera(&camera, extent) });
-
-		let fov = view.fov();
-
-		let camera = ShaderViewData {
-			view: view.view(),
-			projection: view.projection(),
-			view_projection: view.view_projection(),
-			inverse_view: math::inverse(view.view()),
-			inverse_projection: math::inverse(view.projection_view()),
-			inverse_view_projection: math::inverse(view.projection_view()),
-			fov,
-			near: view.near(), far: view.far(),
-		};
-
-		views_data_buffer[0] = camera;
-
-		{
-			let meshes_data_slice = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
-
-			for (index, (m, smd)) in self.render_entities.iter().enumerate() {
-				let mesh = m.write();
-				meshes_data_slice[index] = *smd;
-				meshes_data_slice[index].model = mesh.transform().get_matrix();
-			}
-		}
-
-		let visibility_pass = self.visibility_pass.prepare(self.visibility_info, &self.render_info.instances, self.primitive_index, self.instance_id, self.depth_target);
-		let material_count_pass = self.material_count_pass.prepare();
-		let material_offset_pass = self.material_offset_pass.prepare();
-		let pixel_mapping_pass = self.pixel_mapping_pass.prepare();
-
-		let pipeline_layout_handle = self.pipeline_layout_handle;
-		let descriptor_set = self.descriptor_set;
-		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
-		let material_evaluation_descriptor_set = self.material_evaluation_descriptor_set;
-		let material_evaluation_pipeline_layout = self.material_evaluation_pipeline_layout;
-		let material_evaluation_dispatches = self.material_offset_pass.material_evaluation_dispatches;
-
-		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
-		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
-
-		Some(Box::new(move |c, viewport, t| {
-			c.start_region("Visibility Render Model");
-
-			let extent = viewport.extent();
-
-			visibility_pass(c, viewport, t);
-			material_count_pass(c, viewport, t);
-			material_offset_pass(c, viewport, t);
-			pixel_mapping_pass(c, viewport, t);
-
-			c.end_region();
-
-			c.clear_images(&[(diffuse, ghi::ClearValue::Color(RGBA::black())), (specular, ghi::ClearValue::Color(RGBA::black()))]);
-
-			let c = c.bind_pipeline_layout(pipeline_layout_handle);
-
-			c.bind_descriptor_sets(&[descriptor_set]);
-
-			c.start_region("Material Evaluation");
-
-			c.start_region("Opaque");
-
-			let c = c.bind_pipeline_layout(material_evaluation_pipeline_layout);
-
-			c.write_push_constant(0, 0); // Set view index to 0 (camera)
-
-			for (name, index, pipeline) in &opaque_materials {
-				c.start_region(&format!("Material: {}", name));
-				// No need for sync here, as each thread across all invocations will write to a different pixel
-				c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
-				c.write_push_constant(4, *index); // Set material index
-				let c = c.bind_compute_pipeline(*pipeline);
-				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
-				c.end_region();
-			}
-
-			c.end_region();
-
-			c.start_region("Transparent");
-
-			for (name, index, pipeline) in &transparent_materials { // TODO: sort by distance to camera
-				c.start_region(&format!("Material: {}", name));
-				// No need for sync here, as each thread across all invocations will write to a different pixel
-				c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
-				c.write_push_constant(4, *index); // Set material index
-				let c = c.bind_compute_pipeline(*pipeline);
-				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
-				c.end_region();
-			}
-
-			c.end_region();
-
-			c.end_region();
-		}))
 	}
 }
 
 struct VisibilityRenderPassView {
+	render_pass: VisibilityPass,
 	descriptor_set: ghi::DescriptorSetHandle,
 }
 
 impl VisibilityRenderPassView {
-	fn new(descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		Self { descriptor_set }
+	fn new(render_pass: &VisibilityPass) -> Self {
+		Self {
+			render_pass: render_pass.clone(),
+		}
 	}
 }
 
 impl RenderPassView for VisibilityRenderPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand> {
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 
-		Some(Box::new(move |c, viewport, t| {
-			c.start_region("Visibility Render Model");
+		let extent = viewport.extent();
 
-			let extent = viewport.extent();
+		Some(Box::new(move |c, t| {
+			c.start_region("Visibility Render Model");
 
 			visibility_pass(c, viewport, t);
 			material_count_pass(c, viewport, t);
@@ -1252,6 +1078,7 @@ impl WorldRenderDomain for VisibilityWorldRenderDomain {
 	}
 }
 
+#[derive(Clone)]
 struct VisibilityPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
@@ -1305,17 +1132,17 @@ impl VisibilityPass {
 		}
 	}
 
-	pub fn prepare(&self, visibility_info: VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> RenderPassCommand {
+	pub fn prepare(&self, visibility_info: VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> RenderPassViewCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.visibility_pass_pipeline;
 
 		let instances = instances.iter().map(|e| *e).collect::<Vec<_>>();
 
-		Box::new(move |c, viewport, t| {
-			c.start_region("Visibility Buffer");
+		let extent = viewport.extent();
 
-			let extent = viewport.extent();
+		Box::new(move |c, t| {
+			c.start_region("Visibility Buffer");
 
 			let c = c.start_render_pass(extent, t);
 
@@ -1370,14 +1197,14 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn prepare(&self) -> RenderPassCommand {
+	fn prepare(&self) -> RenderPassViewCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.pipeline;
 		let material_count_buffer = self.material_count_buffer;
 
-		Box::new(move |command_buffer_recording, viewport, _| {
+		Box::new(move |command_buffer_recording, _| {
 			command_buffer_recording.start_region("Material Count");
 
 			command_buffer_recording.clear_buffers(&[material_count_buffer.into()]);
@@ -1437,7 +1264,7 @@ impl MaterialOffsetPass {
 		}
 	}
 
-	fn prepare(&self) -> RenderPassCommand {
+	fn prepare(&self) -> RenderPassViewCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
@@ -1446,7 +1273,7 @@ impl MaterialOffsetPass {
 		let material_offset_scratch_buffer = self.material_offset_scratch_buffer;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 
-		Box::new(move |command_buffer_recording, viewport, _| {
+		Box::new(move |command_buffer_recording, _| {
 			command_buffer_recording.start_region("Material Offset");
 
 			command_buffer_recording.clear_buffers(&[material_offset_buffer.into(), material_offset_scratch_buffer.into(), material_evaluation_dispatches.into()]);
@@ -1502,14 +1329,14 @@ impl PixelMappingPass {
 		}
 	}
 
-	fn prepare(&self) -> RenderPassCommand {
+	fn prepare(&self) -> RenderPassViewCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
 		let material_xy = self.material_xy;
 
-		Box::new(move |command_buffer_recording, viewport, _| {
+		Box::new(move |command_buffer_recording, _| {
 			command_buffer_recording.start_region("Pixel Mapping");
 
 			command_buffer_recording.clear_buffers(&[material_xy.into(),]);

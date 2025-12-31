@@ -9,7 +9,7 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 use crate::{
 	application::parameters::Parameters, core::{
 		Entity, EntityHandle, entity::EntityBuilder, listener::{CreateEvent, Listener}
-	}, gameplay::space::Spawner, rendering::{View, Viewport, render_pass::RenderPassCommand, window::Window}
+	}, gameplay::space::Spawner, rendering::{View, Viewport, render_pass::{FramePrepare, RenderPassViewCommand}, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -184,7 +184,7 @@ impl Renderer {
 
 		let render_passes = self.render_passes.iter().map(|render_pass| {
 			let render_pass = render_pass.read();
-			let execute = render_pass.prepare(&mut frame);
+			let execute = render_pass.prepare(&mut frame, FramePrepare::new());
 			execute
 		});
 
@@ -193,7 +193,7 @@ impl Renderer {
 				continue;
 			};
 
-			let viewport = Viewport::new(*view, extent);
+			let viewport = Viewport::new(*view, extent, *index);
 
 			// We assume every view renders the same set of render passes
 			for render_pass in render_passes.clone() {
@@ -376,8 +376,8 @@ impl RootRenderPass {
 }
 
 impl RenderPass for RootRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
-		None
+	fn create_view(&self) {
+		todo!()
 	}
 }
 

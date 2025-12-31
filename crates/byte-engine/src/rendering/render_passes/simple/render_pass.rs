@@ -9,7 +9,7 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{RenderPassCommand, RenderPassBuilder}, renderable::mesh::MeshSource, simple::SimpleRenderPass, utils::{MeshBuffersStats, MeshStats}, view::View}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{FramePrepare, RenderPassBuilder, RenderPassViewCommand}, renderable::mesh::MeshSource, simple::SimpleRenderPass, utils::{MeshBuffersStats, MeshStats}, view::View}};
 
 pub struct RenderPass {
 	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
@@ -165,7 +165,11 @@ impl Listener<CreateEvent<dyn RenderableMesh>> for RenderPass {
 }
 
 impl crate::rendering::RenderPass for RenderPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
+	fn create_view(&self) {
+
+	}
+
+	fn prepare(&mut self, frame: &mut ghi::Frame, params: FramePrepare) {
 		{
 			let pending_entities = self.pending_entities.drain(..);
 
@@ -218,12 +222,6 @@ impl crate::rendering::RenderPass for RenderPass {
 			}
 		}
 
-		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(self.camera_data_buffer);
-
-		for (index, viewport) in viewports.iter().enumerate() {
-			camera_data_buffer[index] = CameraShaderData { vp: viewport.view_projection() };
-		}
-
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
@@ -241,8 +239,27 @@ impl crate::rendering::RenderPass for RenderPass {
 		let index_buffer = self.indeces_buffer;
 
 		let instance_batches = instance_batches.iter().into_vec();
+	}
+}
 
-		Some(Box::new(move |c, viewport, t| {
+pub struct RenderPassView {
+	render_pass: RenderPass,
+	descriptor_set: ghi::DescriptorSetHandle,
+}
+
+impl crate::rendering::render_pass::RenderPassView for RenderPassView {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand> {
+		let camera_data_buffer = self.render_pass.camera_data_buffer;
+
+		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
+
+		camera_data_buffer[viewport.index()] = CameraShaderData { vp: viewport.view_projection() };
+
+		let RenderPass { pipeline_layout, pipeline, descriptor_set, vertex_positions_buffer: vertex_buffer, indeces_buffer: index_buffer, .. } = self.render_pass;
+
+		let instance_batches = instance_batches.iter().into_vec();
+
+		Some(Box::new(move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
 			c.bind_index_buffer(&index_buffer.into());
 
@@ -262,10 +279,6 @@ impl crate::rendering::RenderPass for RenderPass {
 			c.end_render_pass();
 		}))
 	}
-}
-
-pub struct RenderPassView {
-	descriptor_set: ghi::DescriptorSetHandle,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use crate::{core::EntityHandle, rendering::{Viewport, render_pass::RenderPassView, view::View}};
+use crate::{core::EntityHandle, rendering::{Viewport, render_pass::{FramePrepare, RenderPassView, RenderPassViewBuilder}, view::View}};
 
 use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _, FrameKey};
 use resource_management::glsl;
@@ -8,8 +8,9 @@ use utils::{Extent, Box};
 
 use crate::core::{Entity, entity::EntityBuilder};
 
-use super::{render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand}, tonemap_render_pass};
+use super::{render_pass::{RenderPass, RenderPassBuilder, RenderPassViewCommand}, tonemap_render_pass};
 
+#[derive(Clone)]
 pub struct AcesToneMapPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
@@ -50,48 +51,48 @@ impl AcesToneMapPass {
 }
 
 impl RenderPass for AcesToneMapPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
-		let pipeline_layout = self.pipeline_layout;
-		let pipeline = self.pipeline;
-		let descriptor_set = self.descriptor_set;
+	fn create_view(&self) {
+		todo!()
+	}
 
-		Some(Box::new(move |c, viewport, _| {
-			let extent = viewport.extent();
-			c.region("Tonemap", |c| {
-				let c = c.bind_pipeline_layout(pipeline_layout);
-				c.bind_descriptor_sets(&[descriptor_set]);
-				let r = c.bind_compute_pipeline(pipeline);
-				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-			});
-		}))
+	fn prepare(&mut self, frame: &mut ghi::Frame, params: FramePrepare) {
+
 	}
 }
 
 struct AcesToneMapPassView {
+	render_pass: AcesToneMapPass,
 	descriptor_set: ghi::DescriptorSetHandle,
 }
 
 impl AcesToneMapPassView {
-	fn new(device: &mut ghi::Device, render_pass: &AcesToneMapPass) -> Self {
+	fn new(render_pass_builder: &mut RenderPassViewBuilder, render_pass: &AcesToneMapPass) -> Self {
+		let read_from_main = render_pass_builder.read_from("main");
+		let render_to_main = render_pass_builder.render_to("result");
+
+		let device = render_pass_builder.device();
+
 		let descriptor_set = device.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
 
 		let source_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
 		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
 
 		AcesToneMapPassView {
+			render_pass: render_pass.clone(),
 			descriptor_set,
 		}
 	}
 }
 
 impl RenderPassView for AcesToneMapPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame) -> Option<RenderPassCommand> {
-		let pipeline_layout = self.pipeline_layout;
-		let pipeline = self.pipeline;
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand> {
+		let pipeline_layout = self.render_pass.pipeline_layout;
+		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;
 
-		Some(Box::new(move |c, viewport, _| {
-			let extent = viewport.extent();
+		let extent = viewport.extent();
+
+		Some(Box::new(move |c, _| {
 			c.region("Tonemap", |c| {
 				let c = c.bind_pipeline_layout(pipeline_layout);
 				c.bind_descriptor_sets(&[descriptor_set]);

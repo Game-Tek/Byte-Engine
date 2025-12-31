@@ -8,12 +8,13 @@ use crate::rendering::view::View;
 pub struct Viewport {
 	view: View,
 	extent: Extent,
+	index: usize,
 }
 
 impl Viewport {
-	pub fn new(view: View, extent: Extent) -> Self {
+	pub fn new(view: View, extent: Extent, index: usize) -> Self {
 		Self {
-			view, extent,
+			view, extent, index,
 		}
 	}
 
@@ -23,5 +24,9 @@ impl Viewport {
 
 	pub fn view_projection(&self) -> Matrix4 {
 		self.view.view_projection()
+	}
+
+	pub fn index(&self) -> usize {
+		self.index
 	}
 }

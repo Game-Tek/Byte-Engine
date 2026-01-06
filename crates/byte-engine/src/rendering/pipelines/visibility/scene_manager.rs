@@ -35,21 +35,20 @@ use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonSha
 use crate::rendering::lights::{DirectionalLight, Light, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
-use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassView, RenderPassViewCommand};
+use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassCommand};
 use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
 use crate::gameplay::Transformable as _;
-use crate::rendering::visibility_model::visibility_shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
+use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{RenderableMesh, Viewport, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain};
-use crate::rendering::world_render_domain::{VisibilityInfo, WorldRenderDomain};
 use crate::{resource_management::{self, }, camera::{self}};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	resource_manager: EntityHandle<ResourceManager>,
 
-	visibility_info: world_render_domain::VisibilityInfo,
+	visibility_info: VisibilityInfo,
 
 	camera: Option<EntityHandle<camera::Camera>>,
 
@@ -885,12 +884,8 @@ impl Entity for VisibilityWorldRenderDomain {
 }
 
 impl RenderPass for VisibilityWorldRenderDomain {
-	fn create_view(&self) {
-		todo!()
-	}
-
-	fn prepare(&mut self, frame: &mut ghi::Frame, params: FramePrepare) {
-
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+		None
 	}
 }
 
@@ -908,7 +903,7 @@ impl VisibilityRenderPassView {
 }
 
 impl RenderPassView for VisibilityRenderPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 
@@ -1061,18 +1056,6 @@ impl WorldRenderDomain for VisibilityWorldRenderDomain {
 		self.descriptor_set
 	}
 
-	fn get_diffuse(&self) -> ghi::ImageHandle {
-		self.diffuse
-	}
-
-	fn get_view_depth_image(&self) -> ghi::ImageHandle {
-		self.depth_target
-	}
-
-	fn get_view_occlusion_image(&self) -> ghi::ImageHandle {
-		self.occlusion_map
-	}
-
 	fn get_visibility_info(&self) -> VisibilityInfo {
 		self.visibility_info
 	}
@@ -1132,7 +1115,7 @@ impl VisibilityPass {
 		}
 	}
 
-	pub fn prepare(&self, visibility_info: VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> RenderPassViewCommand {
+	pub fn prepare(&self, visibility_info: VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> RenderPassCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.visibility_pass_pipeline;
@@ -1197,19 +1180,19 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn prepare(&self) -> RenderPassViewCommand {
+	fn prepare(&self, frame: &ghi::Frame, viewport: &Viewport) -> RenderPassCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.pipeline;
 		let material_count_buffer = self.material_count_buffer;
 
+		let extent = viewport.extent();
+
 		Box::new(move |command_buffer_recording, _| {
 			command_buffer_recording.start_region("Material Count");
 
 			command_buffer_recording.clear_buffers(&[material_count_buffer.into()]);
-
-			let extent = viewport.extent();
 
 			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
@@ -1264,7 +1247,7 @@ impl MaterialOffsetPass {
 		}
 	}
 
-	fn prepare(&self) -> RenderPassViewCommand {
+	fn prepare(&self) -> RenderPassCommand {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
@@ -1329,30 +1312,32 @@ impl PixelMappingPass {
 		}
 	}
 
-	fn prepare(&self) -> RenderPassViewCommand {
+	fn resize(&self, extent: Extent, ghi: &mut ghi::Device) {
+		ghi.resize_buffer(self.material_xy.into(), (extent.width() * extent.height() * 4) as usize);
+	}
+}
+
+impl RenderPass for PixelMappingPass {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
 		let material_xy = self.material_xy;
 
-		Box::new(move |command_buffer_recording, _| {
+		let extent = viewport.extent();
+
+		Some(Box::new(move |command_buffer_recording, _| {
 			command_buffer_recording.start_region("Pixel Mapping");
 
 			command_buffer_recording.clear_buffers(&[material_xy.into(),]);
-
-			let extent = viewport.extent();
 
 			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
 			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 			command_buffer_recording.end_region();
-		})
-	}
-
-	fn resize(&self, extent: Extent, ghi: &mut ghi::Device) {
-		ghi.resize_buffer(self.material_xy.into(), (extent.width() * extent.height() * 4) as usize);
+		}))
 	}
 }
 
@@ -1610,4 +1595,21 @@ struct RenderInfo {
 struct Image {
 	/// This is the index of the image in the descriptor set.
 	index: u32,
+}
+
+use crate::ghi;
+
+#[derive(Clone, Copy)]
+pub struct VisibilityInfo {
+	pub instance_count: u32,
+	pub triangle_count: u32,
+	pub meshlet_count: u32,
+	pub vertex_count: u32,
+	pub primitives_count: u32,
+}
+
+pub trait WorldRenderDomain {
+	fn get_descriptor_set_template(&self) -> ghi::DescriptorSetTemplateHandle;
+	fn get_descriptor_set(&self) -> ghi::DescriptorSetHandle;
+	fn get_visibility_info(&self) -> VisibilityInfo;
 }

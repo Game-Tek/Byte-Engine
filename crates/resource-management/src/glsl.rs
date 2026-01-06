@@ -27,6 +27,20 @@ pub fn compile<'a>(source_code: &'a str, shader_name: &str) -> Result<CompiledSh
 	}
 }
 
+impl <'a> std::ops::Deref for CompiledShader {
+	type Target = shaderc::CompilationArtifact;
+
+	fn deref(&self) -> &Self::Target {
+		&self.artifact
+	}
+}
+
+impl <'a> AsRef<[u8]> for CompiledShader {
+	fn as_ref(&self) -> &[u8] {
+		self.artifact.as_binary_u8()
+	}
+}
+
 impl <'a> Into<&'a [u8]> for &'a CompiledShader {
 	fn into(self) -> &'a [u8] {
 		self.artifact.as_binary_u8()

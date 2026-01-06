@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use crate::{core::EntityHandle, rendering::{Viewport, render_pass::{FramePrepare, RenderPassView, RenderPassViewBuilder}, view::View}};
+use crate::{core::EntityHandle, rendering::{Viewport, render_pass::{FramePrepare, RenderPassViewBuilder}, view::View}};
 
 use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _, FrameKey};
 use resource_management::glsl;
@@ -8,10 +8,10 @@ use utils::{Extent, Box};
 
 use crate::core::{Entity, entity::EntityBuilder};
 
-use super::{render_pass::{RenderPass, RenderPassBuilder, RenderPassViewCommand}, tonemap_render_pass};
+use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand};
 
 #[derive(Clone)]
-pub struct AcesToneMapPass {
+pub struct BaseAcesToneMapPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
@@ -20,9 +20,9 @@ pub struct AcesToneMapPass {
 const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
-impl Entity for AcesToneMapPass {}
+impl Entity for BaseAcesToneMapPass {}
 
-impl AcesToneMapPass {
+impl BaseAcesToneMapPass {
 	pub fn create<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> EntityBuilder<'static, Self> where Self: Sized {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to("result");
@@ -42,7 +42,7 @@ impl AcesToneMapPass {
 
 		let tone_mapping_pipeline = device.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
 
-		AcesToneMapPass {
+		BaseAcesToneMapPass {
 			descriptor_set_layout,
 			pipeline_layout,
 			pipeline: tone_mapping_pipeline,
@@ -50,23 +50,13 @@ impl AcesToneMapPass {
 	}
 }
 
-impl RenderPass for AcesToneMapPass {
-	fn create_view(&self) {
-		todo!()
-	}
-
-	fn prepare(&mut self, frame: &mut ghi::Frame, params: FramePrepare) {
-
-	}
-}
-
-struct AcesToneMapPassView {
-	render_pass: AcesToneMapPass,
+pub struct AcesToneMapPass {
+	render_pass: BaseAcesToneMapPass,
 	descriptor_set: ghi::DescriptorSetHandle,
 }
 
-impl AcesToneMapPassView {
-	fn new(render_pass_builder: &mut RenderPassViewBuilder, render_pass: &AcesToneMapPass) -> Self {
+impl AcesToneMapPass {
+	fn new(render_pass_builder: &mut RenderPassViewBuilder, render_pass: &BaseAcesToneMapPass) -> Self {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to("result");
 
@@ -77,15 +67,15 @@ impl AcesToneMapPassView {
 		let source_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
 		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
 
-		AcesToneMapPassView {
+		AcesToneMapPass {
 			render_pass: render_pass.clone(),
 			descriptor_set,
 		}
 	}
 }
 
-impl RenderPassView for AcesToneMapPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand> {
+impl RenderPass for AcesToneMapPass {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
 		let pipeline_layout = self.render_pass.pipeline_layout;
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;

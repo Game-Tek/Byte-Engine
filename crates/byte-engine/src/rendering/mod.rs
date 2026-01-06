@@ -13,10 +13,8 @@ pub mod renderable;
 
 pub mod cct;
 
-pub mod rendering_domain;
+pub mod scene_manager;
 pub mod world_render_domain;
-
-pub mod visibility_model;
 
 pub mod renderer;
 pub mod texture_manager;
@@ -25,10 +23,9 @@ pub mod render_pass;
 pub mod render_passes;
 pub mod framebuffer;
 
-pub mod tonemap_render_pass;
-
-pub mod aces_tonemap_render_pass;
 pub mod pipeline_manager;
+
+pub mod pipelines;
 
 pub mod view;
 pub mod viewport;

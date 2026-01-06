@@ -1,42 +1,23 @@
 use ghi::command_buffer::{CommandBufferRecordable as _, CommonCommandBufferMode as _};
 use utils::{Box};
-use crate::rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassView, RenderPassViewCommand}};
+use crate::rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassCommand}};
 
-pub struct BlitPass {
-}
-
-impl BlitPass {
-	pub fn new() -> Self {
-		BlitPass {
-		}
-	}
-}
-
-impl RenderPass for BlitPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, _params: FramePrepare) {
-	}
-
-	fn create_view(&self) {
-		todo!()
-	}
-}
-
-struct BlitPassView {
+struct BlitPass {
 	source: ghi::ImageHandle,
 	destination: ghi::ImageHandle,
 }
 
-impl BlitPassView {
+impl BlitPass {
 	pub fn new(source_image: ghi::ImageHandle, destination_image: ghi::ImageHandle) -> Self {
-		BlitPassView {
+		BlitPass {
 			source: source_image,
 			destination: destination_image,
 		}
 	}
 }
 
-impl RenderPassView for BlitPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand> {
+impl RenderPass for BlitPass {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
 		let source = self.source;
 		let destination = self.destination;
 

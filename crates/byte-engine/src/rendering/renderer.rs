@@ -9,7 +9,7 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 use crate::{
 	application::parameters::Parameters, core::{
 		Entity, EntityHandle, entity::EntityBuilder, listener::{CreateEvent, Listener}
-	}, gameplay::space::Spawner, rendering::{View, Viewport, render_pass::{FramePrepare, RenderPassViewCommand}, window::Window}
+	}, gameplay::space::Spawner, rendering::{View, Viewport, render_pass::{FramePrepare, RenderPassCommand}, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -43,7 +43,7 @@ impl Renderer {
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics device. Defaults to true.
-	pub fn new(spawner: &mut impl Spawner, resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
+	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
 		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
@@ -94,12 +94,12 @@ impl Renderer {
 
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
-		let root_render_pass = RootRenderPass::new();
-		let root_render_pass: EntityHandle<dyn RenderPass> = spawner.spawn(root_render_pass.builder());
+		// let root_render_pass = RootRenderPass::new();
+		// let root_render_pass: EntityHandle<dyn RenderPass> = spawner.spawn(root_render_pass.builder());
 
 		let mut render_passes = Vec::with_capacity(64);
 
-		render_passes.push(root_render_pass);
+		// render_passes.push(root_render_pass);
 
 		Renderer {
 			instance,
@@ -331,18 +331,18 @@ impl RootRenderPass {
 	fn prepare(&self, frame: &mut ghi::Frame, extent: Extent, present_key: ghi::PresentKey, swapchain_handle: ghi::SwapchainHandle) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
 		let result = self.get_target("result");
 
-		let commands = self.order.iter().map(|index| {
+		let attachments = self.order.iter().map(|index| {
 			let (render_pass, consumed) = &self.render_passes[*index];
 			let attachments = consumed.iter().map(|c| {
 				let (image, format, layout) = self.images.get(c).unwrap();
 				ghi::AttachmentInformation::new(*image, *format, *layout, ghi::ClearValue::Color(RGBA::black()), false, true)
 			}).collect::<Vec<_>>();
 
-			let command = render_pass.get_mut(|e| {
-				e.prepare(frame)
+			render_pass.get_mut(|e| {
+				e.prepare(frame, FramePrepare::new())
 			});
 
-			(attachments, command)
+			attachments
 		}).collect::<Vec<_>>();
 
 		move |c: &mut ghi::CommandBufferRecording<'_>| {
@@ -350,7 +350,7 @@ impl RootRenderPass {
 				return;
 			};
 
-			for (attachments, command) in commands {
+			for attachments in attachments {
 				if let Some(command) = command {
 					command(c);
 				}
@@ -372,12 +372,6 @@ impl RootRenderPass {
 
 	fn get_target(&self, name: &str) -> Option<ghi::ImageHandle> {
 		self.images.get(name).map(|(image, _, _)| *image)
-	}
-}
-
-impl RenderPass for RootRenderPass {
-	fn create_view(&self) {
-		todo!()
 	}
 }
 

@@ -8,26 +8,13 @@ use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 
 /// The type of a boxed function object that writes a render pass to a command buffer
-pub type RenderPassViewCommand = Box<dyn Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]) + Send + Sync>;
+pub type RenderPassCommand = Box<dyn Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]) + Send + Sync>;
 
 /// A `RenderPass` represents the definition of a rendering step.
-/// It might own resources that are used during the rendering process, but independent of a particular view/viewport.
+/// It might own resources that are used during the rendering process.
 pub trait RenderPass {
 	/// Evaluates rendering condition and potentially prepares the render pass.
-	fn prepare(&mut self, frame: &mut ghi::Frame, params: FramePrepare);
-
-	/// Creates a view of the render pass.
-	fn create_view(&self);
-}
-
-/// A `RenderPassView` represents a concrete view of a render pass.
-/// It might own resources that are used during the rendering process, but tied to a particular view/viewport.
-pub trait RenderPassView {
-	/// Evaluates rendering condition and potentially prepares the render pass.
-	///
-	/// If the render pass is not needed, it returns `None`.
-	/// If it is needed, it may execute setup code and return a `RenderPassRecordCommand` that can be used to effectively record the render pass.
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassViewCommand>;
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand>;
 }
 
 pub struct RenderPassBuilder<'a> {

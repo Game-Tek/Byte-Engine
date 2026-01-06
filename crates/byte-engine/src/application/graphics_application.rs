@@ -1,4 +1,4 @@
-use crate::{application::parameters::Parameters, core::{domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task, Entity, EntityHandle}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{http::HttpInspectorServer, Inspector}, rendering::{aces_tonemap_render_pass::AcesToneMapPass, render_pass::RenderPass, renderer, simple::SimpleRenderModel, texture_manager::TextureManager, visibility_model::render_domain::VisibilityWorldRenderDomain}};
+use crate::{application::parameters::Parameters, core::{Entity, EntityHandle, domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, rendering::{render_passes::aces::AcesToneMapPass, render_pass::RenderPass, render_passes::simple::SimpleRenderPass, renderer, texture_manager::TextureManager, pipelines::visibility::VisibilityWorldRenderDomain}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -6,7 +6,7 @@ use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handl
 use tracing::{debug_span, instrument, span, Level};
 use utils::{sync::RwLock, Extent};
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, visibility_model::visibility_shader_generator::VisibilityShaderGenerator}};
+use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, pipelines::visibility::shader_generator::VisibilityShaderGenerator}};
 
 use super::{application::{Application, BaseApplication}, Parameter, Time, Events};
 
@@ -69,7 +69,7 @@ impl Application for GraphicsApplication {
 		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
 
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
-		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(root_space_handle.write(), resource_manager.clone(), &application).builder());
+		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), &application).builder());
 		let audio_system_handle = root_space_handle.try_spawn(DefaultAudioSystem::new_as_system(resource_manager.clone())).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn().ok();
 		let physics_system_handle = root_space_handle.spawn(physics::dynabit::World::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
@@ -419,7 +419,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 	renderer.add_render_pass(|c| {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		application.root_space_handle.spawn(SimpleRenderModel::new(c).builder())
+		application.root_space_handle.spawn(SimpleRenderPass::new(c).builder())
 	});
 
 	renderer.add_render_pass(|c| {

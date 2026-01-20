@@ -7,14 +7,16 @@ use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMod
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 
+pub trait RenderPassFunction = Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]);
+
 /// The type of a boxed function object that writes a render pass to a command buffer
-pub type RenderPassCommand = Box<dyn Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]) + Send + Sync>;
+pub type RenderPassReturn = Box<dyn RenderPassFunction + Send + Sync>;
 
 /// A `RenderPass` represents the definition of a rendering step.
 /// It might own resources that are used during the rendering process.
 pub trait RenderPass {
 	/// Evaluates rendering condition and potentially prepares the render pass.
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand>;
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn>;
 }
 
 pub struct RenderPassBuilder<'a> {

@@ -35,8 +35,11 @@ use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonSha
 use crate::rendering::lights::{DirectionalLight, Light, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
-use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassCommand};
+use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
+use crate::rendering::pipelines::visibility::{INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING};
+use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
+use crate::rendering::scene_manager::{SceneManager};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
 use crate::gameplay::Transformable as _;
@@ -47,126 +50,82 @@ use crate::{resource_management::{self, }, camera::{self}};
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	resource_manager: EntityHandle<ResourceManager>,
-
+	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
-
-	camera: Option<EntityHandle<camera::Camera>>,
-
+	/// Render entities that will be rendered in the scene.
 	render_entities: Vec<(EntityHandle<dyn RenderableMesh>, ShaderMesh)>,
-
+	/// Loaded mesh resources.
 	meshes: Vec<MeshData>,
+	/// Mapping from resource ID to mesh index.
 	meshes_by_resource: HashMap<String, usize>,
+	/// Loaded images.
 	images: RwLock<HashMap<String, Image>>,
-
+	/// Texture manager.
 	texture_manager: Arc<RwLock<TextureManager>>,
+	/// Pipeline manager.
 	pipeline_manager: PipelineManager,
-
+	/// Mapping from mesh resource ID to mesh index.
 	mesh_resources: HashMap<String, u32>,
-
+	/// Material evaluation materials.
 	material_evaluation_materials: RwLock<HashMap<String, Arc<OnceLock<RenderDescription>>>>,
-
-	occlusion_map: ghi::ImageHandle,
-
-	// Visibility
-
-	pipeline_layout_handle: ghi::PipelineLayoutHandle,
-
+	/// Base pipeline layout handle.
+	base_pipeline_layout: ghi::PipelineLayoutHandle,
+	/// Vertex positions buffer for rendered meshes.
 	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
+	/// Vertex normals buffer for rendered meshes.
 	vertex_normals_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
+	/// Vertex UVs buffer for rendered meshes.
 	vertex_uvs_buffer: ghi::BufferHandle<[(f32, f32); MAX_VERTICES]>,
-
 	/// Indices laid out as indices into the vertex buffers
 	vertex_indices_buffer: ghi::BufferHandle<[u16; MAX_PRIMITIVE_TRIANGLES]>,
 	/// Indices laid out as indices into the `vertex_indices_buffer`
 	primitive_indices_buffer: ghi::BufferHandle<[[u8; 3]; MAX_TRIANGLES]>,
-
+	/// Views data buffer.
 	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
+	///  Materials data buffer.
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
-
+	/// Base descriptor set layout.
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
-
 	textures_binding: ghi::DescriptorSetBindingHandle,
-
+	/// Handle to the buffer where each instance's data is stored.
 	meshes_data_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
+	/// Handle to the buffer where each meshlet's data is stored.
 	meshlets_data_buffer: ghi::BufferHandle<[ShaderMeshletData; MAX_MESHLETS]>,
-
+	/// Pipeline layout for the visibility pass.
 	visibility_pass_pipeline_layout: ghi::PipelineLayoutHandle,
+	/// Descriptor set for the visibility pass.
 	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
-
 	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	material_evaluation_pipeline_layout: ghi::PipelineLayoutHandle,
-
+	/// Buffer containing lighting data.
 	light_data_buffer: ghi::BufferHandle<LightingData>,
-
-	visibility_pass: VisibilityPass,
-	material_count_pass: MaterialCountPass,
-	material_offset_pass: MaterialOffsetPass,
-	pixel_mapping_pass: PixelMappingPass,
-
-	shadow_map_binding: ghi::DescriptorSetBindingHandle,
-
+	/// Lights in the scene.
 	lights: Vec<EntityHandle<dyn Light>>,
-
+	/// Information about the current render.
 	render_info: RenderInfo,
-
+	/// Queue of render entities pending to be processed.
 	pending_render_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
+	/// Views
+	views: Vec<(usize, VisibilityPipelineRenderPass)>,
 }
 
-/* BASE */
-/// Binding to access the views which may be used to render the scene.
-pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::RAYGEN).union(ghi::Stages::COMPUTE));
-pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE));
-pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(8, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16);
-
-/* Visibility */
-pub const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-
-/* Material Evaluation */
-pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const CAMERA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const OUT_SPECULAR: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const MATERIALS: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-
 impl VisibilityWorldRenderDomain {
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
+	pub fn new(device: &mut ghi::Device, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
-		let diffuse_target = render_pass_builder.create_render_target(ghi::image::Builder::new(extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Diffuse"));
-		let specular_target = render_pass_builder.create_render_target(ghi::image::Builder::new(extent, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Specular"));
-		let depth_target = render_pass_builder.create_render_target(ghi::image::Builder::new(extent, ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"));
-		let primitive_index = render_pass_builder.create_render_target(ghi::image::Builder::new(extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"));
-		let instance_id = render_pass_builder.create_render_target(ghi::image::Builder::new(extent, ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"));
+		let vertex_positions_buffer_handle = device.create_buffer(Some("Visibility Vertex Positions Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let vertex_normals_buffer_handle = device.create_buffer(Some("Visibility Vertex Normals Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let vertex_uv_buffer_handle = device.create_buffer(Some("Visibility Vertex UV Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let vertex_indices_buffer_handle = device.create_buffer(Some("Visibility Index Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let primitive_indices_buffer_handle = device.create_buffer(Some("Visibility Primitive Indices Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let meshlets_data_buffer = device.create_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(Some("Visibility Meshlets Data"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
 
-		let device = render_pass_builder.device();
+		let views_data_buffer_handle = device.create_dynamic_buffer::<[ShaderViewData; 8]>(Some("Visibility Views Data"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
 
-		let vertex_positions_buffer_handle = device.create_buffer(Some("Visibility Vertex Positions Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-		let vertex_normals_buffer_handle = device.create_buffer(Some("Visibility Vertex Normals Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-		let vertex_uv_buffer_handle = device.create_buffer(Some("Visibility Vertex UV Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-		let vertex_indices_buffer_handle = device.create_buffer(Some("Visibility Index Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-		let primitive_indices_buffer_handle = device.create_buffer(Some("Visibility Primitive Indices Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-		let meshlets_data_buffer = device.create_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(Some("Visibility Meshlets Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-
-		let views_data_buffer_handle = device.create_dynamic_buffer::<[ShaderViewData; 8]>(Some("Visibility Views Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
-
-		let meshes_data_buffer = device.create_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(Some("Visibility Meshes Data"), ghi::Uses::Storage, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
+		let meshes_data_buffer = device.create_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(Some("Visibility Meshes Data"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
 
 		let bindings = [
 			VIEWS_DATA_BINDING,
@@ -213,32 +172,13 @@ impl VisibilityWorldRenderDomain {
 		let visibility_pass_pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout], &[]);
 		let visibility_passes_descriptor_set = device.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout);
 
-		let diffuse_target: ghi::ImageHandle = diffuse_target.into();
-		let specular_target: ghi::ImageHandle = specular_target.into();
-		let depth_target: ghi::ImageHandle = depth_target.into();
-		let primitive_index: ghi::ImageHandle = primitive_index.into();
-		let instance_id: ghi::ImageHandle = instance_id.into();
-
-		let visibility_pass = VisibilityPass::new(device, pipeline_layout_handle, descriptor_set, primitive_index, instance_id, depth_target);
-		let material_count_pass = MaterialCountPass::new(device, visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set, &visibility_pass);
-		let material_offset_pass = MaterialOffsetPass::new(device, visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set);
-		let pixel_mapping_pass = PixelMappingPass::new(device, visibility_pass_pipeline_layout, descriptor_set, visibility_passes_descriptor_set,);
-
-		let material_count_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_pass.get_material_count_buffer()));
-		let material_offset_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_BINDING, material_offset_pass.get_material_offset_buffer()));
-		let material_offset_scratch_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_pass.get_material_offset_scratch_buffer()));
-		let material_evaluation_dispatches_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_EVALUATION_DISPATCHES_BINDING, material_offset_pass.material_evaluation_dispatches.into()));
-		let material_xy_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_XY_BINDING, pixel_mapping_pass.material_xy.into()));
-		let vertex_id_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index, ghi::Layouts::General));
-		let instance_id_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id, ghi::Layouts::General));
-
-		let light_data_buffer = device.create_buffer::<LightingData>(Some("Light Data"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead);
+		let light_data_buffer = device.create_buffer::<LightingData>(Some("Light Data"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::HostToDevice);
 
 		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
 
 		lighting_data.count = 0; // Initially, no lights
 
-		let materials_data_buffer_handle = device.create_buffer::<[MaterialData; MAX_MATERIALS]>(Some("Materials Data"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead,);
+		let materials_data_buffer_handle = device.create_buffer::<[MaterialData; MAX_MATERIALS]>(Some("Materials Data"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::HostToDevice);
 
 		let bindings = [
 			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
@@ -253,35 +193,18 @@ impl VisibilityWorldRenderDomain {
 
 		let sampler = device.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
 		let depth_sampler = device.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
-		let occlusion_map = device.create_image(Some("Occlusion Map"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, None);
-		let shadow_map = device.create_image(Some("Shadow Map"), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::DYNAMIC, NonZeroU32::new(1));
 
 		let material_evaluation_descriptor_set_layout = device.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 		let material_evaluation_descriptor_set = device.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
 
-		let diffuse_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::image(&bindings[0], diffuse_target, ghi::Layouts::General));
-		let camera_data_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[1], views_data_buffer_handle.into()));
-		let specular_target_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::image(&bindings[2], specular_target, ghi::Layouts::General));
-		let light_data_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], light_data_buffer.into()));
-		let materials_data_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], materials_data_buffer_handle.into()));
-		let occlussion_texture_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[6], occlusion_map, sampler, ghi::Layouts::Read));
-		let shadow_map_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], shadow_map, depth_sampler, ghi::Layouts::Read));
-
-		let material_evaluation_pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange{ offset: 0, size: 4 + 4 }]);
+		let material_evaluation_pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4 + 4)]);
 
 		Self {
 			render_entities: Vec::with_capacity(512),
 
 			resource_manager: resource_manager_handle,
 
-			visibility_info:  VisibilityInfo{ triangle_count: 0, instance_count: 0, meshlet_count:0, vertex_count:0, primitives_count: 0, },
-
-			visibility_pass,
-			material_count_pass,
-			material_offset_pass,
-			pixel_mapping_pass,
-
-			camera: None,
+			visibility_info:  VisibilityInfo::default(),
 
 			meshes: Vec::with_capacity(1024),
 			meshes_by_resource: HashMap::with_capacity(1024),
@@ -295,11 +218,9 @@ impl VisibilityWorldRenderDomain {
 
 			material_evaluation_materials: RwLock::new(HashMap::new()),
 
-			occlusion_map,
-
 			// Visibility
 
-			pipeline_layout_handle,
+			base_pipeline_layout: pipeline_layout_handle,
 
 			vertex_positions_buffer: vertex_positions_buffer_handle,
 			vertex_normals_buffer: vertex_normals_buffer_handle,
@@ -328,13 +249,13 @@ impl VisibilityWorldRenderDomain {
 			light_data_buffer,
 			materials_data_buffer_handle,
 
-			shadow_map_binding,
-
 			lights: Vec::new(),
 
 			render_info: RenderInfo { instances: Vec::with_capacity(4096) },
 
 			pending_render_entities: VecDeque::with_capacity(64),
+
+			views: Vec::with_capacity(4),
 		}
 	}
 
@@ -867,101 +788,52 @@ impl VisibilityWorldRenderDomain {
 	}
 }
 
-impl Listener<CreateEvent<camera::Camera>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<camera::Camera>) {
-		let handle = event.handle();
-		self.camera = Some(handle.clone());
-	}
-}
-
 impl Entity for VisibilityWorldRenderDomain {
 	fn builder(self) -> EntityBuilder<'static, Self> {
 		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<camera::Camera>>()
 			.listen_to::<CreateEvent<dyn Light>>()
 			.listen_to::<CreateEvent<dyn RenderableMesh>>()
 	}
 }
 
-impl RenderPass for VisibilityWorldRenderDomain {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
-		None
-	}
-}
-
-struct VisibilityRenderPassView {
-	render_pass: VisibilityPass,
-	descriptor_set: ghi::DescriptorSetHandle,
-}
-
-impl VisibilityRenderPassView {
-	fn new(render_pass: &VisibilityPass) -> Self {
-		Self {
-			render_pass: render_pass.clone(),
-		}
-	}
-}
-
-impl RenderPassView for VisibilityRenderPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+impl SceneManager for VisibilityWorldRenderDomain {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 
-		let extent = viewport.extent();
+		let viewport_x_rp = viewports.iter().map(|v| {
+			(v, &self.views[v.index()].1)
+		});
 
-		Some(Box::new(move |c, t| {
-			c.start_region("Visibility Render Model");
+		let commands: Vec<Box<dyn RenderPassFunction>> = viewport_x_rp.map(|(v, r)| Box::new(r.prepare(frame, v, &[])) as Box<dyn RenderPassFunction>).collect::<Vec<_>>();
 
-			visibility_pass(c, viewport, t);
-			material_count_pass(c, viewport, t);
-			material_offset_pass(c, viewport, t);
-			pixel_mapping_pass(c, viewport, t);
-
-			c.end_region();
-
-			c.clear_images(&[(diffuse, ghi::ClearValue::Color(RGBA::black())), (specular, ghi::ClearValue::Color(RGBA::black()))]);
-
-			let c = c.bind_pipeline_layout(pipeline_layout_handle);
-
-			c.bind_descriptor_sets(&[descriptor_set]);
-
-			c.start_region("Material Evaluation");
-
-			c.start_region("Opaque");
-
-			let c = c.bind_pipeline_layout(material_evaluation_pipeline_layout);
-
-			c.write_push_constant(0, 0); // Set view index to 0 (camera)
-
-			for (name, index, pipeline) in &opaque_materials {
-				c.start_region(&format!("Material: {}", name));
-				// No need for sync here, as each thread across all invocations will write to a different pixel
-				c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
-				c.write_push_constant(4, *index); // Set material index
-				let c = c.bind_compute_pipeline(*pipeline);
-				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
-				c.end_region();
-			}
-
-			c.end_region();
-
-			c.start_region("Transparent");
-
-			for (name, index, pipeline) in &transparent_materials { // TODO: sort by distance to camera
-				c.start_region(&format!("Material: {}", name));
-				// No need for sync here, as each thread across all invocations will write to a different pixel
-				c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set, material_evaluation_descriptor_set]);
-				c.write_push_constant(4, *index); // Set material index
-				let c = c.bind_compute_pipeline(*pipeline);
-				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
-				c.end_region();
-			}
-
-			c.end_region();
-
-			c.end_region();
-		}))
+		Some(commands)
 	}
+
+	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
+		let diffuse_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Diffuse"));
+		let specular_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Specular"));
+		let depth_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"));
+		let primitive_index = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"));
+		let instance_id = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"));
+
+        let render_pass = VisibilityPipelineRenderPass::new(
+			render_pass_builder.device(),
+			self.base_pipeline_layout,
+			self.visibility_pass_pipeline_layout,
+			self.material_evaluation_pipeline_layout,
+			self.descriptor_set,
+			self.visibility_passes_descriptor_set,
+			self.material_evaluation_descriptor_set,
+			diffuse_target.into(),
+			specular_target.into(),
+			depth_target.into(),
+			primitive_index.into(),
+			instance_id.into(),
+		);
+
+		self.views.push((id, render_pass));
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -1061,448 +933,6 @@ impl WorldRenderDomain for VisibilityWorldRenderDomain {
 	}
 }
 
-#[derive(Clone)]
-struct VisibilityPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	visibility_pass_pipeline: ghi::PipelineHandle,
-}
-
-impl VisibilityPass {
-	pub fn new(ghi_instance: &mut ghi::Device, pipeline_layout_handle: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> Self {
-		let visibility_shader = get_visibility_pass_mesh_source();
-
-		let visibility_mesh_shader_artifact = glsl::compile(&visibility_shader, "Visibility Mesh Shader").unwrap();
-
-		let visibility_pass_mesh_shader = ghi_instance.create_shader(Some("Visibility Pass Mesh Shader"), ghi::ShaderSource::SPIRV(visibility_mesh_shader_artifact.borrow().into()), ghi::ShaderTypes::Mesh,
-			[
-				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				// ghi::ShaderBindingDescriptor::new(0, 4, ghi::AccessPolicies::READ),
-				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			]
-		).expect("Failed to create shader");
-
-		let visibility_fragment_shader_artifact = glsl::compile(VISIBILITY_PASS_FRAGMENT_SOURCE, "Visibility Fragment Shader").unwrap();
-
-		let visibility_pass_fragment_shader = ghi_instance.create_shader(Some("Visibility Pass Fragment Shader"), ghi::ShaderSource::SPIRV(visibility_fragment_shader_artifact.borrow().into()), ghi::ShaderTypes::Fragment, []).expect("Failed to create shader");
-
-		let visibility_pass_shaders = [
-			ghi::ShaderParameter::new(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh),
-			ghi::ShaderParameter::new(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment),
-		];
-
-		let attachments = [
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,),
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32,),
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32,),
-		];
-
-		let vertex_layout = [
-			ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
-			ghi::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
-		];
-
-		let visibility_pass_pipeline = ghi_instance.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout_handle, &[], &visibility_pass_shaders, &attachments));
-
-		VisibilityPass {
-			pipeline_layout: pipeline_layout_handle,
-			descriptor_set,
-			visibility_pass_pipeline,
-		}
-	}
-
-	pub fn prepare(&self, visibility_info: VisibilityInfo, instances: &[Instance], primitive_index: ghi::ImageHandle, instance_id: ghi::ImageHandle, depth_target: ghi::ImageHandle) -> RenderPassCommand {
-		let pipeline_layout = self.pipeline_layout;
-		let descriptor_set = self.descriptor_set;
-		let pipeline = self.visibility_pass_pipeline;
-
-		let instances = instances.iter().map(|e| *e).collect::<Vec<_>>();
-
-		let extent = viewport.extent();
-
-		Box::new(move |c, t| {
-			c.start_region("Visibility Buffer");
-
-			let c = c.start_render_pass(extent, t);
-
-			let c = c.bind_pipeline_layout(pipeline_layout);
-			c.bind_descriptor_sets(&[descriptor_set]);
-			let c = c.bind_raster_pipeline(pipeline);
-
-			for (i, instance) in instances.iter().enumerate() {
-				c.write_push_constant(0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
-				c.dispatch_meshes(instance.meshlet_count, 1, 1);
-			}
-
-			c.end_render_pass();
-
-			c.end_region();
-		})
-	}
-
-	fn resize(&self, _: Extent) {}
-}
-
-struct MaterialCountPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
-	material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-	pipeline: ghi::PipelineHandle,
-}
-
-impl MaterialCountPass {
-	fn new(ghi_instance: &mut ghi::Device, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle, visibility_pass: &VisibilityPass) -> Self {
-		let material_count_shader_artifact = glsl::compile(&get_material_count_source(), "Material Count Pass Compute Shader").unwrap();
-
-		let material_count_shader = ghi_instance.create_shader(Some("Material Count Pass Compute Shader"), ghi::ShaderSource::SPIRV(material_count_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
-			[
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-				INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-			]
-		).expect("Failed to create shader");
-
-		let material_count_pipeline = ghi_instance.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute));
-
-		let material_count_buffer = ghi_instance.create_buffer(Some("Material Count"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
-
-		MaterialCountPass {
-			pipeline_layout,
-			descriptor_set,
-			material_count_buffer,
-			visibility_pass_descriptor_set,
-			pipeline: material_count_pipeline,
-		}
-	}
-
-	fn prepare(&self, frame: &ghi::Frame, viewport: &Viewport) -> RenderPassCommand {
-		let pipeline_layout = self.pipeline_layout;
-		let descriptor_set = self.descriptor_set;
-		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
-		let pipeline = self.pipeline;
-		let material_count_buffer = self.material_count_buffer;
-
-		let extent = viewport.extent();
-
-		Box::new(move |command_buffer_recording, _| {
-			command_buffer_recording.start_region("Material Count");
-
-			command_buffer_recording.clear_buffers(&[material_count_buffer.into()]);
-
-			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-
-			command_buffer_recording.end_region();
-		})
-	}
-
-	fn get_material_count_buffer(&self) -> ghi::BaseBufferHandle {
-		self.material_count_buffer.into()
-	}
-}
-
-struct MaterialOffsetPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
-	material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-	material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-	material_evaluation_dispatches: ghi::BufferHandle<[(u32, u32, u32); MAX_MATERIALS]>,
-	material_offset_pipeline: ghi::PipelineHandle,
-}
-
-impl MaterialOffsetPass {
-	fn new(ghi_instance: &mut ghi::Device, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_pass_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let material_offset_shader_artifact = glsl::compile(&get_material_offset_source(), "Material Offset Pass Compute Shader").unwrap();
-
-		let material_offset_shader = ghi_instance.create_shader(Some("Material Offset Pass Compute Shader"), ghi::ShaderSource::SPIRV(material_offset_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
-			[
-				MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				MATERIAL_EVALUATION_DISPATCHES_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-			]
-		).expect("Failed to create shader");
-
-		let material_offset_pipeline = ghi_instance.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute,));
-
-		let material_evaluation_dispatches = ghi_instance.create_buffer(Some("Material Evaluation Dipatches"), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
-		let material_offset_buffer = ghi_instance.create_buffer(Some("Material Offset"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
-		let material_offset_scratch_buffer = ghi_instance.create_buffer(Some("Material Offset Scratch"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead);
-
-		MaterialOffsetPass {
-			material_offset_buffer,
-			material_offset_scratch_buffer,
-			material_evaluation_dispatches,
-			pipeline_layout,
-			descriptor_set,
-			visibility_pass_descriptor_set,
-			material_offset_pipeline,
-		}
-	}
-
-	fn prepare(&self) -> RenderPassCommand {
-		let pipeline_layout = self.pipeline_layout;
-		let descriptor_set = self.descriptor_set;
-		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
-		let pipeline = self.material_offset_pipeline;
-		let material_offset_buffer = self.material_offset_buffer;
-		let material_offset_scratch_buffer = self.material_offset_scratch_buffer;
-		let material_evaluation_dispatches = self.material_evaluation_dispatches;
-
-		Box::new(move |command_buffer_recording, _| {
-			command_buffer_recording.start_region("Material Offset");
-
-			command_buffer_recording.clear_buffers(&[material_offset_buffer.into(), material_offset_scratch_buffer.into(), material_evaluation_dispatches.into()]);
-
-			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
-			command_buffer_recording.end_region();
-		})
-	}
-
-	fn get_material_offset_buffer(&self) -> ghi::BaseBufferHandle {
-		self.material_offset_buffer.into()
-	}
-
-	fn get_material_offset_scratch_buffer(&self) -> ghi::BaseBufferHandle {
-		self.material_offset_scratch_buffer.into()
-	}
-}
-
-struct PixelMappingPass {
-	material_xy: ghi::BufferHandle<[(u16, u16); 4096 * 2160]>,
-
-	pipeline_layout: ghi::PipelineLayoutHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
-	pixel_mapping_pipeline: ghi::PipelineHandle,
-}
-
-impl PixelMappingPass {
-	fn new(ghi_instance: &mut ghi::Device, pipeline_layout: ghi::PipelineLayoutHandle, descriptor_set: ghi::DescriptorSetHandle, visibility_passes_descriptor_set: ghi::DescriptorSetHandle) -> Self {
-		let pixel_mapping_shader_artifact = glsl::compile(&get_pixel_mapping_source(), "Pixel Mapping Pass Compute Shader").unwrap();
-
-		let pixel_mapping_shader = ghi_instance.create_shader(Some("Pixel Mapping Pass Compute Shader"), ghi::ShaderSource::SPIRV(pixel_mapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute,
-			[
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-				INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-			]
-		).expect("Failed to create shader");
-
-		let pixel_mapping_pipeline = ghi_instance.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
-
-		let material_xy = ghi_instance.create_buffer(Some("Material XY"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead,);
-
-		PixelMappingPass {
-			material_xy,
-			pipeline_layout,
-			descriptor_set,
-			visibility_passes_descriptor_set,
-			pixel_mapping_pipeline,
-		}
-	}
-
-	fn resize(&self, extent: Extent, ghi: &mut ghi::Device) {
-		ghi.resize_buffer(self.material_xy.into(), (extent.width() * extent.height() * 4) as usize);
-	}
-}
-
-impl RenderPass for PixelMappingPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
-		let pipeline_layout = self.pipeline_layout;
-		let descriptor_set = self.descriptor_set;
-		let pipeline = self.pixel_mapping_pipeline;
-		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
-		let material_xy = self.material_xy;
-
-		let extent = viewport.extent();
-
-		Some(Box::new(move |command_buffer_recording, _| {
-			command_buffer_recording.start_region("Pixel Mapping");
-
-			command_buffer_recording.clear_buffers(&[material_xy.into(),]);
-
-			command_buffer_recording.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
-			let compute_pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-
-			command_buffer_recording.end_region();
-		}))
-	}
-}
-
-struct MaterialEvaluationPass {
-}
-
-impl MaterialEvaluationPass {
-	fn new(ghi_instance: &mut ghi::Device, visibility_pass: &VisibilityPass, material_count_pass: &MaterialCountPass, material_offset_pass: &MaterialOffsetPass, pixel_mapping_pass: &PixelMappingPass) -> Self {
-		MaterialEvaluationPass {}
-	}
-}
-
-const VERTEX_COUNT: u32 = 64;
-const TRIANGLE_COUNT: u32 = 126;
-
-const MAX_MESHLETS: usize = 1024 * 4;
-const MAX_INSTANCES: usize = 1024;
-const MAX_MATERIALS: usize = 1024;
-const MAX_LIGHTS: usize = 16;
-const MAX_TRIANGLES: usize = 65536 * 4;
-const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
-const MAX_VERTICES: usize = 65536 * 4;
-
-pub fn get_visibility_pass_mesh_source() -> String {
-	let main_code = r#"
-	View view = views.views[0];
-	process_meshlet(push_constant.instance_index, view.view_projection);
-	"#;
-
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["View", "views", "push_constant", "process_meshlet"], Vec::new())]);
-
-	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
-
-	let shader = besl::parser::Node::scope("Shader", vec![push_constant, main]);
-
-	let mut root = besl::parser::Node::root();
-
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
-
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node).unwrap();
-
-	glsl
-}
-
-const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
-#version 450
-#pragma shader_stage(fragment)
-
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_shader_explicit_arithmetic_types : enable
-#extension GL_EXT_buffer_reference: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_mesh_shader: require
-
-layout(location=0) perprimitiveEXT flat in uint in_instance_index;
-layout(location=1) perprimitiveEXT flat in uint in_primitive_index;
-
-layout(location=0) out uint out_primitive_index;
-layout(location=1) out uint out_instance_id;
-
-void main() {
-	out_primitive_index = in_primitive_index;
-	out_instance_id = in_instance_index;
-}
-"#;
-
-pub fn get_material_count_source() -> String {
-	let main_code = r#"
-	// If thread is out of bound respect to the material_id texture, return
-	ivec2 extent = imageSize(instance_index_render_target);
-	if (gl_GlobalInvocationID.x >= extent.x || gl_GlobalInvocationID.y >= extent.y) { return; }
-
-	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
-
-	if (pixel_instance_index == 0xFFFFFFFF) { return; }
-
-	uint material_index = meshes.meshes[pixel_instance_index].material_index;
-
-	atomicAdd(material_count.material_count[material_index], 1);
-	"#;
-
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_count", "instance_index_render_target"], Vec::new())]);
-
-	let shader = besl::parser::Node::scope("Shader", vec![main]);
-
-	let mut root = besl::parser::Node::root();
-
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
-
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
-
-	glsl
-}
-
-pub fn get_material_offset_source() -> String {
-	let main_code = r#"
-	uint sum = 0;
-
-	for (uint i = 0; i < 1024; i++) { /* 1024 is the maximum number of materials */
-		material_offset.material_offset[i] = sum;
-		material_offset_scratch.material_offset_scratch[i] = sum;
-		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec3((material_count.material_count[i] + 127) / 128, 1, 1);
-		sum += material_count.material_count[i];
-	}
-	"#;
-
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["material_offset", "material_offset_scratch", "material_count", "material_evaluation_dispatches",], Vec::new())]);
-
-	let shader = besl::parser::Node::scope("Shader", vec![main]);
-
-	let mut root = besl::parser::Node::root();
-
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
-
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node).unwrap();
-
-	glsl
-}
-
-pub fn get_pixel_mapping_source() -> String {
-	let main_code = r#"
-	ivec2 extent = imageSize(instance_index_render_target);
-	// If thread is out of bound respect to the material_id texture, return
-	if (gl_GlobalInvocationID.x >= extent.x || gl_GlobalInvocationID.y >= extent.y) { return; }
-
-	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
-
-	if (pixel_instance_index == 0xFFFFFFFF) { return; }
-
-	uint material_index = meshes.meshes[pixel_instance_index].material_index;
-
-	uint offset = atomicAdd(material_offset_scratch.material_offset_scratch[material_index], 1);
-
-	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
-	"#;
-
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_offset_scratch", "pixel_mapping", "instance_index_render_target",], Vec::new())]);
-
-	let mut root = besl::parser::Node::root();
-
-	let shader = besl::parser::Node::scope("Shader", vec![main]);
-
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
-
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
-
-	glsl
-}
-
 #[derive(Debug, Clone)]
 struct MeshPrimitive {
 	/// The material index.
@@ -1599,7 +1029,7 @@ struct Image {
 
 use crate::ghi;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct VisibilityInfo {
 	pub instance_count: u32,
 	pub triangle_count: u32,

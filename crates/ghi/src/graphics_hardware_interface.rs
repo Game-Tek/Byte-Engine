@@ -1307,8 +1307,8 @@ impl <'a> ShaderParameter<'a> {
 }
 
 pub struct PushConstantRange {
-	pub offset: u32,
-	pub size: u32,
+	pub(crate) offset: u32,
+	pub(crate) size: u32,
 }
 
 impl PushConstantRange {

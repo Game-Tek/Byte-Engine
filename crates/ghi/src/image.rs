@@ -17,17 +17,19 @@ pub struct Builder<'a> {
 
 impl<'a> Builder<'a> {
 	/// Creates a new image builder with the given extent, format, and resource uses.
+	/// The default name is None.
+	/// The default extent is (0, 0, 0).
 	/// The default device accesses are GPU read and write.
 	/// The default use case is static.
 	/// The default number of array layers is None.
 	/// The default number of mip levels is 1.
-	pub fn new(extent: Extent, format: Formats, resource_uses: Uses) -> Self {
+	pub fn new(format: Formats, resource_uses: Uses) -> Self {
 		Self {
 			name: None,
-			extent,
+			extent: Extent::cube(0, 0, 0),
 			format,
 			resource_uses,
-			device_accesses: DeviceAccesses::GpuRead | DeviceAccesses::GpuWrite,
+			device_accesses: DeviceAccesses::DeviceOnly,
 			use_case: UseCases::STATIC,
 			mip_levels: 1,
 			array_layers: None,

@@ -8,7 +8,7 @@ use utils::{Extent, Box};
 
 use crate::core::{Entity, entity::EntityBuilder};
 
-use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassCommand};
+use crate::rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn};
 
 #[derive(Clone)]
 pub struct BaseAcesToneMapPass {
@@ -23,7 +23,7 @@ const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::Des
 impl Entity for BaseAcesToneMapPass {}
 
 impl BaseAcesToneMapPass {
-	pub fn create<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> EntityBuilder<'static, Self> where Self: Sized {
+	pub fn new<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> Self {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to("result");
 
@@ -42,11 +42,11 @@ impl BaseAcesToneMapPass {
 
 		let tone_mapping_pipeline = device.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
 
-		BaseAcesToneMapPass {
+		Self {
 			descriptor_set_layout,
 			pipeline_layout,
 			pipeline: tone_mapping_pipeline,
-		}.into()
+		}
 	}
 }
 
@@ -56,7 +56,9 @@ pub struct AcesToneMapPass {
 }
 
 impl AcesToneMapPass {
-	fn new(render_pass_builder: &mut RenderPassViewBuilder, render_pass: &BaseAcesToneMapPass) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
+		let render_pass = BaseAcesToneMapPass::new(render_pass_builder);
+
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to("result");
 
@@ -68,14 +70,16 @@ impl AcesToneMapPass {
 		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
 
 		AcesToneMapPass {
-			render_pass: render_pass.clone(),
+			render_pass,
 			descriptor_set,
 		}
 	}
 }
 
+impl Entity for AcesToneMapPass {}
+
 impl RenderPass for AcesToneMapPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let pipeline_layout = self.render_pass.pipeline_layout;
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;

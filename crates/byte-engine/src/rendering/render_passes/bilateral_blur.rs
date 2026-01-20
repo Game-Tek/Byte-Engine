@@ -4,7 +4,7 @@ use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMod
 use math::Vector2;
 use utils::{Box, Extent};
 
-use crate::{core::EntityBuilder, rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassBuilder, RenderPassViewBuilder, RenderPassCommand}}};
+use crate::{core::EntityBuilder, rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassBuilder, RenderPassViewBuilder, RenderPassReturn}}};
 
 const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 const BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
@@ -59,8 +59,8 @@ impl BilateralBlurPass {
 		let descriptor_set_x = device.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
 		let descriptor_set_y = device.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
 
-		let x_blur_map = device.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::Storage));
-		let y_blur_map = device.build_image(ghi::image::Builder::new(Extent::square(0), ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::Storage));
+		let x_blur_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::Storage));
+		let y_blur_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::Storage));
 
 		let sampler = device.build_sampler(ghi::sampler::Builder::new());
 		let depth_sampler = device.build_sampler(ghi::sampler::Builder::new().filtering_mode(ghi::FilteringModes::Linear).mip_map_mode(ghi::FilteringModes::Linear));
@@ -82,7 +82,7 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let execute_in_axis = |command_buffer: &mut ghi::CommandBufferRecording, pipeline_layout: ghi::PipelineLayoutHandle, pipeline: ghi::PipelineHandle, descriptor_set: ghi::DescriptorSetHandle, extent: Extent| {
 			let c = command_buffer.bind_pipeline_layout(pipeline_layout);
 			c.bind_descriptor_sets(&[descriptor_set]);

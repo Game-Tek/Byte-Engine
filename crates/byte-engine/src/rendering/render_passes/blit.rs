@@ -1,6 +1,6 @@
 use ghi::command_buffer::{CommandBufferRecordable as _, CommonCommandBufferMode as _};
 use utils::{Box};
-use crate::rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassCommand}};
+use crate::rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassReturn}};
 
 struct BlitPass {
 	source: ghi::ImageHandle,
@@ -17,7 +17,7 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let source = self.source;
 		let destination = self.destination;
 

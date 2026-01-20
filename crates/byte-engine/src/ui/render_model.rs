@@ -15,11 +15,18 @@ impl UIRenderModel {
 
 }
 
-use crate::{rendering::scene_manager::SceneManager, core::{Entity, entity::EntityBuilder}};
-
+use crate::{core::{Entity, entity::EntityBuilder}, rendering::{Viewport, render_pass::{RenderPassBuilder, RenderPassFunction}, scene_manager::SceneManager}};
+use utils::Box;
 use super::Text;
 
 impl SceneManager for UIRenderModel {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		None
+	}
+
+	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
+        todo!()
+    }
 }
 
 impl Entity for UIRenderModel {

@@ -9,25 +9,20 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, render_pass::{FramePrepare, RenderPassBuilder, RenderPassCommand}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
 
 pub struct SceneManager {
-	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
-	indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
-
-	instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
-	camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
-
-	mesh_buffers_stats: MeshBuffersStats<EntityHandle<dyn Transformable>>,
-
-	descriptor_set: ghi::DescriptorSetHandle,
-
-	pipeline_layout: ghi::PipelineLayoutHandle,
-	pipeline: ghi::PipelineHandle,
-
-	pending_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
-
-	views: Vec<RenderPassView>,
+	/// Buffer containing all vertex positions for meshes.
+	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
+	pub(super) indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
+	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
+	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
+	pub(super) mesh_buffers_stats: MeshBuffersStats<EntityHandle<dyn Transformable>>,
+	pub(super) descriptor_set_template: ghi::DescriptorSetTemplateHandle,
+	pub(super) pipeline_layout: ghi::PipelineLayoutHandle,
+	pub(super) pipeline: ghi::PipelineHandle,
+	pub(super) pending_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
+	views: Vec<RenderPass>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
@@ -35,12 +30,7 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 ];
 
 impl SceneManager {
-	pub fn new<'a>(render_pass_builder: &mut RenderPassBuilder<'a>) -> Self {
-		let render_to = render_pass_builder.render_to("main");
-		let depth_map = render_pass_builder.render_to("depth");
-
-		let device = render_pass_builder.device();
-
+	pub fn new(device: &mut ghi::Device) -> Self {
 		let vertex_positions_buffer = device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
 		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
 
@@ -50,17 +40,12 @@ impl SceneManager {
 		let camera_data_binding_template = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 		let instance_data_binding_template = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 
-		let descriptor_set_layout = device.create_descriptor_set_template(None, &[
+		let descriptor_set_template = device.create_descriptor_set_template(None, &[
 			camera_data_binding_template.clone(),
 			instance_data_binding_template.clone(),
 		]);
 
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout);
-
-		device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer.into()));
-		device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer.into()));
-
-		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4)]);
+		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_template], &[ghi::PushConstantRange::new(0, 4)]);
 
 		let mut shader_generator = SPIRVShaderGenerator::new();
 
@@ -131,25 +116,34 @@ impl SceneManager {
 		let vertex_shader = device.create_shader(Some("Vertex Shader"), ghi::ShaderSource::SPIRV(generated_vertex_shader.binary()), ghi::ShaderTypes::Vertex, generated_vertex_shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor)).unwrap();
 		let fragment_shader = device.create_shader(Some("Fragment Shader"), ghi::ShaderSource::SPIRV(generated_fragment_shader.binary()), ghi::ShaderTypes::Fragment, generated_fragment_shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor)).unwrap();
 
-		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(pipeline_layout, &VERTEX_LAYOUT, &[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)], &[render_to.into(), depth_map.into()]));
+		let pipeline = device.create_raster_pipeline(
+			ghi::raster_pipeline::Builder::new(
+				pipeline_layout,
+				&VERTEX_LAYOUT,
+				&[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)],
+				&[
+					ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized)),
+					ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32),
+				],
+			)
+		);
 
 		Self {
 			vertex_positions_buffer,
 			indeces_buffer,
-
-			descriptor_set,
 
 			mesh_buffers_stats: MeshBuffersStats::default(),
 
 			instance_data_buffer,
 			camera_data_buffer,
 
+			descriptor_set_template,
 			pipeline_layout,
 			pipeline,
 
 			pending_entities: VecDeque::with_capacity(64),
 
-			views: Vec::new(),
+			views: Vec::with_capacity(4),
 		}
 	}
 }
@@ -168,8 +162,8 @@ impl Listener<CreateEvent<dyn RenderableMesh>> for SceneManager {
 	}
 }
 
-impl crate::rendering::RenderPass for SceneManager {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassCommand> {
+impl crate::rendering::scene_manager::SceneManager for SceneManager {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		{
 			let pending_entities = self.pending_entities.drain(..);
 
@@ -232,61 +226,23 @@ impl crate::rendering::RenderPass for SceneManager {
 			}
 		}
 
-		let pipeline_layout = self.pipeline_layout;
-		let pipeline = self.pipeline.clone();
-		let descriptor_set = self.descriptor_set;
-		let vertex_buffer = self.vertex_positions_buffer;
-		let index_buffer = self.indeces_buffer;
-
 		let instance_batches = instance_batches.iter().into_vec();
 
-		None
+		let commands = viewports.iter().filter_map(|viewport| {
+			self.views.iter().find(|v| v.index == viewport.index()).map(|v| (viewport, v))
+		}).map(|(viewport, v)| {
+			Box::new(v.prepare(frame, viewport, &self, &instance_batches)) as Box<dyn RenderPassFunction>
+		}).collect::<Vec<_>>();
+
+		Some(commands)
 	}
-}
 
-pub struct RenderPassView {
-	index: usize,
-	descriptor_set: ghi::DescriptorSetHandle,
-}
-
-impl RenderPassView {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport, instance_batches: Vec<InstanceBatch>) -> Option<RenderPassCommand> {
-		let camera_data_buffer = self.render_pass.camera_data_buffer;
-
-		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
-
-		camera_data_buffer[viewport.index()] = CameraShaderData { vp: viewport.view_projection() };
-
-		let SceneManager { pipeline_layout, pipeline, descriptor_set, vertex_positions_buffer: vertex_buffer, indeces_buffer: index_buffer, .. } = self.render_pass;
-
-		Some(Box::new(move |c, t| {
-			c.bind_vertex_buffers(&[vertex_buffer.into()]);
-			c.bind_index_buffer(&index_buffer.into());
-
-			let extent = viewport.extent();
-
-			let c = c.start_render_pass(extent, t);
-
-			let c = c.bind_pipeline_layout(pipeline_layout);
-			c.bind_descriptor_sets(&[descriptor_set]);
-			let c = c.bind_raster_pipeline(pipeline);
-
-			for batch in &instance_batches {
-				c.write_push_constant(0, batch.base_instance() as u32);
-				c.draw_indexed(batch.index_count() as u32, batch.instance_count() as u32, batch.base_index() as _, batch.base_vertex() as _, batch.base_instance() as _);
-			}
-
-			c.end_render_pass();
-		}))
+	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
+		self.views.push(RenderPass::new(render_pass_builder.device(), &self.descriptor_set_template, self.camera_data_buffer.into(), self.instance_data_buffer.into(), id))
 	}
 }
 
 #[derive(Debug, Clone, Copy)]
 struct InstanceShaderData {
 	instance_transform: Matrix4,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CameraShaderData {
-	vp: Matrix4,
 }

@@ -1,4 +1,4 @@
-use crate::{application::parameters::Parameters, core::{Entity, EntityHandle, domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, rendering::{render_passes::aces::AcesToneMapPass, render_pass::RenderPass, render_passes::simple::SimpleRenderPass, renderer, texture_manager::TextureManager, pipelines::visibility::VisibilityWorldRenderDomain}};
+use crate::{application::parameters::Parameters, core::{Entity, EntityHandle, domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, rendering::{pipelines::{simple::{SimpleSceneManager, SimpleRenderPass}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderer, texture_manager::TextureManager}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -234,10 +234,7 @@ impl Application for GraphicsApplication {
 
 		{
 			let mut e = self.renderer_handle.write();
-			let render_command = e.prepare();
-			if let Some(render_command) = render_command {
-				render_command.render();
-			}
+			e.prepare();
 		}
 
 		self.tick_count += 1;
@@ -417,27 +414,23 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	let mut renderer = application.renderer_handle.write();
 
-	renderer.add_render_pass(|c| {
+	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		application.root_space_handle.spawn(SimpleRenderPass::new(c).builder())
-	});
+		application.root_space_handle.spawn(SimpleSceneManager::new(renderer.device_mut()).builder())
+	};
 
-	renderer.add_render_pass(|c| {
-		application.root_space_handle.spawn(AcesToneMapPass::create(c))
-	});
+	renderer.add_scene_manager(sm);
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	let mut renderer = application.renderer_handle.write();
 
-	renderer.add_render_pass(|c| {
+	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		application.root_space_handle.spawn(VisibilityWorldRenderDomain::new(c, application.resource_manager.clone(), texture_manager).builder())
-	});
+		application.root_space_handle.spawn(VisibilityWorldRenderDomain::new(renderer.device_mut(), application.resource_manager.clone(), texture_manager).builder())
+	};
 
-	renderer.add_render_pass(|c| {
-		application.root_space_handle.spawn(AcesToneMapPass::create(c))
-	});
+	renderer.add_scene_manager(sm);
 }
 
 pub fn process_default_window_input(input_system: &mut input::InputManager, event: ghi::Events) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {

@@ -1,7 +1,7 @@
 
 use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
-use crate::{core::{EntityHandle, entity::EntityBuilder}, rendering::Viewport};
+use crate::{core::{EntityHandle, entity::EntityBuilder}, rendering::{Viewport, renderer::RenderTargets}};
 
 use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _};
 use resource_management::glsl;
@@ -21,14 +21,16 @@ pub trait RenderPass {
 
 pub struct RenderPassBuilder<'a> {
 	device: &'a mut ghi::Device,
+	view_id: usize,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
-	pub(crate) images: &'a mut HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
+	pub(crate) images: &'a mut RenderTargets,
 }
 
 impl <'a> RenderPassBuilder<'a> {
-	pub fn new(device: &'a mut ghi::Device, images: &'a mut HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>) -> Self {
+	pub fn new(device: &'a mut ghi::Device, images: &'a mut RenderTargets, view_id: usize) -> Self {
 		RenderPassBuilder {
 			device,
+			view_id,
 			consumed_resources: Vec::new(),
 			images,
 		}
@@ -38,7 +40,7 @@ impl <'a> RenderPassBuilder<'a> {
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 
-		let (image, format, _) = self.images.get(name).expect("Image not found").clone();
+		let (image, format) = self.images.get(name).expect("Image not found").clone();
 
 		RenderToResult { image, format }
 	}
@@ -52,7 +54,7 @@ impl <'a> RenderPassBuilder<'a> {
 
 		let image = self.device.build_image(builder);
 
-		let (image, format, _) = self.images.insert(name, (image, format, 0)).unwrap();
+		self.images.insert(name, self.view_id, image.clone(), format);
 
 		RenderToResult { image, format }
 	}
@@ -60,7 +62,7 @@ impl <'a> RenderPassBuilder<'a> {
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 
-		let (image, _, _) = self.images.get(name).expect("Image not found").clone();
+		let (image, _) = self.images.get(name).expect("Image not found").clone();
 
 		ReadFromResult { image, }
 	}
@@ -117,57 +119,5 @@ impl FramePrepare {
 
 	pub fn viewports(&self) -> &[Viewport] {
 		&[]
-	}
-}
-
-
-pub struct RenderPassViewBuilder<'a> {
-	device: &'a mut ghi::Device,
-	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
-	pub(crate) images: &'a mut HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
-}
-
-impl <'a> RenderPassViewBuilder<'a> {
-	pub fn new(device: &'a mut ghi::Device, images: &'a mut HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>) -> Self {
-		Self {
-			device,
-			consumed_resources: Vec::new(),
-			images,
-		}
-	}
-
-	/// Use `render_to` to get a reference to an image you expect to exist.
-	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
-		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
-
-		let (image, format, _) = self.images.get(name).expect("Image not found").clone();
-
-		RenderToResult { image, format }
-	}
-
-	/// Use `create_render_target` to create a new image and get a reference to it.
-	pub fn create_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
-		self.consumed_resources.push((builder.get_name().unwrap(), ghi::AccessPolicies::WRITE));
-
-		let name = builder.get_name().unwrap().to_string();
-		let format = builder.get_format();
-
-		let image = self.device.build_image(builder);
-
-		let (image, format, _) = self.images.insert(name, (image, format, 0)).unwrap();
-
-		RenderToResult { image, format }
-	}
-
-	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
-		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
-
-		let (image, _, _) = self.images.get(name).expect("Image not found").clone();
-
-		ReadFromResult { image, }
-	}
-
-	pub fn device(&mut self) -> &'_ mut ghi::Device {
-		self.device
 	}
 }

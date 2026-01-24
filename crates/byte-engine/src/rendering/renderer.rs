@@ -29,8 +29,7 @@ pub struct Renderer {
 	windows: Vec<(ghi::Window, ghi::SwapchainHandle)>,
 	views: Vec<(usize, View)>,
 
-	render_targets: HashMap<String, (ghi::ImageHandle, ghi::Formats, i8)>,
-	images: HashMap<String, (ghi::ImageHandle, ghi::Formats, ghi::Layouts,)>,
+	render_targets: RenderTargets,
 
 	render_passes: Vec<EntityHandle<dyn RenderPass>>,
 	scene_managers: Vec<EntityHandle<dyn SceneManager>>,
@@ -109,12 +108,10 @@ impl Renderer {
 			windows: Vec::with_capacity(16),
 			views: Vec::with_capacity(16),
 
-			render_targets: HashMap::with_capacity(32),
+			render_targets: RenderTargets::new(),
 
 			render_passes: Vec::with_capacity(64),
 			scene_managers: Vec::with_capacity(8),
-
-			images: HashMap::with_capacity(64),
 
 			render_command_buffer,
 			render_finished_synchronizer,
@@ -125,10 +122,10 @@ impl Renderer {
 		{
 			let mut scene_manager = handle.write();
 
-			for (id, _) in self.windows.iter().enumerate() {
-				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets);
+			for (view_id, _) in self.windows.iter().enumerate() {
+				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 
-				scene_manager.create_view(id, &mut rpb);
+				scene_manager.create_view(view_id, &mut rpb);
 			}
 		}
 
@@ -191,14 +188,18 @@ impl Renderer {
 		let commands = scene_managers.filter_map(|sm| {
 			let mut sm = sm.write();
 			sm.prepare(&mut frame, &viewports)
-		});
+		}).collect::<Vec<_>>();
 
-		let execute = move |e: &mut ghi::CommandBufferRecording| {
-			for commands in commands {
-				for (command, viewport) in commands.iter().zip(viewports.iter()) {
-					// TODO: build attachment information from render pass
+		let execute = {
+			let viewports = &viewports;
 
-					// (command.borrow_mut())(e, viewport);
+			|e: &mut ghi::CommandBufferRecording| {
+				for commands in commands.into_iter() {
+					for (mut command, viewport) in commands.iter().zip(viewports.iter()) {
+						let attachment_infos = self.render_targets.get_attachment_infos(viewport.index());
+
+						(command.borrow_mut())(e, &attachment_infos);
+					}
 				}
 			}
 		};
@@ -257,53 +258,23 @@ impl Listener<CreateEvent<Window>> for Renderer {
 					extent,
 				);
 
-				{
-					let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
+				let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
+				let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
+				let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
 
-					let result = device.create_image(
-						Some("result"),
-						extent,
-						ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-						ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
-						ghi::DeviceAccesses::DeviceOnly,
-						ghi::UseCases::DYNAMIC,
-						None,
-					);
+				let view_id = self.windows.len();
 
-					let main = device.create_image(
-						Some("main"),
-						extent,
-						ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
-						ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
-						ghi::DeviceAccesses::DeviceOnly,
-						ghi::UseCases::DYNAMIC,
-						None,
-					);
-
-					let depth = device.create_image(
-						Some("depth"),
-						extent,
-						ghi::Formats::Depth32,
-						ghi::Uses::RenderTarget | ghi::Uses::Image,
-						ghi::DeviceAccesses::DeviceOnly,
-						ghi::UseCases::DYNAMIC,
-						None,
-					);
-
-					self.images.insert("result".to_string(), (result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget,));
-					self.images.insert("main".to_string(), (main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget,));
-					self.images.insert("depth".to_string(), (depth, ghi::Formats::Depth32, ghi::Layouts::RenderTarget,));
-				}
-
-				let id = self.windows.len();
+				self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized));
+				self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized));
+				self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
 
 				{
 					let scene_managers = self.scene_managers.iter();
 
 					for sm in scene_managers {
-						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets);
+						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 
-						sm.write().create_view(id, &mut rpb);
+						sm.write().create_view(view_id, &mut rpb);
 					}
 				}
 
@@ -365,5 +336,121 @@ impl Settings {
 	pub fn mesh_shading(mut self, value: bool) -> Self {
 		self.mesh_shading = value;
 		self
+	}
+}
+
+pub struct RenderTargets {
+	images: Vec<(ghi::ImageHandle, ghi::Formats)>,
+	/// Maps names to image indices.
+	by_name: Vec<(String, usize)>,
+	/// Maps view indices to image indices.
+	by_view_index: Vec<(usize, usize)>,
+}
+
+impl RenderTargets {
+	pub fn new() -> Self {
+		Self {
+			images: Vec::with_capacity(32),
+			by_name: Vec::with_capacity(32),
+			by_view_index: Vec::with_capacity(32),
+		}
+	}
+
+	/// Inserts a new render target image, associated to a view index.
+	/// Returns the index of the image in the internal storage.
+	pub fn insert(&mut self, name: String, view: usize, image: ghi::ImageHandle, format: ghi::Formats) -> usize {
+		let index = self.images.len();
+		self.images.push((image, format));
+		self.by_name.push((name, index));
+		self.by_view_index.push((view, index));
+		index
+	}
+
+	pub fn get(&self, name: &str) -> Option<&(ghi::ImageHandle, ghi::Formats)> {
+		if let Some((_, index)) = self.by_name.iter().find(|(n, _)| n == name) {
+			self.images.get(*index)
+		} else {
+			None
+		}
+	}
+
+	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
+		let attachments = self.by_view_index.iter().filter_map(|(v, i)| {
+			if *v == view {
+				self.images.get(*i)
+			} else {
+				None
+			}
+		});
+
+		attachments.map(|(image, format)| {
+			ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true) // Trivialize for now
+		}).collect()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_render_targets_new() {
+		let rt = RenderTargets::new();
+		assert!(rt.images.is_empty());
+		assert!(rt.by_name.is_empty());
+		assert!(rt.by_view_index.is_empty());
+	}
+
+	#[test]
+	fn test_insert_and_get() {
+		let mut rt = RenderTargets::new();
+		let image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let format = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
+		let index = rt.insert("test".to_string(), 0, image, format);
+		assert_eq!(index, 0);
+		let retrieved = rt.get("test");
+		assert!(retrieved.is_some());
+		assert_eq!(rt.get("nonexistent"), None);
+	}
+
+	#[test]
+	fn test_insert_multiple() {
+		let mut rt = RenderTargets::new();
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let format1 = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
+		let format2 = ghi::Formats::Depth32;
+
+		rt.insert("color".to_string(), 0, image1, format1);
+		rt.insert("depth".to_string(), 0, image2, format2);
+
+		assert!(rt.get("color").is_some());
+		assert!(rt.get("depth").is_some());
+	}
+
+	#[test]
+	fn test_get_attachment_infos() {
+		let mut rt = RenderTargets::new();
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let format1 = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
+		let format2 = ghi::Formats::Depth32;
+
+		rt.insert("color".to_string(), 0, image1, format1);
+		rt.insert("depth".to_string(), 0, image2, format2);
+		rt.insert("other".to_string(), 1, unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(3) }, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized));
+
+		let attachments = rt.get_attachment_infos(0);
+		assert_eq!(attachments.len(), 2);
+
+		let attachments_view1 = rt.get_attachment_infos(1);
+		assert_eq!(attachments_view1.len(), 1);
+	}
+
+	#[test]
+	fn test_get_attachment_infos_empty_view() {
+		let rt = RenderTargets::new();
+		let attachments = rt.get_attachment_infos(0);
+		assert!(attachments.is_empty());
 	}
 }

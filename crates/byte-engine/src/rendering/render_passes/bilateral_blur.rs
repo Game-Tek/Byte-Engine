@@ -4,7 +4,7 @@ use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMod
 use math::Vector2;
 use utils::{Box, Extent};
 
-use crate::{core::EntityBuilder, rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassBuilder, RenderPassViewBuilder, RenderPassReturn}}};
+use crate::{core::EntityBuilder, rendering::{RenderPass, Viewport, render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn}}};
 
 const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
 const BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
@@ -48,7 +48,7 @@ struct BilateralBlurPass {
 }
 
 impl BilateralBlurPass {
-	pub fn new(render_pass_builder: &mut RenderPassViewBuilder, render_pass: &BaseBilateralBlurPass, source: ghi::ImageHandle) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, render_pass: &BaseBilateralBlurPass, source: ghi::ImageHandle) -> Self {
 		let read_depth = render_pass_builder.read_from("depth");
 		let depth_image: ghi::ImageHandle = read_depth.borrow().into();
 

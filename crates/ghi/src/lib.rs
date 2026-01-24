@@ -11,6 +11,7 @@ pub mod graphics_hardware_interface;
 pub mod render_debugger;
 
 pub mod vulkan;
+pub mod debug;
 
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;

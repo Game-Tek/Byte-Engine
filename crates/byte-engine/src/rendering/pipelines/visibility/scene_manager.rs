@@ -811,8 +811,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 	}
 
 	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let diffuse_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Diffuse"));
-		let specular_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Specular"));
+		let diffuse_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Diffuse"));
+		let specular_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Specular"));
 		let depth_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"));
 		let primitive_index = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"));
 		let instance_id = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"));

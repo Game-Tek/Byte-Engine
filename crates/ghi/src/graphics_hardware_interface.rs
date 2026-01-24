@@ -550,26 +550,218 @@ pub enum Encodings {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+/// Describes the bit layout of a format's channels.
+pub enum ChannelLayout {
+	/// Single channel (R).
+	R,
+	/// Two channels (RG).
+	RG,
+	/// Three channels (RGB).
+	RGB,
+	/// Four channels (RGBA).
+	RGBA,
+	/// Four channels in BGRA order.
+	BGRA,
+	/// Special packed format.
+	Packed,
+	/// Depth channel.
+	Depth,
+	/// Block compressed format.
+	BC,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+/// Describes the bit size per channel.
+pub enum ChannelBitSize {
+	/// 8 bits per channel.
+	Bits8,
+	/// 16 bits per channel.
+	Bits16,
+	/// 32 bits per channel.
+	Bits32,
+	/// Special case: 11 bits for R and G, 10 bits for B.
+	Bits11_11_10,
+	/// Block compressed format (variable bit size).
+	Compressed,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// Enumerates the formats that textures can have.
 pub enum Formats {
+	/// 8 bit unsigned per component floating point R.
+	R8F,
+	/// 8 bit unsigned normalized R.
+	R8UNORM,
+	/// 8 bit signed normalized R.
+	R8SNORM,
+	/// 8 bit sRGB R.
+	R8sRGB,
+
+	/// 16 bit unsigned per component floating point R.
+	R16F,
+	/// 16 bit unsigned normalized R.
+	R16UNORM,
+	/// 16 bit signed normalized R.
+	R16SNORM,
+	/// 16 bit sRGB R.
+	R16sRGB,
+
+	/// 32 bit unsigned per component floating point R.
+	R32F,
+	/// 32 bit unsigned normalized R.
+	R32UNORM,
+	/// 32 bit signed normalized R.
+	R32SNORM,
+	/// 32 bit sRGB R.
+	R32sRGB,
+
+	/// 8 bit unsigned per component floating point RG.
+	RG8F,
+	/// 8 bit unsigned normalized RG.
+	RG8UNORM,
+	/// 8 bit signed normalized RG.
+	RG8SNORM,
+	/// 8 bit sRGB RG.
+	RG8sRGB,
+
+	/// 16 bit unsigned per component floating point RG.
+	RG16F,
+	/// 16 bit unsigned normalized RG.
+	RG16UNORM,
+	/// 16 bit signed normalized RG.
+	RG16SNORM,
+	/// 16 bit sRGB RG.
+	RG16sRGB,
+
+	/// 8 bit unsigned per component floating point RGB.
+	RGB8F,
+	/// 8 bit unsigned normalized RGB.
+	RGB8UNORM,
+	/// 8 bit signed normalized RGB.
+	RGB8SNORM,
+	/// 8 bit sRGB RGB.
+	RGB8sRGB,
+
+	/// 16 bit unsigned per component floating point RGB.
+	RGB16F,
+	/// 16 bit unsigned normalized RGB.
+	RGB16UNORM,
+	/// 16 bit signed normalized RGB.
+	RGB16SNORM,
+	/// 16 bit sRGB RGB.
+	RGB16sRGB,
+
+	/// 8 bit unsigned per component floating point RGBA.
+	RGBA8F,
+	/// 8 bit unsigned normalized RGBA.
+	RGBA8UNORM,
+	/// 8 bit signed normalized RGBA.
+	RGBA8SNORM,
+	/// 8 bit sRGB RGBA.
+	RGBA8sRGB,
+
+	/// 16 bit unsigned per component floating point RGBA.
+	RGBA16F,
+	/// 16 bit unsigned normalized RGBA.
+	RGBA16UNORM,
+	/// 16 bit signed normalized RGBA.
+	RGBA16SNORM,
+	/// 16 bit sRGB RGBA.
+	RGBA16sRGB,
+
 	/// 11 bit unsigned for R, G and 10 bit unsigned for B normalized RGB.
 	RGBu11u11u10,
 	/// 8 bit unsigned per component normalized BGRA.
 	BGRAu8,
 	/// 32 bit float depth.
 	Depth32,
+	/// 32 bit unsigned integer.
 	U32,
-	R8(Encodings),
-	R16(Encodings),
-	R32(Encodings),
-	RG8(Encodings),
-	RG16(Encodings),
-	RGB8(Encodings),
-	RGB16(Encodings),
-	RGBA8(Encodings),
-	RGBA16(Encodings),
+	/// BC5 block compressed format.
 	BC5,
+	/// BC7 block compressed format.
 	BC7,
+}
+
+impl Formats {
+	/// Returns the encoding of the format.
+	pub fn encoding(&self) -> Option<Encodings> {
+		match self {
+			Formats::R8F | Formats::R16F | Formats::R32F |
+			Formats::RG8F | Formats::RG16F |
+			Formats::RGB8F | Formats::RGB16F |
+			Formats::RGBA8F | Formats::RGBA16F |
+			Formats::Depth32 => Some(Encodings::FloatingPoint),
+
+			Formats::R8UNORM | Formats::R16UNORM | Formats::R32UNORM |
+			Formats::RG8UNORM | Formats::RG16UNORM |
+			Formats::RGB8UNORM | Formats::RGB16UNORM |
+			Formats::RGBA8UNORM | Formats::RGBA16UNORM |
+			Formats::RGBu11u11u10 | Formats::BGRAu8 => Some(Encodings::UnsignedNormalized),
+
+			Formats::R8SNORM | Formats::R16SNORM | Formats::R32SNORM |
+			Formats::RG8SNORM | Formats::RG16SNORM |
+			Formats::RGB8SNORM | Formats::RGB16SNORM |
+			Formats::RGBA8SNORM | Formats::RGBA16SNORM => Some(Encodings::SignedNormalized),
+
+			Formats::R8sRGB | Formats::R16sRGB | Formats::R32sRGB |
+			Formats::RG8sRGB | Formats::RG16sRGB |
+			Formats::RGB8sRGB | Formats::RGB16sRGB |
+			Formats::RGBA8sRGB | Formats::RGBA16sRGB => Some(Encodings::sRGB),
+
+			Formats::U32 | Formats::BC5 | Formats::BC7 => None,
+		}
+	}
+
+	/// Returns the channel bit size of the format.
+	pub fn channel_bit_size(&self) -> ChannelBitSize {
+		match self {
+			Formats::R8F | Formats::R8UNORM | Formats::R8SNORM | Formats::R8sRGB |
+			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB |
+			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB |
+			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB |
+			Formats::BGRAu8 => ChannelBitSize::Bits8,
+
+			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB |
+			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB |
+			Formats::RGB16F | Formats::RGB16UNORM | Formats::RGB16SNORM | Formats::RGB16sRGB |
+			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => ChannelBitSize::Bits16,
+
+			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB |
+			Formats::Depth32 | Formats::U32 => ChannelBitSize::Bits32,
+
+			Formats::RGBu11u11u10 => ChannelBitSize::Bits11_11_10,
+
+			Formats::BC5 | Formats::BC7 => ChannelBitSize::Compressed,
+		}
+	}
+
+	/// Returns the channel layout of the format.
+	pub fn channel_layout(&self) -> ChannelLayout {
+		match self {
+			Formats::R8F | Formats::R8UNORM | Formats::R8SNORM | Formats::R8sRGB |
+			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB |
+			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB => ChannelLayout::R,
+
+			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB |
+			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB => ChannelLayout::RG,
+
+			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB |
+			Formats::RGB16F | Formats::RGB16UNORM | Formats::RGB16SNORM | Formats::RGB16sRGB |
+			Formats::RGBu11u11u10 => ChannelLayout::RGB,
+
+			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB |
+			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => ChannelLayout::RGBA,
+
+			Formats::BGRAu8 => ChannelLayout::BGRA,
+
+			Formats::Depth32 => ChannelLayout::Depth,
+
+			Formats::U32 => ChannelLayout::Packed,
+
+			Formats::BC5 | Formats::BC7 => ChannelLayout::BC,
+		}
+	}
 }
 
 pub trait Size {
@@ -579,19 +771,19 @@ pub trait Size {
 impl Size for Formats {
 	fn size(&self) -> usize {
 		match self {
+			Formats::R8F | Formats::R8UNORM | Formats::R8SNORM | Formats::R8sRGB => 1,
+			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB => 2,
+			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB => 4,
+			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB => 2,
+			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB => 4,
+			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB => 3,
+			Formats::RGB16F | Formats::RGB16UNORM | Formats::RGB16SNORM | Formats::RGB16sRGB => 6,
+			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB => 4,
+			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => 8,
 			Formats::RGBu11u11u10 => 4,
 			Formats::BGRAu8 => 4,
 			Formats::Depth32 => 4,
 			Formats::U32 => 4,
-			Formats::R8(_) => 1,
-			Formats::R16(_) => 2,
-			Formats::R32(_) => 4,
-			Formats::RG8(_) => 2,
-			Formats::RG16(_) => 4,
-			Formats::RGB8(_) => 3,
-			Formats::RGB16(_) => 6,
-			Formats::RGBA8(_) => 4,
-			Formats::RGBA16(_) => 8,
 			Formats::BC5 => 1,
 			Formats::BC7 => 1,
 		}
@@ -1354,6 +1546,220 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 	use super::*;
 
+	#[test]
+	fn test_formats_encoding() {
+		// Test floating point formats
+		assert_eq!(Formats::R8F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::R16F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::R32F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::RG8F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::RG16F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::RGB8F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::RGB16F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::RGBA8F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::RGBA16F.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(Formats::Depth32.encoding(), Some(Encodings::FloatingPoint));
+
+		// Test unsigned normalized formats
+		assert_eq!(Formats::R8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::R16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::R32UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RG8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RG16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RGB8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RGB16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RGBA8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RGBA16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RGBu11u11u10.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::BGRAu8.encoding(), Some(Encodings::UnsignedNormalized));
+
+		// Test signed normalized formats
+		assert_eq!(Formats::R8SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::R16SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::R32SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::RG8SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::RG16SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::RGB8SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::RGB16SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::RGBA8SNORM.encoding(), Some(Encodings::SignedNormalized));
+		assert_eq!(Formats::RGBA16SNORM.encoding(), Some(Encodings::SignedNormalized));
+
+		// Test sRGB formats
+		assert_eq!(Formats::R8sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::R16sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::R32sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::RG8sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::RG16sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::RGB8sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::RGB16sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::RGBA8sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::RGBA16sRGB.encoding(), Some(Encodings::sRGB));
+
+		// Test formats without encoding
+		assert_eq!(Formats::U32.encoding(), None);
+		assert_eq!(Formats::BC5.encoding(), None);
+		assert_eq!(Formats::BC7.encoding(), None);
+	}
+
+	#[test]
+	fn test_formats_channel_bit_size() {
+		// Test 8-bit formats
+		assert_eq!(Formats::R8F.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::R8UNORM.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::R8SNORM.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::R8sRGB.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::RG8F.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::RGB8UNORM.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::RGBA8SNORM.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::BGRAu8.channel_bit_size(), ChannelBitSize::Bits8);
+
+		// Test 16-bit formats
+		assert_eq!(Formats::R16F.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(Formats::R16UNORM.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(Formats::RG16SNORM.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(Formats::RGB16F.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(Formats::RGBA16UNORM.channel_bit_size(), ChannelBitSize::Bits16);
+
+		// Test 32-bit formats
+		assert_eq!(Formats::R32F.channel_bit_size(), ChannelBitSize::Bits32);
+		assert_eq!(Formats::R32UNORM.channel_bit_size(), ChannelBitSize::Bits32);
+		assert_eq!(Formats::Depth32.channel_bit_size(), ChannelBitSize::Bits32);
+		assert_eq!(Formats::U32.channel_bit_size(), ChannelBitSize::Bits32);
+
+		// Test special formats
+		assert_eq!(Formats::RGBu11u11u10.channel_bit_size(), ChannelBitSize::Bits11_11_10);
+		assert_eq!(Formats::BC5.channel_bit_size(), ChannelBitSize::Compressed);
+		assert_eq!(Formats::BC7.channel_bit_size(), ChannelBitSize::Compressed);
+	}
+
+	#[test]
+	fn test_formats_channel_layout() {
+		// Test single channel formats
+		assert_eq!(Formats::R8F.channel_layout(), ChannelLayout::R);
+		assert_eq!(Formats::R16UNORM.channel_layout(), ChannelLayout::R);
+		assert_eq!(Formats::R32SNORM.channel_layout(), ChannelLayout::R);
+		assert_eq!(Formats::R8sRGB.channel_layout(), ChannelLayout::R);
+
+		// Test dual channel formats
+		assert_eq!(Formats::RG8F.channel_layout(), ChannelLayout::RG);
+		assert_eq!(Formats::RG16UNORM.channel_layout(), ChannelLayout::RG);
+		assert_eq!(Formats::RG8SNORM.channel_layout(), ChannelLayout::RG);
+
+		// Test triple channel formats
+		assert_eq!(Formats::RGB8F.channel_layout(), ChannelLayout::RGB);
+		assert_eq!(Formats::RGB16UNORM.channel_layout(), ChannelLayout::RGB);
+		assert_eq!(Formats::RGB8sRGB.channel_layout(), ChannelLayout::RGB);
+		assert_eq!(Formats::RGBu11u11u10.channel_layout(), ChannelLayout::RGB);
+
+		// Test quad channel formats
+		assert_eq!(Formats::RGBA8F.channel_layout(), ChannelLayout::RGBA);
+		assert_eq!(Formats::RGBA16UNORM.channel_layout(), ChannelLayout::RGBA);
+		assert_eq!(Formats::RGBA8SNORM.channel_layout(), ChannelLayout::RGBA);
+
+		// Test BGRA format
+		assert_eq!(Formats::BGRAu8.channel_layout(), ChannelLayout::BGRA);
+
+		// Test depth format
+		assert_eq!(Formats::Depth32.channel_layout(), ChannelLayout::Depth);
+
+		// Test packed format
+		assert_eq!(Formats::U32.channel_layout(), ChannelLayout::Packed);
+
+		// Test block compressed formats
+		assert_eq!(Formats::BC5.channel_layout(), ChannelLayout::BC);
+		assert_eq!(Formats::BC7.channel_layout(), ChannelLayout::BC);
+	}
+
+	#[test]
+	fn test_formats_size() {
+		// Test single channel formats
+		assert_eq!(Formats::R8F.size(), 1);
+		assert_eq!(Formats::R8UNORM.size(), 1);
+		assert_eq!(Formats::R16F.size(), 2);
+		assert_eq!(Formats::R16UNORM.size(), 2);
+		assert_eq!(Formats::R32F.size(), 4);
+		assert_eq!(Formats::R32SNORM.size(), 4);
+
+		// Test dual channel formats
+		assert_eq!(Formats::RG8F.size(), 2);
+		assert_eq!(Formats::RG8UNORM.size(), 2);
+		assert_eq!(Formats::RG16F.size(), 4);
+		assert_eq!(Formats::RG16SNORM.size(), 4);
+
+		// Test triple channel formats
+		assert_eq!(Formats::RGB8F.size(), 3);
+		assert_eq!(Formats::RGB8UNORM.size(), 3);
+		assert_eq!(Formats::RGB16F.size(), 6);
+		assert_eq!(Formats::RGB16SNORM.size(), 6);
+
+		// Test quad channel formats
+		assert_eq!(Formats::RGBA8F.size(), 4);
+		assert_eq!(Formats::RGBA8UNORM.size(), 4);
+		assert_eq!(Formats::RGBA16F.size(), 8);
+		assert_eq!(Formats::RGBA16UNORM.size(), 8);
+
+		// Test special formats
+		assert_eq!(Formats::RGBu11u11u10.size(), 4);
+		assert_eq!(Formats::BGRAu8.size(), 4);
+		assert_eq!(Formats::Depth32.size(), 4);
+		assert_eq!(Formats::U32.size(), 4);
+		assert_eq!(Formats::BC5.size(), 1);
+		assert_eq!(Formats::BC7.size(), 1);
+	}
+
+	#[test]
+	fn test_formats_comprehensive() {
+		// Test that encoding, channel_bit_size, and channel_layout are consistent
+		// For R8FloatingPoint
+		let format = Formats::R8F;
+		assert_eq!(format.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(format.channel_layout(), ChannelLayout::R);
+		assert_eq!(format.size(), 1);
+
+		// For RGBA16UnsignedNormalized
+		let format = Formats::RGBA16UNORM;
+		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits16);
+		assert_eq!(format.channel_layout(), ChannelLayout::RGBA);
+		assert_eq!(format.size(), 8);
+
+		// For RGB8sRGB
+		let format = Formats::RGB8sRGB;
+		assert_eq!(format.encoding(), Some(Encodings::sRGB));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(format.channel_layout(), ChannelLayout::RGB);
+		assert_eq!(format.size(), 3);
+
+		// For special format RGBu11u11u10
+		let format = Formats::RGBu11u11u10;
+		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits11_11_10);
+		assert_eq!(format.channel_layout(), ChannelLayout::RGB);
+		assert_eq!(format.size(), 4);
+
+		// For BGRAu8
+		let format = Formats::BGRAu8;
+		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(format.channel_layout(), ChannelLayout::BGRA);
+		assert_eq!(format.size(), 4);
+
+		// For Depth32
+		let format = Formats::Depth32;
+		assert_eq!(format.encoding(), Some(Encodings::FloatingPoint));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits32);
+		assert_eq!(format.channel_layout(), ChannelLayout::Depth);
+		assert_eq!(format.size(), 4);
+
+		// For BC7
+		let format = Formats::BC7;
+		assert_eq!(format.encoding(), None);
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Compressed);
+		assert_eq!(format.channel_layout(), ChannelLayout::BC);
+		assert_eq!(format.size(), 1);
+	}
+
 	fn compile_shaders() -> (glsl::CompiledShader, glsl::CompiledShader) {
 		let vertex_shader_code = "
 			#version 450
@@ -1491,10 +1897,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1506,7 +1912,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA::black()), false, true,)
+			AttachmentInformation::new(render_target,Formats::RGBA8UNORM,Layouts::RenderTarget,ClearValue::Color(RGBA::black()), false, true,)
 		];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1569,10 +1975,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceOnly, UseCases::STATIC, None);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceOnly, UseCases::STATIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1592,7 +1998,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [
-			AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+			AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 		];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1652,10 +2058,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1674,7 +2080,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
-				AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+				AttachmentInformation::new(render_target,Formats::RGBA8UNORM,Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1733,10 +2139,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1753,7 +2159,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1814,10 +2220,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1838,7 +2244,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1898,10 +2304,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let mut extent = Extent::rectangle(1280, 720);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -1923,7 +2329,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1987,10 +2393,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -2009,7 +2415,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			let mut cb = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8(Encodings::UnsignedNormalized), Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
+				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
 			];
 
 			let c = cb.start_render_pass(extent, &attachments);
@@ -2100,7 +2506,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pipeline = device.create_compute_pipeline(pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
 
-		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8UNORM, Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
 
@@ -2257,7 +2663,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::HostToDevice);
 
-		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Image, DeviceAccesses::HostToDevice, UseCases::STATIC, None);
+		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8UNORM, Uses::Image, DeviceAccesses::HostToDevice, UseCases::STATIC, None);
 
 		let pixels = vec![
 			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
@@ -2287,10 +2693,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
+		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
 
 		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8(Encodings::UnsignedNormalized),)
+			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
 		];
 
 		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
@@ -2306,7 +2712,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
 		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8(Encodings::UnsignedNormalized),Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
+			AttachmentInformation::new(render_target,Formats::RGBA8UNORM,Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
 		];
 
 		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -2484,7 +2890,7 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8(Encodings::UnsignedNormalized), Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = renderer.create_image(None, extent, Formats::RGBA8UNORM, Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
 
 		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
 		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));

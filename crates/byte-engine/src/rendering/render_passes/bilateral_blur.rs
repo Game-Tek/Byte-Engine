@@ -59,8 +59,8 @@ impl BilateralBlurPass {
 		let descriptor_set_x = device.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
 		let descriptor_set_y = device.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
 
-		let x_blur_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::Storage));
-		let y_blur_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::Storage));
+		let x_blur_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGB16UNORM, ghi::Uses::Image | ghi::Uses::Storage));
+		let y_blur_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGB16UNORM, ghi::Uses::Image | ghi::Uses::Storage));
 
 		let sampler = device.build_sampler(ghi::sampler::Builder::new());
 		let depth_sampler = device.build_sampler(ghi::sampler::Builder::new().filtering_mode(ghi::FilteringModes::Linear).mip_map_mode(ghi::FilteringModes::Linear));

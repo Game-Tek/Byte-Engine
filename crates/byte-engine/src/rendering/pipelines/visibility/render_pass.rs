@@ -247,7 +247,7 @@ impl PixelMappingPass {
 
 		let pixel_mapping_pipeline = device.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute,));
 
-		let material_xy = device.build_image(ghi::image::Builder::new(ghi::Formats::RG16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination));
+		let material_xy = device.build_image(ghi::image::Builder::new(ghi::Formats::RG16UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination));
 
 		PixelMappingPass {
 			material_xy,

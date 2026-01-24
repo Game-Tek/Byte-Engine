@@ -39,11 +39,11 @@ impl TextureManager {
 		let texture = reference.resource();
 
 		let format = match texture.format {
-			resource_management::types::Formats::RG8 => ghi::Formats::RG8(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGB8 => ghi::Formats::RGB8(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGB16 => ghi::Formats::RGB16(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-			resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
+			resource_management::types::Formats::RG8 => ghi::Formats::RG8UNORM,
+			resource_management::types::Formats::RGB8 => ghi::Formats::RGB8UNORM,
+			resource_management::types::Formats::RGB16 => ghi::Formats::RGB16UNORM,
+			resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
+			resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
 			resource_management::types::Formats::BC5 => ghi::Formats::BC5,
 			resource_management::types::Formats::BC7 => ghi::Formats::BC7,
 		};

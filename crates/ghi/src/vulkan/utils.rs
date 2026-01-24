@@ -61,78 +61,42 @@ pub(super) fn to_store_operation(value: bool) -> vk::AttachmentStoreOp { if valu
 
 pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::Format {
 	match format {
-		graphics_hardware_interface::Formats::R8(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8_SRGB }
-			}
-		}
-		graphics_hardware_interface::Formats::R16(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16_SFLOAT }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
-			}
-		}
-		graphics_hardware_interface::Formats::R32(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R32_SFLOAT }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R32_UINT }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R32_SINT }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
-			}
-		}
-		graphics_hardware_interface::Formats::RG8(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8G8_SRGB }
-			}
-		}
-		graphics_hardware_interface::Formats::RG16(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16_SFLOAT }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
-			}
-		}
-		graphics_hardware_interface::Formats::RGB8(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8B8_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8G8B8_SRGB }
-			}
-		}
-		graphics_hardware_interface::Formats::RGB16(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16B16_SFLOAT }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16B16_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16B16_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
-			}
-		}
-		graphics_hardware_interface::Formats::RGBA8(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::UNDEFINED }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R8G8B8A8_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R8G8B8A8_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::R8G8B8A8_SRGB }
-			}
-		}
-		graphics_hardware_interface::Formats::RGBA16(encoding) => {
-			match encoding {
-				graphics_hardware_interface::Encodings::FloatingPoint => { vk::Format::R16G16B16A16_SFLOAT }
-				graphics_hardware_interface::Encodings::UnsignedNormalized => { vk::Format::R16G16B16A16_UNORM }
-				graphics_hardware_interface::Encodings::SignedNormalized => { vk::Format::R16G16B16A16_SNORM }
-				graphics_hardware_interface::Encodings::sRGB => { vk::Format::UNDEFINED }
-			}
-		}
+		graphics_hardware_interface::Formats::R8F => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::R8UNORM => { vk::Format::R8_UNORM }
+		graphics_hardware_interface::Formats::R8SNORM => { vk::Format::R8_SNORM }
+		graphics_hardware_interface::Formats::R8sRGB => { vk::Format::R8_SRGB }
+		graphics_hardware_interface::Formats::R16F => { vk::Format::R16_SFLOAT }
+		graphics_hardware_interface::Formats::R16UNORM => { vk::Format::R16_UNORM }
+		graphics_hardware_interface::Formats::R16SNORM => { vk::Format::R16_SNORM }
+		graphics_hardware_interface::Formats::R16sRGB => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::R32F => { vk::Format::R32_SFLOAT }
+		graphics_hardware_interface::Formats::R32UNORM => { vk::Format::R32_UINT }
+		graphics_hardware_interface::Formats::R32SNORM => { vk::Format::R32_SINT }
+		graphics_hardware_interface::Formats::R32sRGB => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::RG8F => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::RG8UNORM => { vk::Format::R8G8_UNORM }
+		graphics_hardware_interface::Formats::RG8SNORM => { vk::Format::R8G8_SNORM }
+		graphics_hardware_interface::Formats::RG8sRGB => { vk::Format::R8G8_SRGB }
+		graphics_hardware_interface::Formats::RG16F => { vk::Format::R16G16_SFLOAT }
+		graphics_hardware_interface::Formats::RG16UNORM => { vk::Format::R16G16_UNORM }
+		graphics_hardware_interface::Formats::RG16SNORM => { vk::Format::R16G16_SNORM }
+		graphics_hardware_interface::Formats::RG16sRGB => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::RGB8F => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::RGB8UNORM => { vk::Format::R8G8B8_UNORM }
+		graphics_hardware_interface::Formats::RGB8SNORM => { vk::Format::R8G8B8_SNORM }
+		graphics_hardware_interface::Formats::RGB8sRGB => { vk::Format::R8G8B8_SRGB }
+		graphics_hardware_interface::Formats::RGB16F => { vk::Format::R16G16B16_SFLOAT }
+		graphics_hardware_interface::Formats::RGB16UNORM => { vk::Format::R16G16B16_UNORM }
+		graphics_hardware_interface::Formats::RGB16SNORM => { vk::Format::R16G16B16_SNORM }
+		graphics_hardware_interface::Formats::RGB16sRGB => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::RGBA8F => { vk::Format::UNDEFINED }
+		graphics_hardware_interface::Formats::RGBA8UNORM => { vk::Format::R8G8B8A8_UNORM }
+		graphics_hardware_interface::Formats::RGBA8SNORM => { vk::Format::R8G8B8A8_SNORM }
+		graphics_hardware_interface::Formats::RGBA8sRGB => { vk::Format::R8G8B8A8_SRGB }
+		graphics_hardware_interface::Formats::RGBA16F => { vk::Format::R16G16B16A16_SFLOAT }
+		graphics_hardware_interface::Formats::RGBA16UNORM => { vk::Format::R16G16B16A16_UNORM }
+		graphics_hardware_interface::Formats::RGBA16SNORM => { vk::Format::R16G16B16A16_SNORM }
+		graphics_hardware_interface::Formats::RGBA16sRGB => { vk::Format::UNDEFINED }
 		graphics_hardware_interface::Formats::RGBu11u11u10 => vk::Format::B10G11R11_UFLOAT_PACK32,
 		graphics_hardware_interface::Formats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
 		graphics_hardware_interface::Formats::Depth32 => vk::Format::D32_SFLOAT,
@@ -528,103 +492,103 @@ mod tests {
 
 	#[test]
 	fn test_texture_format_and_resource_use_to_image_layout() {
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Undefined, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Undefined, None);
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Undefined, Some(graphics_hardware_interface::AccessPolicies::READ));
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Undefined, Some(graphics_hardware_interface::AccessPolicies::READ));
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Undefined, Some(graphics_hardware_interface::AccessPolicies::WRITE));
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Undefined, Some(graphics_hardware_interface::AccessPolicies::WRITE));
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::RenderTarget, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::RenderTarget, None);
 		assert_eq!(value, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::Depth32, graphics_hardware_interface::Layouts::RenderTarget, None);
 		assert_eq!(value, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Transfer, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Transfer, None);
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Transfer, Some(graphics_hardware_interface::AccessPolicies::READ));
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Transfer, Some(graphics_hardware_interface::AccessPolicies::READ));
 		assert_eq!(value, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Transfer, Some(graphics_hardware_interface::AccessPolicies::WRITE));
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Transfer, Some(graphics_hardware_interface::AccessPolicies::WRITE));
 		assert_eq!(value, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Present, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Present, None);
 		assert_eq!(value, vk::ImageLayout::PRESENT_SRC_KHR);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Read, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Read, None);
 		assert_eq!(value, vk::ImageLayout::READ_ONLY_OPTIMAL);
 		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::Depth32, graphics_hardware_interface::Layouts::Read, None);
 		assert_eq!(value, vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::General, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::General, None);
 		assert_eq!(value, vk::ImageLayout::GENERAL);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::ShaderBindingTable, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::ShaderBindingTable, None);
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
 
-		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized), graphics_hardware_interface::Layouts::Indirect, None);
+		let value = texture_format_and_resource_use_to_image_layout(graphics_hardware_interface::Formats::RGBA8UNORM, graphics_hardware_interface::Layouts::Indirect, None);
 		assert_eq!(value, vk::ImageLayout::UNDEFINED);
 	}
 
 	#[test]
 	fn test_to_format() {
-		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::R8UNORM);
 		assert_eq!(value, vk::Format::R8_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::R8SNORM);
 		assert_eq!(value, vk::Format::R8_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R8(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::R8F);
 		assert_eq!(value, vk::Format::UNDEFINED);
 
-		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::R16UNORM);
 		assert_eq!(value, vk::Format::R16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::R16SNORM);
 		assert_eq!(value, vk::Format::R16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::R16(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::R16F);
 		assert_eq!(value, vk::Format::R16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::R32UNORM);
 		assert_eq!(value, vk::Format::R32_UINT);
-		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::R32SNORM);
 		assert_eq!(value, vk::Format::R32_SINT);
-		let value = to_format(graphics_hardware_interface::Formats::R32(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::R32F);
 		assert_eq!(value, vk::Format::R32_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RG8UNORM);
 		assert_eq!(value, vk::Format::R8G8_UNORM);
 		let value = to_format(graphics_hardware_interface::Formats::BC5);
 		assert_eq!(value, vk::Format::BC5_UNORM_BLOCK);
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RG8SNORM);
 		assert_eq!(value, vk::Format::R8G8_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG8(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::RG8F);
 		assert_eq!(value, vk::Format::UNDEFINED);
 
-		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RG16UNORM);
 		assert_eq!(value, vk::Format::R16G16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RG16SNORM);
 		assert_eq!(value, vk::Format::R16G16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RG16(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::RG16F);
 		assert_eq!(value, vk::Format::R16G16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RGB16UNORM);
 		assert_eq!(value, vk::Format::R16G16B16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RGB16SNORM);
 		assert_eq!(value, vk::Format::R16G16B16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGB16(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::RGB16F);
 		assert_eq!(value, vk::Format::R16G16B16_SFLOAT);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RGBA8UNORM);
 		assert_eq!(value, vk::Format::R8G8B8A8_UNORM);
 		let value = to_format(graphics_hardware_interface::Formats::BC7);
 		assert_eq!(value, vk::Format::BC7_SRGB_BLOCK);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RGBA8SNORM);
 		assert_eq!(value, vk::Format::R8G8B8A8_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::RGBA8F);
 		assert_eq!(value, vk::Format::UNDEFINED);
 
-		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::UnsignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RGBA16UNORM);
 		assert_eq!(value, vk::Format::R16G16B16A16_UNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::SignedNormalized));
+		let value = to_format(graphics_hardware_interface::Formats::RGBA16SNORM);
 		assert_eq!(value, vk::Format::R16G16B16A16_SNORM);
-		let value = to_format(graphics_hardware_interface::Formats::RGBA16(graphics_hardware_interface::Encodings::FloatingPoint));
+		let value = to_format(graphics_hardware_interface::Formats::RGBA16F);
 		assert_eq!(value, vk::Format::R16G16B16A16_SFLOAT);
 
 		let value = to_format(graphics_hardware_interface::Formats::BGRAu8);
@@ -738,13 +702,13 @@ mod tests {
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::PRESENTATION, graphics_hardware_interface::Layouts::Undefined, None);
 		assert_eq!(value, vk::AccessFlags2::NONE);
 
-		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::RGBA8UNORM));
 		assert_eq!(value, vk::AccessFlags2::COLOR_ATTACHMENT_READ);
 
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::Depth32));
 		assert_eq!(value, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ);
 
-		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::Read, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::Read, Some(graphics_hardware_interface::Formats::RGBA8UNORM));
 		assert_eq!(value, vk::AccessFlags2::SHADER_SAMPLED_READ);
 
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::READ, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::Read, Some(graphics_hardware_interface::Formats::Depth32));
@@ -771,13 +735,13 @@ mod tests {
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::COMPUTE, graphics_hardware_interface::Layouts::General, None);
 		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
 
-		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::RGBA8UNORM));
 		assert_eq!(value, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE);
 
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::RenderTarget, Some(graphics_hardware_interface::Formats::Depth32));
 		assert_eq!(value, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE);
 
-		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::General, Some(graphics_hardware_interface::Formats::RGBA8(graphics_hardware_interface::Encodings::UnsignedNormalized)));
+		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::General, Some(graphics_hardware_interface::Formats::RGBA8UNORM));
 		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
 
 		let value = to_access_flags(graphics_hardware_interface::AccessPolicies::WRITE, graphics_hardware_interface::Stages::FRAGMENT, graphics_hardware_interface::Layouts::General, Some(graphics_hardware_interface::Formats::Depth32));

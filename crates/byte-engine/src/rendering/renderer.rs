@@ -258,14 +258,14 @@ impl Listener<CreateEvent<Window>> for Renderer {
 					extent,
 				);
 
-				let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
-				let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
+				let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
+				let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
 				let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
 
 				let view_id = self.windows.len();
 
-				self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized));
-				self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized));
+				self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
+				self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16UNORM);
 				self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
 
 				{
@@ -405,7 +405,7 @@ mod tests {
 	fn test_insert_and_get() {
 		let mut rt = RenderTargets::new();
 		let image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
-		let format = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
+		let format = ghi::Formats::RGBA8UNORM;
 		let index = rt.insert("test".to_string(), 0, image, format);
 		assert_eq!(index, 0);
 		let retrieved = rt.get("test");
@@ -417,7 +417,7 @@ mod tests {
 	fn test_insert_multiple() {
 		let mut rt = RenderTargets::new();
 		let image1 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
-		let format1 = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
+		let format1 = ghi::Formats::RGBA8UNORM;
 		let image2 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
 		let format2 = ghi::Formats::Depth32;
 
@@ -432,13 +432,13 @@ mod tests {
 	fn test_get_attachment_infos() {
 		let mut rt = RenderTargets::new();
 		let image1 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
-		let format1 = ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized);
+		let format1 = ghi::Formats::RGBA8UNORM;
 		let image2 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
 		let format2 = ghi::Formats::Depth32;
 
 		rt.insert("color".to_string(), 0, image1, format1);
 		rt.insert("depth".to_string(), 0, image2, format2);
-		rt.insert("other".to_string(), 1, unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(3) }, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized));
+		rt.insert("other".to_string(), 1, unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(3) }, ghi::Formats::RGBA16UNORM);
 
 		let attachments = rt.get_attachment_infos(0);
 		assert_eq!(attachments.len(), 2);

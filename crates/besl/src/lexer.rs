@@ -72,7 +72,7 @@ impl NodeReference {
 								_ => {}
 							}
 						}
-						Nodes::GLSL { output, .. } => {
+						Nodes::Raw { output, .. } => {
 							for o in output {
 								if let Some(c) = o.get_descendant(child_name) {
 									return Some(c);
@@ -109,7 +109,7 @@ impl NodeReference {
 					_ => {}
 				}
 			}
-			Nodes::GLSL { output, .. } => {
+			Nodes::Raw { output, .. } => {
 				for o in output {
 					if let Some(c) = o.get_descendant(child_name) {
 						return Some(c);
@@ -358,8 +358,31 @@ impl Node {
 
 	pub fn glsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
 		Node {
-			node: Nodes::GLSL {
-				code,
+			node: Nodes::Raw {
+				glsl: Some(code),
+				hlsl: None,
+				input: inputs,
+				output: outputs,
+			},
+		}
+	}
+
+	pub fn hlsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Raw {
+				glsl: None,
+				hlsl: Some(code),
+				input: inputs,
+				output: outputs,
+			},
+		}
+	}
+
+	pub fn raw(glsl: Option<String>, hlsl: Option<String>, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Raw {
+				glsl,
+				hlsl,
 				input: inputs,
 				output: outputs,
 			},
@@ -495,7 +518,7 @@ impl Node {
 
 	pub fn get_name(&self) -> Option<&str> {
 		match &self.node {
-			Nodes::Scope { name, .. } | Nodes::Function { name, .. } | Nodes::Member { name, .. } | Nodes::Struct { name, .. } | Nodes::Intrinsic { name, .. } | Nodes::Binding { name, .. } | Nodes::Parameter { name, .. } => {
+			Nodes::Scope { name, .. } | Nodes::Function { name, .. } | Nodes::Member { name, .. } | Nodes::Struct { name, .. } | Nodes::Intrinsic { name, .. } | Nodes::Binding { name, .. } | Nodes::Parameter { name, .. } | Nodes::Specialization { name, .. } | Nodes::Literal { name, .. } => {
 				Some(name)
 			}
 			Nodes::Input { name, .. } | Nodes::Output { name, .. } => {
@@ -601,8 +624,9 @@ pub enum Nodes {
 		r#type: NodeReference,
 	},
 	Expression(Expressions),
-	GLSL {
-		code: String,
+	Raw {
+		glsl: Option<String>,
+		hlsl: Option<String>,
 		input: Vec<NodeReference>,
 		output: Vec<NodeReference>,
 	},
@@ -659,7 +683,7 @@ impl Nodes {
 			Nodes::Intrinsic { .. } => true,
 			Nodes::Member { .. } => true,
 			Nodes::Expression { .. } => true,
-			Nodes::GLSL { .. } => true,
+			Nodes::Raw { .. } => true,
 		}
 	}
 }
@@ -674,7 +698,7 @@ impl std::fmt::Debug for Node {
 			Nodes::Function { name, params, statements, .. } => { write!(f, "Function {{ name: {}, parameters: {:?}, statements: {:?} }}", name, params.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), statements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Specialization { name, r#type } => { write!(f, "Specialization {{ name: {}, type: {:?} }}", name, r#type.0.borrow().get_name().map(|e| e.to_string())) }
 			Nodes::Expression(expression) => { write!(f, "Expression {{ {:?} }}", expression) }
-			Nodes::GLSL { code, input, output } => { write!(f, "GLSL {{ code: {}, input: {:?}, output: {:?} }}", code, input.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), output.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
+			Nodes::Raw { glsl, hlsl, input, output } => { write!(f, "RawCode {{ glsl: {:?}, hlsl: {:?}, input: {:?}, output: {:?} }}", glsl, hlsl, input.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), output.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Binding { name, set, binding, read, write, r#type, count } => { write!(f, "Binding {{ name: {}, set: {}, binding: {}, read: {}, write: {}, type: {:?}, count: {:?} }}", name, set, binding, read, write, r#type, count) }
 			Nodes::PushConstant { members } => { write!(f, "PushConstant {{ members: {:?} }}", members.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))) }
 			Nodes::Intrinsic { name, elements, r#return } => { write!(f, "Intrinsic {{ name: {}, elements: {:?}, return: {:?} }}", name, elements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())), r#return.0.borrow().get_name().map(|e| e.to_string())) }
@@ -983,7 +1007,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 			this.into()
 		}
-		parser::Nodes::GLSL { code, input, output, .. } => {
+		parser::Nodes::RawCode { glsl, hlsl, input, output, .. } => {
 			let mut inputs = Vec::new();
 
 			for i in input {
@@ -996,7 +1020,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				outputs.push(Node::expression(Expressions::VariableDeclaration { name: o.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name: o.clone() })? }).into());
 			}
 
-			let this = Node::glsl(code.clone(), inputs, outputs);
+			let this = Node::raw(glsl.clone(), hlsl.clone(), inputs, outputs);
 
 			this.into()
 		}
@@ -1092,7 +1116,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 					this
 				}
-				parser::Expressions::GLSL { code, input, output } => {
+				parser::Expressions::RawCode { glsl, hlsl, input, output } => {
 					let mut inputs = Vec::new();
 
 					for i in input {
@@ -1105,7 +1129,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 						outputs.push(Node::expression(Expressions::VariableDeclaration { name: o.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name: o.clone() })? }).into());
 					}
 
-					Node::glsl(code.clone(), inputs, outputs)
+					Node::raw(glsl.clone(), hlsl.clone(), inputs, outputs)
 				}
 				parser::Expressions::Macro { name, body } => {
 					Node::r#macro(&name, lex_parsed_node(chain, body)?)

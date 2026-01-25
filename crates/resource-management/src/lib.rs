@@ -30,8 +30,10 @@ pub mod resources;
 pub mod file_tracker;
 
 pub mod shader_generator;
+pub mod shader_graph;
 
 pub mod glsl_shader_generator;
+pub mod hlsl_shader_generator;
 pub mod spirv_shader_generator;
 
 pub mod glsl;

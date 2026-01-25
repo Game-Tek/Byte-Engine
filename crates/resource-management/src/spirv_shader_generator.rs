@@ -166,7 +166,7 @@ impl SPIRVShaderGenerator {
 					bindings.push(Binding { binding: *binding, set: *set, read: *read, write: *write });
 				}
 			}
-			besl::Nodes::GLSL { input, output, .. } => {
+			besl::Nodes::Raw { input, output, .. } => {
 				for input in input {
 					self.build_graph(bindings, input);
 				}

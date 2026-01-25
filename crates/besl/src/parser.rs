@@ -201,8 +201,31 @@ impl Node {
 
 	pub fn glsl(code: &str, input: &[&str], output: Vec<String>) -> Node {
 		Node {
-			node: Nodes::GLSL {
-				code: code.to_string(),
+			node: Nodes::RawCode {
+				glsl: Some(code.to_string()),
+				hlsl: None,
+				input: input.iter().map(|v| v.to_string()).collect(),
+				output,
+			},
+		}
+	}
+
+	pub fn hlsl(code: &str, input: &[&str], output: Vec<String>) -> Node {
+		Node {
+			node: Nodes::RawCode {
+				glsl: None,
+				hlsl: Some(code.to_string()),
+				input: input.iter().map(|v| v.to_string()).collect(),
+				output,
+			},
+		}
+	}
+
+	pub fn raw_code(glsl: Option<String>, hlsl: Option<String>, input: &[&str], output: Vec<String>) -> Node {
+		Node {
+			node: Nodes::RawCode {
+				glsl,
+				hlsl,
 				input: input.iter().map(|v| v.to_string()).collect(),
 				output,
 			},
@@ -294,7 +317,7 @@ impl Node {
 			Nodes::Image { .. } => None,
 			Nodes::CombinedImageSampler { .. } => None,
 			Nodes::Expression(_) => None,
-			Nodes::GLSL { .. } => None,
+			Nodes::RawCode { .. } => None,
 			Nodes::Intrinsic { name, .. } => Some(name),
 			Nodes::Literal { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
@@ -384,8 +407,9 @@ pub enum Nodes {
 		format: String,
 	},
 	Expression(Expressions),
-	GLSL {
-		code: String,
+	RawCode {
+		glsl: Option<String>,
+		hlsl: Option<String>,
 		input: Vec<String>,
 		output: Vec<String>,
 	},
@@ -423,7 +447,7 @@ pub enum Expressions {
 	Call{ name: String, parameters: Vec<Node> },
 	Operator{ name: String, left: Box<Node>, right: Box<Node>, },
 	VariableDeclaration{ name: String, r#type: String, },
-	GLSL{ code: String, input: Vec<String>, output: Vec<String>, },
+	RawCode{ glsl: Option<String>, hlsl: Option<String>, input: Vec<String>, output: Vec<String>, },
 	Macro{ name: String, body: Box<Node> },
 	Return,
 }

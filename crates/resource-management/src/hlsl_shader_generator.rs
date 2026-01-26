@@ -756,8 +756,7 @@ mod tests {
 
 		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
 		assert_string_contains!(shader, "void used(){}");
-		// Note: GLSL code passed through as-is for now
-		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
+		assert_string_contains!(shader, "output.position = float4(0, 0, 0, 1)");
 	}
 
 	#[test]

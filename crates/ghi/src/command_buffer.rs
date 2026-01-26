@@ -23,7 +23,7 @@ pub trait CommandBufferRecordable where Self: Sized {
 
 	fn blit_image(&mut self, source_image: ImageHandle, source_layout: Layouts, destination_image: ImageHandle, destination_layout: Layouts);
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
+	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_key: PresentKey ,swapchain_handle: SwapchainHandle);
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
 

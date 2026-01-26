@@ -2,8 +2,9 @@ use std::{
 	borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
 };
 
-use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecordable as _, RasterizationRenderPassMode as _}, device::Device as _, frame::Frame as _, raster_pipeline, vulkan::command_buffer};
+use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecordable, RasterizationRenderPassMode as _}, device::Device as _, frame::Frame as _, raster_pipeline, vulkan::command_buffer};
 use resource_management::resource::resource_manager::ResourceManager;
+use smallvec::SmallVec;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
@@ -11,10 +12,12 @@ use crate::{
 		Entity, EntityHandle, entity::EntityBuilder, listener::{CreateEvent, Listener}
 	},
 	gameplay::space::Spawner,
-	rendering::{View, Viewport, render_pass::{FramePrepare, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
+	rendering::{View, Viewport, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
+
+use utils::Box;
 
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
@@ -26,13 +29,15 @@ pub struct Renderer {
 
 	frame_queue_depth: usize,
 
-	windows: Vec<(ghi::Window, ghi::SwapchainHandle)>,
-	views: Vec<(usize, View)>,
+	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
+	views: SmallVec<[(usize, View); 16]>,
 
 	render_targets: RenderTargets,
 
-	render_passes: Vec<EntityHandle<dyn RenderPass>>,
-	scene_managers: Vec<EntityHandle<dyn SceneManager>>,
+	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
+	render_passes_by_view: SmallVec<[(usize, usize); 32]>,
+
+	scene_managers: SmallVec<[EntityHandle<dyn SceneManager>; 16]>,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
@@ -105,13 +110,15 @@ impl Renderer {
 
 			frame_queue_depth: 2,
 
-			windows: Vec::with_capacity(16),
-			views: Vec::with_capacity(16),
+			windows: SmallVec::with_capacity(16),
+			views: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
 
-			render_passes: Vec::with_capacity(64),
-			scene_managers: Vec::with_capacity(8),
+			render_passes: SmallVec::with_capacity(64),
+			render_passes_by_view: SmallVec::with_capacity(32),
+
+			scene_managers: SmallVec::with_capacity(8),
 
 			render_command_buffer,
 			render_finished_synchronizer,
@@ -130,6 +137,12 @@ impl Renderer {
 		}
 
 		self.scene_managers.push(handle);
+	}
+
+	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, view_id: usize) {
+		let render_pass_id = self.render_passes.len();
+		self.render_passes.push(render_pass);
+		self.render_passes_by_view.push((render_pass_id, view_id));
 	}
 
 	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
@@ -155,7 +168,7 @@ impl Renderer {
 
 		self.started_frame_count += 1;
 
-		let swapchains = self.windows.iter().map(|(window, swapchain)| {
+		let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = self.windows.iter().map(|(window, swapchain)| {
 			let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
 
 			if extent.width() == 0 || extent.height() == 0 {
@@ -169,13 +182,13 @@ impl Renderer {
 			}
 
 			Some((present_key, extent, *swapchain))
-		}).collect::<Vec<_>>();
+		}).collect();
 
 		let views = self.views.iter();
 
 		let scene_managers = self.scene_managers.iter_mut();
 
-		let viewports = views.filter_map(|(index, view)| {
+		let viewports: SmallVec<[Viewport; 16]> = views.filter_map(|(index, view)| {
 			let Some((present_key, extent, swapchain)) = swapchains[*index] else {
 				return None;
 			};
@@ -183,23 +196,42 @@ impl Renderer {
 			let viewport = Viewport::new(*view, extent, *index);
 
 			Some(viewport)
-		}).collect::<Vec<_>>();
+		}).collect();
 
-		let commands = scene_managers.filter_map(|sm| {
+		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]>  = scene_managers.filter_map(|sm| {
 			let mut sm = sm.write();
 			sm.prepare(&mut frame, &viewports)
-		}).collect::<Vec<_>>();
+		}).collect();
+
+		// A list of render pass commands and their corresponding viewport index
+		let render_pass_commands: SmallVec<[(RenderPassReturn, usize); 64]> = self.render_passes_by_view.iter_mut().filter_map(|(render_pass_id, view_id)| {
+			if let Some(render_pass) = self.render_passes.get_mut(*render_pass_id) {
+				if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *view_id) {
+					let render_pass = render_pass;
+					if let Some(command) = render_pass.prepare(&mut frame, viewport) {
+						return Some((command, viewport.index()));
+					}
+				}
+			}
+			None
+		}).collect();
 
 		let execute = {
 			let viewports = &viewports;
+			let render_targets = &self.render_targets;
 
-			|e: &mut ghi::CommandBufferRecording| {
-				for commands in commands.into_iter() {
+			move |e: &mut ghi::CommandBufferRecording| {
+				for commands in scene_manager_commands.into_iter() {
 					for (mut command, viewport) in commands.iter().zip(viewports.iter()) {
-						let attachment_infos = self.render_targets.get_attachment_infos(viewport.index());
+						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
 
 						(command.borrow_mut())(e, &attachment_infos);
 					}
+				}
+
+				for (mut command, viewport) in render_pass_commands.into_iter() {
+					let attachment_infos = render_targets.get_attachment_infos(viewport);
+					(command.borrow_mut())(e, &attachment_infos);
 				}
 			}
 		};
@@ -336,6 +368,28 @@ impl Settings {
 	pub fn mesh_shading(mut self, value: bool) -> Self {
 		self.mesh_shading = value;
 		self
+	}
+}
+
+struct CopyToSwapchainRenderPass {
+	source_texture_handle: ghi::ImageHandle,
+	present_key: ghi::PresentKey,
+	swapchain_handle: ghi::SwapchainHandle,
+}
+
+impl RenderPass for CopyToSwapchainRenderPass {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+		let view_id = viewport.index();
+
+		let source_texture_handle = self.source_texture_handle;
+		let present_key = self.present_key;
+		let swapchain_handle = self.swapchain_handle;
+
+		let command = Box::new(move |e: &mut ghi::CommandBufferRecording, a: &[ghi::AttachmentInformation]| {
+			e.copy_to_swapchain(source_texture_handle, present_key, swapchain_handle);
+		});
+
+		Some(command)
 	}
 }
 

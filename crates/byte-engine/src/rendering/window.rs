@@ -28,6 +28,10 @@ impl Window {
 	pub fn attach(&mut self, camera: EntityHandle<Camera>) {
 		self.camera = Some(camera);
 	}
+
+	pub fn camera(&self) -> Option<&EntityHandle<Camera>> {
+		self.camera.as_ref()
+	}
 }
 
 impl Entity for Window {}

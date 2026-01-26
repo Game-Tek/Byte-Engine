@@ -8,11 +8,9 @@ use smallvec::SmallVec;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
-	application::parameters::Parameters, core::{
+	application::parameters::Parameters, camera::Camera, core::{
 		Entity, EntityHandle, entity::EntityBuilder, listener::{CreateEvent, Listener}
-	},
-	gameplay::space::Spawner,
-	rendering::{View, Viewport, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
+	}, gameplay::space::Spawner, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
@@ -29,8 +27,10 @@ pub struct Renderer {
 
 	frame_queue_depth: usize,
 
+	/// A list of display windows and their associated swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
-	views: SmallVec<[(usize, View); 16]>,
+	/// A list of windows and their associated cameras.
+	views: SmallVec<[(usize, EntityHandle<Camera>); 16]>,
 
 	render_targets: RenderTargets,
 
@@ -186,17 +186,21 @@ impl Renderer {
 
 		let views = self.views.iter();
 
-		let scene_managers = self.scene_managers.iter_mut();
-
 		let viewports: SmallVec<[Viewport; 16]> = views.filter_map(|(index, view)| {
 			let Some((present_key, extent, swapchain)) = swapchains[*index] else {
 				return None;
 			};
 
-			let viewport = Viewport::new(*view, extent, *index);
+			let camera = view.read();
+
+			let view = make_perspective_view_from_camera(&camera, extent);
+
+			let viewport = Viewport::new(view, extent, *index);
 
 			Some(viewport)
 		}).collect();
+
+		let scene_managers = self.scene_managers.iter_mut();
 
 		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]>  = scene_managers.filter_map(|sm| {
 			let mut sm = sm.write();
@@ -275,6 +279,7 @@ impl Listener<CreateEvent<Window>> for Renderer {
 
 		let name = window.name();
 		let extent = window.extent();
+		let camera = window.camera();
 
 		let window = ghi::Window::new_with_params(name, extent, "main_window");
 
@@ -290,23 +295,31 @@ impl Listener<CreateEvent<Window>> for Renderer {
 					extent,
 				);
 
-				let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
-				let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
-				let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
+				let view_id = if let Some(camera) = camera {
+					let view_id = self.views.len();
+					self.views.push((view_id, camera.clone()));
+					Some(view_id)
+				} else {
+					None
+				};
 
-				let view_id = self.windows.len();
+				if let Some(view_id) = view_id {
+					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
+					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
+					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
 
-				self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
-				self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16UNORM);
-				self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
-
-				{
-					let scene_managers = self.scene_managers.iter();
-
-					for sm in scene_managers {
-						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
-
-						sm.write().create_view(view_id, &mut rpb);
+					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
+					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16UNORM);
+					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
+	
+					{
+						let scene_managers = self.scene_managers.iter();
+	
+						for sm in scene_managers {
+							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+	
+							sm.write().create_view(view_id, &mut rpb);
+						}
 					}
 				}
 

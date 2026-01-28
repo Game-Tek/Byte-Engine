@@ -1,8 +1,9 @@
-use std::{collections::VecDeque, ffi::c_void, marker::PhantomData};
+use std::{cell::RefCell, collections::VecDeque, ffi::c_void, io::Read, marker::PhantomData, os::fd::{FromRawFd, IntoRawFd}, rc::Rc};
 
 use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
 use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1}, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
+use xkbcommon::xkb::{self, keysyms};
 
 use crate::{os::WindowLike, window::{input::{Keys, MouseKeys}, Events}};
 
@@ -257,6 +258,8 @@ struct WindowState {
 	focused_pointer: Option<wl_pointer::WlPointer>,
 	/// The focused keyboard
 	focused_keyboard: Option<wl_keyboard::WlKeyboard>,
+	/// The XKB state for translating keycodes into keysyms.
+	keyboard_state: Option<Rc<RefCell<KeyboardState>>>,
 }
 
 impl Default for WindowState {
@@ -268,8 +271,120 @@ impl Default for WindowState {
 			monitor_extent: None,
 			focused_pointer: None,
 			focused_keyboard: None,
+			keyboard_state: None,
 		}
 	}
+}
+
+/// The `KeyboardState` struct manages the XKB context, keymap, and state.
+struct KeyboardState {
+	context: xkb::Context,
+	keymap: xkb::Keymap,
+	state: xkb::State,
+}
+
+impl std::fmt::Debug for KeyboardState {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("KeyboardState").finish()
+	}
+}
+
+fn keysym_to_key(keysym: xkb::Keysym) -> Option<Keys> {
+	let key = match keysym.raw() {
+		keysyms::KEY_a | keysyms::KEY_A => Keys::A,
+		keysyms::KEY_b | keysyms::KEY_B => Keys::B,
+		keysyms::KEY_c | keysyms::KEY_C => Keys::C,
+		keysyms::KEY_d | keysyms::KEY_D => Keys::D,
+		keysyms::KEY_e | keysyms::KEY_E => Keys::E,
+		keysyms::KEY_f | keysyms::KEY_F => Keys::F,
+		keysyms::KEY_g | keysyms::KEY_G => Keys::G,
+		keysyms::KEY_h | keysyms::KEY_H => Keys::H,
+		keysyms::KEY_i | keysyms::KEY_I => Keys::I,
+		keysyms::KEY_j | keysyms::KEY_J => Keys::J,
+		keysyms::KEY_k | keysyms::KEY_K => Keys::K,
+		keysyms::KEY_l | keysyms::KEY_L => Keys::L,
+		keysyms::KEY_m | keysyms::KEY_M => Keys::M,
+		keysyms::KEY_n | keysyms::KEY_N => Keys::N,
+		keysyms::KEY_o | keysyms::KEY_O => Keys::O,
+		keysyms::KEY_p | keysyms::KEY_P => Keys::P,
+		keysyms::KEY_q | keysyms::KEY_Q => Keys::Q,
+		keysyms::KEY_r | keysyms::KEY_R => Keys::R,
+		keysyms::KEY_s | keysyms::KEY_S => Keys::S,
+		keysyms::KEY_t | keysyms::KEY_T => Keys::T,
+		keysyms::KEY_u | keysyms::KEY_U => Keys::U,
+		keysyms::KEY_v | keysyms::KEY_V => Keys::V,
+		keysyms::KEY_w | keysyms::KEY_W => Keys::W,
+		keysyms::KEY_x | keysyms::KEY_X => Keys::X,
+		keysyms::KEY_y | keysyms::KEY_Y => Keys::Y,
+		keysyms::KEY_z | keysyms::KEY_Z => Keys::Z,
+		keysyms::KEY_0 => Keys::Num0,
+		keysyms::KEY_1 => Keys::Num1,
+		keysyms::KEY_2 => Keys::Num2,
+		keysyms::KEY_3 => Keys::Num3,
+		keysyms::KEY_4 => Keys::Num4,
+		keysyms::KEY_5 => Keys::Num5,
+		keysyms::KEY_6 => Keys::Num6,
+		keysyms::KEY_7 => Keys::Num7,
+		keysyms::KEY_8 => Keys::Num8,
+		keysyms::KEY_9 => Keys::Num9,
+		keysyms::KEY_KP_0 => Keys::NumPad0,
+		keysyms::KEY_KP_1 => Keys::NumPad1,
+		keysyms::KEY_KP_2 => Keys::NumPad2,
+		keysyms::KEY_KP_3 => Keys::NumPad3,
+		keysyms::KEY_KP_4 => Keys::NumPad4,
+		keysyms::KEY_KP_5 => Keys::NumPad5,
+		keysyms::KEY_KP_6 => Keys::NumPad6,
+		keysyms::KEY_KP_7 => Keys::NumPad7,
+		keysyms::KEY_KP_8 => Keys::NumPad8,
+		keysyms::KEY_KP_9 => Keys::NumPad9,
+		keysyms::KEY_KP_Add => Keys::NumPadAdd,
+		keysyms::KEY_KP_Subtract => Keys::NumPadSubtract,
+		keysyms::KEY_KP_Multiply => Keys::NumPadMultiply,
+		keysyms::KEY_KP_Divide => Keys::NumPadDivide,
+		keysyms::KEY_KP_Decimal => Keys::NumPadDecimal,
+		keysyms::KEY_KP_Enter => Keys::NumPadEnter,
+		keysyms::KEY_BackSpace => Keys::Backspace,
+		keysyms::KEY_Tab => Keys::Tab,
+		keysyms::KEY_Return => Keys::Enter,
+		keysyms::KEY_Shift_L => Keys::ShiftLeft,
+		keysyms::KEY_Shift_R => Keys::ShiftRight,
+		keysyms::KEY_Control_L => Keys::ControlLeft,
+		keysyms::KEY_Control_R => Keys::ControlRight,
+		keysyms::KEY_Alt_L => Keys::AltLeft,
+		keysyms::KEY_Alt_R => Keys::AltRight,
+		keysyms::KEY_Menu => Keys::Menu,
+		keysyms::KEY_space => Keys::Space,
+		keysyms::KEY_Insert => Keys::Insert,
+		keysyms::KEY_Delete => Keys::Delete,
+		keysyms::KEY_Home => Keys::Home,
+		keysyms::KEY_End => Keys::End,
+		keysyms::KEY_Page_Up => Keys::PageUp,
+		keysyms::KEY_Page_Down => Keys::PageDown,
+		keysyms::KEY_Up => Keys::ArrowUp,
+		keysyms::KEY_Down => Keys::ArrowDown,
+		keysyms::KEY_Left => Keys::ArrowLeft,
+		keysyms::KEY_Right => Keys::ArrowRight,
+		keysyms::KEY_Escape => Keys::Escape,
+		keysyms::KEY_F1 => Keys::F1,
+		keysyms::KEY_F2 => Keys::F2,
+		keysyms::KEY_F3 => Keys::F3,
+		keysyms::KEY_F4 => Keys::F4,
+		keysyms::KEY_F5 => Keys::F5,
+		keysyms::KEY_F6 => Keys::F6,
+		keysyms::KEY_F7 => Keys::F7,
+		keysyms::KEY_F8 => Keys::F8,
+		keysyms::KEY_F9 => Keys::F9,
+		keysyms::KEY_F10 => Keys::F10,
+		keysyms::KEY_F11 => Keys::F11,
+		keysyms::KEY_F12 => Keys::F12,
+		keysyms::KEY_Num_Lock => Keys::NumLock,
+		keysyms::KEY_Scroll_Lock => Keys::ScrollLock,
+		keysyms::KEY_Caps_Lock => Keys::CapsLock,
+		keysyms::KEY_Print => Keys::PrintScreen,
+		_ => return None,
+	};
+
+	Some(key)
 }
 
 impl AppData {
@@ -537,44 +652,61 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 		match event {
 			wl_keyboard::Event::Key { key, state, .. } => {
 				let pressed = state.into_result().unwrap() == wl_keyboard::KeyState::Pressed;
+				let keycode = xkb::Keycode::new(key + 8);
 
-				let key = match key {
-					1 => Keys::Escape,
-					2 => Keys::F1,
-					3 => Keys::F2,
-					4 => Keys::F3,
-					5 => Keys::F4,
-					6 => Keys::F5,
-					7 => Keys::F6,
-					8 => Keys::F7,
-					9 => Keys::F8,
-					10 => Keys::F9,
-					11 => Keys::F10,
-					12 => Keys::F11,
-					13 => Keys::F12,
-					14 => Keys::PrintScreen,
-					15 => Keys::ScrollLock,
-					17 => Keys::W,
-					18 => Keys::Home,
-					19 => Keys::PageUp,
-					20 => Keys::Delete,
-					21 => Keys::End,
-					22 => Keys::PageDown,
-					23 => Keys::ArrowRight,
-					24 => Keys::ArrowLeft,
-					25 => Keys::ArrowDown,
-					26 => Keys::ArrowUp,
-					27 => Keys::NumLock,
-					30 => Keys::A,
-					31 => Keys::S,
-					32 => Keys::D,
-					57 => Keys::Space,
-					_ => return,
+				let keyboard_state = match this.state.keyboard_state.as_ref() {
+					Some(keyboard_state) => keyboard_state,
+					None => return,
 				};
 
-				this.events.push_back(Events::Key { pressed, key });
+				let mut keyboard_state = keyboard_state.borrow_mut();
+				let direction = if pressed {
+					xkb::KeyDirection::Down
+				} else {
+					xkb::KeyDirection::Up
+				};
+
+				keyboard_state.state.update_key(keycode, direction);
+
+				if let Some(key) = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode)) {
+					this.events.push_back(Events::Key { pressed, key });
+				}
 			}
-			wl_keyboard::Event::Keymap { .. } => {
+			wl_keyboard::Event::Keymap { format, fd, size } => {
+				let format = match format.into_result() {
+					Ok(format) => format,
+					Err(_) => return,
+				};
+
+				if format != wl_keyboard::KeymapFormat::XkbV1 {
+					return;
+				}
+
+				let file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
+				let mut keymap = String::new();
+				let mut reader = file.take(size as u64);
+
+				if reader.read_to_string(&mut keymap).is_err() {
+					return;
+				}
+
+				if let Some(null_pos) = keymap.find('\0') {
+					keymap.truncate(null_pos);
+				}
+
+				let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+				let keymap = match xkb::Keymap::new_from_string(&context, keymap, xkb::KEYMAP_FORMAT_TEXT_V1, xkb::COMPILE_NO_FLAGS) {
+					Some(keymap) => keymap,
+					None => return,
+				};
+
+				let state = xkb::State::new(&keymap);
+
+				this.state.keyboard_state = Some(Rc::new(RefCell::new(KeyboardState {
+					context,
+					keymap,
+					state,
+				})));
 			}
 			wl_keyboard::Event::Enter { .. } => {
 				this.state.focused_keyboard = Some(keyboard.clone());
@@ -589,6 +721,15 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 				}
 
 				this.process_requests(qh);
+			}
+			wl_keyboard::Event::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
+				let keyboard_state = match this.state.keyboard_state.as_ref() {
+					Some(keyboard_state) => keyboard_state,
+					None => return,
+				};
+
+				let mut keyboard_state = keyboard_state.borrow_mut();
+				keyboard_state.state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
 			}
 			_ => {}
 		}

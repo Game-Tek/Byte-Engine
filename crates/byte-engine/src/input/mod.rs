@@ -1,6 +1,7 @@
 use super::utils::RGBA;
 
 pub mod input_manager;
+mod gamepad;
 
 pub mod device_class;
 pub mod device;

@@ -48,7 +48,7 @@ jobs:
       run: sudo apt-get install libasound2-dev
     - name: Install additional Linux dependencies
       if: matrix.platform == 'linux'
-      run: sudo apt-get install -y pkg-config libx11-dev libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      run: sudo apt-get install -y pkg-config libx11-dev libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev libudev-dev
     - name: Install Windows dependencies
       if: matrix.platform == 'windows'
       run: |

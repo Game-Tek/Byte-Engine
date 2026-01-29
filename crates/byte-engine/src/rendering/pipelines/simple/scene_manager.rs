@@ -238,6 +238,8 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	}
 
 	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
+		let main = render_pass_builder.render_to("main");
+		let depth = render_pass_builder.render_to("depth");
 		self.views.push(RenderPass::new(render_pass_builder.device(), &self.descriptor_set_template, self.camera_data_buffer.into(), self.instance_data_buffer.into(), id))
 	}
 }

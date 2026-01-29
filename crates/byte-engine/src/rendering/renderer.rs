@@ -133,6 +133,10 @@ impl Renderer {
 				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 
 				scene_manager.create_view(view_id, &mut rpb);
+
+				if rpb.consumed_resources.len() == 0 {
+					log::debug!("No resources consumed by scene manager");
+				}
 			}
 		}
 
@@ -156,7 +160,7 @@ impl Renderer {
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
 	pub fn prepare(&'_ mut self) {
 		let Some(_) = self.windows.first() else {
-			log::warn!("No swapchains available to present to. Skipping rendering!");
+			log::debug!("No swapchains available to present to. Skipping rendering!");
 			return;
 		};
 
@@ -230,6 +234,14 @@ impl Renderer {
 						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
 
 						(command.borrow_mut())(e, &attachment_infos);
+
+						// temporary: copy to swapchain
+						{
+							let (present_key, _, swapchain) = swapchains[0].unwrap();
+
+							let source_texture = render_targets.get_image("result", viewport.index());
+							e.copy_to_swapchain(*source_texture, present_key, swapchain);
+						}
 					}
 				}
 
@@ -311,14 +323,18 @@ impl Listener<CreateEvent<Window>> for Renderer {
 					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16UNORM);
 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
-	
+
 					{
 						let scene_managers = self.scene_managers.iter();
-	
+
 						for sm in scene_managers {
 							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
-	
+
 							sm.write().create_view(view_id, &mut rpb);
+
+							if rpb.consumed_resources.len() == 0 {
+								log::debug!("No resources consumed by scene manager");
+							}
 						}
 					}
 				}
@@ -410,8 +426,8 @@ pub struct RenderTargets {
 	images: Vec<(ghi::ImageHandle, ghi::Formats)>,
 	/// Maps names to image indices.
 	by_name: Vec<(String, usize)>,
-	/// Maps view indices to image indices.
-	by_view_index: Vec<(usize, usize)>,
+	/// Maps view indices to image indices and access policies, making attachments.
+	by_view_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
 }
 
 impl RenderTargets {
@@ -429,8 +445,36 @@ impl RenderTargets {
 		let index = self.images.len();
 		self.images.push((image, format));
 		self.by_name.push((name, index));
-		self.by_view_index.push((view, index));
+		self.by_view_index.push((view, (index, ghi::AccessPolicies::WRITE)));
 		index
+	}
+
+	pub fn read_from(&mut self, name: &str, view_id: usize) {
+		if let Some(_) = self.get_attachment_index(name, view_id) {
+			log::debug!("Attachment is already used in the render pass");
+			return;
+		}
+
+		let Some(index) = self.get_image_index(name) else {
+			log::debug!("An image by that name does not exists");
+			return;
+		};
+
+		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::READ)));
+	}
+
+	pub fn write_to(&mut self, name: &str, view_id: usize) {
+		if let Some(_) = self.get_attachment_index(name, view_id) {
+			log::debug!("Attachment is already used in the render pass");
+			return;
+		}
+
+		let Some(index) = self.get_image_index(name) else {
+			log::debug!("An image by that name does not exists");
+			return;
+		};
+
+		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::WRITE)));
 	}
 
 	pub fn get(&self, name: &str) -> Option<&(ghi::ImageHandle, ghi::Formats)> {
@@ -442,7 +486,7 @@ impl RenderTargets {
 	}
 
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
-		let attachments = self.by_view_index.iter().filter_map(|(v, i)| {
+		let attachments = self.by_view_index.iter().filter_map(|(v, (i, _))| {
 			if *v == view {
 				self.images.get(*i)
 			} else {
@@ -453,6 +497,23 @@ impl RenderTargets {
 		attachments.map(|(image, format)| {
 			ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true) // Trivialize for now
 		}).collect()
+	}
+
+	fn get_image(&self, name: &str, view_id: usize) -> &ghi::ImageHandle {
+		let index = self.get_attachment_index(name, view_id).unwrap();
+		&self.images.get(index).unwrap().0
+	}
+
+	fn get_image_index(&self, name: &str) -> Option<usize> {
+		self.by_name.iter().find(|(n, _)| n == name).map(|(_, i)| *i)
+	}
+
+	fn get_attachment_index(&self, name: &str, view_id: usize) -> Option<usize> {
+		let by_name = self.by_name.iter().filter(|(n, _)| n == name);
+		let by_view_index = self.by_view_index.iter().filter(|(v, _)| *v == view_id);
+		let image = by_name.zip(by_view_index).find(|((_, i), (_, (j, _)))| *i == *j);
+
+		image.map(|((_, i), (_, _))| *i)
 	}
 }
 

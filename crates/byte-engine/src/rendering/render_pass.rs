@@ -39,6 +39,7 @@ impl <'a> RenderPassBuilder<'a> {
 	/// Use `render_to` to get a reference to an image you expect to exist.
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
+		self.images.write_to(name, self.view_id);
 
 		let (image, format) = self.images.get(name).expect("Image not found").clone();
 
@@ -61,6 +62,7 @@ impl <'a> RenderPassBuilder<'a> {
 
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
+		self.images.read_from(name, self.view_id);
 
 		let (image, _) = self.images.get(name).expect("Image not found").clone();
 

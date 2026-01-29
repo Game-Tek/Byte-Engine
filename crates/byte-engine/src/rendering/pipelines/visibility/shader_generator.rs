@@ -1,6 +1,7 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use besl::{parser::Node, NodeReference};
+use std::sync::Arc;
 use resource_management::asset::material_asset_handler::ProgramGenerator;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
@@ -349,8 +350,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(0, besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "views", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
-				statements.push(besl::parser::Node::glsl(b, &["lighting_data", "diffuse_map", "specular_map", "sample_shadow"], Vec::new()));
+				let mut new_statements = Vec::with_capacity(statements.len() + 2);
+				new_statements.push(besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "views", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
+				new_statements.extend(statements.iter().cloned());
+				new_statements.push(besl::parser::Node::glsl(b, &["lighting_data", "diffuse_map", "specular_map", "sample_shadow"], Vec::new()));
+				*statements = Arc::from(new_statements);
 			}
 			_ => {}
 		}

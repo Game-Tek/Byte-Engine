@@ -1,9 +1,6 @@
-use std::marker::PhantomData;
-
 pub struct Tokens<'a> {
 	/// The tokens in the stream.
-	pub(crate) tokens: Vec<String>,
-	_lifetime: PhantomData<&'a str>,
+	pub(crate) tokens: Vec<&'a str>,
 }
 
 /// Tokenize consumes a string and returns a stream of tokens.
@@ -12,10 +9,10 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 		c.is_whitespace()
 	};
 
-	let can_sequence_continue = |sequence: &str, c: char| -> bool {
-		if sequence.is_empty() { return true; }
-
-		let last = sequence.chars().last().unwrap();
+	let can_sequence_continue = |last: Option<char>, c: char| -> bool {
+		let Some(last) = last else {
+			return true;
+		};
 
 		if last.is_alphabetic() {
 			c.is_alphanumeric() || c == '_'
@@ -33,41 +30,45 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 	};
 
 	let mut tokens = Vec::new();
-	let mut chars = source.chars();
-	let mut iterator = chars.next();
+	let mut chars = source.char_indices().peekable();
+	let mut token_start: Option<usize> = None;
+	let mut token_last: Option<char> = None;
 
-	'outer: loop {
-		let mut token = String::new();
-
-		'inner: loop {
-			match iterator {
-				Some(c) => {
-					if interrupt(c) {
-						iterator = chars.next();
-						break 'inner;
-					} else if can_sequence_continue(&token, c) {
-						token.push(c);
-						iterator = chars.next();
-					} else {
-						break 'inner;
-					}
-				},
-				None => {
-					if !token.is_empty() {
-						tokens.push(token);
-					}
-
-					break 'outer;
-				},
+	while let Some((idx, c)) = chars.peek().copied() {
+		if interrupt(c) {
+			if let Some(start) = token_start {
+				tokens.push(&source[start..idx]);
+				token_start = None;
+				token_last = None;
 			}
+			chars.next();
+			continue;
 		}
 
-		if token.len() > 0 {
-			tokens.push(token);
+		match token_start {
+			None => {
+				token_start = Some(idx);
+				token_last = Some(c);
+				chars.next();
+			}
+			Some(start) => {
+				if can_sequence_continue(token_last, c) {
+					token_last = Some(c);
+					chars.next();
+				} else {
+					tokens.push(&source[start..idx]);
+					token_start = None;
+					token_last = None;
+				}
+			}
 		}
 	}
 
-	Ok(Tokens { tokens, _lifetime: PhantomData })
+	if let Some(start) = token_start {
+		tokens.push(&source[start..]);
+	}
+
+	Ok(Tokens { tokens })
 }
 
 #[cfg(test)]

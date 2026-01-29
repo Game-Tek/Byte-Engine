@@ -182,7 +182,7 @@ pub(super) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 
 	match &node.node {
 		parser::Nodes::Scope { name, children } => {
-			assert_eq!(name, "root");
+			assert_eq!(name.as_ref(), "root");
 
 			for child in children {
 				let c = lex_parsed_node(vec![root.clone()], child,)?;
@@ -789,9 +789,9 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 	let node = match &parser_node.node {
 		parser::Nodes::Null => { Node::new(Nodes::Null).into() }
 		parser::Nodes::Scope{ name, children } => {
-			assert_ne!(name, "root"); // The root scope node cannot be an inner part of the program.
+			assert_ne!(name.as_ref(), "root"); // The root scope node cannot be an inner part of the program.
 
-			let this: NodeReference = Node::scope(name.clone()).into();
+			let this: NodeReference = Node::scope(name.as_ref().to_string()).into();
 
 			for child in children {
 				let c = lex_parsed_node({
@@ -805,11 +805,11 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this
 		}
 		parser::Nodes::Struct { name, fields } => {
-			if let Some(n) = get_reference(&chain, name) { // If the type already exists, return it.
+			if let Some(n) = get_reference(&chain, name.as_ref()) { // If the type already exists, return it.
 				return Ok(n.clone());
 			}
 
-			let this: NodeReference = Node::r#struct(&name, Vec::new()).into();
+			let this: NodeReference = Node::r#struct(name.as_ref(), Vec::new()).into();
 
 			for field in fields {
 				let mut chain = chain.clone();
@@ -821,10 +821,10 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this
 		}
 		parser::Nodes::Specialization { name, r#type } => {
-			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType { type_name: r#type.clone() })?;
+			let t = get_reference(&chain, r#type.as_ref()).ok_or(LexError::ReferenceToUndefinedType { type_name: r#type.as_ref().to_string() })?;
 
 			let this = Node::new(Nodes::Specialization {
-				name: name.clone(),
+				name: name.as_ref().to_string(),
 				r#type: t,
 			});
 
@@ -857,7 +857,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					get_reference(&chain, inner_type_name).ok_or(LexError::ReferenceToUndefinedType{ type_name: inner_type_name.to_string() })?
 				};
 
-				if let Some(n) = get_reference(&chain, r#type) { // If the specialized generic type already exists, return it.
+				if let Some(n) = get_reference(&chain, r#type.as_ref()) { // If the specialized generic type already exists, return it.
 					return Ok(n.clone());
 				}
 
@@ -865,7 +865,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 				let this = Node {
 					node: Nodes::Struct {
-						name: r#type.clone(),
+						name: r#type.as_ref().to_string(),
 						template: Some(outer_type.clone()),
 						fields: children,
 						types: vec![inner_type],
@@ -884,30 +884,30 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 				let count = s.next().ok_or(LexError::Undefined{ message: Some("No count".to_string()) })?.parse().map_err(|_| LexError::Undefined{ message: Some("Invalid count".to_string()) })?;
 
-				return Ok(Node::array(&name, member_type, count));
+				return Ok(Node::array(name.as_ref(), member_type, count));
 			} else {
-				get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?
+				get_reference(&chain, r#type.as_ref()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.as_ref().to_string() })?
 			};
 
-			let this: NodeReference = Node::member(&name, t,).into();
+			let this: NodeReference = Node::member(name.as_ref(), t,).into();
 
 			this
 		}
 		parser::Nodes::Parameter { name, r#type } => {
-			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType { type_name: r#type.clone() })?;
+			let t = get_reference(&chain, r#type.as_ref()).ok_or(LexError::ReferenceToUndefinedType { type_name: r#type.as_ref().to_string() })?;
 
 			let this = Node::new(Nodes::Parameter {
-				name: name.clone(),
+				name: name.as_ref().to_string(),
 				r#type: t,
 			});
 
 			this.into()
 		}
 		parser::Nodes::Input { name, format, location } => {
-			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType { type_name: format.clone() })?;
+			let t = get_reference(&chain, format.as_ref()).ok_or(LexError::ReferenceToUndefinedType { type_name: format.as_ref().to_string() })?;
 
 			let this = Node::new(Nodes::Input {
-				name: name.clone(),
+				name: name.as_ref().to_string(),
 				format: t,
 				location: location.clone(),
 			});
@@ -915,10 +915,10 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this.into()
 		}
 		parser::Nodes::Output { name, format, location } => {
-			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType { type_name: format.clone() })?;
+			let t = get_reference(&chain, format.as_ref()).ok_or(LexError::ReferenceToUndefinedType { type_name: format.as_ref().to_string() })?;
 
 			let this = Node::new(Nodes::Output {
-				name: name.clone(),
+				name: name.as_ref().to_string(),
 				format: t,
 				location: location.clone(),
 			});
@@ -926,9 +926,9 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this.into()
 		}
 		parser::Nodes::Function { name, return_type, statements, params, .. } => {
-			let t = get_reference(&chain, return_type).ok_or(LexError::ReferenceToUndefinedType { type_name: return_type.clone() })?;
+			let t = get_reference(&chain, return_type.as_ref()).ok_or(LexError::ReferenceToUndefinedType { type_name: return_type.as_ref().to_string() })?;
 
-			let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new(),).into();
+			let this: NodeReference = Node::function(name.as_ref(), Vec::new(), t, Vec::new(),).into();
 
 			for param in params {
 				let mut chain = chain.clone();
@@ -971,24 +971,24 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					BindingTypes::Buffer { members: members.iter().map(|m| lex_parsed_node(chain.clone(), m)).collect::<Result<Vec<NodeReference>, LexError>>()? }
 				}
 				parser::Nodes::Image { format } => {
-					BindingTypes::Image { format: format.clone() }
+					BindingTypes::Image { format: format.as_ref().to_string() }
 				}
 				parser::Nodes::CombinedImageSampler { format } => {
-					BindingTypes::CombinedImageSampler { format: format.clone() }
+					BindingTypes::CombinedImageSampler { format: format.as_ref().to_string() }
 				}
 				_ => { return Err(LexError::Undefined{ message: Some("Invalid binding type".to_string()) }); }
 			};
 
 			let this = if let Some(count) = count {
-				Node::binding_array(&name, r#type, *set, *descriptor, *read, *write, count.get())
+				Node::binding_array(name.as_ref(), r#type, *set, *descriptor, *read, *write, count.get())
 			} else {
-				Node::binding(&name, r#type, *set, *descriptor, *read, *write)
+				Node::binding(name.as_ref(), r#type, *set, *descriptor, *read, *write)
 			};
 
 			this.into()
 		}
 		parser::Nodes::Type { name, members } => {
-			let mut this = Node::r#struct(name, Vec::new());
+			let mut this = Node::r#struct(name.as_ref(), Vec::new());
 
 			for member in members {
 				let c = lex_parsed_node(chain.clone(), member)?;
@@ -998,12 +998,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this.into()
 		}
 		parser::Nodes::Image { format } => {
-			let this = Node::binding("image", BindingTypes::Image { format: format.clone() }, 0, 0, false, false);
+			let this = Node::binding("image", BindingTypes::Image { format: format.as_ref().to_string() }, 0, 0, false, false);
 
 			this.into()
 		}
 		parser::Nodes::CombinedImageSampler { format } => {
-			let this = Node::binding("combined_image_sampler", BindingTypes::CombinedImageSampler{ format: format.clone() }, 0, 0, false, false);
+			let this = Node::binding("combined_image_sampler", BindingTypes::CombinedImageSampler{ format: format.as_ref().to_string() }, 0, 0, false, false);
 
 			this.into()
 		}
@@ -1011,23 +1011,25 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			let mut inputs = Vec::new();
 
 			for i in input {
-				inputs.push(get_reference(&chain, i).ok_or(LexError::AccessingUndeclaredMember { name: i.clone() })?.clone());
+				let name = i.as_ref();
+				inputs.push(get_reference(&chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })?.clone());
 			}
 
 			let mut outputs = Vec::new();
 
 			for o in output {
-				outputs.push(Node::expression(Expressions::VariableDeclaration { name: o.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name: o.clone() })? }).into());
+				let name = o.as_ref().to_string();
+				outputs.push(Node::expression(Expressions::VariableDeclaration { name: name.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name })? }).into());
 			}
 
-			let this = Node::raw(glsl.clone(), hlsl.clone(), inputs, outputs);
+			let this = Node::raw(glsl.as_ref().map(|v| v.as_ref().to_string()), hlsl.as_ref().map(|v| v.as_ref().to_string()), inputs, outputs);
 
 			this.into()
 		}
 		parser::Nodes::Literal { name, body } => {
 			Node::new(Nodes::Literal {
-				name: name.clone(),
-				value: lex_parsed_node(chain, body)?,
+				name: name.as_ref().to_string(),
+				value: lex_parsed_node(chain, body.as_ref())?,
 			}).into()
 		}
 		parser::Nodes::Expression(expression) => {
@@ -1054,13 +1056,13 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				}
 				parser::Expressions::Member{ name } => {
 					Node::expression(Expressions::Member {
-						source: get_reference(&chain, name).ok_or(LexError::AccessingUndeclaredMember{ name: name.clone() })?.clone(),
-						name: name.clone(),
+						source: get_reference(&chain, name.as_ref()).ok_or(LexError::AccessingUndeclaredMember{ name: name.as_ref().to_string() })?.clone(),
+						name: name.as_ref().to_string(),
 					})
 				}
 				parser::Expressions::Literal{ value } => {
 					Node::expression(Expressions::Literal {
-						value: value.clone(),
+						value: value.as_ref().to_string(),
 					})
 				}
 				parser::Expressions::Expression(elements) => {
@@ -1068,7 +1070,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				}
 				parser::Expressions::Call{ name, parameters } => {
 					// let r = function.clone(); // Clone to be able to borrow it in and return it
-					let function = get_reference(&chain, name).ok_or(LexError::ReferenceToUndefinedType{ type_name: name.clone() })?;
+					let function = get_reference(&chain, name.as_ref()).ok_or(LexError::ReferenceToUndefinedType{ type_name: name.as_ref().to_string() })?;
 					let r = function.clone(); // Clone to be able to borrow it in and return it
 					let parameters = parameters.iter().map(|e| lex_parsed_node(chain.clone(), e)).collect::<Result<Vec<NodeReference>, LexError>>()?;
 
@@ -1094,7 +1096,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				}
 				parser::Expressions::Operator{ name, left, right } => {
 					Node::expression(Expressions::Operator {
-						operator: match name.as_str() {
+						operator: match name.as_ref() {
 							"+" => Operators::Plus,
 							"-" => Operators::Minus,
 							"*" => Operators::Multiply,
@@ -1110,8 +1112,8 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				}
 				parser::Expressions::VariableDeclaration{ name, r#type } => {
 					let this = Node::expression(Expressions::VariableDeclaration {
-						name: name.clone(),
-						r#type: get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.clone() })?,
+						name: name.as_ref().to_string(),
+						r#type: get_reference(&chain, r#type.as_ref()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#type.as_ref().to_string() })?,
 					});
 
 					this
@@ -1120,26 +1122,28 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					let mut inputs = Vec::new();
 
 					for i in input {
-						inputs.push(get_reference(&chain, i).ok_or(LexError::AccessingUndeclaredMember { name: i.clone() })?.clone());
+						let name = i.as_ref();
+						inputs.push(get_reference(&chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })?.clone());
 					}
 
 					let mut outputs = Vec::new();
 
 					for o in output {
-						outputs.push(Node::expression(Expressions::VariableDeclaration { name: o.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name: o.clone() })? }).into());
+						let name = o.as_ref().to_string();
+						outputs.push(Node::expression(Expressions::VariableDeclaration { name: name.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name })? }).into());
 					}
 
-					Node::raw(glsl.clone(), hlsl.clone(), inputs, outputs)
+					Node::raw(glsl.as_ref().map(|v| v.as_ref().to_string()), hlsl.as_ref().map(|v| v.as_ref().to_string()), inputs, outputs)
 				}
 				parser::Expressions::Macro { name, body } => {
-					Node::r#macro(&name, lex_parsed_node(chain, body)?)
+					Node::r#macro(name.as_ref(), lex_parsed_node(chain, body.as_ref())?)
 				}
 			};
 
 			this.into()
 		}
 		parser::Nodes::Intrinsic { name, elements, r#return, .. } => {
-			let this: NodeReference = Node::intrinsic(name, Vec::new(), get_reference(&chain, &r#return).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#return.clone() })?).into();
+			let this: NodeReference = Node::intrinsic(name.as_ref(), Vec::new(), get_reference(&chain, r#return.as_ref()).ok_or(LexError::ReferenceToUndefinedType{ type_name: r#return.as_ref().to_string() })?).into();
 
 			for e in elements {
 				let mut chain = chain.clone();

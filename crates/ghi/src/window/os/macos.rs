@@ -1,20 +1,96 @@
+use std::cell::Cell;
+
 use crate::input::{Keys, MouseKeys};
 use crate::{os::WindowLike, Events};
-use objc2::{rc::Retained, MainThreadMarker};
-use objc2::MainThreadOnly as _;
-use objc2::Message as _;
-use objc2::define_class;
-use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow, NSWindowStyleMask};
-use objc2_foundation::{NSAutoreleasePool, NSDefaultRunLoopMode, NSPoint, NSRect, NSRunLoop, NSRunLoopMode, NSSize, NSString};
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _};
+use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask};
+use objc2_foundation::{NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 pub struct Window {
 	mtm: MainThreadMarker,
 	app: Retained<NSApplication>,
 	window: Retained<NSWindow>,
+	delegate: Retained<WindowDelegate>,
+	modifier_state: ModifierState,
 }
 
 pub struct Handles {
 	pub(crate) view: Retained<NSView>,
+}
+
+#[derive(Debug, Default)]
+struct WindowDelegateIvars {
+	close_requested: Cell<bool>,
+	minimize_requested: Cell<bool>,
+	maximize_requested: Cell<bool>,
+	zoomed: Cell<bool>,
+}
+
+define_class!(
+	#[unsafe(super = NSObject)]
+	#[thread_kind = MainThreadOnly]
+	#[ivars = WindowDelegateIvars]
+	struct WindowDelegate;
+
+	unsafe impl NSObjectProtocol for WindowDelegate {}
+
+	unsafe impl NSWindowDelegate for WindowDelegate {
+		#[unsafe(method(windowWillClose:))]
+		fn window_will_close(&self, _notification: &NSNotification) {
+			self.ivars().close_requested.set(true);
+		}
+
+		#[unsafe(method(windowDidMiniaturize:))]
+		fn window_did_miniaturize(&self, _notification: &NSNotification) {
+			self.ivars().minimize_requested.set(true);
+		}
+
+		#[unsafe(method(windowDidResize:))]
+		fn window_did_resize(&self, notification: &NSNotification) {
+			self.update_zoom_state(notification);
+		}
+
+		#[unsafe(method(windowDidEnterFullScreen:))]
+		fn window_did_enter_full_screen(&self, _notification: &NSNotification) {
+			self.ivars().maximize_requested.set(true);
+			self.ivars().zoomed.set(true);
+		}
+
+		#[unsafe(method(windowDidExitFullScreen:))]
+		fn window_did_exit_full_screen(&self, _notification: &NSNotification) {
+			self.ivars().zoomed.set(false);
+		}
+	}
+);
+
+impl WindowDelegate {
+	fn new(mtm: MainThreadMarker) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars::default());
+		unsafe { msg_send![super(this), init] }
+	}
+
+	fn update_zoom_state(&self, notification: &NSNotification) {
+		let Some(window) = notification.object() else {
+			return;
+		};
+
+		let Ok(window) = window.downcast::<NSWindow>() else {
+			return;
+		};
+
+		let is_zoomed = window.isZoomed();
+		let was_zoomed = self.ivars().zoomed.get();
+
+		if is_zoomed != was_zoomed {
+			self.ivars().zoomed.set(is_zoomed);
+
+			if is_zoomed {
+				self.ivars().maximize_requested.set(true);
+			}
+		}
+	}
 }
 
 impl WindowLike for Window {
@@ -39,6 +115,9 @@ impl WindowLike for Window {
 			)
 		};
 
+		let delegate = WindowDelegate::new(mtm);
+		window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+
 		window.setTitle(&NSString::from_str(name));
 		window.makeKeyAndOrderFront(None);
 
@@ -49,11 +128,25 @@ impl WindowLike for Window {
 			mtm,
 			window,
 			app,
+			delegate,
+			modifier_state: ModifierState::default(),
 		})
 	}
 
 	fn poll(&mut self) -> impl Iterator<Item = Events> {
 		let mut events = Vec::new();
+
+		if self.delegate.ivars().close_requested.replace(false) {
+			events.push(Events::Close);
+		}
+
+		if self.delegate.ivars().minimize_requested.replace(false) {
+			events.push(Events::Minimize);
+		}
+
+		if self.delegate.ivars().maximize_requested.replace(false) {
+			events.push(Events::Maximize);
+		}
 
 		while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, None, unsafe { NSDefaultRunLoopMode }, true) {
 			let time = (event.timestamp() * 1000.0) as u64;
@@ -90,18 +183,16 @@ impl WindowLike for Window {
 				NSEventType::KeyDown | NSEventType::KeyUp => {
 					let pressed = event.r#type() == NSEventType::KeyDown;
 
-					let key = match event.keyCode() {
-						53 => Keys::Escape,
-						13 => Keys::W,
-						0 => Keys::A,
-						1 => Keys::S,
-						2 => Keys::D,
-						_ => Keys::Z
-					};
-
-					events.push(Events::Key { pressed, key });
+					if let Some(key) = keycode_to_key(event.keyCode()) {
+						events.push(Events::Key { pressed, key });
+					}
 				}
 				NSEventType::FlagsChanged => {
+					if let Some(key) = modifier_keycode_to_key(event.keyCode()) {
+						if let Some(pressed) = self.modifier_state.update(key, event.modifierFlags()) {
+							events.push(Events::Key { pressed, key });
+						}
+					}
 				}
 				NSEventType::AppKitDefined => {
 				}
@@ -116,5 +207,157 @@ impl WindowLike for Window {
 		Handles {
 			view: self.window.contentView().unwrap().retain(),
 		}
+	}
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ModifierState {
+	shift_left: bool,
+	shift_right: bool,
+	control_left: bool,
+	control_right: bool,
+	alt_left: bool,
+	alt_right: bool,
+	caps_lock: bool,
+}
+
+impl ModifierState {
+	fn update(&mut self, key: Keys, flags: NSEventModifierFlags) -> Option<bool> {
+		match key {
+			Keys::ShiftLeft => update_modifier_side(&mut self.shift_left, &mut self.shift_right, flags.contains(NSEventModifierFlags::Shift)),
+			Keys::ShiftRight => update_modifier_side(&mut self.shift_right, &mut self.shift_left, flags.contains(NSEventModifierFlags::Shift)),
+			Keys::ControlLeft => update_modifier_side(&mut self.control_left, &mut self.control_right, flags.contains(NSEventModifierFlags::Control)),
+			Keys::ControlRight => update_modifier_side(&mut self.control_right, &mut self.control_left, flags.contains(NSEventModifierFlags::Control)),
+			Keys::AltLeft => update_modifier_side(&mut self.alt_left, &mut self.alt_right, flags.contains(NSEventModifierFlags::Option)),
+			Keys::AltRight => update_modifier_side(&mut self.alt_right, &mut self.alt_left, flags.contains(NSEventModifierFlags::Option)),
+			Keys::CapsLock => {
+				let pressed = flags.contains(NSEventModifierFlags::CapsLock);
+
+				if pressed == self.caps_lock {
+					None
+				} else {
+					self.caps_lock = pressed;
+					Some(pressed)
+				}
+			}
+			_ => None,
+		}
+	}
+}
+
+fn update_modifier_side(current: &mut bool, other: &mut bool, flag_on: bool) -> Option<bool> {
+	let next = if !flag_on {
+		*other = false;
+		false
+	} else if !*other {
+		true
+	} else {
+		!*current
+	};
+
+	if *current == next {
+		return None;
+	}
+
+	*current = next;
+	Some(next)
+}
+
+fn modifier_keycode_to_key(code: u16) -> Option<Keys> {
+	match code {
+		56 => Some(Keys::ShiftLeft),
+		60 => Some(Keys::ShiftRight),
+		59 => Some(Keys::ControlLeft),
+		62 => Some(Keys::ControlRight),
+		58 => Some(Keys::AltLeft),
+		61 => Some(Keys::AltRight),
+		57 => Some(Keys::CapsLock),
+		_ => None,
+	}
+}
+
+fn keycode_to_key(code: u16) -> Option<Keys> {
+	match code {
+		0 => Some(Keys::A),
+		11 => Some(Keys::B),
+		8 => Some(Keys::C),
+		2 => Some(Keys::D),
+		14 => Some(Keys::E),
+		3 => Some(Keys::F),
+		5 => Some(Keys::G),
+		4 => Some(Keys::H),
+		34 => Some(Keys::I),
+		38 => Some(Keys::J),
+		40 => Some(Keys::K),
+		37 => Some(Keys::L),
+		46 => Some(Keys::M),
+		45 => Some(Keys::N),
+		31 => Some(Keys::O),
+		35 => Some(Keys::P),
+		12 => Some(Keys::Q),
+		15 => Some(Keys::R),
+		1 => Some(Keys::S),
+		17 => Some(Keys::T),
+		32 => Some(Keys::U),
+		9 => Some(Keys::V),
+		13 => Some(Keys::W),
+		7 => Some(Keys::X),
+		16 => Some(Keys::Y),
+		6 => Some(Keys::Z),
+		18 => Some(Keys::Num1),
+		19 => Some(Keys::Num2),
+		20 => Some(Keys::Num3),
+		21 => Some(Keys::Num4),
+		23 => Some(Keys::Num5),
+		22 => Some(Keys::Num6),
+		26 => Some(Keys::Num7),
+		28 => Some(Keys::Num8),
+		25 => Some(Keys::Num9),
+		29 => Some(Keys::Num0),
+		82 => Some(Keys::NumPad0),
+		83 => Some(Keys::NumPad1),
+		84 => Some(Keys::NumPad2),
+		85 => Some(Keys::NumPad3),
+		86 => Some(Keys::NumPad4),
+		87 => Some(Keys::NumPad5),
+		88 => Some(Keys::NumPad6),
+		89 => Some(Keys::NumPad7),
+		91 => Some(Keys::NumPad8),
+		92 => Some(Keys::NumPad9),
+		69 => Some(Keys::NumPadAdd),
+		78 => Some(Keys::NumPadSubtract),
+		67 => Some(Keys::NumPadMultiply),
+		75 => Some(Keys::NumPadDivide),
+		65 => Some(Keys::NumPadDecimal),
+		76 => Some(Keys::NumPadEnter),
+		51 => Some(Keys::Backspace),
+		48 => Some(Keys::Tab),
+		36 => Some(Keys::Enter),
+		49 => Some(Keys::Space),
+		114 => Some(Keys::Insert),
+		117 => Some(Keys::Delete),
+		115 => Some(Keys::Home),
+		119 => Some(Keys::End),
+		116 => Some(Keys::PageUp),
+		121 => Some(Keys::PageDown),
+		123 => Some(Keys::ArrowLeft),
+		124 => Some(Keys::ArrowRight),
+		125 => Some(Keys::ArrowDown),
+		126 => Some(Keys::ArrowUp),
+		53 => Some(Keys::Escape),
+		122 => Some(Keys::F1),
+		120 => Some(Keys::F2),
+		99 => Some(Keys::F3),
+		118 => Some(Keys::F4),
+		96 => Some(Keys::F5),
+		97 => Some(Keys::F6),
+		98 => Some(Keys::F7),
+		100 => Some(Keys::F8),
+		101 => Some(Keys::F9),
+		109 => Some(Keys::F10),
+		103 => Some(Keys::F11),
+		111 => Some(Keys::F12),
+		71 => Some(Keys::NumLock),
+		_ => None,
 	}
 }

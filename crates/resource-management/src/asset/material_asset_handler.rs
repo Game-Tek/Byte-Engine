@@ -9,7 +9,7 @@ use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::Ass
 
 pub trait ProgramGenerator: Send + Sync {
 	/// Transforms a program.
-	fn transform(&self, node: besl::parser::Node, material: &json::Object) -> besl::parser::Node;
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a>;
 }
 
 struct MaterialAsset {
@@ -325,7 +325,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a> {
 			let material_struct = besl::parser::Node::buffer("Material", vec![besl::parser::Node::member("color", "vec4f")]);
 
 			let sample_function = besl::parser::Node::function("sample_", vec![besl::parser::Node::member("t", "u32")], "void", vec![]);
@@ -347,7 +347,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a> {
 			let binding = besl::parser::Node::binding("materials", besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]), 0, 0, true, false);
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
@@ -367,10 +367,10 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for LeafTestShaderGenerator {
-		fn transform(&self, mut root: besl::parser::Node, _: &json::Object) -> besl::parser::Node {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
 			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("material_index", "u32")]);
 
-			let main = besl::parser::Node::function("main", vec![], "void", vec![besl::parser::Node::glsl("push_constant;\nmaterials;\nsample_(0);\n", &["push_constant", "materials", "sample_"], Vec::new())]);
+			let main = besl::parser::Node::function("main", vec![], "void", vec![besl::parser::Node::glsl("push_constant;\nmaterials;\nsample_(0);\n", &["push_constant", "materials", "sample_"], &[])]);
 
 			root.add(vec![push_constant, main]);
 

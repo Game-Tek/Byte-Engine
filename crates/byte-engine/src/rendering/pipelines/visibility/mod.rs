@@ -55,7 +55,7 @@ pub fn get_visibility_pass_mesh_source() -> String {
 	process_meshlet(push_constant.instance_index, view.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["View", "views", "push_constant", "process_meshlet"], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["View", "views", "push_constant", "process_meshlet"], &[])]);
 
 	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 
@@ -111,7 +111,7 @@ pub fn get_material_count_source() -> String {
 	atomicAdd(material_count.material_count[material_index], 1);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_count", "instance_index_render_target"], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_count", "instance_index_render_target"], &[])]);
 
 	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
@@ -140,7 +140,7 @@ pub fn get_material_offset_source() -> String {
 	}
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["material_offset", "material_offset_scratch", "material_count", "material_evaluation_dispatches",], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["material_offset", "material_offset_scratch", "material_count", "material_evaluation_dispatches",], &[])]);
 
 	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
@@ -174,7 +174,7 @@ pub fn get_pixel_mapping_source() -> String {
 	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_offset_scratch", "pixel_mapping", "instance_index_render_target",], Vec::new())]);
+	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_offset_scratch", "pixel_mapping", "instance_index_render_target",], &[])]);
 
 	let mut root = besl::parser::Node::root();
 

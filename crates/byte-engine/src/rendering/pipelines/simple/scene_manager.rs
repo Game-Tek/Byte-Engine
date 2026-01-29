@@ -59,7 +59,7 @@ impl SceneManager {
 			out_instance_index = instance_index;
 			"#.trim();
 
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["cameras", "instances", "push_constant", "in_position", "out_instance_index"], Vec::new())]);
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["cameras", "instances", "push_constant", "in_position", "out_instance_index"], &[])]);
 
 			let mut root = besl::ParserNode::root();
 
@@ -93,7 +93,7 @@ impl SceneManager {
 			out_albedo = get_debug_color(instance_index);
 			"#.trim();
 
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["in_instance_index", "out_albedo", "get_debug_color"], Vec::new())]);
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(main_code, &["in_instance_index", "out_albedo", "get_debug_color"], &[])]);
 
 			let mut root = besl::ParserNode::root();
 

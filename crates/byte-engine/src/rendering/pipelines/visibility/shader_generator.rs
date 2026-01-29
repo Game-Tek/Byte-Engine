@@ -10,11 +10,11 @@ use crate::rendering::common_shader_generator::CommonShaderScope;
 pub struct VisibilityShaderScope {
 }
 
-pub struct VisibilityShaderGenerator {
-	scope: Node,
+pub struct VisibilityShaderGenerator<'a> {
+	scope: Node<'a>,
 }
 
-impl VisibilityShaderGenerator {
+impl VisibilityShaderGenerator<'_> {
 	pub fn new(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
 		Self {
 			scope: VisibilityShaderScope::new_with_params(material_count_read, material_count_write, material_offset_read, material_offset_write, material_offset_scratch_read, material_offset_scratch_write, pixel_mapping_read, pixel_mapping_write),
@@ -23,11 +23,11 @@ impl VisibilityShaderGenerator {
 }
 
 impl VisibilityShaderScope {
-	pub fn new() -> besl::parser::Node {
+	pub fn new<'a>() -> besl::parser::Node<'a> {
 		Self::new_with_params(true, true, true, true, true, true, true, true)
 	}
 
-	pub fn new_with_params(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> besl::parser::Node {
+	pub fn new_with_params<'a>(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> besl::parser::Node<'a> {
 		use besl::parser::Node;
 
 		let mesh_struct = Node::r#struct("Mesh", vec![Node::member("model", "mat4f"), Node::member("material_index", "u32"), Node::member("base_vertex_index", "u32"), Node::member("base_primitive_index", "u32"), Node::member("base_triangle_index", "u32"), Node::member("base_meshlet_index", "u32")]);
@@ -54,7 +54,7 @@ impl VisibilityShaderScope {
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
 		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
 
-		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */", &["vertex_indices"], Vec::new())]);
+		let compute_vertex_index = Node::function("compute_vertex_index", vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")], "u32", vec![Node::glsl("return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */", &["vertex_indices"], &[])]);
 
 		let process_meshlet = Node::function("process_meshlet", vec![Node::parameter("instance_index", "u32"), Node::parameter("matrix", "mat4f")], "void", vec![Node::glsl("
 		Mesh mesh = meshes.meshes[instance_index];
@@ -77,7 +77,7 @@ impl VisibilityShaderScope {
 			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
 			out_instance_index[primitive_index] = instance_index;
 			out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);
-		}", &["meshes", "vertex_positions", "vertex_indices", "primitive_indices", "meshlets", "compute_vertex_index"], Vec::new())]);
+		}", &["meshes", "vertex_positions", "vertex_indices", "primitive_indices", "meshlets", "compute_vertex_index"], &[])]);
 
 		let set2_binding0 = Node::binding("diffuse_map", Node::image("rgba16"), 2, 0, false, true);
 		let set2_binding2 = Node::binding("specular_map", Node::image("rgba16"), 2, 2, false, true);
@@ -88,12 +88,12 @@ impl VisibilityShaderScope {
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
-		let sample_function = Node::intrinsic("sample", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv)", &[], Vec::new())]), "vec4f");
+		let sample_function = Node::intrinsic("sample", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("texture(", &[], &[]), Node::member_expression("smplr"), Node::glsl(", vertex_uv)", &[], &[])]), "vec4f");
 
 		let sample_normal_function = if true {
-			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("unit_vector_from_xy(texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xy)", &["unit_vector_from_xy"], Vec::new())]), "vec3f")
+			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("unit_vector_from_xy(texture(", &[], &[]), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xy)", &["unit_vector_from_xy"], &[])]), "vec3f")
 		} else {
-			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("normalize(texture(", &[], Vec::new()), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xyz * 2.0f - 1.0f)", &[], Vec::new())]), "vec3f")
+			Node::intrinsic("sample_normal", Node::parameter("smplr", "u32"), Node::sentence(vec![Node::glsl("normalize(texture(", &[], &[]), Node::member_expression("smplr"), Node::glsl(", vertex_uv).xyz * 2.0f - 1.0f)", &[], &[])]), "vec3f")
 		};
 
 		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
@@ -122,7 +122,7 @@ impl VisibilityShaderScope {
 
 			float closest_depth = texture(shadow_map, vec3(shadow_uv, float(cascade_index))).r;
 
-			return surface_depth < closest_depth ? 0.0 : 1.0", &["views"], Vec::new())]);
+			return surface_depth < closest_depth ? 0.0 : 1.0", &["views"], &[])]);
 
 		Node::scope("Visibility", vec![
 			view_struct,
@@ -164,8 +164,8 @@ impl VisibilityShaderScope {
 	}
 }
 
-impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform(&self, mut root: besl::parser::Node, material: &json::Object) -> besl::parser::Node {
+impl ProgramGenerator for VisibilityShaderGenerator<'_> {
+	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a> {
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];
@@ -268,7 +268,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let x = besl::parser::Node::literal(name, besl::parser::Node::glsl(&format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), &[/* TODO: fix literals "material".to_string(), */"textures"], Vec::new()));
+					let x = besl::parser::Node::literal(name, besl::parser::Node::glsl(&format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), &[/* TODO: fix literals "material".to_string(), */"textures"], &[]));
 					extra.push(x);
 					texture_count += 1;
 				}
@@ -351,10 +351,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
 				let mut new_statements = Vec::with_capacity(statements.len() + 2);
-				new_statements.push(besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "views", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], vec!["material".to_string(), "albedo".to_string(), "normal".to_string(), "roughness".to_string(), "metalness".to_string()]));
+				new_statements.push(besl::parser::Node::glsl(a, &["vertex_uvs", "ao", "depth_shadow_map", "push_constant", "material_offset", "pixel_mapping", "material_count", "meshes", "meshlets", "materials", "primitive_indices", "vertex_indices", "vertex_positions", "vertex_normals", "triangle_index", "instance_index_render_target", "views", "calculate_full_bary", "interpolate_vec3f_with_deriv", "interpolate_vec2f_with_deriv", "fresnel_schlick", "distribution_ggx", "geometry_smith", "compute_vertex_index"], &["material", "albedo", "normal", "roughness", "metalness"]));
 				new_statements.extend(statements.iter().cloned());
-				new_statements.push(besl::parser::Node::glsl(b, &["lighting_data", "diffuse_map", "specular_map", "sample_shadow"], Vec::new()));
-				*statements = Arc::from(new_statements);
+				new_statements.push(besl::parser::Node::glsl(b, &["lighting_data", "diffuse_map", "specular_map", "sample_shadow"], &[]));
 			}
 			_ => {}
 		}

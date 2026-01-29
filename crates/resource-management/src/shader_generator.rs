@@ -253,8 +253,8 @@ pub mod tests {
 
 		use besl::parser::Node;
 
-		let number_literal = Node::literal("number", Node::glsl("1.0", &[], Vec::new()));
-		let sample_function = Node::intrinsic("sample", Node::parameter("num", "f32"), Node::sentence(vec![Node::glsl("0 + ", &[], Vec::new()), Node::member_expression("num"), Node::glsl(" * 2", &[], Vec::new())]), "f32");
+		let number_literal = Node::literal("number", Node::glsl("1.0", &[], &[]));
+		let sample_function = Node::intrinsic("sample", Node::parameter("num", "f32"), Node::sentence(vec![Node::glsl("0 + ", &[], &[]), Node::member_expression("num"), Node::glsl(" * 2", &[], &[])]), "f32");
 
 		let mut root = besl::parse(&script).unwrap();
 

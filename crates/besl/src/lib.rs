@@ -13,16 +13,16 @@ pub use crate::lexer::NodeReference;
 pub use crate::lexer::BindingTypes;
 
 /// Useful type alias for the parser's node type.
-pub type ParserNode = parser::Node;
+pub type ParserNode<'a> = parser::Node<'a>;
 
 /// Parses BESL source code.
 /// It first tokenizes the input then feeds it to the parser to build a syntax tree.
 /// The syntax tree is just another representation of the source code.
 /// It is missing the final transformation step, which is the lexing step.
 /// The returned node is the root of the syntax tree.
-pub fn parse(source: &str) -> Result<parser::Node, CompilationError> {
+pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> {
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Tokenization)?;
-	let parser_root_node = parser::parse(tokens).map_err(|_e| CompilationError::Parsing)?;
+	let parser_root_node = parser::parse(&tokens).map_err(|_e| CompilationError::Parsing)?;
 
 	Ok(parser_root_node)
 }
@@ -50,7 +50,7 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 	}
 
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
-	let parser_root_node = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
+	let parser_root_node = parser::parse(&tokens).map_err(|_e| CompilationError::Undefined)?;
 
 	let besl = if let Some(parent)  = parent {
 		lexer::lex_with_root(parent, parser_root_node).map_err(|_e| CompilationError::Undefined)?

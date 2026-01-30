@@ -8,6 +8,8 @@ use windows::Win32::{
 	System::Com::{CoCreateInstance, CoTaskMemFree, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,},
 };
 
+use crate::audio_hardware_interface::{BufferPlayFunction, HardwareParameters, Streams, WritePlayFunction};
+
 pub struct Device {
 	device: IMMDevice,
 	client: IAudioClient,

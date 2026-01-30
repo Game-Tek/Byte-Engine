@@ -1,6 +1,6 @@
 use windows::{core::PCSTR, Win32::{Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC}, Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM}, Graphics::Gdi::{GetMonitorInfoA, MonitorFromWindow, HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST}, System::LibraryLoader::GetModuleHandleA, UI::{HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2}, Input::{GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, MOUSE_MOVE_RELATIVE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE}, WindowsAndMessaging::{CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE}}}};
 
-use crate::{Keys, MouseKeys, Events};
+use crate::{Events, input::{Keys, MouseKeys}, os::WindowLike};
 
 pub struct Window {
 	class_atom: u16,
@@ -267,12 +267,18 @@ fn wparam_to_key(wparam: WPARAM) -> Option<Keys> {
 impl WindowLike for Window {
 	fn try_new(name: &str, extent: utils::Extent, id_name: &str) -> Result<Window, String> {
 		let hinstance = unsafe {
-			GetModuleHandleA(PCSTR(std::ptr::null())).ok()?
+			GetModuleHandleA(PCSTR(std::ptr::null())).map_err(|_| {
+				"Failed to acquire the module handle. The most likely cause is that the current process module handle could not be resolved."
+			})?
 		};
 
 		// Create Cstrings becasue Win32 API uses null terminated strings
-		let id_name = std::ffi::CString::new(id_name).ok()?;
-		let name = std::ffi::CString::new(name).ok()?;
+		let id_name = std::ffi::CString::new(id_name).map_err(|_| {
+			"Failed to build the window class name. The most likely cause is that the id string contains an interior null byte."
+		})?;
+		let name = std::ffi::CString::new(name).map_err(|_| {
+			"Failed to build the window title. The most likely cause is that the window name contains an interior null byte."
+		})?;
 
 		let window_style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 
@@ -295,12 +301,16 @@ impl WindowLike for Window {
 			let class = RegisterClassA(&wnd_class);
 
 			if class == 0 {
-				return None;
+				return Err("Failed to register the window class. The most likely cause is that the class name already exists or is invalid.".to_string());
 			}
 
-			SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).ok()?;
+			SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).map_err(|_| {
+				"Failed to set the DPI awareness context. The most likely cause is that the process does not have permission to change DPI awareness."
+			})?;
 
-			let hwnd = CreateWindowExA(WINDOW_EX_STYLE::default(), PCSTR(id_name.as_ptr() as _), PCSTR(name.as_ptr() as _), window_style, CW_USEDEFAULT, CW_USEDEFAULT, width, height, None, None, Some(hinstance.into()), None).ok()?;
+			let hwnd = CreateWindowExA(WINDOW_EX_STYLE::default(), PCSTR(id_name.as_ptr() as _), PCSTR(name.as_ptr() as _), window_style, CW_USEDEFAULT, CW_USEDEFAULT, width, height, None, None, Some(hinstance.into()), None).map_err(|_| {
+				"Failed to create the window. The most likely cause is that the window class registration or parameters are invalid."
+			})?;
 			(class, hwnd)
 		};
 
@@ -321,18 +331,20 @@ impl WindowLike for Window {
 				hwndTarget: hwnd,
 			};
 
-			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).ok()?;
+			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).map_err(|_| {
+				"Failed to register raw input devices. The most likely cause is that raw input is not supported for this window handle."
+			})?;
 		}
 
-		Window {
+		Ok(Window {
 			class_atom: class,
 			hwnd,
 			hinstance: hinstance.into(),
 			state: State::default(),
-		}.into()
+		})
 	}
 
-	fn poll(&mut self) -> WindowIterator {
+	fn poll<'a>(&'a mut self) -> WindowIterator<'a> {
 		// Set WNDPROC, we are ready to handle messages
 		unsafe {
 			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as _);
@@ -344,7 +356,7 @@ impl WindowLike for Window {
 		}
 	}
 
-	fn os_handles(&self) -> Handles {
+	fn handles(&self) -> Handles {
 		Handles {
 			hwnd: self.hwnd,
 			hinstance: self.hinstance,

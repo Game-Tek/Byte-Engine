@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use utils::Extent;
 
-use crate::{glsl, glsl_shader_generator::GLSLShaderGenerator, shader_generator::{ShaderGenerationSettings, ShaderGenerator}};
+use crate::{glsl, glsl_shader_generator::GLSLShaderGenerator, program_evaluation::ProgramEvaluation, shader_generator::{ShaderGenerationSettings, ShaderGenerator}};
 
 pub struct Binding {
 	pub binding: u32,
@@ -79,8 +79,6 @@ impl SPIRVShaderGenerator {
 			}
 		};
 
-		let mut bindings = Vec::with_capacity(16);
-
 		{
 			let node_borrow = RefCell::borrow(&main_function_node);
 			let node_ref = node_borrow.node();
@@ -93,127 +91,20 @@ impl SPIRVShaderGenerator {
 			}
 		}
 
-		self.build_graph(&mut bindings, main_function_node);
+		let program_evaluation = ProgramEvaluation::from_main(main_function_node)?;
 
-		bindings.sort_by(|a, b| {
-			if a.set == b.set {
-				a.binding.cmp(&b.binding)
-			} else {
-				a.set.cmp(&b.set)
-			}
-		});
+		let bindings = program_evaluation.bindings();
 
 		return Ok(GeneratedShader {
 			binary: Box::from(compilation_artifact.as_binary_u8()),
-			bindings,
+			bindings: bindings.iter().map(|b| Binding {
+				binding: b.binding,
+				set: b.set,
+				read: b.read,
+				write: b.write,
+			}).collect(),
 			extent: match shader_compilation_settings.stage { crate::shader_generator::Stages::Compute { local_size } => Some(local_size), _ => None },
 		});
-	}
-
-	fn build_graph(&mut self, bindings: &mut Vec<Binding>, node: &besl::NodeReference) {
-		let node_borrow = RefCell::borrow(&node);
-		let node_ref = node_borrow.node();
-
-		match node_ref {
-			besl::Nodes::Function { statements, .. } => {
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::Expression(expresions) => {
-				match expresions {
-					besl::Expressions::FunctionCall { parameters, function } => {
-						self.build_graph(bindings, function);
-						for parameter in parameters {
-							self.build_graph(bindings, parameter);
-						}
-					}
-					besl::Expressions::Accessor { left, right } => {
-						self.build_graph(bindings, left);
-						self.build_graph(bindings, right);
-					}
-					besl::Expressions::Expression { elements } => {
-						for element in elements {
-							self.build_graph(bindings, element);
-						}
-					}
-					besl::Expressions::IntrinsicCall { intrinsic, elements } => {
-						for element in elements {
-							self.build_graph(bindings, element);
-						}
-						self.build_graph(bindings, intrinsic);
-					}
-					besl::Expressions::Return | besl::Expressions::Literal { .. } => {
-						// Do nothing
-					}
-					besl::Expressions::Macro { body, .. } => {
-						self.build_graph(bindings, body);
-					}
-					besl::Expressions::Member { source, .. } => {
-						self.build_graph(bindings, source);
-					}
-					besl::Expressions::Operator { left, right, .. } => {
-						self.build_graph(bindings, left);
-						self.build_graph(bindings, right);
-					}
-					besl::Expressions::VariableDeclaration { r#type, .. } => {
-						self.build_graph(bindings, r#type);
-					}
-				}
-			}
-			besl::Nodes::Binding { set, binding, read, write, .. } => {
-				if let None = bindings.iter().find(|b| b.binding == *binding && b.set == *set) {
-					bindings.push(Binding { binding: *binding, set: *set, read: *read, write: *write });
-				}
-			}
-			besl::Nodes::Raw { input, output, .. } => {
-				for input in input {
-					self.build_graph(bindings, input);
-				}
-				for output in output {
-					self.build_graph(bindings, output);
-				}
-			}
-			besl::Nodes::Struct { fields, .. } => {
-				for member in fields {
-					self.build_graph(bindings, member);
-				}
-			}
-			besl::Nodes::Intrinsic { elements, r#return, .. } => {
-				for element in elements {
-					self.build_graph(bindings, element);
-				}
-				self.build_graph(bindings, r#return);
-			}
-			besl::Nodes::Literal { value, .. } => {
-				self.build_graph(bindings, value);
-			}
-			besl::Nodes::Member { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
-				self.build_graph(bindings, format);
-			}
-			besl::Nodes::Null { .. } => {
-				// Do nothing
-			}
-			besl::Nodes::Parameter { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::PushConstant { members } => {
-				for member in members {
-					self.build_graph(bindings, member);
-				}
-			}
-			besl::Nodes::Scope { children, .. } => {
-				for child in children {
-					self.build_graph(bindings, child);
-				}
-			}
-			besl::Nodes::Specialization { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-		}
 	}
 }
 

@@ -973,7 +973,7 @@ trait ParserIterator<'a> {
 impl <'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
 	fn next_is(&mut self, f: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons> {
 		let token = self.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
-		if is_identifier(token) && f(token) {
+		if f(token) {
 			Ok(token)
 		} else {
 			Err(ParsingFailReasons::NotMine)

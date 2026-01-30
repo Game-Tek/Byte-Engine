@@ -12,6 +12,8 @@ pub mod render_debugger;
 
 pub mod vulkan;
 pub mod debug;
+#[cfg(any(target_os = "macos"))]
+pub mod metal;
 
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;

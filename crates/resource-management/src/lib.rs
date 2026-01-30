@@ -34,6 +34,7 @@ pub mod shader_graph;
 
 pub mod glsl_shader_generator;
 pub mod hlsl_shader_generator;
+pub mod msl_shader_generator;
 pub mod spirv_shader_generator;
 pub mod program_evaluation;
 

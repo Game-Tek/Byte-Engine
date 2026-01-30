@@ -1,4 +1,5 @@
+pub mod animation;
 pub mod audio;
 pub mod image;
-pub mod mesh;
 pub mod material;
+pub mod mesh;

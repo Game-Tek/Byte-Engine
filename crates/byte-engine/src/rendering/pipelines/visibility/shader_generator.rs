@@ -10,11 +10,11 @@ use crate::rendering::common_shader_generator::CommonShaderScope;
 pub struct VisibilityShaderScope {
 }
 
-pub struct VisibilityShaderGenerator<'a> {
-	scope: Node<'a>,
+pub struct VisibilityShaderGenerator {
+	scope: besl::parser::Node<'static>,
 }
 
-impl VisibilityShaderGenerator<'_> {
+impl VisibilityShaderGenerator {
 	pub fn new(material_count_read: bool, material_count_write: bool, material_offset_read: bool, material_offset_write: bool, material_offset_scratch_read: bool, material_offset_scratch_write: bool, pixel_mapping_read: bool, pixel_mapping_write: bool) -> Self {
 		Self {
 			scope: VisibilityShaderScope::new_with_params(material_count_read, material_count_write, material_offset_read, material_offset_write, material_offset_scratch_read, material_offset_scratch_write, pixel_mapping_read, pixel_mapping_write),
@@ -164,8 +164,8 @@ impl VisibilityShaderScope {
 	}
 }
 
-impl ProgramGenerator for VisibilityShaderGenerator<'_> {
-	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a> {
+impl ProgramGenerator for VisibilityShaderGenerator {
+	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];
@@ -254,7 +254,7 @@ impl ProgramGenerator for VisibilityShaderGenerator<'_> {
 		float metalness = 0;
 		float roughness = float(0.5);".trim();
 
-		let mut extra = Vec::new();
+		let mut extra: Vec<Node<'a>> = Vec::new();
 
 		let mut texture_count = 0;
 
@@ -268,7 +268,7 @@ impl ProgramGenerator for VisibilityShaderGenerator<'_> {
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let x = besl::parser::Node::literal(name, besl::parser::Node::glsl(&format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), &[/* TODO: fix literals "material".to_string(), */"textures"], &[]));
+					let x = besl::parser::Node::literal(name, besl::parser::Node::glsl(format!("textures[nonuniformEXT(material.textures[{}])]", texture_count), &[/* TODO: fix literals "material".to_string(), */"textures"], &[]));
 					extra.push(x);
 					texture_count += 1;
 				}

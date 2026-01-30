@@ -1022,7 +1022,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				outputs.push(Node::expression(Expressions::VariableDeclaration { name: name.clone(), r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name })? }).into());
 			}
 
-			let this = Node::raw(glsl.map(|v| v.to_string()), hlsl.map(|v| v.to_string()), inputs, outputs);
+			let this = Node::raw(glsl.as_ref().map(|v| v.to_string()), hlsl.as_ref().map(|v| v.to_string()), inputs, outputs);
 
 			this.into()
 		}

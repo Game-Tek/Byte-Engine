@@ -55,6 +55,7 @@ pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Nod
 	Ok(make_scope("root", children),)
 }
 
+use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
 #[derive(Clone, Debug)]
@@ -190,15 +191,15 @@ impl <'a> Node<'a> {
 		}
 	}
 
-	pub fn glsl(code: &'a str, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(Some(code), None, input, output)
+	pub fn glsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+		make_raw_code(Some(code.into()), None, input, output)
 	}
 
-	pub fn hlsl(code: &'a str, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(None, Some(code), input, output)
+	pub fn hlsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+		make_raw_code(None, Some(code.into()), input, output)
 	}
 
-	pub fn raw_code(glsl: Option<&'a str>, hlsl: Option<&'a str>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+	pub fn raw_code(glsl: Option<Cow<'a, str>>, hlsl: Option<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
 		make_raw_code(glsl, hlsl, input, output)
 	}
 
@@ -381,8 +382,8 @@ pub enum Nodes<'a> {
 	},
 	Expression(Expressions<'a>),
 	RawCode {
-		glsl: Option<&'a str>,
-		hlsl: Option<&'a str>,
+		glsl: Option<Cow<'a, str>>,
+		hlsl: Option<Cow<'a, str>>,
 		input: &'a [&'a str],
 		output: &'a [&'a str],
 	},
@@ -483,7 +484,7 @@ fn make_function<'a>(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str,
 	}
 }
 
-fn make_raw_code<'a>(glsl: Option<&'a str>, hlsl: Option<&'a str>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+fn make_raw_code<'a>(glsl: Option<Cow<'a, str>>, hlsl: Option<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
 	Node {
 		node: Nodes::RawCode {
 			glsl,
@@ -522,13 +523,13 @@ impl Precedence for Atoms<'_> {
 }
 
 /// Type of the result of a parser.
-type FeatureParserResult<'i, 'a: 'i> = Result<(Node<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
+type FeatureParserResult<'i, 'a> = Result<(Node<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
 
 /// A parser is a function that tries to parse a sequence of tokens.
-type FeatureParser<'i, 'a: 'i> = fn(std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a>;
+type FeatureParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a>;
 
-type ExpressionParserResult<'i, 'a: 'i> = Result<(Vec<Atoms<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
-type ExpressionParser<'i, 'a: 'i> = fn(std::slice::Iter<'i, &'a str>, Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;
+type ExpressionParserResult<'i, 'a> = Result<(Vec<Atoms<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
+type ExpressionParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>, Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;
 
 /// Execute a list of parsers on a stream of tokens.
 fn execute_parsers<'i, 'a: 'i>(parsers: &[FeatureParser<'i, 'a>], mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -574,14 +575,35 @@ fn try_execute_expression_parsers<'i, 'a: 'i>(parsers: &[ExpressionParser<'i, 'a
 	None
 }
 
-fn is_identifier(c: char) -> bool { // TODO: validate number at end of identifier
+fn is_identifier_char(c: char) -> bool { // TODO: validate number at end of identifier
 	c.is_alphanumeric() || c == '_'
 }
 
+fn is_identifier(s: &str) -> bool {
+	if s == "struct" || s == "fn" || s == "let" || s == "return" { // should not be a keyword
+		return false;
+	}
+	s.chars().all(is_identifier_char)
+}
+
+fn if_next_token_is<'i, 'a: 'i>(iterator: &mut std::slice::Iter<'i, &'a str>, expected: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons> {
+	let token = iterator.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+	if expected(token) {
+		Ok(token)
+	} else {
+		Err(ParsingFailReasons::NotMine)
+	}
+}
+
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(*v) } else { Err(ParsingFailReasons::NotMine) })?;
-	iterator.next().and_then(|&v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	let mut r#type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find type while parsing member {}.", name) })?.to_string();
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	let mut r#type = iterator.next_identifier().map_err(|e| {
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find type while parsing member {}.", name) },
+			_ => e,
+		}
+	})?.to_string();
 
 	if let Some(&&n) = iterator.clone().peekable().peek() {
 		if n == "<"	{
@@ -604,19 +626,34 @@ fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> Fea
 fn parse_macro<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
 	let mut iter = iterator;
 
-	iter.next().and_then(|&v| if v == "#" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iter.next().and_then(|&v| if v == "[" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iter.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find macro name.") })?;
-	iter.next().and_then(|&v| if v == "]" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find ] after macro.") })?;
+	iter.next_str("#")?;
+	iter.next_str("[")?;
+	iter.next_identifier().map_err(|e|
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find macro name after #[.") },
+			_ => e,
+		}
+	)?;
+	iter.next_str("]").map_err(|e|
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find ] after macro name.") },
+			_ => e,
+		}
+	)?;
 
 	Ok((make_scope("MACRO", vec![]).into(), iter))
 }
 
 fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(char::is_alphanumeric) { Ok(*v) } else { Err(ParsingFailReasons::NotMine) })?;
-	iterator.next().and_then(|&v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().and_then(|&v| if v == "struct" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().and_then(|&v| if v == "{" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find {{ after struct {} declaration", name) })?;
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("struct")?;
+	iterator.next_str("{").map_err(|e|
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find {{ after struct {} declaration.", name) },
+			_ => e,
+		}
+	)?;
 
 	let mut fields = vec![];
 
@@ -627,13 +664,19 @@ fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> Fea
 			continue;
 		}
 
-		let colon = iterator.next().unwrap();
+		iterator.next_str(":").map_err(|e|
+			match e {
+				ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find : after name for member {} in struct {}", v, name) },
+				_ => e,
+			}
+		)?;
 
-		if *colon != ":" { return Err(ParsingFailReasons::BadSyntax{ message: format!("Expected to find : after name for member {} in struct {}", v, name) }); }
-
-		let type_name = iterator.next().unwrap();
-
-		if !type_name.chars().next().unwrap().is_alphabetic() { return Err(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type name after : for member {} in struct {}", v, name) }); }
+		let type_name = iterator.next_identifier().map_err(|e|
+			match e {
+				ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type name after : for member {} in struct {}", v, name) },
+				_ => e,
+			}
+		)?;
 
 		// See if is array type
 		let type_name = if iterator.clone().peekable().peek().map(|v| v.as_ref()) == Some("[") {
@@ -654,10 +697,15 @@ fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> Fea
 }
 
 fn parse_var_decl<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
-	let _ = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|&v| if v == "let" { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
-	let variable_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(*v) } else { Err(ParsingFailReasons::NotMine) })?;
-	iterator.next().and_then(|&v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	let variable_type = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) }).and_then(|v| if v.chars().all(is_identifier) { Ok(*v) } else { Err(ParsingFailReasons::NotMine) })?;
+	iterator.next_str("let")?;
+	let variable_name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	let variable_type = iterator.next_identifier().map_err(|e|
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) },
+			_ => e,
+		}
+	)?;
 
 	expressions.push(Atoms::VariableDeclaration{ name: variable_name, r#type: variable_type });
 
@@ -671,7 +719,7 @@ fn parse_var_decl<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut e
 }
 
 fn parse_keywords<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
-	iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|&v| if v == "return" { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
+	iterator.next_str("return")?;
 
 	expressions.push(Atoms::Keyword);
 
@@ -686,7 +734,7 @@ fn parse_keywords<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut e
 }
 
 fn parse_variable<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|&v| if v.chars().all(is_identifier) { Ok(v) } else { Err(ParsingFailReasons::NotMine) })?;
+	let name = iterator.next_identifier()?;
 
 	expressions.push(Atoms::Member{ name });
 
@@ -699,7 +747,7 @@ fn parse_variable<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut e
 }
 
 fn parse_accessor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
-	let _ = iterator.next().and_then(|&v| if v == "." { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	let _ = iterator.next_str(".")?;
 
 	expressions.push(Atoms::Accessor);
 
@@ -710,8 +758,12 @@ fn parse_accessor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut e
 	execute_expression_parsers(&lexers, iterator, expressions)
 }
 
+fn is_number_literal(s: &str) -> bool {
+	s.chars().all(|c| c.is_digit(10) || c == '.')
+}
+
 fn parse_literal<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
-	let value = iterator.next().and_then(|&v| if v == "0" || v == "2.0" || v == "1.0" || v == "0.0" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?; // TODO: do real literal parsing
+	let value = iterator.next_is(is_number_literal)?;
 
 	expressions.push(Atoms::Literal{ value });
 
@@ -729,7 +781,7 @@ fn parse_rvalue<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>, expressions
 }
 
 fn parse_operator<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
-	let operator = iterator.next().and_then(|&v| if v == "*" || v == "+" || v == "-" || v == "/" || v == "=" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "=")?;
 
 	expressions.push(Atoms::Operator{ name: operator });
 
@@ -741,8 +793,8 @@ fn parse_operator<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut e
 }
 
 fn parse_function_call<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
-	let function_name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(*v) } else { Err(ParsingFailReasons::NotMine) })?;
-	iterator.next().and_then(|&v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	let function_name = iterator.next_identifier()?;
+	iterator.next_str("(")?;
 
 	let mut parameters = vec![];
 
@@ -780,7 +832,7 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> Feat
 
 	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
 
-	iterator.next().and_then(|&v| if v == ";" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected semicolon") })?; // Skip semicolon
+	iterator.next_str(";")?; // Skip semicolon
 
 	fn dandc<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 		let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
@@ -828,17 +880,27 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> Feat
 }
 
 fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
-	let name = iterator.next().ok_or(ParsingFailReasons::NotMine).and_then(|v| if v.chars().all(is_identifier) { Ok(*v) } else { Err(ParsingFailReasons::NotMine) })?;
+	let name = iterator.next_identifier()?;
 
-	iterator.next().and_then(|&v| if v == ":" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().and_then(|&v| if v == "fn" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().and_then(|&v| if v == "(" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().and_then(|&v| if v == ")" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
-	iterator.next().and_then(|&v| if v == "->" { Some(v) } else { None }).ok_or(ParsingFailReasons::NotMine)?;
+	iterator.next_str(":")?;
+	iterator.next_str("fn")?;
+	iterator.next_str("(")?;
+	iterator.next_str(")")?;
+	iterator.next_str("->")?;
 
-	let return_type = *iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected a return type for function {} declaration.", name) })?;
+	let return_type = iterator.next_identifier().map_err(|e| {
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected a return type for function {} declaration.", name) },
+			_ => e,
+		}
+	})?;
 
-	iterator.next().and_then(|&v| if v == "{" { Some(v) } else { None }).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected a {{ after function {} declaration.", name) })?;
+	iterator.next_str("{").map_err(|e| {
+		match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected a {{ after function {} declaration.", name) },
+			_ => e,
+		}
+	})?;
 
 	let mut statements = vec![];
 
@@ -900,6 +962,31 @@ impl <'a> Index<&str> for Node<'a> {
 
 		panic!("Not found");
     }
+}
+
+trait ParserIterator<'a> {
+	fn next_is(&mut self, f: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons>;
+	fn next_str(&mut self, expected: &'a str) -> Result<&'a str, ParsingFailReasons>;
+	fn next_identifier(&mut self) -> Result<&'a str, ParsingFailReasons>;
+}
+
+impl <'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
+	fn next_is(&mut self, f: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons> {
+		let token = self.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+		if is_identifier(token) && f(token) {
+			Ok(token)
+		} else {
+			Err(ParsingFailReasons::NotMine)
+		}
+	}
+
+	fn next_str(&mut self, expected: &'a str) -> Result<&'a str, ParsingFailReasons> {
+		self.next_is(|v| v == expected)
+	}
+
+	fn next_identifier(&mut self) -> Result<&'a str, ParsingFailReasons> {
+		self.next_is(is_identifier)
+	}
 }
 
 #[derive(Clone)]

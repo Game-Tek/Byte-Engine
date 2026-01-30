@@ -538,7 +538,9 @@ impl VisibilityWorldRenderDomain {
 
 				let shader_generator = VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 
-				let root = shader_generator.transform(root, &json::object! { "variables": [] });
+				let object = json::object! { "variables": [] };
+
+				let root = shader_generator.transform(root, &object);
 
 				let root = besl::lex(root).unwrap();
 

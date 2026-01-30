@@ -9,7 +9,7 @@ use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::Ass
 
 pub trait ProgramGenerator: Send + Sync {
 	/// Transforms a program.
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a>;
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a>;
 }
 
 struct MaterialAsset {
@@ -325,7 +325,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
 			let material_struct = besl::parser::Node::buffer("Material", vec![besl::parser::Node::member("color", "vec4f")]);
 
 			let sample_function = besl::parser::Node::function("sample_", vec![besl::parser::Node::member("t", "u32")], "void", vec![]);
@@ -347,7 +347,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
 			let binding = besl::parser::Node::binding("materials", besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]), 0, 0, true, false);
 
 			let leaf_test_shader_generator = LeafTestShaderGenerator::new();
@@ -382,7 +382,9 @@ pub mod tests {
 	fn generate_program() {
 		let test_shader_generator = RootTestShaderGenerator::new();
 
-		let root = test_shader_generator.transform(besl::parser::Node::root(), &json::object! {});
+		let object = json::object! {};
+
+		let root = test_shader_generator.transform(besl::parser::Node::root(), &object);
 
 		let root = besl::lex(root).unwrap();
 

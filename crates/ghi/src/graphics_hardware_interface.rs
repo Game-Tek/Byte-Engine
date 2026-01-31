@@ -1498,6 +1498,7 @@ impl <'a> ShaderParameter<'a> {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct PushConstantRange {
 	pub(crate) offset: u32,
 	pub(crate) size: u32,

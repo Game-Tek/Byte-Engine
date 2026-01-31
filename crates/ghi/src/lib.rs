@@ -12,6 +12,8 @@ pub mod render_debugger;
 
 pub mod vulkan;
 pub mod debug;
+#[cfg(target_os = "windows")]
+pub mod dx12;
 #[cfg(any(target_os = "macos"))]
 pub mod metal;
 

@@ -541,8 +541,6 @@ pub mod tests {
 		let shader_spirv = resource_storage_backend.get_resource_data_by_name(ResourceId::new("fragment.besl")).expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		dbg!(&shader_spirv);
-
 		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
 		assert!(shader_spirv.contains("void main()"));
 

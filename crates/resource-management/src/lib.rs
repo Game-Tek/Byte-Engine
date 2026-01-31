@@ -41,6 +41,8 @@ pub mod program_evaluation;
 
 pub mod glsl;
 
+pub mod r#async;
+
 pub use resource::resource_manager::ResourceManager;
 pub use asset::asset_handler::AssetHandler;
 

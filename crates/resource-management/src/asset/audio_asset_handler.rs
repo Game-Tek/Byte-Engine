@@ -1,46 +1,66 @@
-use crate::{resources::audio::Audio, types::BitDepths, ProcessedAsset, asset, resource};
+use std::sync::Arc;
+
+use crate::{ProcessedAsset, asset, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::audio::Audio, types::BitDepths};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, ResourceId};
 
 pub struct AudioAsset {
     id: String,
-    data: Box<[u8]>,
+    data: Arc<[u8]>,
 }
 
 impl Asset for AudioAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, id: ResourceId<'a>) -> Result<(), String> {
-    	let extension = id.get_extension();
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, id: ResourceId<'a>) -> BoxedFuture<'a, Result<(), String>> {
+		Box::pin(async move {
+			let extension = id.get_extension();
 
-     	if extension == "wav" {
-     		self.load_wav(storage_backend)?;
-     	} else if extension == "ogg" {
-     		self.load_ogg(storage_backend)?;
-     	} else {
-     		return Err("Unsupported audio format".to_string());
-     	}
+			let (audio_resource, data) = match extension {
+				"wav" => Self::decode_wav(&self.data)?,
+				"ogg" => {
+					let data = self.data.clone();
+					let decoded = spawn_cpu_task(move || Self::decode_ogg(&data)).await.or_else(|_| Err("Task panicked".to_string()))?;
+					decoded?
+				}
+				_ => {
+					return Err("Unsupported audio format. The asset extension is not handled by the audio loader.".to_string());
+				}
+			};
 
-        Ok(())
+			let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
+			storage_backend
+				.store(&resource, &data)
+				.map_err(|_| "Failed to store audio resource. The storage backend likely rejected the write.".to_string())?;
+			Ok(())
+		})
     }
 }
 
 impl AudioAsset {
-    fn load_wav<'a>(&'a self, storage_backend: &'a (dyn resource::StorageBackend + 'static)) -> Result<(), String> {
-        let data = &self.data;
-        let riff = &data[0..4];
+	/// Parses a WAV buffer into audio metadata and PCM data.
+    fn decode_wav(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {
+        let riff = data.get(0..4).ok_or_else(|| {
+			"Invalid RIFF header. The file is likely truncated or not a WAV asset.".to_string()
+		})?;
         if riff != b"RIFF" {
-            return Err("Invalid RIFF header".to_string());
+            return Err("Invalid RIFF header. The file is likely not a WAV asset.".to_string());
         }
-        let format = &data[8..12];
+        let format = data.get(8..12).ok_or_else(|| {
+			"Invalid WAVE format. The file is likely truncated or not a WAV asset.".to_string()
+		})?;
         if format != b"WAVE" {
-            return Err("Invalid WAVE format".to_string());
+            return Err("Invalid WAVE format. The file is likely not a WAV asset.".to_string());
         }
-        let audio_format = &data[20..22];
+        let audio_format = data.get(20..22).ok_or_else(|| {
+			"Invalid audio format. The WAV header is likely incomplete.".to_string()
+		})?;
         if audio_format != b"\x01\x00" {
-            return Err("Invalid audio format".to_string());
+            return Err("Unsupported audio format. The WAV file is likely not PCM encoded.".to_string());
         }
-        let subchunk_1_size = &data[16..20];
+        let subchunk_1_size = data.get(16..20).ok_or_else(|| {
+			"Invalid subchunk size. The WAV header is likely incomplete.".to_string()
+		})?;
         let subchunk_1_size = u32::from_le_bytes([
             subchunk_1_size[0],
             subchunk_1_size[1],
@@ -48,21 +68,27 @@ impl AudioAsset {
             subchunk_1_size[3],
         ]);
         if subchunk_1_size != 16 {
-            return Err("Invalid subchunk 1 size".to_string());
+            return Err("Invalid subchunk size. The WAV header is likely malformed.".to_string());
         }
-        let num_channels = &data[22..24];
+        let num_channels = data.get(22..24).ok_or_else(|| {
+			"Invalid channel count. The WAV header is likely incomplete.".to_string()
+		})?;
         let num_channels = u16::from_le_bytes([num_channels[0], num_channels[1]]);
         if num_channels != 1 && num_channels != 2 {
-            return Err("Invalid number of channels".to_string());
+            return Err("Unsupported channel count. The WAV header likely reports an unsupported configuration.".to_string());
         }
-        let sample_rate = &data[24..28];
+        let sample_rate = data.get(24..28).ok_or_else(|| {
+			"Invalid sample rate. The WAV header is likely incomplete.".to_string()
+		})?;
         let sample_rate = u32::from_le_bytes([
             sample_rate[0],
             sample_rate[1],
             sample_rate[2],
             sample_rate[3],
         ]);
-        let bits_per_sample = &data[34..36];
+        let bits_per_sample = data.get(34..36).ok_or_else(|| {
+			"Invalid bits per sample. The WAV header is likely incomplete.".to_string()
+		})?;
         let bits_per_sample = u16::from_le_bytes([bits_per_sample[0], bits_per_sample[1]]);
         let bit_depth = match bits_per_sample {
             8 => BitDepths::Eight,
@@ -70,33 +96,42 @@ impl AudioAsset {
             24 => BitDepths::TwentyFour,
             32 => BitDepths::ThirtyTwo,
             _ => {
-                return Err("Invalid bits per sample".to_string());
+                return Err("Unsupported bit depth. The WAV header likely reports an unsupported format.".to_string());
             }
         };
-        let data_header = &data[36..40];
+        let data_header = data.get(36..40).ok_or_else(|| {
+			"Invalid data header. The WAV header is likely incomplete.".to_string()
+		})?;
         if data_header != b"data" {
-            return Err("Invalid data header".to_string());
+            return Err("Invalid data header. The WAV header is likely malformed.".to_string());
         }
-        let data_size = &data[40..44];
+        let data_size = data.get(40..44).ok_or_else(|| {
+			"Invalid data size. The WAV header is likely incomplete.".to_string()
+		})?;
         let data_size =
             u32::from_le_bytes([data_size[0], data_size[1], data_size[2], data_size[3]]);
         let sample_count = data_size / (bits_per_sample / 8) as u32 / num_channels as u32;
-        let data = &data[44..][..data_size as usize];
+        let data = data.get(44..).ok_or_else(|| {
+			"Invalid PCM data. The WAV file is likely truncated.".to_string()
+		})?;
+        let data = data.get(..data_size as usize).ok_or_else(|| {
+			"Invalid PCM data. The WAV file is likely truncated.".to_string()
+		})?;
         let audio_resource = Audio {
             bit_depth,
             channel_count: num_channels,
             sample_rate,
             sample_count,
         };
-        let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
-        storage_backend.store(&resource, data.into()).map_err(|_| "Failed to store audio resource".to_string())?;
-        Ok(())
+        Ok((audio_resource, data.to_vec()))
     }
 
-    fn load_ogg<'a>(&self, storage_backend: &'a (dyn resource::StorageBackend + 'static)) -> Result<(), String> {
+	/// Decodes an OGG Vorbis buffer into audio metadata and PCM data.
+    fn decode_ogg(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {
         use std::io::Cursor;
 
-        let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(&self.data)).unwrap();
+        let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(data))
+			.map_err(|_| "Failed to decode OGG data. The file is likely corrupt or not Vorbis encoded.".to_string())?;
 
         let sample_rate = decoder.sampling_frequency().get();
         let channel_count = decoder.channels().get();
@@ -106,7 +141,10 @@ impl AudioAsset {
         // Force bit depth to 8-bit, TODO: support other bit depths
         let bit_depth = BitDepths::Eight;
 
-        while let Some(block) = decoder.decode_audio_block().unwrap() {
+        while let Some(block) = decoder
+			.decode_audio_block()
+			.map_err(|_| "Failed to decode OGG data. The stream is likely corrupt.".to_string())?
+		{
         	let samples = block.samples();
         	for &x in samples {
         		for y in x {
@@ -126,11 +164,7 @@ impl AudioAsset {
             sample_count,
         };
 
-        let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
-
-        storage_backend.store(&resource, &data).map_err(|_| "Failed to store audio asset".to_string())?;
-
-        Ok(())
+        Ok((audio_resource, data))
     }
 }
 
@@ -147,23 +181,25 @@ impl AssetHandler for AudioAssetHandler {
         r#type == "wav" || r#type == "ogg"
     }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
-        if let Some(dt) = storage_backend.get_type(url) {
-            if dt != "wav" && dt != "ogg" {
-                return Err(LoadErrors::UnsupportedType);
-            }
-        }
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+		Box::pin(async move {
+			if let Some(dt) = storage_backend.get_type(url) {
+				if dt != "wav" && dt != "ogg" {
+					return Err(LoadErrors::UnsupportedType);
+				}
+			}
 
-        let (data, _, dt) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+			let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-        if dt != "wav" && dt != "ogg" {
-            return Err(LoadErrors::UnsupportedType);
-        }
+			if dt != "wav" && dt != "ogg" {
+				return Err(LoadErrors::UnsupportedType);
+			}
 
-        Ok(Box::new(AudioAsset {
-            id: url.to_string(),
-            data,
-        }) as Box<dyn Asset>)
+			Ok(Box::new(AudioAsset {
+				id: url.to_string(),
+				data: Arc::from(data),
+			}) as Box<dyn Asset>)
+		})
     }
 }
 
@@ -171,7 +207,7 @@ struct AudioDescription {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId}, resource, resources::audio::Audio, types::BitDepths, AssetHandler};
+    use crate::{r#async::block_on, asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId}, resource, resources::audio::Audio, types::BitDepths, AssetHandler};
 
     #[test]
     fn test_audio_asset_handler() {
@@ -183,9 +219,9 @@ mod tests {
 
         let url = ResourceId::new("gun.wav");
 
-        let asset = audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).expect("Audio asset handler failed to load asset");
+        let asset = block_on(audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset handler failed to load asset");
 
-		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).expect("Audio asset failed to load");
+		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset failed to load");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

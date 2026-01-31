@@ -8,16 +8,10 @@ use utils::{
 };
 
 use crate::{
-    asset,
-    asset::image_asset_handler::{guess_semantic_from_name, Semantic},
-    resource,
-    resources::material::VariantModel,
-    resources::mesh::{MeshModel, PrimitiveModel},
-    types::{
+    Description, ProcessedAsset, StreamDescription, asset::{self, image_asset_handler::{Semantic, guess_semantic_from_name}}, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::{material::VariantModel, mesh::{MeshModel, PrimitiveModel}}, types::{
         Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent,
         VertexSemantics,
-    },
-    Description, ProcessedAsset, StreamDescription,
+    }
 };
 
 use super::{
@@ -25,6 +19,101 @@ use super::{
     asset_manager::AssetManager,
     ResourceId,
 };
+
+/// The `MeshAssetHandler` struct loads mesh assets from glTF sources.
+pub struct MeshAssetHandler {}
+
+impl MeshAssetHandler {
+	pub fn new() -> MeshAssetHandler {
+		MeshAssetHandler {}
+	}
+}
+
+impl AssetHandler for MeshAssetHandler {
+	fn can_handle(&self, r#type: &str) -> bool {
+		r#type == "gltf" || r#type == "glb"
+	}
+
+	fn load<'a>(
+		&'a self,
+		_asset_manager: &'a AssetManager,
+		storage_backend: &'a dyn resource::StorageBackend,
+		asset_storage_backend: &'a dyn asset::StorageBackend,
+		url: ResourceId<'a>,
+	) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+		Box::pin(async move {
+			if let Some(dt) = storage_backend.get_type(url) {
+				if dt != "gltf" && dt != "glb" {
+					return Err(LoadErrors::UnsupportedType);
+				}
+			}
+
+			let (data, spec, dt) = asset_storage_backend
+				.resolve(url)
+				.await
+				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+
+			let id = url.to_string();
+
+			let (gltf, buffers) = if dt == "glb" {
+				let parsed = spawn_cpu_task(move || -> Result<(gltf::Gltf, Vec<gltf::buffer::Data>), LoadErrors> {
+					let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+					let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
+					let buffers = gltf::import_buffers(
+						&gltf,
+						None,
+						glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()),
+					)
+					.map_err(|_| LoadErrors::FailedToProcess)?;
+					Ok((gltf, buffers))
+				})
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)??;
+
+				parsed
+			} else {
+				let gltf = spawn_cpu_task(move || {
+					gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)
+				})
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)??;
+
+				let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| {
+					if let gltf::buffer::Source::Uri(r) = b.source() {
+						if r.ends_with(".bin") {
+							Some(r)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				}) {
+					let bin_file = ResourceId::new(bin_file);
+					let (bin, ..) = asset_storage_backend
+						.resolve(bin_file)
+						.await
+						.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+					gltf.buffers()
+						.map(|_| gltf::buffer::Data(bin.clone().into()))
+						.collect::<Vec<_>>()
+				} else {
+					gltf::import_buffers(&gltf, None, None)
+						.map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?
+				};
+
+				(gltf, buffers)
+			};
+
+			Ok(Box::new(MeshAsset {
+				id,
+				spec,
+				gltf,
+				buffers,
+			}) as Box<dyn Asset>)
+		})
+	}
+}
 
 struct MeshAsset {
     id: String,
@@ -62,9 +151,10 @@ impl Asset for MeshAsset {
         storage_backend: &'a dyn resource::StorageBackend,
         asset_storage_backend: &'a dyn asset::StorageBackend,
         url: ResourceId<'a>,
-    ) -> Result<(), String> {
-        let gltf = &self.gltf;
-        let buffers = &self.buffers;
+    ) -> BoxedFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let gltf = &self.gltf;
+            let buffers = &self.buffers;
 
         if let Some(fragment) = url.get_fragment() {
             let image = gltf
@@ -263,14 +353,14 @@ impl Asset for MeshAsset {
             })
             .collect::<Vec<String>>();
 
-        let materials_per_primitive = material_name_per_primitive
-            .into_iter()
-            .map(|n| (n, asset_manager))
-            .map(|(name, asset_manager): (String, &'a AssetManager)| {
-                asset_manager.load::<VariantModel>(&name, storage_backend)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .or(Err("Failed to load materials"))?;
+        let mut materials_per_primitive = Vec::with_capacity(material_name_per_primitive.len());
+        for name in material_name_per_primitive {
+            let material = asset_manager
+                .load::<VariantModel>(&name, storage_backend)
+                .await
+                .map_err(|_| "Failed to load materials. The referenced material assets could not be loaded.".to_string())?;
+            materials_per_primitive.push(material);
+        }
 
         let vertex_counts = flat_mesh_tree
             .clone()
@@ -729,6 +819,7 @@ impl Asset for MeshAsset {
         storage_backend.store(&resource_document, &buffer);
 
         Ok(())
+        })
     }
 }
 
@@ -755,6 +846,7 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 #[cfg(test)]
 mod tests {
     use super::MeshAssetHandler;
+    use crate::r#async;
     use crate::{
         asset::{
             self,
@@ -771,8 +863,8 @@ mod tests {
         ReferenceModel,
     };
 
-    #[test]
-    fn load_gltf() {
+    #[r#async::test]
+    async fn load_gltf() {
         let asset_storage_backend = AssetTestStorageBackend::new();
 
         asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
@@ -819,6 +911,7 @@ mod tests {
 
         let mesh: ReferenceModel<MeshModel> = asset_manager
             .load(url, &resource_storage_backend)
+            .await
             .expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();
@@ -831,8 +924,8 @@ mod tests {
         // TODO: ASSERT BINARY DATA
     }
 
-    #[test]
-    fn load_gltf_with_bin() {
+    #[r#async::test]
+    async fn load_gltf_with_bin() {
         let asset_storage_backend = AssetTestStorageBackend::new();
 
         asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
@@ -880,6 +973,7 @@ mod tests {
 
         let mesh: ReferenceModel<MeshModel> = asset_manager
             .load(url, &resource_storage_backend)
+            .await
             .expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();
@@ -939,9 +1033,9 @@ mod tests {
         // assert_eq!(triangle_indices[3935 * 3..3936 * 3], [11805, 11806, 11807]);
     }
 
-    #[test]
+    #[r#async::test]
     #[ignore = "Test uses data not pushed to the repository"]
-    fn load_glb() {
+    async fn load_glb() {
         let asset_storage_backend = AssetTestStorageBackend::new();
 
         asset_storage_backend.add_file("shaders/pbr.besl", "main: fn () -> void {}".as_bytes());
@@ -1100,7 +1194,7 @@ mod tests {
         let url = "Revolver.glb";
 
         let mesh: ReferenceModel<MeshModel> =
-            asset_manager.load(&url, &resource_storage_backend).unwrap();
+            asset_manager.load(&url, &resource_storage_backend).await.unwrap();
 
         let url = ResourceId::new(url);
 
@@ -1136,9 +1230,9 @@ mod tests {
         );
     }
 
-    #[test]
+    #[r#async::test]
     #[ignore = "Test uses data not pushed to the repository"]
-    fn load_glb_image() {
+    async fn load_glb_image() {
         let asset_storage_backend = AssetTestStorageBackend::new();
         let resource_storage_backend = ResourceTestStorageBackend::new();
 
@@ -1158,7 +1252,7 @@ mod tests {
                 &resource_storage_backend,
                 asset_manager.get_storage_backend(),
                 url,
-            )
+            ).await
             .expect("Image asset handler did not handle asset");
 
         asset_loader
@@ -1168,6 +1262,7 @@ mod tests {
                 asset_manager.get_storage_backend(),
                 url,
             )
+            .await
             .expect("Image asset handler did not handle asset");
 
         let _ = resource_storage_backend

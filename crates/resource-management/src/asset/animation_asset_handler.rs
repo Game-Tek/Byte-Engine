@@ -1,9 +1,11 @@
+use std::sync::Arc;
+
 use crate::resources::animation::{
     AnimationChannel, AnimationModel, AnimationSampler, SamplerOutput,
 };
 use crate::{
     asset,
-    asset::asset_handler::{Asset, AssetHandler, LoadErrors},
+    asset::asset_handler::{Asset, AssetHandler, BoxFuture, LoadErrors},
     asset::asset_manager::AssetManager,
     asset::ResourceId,
     resource, Description, ProcessedAsset,
@@ -11,11 +13,13 @@ use crate::{
 
 use utils::json;
 
+use super::tasks::spawn_cpu_task;
+
 struct AnimationAsset {
     id: String,
     spec: Option<json::Value>,
-    gltf: gltf::Gltf,
-    buffers: Vec<gltf::buffer::Data>,
+    gltf: Arc<gltf::Gltf>,
+    buffers: Arc<Vec<gltf::buffer::Data>>,
 }
 
 impl Asset for AnimationAsset {
@@ -29,79 +33,87 @@ impl Asset for AnimationAsset {
         storage_backend: &'a dyn resource::StorageBackend,
         _asset_storage_backend: &'a dyn asset::StorageBackend,
         url: ResourceId<'a>,
-    ) -> Result<(), String> {
-        let gltf = &self.gltf;
-        let buffers = &self.buffers;
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let gltf = self.gltf.clone();
+            let buffers = self.buffers.clone();
 
-        // Check if we need to load a specific animation by fragment
-        let target_name = url.get_fragment().map(|f| f.as_ref().to_string());
+            // Check if we need to load a specific animation by fragment
+            let target_name = url.get_fragment().map(|f| f.as_ref().to_string());
 
-        // Find the animation to load
-        let animation = if let Some(ref name) = target_name {
-            gltf.animations()
-                .find(|a| a.name() == Some(name.as_str()))
-                .ok_or_else(|| format!("Animation '{}' not found", name))?
-        } else {
-            // If no fragment specified, load the first animation
-            gltf.animations()
-                .next()
-                .ok_or("No animations found in file")?
-        };
+            let animation_resource = spawn_cpu_task(move || -> Result<AnimationModel, String> {
+                let gltf = gltf.as_ref();
+                let buffers = buffers.as_ref();
 
-        let name = animation.name().map(|s| s.to_string());
-        let mut samplers = Vec::new();
-        let mut max_duration = 0.0f32;
+                // Find the animation to load
+                let animation = if let Some(ref name) = target_name {
+                    gltf.animations()
+                        .find(|a| a.name() == Some(name.as_str()))
+                        .ok_or_else(|| format!("Animation '{}' not found. The glTF file likely does not contain this animation.", name))?
+                } else {
+                    // If no fragment specified, load the first animation
+                    gltf.animations()
+                        .next()
+                        .ok_or("No animations found. The glTF file likely contains no animation data.".to_string())?
+                };
 
-        for sampler in animation.samplers() {
-            let input_accessor = sampler.input();
-            let output_accessor = sampler.output();
+                let name = animation.name().map(|s| s.to_string());
+                let mut samplers = Vec::new();
+                let mut max_duration = 0.0f32;
 
-            // Read input times
-            let input_times = read_f32_accessor(&input_accessor, buffers)?;
+                for sampler in animation.samplers() {
+                    let input_accessor = sampler.input();
+                    let output_accessor = sampler.output();
 
-            // Update max duration
-            if let Some(&last_time) = input_times.last() {
-                max_duration = max_duration.max(last_time);
-            }
+                    // Read input times
+                    let input_times = read_f32_accessor(&input_accessor, buffers)?;
 
-            // Read output values based on accessor type
-            let output_values = read_output_accessor(&output_accessor, buffers)?;
+                    // Update max duration
+                    if let Some(&last_time) = input_times.last() {
+                        max_duration = max_duration.max(last_time);
+                    }
 
-            samplers.push(AnimationSampler {
-                interpolation: sampler.interpolation().into(),
-                input_times,
-                output_values,
-            });
-        }
+                    // Read output values based on accessor type
+                    let output_values = read_output_accessor(&output_accessor, buffers)?;
 
-        let mut channels = Vec::new();
+                    samplers.push(AnimationSampler {
+                        interpolation: sampler.interpolation().into(),
+                        input_times,
+                        output_values,
+                    });
+                }
 
-        for channel in animation.channels() {
-            let sampler_index = channel.sampler().index();
-            let target = channel.target();
-            let target_node = target.node().index();
-            let target_path = target.property().into();
+                let mut channels = Vec::new();
 
-            channels.push(AnimationChannel {
-                sampler_index,
-                target_node,
-                target_path,
-            });
-        }
+                for channel in animation.channels() {
+                    let sampler_index = channel.sampler().index();
+                    let target = channel.target();
+                    let target_node = target.node().index();
+                    let target_path = target.property().into();
 
-        let animation_resource = AnimationModel {
-            name: name.clone(),
-            samplers,
-            channels,
-            duration: max_duration,
-        };
+                    channels.push(AnimationChannel {
+                        sampler_index,
+                        target_node,
+                        target_path,
+                    });
+                }
 
-        let resource_document = ProcessedAsset::new(url, animation_resource);
-        storage_backend
-            .store(&resource_document, &[])
-            .map_err(|_| "Failed to store resource".to_string())?;
+                Ok(AnimationModel {
+                    name: name.clone(),
+                    samplers,
+                    channels,
+                    duration: max_duration,
+                })
+            })
+            .await?;
 
-        Ok(())
+            let resource_document = ProcessedAsset::new(url, animation_resource);
+            storage_backend
+                .store(&resource_document, &[])
+                .map_err(|_| "Failed to store animation resource. The storage backend likely rejected the write.".to_string())?;
+
+            Ok(())
+        })
     }
 }
 
@@ -216,64 +228,68 @@ impl AssetHandler for AnimationAssetHandler {
         storage_backend: &'a dyn resource::StorageBackend,
         asset_storage_backend: &'a dyn asset::StorageBackend,
         url: ResourceId<'a>,
-    ) -> Result<Box<dyn Asset>, LoadErrors> {
-        if let Some(dt) = storage_backend.get_type(url) {
-            if dt != "gltf" && dt != "glb" {
-                return Err(LoadErrors::UnsupportedType);
+    ) -> BoxFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+        Box::pin(async move {
+            if let Some(dt) = storage_backend.get_type(url) {
+                if dt != "gltf" && dt != "glb" {
+                    return Err(LoadErrors::UnsupportedType);
+                }
             }
-        }
 
-        let (data, spec, dt) = asset_storage_backend
-            .resolve(url)
-            .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+            let (data, spec, dt) = asset_storage_backend
+                .resolve(url)
+                .await
+                .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-        let (gltf, buffers) = if dt == "glb" {
-            let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
-            let gltf =
-                gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
-            let buffers = gltf::import_buffers(
-                &gltf,
-                None,
-                glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()),
-            )
-            .map_err(|_| LoadErrors::FailedToProcess)?;
-            (gltf, buffers)
-        } else {
-            let gltf =
-                gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
+            let (gltf, buffers) = if dt == "glb" {
+                let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+                let gltf =
+                    gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
+                let buffers = gltf::import_buffers(
+                    &gltf,
+                    None,
+                    glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()),
+                )
+                .map_err(|_| LoadErrors::FailedToProcess)?;
+                (gltf, buffers)
+            } else {
+                let gltf =
+                    gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
 
-            let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| {
-                if let gltf::buffer::Source::Uri(r) = b.source() {
-                    if r.ends_with(".bin") {
-                        Some(r)
+                let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| {
+                    if let gltf::buffer::Source::Uri(r) = b.source() {
+                        if r.ends_with(".bin") {
+                            Some(r)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
+                }) {
+                    let bin_file = ResourceId::new(bin_file);
+                    let (bin, ..) = asset_storage_backend
+                        .resolve(bin_file)
+                        .await
+                        .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+                    gltf.buffers()
+                        .map(|_| gltf::buffer::Data(bin.clone().into()))
+                        .collect::<Vec<_>>()
                 } else {
-                    None
-                }
-            }) {
-                let bin_file = ResourceId::new(bin_file);
-                let (bin, ..) = asset_storage_backend
-                    .resolve(bin_file)
-                    .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-                gltf.buffers()
-                    .map(|_| gltf::buffer::Data(bin.clone().into()))
-                    .collect::<Vec<_>>()
-            } else {
-                gltf::import_buffers(&gltf, None, None)
-                    .map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?
+                    gltf::import_buffers(&gltf, None, None)
+                        .map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?
+                };
+
+                (gltf, buffers)
             };
 
-            (gltf, buffers)
-        };
-
-        Ok(Box::new(AnimationAsset {
-            id: url.to_string(),
-            spec,
-            gltf,
-            buffers,
-        }) as _)
+            Ok(Box::new(AnimationAsset {
+                id: url.to_string(),
+                spec,
+                gltf: Arc::new(gltf),
+                buffers: Arc::new(buffers),
+            }) as _)
+        })
     }
 }
 
@@ -314,7 +330,7 @@ mod tests {
         let url = "AnimatedCube.gltf";
 
         let animation: ReferenceModel<AnimationModel> = asset_manager
-            .load(url, &resource_storage_backend)
+            .load_sync(url, &resource_storage_backend)
             .expect("Failed to parse asset");
 
         let generated_resources = resource_storage_backend.get_resources();

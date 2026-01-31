@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use utils::sync::Arc;
+use utils::{r#async::StreamExt, sync::Arc};
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler, FileStorageBackend}, resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend}};
 
 #[derive(Parser)]
@@ -32,9 +32,6 @@ enum Commands {
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 1..)]
 		ids: Vec<String>,
-		/// Build resources synchronously
-		#[clap(long, default_value = "false")]
-		sync: bool,
 	},
     /// Delete resources
     Delete {
@@ -90,7 +87,7 @@ fn main() -> Result<(), i32> {
 				}
 			}
 		}
-		Commands::Bake { ids, sync } => {
+		Commands::Bake { ids } => {
 			let asset_storage_backend = FileStorageBackend::new(source_path.into());
 			let mut asset_manager = AssetManager::new(asset_storage_backend);
 
@@ -116,34 +113,27 @@ fn main() -> Result<(), i32> {
 
 			let resource_storage_backend = RedbStorageBackend::new(destination_path.into());
 
-			if sync {
-				for id in ids {
-					log::info!("Baking resource '{}'", id);
-					match asset_manager.bake(&id, &resource_storage_backend) {
-						Ok(_) => {
-							log::info!("Baked resource '{}'", id);
-						}
-						Err(e) => {
-							log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
-						}
+			let executor = resource_management::r#async::Executor::new().map_err(|_| 1)?;
+
+			let asset_manager = Arc::new(asset_manager);
+
+			let tasks = ids.into_iter().map(async |id| {
+				let asset_manager = asset_manager.clone();
+				log::info!("Baking resource '{}'", id);
+				match asset_manager.bake(&id, &resource_storage_backend).await {
+					Ok(_) => {
+						log::info!("Baked resource '{}'", id);
+					}
+					Err(e) => {
+						log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
 					}
 				}
-			} else {
-				let asset_manager = Arc::new(asset_manager);
+			});
 
-				ids.into_iter().for_each(|id| {
-					let asset_manager = asset_manager.clone();
-					log::info!("Baking resource '{}'", id);
-					match asset_manager.bake(&id, &resource_storage_backend) {
-						Ok(_) => {
-							log::info!("Baked resource '{}'", id);
-						}
-						Err(e) => {
-							log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
-						}
-					}
-				});
-			}
+			let tasks = utils::r#async::stream::iter(tasks);
+			let tasks = tasks.buffer_unordered(16).collect::<Vec<_>>();
+
+			executor.block_on(tasks);
 
 			Ok(())
 		}

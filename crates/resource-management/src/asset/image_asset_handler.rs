@@ -2,7 +2,7 @@ use std::any::Any;
 
 use utils::Extent;
 
-use crate::{resources::image::Image, resource, asset, types::{Formats, Gamma}, Description, ProcessedAsset};
+use crate::{Description, ProcessedAsset, asset, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::image::Image, types::{Formats, Gamma}};
 
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, resource_id::ResourceIdBase, ResourceId};
 
@@ -17,27 +17,30 @@ pub struct ImageAsset {
 impl Asset for ImageAsset {
     fn requested_assets(&self) -> Vec<String> { vec![] }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> Result<(), String> {
-		let semantic = guess_semantic_from_name(url.get_base());
+    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), String>> {
+		Box::pin(async move {
+			let semantic = guess_semantic_from_name(url.get_base());
 
-		let format = self.format;
-		let extent = self.extent;
-		let gamma = self.gamma;
+			let format = self.format;
+			let extent = self.extent;
+			let gamma = self.gamma;
 
-		let buffer = self.data.clone();
+			let buffer = self.data.clone();
+			let description = ImageDescription {
+				format,
+				extent,
+				semantic,
+				gamma,
+			};
 
-		let (image, data) = ImageAssetHandler::produce(&ImageDescription {
-			format,
-			extent,
-			semantic,
-			gamma,
-		}, buffer);
+			let (image, data) = spawn_cpu_task(move || ImageAssetHandler::produce(&description, buffer)).await.or_else(|_| Err("Task panicked"))?;
 
-		let resource_document = ProcessedAsset::new(url, image);
+			let resource_document = ProcessedAsset::new(url, image);
 
-		storage_backend.store(&resource_document, &data).map_err(|_| format!("Failed to store resource"))?;
+			storage_backend.store(&resource_document, &data).map_err(|_| "Failed to store image resource. The storage backend likely rejected the write.".to_string())?;
 
-		Ok(())
+			Ok(())
+		})
     }
 }
 
@@ -55,78 +58,85 @@ impl AssetHandler for ImageAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
-			if dt != "png" { return Err(LoadErrors::UnsupportedType); }
-		}
-
-		let (data, _, dt) = asset_storage_backend.resolve(url).or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-		let semantic = guess_semantic_from_name(url.get_base());
-
-		let mut buffer;
-		let extent;
-		let gamma;
-		let format;
-
-		match dt.as_str() {
-			"png" | "image/png" => {
-				let decoder = png::Decoder::new(data.as_ref());
-				if true { // TODO: make this a setting
-					// decoder.set_transformations(png::Transformations::normalize_to_color8());
-				}
-				let mut reader = decoder.read_info().unwrap();
-				buffer = vec![0u8; reader.output_buffer_size()];
-				let info = reader.next_frame(&mut buffer).unwrap();
-
-				extent = Extent::rectangle(info.width, info.height);
-
-				gamma = reader.info().gama_chunk.map(|gamma| {
-					if gamma.into_scaled() == 45455 {
-						Gamma::SRGB
-					} else {
-						Gamma::Linear
-					}
-				}).unwrap_or(gamma_from_semantic(semantic));
-
-				match info.bit_depth {
-					png::BitDepth::Eight => {}
-					png::BitDepth::Sixteen => {
-						for i in 0..buffer.len() / 2 {
-							buffer.swap(i * 2, i * 2 + 1);
-						}
-					}
-					_ => { panic!("Unsupported bit depth"); }
-				}
-
-				format = match info.color_type {
-					png::ColorType::Rgb => {
-						match info.bit_depth {
-							png::BitDepth::Eight => Formats::RGB8,
-							png::BitDepth::Sixteen => Formats::RGB16,
-							_ => { panic!("Unsupported bit depth") }
-						}
-					}
-					png::ColorType::Rgba => {
-						match info.bit_depth {
-							png::BitDepth::Eight => Formats::RGBA8,
-							png::BitDepth::Sixteen => Formats::RGBA16,
-							_ => { panic!("Unsupported bit depth") }
-						}
-					}
-					_ => { panic!("Unsupported color type") }
-				};
+	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+		Box::pin(async move {
+			if let Some(dt) = storage_backend.get_type(url) {
+				if dt != "png" { return Err(LoadErrors::UnsupportedType); }
 			}
-			_ => { return Err(LoadErrors::UnsupportedType); }
-		}
 
-		Ok(Box::new(ImageAsset {
-		    id: url.to_string(),
-			data: buffer.into(),
-			gamma,
-			format,
-			extent,
-		}) as Box<dyn Asset>)
+			let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+
+			let id = url.to_string();
+			let semantic = guess_semantic_from_name(url.get_base());
+
+			let decoded = spawn_cpu_task(move || -> Result<ImageAsset, LoadErrors> {
+				let mut buffer;
+				let extent;
+				let gamma;
+				let format;
+
+				match dt.as_str() {
+					"png" | "image/png" => {
+						let decoder = png::Decoder::new(data.as_ref());
+						if true { // TODO: make this a setting
+							// decoder.set_transformations(png::Transformations::normalize_to_color8());
+						}
+						let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
+						buffer = vec![0u8; reader.output_buffer_size()];
+						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
+
+						extent = Extent::rectangle(info.width, info.height);
+
+						gamma = reader.info().gama_chunk.map(|gamma| {
+							if gamma.into_scaled() == 45455 {
+								Gamma::SRGB
+							} else {
+								Gamma::Linear
+							}
+						}).unwrap_or(gamma_from_semantic(semantic));
+
+						match info.bit_depth {
+							png::BitDepth::Eight => {}
+							png::BitDepth::Sixteen => {
+								for i in 0..buffer.len() / 2 {
+									buffer.swap(i * 2, i * 2 + 1);
+								}
+							}
+							_ => { return Err(LoadErrors::FailedToProcess); }
+						}
+
+						format = match info.color_type {
+							png::ColorType::Rgb => {
+								match info.bit_depth {
+									png::BitDepth::Eight => Formats::RGB8,
+									png::BitDepth::Sixteen => Formats::RGB16,
+									_ => { return Err(LoadErrors::FailedToProcess); }
+								}
+							}
+							png::ColorType::Rgba => {
+								match info.bit_depth {
+									png::BitDepth::Eight => Formats::RGBA8,
+									png::BitDepth::Sixteen => Formats::RGBA16,
+									_ => { return Err(LoadErrors::FailedToProcess); }
+								}
+							}
+							_ => { return Err(LoadErrors::FailedToProcess); }
+						};
+					}
+					_ => { return Err(LoadErrors::UnsupportedType); }
+				}
+
+				Ok(ImageAsset {
+					id,
+					data: buffer.into(),
+					gamma,
+					format,
+					extent,
+				})
+			}).await.map_err(|_| LoadErrors::FailedToProcess)??;
+
+			Ok(Box::new(decoded) as Box<dyn Asset>)
+		})
 	}
 
 	fn produce<'a>(&'a self, id: ResourceId<'a>, description: &'a dyn Description, data: Box<[u8]>) -> Result<(ProcessedAsset, Box<[u8]>), String> {
@@ -348,7 +358,7 @@ impl Description for ImageDescription {
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId}, resource};
+    use crate::{r#async::block_on, asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId}, resource};
 
 	#[test]
 	fn load_image() {
@@ -360,9 +370,9 @@ mod tests {
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
-		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).expect("Image asset handler did not handle asset");
+		let asset = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset handler did not handle asset");
 
-		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).expect("Image asset did not load");
+		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset did not load");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

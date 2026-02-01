@@ -50,11 +50,11 @@ impl SphereMeshGenerator {
 }
 
 impl MeshGenerator for SphereMeshGenerator {
-	fn positions(&self) -> Cow<[(f32, f32, f32)]> {
+	fn positions(&self) -> Cow<'_, [(f32, f32, f32)]> {
 		Cow::Borrowed(&self.vertex_positions)
 	}
 
-	fn indices(&self) -> Cow<[u32]> {
+	fn indices(&self) -> Cow<'_, [u32]> {
 		let segments = self.segments;
 		let rings = self.rings;
 		let mut indices = Vec::new();
@@ -77,7 +77,7 @@ impl MeshGenerator for SphereMeshGenerator {
 		Cow::Owned(indices)
 	}
 
-	fn normals(&self) -> Cow<[(f32, f32, f32)]> {
+	fn normals(&self) -> Cow<'_, [(f32, f32, f32)]> {
 		let segments = self.segments as usize;
 		let rings = self.rings as usize;
 		let mut normals = Vec::new();
@@ -97,7 +97,7 @@ impl MeshGenerator for SphereMeshGenerator {
 		Cow::Owned(normals)
 	}
 
-	fn tangents(&self) -> Cow<[Vector3]> {
+	fn tangents(&self) -> Cow<'_, [Vector3]> {
 		let segments = self.segments;
 		let rings = self.rings;
 		let mut tangents = Vec::new();
@@ -117,7 +117,7 @@ impl MeshGenerator for SphereMeshGenerator {
 		Cow::Owned(tangents)
 	}
 
-	fn bitangents(&self) -> Cow<[Vector3]> {
+	fn bitangents(&self) -> Cow<'_, [Vector3]> {
     	let segments = self.segments;
 		let rings = self.rings;
 		let mut bitangents = Vec::new();
@@ -137,11 +137,11 @@ impl MeshGenerator for SphereMeshGenerator {
 		Cow::Owned(bitangents)
 	}
 
-	fn colors(&self) -> Option<Cow<[Vector4]>> {
+	fn colors(&self) -> Option<Cow<'_, [Vector4]>> {
     	None
 	}
 
-	fn meshlet_indices(&self) -> Option<Cow<[u8]>> {
+	fn meshlet_indices(&self) -> Option<Cow<'_, [u8]>> {
     	let segments = self.segments;
 		let rings = self.rings;
 		let mut indices = Vec::new();
@@ -164,7 +164,7 @@ impl MeshGenerator for SphereMeshGenerator {
 		Some(Cow::Owned(indices))
 	}
 
-	fn uvs(&self) -> Cow<[(f32, f32)]> {
+	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
 		let segments = self.segments;
 		let rings = self.rings;
 		let mut uvs = Vec::new();

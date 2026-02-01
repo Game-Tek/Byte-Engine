@@ -53,7 +53,7 @@ impl MeshGenerator for BoxMeshGenerator {
 		])
 	}
 
-	fn tangents(&self) -> Cow<[Vector3]> {
+	fn tangents(&self) -> Cow<'_, [Vector3]> {
 		std::borrow::Cow::Owned(vec![
 			Vector3::new(1.0, 0.0, 0.0),
 			Vector3::new(1.0, 0.0, 0.0),
@@ -66,7 +66,7 @@ impl MeshGenerator for BoxMeshGenerator {
 		])
 	}
 
-	fn bitangents(&self) -> std::borrow::Cow<[Vector3]> {
+	fn bitangents(&self) -> std::borrow::Cow<'_, [Vector3]> {
 		std::borrow::Cow::Owned(vec![
 			Vector3::new(0.0, 1.0, 0.0),
 			Vector3::new(0.0, 1.0, 0.0),
@@ -92,7 +92,7 @@ impl MeshGenerator for BoxMeshGenerator {
 		])
 	}
 
-	fn indices(&self) -> std::borrow::Cow<[u32]> {
+	fn indices(&self) -> std::borrow::Cow<'_, [u32]> {
 		std::borrow::Cow::Borrowed(&[
 			0, 2, 1,
 			0, 3, 2,

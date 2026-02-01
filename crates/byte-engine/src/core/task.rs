@@ -100,7 +100,7 @@ impl Execution {
 							handler(event.as_ref());
 						}
 					} else {
-						eprintln!("No handlers for event type: {:#?}", type_id);
+						log::debug!("No handlers for event type: {:#?}", type_id);
 					}
 				}
 			}

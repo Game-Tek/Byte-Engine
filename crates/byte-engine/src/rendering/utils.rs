@@ -131,7 +131,7 @@ impl <I> MeshBuffersStats<I> {
 		self.instances.push((mesh_id, instance_data));
 	}
 
-	pub fn get_instance_batches(&self) -> InstanceBatches<I> {
+	pub fn get_instance_batches(&self) -> InstanceBatches<'_, I> {
 		let mut batches = HashMap::with_capacity(self.meshes.len());
 
 		for (instance_id, &(mesh_id, _)) in self.instances.iter().enumerate() {

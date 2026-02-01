@@ -25,7 +25,7 @@ impl EventRegistry {
 		let subscribers = map.entry(type_id).or_insert_with(|| Vec::with_capacity(8));
 		subscribers.push(Box::new(move |event| {
 			let event = unsafe {
-				event.downcast_ref_unchecked::<E>()
+				event.downcast_unchecked_ref::<E>()
 			};
 
 			subscriber.write().handle(event);

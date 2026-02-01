@@ -12,7 +12,7 @@ impl<'a> Frame<'a> {
 	}
 
 	pub fn get_mut_dynamic_buffer_slice<'b, T: Copy>(&'b self, _buffer_handle: DynamicBufferHandle<T>) -> &'b mut T {
-		unsafe { &mut *(std::ptr::null_mut() as *mut T) }
+		todo!("Handle true allocations");
 	}
 
 	pub fn resize_image(&mut self, _image_handle: ImageHandle, _extent: Extent) {

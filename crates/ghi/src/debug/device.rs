@@ -90,11 +90,11 @@ impl Device {
 	}
 
 	pub fn get_buffer_slice<T: Copy>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
-		unsafe { &*(std::ptr::null() as *const T) }
+		todo!("Handle true allocations");
 	}
 
 	pub fn get_mut_buffer_slice<'a, T: Copy>(&'a self, _buffer_handle: BufferHandle<T>) -> &'a mut T {
-		unsafe { &mut *(std::ptr::null_mut() as *mut T) }
+		todo!("Handle true allocations");
 	}
 
 	pub fn get_texture_slice_mut(&mut self, _texture_handle: ImageHandle) -> &'static mut [u8] {

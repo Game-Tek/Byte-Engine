@@ -158,7 +158,7 @@ impl WindowLike for Window {
 					if let Some(window) = event.window(self.mtm) {
 						if window == self.window {
 							let screen = window.screen().unwrap();
-							let monitor_extent = screen.frame().size;
+							let _monitor_extent = screen.frame().size;
 							let window_extent = window.frame().size;
 							let width = window_extent.width as f32;
 							let height = window_extent.height as f32;

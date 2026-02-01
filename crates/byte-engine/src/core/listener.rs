@@ -51,7 +51,7 @@ impl <T: ?Sized + 'static> Event for DeleteEvent<T> {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-	use std::assert_matches::assert_matches;
+	use std::assert_matches;
 
 	use super::*;
 	use crate::{application::Events, core::{domain::DomainEvents, entity::EntityBuilder, spawn, spawn_as_child}, gameplay::space::Space};

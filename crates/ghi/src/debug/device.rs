@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 use utils::Extent;
 use crate::{
-	graphics_hardware_interface, image, raster_pipeline, sampler, window,
+	image, raster_pipeline, sampler, window,
 	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,

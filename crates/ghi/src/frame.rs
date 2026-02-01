@@ -14,7 +14,7 @@ pub trait Frame {
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> CommandBufferRecording;
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> CommandBufferRecording<'_>;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///

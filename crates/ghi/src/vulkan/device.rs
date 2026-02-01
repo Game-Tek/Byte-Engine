@@ -1276,7 +1276,7 @@ impl Device {
 			return;
 		}
 
-		if let Some(staging_buffer_handle) = image.staging_buffer {
+		if let Some(_staging_buffer_handle) = image.staging_buffer {
 			todo!("Not implemented!");
 		}
 
@@ -2359,7 +2359,7 @@ impl crate::device::Device for Device {
 		command_buffer_handle
 	}
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle) -> crate::CommandBufferRecording {
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: graphics_hardware_interface::CommandBufferHandle) -> crate::CommandBufferRecording<'_> {
 		let mut pending_buffers = self.pending_buffer_syncs.lock();
 
 		let buffer_copies = pending_buffers.drain(..).map(|e| {

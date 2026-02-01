@@ -889,7 +889,7 @@ pub mod device {
 		pub fn new(settings: graphics_hardware_interface::Features, device: Retained<ProtocolObject<dyn mtl::MTLDevice>>, queues: &mut [(graphics_hardware_interface::QueueSelection, &mut Option<graphics_hardware_interface::QueueHandle>)]) -> Result<Device, &'static str> {
 			let mut created_queues = Vec::with_capacity(queues.len());
 
-			for (selection, output_handle) in queues.iter_mut() {
+			for (_selection, output_handle) in queues.iter_mut() {
 				let queue = device.newCommandQueue().ok_or("Metal command queue creation failed. The most likely cause is that the device ran out of command queue resources.")?;
 				let handle = graphics_hardware_interface::QueueHandle(created_queues.len() as u64);
 
@@ -1590,7 +1590,7 @@ pub mod command_buffer {
 			}
 		}
 
-		fn execute(mut self, _wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], _signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], _presentations: &[graphics_hardware_interface::PresentKey], _execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
+		fn execute(self, _wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], _signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], _presentations: &[graphics_hardware_interface::PresentKey], _execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 			for drawable in &self.present_drawables {
 				let drawable_ref: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 				self.command_buffer.presentDrawable(drawable_ref);
@@ -1692,10 +1692,4 @@ pub use self::instance::*;
 pub use self::device::*;
 pub use self::command_buffer::*;
 pub use self::frame::*;
-pub use self::buffer::*;
-pub use self::image::*;
 pub use self::descriptor_set::*;
-pub use self::swapchain::*;
-pub use self::synchronizer::*;
-pub use self::binding::*;
-pub use self::sampler::*;

@@ -1,4 +1,4 @@
-use crate::{graphics_hardware_interface, device::Device as DeviceTrait};
+use crate::graphics_hardware_interface;
 
 pub struct Instance {
 }

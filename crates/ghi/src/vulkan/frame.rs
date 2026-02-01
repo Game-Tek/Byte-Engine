@@ -1,7 +1,7 @@
 use ash::vk::{self, Handle as _};
 use utils::Extent;
 
-use crate::{device::Device as _, graphics_hardware_interface, vulkan::{BufferCopy, BufferHandle, HandleLike as _, ImageCopy, ImageHandle, Task, Tasks}, CommandBufferRecording, Device, FrameKey};
+use crate::{graphics_hardware_interface, vulkan::{BufferCopy, BufferHandle, HandleLike as _, ImageCopy, ImageHandle, Tasks}, CommandBufferRecording, Device, FrameKey};
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,

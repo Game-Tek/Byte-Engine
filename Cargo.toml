@@ -5,7 +5,6 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-name = "byte-engine"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"

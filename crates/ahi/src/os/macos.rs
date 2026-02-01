@@ -3,7 +3,7 @@ pub struct Device {
 }
 
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
-	fn new(params: crate::audio_hardware_interface::HardwareParameters) -> Option<Self> where Self: Sized {
+	fn new(_params: crate::audio_hardware_interface::HardwareParameters) -> Option<Self> where Self: Sized {
 		None
 	}
 
@@ -11,7 +11,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		panic!()
 	}
 
-	fn play(&self, wpf: impl crate::audio_hardware_interface::WritePlayFunction, bpf: impl crate::audio_hardware_interface::BufferPlayFunction) -> Result<usize, ()> {
+	fn play(&self, _wpf: impl crate::audio_hardware_interface::WritePlayFunction, _bpf: impl crate::audio_hardware_interface::BufferPlayFunction) -> Result<usize, ()> {
 		Ok(0)
 	}
 

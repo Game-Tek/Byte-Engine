@@ -5,7 +5,6 @@ pub mod ray;
 
 pub mod collision;
 
-use std::ops::Mul;
 
 pub use maths_rs::Vec2f as Vector2;
 pub use maths_rs::Vec3f as Vector3;

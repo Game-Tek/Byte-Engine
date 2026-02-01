@@ -243,8 +243,8 @@ fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
 	let inv_a = 1.0 / a;
 
 	let delta_root = delta.sqrt();
-	let t1 = inv_a * (b - delta_root);
-	let t2 = inv_a * (b + delta_root);
+	let _t1 = inv_a * (b - delta_root);
+	let _t2 = inv_a * (b + delta_root);
 
 	true
 }

@@ -12,12 +12,11 @@ besl = { path = "../besl" }
 shaderc = "0.9.1"
 png = "0.17.16"
 pot = { version = "3.0.1" }
-serde_json = { version = "1.0.140" }
 md5 = { version = "0.7.0" }
 redb = { version = "2.4.0" }
 notify-debouncer-full = { version = "0.5.0", default-features = false }
 intel_tex_2 = "0.4.0"
-gltf = { version = "1.4.1", features = ["image"] }
+gltf = { version = "1.4.1" }
 libdeflater = "1.23.1"
 meshopt = "0.4.1"
 serde = "1.0.219"

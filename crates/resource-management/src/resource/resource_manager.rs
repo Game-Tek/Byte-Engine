@@ -50,7 +50,8 @@ impl ResourceManager {
 			let (resource, _) = result;
 			resource.into()
 		} else if let Some(asset_manager) = &self.asset_manager {
-			r#async::block_on(asset_manager.load(id, storage_backend)).map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
+			todo!("Figure out how to run async code from here!");
+			// asset_manager.load(id, storage_backend).map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
 		} else {
             return Err("Resource does not exists and an asset manager is not available");
         };

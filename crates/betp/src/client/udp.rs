@@ -13,7 +13,7 @@ impl Client {
 	/// Creates a client that will connect to the server at the specified address.
 	/// Must call `connect` to establish a connection.
 	pub fn new(server_address: std::net::SocketAddr) -> Result<Self, ()> {
-		let _ = machineid_rs::IdBuilder::new(machineid_rs::Encryption::MD5).add_component(machineid_rs::HWIDComponent::MacAddress).build("Byte-Engine").ok().ok_or(())?;
+		let _ = mid::get("Byte-Engine").ok().ok_or(())?; // TODO: should be better key
 
 		let socket = std::net::UdpSocket::bind(server_address).map_err(|_| ())?;
 

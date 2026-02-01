@@ -207,10 +207,10 @@ struct AudioDescription {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{r#async::block_on, asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId}, resource, resources::audio::Audio, types::BitDepths, AssetHandler};
+    use crate::{r#async, asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId}, resource, resources::audio::Audio, types::BitDepths, AssetHandler};
 
-    #[test]
-    fn test_audio_asset_handler() {
+    #[r#async::test]
+    async fn test_audio_asset_handler() {
 		let audio_asset_handler = AudioAssetHandler::new();
 
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
@@ -219,9 +219,9 @@ mod tests {
 
         let url = ResourceId::new("gun.wav");
 
-        let asset = block_on(audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset handler failed to load asset");
+        let asset = audio_asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).await.expect("Audio asset handler failed to load asset");
 
-		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)).expect("Audio asset failed to load");
+		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url).await.expect("Audio asset failed to load");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

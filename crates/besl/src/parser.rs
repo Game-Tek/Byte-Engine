@@ -586,15 +586,6 @@ fn is_identifier(s: &str) -> bool {
 	s.chars().all(is_identifier_char)
 }
 
-fn if_next_token_is<'i, 'a: 'i>(iterator: &mut std::slice::Iter<'i, &'a str>, expected: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons> {
-	let token = iterator.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
-	if expected(token) {
-		Ok(token)
-	} else {
-		Err(ParsingFailReasons::NotMine)
-	}
-}
-
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;

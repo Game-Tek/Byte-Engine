@@ -1289,7 +1289,7 @@ impl Device {
 		let name = self.names.get(&graphics_hardware_interface::ImageHandle(image_handle.root(&self.images).0).into()).map(|s| s.clone());
 
 		#[cfg(not(debug_assertions))]
-		let name = None;
+		let name: Option<String> = None;
 
 		let new_image = self.build_image_internal(image.next, name.as_ref().map(|e| e.as_str()), image.format_, image.access, image.layers, extent, image.uses);
 
@@ -1625,7 +1625,7 @@ impl Device {
 					let name = self.names.get(&graphics_hardware_interface::Handle::Image(builder.master)).map(|e| e.clone());
 
 					#[cfg(not(debug_assertions))]
-					let name = None;
+					let name: Option<String> = None;
 
 					let previous_image = builder.previous.access(&self.images);
 
@@ -1636,7 +1636,7 @@ impl Device {
 					let name = self.names.get(&graphics_hardware_interface::Handle::Buffer(builder.master)).map(|e| e.clone());
 
 					#[cfg(not(debug_assertions))]
-					let name = None;
+					let name: Option<String> = None;
 
 					let previous_buffer = builder.previous.access(&self.buffers);
 
@@ -1793,7 +1793,7 @@ impl crate::device::Device for Device {
 				let name = self.names.get(&graphics_hardware_interface::SynchronizerHandle(synchronizer_handle.root(&self.synchronizers).0).into());
 
 				#[cfg(not(debug_assertions))]
-				let name = None;
+				let name: Option<&String> = None;
 
 				let name = name.as_ref().map(|s| s.as_str());
 				let signaled = current_synchronizer.signaled;

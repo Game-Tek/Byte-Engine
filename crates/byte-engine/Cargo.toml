@@ -18,7 +18,6 @@ resource-management = { path = "../resource-management" }
 math = { path = "../math" }
 betp = { path = "../betp", optional = true }
 
-serde_json = "1.0.140"
 dual_quaternion = "0.2.0"
 serde = "1.0.219"
 log = "0.4.26"

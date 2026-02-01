@@ -320,9 +320,9 @@ impl Listener<CreateEvent<Window>> for Renderer {
 					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
 					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
 
-					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16UNORM);
 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
+					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
 
 					{
 						let scene_managers = self.scene_managers.iter();
@@ -442,10 +442,21 @@ impl RenderTargets {
 	/// Inserts a new render target image, associated to a view index.
 	/// Returns the index of the image in the internal storage.
 	pub fn insert(&mut self, name: String, view: usize, image: ghi::ImageHandle, format: ghi::Formats) -> usize {
+		if let Some(_) = self.get_image_index(&name) {
+			log::debug!("An image by that name already exists");
+			panic!("An image by that name already exists");
+		};
+
+		if let Some(_) = self.get_attachment_index(&name, view) {
+			log::debug!("Attachment is already used in the render pass");
+			panic!("Attachment is already used in the render pass");
+		}
+
 		let index = self.images.len();
 		self.images.push((image, format));
 		self.by_name.push((name, index));
 		self.by_view_index.push((view, (index, ghi::AccessPolicies::WRITE)));
+
 		index
 	}
 
@@ -486,17 +497,18 @@ impl RenderTargets {
 	}
 
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
-		let attachments = self.by_view_index.iter().filter_map(|(v, (i, _))| {
+		let attachments = self.by_view_index.iter().filter_map(|(v, (i, ap))| {
 			if *v == view {
-				self.images.get(*i)
+				let (image, format) = self.images.get(*i)?;
+				Some((image, format, ap))
 			} else {
 				None
 			}
+		}).map(|(image, format, access)| {
+			ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true) // Trivialize for now
 		});
 
-		attachments.map(|(image, format)| {
-			ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true) // Trivialize for now
-		}).collect()
+		attachments.collect()
 	}
 
 	fn get_image(&self, name: &str, view_id: usize) -> &ghi::ImageHandle {
@@ -509,11 +521,15 @@ impl RenderTargets {
 	}
 
 	fn get_attachment_index(&self, name: &str, view_id: usize) -> Option<usize> {
-		let by_name = self.by_name.iter().filter(|(n, _)| n == name);
-		let by_view_index = self.by_view_index.iter().filter(|(v, _)| *v == view_id);
-		let image = by_name.zip(by_view_index).find(|((_, i), (_, (j, _)))| *i == *j);
+		let image_index = self.get_image_index(name)?;
 
-		image.map(|((_, i), (_, _))| *i)
+		self.by_view_index.iter().find_map(|(v, (i, _))| {
+			if *v == view_id && *i == image_index {
+				Some(*i)
+			} else {
+				None
+			}
+		})
 	}
 }
 

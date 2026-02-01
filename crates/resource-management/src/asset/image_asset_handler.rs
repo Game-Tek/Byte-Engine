@@ -358,10 +358,10 @@ impl Description for ImageDescription {
 
 #[cfg(test)]
 mod tests {
-    use crate::{r#async::block_on, asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId}, resource};
+    use crate::{r#async, asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId}, resource};
 
-	#[test]
-	fn load_image() {
+	#[r#async::test]
+	async fn load_image() {
 		let asset_handler = ImageAssetHandler::new();
 
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
@@ -370,9 +370,9 @@ mod tests {
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
-		let asset = block_on(asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset handler did not handle asset");
+		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).await.expect("Image asset handler did not handle asset");
 
-		let _ = block_on(asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,)).expect("Image asset did not load");
+		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).await.expect("Image asset did not load");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

@@ -8,4 +8,4 @@ rust-version = "1.81.0"
 [dependencies]
 utils = { path = "../utils" }
 
-machineid-rs = "1.2.4"
+mid = "5.0.1"

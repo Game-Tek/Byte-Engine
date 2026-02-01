@@ -5,8 +5,6 @@ pub use compio::fs::File;
 pub use compio::fs::read;
 pub use compio::runtime::spawn;
 
-pub use utils::r#async::block_on;
-
 pub use compio::runtime::spawn_blocking;
 pub use spawn_blocking as offload;
 pub use spawn_blocking as spawn_cpu_task;

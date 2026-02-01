@@ -1158,8 +1158,8 @@ impl Device {
 
 		let texture_creation_result = self.create_vulkan_texture(name, vk_extent, format, resource_uses | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) { graphics_hardware_interface::Uses::TransferSource } else { graphics_hardware_interface::Uses::empty() } , 1, array_layers);
 
-		let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead) {
-			graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::GpuWrite
+		let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly) {
+			graphics_hardware_interface::DeviceAccesses::DeviceOnly
 		} else {
 			device_accesses
 		};
@@ -1170,7 +1170,7 @@ impl Device {
 
 		let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
 
-		let (staging_buffer, pointer) = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+		let (staging_buffer, pointer) = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly) {
 			let vk_buffer_usage_flags = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
@@ -1178,9 +1178,9 @@ impl Device {
 			};
 
 			let device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-				graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead
+				graphics_hardware_interface::DeviceAccesses::DeviceToHost
 			} else {
-				graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead
+				graphics_hardware_interface::DeviceAccesses::HostToDevice
 			};
 
 			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);

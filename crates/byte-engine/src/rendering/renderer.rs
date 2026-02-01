@@ -204,6 +204,16 @@ impl Renderer {
 			Some(viewport)
 		}).collect();
 
+		for viewport in &viewports {
+			// Get images for the current view and render pass and resize them to window extent
+			let images = self.render_targets.get_images_for_view(viewport.index());
+
+			// Resize images to window extent
+			for &image in images {
+				frame.resize_image(image, viewport.extent());
+			}
+		}
+
 		let scene_managers = self.scene_managers.iter_mut();
 
 		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]>  = scene_managers.filter_map(|sm| {
@@ -215,7 +225,6 @@ impl Renderer {
 		let render_pass_commands: SmallVec<[(RenderPassReturn, usize); 64]> = self.render_passes_by_view.iter_mut().filter_map(|(render_pass_id, view_id)| {
 			if let Some(render_pass) = self.render_passes.get_mut(*render_pass_id) {
 				if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *view_id) {
-					let render_pass = render_pass;
 					if let Some(command) = render_pass.prepare(&mut frame, viewport) {
 						return Some((command, viewport.index()));
 					}
@@ -223,6 +232,8 @@ impl Renderer {
 			}
 			None
 		}).collect();
+
+		let present_keys = swapchains.iter().filter_map(|sc| sc.as_ref().map(|(pk, _, _)| *pk)).collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
 		let execute = {
 			let viewports = &viewports;
@@ -267,7 +278,7 @@ impl Renderer {
 		command_buffer_recording.execute(
 			&[],
 			&[],
-			&[],
+			&present_keys,
 			synchronizer,
 		);
 	}
@@ -316,13 +327,14 @@ impl Listener<CreateEvent<Window>> for Renderer {
 				};
 
 				if let Some(view_id) = view_id {
-					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
 					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
 					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
+					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
 
 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16UNORM);
 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
 					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
+
 
 					{
 						let scene_managers = self.scene_managers.iter();
@@ -498,14 +510,18 @@ impl RenderTargets {
 
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
 		let attachments = self.by_view_index.iter().filter_map(|(v, (i, ap))| {
-			if *v == view {
+			if *v == view && self.by_name.iter().find(|(name, _)| name == "result")?.1 != *i { // TODO: temporary fix
 				let (image, format) = self.images.get(*i)?;
 				Some((image, format, ap))
 			} else {
 				None
 			}
 		}).map(|(image, format, access)| {
-			ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, ghi::ClearValue::None, true, true) // Trivialize for now
+			let load = access.intersects(ghi::AccessPolicies::READ);
+			let store = access.intersects(ghi::AccessPolicies::WRITE);
+			let clear_value = if load { ghi::ClearValue::None } else { ghi::ClearValue::Color(RGBA::black()) };
+
+			ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, clear_value, load, store)
 		});
 
 		attachments.collect()
@@ -526,6 +542,16 @@ impl RenderTargets {
 		self.by_view_index.iter().find_map(|(v, (i, _))| {
 			if *v == view_id && *i == image_index {
 				Some(*i)
+			} else {
+				None
+			}
+		})
+	}
+
+	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::ImageHandle> {
+		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
+			if *v == index {
+				self.images.get(*i).map(|(image, _)| image)
 			} else {
 				None
 			}

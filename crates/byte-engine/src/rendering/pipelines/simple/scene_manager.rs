@@ -122,7 +122,7 @@ impl SceneManager {
 				&VERTEX_LAYOUT,
 				&[ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex), ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment)],
 				&[
-					ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16UNORM),
+					ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16F),
 					ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32),
 				],
 			)

@@ -9,9 +9,12 @@ pub trait Packet: Sized {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 /// The types of packet supported by the protocol.
 pub enum PacketType {
+	/// A default packet type. Should not be used.
+	#[default]
+	Default = 0,
 	/// A connection request packet. Sent by the client to request a connection to the server.
 	ConnectionRequest = 1,
 	/// A challenge packet. Sent by the server to challenge the client.
@@ -25,7 +28,7 @@ pub enum PacketType {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 /// The header of a BETP packet.
 /// The header contains the protocol id and the type of the packet.
 pub struct PacketHeader {
@@ -167,7 +170,7 @@ impl Into<Packets> for ChallengeResponsePacket {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 /// The status of a connection.
 pub struct ConnectionStatus {
 	/// The sequence number of the packet. An incrementing number that is used to order the packets.
@@ -226,6 +229,17 @@ impl <const S: usize> Packet for DataPacket<S> {
 
 	fn header(&self) -> PacketHeader {
 		self.header
+	}
+}
+
+impl <const S: usize> Default for DataPacket<S> {
+	fn default() -> Self {
+		Self {
+			header: PacketHeader::default(),
+			connection_id: 0,
+			connection_status: ConnectionStatus::default(),
+			data: [0; S],
+		}
 	}
 }
 

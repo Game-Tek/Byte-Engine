@@ -1,7 +1,7 @@
 //! Client module for the Byte-Engine networking library.
 //! The client is the entity that connects to a server and participates in the game.
 
-use crate::{local::Local, packet_buffer::PacketBuffer, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets}, remote::Remote};
+use crate::{client::Errors, local::Local, packet_buffer::PacketBuffer, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets}, remote::Remote};
 
 /// The client is the entity that connects to a server and participates in the game.
 pub struct Session {
@@ -31,7 +31,7 @@ impl Session {
 		}
 	}
 
-	pub fn update(&mut self, packets: &[Packets]) -> Result<Vec<Packets>, ()> {
+	pub fn update(&mut self, packets: &[Packets]) -> Result<Vec<Packets>, Errors> {
 		match &mut self.state {
 			State::Initial => {
 				Ok(Vec::new())
@@ -53,7 +53,7 @@ impl Session {
 									ChallengeResponsePacket::new(id).into()
 								]);
 							} else {
-								return Err(());
+								return Err(Errors::BadSalt);
 							}
 						}
 						_ => {}
@@ -81,7 +81,7 @@ impl Session {
 								self.remote.acknowledge_packet(data_packet.get_connection_status().sequence);
 								packet_buffer.remove(data_packet.get_connection_status().sequence);
 							} else {
-								println!("This client received a data packet with an incorrect connection id");
+								return Err(Errors::BadConnectionId);
 							}
 						}
 						Packets::Disconnect(disconnect_packet) => {
@@ -89,14 +89,14 @@ impl Session {
 								self.state = State::Disconnecting { id };
 								return Ok(Vec::new());
 							} else {
-								println!("This client received a disconnect packet with an incorrect connection id");
+								return Err(Errors::BadConnectionId);
 							}
 						}
 						_ => {},
 					}
 				}
 
-				Ok(packet_buffer.gather_unsent_packets().into_iter().map(|p| Packets::Data(p)).collect())
+				Ok(packet_buffer.gather_unsent_packets_for_retry().into_iter().map(|p| Packets::Data(p)).collect())
 			}
 			State::Disconnecting { id } => {
 				let id = *id;
@@ -146,17 +146,30 @@ impl Session {
 	}
 }
 
+/// `State` represents the current state of the client session. It is a state machine that transitions through various stages of the connection lifecycle.
 pub enum State {
+	/// The initial state of the session before any connection attempts have been made. The client could idle in this state or attempt to initiate a connection.
 	Initial,
-	InitiatingConnection { salt: u64 },
+	/// The state where the client has initiated a connection request to the server and is awaiting a challenge response.
+	InitiatingConnection {
+		/// A generated salt value used for the connection request.
+		salt: u64
+	},
+	/// The state where the client has sent a challenge response and is waiting for the server to confirm the connection.
 	Connecting {
+		/// The connection ID generated from the challenge response.
 		id: u64,
 	},
+	/// The state where the client is fully connected to the server and can send and receive data packets.
 	Connected {
+		/// The established connection ID.
 		id: u64,
+		/// The packet buffer that manages sent and acknowledged packets.
 		packet_buffer: PacketBuffer<16, 1024>,
 	},
+	/// The state where the client is in the process of disconnecting from the server.
 	Disconnecting {
+		/// The connection ID being disconnected.
 		id: u64,
 	},
 }

@@ -2,7 +2,13 @@
 
 pub mod client;
 pub mod session;
-pub mod udp;
 
 pub use client::Client;
 pub use session::Session;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Errors {
+	BadSalt,
+	BadConnectionId,
+	IoError,
+}

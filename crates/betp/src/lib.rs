@@ -36,8 +36,6 @@
 pub mod client;
 pub mod server;
 
-pub mod udp;
-
 mod local;
 mod remote;
 
@@ -106,7 +104,7 @@ pub(crate) fn write_connection_status(buffer: &mut [u8], connection_status: Conn
 	Some(())
 }
 
-pub(crate) fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
+pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 	let header = packet.header();
 
 	write_packet_header(buffer, header)?;

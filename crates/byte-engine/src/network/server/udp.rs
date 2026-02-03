@@ -1,6 +1,8 @@
+//! UDP implementation of a BETP server.
+
 use std::net::ToSocketAddrs;
 
-use crate::{packets::Packets, server::{Events, server::{ConnectionResults, Settings}, session::Session}};
+use betp::{packets::Packets, server::{Events, server::{ConnectionResults, Settings}, session::Session}};
 
 /// A BETP authoritative server implementation over UDP.
 pub struct Server {
@@ -27,7 +29,7 @@ impl Server {
 	}
 }
 
-impl crate::Server for Server {
+impl betp::Server for Server {
 	fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Events>, ConnectionResults> {
 		let socket = &mut self.socket;
 		let mut events = Vec::with_capacity(256);
@@ -54,7 +56,7 @@ impl crate::Server for Server {
 		}
 
 		for client in self.clients.iter_mut().filter_map(Option::as_mut) {
-			client.update(&packets, current_time);
+			client.update(&packets, current_time).map_err(|_| ConnectionResults::ServerFull)?;
 		}
 
 		Ok(events)

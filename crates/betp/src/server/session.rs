@@ -105,7 +105,7 @@ impl Session {
 					return Ok(Vec::new());
 				}
 
-				Ok(packet_buffer.gather_unsent_packets().into_iter().map(|p| Packets::Data(p)).collect())
+				Ok(packet_buffer.gather_unsent_packets_for_retry().into_iter().map(|p| Packets::Data(p)).collect())
 			}
 			State::Disconnecting { id } => {
 				let id = *id;
@@ -162,21 +162,35 @@ impl Session {
 	}
 }
 
+/// The different states a session can be in.
+/// Used to manage the connection lifecycle.
 #[derive(Debug, Clone, Copy)]
 pub enum State {
+	/// The initial state of the session.
+	/// No connection has been initiated yet.
 	Initial,
+	/// The session is attempting to initiate a connection.
 	InitiatingConnection {
+		/// The client salt used to identify the connection attempt.
 		salt: u64
 	},
+	/// The session is in the process of connecting.
 	Connecting {
+		/// The connection ID assigned to this session.
 		id: u64,
 	},
+	/// The session is fully connected.
 	Connected {
+		/// The established connection ID.
 		id: u64,
+		/// The packet buffer that manages sent and acknowledged packets.
 		packet_buffer: PacketBuffer<16, 1024>,
+		/// The last time a packet was received from the client.
 		last_seen: std::time::Instant,
 	},
+	/// The session is in the process of disconnecting.
 	Disconnecting {
+		/// The connection ID being disconnected.
 		id: u64,
 	},
 }

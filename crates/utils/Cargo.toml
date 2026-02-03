@@ -6,7 +6,7 @@ license = "MIT"
 rust-version = "1.73.0"
 
 [dependencies]
-futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
+futures = { version = "0.3.31", features = ["alloc"], default-features = false }
 parking_lot = "0.12.3"
 gxhash = "3.5.0"
 sonic-rs = "0.5.1"

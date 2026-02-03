@@ -1,13 +1,15 @@
-use crate::core::Entity;
+use betp::Server as _;
+
+use crate::{core::Entity, network::server::udp};
 
 pub struct Server {
-	server: Box<dyn betp::Server>,
+	server: udp::Server,
 }
 
 impl Server {
 	pub fn new() -> Result<Server, String> {
 		Ok(Server {
-			server: Box::new(betp::udp::Server::new("0.0.0.0:6669").map_err(|_| "Failed to create BETP server".to_string())?),
+			server: udp::Server::new("0.0.0.0:6669").map_err(|_| "Failed to create BETP server".to_string())?,
 		})
 	}
 

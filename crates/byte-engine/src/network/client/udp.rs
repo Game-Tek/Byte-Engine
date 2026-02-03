@@ -1,7 +1,6 @@
-//! Client module for the Byte-Engine networking library.
-//! The client is the entity that connects to a server and participates in the game.
+//! UPD implementation of a BETP client.
 
-use crate::{client::Session, write_packet};
+use betp::{client::Session, write_packet};
 
 /// The client is the entity that connects to a server and participates in the game.
 pub struct Client {
@@ -26,19 +25,19 @@ impl Client {
 	}
 }
 
-impl super::Client for Client {
+impl betp::Client for Client {
 	fn connect(&mut self, current_time: std::time::Instant) -> () {
 		let salt = current_time.elapsed().as_nanos() as u64;
 
 		self.session.connect(salt);
 	}
 
-	fn update(&mut self) -> Result<(), ()> {
+	fn update(&mut self) -> Result<(), betp::client::Errors> {
 		let socket = &mut self.socket;
 
 		let mut buffer = [0u8; 1024];
 
-		let bytes_read = socket.recv(&mut buffer).map_err(|_| ())?;
+		let bytes_read = socket.recv(&mut buffer).map_err(|_| betp::client::Errors::IoError)?;
 
 		let session = &mut self.session;
 

@@ -1,19 +1,19 @@
 use std::net::SocketAddr;
 
-use betp;
+use betp::{self, Client as _};
 
-use crate::{core::{Entity, listener::{Listener}}, network::{Replicable, replicable::Importance}};
+use crate::{core::{Entity}, network::{Replicable, replicable::Importance, client::udp}};
 
 /// The `Client` entity represents a client connection for a replicated application setup.
 /// This class handles replication of application entities.
 pub struct Client {
-	client: Box<dyn betp::Client>,
+	client: udp::Client,
 }
 
 impl Client {
 	pub fn new(server_address: SocketAddr) -> Result<Client, String> {
 		Ok(Client {
-			client: Box::new(betp::udp::Client::new(server_address).map_err(|_| "Failed to initilize BETP client.".to_string())?),
+			client: udp::Client::new(server_address).map_err(|_| "Failed to initilize BETP client.".to_string())?,
 		})
 	}
 

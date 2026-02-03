@@ -50,7 +50,7 @@ pub use server::Server;
 
 use std::io::{Read as _, Write};
 
-use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};
+use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// [`PacketInfo`] contains information about a packet.

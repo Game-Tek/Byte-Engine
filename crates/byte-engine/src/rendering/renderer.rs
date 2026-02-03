@@ -13,7 +13,7 @@ use crate::{
 	}, gameplay::space::Spawner, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
 };
 
-use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
+use super::{render_pass::{RenderPass, RenderPassBuilder}, render_passes::aces::AcesToneMapPass, texture_manager::TextureManager,};
 
 use utils::Box;
 
@@ -36,6 +36,7 @@ pub struct Renderer {
 
 	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
 	render_passes_by_view: SmallVec<[(usize, usize); 32]>,
+	aces_passes: SmallVec<[(usize, AcesToneMapPass); 16]>,
 
 	scene_managers: SmallVec<[EntityHandle<dyn SceneManager>; 16]>,
 
@@ -117,6 +118,7 @@ impl Renderer {
 
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_view: SmallVec::with_capacity(32),
+			aces_passes: SmallVec::with_capacity(16),
 
 			scene_managers: SmallVec::with_capacity(8),
 
@@ -233,6 +235,11 @@ impl Renderer {
 			None
 		}).collect();
 
+		let aces_commands: SmallVec<[RenderPassReturn; 16]> = viewports.iter().filter_map(|viewport| {
+			let (_, aces_pass) = self.aces_passes.iter_mut().find(|(view_id, _)| *view_id == viewport.index())?;
+			aces_pass.prepare(&mut frame, viewport)
+		}).collect();
+
 		let present_keys = swapchains.iter().filter_map(|sc| sc.as_ref().map(|(pk, _, _)| *pk)).collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
 		let execute = {
@@ -245,20 +252,16 @@ impl Renderer {
 						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
 
 						(command.borrow_mut())(e, &attachment_infos);
-
-						// temporary: copy to swapchain
-						{
-							let (present_key, _, swapchain) = swapchains[0].unwrap();
-
-							let source_texture = render_targets.get_image("result", viewport.index());
-							e.copy_to_swapchain(*source_texture, present_key, swapchain);
-						}
 					}
 				}
 
 				for (mut command, viewport) in render_pass_commands.into_iter() {
 					let attachment_infos = render_targets.get_attachment_infos(viewport);
 					(command.borrow_mut())(e, &attachment_infos);
+				}
+
+				for mut command in aces_commands.into_iter() {
+					(command.borrow_mut())(e, &[]);
 				}
 			}
 		};
@@ -327,14 +330,19 @@ impl Listener<CreateEvent<Window>> for Renderer {
 				};
 
 				if let Some(view_id) = view_id {
-					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget).name("main").use_case(ghi::UseCases::DYNAMIC));
+					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget | ghi::Uses::InputAttachment).name("main").use_case(ghi::UseCases::DYNAMIC));
 					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
-					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource).name("result").use_case(ghi::UseCases::DYNAMIC));
+					let result = device.get_swapchain_image(swapchain_handle);
 
 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16F);
 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
-					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
+					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::BGRAu8);
 
+					{
+						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+						let aces_pass = AcesToneMapPass::new(&mut rpb);
+						self.aces_passes.push((view_id, aces_pass));
+					}
 
 					{
 						let scene_managers = self.scene_managers.iter();
@@ -550,11 +558,17 @@ impl RenderTargets {
 
 	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::ImageHandle> {
 		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
-			if *v == index {
-				self.images.get(*i).map(|(image, _)| image)
-			} else {
-				None
+			if *v != index {
+				return None;
 			}
+
+			if let Some((_, result_index)) = self.by_name.iter().find(|(name, _)| name == "result") {
+				if *result_index == *i {
+					return None;
+				}
+			}
+
+			self.images.get(*i).map(|(image, _)| image)
 		})
 	}
 }

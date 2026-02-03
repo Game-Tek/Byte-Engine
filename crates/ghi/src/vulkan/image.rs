@@ -5,6 +5,8 @@ use utils::Extent;
 
 use crate::{vulkan::{Handle, HandleLike, Next}, DeviceAccesses, Formats, Uses};
 
+/// The `Image` struct stores Vulkan image resources and views for the GHI backend, including swapchain-backed images.
+/// Swapchain-backed images keep the swapchain Vulkan handles and image views, chain across frames via `next`, and do not store extents or own the images.
 #[derive(Clone)]
 pub(crate) struct Image {
 	pub(crate) next: Option<ImageHandle>,
@@ -20,6 +22,7 @@ pub(crate) struct Image {
 	pub(crate) size: usize,
 	pub(crate) uses: Uses,
 	pub(crate) layers: Option<NonZeroU32>,
+	pub(crate) owns_image: bool,
 }
 
 unsafe impl Send for Image {}

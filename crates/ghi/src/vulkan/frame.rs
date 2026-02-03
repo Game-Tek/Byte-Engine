@@ -24,7 +24,7 @@ impl crate::frame::Frame for Frame<'_> {
 
 		let swapchain = &swapchains[swapchain_handle.0 as usize];
 
-		let s = swapchain.images.iter().filter(|e| !e.is_null()).count() as u64;
+		let s = swapchain.max_image_count as u64;
 		let m = swapchain.min_image_count as u64;
 
 		let frame_key = self.frame_key;

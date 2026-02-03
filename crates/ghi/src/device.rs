@@ -133,6 +133,9 @@ pub trait Device where Self: Sized {
 	/// Associates a swapchain with a window.
 	fn bind_to_window(&mut self, window_os_handles: &window::Handles, presentation_mode: PresentationModes, fallback_extent: Extent) -> SwapchainHandle;
 
+	/// Returns the swapchain image handle for rendering.
+	fn get_swapchain_image(&self, swapchain_handle: SwapchainHandle) -> ImageHandle;
+
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
 
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\

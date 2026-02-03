@@ -301,6 +301,8 @@ pub(super) fn into_vk_image_usage_flags(uses: graphics_hardware_interface::Uses,
 	|
 	if uses.intersects(graphics_hardware_interface::Uses::Image) { vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::empty() }
 	|
+	if uses.intersects(graphics_hardware_interface::Uses::InputAttachment) { vk::ImageUsageFlags::INPUT_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
+	|
 	if uses.intersects(graphics_hardware_interface::Uses::Clear) { vk::ImageUsageFlags::TRANSFER_DST } else { vk::ImageUsageFlags::empty() }
 	|
 	if uses.intersects(graphics_hardware_interface::Uses::Storage) { vk::ImageUsageFlags::STORAGE } else { vk::ImageUsageFlags::empty() }

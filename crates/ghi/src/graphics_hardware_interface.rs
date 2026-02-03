@@ -993,6 +993,8 @@ bitflags::bitflags! {
 		const Image = 1 << 5;
 		/// Resource will be used as a render target.
 		const RenderTarget = 1 << 6;
+		/// Resource will be used as an input attachment.
+		const InputAttachment = 1 << 15;
 		/// Resource will be used as a depth stencil.
 		const DepthStencil = 1 << 7;
 		/// Resource will be used as an acceleration structure.
@@ -1051,6 +1053,8 @@ pub enum DescriptorType {
 	CombinedImageSampler,
 	/// A storage image.
 	StorageImage,
+	/// An input attachment.
+	InputAttachment,
 	/// A sampler.
 	Sampler,
 	/// An acceleration structure.

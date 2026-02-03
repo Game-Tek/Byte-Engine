@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::vulkan::{SynchronizerHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES};
+use crate::{vulkan::{ImageHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES, SynchronizerHandle}};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -8,7 +8,7 @@ pub(crate) struct Swapchain {
 	pub swapchain: vk::SwapchainKHR,
 	pub acquire_synchronizers: [SynchronizerHandle; MAX_FRAMES_IN_FLIGHT],
 	pub submit_synchronizers: [SynchronizerHandle; MAX_SWAPCHAIN_IMAGES],
-	pub images: [vk::Image; MAX_SWAPCHAIN_IMAGES],
+	pub images: [ImageHandle; MAX_SWAPCHAIN_IMAGES],
 	pub extent: vk::Extent2D,
 	pub sync_stage: vk::PipelineStageFlags2,
 	pub vk_present_mode: vk::PresentModeKHR,

@@ -972,8 +972,8 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 		let source_texture = self.get_image(source_image_internal_handle);
 		let swapchain = &self.ghi.swapchains[swapchain_handle.0 as usize];
-
-		let swapchain_image = swapchain.images[present_key.image_index as usize];
+		let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
+		let swapchain_image = swapchain_image_handle.access(&self.ghi.images);
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 
@@ -989,7 +989,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
 				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(swapchain_image)
+				.image(swapchain_image.image)
 				.subresource_range(vk::ImageSubresourceRange {
 					aspect_mask: vk::ImageAspectFlags::COLOR,
 					base_mip_level: 0,
@@ -1026,7 +1026,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let copy_image_info = vk::BlitImageInfo2::default()
 			.src_image(source_texture.image)
 			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-			.dst_image(swapchain_image)
+			.dst_image(swapchain_image.image)
 			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
 			.regions(&image_blits)
 		;
@@ -1045,7 +1045,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				.dst_stage_mask(swapchain.sync_stage)
 				.dst_access_mask(vk::AccessFlags2KHR::NONE)
 				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(swapchain_image)
+				.image(swapchain_image.image)
 				.subresource_range(vk::ImageSubresourceRange {
 					aspect_mask: vk::ImageAspectFlags::COLOR,
 					base_mip_level: 0,
@@ -1087,15 +1087,38 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 		{
 			let command_buffer = self.get_command_buffer();
+			let command_buffer = command_buffer.command_buffer;
 
 			if self.in_render_pass {
 				unsafe {
-					self.ghi.device.cmd_end_render_pass(command_buffer.command_buffer);
+					self.ghi.device.cmd_end_render_pass(command_buffer);
+				}
+			}
+
+			{
+				let presentations = presentations.iter().chain(self.present_keys.iter());
+
+				let present_transitions = presentations.clone().map(|present_key| {
+					let swapchain = self.get_swapchain(present_key.swapchain);
+					let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
+
+					Consumption {
+						handle: Handle::Image(swapchain_image_handle),
+						stages: graphics_hardware_interface::Stages::PRESENTATION,
+						access: graphics_hardware_interface::AccessPolicies::READ,
+						layout: graphics_hardware_interface::Layouts::Present,
+					}
+				}).collect::<Vec<_>>();
+
+				if !present_transitions.is_empty() {
+					unsafe {
+						self.consume_resources(present_transitions)(&mut self);
+					}
 				}
 			}
 
 			unsafe {
-				self.ghi.device.end_command_buffer(command_buffer.command_buffer).expect("Failed to end command buffer.");
+				self.ghi.device.end_command_buffer(command_buffer).expect("Failed to end command buffer.");
 			}
 		}
 
@@ -1342,6 +1365,8 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 
 		let mesh = &self.ghi.meshes[mesh_handle.0 as usize];
@@ -1359,6 +1384,8 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
@@ -1368,6 +1395,8 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	}
 
 	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 

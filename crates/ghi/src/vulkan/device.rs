@@ -898,6 +898,69 @@ impl Device {
 		vk_image_view
 	}
 
+	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
+	fn create_swapchain_image(&mut self, vk_image: vk::Image, format: graphics_hardware_interface::Formats) -> ImageHandle {
+		let root_handle = ImageHandle(self.images.len() as u64);
+		let root_image = {
+			let image_view = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, None);
+
+			let mut image_views = [vk::ImageView::null(); 8];
+			image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, NonZeroU32::new(1));
+
+			Image {
+				next: None,
+				size: 0,
+				staging_buffer: None,
+				pointer: None,
+				image: vk_image,
+				image_view,
+				image_views,
+				extent: Extent::cube(0, 0, 0),
+				access: graphics_hardware_interface::DeviceAccesses::DeviceOnly,
+				format: to_format(format),
+				format_: format,
+				uses: graphics_hardware_interface::Uses::RenderTarget | graphics_hardware_interface::Uses::TransferDestination,
+				layers: None,
+				owns_image: false,
+			}
+		};
+		self.images.push(root_image);
+
+		let mut previous_handle = root_handle;
+
+		for _ in 1..self.frames {
+			let handle = ImageHandle(self.images.len() as u64);
+			let image = {
+				let image_view = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, None);
+
+				let mut image_views = [vk::ImageView::null(); 8];
+				image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, NonZeroU32::new(1));
+
+				Image {
+					next: None,
+					size: 0,
+					staging_buffer: None,
+					pointer: None,
+					image: vk_image,
+					image_view,
+					image_views,
+					extent: Extent::cube(0, 0, 0),
+					access: graphics_hardware_interface::DeviceAccesses::DeviceOnly,
+					format: to_format(format),
+					format_: format,
+					uses: graphics_hardware_interface::Uses::RenderTarget | graphics_hardware_interface::Uses::TransferDestination,
+					layers: None,
+					owns_image: false,
+				}
+			};
+			self.images.push(image);
+			self.images[previous_handle.0 as usize].next = Some(handle);
+			previous_handle = handle;
+		}
+
+		root_handle
+	}
+
 	fn create_vulkan_surface(&self, window_os_handles: &window::Handles) -> vk::SurfaceKHR {
 		let surface = {
 			#[cfg(target_os = "linux")]
@@ -1147,6 +1210,7 @@ impl Device {
 				format_: format,
 				uses: resource_uses,
 				layers: array_layers,
+				owns_image: true,
 			};
 		}
 
@@ -1216,6 +1280,7 @@ impl Device {
 			format_: format,
 			uses: resource_uses,
 			layers: array_layers,
+			owns_image: true,
 		}
 	}
 
@@ -1667,11 +1732,6 @@ impl Drop for Device {
 				});
 			});
 
-			self.swapchains.iter().for_each(|swapchain| {
-				self.swapchain.destroy_swapchain(swapchain.swapchain, None);
-				self.surface.destroy_surface(swapchain.surface, None);
-			});
-
 			self.synchronizers.iter().for_each(|synchronizer| {
 				self.device.destroy_semaphore(synchronizer.semaphore, None);
 				self.device.destroy_fence(synchronizer.fence, None);
@@ -1694,12 +1754,21 @@ impl Drop for Device {
 			});
 
 			self.images.iter().for_each(|image| {
-				self.device.destroy_image(image.image, None);
-
 				self.device.destroy_image_view(image.image_view, None);
 
 				for vk_image_view in image.image_views {
 					self.device.destroy_image_view(vk_image_view, None);
+				}
+			});
+
+			self.swapchains.iter().for_each(|swapchain| {
+				self.swapchain.destroy_swapchain(swapchain.swapchain, None);
+				self.surface.destroy_surface(swapchain.surface, None);
+			});
+
+			self.images.iter().for_each(|image| {
+				if image.owns_image {
+					self.device.destroy_image(image.image, None);
 				}
 			});
 
@@ -1908,6 +1977,7 @@ impl crate::device::Device for Device {
 					graphics_hardware_interface::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
 					graphics_hardware_interface::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
 					graphics_hardware_interface::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
+					graphics_hardware_interface::DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
 					graphics_hardware_interface::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 					graphics_hardware_interface::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
 				})
@@ -1963,6 +2033,7 @@ impl crate::device::Device for Device {
 			graphics_hardware_interface::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
 			graphics_hardware_interface::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
 			graphics_hardware_interface::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
+			graphics_hardware_interface::DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
 			graphics_hardware_interface::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 			graphics_hardware_interface::DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
 		};
@@ -2767,7 +2838,7 @@ impl crate::device::Device for Device {
     		.present_modes(&presentation_modes)
 		;
 
-		let image_count = if max_image_count != 0 {
+		let requested_image_count = if max_image_count != 0 {
 			max_image_count.max(min_image_count)
 		} else {
 			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
@@ -2777,7 +2848,7 @@ impl crate::device::Device for Device {
     		.push_next(&mut present_modes_create_info)
 			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
 			.surface(vk_surface)
-			.min_image_count(image_count)
+			.min_image_count(requested_image_count)
 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
 			.image_format(vk::Format::B8G8R8A8_SRGB)
 			.image_extent(extent)
@@ -2801,21 +2872,20 @@ impl crate::device::Device for Device {
 			acquire_synchronizers[i as usize] = synchronizer;
 		}
 
-		let mut submit_synchronizers = [SynchronizerHandle(!0u64); 8];
+		let vk_images = unsafe { self.swapchain.get_swapchain_images(vk_swapchain).expect("No swapchain images found.") };
+		let image_count = vk_images.len() as u32;
+
+		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
 
 		for i in 0..image_count {
 			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
 			submit_synchronizers[i as usize] = synchronizer;
 		}
 
-		let vk_images = unsafe {
-			self.swapchain.get_swapchain_images(vk_swapchain).expect("No swapchain images found.")
-		};
-
-		let mut images = [vk::Image::null(); 8];
+		let mut images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
 
 		for (i, vk_image) in vk_images.iter().enumerate() {
-			images[i] = *vk_image;
+			images[i] = self.create_swapchain_image(*vk_image, graphics_hardware_interface::Formats::BGRAu8);
 		}
 
 		self.swapchains.push(Swapchain {
@@ -2825,13 +2895,18 @@ impl crate::device::Device for Device {
 			submit_synchronizers,
 			extent,
 			images,
-			sync_stage: vk::PipelineStageFlags2::TRANSFER,
+			sync_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,
 		});
 
 		swapchain_handle
+	}
+
+	fn get_swapchain_image(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> graphics_hardware_interface::ImageHandle {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
 	}
 
 	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {

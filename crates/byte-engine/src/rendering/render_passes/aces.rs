@@ -103,8 +103,8 @@ const TONE_MAPPING_SHADER: &'static str = r#"
 #extension GL_EXT_buffer_reference2: enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 
-layout(set=0, binding=0, rgba16) uniform readonly image2D source;
-layout(set=0, binding=1, rgba8) uniform image2D result;
+layout(set=0, binding=0, rgba16f) uniform readonly image2D source;
+layout(set=0, binding=1) uniform writeonly image2D result;
 
 vec3 ACESNarkowicz(vec3 x) {
 	const float a = 2.51;

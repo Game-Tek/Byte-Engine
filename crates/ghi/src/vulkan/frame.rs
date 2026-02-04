@@ -6,6 +6,7 @@ use crate::{graphics_hardware_interface, vulkan::{BufferCopy, BufferHandle, Hand
 pub struct Frame<'a> {
 	frame_key: FrameKey,
 	device: &'a mut Device,
+	acquired_swapchains: Vec<crate::PresentKey>,
 }
 
 impl <'a> Frame<'a> {
@@ -13,6 +14,7 @@ impl <'a> Frame<'a> {
 		Self {
 			frame_key,
 			device,
+			acquired_swapchains: Vec::new(),
 		}
 	}
 }
@@ -86,7 +88,7 @@ impl crate::frame::Frame for Frame<'_> {
 			unsafe { swapchain_functions.acquire_next_image2(&acquire_info) }
 		};
 
-		let (index, _) = if let Ok((index, is_suboptimal)) = acquisition_result {
+		let (index, swapchain_state) = if let Ok((index, is_suboptimal)) = acquisition_result {
 			if !is_suboptimal {
 				(index, graphics_hardware_interface::SwapchainStates::Ok)
 			} else {
@@ -96,17 +98,23 @@ impl crate::frame::Frame for Frame<'_> {
 			(0, graphics_hardware_interface::SwapchainStates::Invalid)
 		};
 
+		let present_key = graphics_hardware_interface::PresentKey {
+			image_index: index as u8,
+			sequence_index: frame_key.sequence_index,
+			swapchain: swapchain_handle,
+		};
+
+		if swapchain_state != graphics_hardware_interface::SwapchainStates::Invalid && !self.acquired_swapchains.contains(&present_key) {
+			self.acquired_swapchains.push(present_key);
+		}
+
 		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX && vk_surface_capabilities.current_extent.height != u32::MAX {
 			Extent::rectangle(vk_surface_capabilities.current_extent.width, vk_surface_capabilities.current_extent.height)
 		} else {
 			Extent::rectangle(swapchain.extent.width, swapchain.extent.height)
 		};
 
-		(graphics_hardware_interface::PresentKey {
-			image_index: index as u8,
-			sequence_index: frame_key.sequence_index,
-			swapchain: swapchain_handle,
-		}, extent)
+		(present_key, extent)
 	}
 
 	fn resize_image(&mut self, image_handle: crate::ImageHandle, extent: Extent) {
@@ -158,8 +166,8 @@ impl crate::frame::Frame for Frame<'_> {
 
 		drop(pending_images);
 
-		let recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
-
+		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
+		recording.record_swapchain_attachment_usage(&self.acquired_swapchains);
 		recording
 	}
 

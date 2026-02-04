@@ -146,6 +146,7 @@ impl Device {
 			.shader_storage_image_write_without_format(true)
 			.texture_compression_bc(true)
 			.geometry_shader(settings.geometry_shader)
+			.shader_storage_image_write_without_format(true)
 		;
 
 		let mut shader_atomic_float_required_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
@@ -905,7 +906,7 @@ impl Device {
 			let image_view = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, None);
 
 			let mut image_views = [vk::ImageView::null(); 8];
-			image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, NonZeroU32::new(1));
+			image_views[0] = image_view;
 
 			Image {
 				next: None,
@@ -924,6 +925,7 @@ impl Device {
 				owns_image: false,
 			}
 		};
+
 		self.images.push(root_image);
 
 		let mut previous_handle = root_handle;
@@ -934,7 +936,7 @@ impl Device {
 				let image_view = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, None);
 
 				let mut image_views = [vk::ImageView::null(); 8];
-				image_views[0] = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, NonZeroU32::new(1));
+				image_views[0] = image_view;
 
 				Image {
 					next: None,
@@ -2844,6 +2846,8 @@ impl crate::device::Device for Device {
 			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
 		};
 
+		let image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE;
+
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
     		.push_next(&mut present_modes_create_info)
 			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
@@ -2852,7 +2856,7 @@ impl crate::device::Device for Device {
 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
 			.image_format(vk::Format::B8G8R8A8_SRGB)
 			.image_extent(extent)
-			.image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+			.image_usage(image_usage)
 			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.pre_transform(vk_surface_capabilities.current_transform)
 			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -2895,7 +2899,7 @@ impl crate::device::Device for Device {
 			submit_synchronizers,
 			extent,
 			images,
-			sync_stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+			sync_stage: vk::PipelineStageFlags2::COMPUTE_SHADER, // Stage which writes last to the swapchain image
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,

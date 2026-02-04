@@ -52,6 +52,16 @@ impl CommandBufferRecording<'_> {
 		command_buffer
 	}
 
+	/// Records swapchain images as attachment writes for the current command buffer recording.
+	pub(crate) fn record_swapchain_attachment_usage(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) {
+		for present_key in present_keys {
+			let swapchain = self.get_swapchain(present_key.swapchain);
+			let swapchain_image_handle = swapchain.images[present_key.sequence_index as usize];
+
+			self.states.insert(Handle::Image(swapchain_image_handle), TransitionState { stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE, layout: vk::ImageLayout::UNDEFINED });
+		}
+	}
+
 	fn begin(&self) {
 		let command_buffer = self.get_command_buffer();
 
@@ -1365,8 +1375,6 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
-		self.consume_resources_current([])(self);
-
 		let command_buffer = self.get_command_buffer();
 
 		let mesh = &self.ghi.meshes[mesh_handle.0 as usize];
@@ -1384,8 +1392,6 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
-		self.consume_resources_current([])(self);
-
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
@@ -1395,8 +1401,6 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	}
 
 	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32) {
-		self.consume_resources_current([])(self);
-
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 

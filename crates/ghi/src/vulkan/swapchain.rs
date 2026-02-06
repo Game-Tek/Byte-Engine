@@ -10,7 +10,6 @@ pub(crate) struct Swapchain {
 	pub submit_synchronizers: [SynchronizerHandle; MAX_SWAPCHAIN_IMAGES],
 	pub images: [ImageHandle; MAX_SWAPCHAIN_IMAGES],
 	pub extent: vk::Extent2D,
-	pub sync_stage: vk::PipelineStageFlags2,
 	pub vk_present_mode: vk::PresentModeKHR,
 	pub min_image_count: u32,
 	pub max_image_count: u32,

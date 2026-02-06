@@ -166,8 +166,8 @@ impl crate::frame::Frame for Frame<'_> {
 
 		drop(pending_images);
 
-		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
-		recording.record_swapchain_attachment_usage(&self.acquired_swapchains);
+		let recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
+
 		recording
 	}
 

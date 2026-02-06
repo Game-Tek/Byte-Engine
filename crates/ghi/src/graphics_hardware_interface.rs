@@ -673,6 +673,8 @@ pub enum Formats {
 	RGBu11u11u10,
 	/// 8 bit unsigned per component normalized BGRA.
 	BGRAu8,
+	/// 8 bit sRGB RGBA.
+	BGRAsRGB,
 	/// 32 bit float depth.
 	Depth32,
 	/// 32 bit unsigned integer.
@@ -707,7 +709,7 @@ impl Formats {
 			Formats::R8sRGB | Formats::R16sRGB | Formats::R32sRGB |
 			Formats::RG8sRGB | Formats::RG16sRGB |
 			Formats::RGB8sRGB | Formats::RGB16sRGB |
-			Formats::RGBA8sRGB | Formats::RGBA16sRGB => Some(Encodings::sRGB),
+			Formats::RGBA8sRGB | Formats::RGBA16sRGB | Formats::BGRAsRGB => Some(Encodings::sRGB),
 
 			Formats::U32 | Formats::BC5 | Formats::BC7 => None,
 		}
@@ -720,7 +722,7 @@ impl Formats {
 			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB |
 			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB |
 			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB |
-			Formats::BGRAu8 => ChannelBitSize::Bits8,
+			Formats::BGRAu8 | Formats::BGRAsRGB => ChannelBitSize::Bits8,
 
 			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB |
 			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB |
@@ -753,7 +755,7 @@ impl Formats {
 			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB |
 			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => ChannelLayout::RGBA,
 
-			Formats::BGRAu8 => ChannelLayout::BGRA,
+			Formats::BGRAu8 | Formats::BGRAsRGB => ChannelLayout::BGRA,
 
 			Formats::Depth32 => ChannelLayout::Depth,
 
@@ -781,7 +783,7 @@ impl Size for Formats {
 			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB => 4,
 			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => 8,
 			Formats::RGBu11u11u10 => 4,
-			Formats::BGRAu8 => 4,
+			Formats::BGRAu8 | Formats::BGRAsRGB => 4,
 			Formats::Depth32 => 4,
 			Formats::U32 => 4,
 			Formats::BC5 => 1,
@@ -1599,6 +1601,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		assert_eq!(Formats::RGB16sRGB.encoding(), Some(Encodings::sRGB));
 		assert_eq!(Formats::RGBA8sRGB.encoding(), Some(Encodings::sRGB));
 		assert_eq!(Formats::RGBA16sRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::BGRAsRGB.encoding(), Some(Encodings::sRGB));
 
 		// Test formats without encoding
 		assert_eq!(Formats::U32.encoding(), None);
@@ -1617,6 +1620,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		assert_eq!(Formats::RGB8UNORM.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(Formats::RGBA8SNORM.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(Formats::BGRAu8.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(Formats::BGRAsRGB.channel_bit_size(), ChannelBitSize::Bits8);
 
 		// Test 16-bit formats
 		assert_eq!(Formats::R16F.channel_bit_size(), ChannelBitSize::Bits16);
@@ -1663,6 +1667,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		// Test BGRA format
 		assert_eq!(Formats::BGRAu8.channel_layout(), ChannelLayout::BGRA);
+		assert_eq!(Formats::BGRAsRGB.channel_layout(), ChannelLayout::BGRA);
 
 		// Test depth format
 		assert_eq!(Formats::Depth32.channel_layout(), ChannelLayout::Depth);
@@ -1706,6 +1711,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Test special formats
 		assert_eq!(Formats::RGBu11u11u10.size(), 4);
 		assert_eq!(Formats::BGRAu8.size(), 4);
+		assert_eq!(Formats::BGRAsRGB.size(), 4);
 		assert_eq!(Formats::Depth32.size(), 4);
 		assert_eq!(Formats::U32.size(), 4);
 		assert_eq!(Formats::BC5.size(), 1);
@@ -1746,6 +1752,13 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// For BGRAu8
 		let format = Formats::BGRAu8;
 		assert_eq!(format.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
+		assert_eq!(format.channel_layout(), ChannelLayout::BGRA);
+		assert_eq!(format.size(), 4);
+
+		// For BGRAsRGB
+		let format = Formats::BGRAsRGB;
+		assert_eq!(format.encoding(), Some(Encodings::sRGB));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Bits8);
 		assert_eq!(format.channel_layout(), ChannelLayout::BGRA);
 		assert_eq!(format.size(), 4);
@@ -1954,7 +1967,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let os_handles = window.os_handles();
 
-		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent);
+		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent, Uses::RenderTarget);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -2037,7 +2050,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let os_handles = window.os_handles();
 
-		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent);
+		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent, Uses::RenderTarget);
 
 		let floats: [f32;21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,

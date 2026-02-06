@@ -52,16 +52,6 @@ impl CommandBufferRecording<'_> {
 		command_buffer
 	}
 
-	/// Records swapchain images as attachment writes for the current command buffer recording.
-	pub(crate) fn record_swapchain_attachment_usage(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) {
-		for present_key in present_keys {
-			let swapchain = self.get_swapchain(present_key.swapchain);
-			let swapchain_image_handle = swapchain.images[present_key.sequence_index as usize];
-
-			self.states.insert(Handle::Image(swapchain_image_handle), TransitionState { stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, access: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE, layout: vk::ImageLayout::UNDEFINED });
-		}
-	}
-
 	fn begin(&self) {
 		let command_buffer = self.get_command_buffer();
 
@@ -969,6 +959,15 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 	fn copy_to_swapchain(&mut self, source_image_handle: graphics_hardware_interface::ImageHandle, present_key: graphics_hardware_interface::PresentKey, swapchain_handle: graphics_hardware_interface::SwapchainHandle) {
 		let source_image_internal_handle = self.get_internal_image_handle(source_image_handle);
 
+		let swapchain = &self.ghi.swapchains[swapchain_handle.0 as usize];
+		let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
+
+		self.states.insert(Handle::Image(swapchain_image_handle), TransitionState {
+			stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags2::BLIT | vk::PipelineStageFlags2::TRANSFER,
+			layout: vk::ImageLayout::UNDEFINED,
+			access: vk::AccessFlags2::NONE,
+		});
+
 		unsafe {
 			self.consume_resources([
 				Consumption {
@@ -977,46 +976,21 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 					access: graphics_hardware_interface::AccessPolicies::READ,
 					layout: graphics_hardware_interface::Layouts::Transfer,
 				},
+				Consumption {
+					handle: Handle::Image(swapchain_image_handle),
+					stages: graphics_hardware_interface::Stages::TRANSFER,
+					access: graphics_hardware_interface::AccessPolicies::WRITE,
+					layout: graphics_hardware_interface::Layouts::Transfer,
+				}
 			])(self);
 		}
 
 		let source_texture = self.get_image(source_image_internal_handle);
-		let swapchain = &self.ghi.swapchains[swapchain_handle.0 as usize];
-		let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
 		let swapchain_image = swapchain_image_handle.access(&self.ghi.images);
 
 		// Transition source texture to transfer read layout and swapchain image to transfer write layout
 
 		let vk_command_buffer = self.get_command_buffer().command_buffer;
-
-		let image_memory_barriers = [
-			vk::ImageMemoryBarrier2KHR::default()
-				.old_layout(vk::ImageLayout::UNDEFINED)
-				.src_stage_mask(swapchain.sync_stage)
-				.src_access_mask(vk::AccessFlags2KHR::NONE)
-				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-				.dst_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
-				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(swapchain_image.image)
-				.subresource_range(vk::ImageSubresourceRange {
-					aspect_mask: vk::ImageAspectFlags::COLOR,
-					base_mip_level: 0,
-					level_count: vk::REMAINING_MIP_LEVELS,
-					base_array_layer: 0,
-					layer_count: vk::REMAINING_ARRAY_LAYERS,
-				}),
-		];
-
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-		;
-
-		unsafe {
-			self.ghi.device.cmd_pipeline_barrier2(vk_command_buffer, &dependency_info);
-		}
 
 		// Copy texture to swapchain image
 
@@ -1042,37 +1016,6 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		;
 
 		unsafe { self.ghi.device.cmd_blit_image2(vk_command_buffer, &copy_image_info); }
-
-		// Transition swapchain image to present layout
-
-		let image_memory_barriers = [
-			vk::ImageMemoryBarrier2KHR::default()
-				.old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-				.src_access_mask(vk::AccessFlags2KHR::TRANSFER_WRITE)
-				.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-				.dst_stage_mask(swapchain.sync_stage)
-				.dst_access_mask(vk::AccessFlags2KHR::NONE)
-				.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-				.image(swapchain_image.image)
-				.subresource_range(vk::ImageSubresourceRange {
-					aspect_mask: vk::ImageAspectFlags::COLOR,
-					base_mip_level: 0,
-					level_count: vk::REMAINING_MIP_LEVELS,
-					base_array_layer: 0,
-					layer_count: vk::REMAINING_ARRAY_LAYERS,
-				})
-		];
-
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION)
-		;
-
-		unsafe {
-			self.ghi.device.cmd_pipeline_barrier2(vk_command_buffer, &dependency_info);
-		}
 	}
 
 	fn present(&mut self, present_key: crate::PresentKey) {
@@ -1081,7 +1024,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 	fn execute(mut self, wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle], presentations: &[graphics_hardware_interface::PresentKey], execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		// Transition all resources which where written to but not consumed by any previous command
-		// If this is skipped validation layers (correctly) complain about missing sync even no "read" operation was performed, except for the following commands
+		// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed, except for the following commands
 		{
 			let consumptions = self.states.iter().filter_map(|(handle, ts)| {
 				match ts.access {
@@ -1118,12 +1061,10 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 						access: graphics_hardware_interface::AccessPolicies::READ,
 						layout: graphics_hardware_interface::Layouts::Present,
 					}
-				}).collect::<Vec<_>>();
+				});
 
-				if !present_transitions.is_empty() {
-					unsafe {
-						self.consume_resources(present_transitions)(&mut self);
-					}
+				unsafe {
+					self.consume_resources(present_transitions)(&mut self);
 				}
 			}
 
@@ -1150,13 +1091,14 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 				.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
 		}).chain(
-			presentations.clone().map(|presentation| {
-				let swapchain = self.get_swapchain(presentation.swapchain);
-				let semaphore = swapchain.acquire_synchronizers[presentation.sequence_index as usize].access(&self.ghi.synchronizers).semaphore;
+			presentations.clone().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize].access(&self.ghi.synchronizers).semaphore;
+				let wait_stage = self.states.get(&Handle::Image(swapchain.images[present_key.image_index as usize])).unwrap().stage;
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
-					.stage_mask(swapchain.sync_stage)
+					.stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags2::BLIT | vk::PipelineStageFlags2::TRANSFER)
 			})
 		).collect::<Vec<_>>();
 
@@ -1167,10 +1109,11 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		}).chain(
 			presentations.clone().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
+				let wait_stage = self.states.get(&Handle::Image(swapchain.images[present_key.image_index as usize])).unwrap().stage;
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(swapchain.submit_synchronizers[present_key.image_index as usize].access(&self.ghi.synchronizers).semaphore)
-					.stage_mask(swapchain.sync_stage)
+					.stage_mask(wait_stage)
 			})
 		).collect::<Vec<_>>();
 

@@ -99,6 +99,7 @@ pub(super) fn to_format(format: graphics_hardware_interface::Formats) -> vk::For
 		graphics_hardware_interface::Formats::RGBA16sRGB => { vk::Format::UNDEFINED }
 		graphics_hardware_interface::Formats::RGBu11u11u10 => vk::Format::B10G11R11_UFLOAT_PACK32,
 		graphics_hardware_interface::Formats::BGRAu8 => vk::Format::B8G8R8A8_SRGB,
+		graphics_hardware_interface::Formats::BGRAsRGB => vk::Format::B8G8R8A8_SRGB,
 		graphics_hardware_interface::Formats::Depth32 => vk::Format::D32_SFLOAT,
 		graphics_hardware_interface::Formats::U32 => vk::Format::R32_UINT,
 		graphics_hardware_interface::Formats::BC5 => vk::Format::BC5_UNORM_BLOCK,
@@ -314,6 +315,10 @@ pub(super) fn into_vk_image_usage_flags(uses: graphics_hardware_interface::Uses,
 	if uses.intersects(graphics_hardware_interface::Uses::TransferSource) { vk::ImageUsageFlags::TRANSFER_SRC } else { vk::ImageUsageFlags::empty() }
 	|
 	if uses.intersects(graphics_hardware_interface::Uses::TransferDestination) { vk::ImageUsageFlags::TRANSFER_DST } else { vk::ImageUsageFlags::empty() }
+	|
+	if uses.intersects(graphics_hardware_interface::Uses::BlitDestination) { vk::ImageUsageFlags::COLOR_ATTACHMENT } else { vk::ImageUsageFlags::empty() }
+	|
+	if uses.intersects(graphics_hardware_interface::Uses::BlitSource) { vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::empty() }
 }
 
 impl Into<vk::ShaderStageFlags> for graphics_hardware_interface::Stages {

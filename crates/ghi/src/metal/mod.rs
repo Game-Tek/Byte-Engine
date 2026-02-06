@@ -398,6 +398,7 @@ mod utils {
 
 			Formats::RGBu11u11u10 => mtl::MTLPixelFormat::RG11B10Float,
 			Formats::BGRAu8 => mtl::MTLPixelFormat::BGRA8Unorm,
+			Formats::BGRAsRGB => mtl::MTLPixelFormat::BGRA8Unorm_sRGB,
 			Formats::Depth32 => mtl::MTLPixelFormat::Depth32Float,
 			Formats::U32 => mtl::MTLPixelFormat::R32Uint,
 

@@ -245,6 +245,7 @@ impl Renderer {
 		let execute = {
 			let viewports = &viewports;
 			let render_targets = &self.render_targets;
+			let present_keys = &present_keys;
 
 			move |e: &mut ghi::CommandBufferRecording| {
 				for commands in scene_manager_commands.into_iter() {
@@ -260,8 +261,13 @@ impl Renderer {
 					(command.borrow_mut())(e, &attachment_infos);
 				}
 
-				for mut command in aces_commands.into_iter() {
+				for (i, mut command) in aces_commands.into_iter().enumerate() {
 					(command.borrow_mut())(e, &[]);
+
+					let source = render_targets.get_image("result", i);
+					let swapchain_handle = swapchains[i].as_ref().unwrap().2;
+
+					e.copy_to_swapchain(*source, present_keys[i], swapchain_handle);
 				}
 			}
 		};
@@ -319,6 +325,7 @@ impl Listener<CreateEvent<Window>> for Renderer {
 					&os_handles,
 					ghi::PresentationModes::FIFO,
 					extent,
+					ghi::Uses::BlitDestination,
 				);
 
 				let view_id = if let Some(camera) = camera {
@@ -332,7 +339,7 @@ impl Listener<CreateEvent<Window>> for Renderer {
 				if let Some(view_id) = view_id {
 					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget | ghi::Uses::InputAttachment).name("main").use_case(ghi::UseCases::DYNAMIC));
 					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
-					let result = device.get_swapchain_image(swapchain_handle);
+					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::BGRAu8, ghi::Uses::Storage | ghi::Uses::BlitSource).name("result").use_case(ghi::UseCases::DYNAMIC));
 
 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16F);
 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
@@ -562,11 +569,11 @@ impl RenderTargets {
 				return None;
 			}
 
-			if let Some((_, result_index)) = self.by_name.iter().find(|(name, _)| name == "result") {
-				if *result_index == *i {
-					return None;
-				}
-			}
+			// if let Some((_, result_index)) = self.by_name.iter().find(|(name, _)| name == "result") {
+			// 	if *result_index == *i {
+			// 		return None;
+			// 	}
+			// }
 
 			self.images.get(*i).map(|(image, _)| image)
 		})

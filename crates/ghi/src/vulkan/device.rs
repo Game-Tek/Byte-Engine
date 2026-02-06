@@ -900,7 +900,7 @@ impl Device {
 	}
 
 	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
-	fn create_swapchain_image(&mut self, vk_image: vk::Image, format: graphics_hardware_interface::Formats) -> ImageHandle {
+	fn create_swapchain_image(&mut self, vk_image: vk::Image, format: graphics_hardware_interface::Formats, previous: Option<ImageHandle>) -> ImageHandle {
 		let root_handle = ImageHandle(self.images.len() as u64);
 		let root_image = {
 			let image_view = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, None);
@@ -926,39 +926,11 @@ impl Device {
 			}
 		};
 
-		self.images.push(root_image);
-
-		let mut previous_handle = root_handle;
-
-		for _ in 1..self.frames {
-			let handle = ImageHandle(self.images.len() as u64);
-			let image = {
-				let image_view = self.create_vulkan_image_view(None, &vk_image, format, 0, 0, None);
-
-				let mut image_views = [vk::ImageView::null(); 8];
-				image_views[0] = image_view;
-
-				Image {
-					next: None,
-					size: 0,
-					staging_buffer: None,
-					pointer: None,
-					image: vk_image,
-					image_view,
-					image_views,
-					extent: Extent::cube(0, 0, 0),
-					access: graphics_hardware_interface::DeviceAccesses::DeviceOnly,
-					format: to_format(format),
-					format_: format,
-					uses: graphics_hardware_interface::Uses::RenderTarget | graphics_hardware_interface::Uses::TransferDestination,
-					layers: None,
-					owns_image: false,
-				}
-			};
-			self.images.push(image);
-			self.images[previous_handle.0 as usize].next = Some(handle);
-			previous_handle = handle;
+		if let Some(previous) = previous {
+			self.images[previous.0 as usize].next = Some(root_handle);
 		}
+
+		self.images.push(root_image);
 
 		root_handle
 	}
@@ -1338,6 +1310,10 @@ impl Device {
 
 	pub fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
 		let image = image_handle.access(&self.images);
+
+		if !image.owns_image {
+			return;
+		}
 
 		if image.extent == extent { // Requested extent matches current extent, no resize needed
 			return;
@@ -2795,7 +2771,7 @@ impl crate::device::Device for Device {
 		self.resize_buffer_internal(buffer_handle, size);
 	}
 
-	fn bind_to_window(&mut self, window_os_handles: &window::Handles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent) -> graphics_hardware_interface::SwapchainHandle {
+	fn bind_to_window(&mut self, window_os_handles: &window::Handles, presentation_mode: graphics_hardware_interface::PresentationModes, fallback_extent: Extent, uses: graphics_hardware_interface::Uses) -> graphics_hardware_interface::SwapchainHandle {
 		let vk_surface = self.create_vulkan_surface(window_os_handles);
 
 		let vk_present_mode = match presentation_mode {
@@ -2846,7 +2822,9 @@ impl crate::device::Device for Device {
 			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
 		};
 
-		let image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE;
+		let format = graphics_hardware_interface::Formats::BGRAsRGB;
+
+		let image_usage = into_vk_image_usage_flags(uses, format);
 
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
     		.push_next(&mut present_modes_create_info)
@@ -2889,7 +2867,8 @@ impl crate::device::Device for Device {
 		let mut images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
 
 		for (i, vk_image) in vk_images.iter().enumerate() {
-			images[i] = self.create_swapchain_image(*vk_image, graphics_hardware_interface::Formats::BGRAu8);
+			let previous = if i > 0 { Some(images[i - 1]) } else { None };
+			images[i] = self.create_swapchain_image(*vk_image, graphics_hardware_interface::Formats::BGRAu8, previous);
 		}
 
 		self.swapchains.push(Swapchain {
@@ -2899,7 +2878,6 @@ impl crate::device::Device for Device {
 			submit_synchronizers,
 			extent,
 			images,
-			sync_stage: vk::PipelineStageFlags2::COMPUTE_SHADER, // Stage which writes last to the swapchain image
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,

@@ -1,6 +1,5 @@
 use std::{collections::HashMap, f32::consts::PI};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
-use smallvec::SmallVec;
 
 use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Positionable};
 use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams, Writer}};
@@ -45,11 +44,17 @@ impl DefaultAudioSystem {
 
 		channels.insert("master".to_string(), Channel { samples: vec![0; device.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
 
+		let sources = vec![Source {
+			generator: Generator::Synthesizer { pitch: 440f32 },
+			current_sample: 0,
+			gain: 1f32,
+		}];
+
 		Ok(Self {
 			resource_manager,
 			device,
 			audio_resources: HashMap::with_capacity(1024),
-			sources: Vec::with_capacity(32),
+			sources,
 			channels,
 			params,
 			last_reported_underrun_count: 0,
@@ -142,8 +147,10 @@ impl DefaultAudioSystem {
 					}
 				}
 				Generator::Synthesizer { pitch } => {
-					for b in buffer.iter_mut() {
-						let sample = (pitch * (current_sample as f32 / sample_rate as f32)).sin();
+					for (i, b) in buffer.iter_mut().enumerate() {
+						let frame = current_sample + i as u32;
+
+						let sample = (pitch * (frame as f32 / sample_rate as f32)).sin();
 						*b = sample * gain;
 					}
 				}
@@ -182,83 +189,36 @@ impl AudioSystem for DefaultAudioSystem {
 		let device = &self.device;
 
 		let frames = device.play(|streams| {
-			if let Streams::MonoFloat32(mut buffer) = streams { // Hardware is the same format as what we use for rendering
-				self.render_sources(&mut buffer);
-			} else {
-				let mut buffer = SmallVec::<[f32; 1024]>::new(); // TODO: this may allocate, swap for static
+			match streams {
+				Streams::MonoFloat32(mut buffer) => { // Hardware is the same format as what we use for rendering
+					self.render_sources(&mut buffer);
+				}
+				Streams::Mono16Bit(buffer) => {
+					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
+					self.render_sources(&mut mix_buffer);
 
-				self.render_sources(&mut buffer);
-
-				match streams {
-					Streams::Mono16Bit(b) => {
-						for (b, s) in b.iter_mut().zip(buffer.iter()) {
-							*b = f32_to_i16(*s);
-						}
-					}
-					Streams::Stereo16Bit(b) => {
-						for ((dr, ds), s) in b.iter_mut().zip(buffer.iter()) {
-							*dr = f32_to_i16(*s);
-							*ds = f32_to_i16(*s);
-						}
-					}
-					Streams::MonoFloat32(b) => {
-						for (b, s) in b.iter_mut().zip(buffer.iter()) {
-							*b = *s;
-						}
-					}
-					Streams::StereoFloat32(b) => {
-						for ((dr, ds), s) in b.iter_mut().zip(buffer.iter()) {
-							*dr = *s;
-							*ds = *s;
-						}
+					for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+						*destination = f32_to_i16(*sample);
 					}
 				}
-			}
-		}, |copier| {
-			let frames = device.get_period_size();
+				Streams::Stereo16Bit(buffer) => {
+					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
+					self.render_sources(&mut mix_buffer);
 
-			let mut buffer = SmallVec::<[f32; 1024]>::new();
-
-			self.render_sources(&mut buffer);
-
-			match copier {
-				Writer::Mono16Bit(c) => {
-					let mut conversion_buffer = vec![0; frames].into_boxed_slice();
-
-					buffer.iter().zip(conversion_buffer.iter_mut()).for_each(|(s, d)| {
-						*d = f32_to_i16(*s);
-					});
-
-					c(&conversion_buffer);
-
-					frames
+					for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+						let sample = f32_to_i16(*sample);
+						*left = sample;
+						*right = sample;
+					}
 				}
-				Writer::Stereo16Bit(c) => {
-					let mut conversion_buffer = vec![(0, 0); frames].into_boxed_slice();
+				Streams::StereoFloat32(buffer) => {
+					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
+					self.render_sources(&mut mix_buffer);
 
-					buffer.iter().zip(conversion_buffer.iter_mut()).for_each(|(s, d)| {
-						*d = (f32_to_i16(*s), f32_to_i16(*s));
-					});
-
-					c(&conversion_buffer);
-
-					frames
-				}
-				Writer::MonoFloat32(c) => {
-					c(&buffer); // Harware requested format is same as our format
-
-					frames
-				}
-				Writer::StereoFloat32(c) => {
-					let mut conversion_buffer = vec![(0f32, 0f32); frames].into_boxed_slice();
-
-					buffer.iter().zip(conversion_buffer.iter_mut()).for_each(|(s, d)| {
-						*d = (*s, *s);
-					});
-
-					c(&conversion_buffer);
-
-					frames
+					for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+						*left = *sample;
+						*right = *sample;
+					}
 				}
 			}
 		}).unwrap();
@@ -266,7 +226,6 @@ impl AudioSystem for DefaultAudioSystem {
 		self.report_new_underruns();
 
 		if frames == 0 {
-			std::thread::yield_now();
 			return true;
 		}
 

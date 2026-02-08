@@ -80,12 +80,19 @@ pub trait AudioHardwareInterface {
 		0
 	}
 
+	/// Waits until playback can accept more data without dropping or busy spinning.
+	///
+	/// Backends that cannot provide a direct wait mechanism should yield briefly.
+	fn wait_for_playback_space(&self) {
+		std::thread::yield_now();
+	}
+
 	/// Sends audio data to the hardware.
 	///
 	/// This function takes a `WritePlayFunction` typed function object as argument that writes client audio data into a hardware buffer.
 	///
 	/// Returns the number of frames played.
-	fn play(&self, wpf: impl WritePlayFunction, bpf: impl BufferPlayFunction) -> Result<usize, ()>;
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()>;
 
 	/// Notifies the hardware that playback has been paused.
 	/// This may be used to improve performance by reducing CPU usage.

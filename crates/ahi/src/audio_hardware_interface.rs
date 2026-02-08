@@ -69,9 +69,16 @@ pub trait BufferPlayFunction = FnOnce(Writer) -> usize;
 
 /// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
 pub trait AudioHardwareInterface {
-	fn new(params: HardwareParameters) -> Option<Self> where Self: Sized;
+	fn new(params: HardwareParameters) -> Result<Self, String> where Self: Sized;
 
 	fn get_period_size(&self) -> usize;
+
+	/// Returns the number of hardware callback cycles that encountered at least one buffer underrun.
+	///
+	/// Backends that cannot provide this metric should return `0`.
+	fn get_underrun_count(&self) -> usize {
+		0
+	}
 
 	/// Sends audio data to the hardware.
 	///
@@ -86,6 +93,7 @@ pub trait AudioHardwareInterface {
 }
 
 /// The `HardwareParameters` struct represents the parameters for the audio hardware.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HardwareParameters {
 	/// The sample rate of the audio hardware, in Hz.
 	pub(crate) sample_rate: u32,
@@ -123,6 +131,18 @@ impl HardwareParameters {
 	pub fn bit_depth(mut self, bit_depth: u32) -> Self {
 		self.bit_depth = bit_depth;
 		self
+	}
+
+	pub fn get_sample_rate(&self) -> u32 {
+		self.sample_rate
+	}
+
+	pub fn get_channels(&self) -> u32 {
+		self.channels
+	}
+
+	pub fn get_bit_depth(&self) -> u32 {
+		self.bit_depth
 	}
 }
 

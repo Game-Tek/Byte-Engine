@@ -14,7 +14,18 @@ fn sound() {
 
     let space_handle = app.get_root_space_handle();
 
-	space_handle.spawn(Synthesizer::new().builder());
+	space_handle.spawn(TestSynthesizer{}.builder());
 
 	app.do_loop();
 }
+
+struct TestSynthesizer;
+
+impl Synthesizer for TestSynthesizer {
+	fn render<'a>(&self, _current_sample: u32, buffer: &'a mut [f32]) -> &'a [f32] {
+		buffer.fill(0.0);
+		buffer
+	}
+}
+
+impl Entity for TestSynthesizer {}

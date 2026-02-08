@@ -1,11 +1,6 @@
 use crate::core::Entity;
 
-pub struct Synthesizer {
-
+pub trait Synthesizer: Entity + Sync + Send {
+	/// Render the synthesizer's output into the provided buffer.
+	fn render<'a>(&self, current_sample: u32, buffer: &'a mut [f32]) -> &'a [f32];
 }
-
-impl Synthesizer {
-	pub fn new() -> Self { Self {} }
-}
-
-impl Entity for Synthesizer {}

@@ -36,7 +36,6 @@ pub struct GraphicsApplication {
 	input_system_handle: EntityHandle<input::InputManager>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer_handle: EntityHandle<Renderer>,
-	audio_system_handle: Option<EntityHandle<DefaultAudioSystem>>,
 	physics_system_handle: EntityHandle<dyn physics::World>,
 	anchor_system_handle: EntityHandle<AnchorSystem>,
 	tick_handle: EntityHandle<Property<Time>>,
@@ -70,7 +69,6 @@ impl Application for GraphicsApplication {
 
 		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
 		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), &application).builder());
-		let audio_system_handle = root_space_handle.try_spawn(DefaultAudioSystem::new_as_system(resource_manager.clone())).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn().ok();
 		let physics_system_handle = root_space_handle.spawn(physics::dynabit::World::new().builder());
 		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
 
@@ -84,24 +82,17 @@ impl Application for GraphicsApplication {
 		let application_events = std::sync::mpsc::channel();
 
 		let audio_thread = {
-			if let Some(audio_system_handle) = &audio_system_handle {
-				let audio_system_handle = audio_system_handle.weak();
+			let resource_manager = resource_manager.clone();
+			std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
+				let Ok(mut audio_system) = DefaultAudioSystem::try_new(resource_manager).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
+					return;
+				};
 
-				std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
-					while let Some(audio_system_handle) = audio_system_handle.upgrade() {
-						let mut audio_system = audio_system_handle.write();
-						let span = debug_span!("Render audio");
-						let _ = span.enter();
-						audio_system.render();
-					}
-
-					log::debug!("Exiting audio thread");
-				}).unwrap()
-			} else {
-				std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
-
-				}).unwrap()
-			}
+				let span = debug_span!("Render audio");
+				let _ = span.enter();
+				audio_system.render();
+				log::debug!("Exiting audio thread");
+			}).unwrap()
 		};
 
 		let inspector = root_space_handle.spawn(Inspector::new(application_events.0.clone()).builder());
@@ -115,7 +106,6 @@ impl Application for GraphicsApplication {
 			input_system_handle,
 			renderer_handle,
 			resource_manager,
-			audio_system_handle,
 			physics_system_handle,
 			anchor_system_handle,
 			task_executor_handle,
@@ -282,10 +272,6 @@ impl GraphicsApplication {
 
 	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<input::InputManager> {
 		&self.input_system_handle
-	}
-
-	pub fn get_audio_system_handle(&self) -> &EntityHandle<crate::audio::audio_system::DefaultAudioSystem> {
-		self.audio_system_handle.as_ref().unwrap()
 	}
 
 	pub fn get_physics_world_handle(&self) -> &EntityHandle<dyn physics::World> {

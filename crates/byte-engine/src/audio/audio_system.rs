@@ -1,5 +1,6 @@
 use std::{collections::HashMap, f32::consts::PI};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
+use smallvec::SmallVec;
 
 use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Positionable};
 use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams, Writer}};
@@ -12,8 +13,13 @@ pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
 	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
 
+	/// Renders audio indefinitely.
+	fn render(&mut self) {
+		while self.render_available() {}
+	}
+
 	/// Processes audio data and sends it to the audio hardware interface.
-	fn render(&mut self);
+	fn render_available(&mut self) -> bool;
 }
 
 pub struct DefaultAudioSystem {
@@ -22,6 +28,8 @@ pub struct DefaultAudioSystem {
 	audio_resources: HashMap<String, (Audio, Vec<i16>)>,
 	sources: Vec<Source>,
 	channels: HashMap<String, Channel>,
+	params: HardwareParameters,
+	last_reported_underrun_count: usize,
 }
 
 impl DefaultAudioSystem {
@@ -30,7 +38,10 @@ impl DefaultAudioSystem {
 
 		let params = HardwareParameters::new().channels(1);
 
-		let device = Device::new(params).ok_or_else(|| "Failed to create audio device. Audio parameters may be invalid or device may not exist or be available.")?;
+		let device = Device::new(params).map_err(|e| {
+			log::error!("Failed to create audio device: {}", e);
+			"Failed to create audio device. Audio parameters may be invalid or device may not exist or be available."
+		})?;
 
 		channels.insert("master".to_string(), Channel { samples: vec![0; device.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
 
@@ -40,13 +51,15 @@ impl DefaultAudioSystem {
 			audio_resources: HashMap::with_capacity(1024),
 			sources: Vec::with_capacity(32),
 			channels,
+			params,
+			last_reported_underrun_count: 0,
 		})
 	}
 
 	pub fn new_as_system(resource_manager: EntityHandle<ResourceManager>) -> Result<EntityBuilder<'static, Self>, &'static str> {
 		Ok(EntityBuilder::new(Self::try_new(resource_manager)?)
 			.listen_to::<CreateEvent<Sound>>()
-			.listen_to::<CreateEvent<Synthesizer>>()
+			.listen_to::<CreateEvent<dyn Synthesizer>>()
 			.listen_to::<CreateEvent<RoundRobin>>()
 			.listen_to::<CreateEvent<Emitter>>()
 		)
@@ -97,7 +110,9 @@ impl DefaultAudioSystem {
 		}
 	}
 
-	fn rndr(&self, buffer: &mut [f32]) {
+	fn render_sources(&self, buffer: &mut [f32]) {
+		let sample_rate = self.params.get_sample_rate();
+
 		for playing_sound in &self.sources {
 			let current_sample = playing_sound.current_sample;
 			let gain = playing_sound.gain;
@@ -126,9 +141,31 @@ impl DefaultAudioSystem {
 						play_sound(e);
 					}
 				}
-				_ => {}
+				Generator::Synthesizer { pitch } => {
+					for b in buffer.iter_mut() {
+						let sample = (pitch * (current_sample as f32 / sample_rate as f32)).sin();
+						*b = sample * gain;
+					}
+				}
 			}
 		}
+	}
+
+	/// Reports newly observed underruns since the previous render call.
+	fn report_new_underruns(&mut self) {
+		let underrun_count = self.device.get_underrun_count();
+		if underrun_count <= self.last_reported_underrun_count {
+			return;
+		}
+
+		let new_underruns = underrun_count - self.last_reported_underrun_count;
+		self.last_reported_underrun_count = underrun_count;
+
+		log::warn!(
+			"Audio underrun detected: {} new event(s), total {}",
+			new_underruns,
+			underrun_count
+		);
 	}
 }
 
@@ -141,18 +178,16 @@ impl AudioSystem for DefaultAudioSystem {
 		self.sources.push(Source { generator: Generator::File { audio_asset_url: audio_asset_url.to_string() }, current_sample: 0, gain: 1f32 });
 	}
 
-	fn render(&mut self) {
+	fn render_available(&mut self) -> bool {
 		let device = &self.device;
-
-		let frames = device.get_period_size();
 
 		let frames = device.play(|streams| {
 			if let Streams::MonoFloat32(mut buffer) = streams { // Hardware is the same format as what we use for rendering
-				self.rndr(&mut buffer);
+				self.render_sources(&mut buffer);
 			} else {
-				let mut buffer = vec![0f32; streams.frames()].into_boxed_slice();
+				let mut buffer = SmallVec::<[f32; 1024]>::new(); // TODO: this may allocate, swap for static
 
-				self.rndr(&mut buffer);
+				self.render_sources(&mut buffer);
 
 				match streams {
 					Streams::Mono16Bit(b) => {
@@ -180,9 +215,11 @@ impl AudioSystem for DefaultAudioSystem {
 				}
 			}
 		}, |copier| {
-			let mut buffer = vec![0f32; frames].into_boxed_slice();
+			let frames = device.get_period_size();
 
-			self.rndr(&mut buffer);
+			let mut buffer = SmallVec::<[f32; 1024]>::new();
+
+			self.render_sources(&mut buffer);
 
 			match copier {
 				Writer::Mono16Bit(c) => {
@@ -226,9 +263,18 @@ impl AudioSystem for DefaultAudioSystem {
 			}
 		}).unwrap();
 
+		self.report_new_underruns();
+
+		if frames == 0 {
+			std::thread::yield_now();
+			return true;
+		}
+
 		for e in &mut self.sources {
 			e.current_sample += frames as u32;
 		}
+
+		true
 	}
 }
 
@@ -262,8 +308,8 @@ impl Listener<CreateEvent<Sound>> for DefaultAudioSystem {
 	}
 }
 
-impl Listener<CreateEvent<Synthesizer>> for DefaultAudioSystem {
-	fn handle<'a>(&'a mut self, handle: &CreateEvent<Synthesizer>) -> () {
+impl Listener<CreateEvent<dyn Synthesizer>> for DefaultAudioSystem {
+	fn handle<'a>(&'a mut self, handle: &CreateEvent<dyn Synthesizer>) -> () {
 		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 110f32 }, current_sample: 0, gain: 0.10f32 });
 		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 440f32 }, current_sample: 0, gain: 0.10f32 });
 		self.sources.push(Source { generator: Generator::Synthesizer { pitch: 554f32 }, current_sample: 0, gain: 0.10f32 });

@@ -4,6 +4,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use utils::sync::Mutex;
+use crate::application::{Receiver, Sender};
 
 use crate::{application::Events, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}};
 
@@ -24,11 +25,11 @@ pub trait Inspectable: Entity + Send + Sync {
 /// The inspector allows different implementations of the Byte Engine Inspection Protocol to interact an query the engine's internal state.
 pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
-	events: std::sync::mpsc::Sender<Events>,
+	events: Sender<Events>,
 }
 
 impl Inspector {
-	pub fn new(tx: std::sync::mpsc::Sender<Events>) -> Self {
+	pub fn new(tx: Sender<Events>) -> Self {
 		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
 
 		Self {

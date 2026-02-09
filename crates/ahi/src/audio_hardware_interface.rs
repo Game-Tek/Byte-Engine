@@ -54,18 +54,9 @@ pub trait Stereo16BitBufferPlayFunction = FnOnce(Stereo16Bit);
 pub trait MonoFloat32BufferPlayFunction = FnOnce(MonoFloat32);
 pub trait StereoFloat32BufferPlayFunction = FnOnce(StereoFloat32);
 
-pub enum Writer<'a> {
-	Mono16Bit(Box<dyn Mono16BitBufferPlayFunction + 'a>),
-	Stereo16Bit(Box<dyn Stereo16BitBufferPlayFunction + 'a>),
-	MonoFloat32(Box<dyn MonoFloat32BufferPlayFunction + 'a>),
-	StereoFloat32(Box<dyn StereoFloat32BufferPlayFunction + 'a>),
-}
-
 /// The `WritePlayFunction` trait represents a function object that writes audio data into a buffer.
 /// This buffer is owned by the hardware and the client writes to it.
 pub trait WritePlayFunction = FnOnce(Streams);
-
-pub trait BufferPlayFunction = FnOnce(Writer) -> usize;
 
 /// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
 pub trait AudioHardwareInterface {

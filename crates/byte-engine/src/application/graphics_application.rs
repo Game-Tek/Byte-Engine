@@ -1,14 +1,15 @@
-use crate::{application::parameters::Parameters, core::{Entity, EntityHandle, domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, rendering::{pipelines::{simple::{SimpleSceneManager, SimpleRenderPass}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderer, texture_manager::TextureManager}};
+use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, rendering::{pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderer, texture_manager::TextureManager}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
 use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler, FileStorageBackend}, resource::{resource_manager::ResourceManager, RedbStorageBackend}, resources::material::Material};
+use smallvec::SmallVec;
 use tracing::{debug_span, instrument, span, Level};
 use utils::{sync::RwLock, Extent};
 
 use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, pipelines::visibility::shader_generator::VisibilityShaderGenerator}};
 
-use super::{application::{Application, BaseApplication}, Parameter, Time, Events};
+use super::{application::{Application, BaseApplication}, Parameter, Time, Events, Sender, Receiver};
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
@@ -31,7 +32,7 @@ pub struct GraphicsApplication {
 
 	close: bool,
 
-	application_events: (std::sync::mpsc::Sender<Events>, std::sync::mpsc::Receiver<Events>),
+	application_events: (Sender<Events>, Receiver<Events>),
 
 	input_system_handle: EntityHandle<input::InputManager>,
 	resource_manager: EntityHandle<ResourceManager>,
@@ -42,7 +43,7 @@ pub struct GraphicsApplication {
 	task_executor_handle: EntityHandle<task::TaskExecutor>,
 	root_space_handle: EntityHandle<dyn Domain>,
 
-	audio_thread: std::thread::JoinHandle<()>,
+	threads: SmallVec<[Thread; 64]>,
 
 	#[cfg(debug_assertions)]
 	ttff: std::time::Duration,
@@ -79,24 +80,20 @@ impl Application for GraphicsApplication {
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
 
-		let application_events = std::sync::mpsc::channel();
+		let tx = Sender::new(16);
 
-		let audio_thread = {
-			let resource_manager = resource_manager.clone();
-			std::thread::Builder::new().name("Audio".to_string()).spawn(move || {
-				let Ok(mut audio_system) = DefaultAudioSystem::try_new(resource_manager).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
-					return;
-				};
+		ctrlc::set_handler({
+			let tx = tx.clone();
+			move || {
+				tx.send(Events::Close).unwrap();
+			}
+		}).unwrap();
 
-				let span = debug_span!("Render audio");
-				let _ = span.enter();
-				audio_system.render();
-				log::debug!("Exiting audio thread");
-			}).unwrap()
-		};
-
-		let inspector = root_space_handle.spawn(Inspector::new(application_events.0.clone()).builder());
+		let inspector = root_space_handle.spawn(Inspector::new(tx.clone()).builder());
 		root_space_handle.spawn(HttpInspectorServer::new(inspector).builder());
+
+		let rx = tx.spawn_rx();
+		let application_events = (tx, rx);
 
 		GraphicsApplication {
 			application,
@@ -113,13 +110,13 @@ impl Application for GraphicsApplication {
 
 			tick_handle,
 
+			threads: SmallVec::new(),
+
 			close: false,
 
 			tick_count: 0,
 			start_time,
 			last_tick_time: std::time::Instant::now(),
-
-			audio_thread,
 
 			#[cfg(debug_assertions)]
 			ttff: std::time::Duration::ZERO,
@@ -189,6 +186,21 @@ impl Application for GraphicsApplication {
 			}
 		}
 
+		if let Ok(e) = self.application_events.1.try_recv() {
+			match e {
+				Events::Close => {
+					close = true;
+				}
+			}
+		}
+
+		if close {
+			let _ = self.application_events.0.send(Events::Close);
+			self.threads.drain(..).for_each(|t| { let _ = t.join(); });
+			self.close();
+			return;
+		}
+
 		let time = Time { elapsed, delta: dt };
 
 		self.tick_handle.get_mut(move |tick| {
@@ -246,18 +258,6 @@ impl Application for GraphicsApplication {
 				self.max_frame_time = self.max_frame_time.max(dt);
 			}
 		}
-
-		for e in self.application_events.1.try_iter() {
-			match e {
-				Events::Close => {
-					close = true;
-				}
-			}
-		}
-
-		if close {
-			self.close();
-		}
 	}
 }
 
@@ -296,10 +296,6 @@ impl GraphicsApplication {
 		}
 	}
 
-	pub fn get_events_sender(&self) -> ApplicationEventsChannel {
-		ApplicationEventsChannel(self.application_events.0.clone())
-	}
-
 	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {
 		&self.resource_manager
 	}
@@ -311,19 +307,10 @@ impl Parameters for GraphicsApplication {
 	}
 }
 
-pub struct ApplicationEventsChannel(std::sync::mpsc::Sender<Events>);
-
-impl ApplicationEventsChannel {
-	/// Requests the application to close.
-	/// This will send a `Close` event to the application.
-	pub fn close(&self) {
-		self.0.send(Events::Close).unwrap();
-	}
-}
-
 /// Performs a default setup of the application.
 /// This includes setting up mouse, keyboard and gamepad input devices,
 /// as well as setting up the resource manager with default asset handlers.
+/// It also sets up the audio system with default audio devices.
 /// It also sets up the renderer with a default render pipeline.
 /// The default render pipeline includes a visibility shader generator and a PBR visibility shading render pipeline.
 /// The default render pipeline also includes a tone mapping pass.
@@ -339,6 +326,8 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 	}
 
 	setup_default_input(application);
+
+	setup_default_audio(application);
 
 	setup_pbr_visibility_shading_render_pipeline(application);
 
@@ -417,6 +406,37 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	};
 
 	renderer.add_scene_manager(sm);
+}
+
+pub fn setup_default_audio(application: &mut GraphicsApplication) {
+	application.threads.push(Thread::new(application.application_events.0.spawn_rx(), {
+		let resource_manager = application.resource_manager.clone();
+
+		move |mut rx| {
+			let Ok(mut audio_system) = DefaultAudioSystem::try_new(resource_manager).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
+				return;
+			};
+
+			let span = debug_span!("Render audio");
+			let _ = span.enter();
+
+			'a: loop {
+				if let Ok(event) = rx.try_recv() {
+					match event {
+						Events::Close => {
+							break 'a;
+						},
+					}
+				}
+
+				if !audio_system.render_available() {
+					break 'a; // Audio rendering can no longer be performed.
+				}
+			}
+
+			log::debug!("Exiting audio thread");
+		}
+	}));
 }
 
 pub fn process_default_window_input(input_system: &mut input::InputManager, event: ghi::Events) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {

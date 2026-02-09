@@ -1,8 +1,8 @@
-use std::{collections::HashMap, f32::consts::PI};
+use std::collections::HashMap;
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
 
 use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, gameplay::Positionable};
-use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams, Writer}};
+use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams}};
 
 use super::{sound::{self, Sound}, synthesizer::Synthesizer};
 
@@ -132,7 +132,7 @@ impl DefaultAudioSystem {
 				let audio_data = &audio_data[current_sample as usize..];
 
 				for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
-					*b = i16_to_f32(*s) * gain;
+					*b += i16_to_f32(*s) * gain;
 				}
 			};
 
@@ -145,17 +145,27 @@ impl DefaultAudioSystem {
 					if let Some(e) = rr.get() {
 						play_sound(e);
 					}
-				}
-				Generator::Synthesizer { pitch } => {
-					for (i, b) in buffer.iter_mut().enumerate() {
-						let frame = current_sample + i as u32;
+					}
+					Generator::Synthesizer { pitch } => {
+						let tau = std::f64::consts::TAU;
+						let sample_rate = sample_rate as f64;
+						let phase_step = tau * *pitch as f64 / sample_rate;
+						let mut phase = (current_sample as f64 * phase_step).rem_euclid(tau);
 
-						let sample = (pitch * (frame as f32 / sample_rate as f32)).sin();
-						*b = sample * gain;
+						for b in buffer.iter_mut() {
+							let sample = phase.sin() as f32;
+							*b += sample * gain;
+
+							phase += phase_step;
+							if phase >= tau {
+								phase -= tau;
+							} else if phase < 0.0 {
+								phase += tau;
+							}
+						}
 					}
 				}
 			}
-		}
 	}
 
 	/// Reports newly observed underruns since the previous render call.

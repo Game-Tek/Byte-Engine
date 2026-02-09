@@ -2,7 +2,11 @@ use std::time::Duration;
 
 pub mod parameters;
 pub mod application;
+pub mod thread;
 pub use application::{Application, BaseApplication};
+
+pub use trotcast::Channel as Sender;
+pub use trotcast::Receiver as Receiver;
 
 #[cfg(feature = "headed")]
 pub mod graphics_application;

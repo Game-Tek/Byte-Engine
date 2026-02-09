@@ -1,28 +1,26 @@
 use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
 
-use crate::core::{property::Property, Entity, EntityHandle};
+use crate::core::{Entity, EntityHandle};
 
 use crate::input::ValueMapping;
 
 use super::TriggerHandle;
 use super::{input_manager::TriggerReference, Function, Types, Value};
 
-trait ActionLike: Entity {
+trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
 	fn get_inputs(&self) -> &[TriggerMapping];
 }
 
-pub struct Action<T: InputValue> {
+#[derive(Clone)]
+pub struct Action {
 	pub(crate) name: &'static str,
 	pub(crate) bindings: Vec<ActionBindingDescription>,
 	pub(crate) inputs: Vec<TriggerMapping>,
-	pub(crate) value: Property<T>,
 }
 
-impl <T: InputValue> Entity for Action<T> {}
-
-impl <T: InputValue> ActionLike for Action<T> {
+impl ActionLike for Action {
 	fn get_bindings(&self) -> &[ActionBindingDescription] { &self.bindings }
 	fn get_inputs(&self) -> &[TriggerMapping] { &self.inputs }
 }
@@ -64,18 +62,14 @@ impl InputValue for RGBA {
 	fn get_type() -> Types { Types::Rgba }
 }
 
-impl <T: InputValue + Clone + 'static> Action<T> {
-	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action<T> {
+impl Action {
+	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action {
 		Action {
 			name,
 			bindings: bindings.to_vec(),
-			value: Property::default(),
 			inputs: Vec::new(),
 		}
 	}
-
-	pub fn value(&self) -> &Property<T> { &self.value }
-	pub fn value_mut(&mut self) -> &mut Property<T> { &mut self.value }
 }
 
 /// An action binding description is a description of how an input source is mapped to a value for an action.

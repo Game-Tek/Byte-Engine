@@ -1,172 +1,105 @@
-use std::ops::DerefMut;
+use std::marker::PhantomData;
 
-use utils::{sync::RwLock, BoxedFuture};
+use trotcast::Receiver;
 
-use crate::gameplay::space::{Destroyer, Spawner};
+/// The `Listener` trait exists to decouple message consumption from transport details.
+pub trait Listener<M> {
+    fn read(&mut self) -> Option<M>;
 
-use super::{domain::Domain, entity::{get_entity_trait_for_type, EntityTrait}, event::Event, spawn_as_child, Entity, EntityHandle, SpawnHandler};
-
-pub trait Listener<T: Event + 'static>: Entity {
-	fn handle(&mut self, event: &T);
+    fn iter(&mut self) -> ListenerIterator<'_, Self, M>
+    where
+        Self: Sized,
+    {
+        ListenerIterator::new(self)
+    }
 }
 
-/// An event that is triggered when an entity of the type `T` is created in the domain.
-/// This event is sent to all listener/subscribers of the event.
-pub struct CreateEvent<T: ?Sized + 'static> {
-	handle: EntityHandle<T>,
+/// The `ListenerIterator` struct exists to provide iterator semantics for any listener implementation.
+pub struct ListenerIterator<'a, L: ?Sized, M>
+where
+    L: Listener<M>,
+{
+    listener: &'a mut L,
+    _marker: PhantomData<M>,
 }
 
-impl <T: ?Sized + 'static> CreateEvent<T> {
-	pub(crate) fn new(handle: EntityHandle<T>) -> Self {
-		CreateEvent { handle }
-	}
-
-	pub fn handle(&self) -> &EntityHandle<T> {
-		&self.handle
-	}
+impl<'a, L: ?Sized, M> ListenerIterator<'a, L, M>
+where
+    L: Listener<M>,
+{
+    fn new(listener: &'a mut L) -> Self {
+        Self {
+            listener,
+            _marker: PhantomData,
+        }
+    }
 }
 
-impl <T: ?Sized + 'static> Event for CreateEvent<T> {
+impl<'a, L: ?Sized, M> Iterator for ListenerIterator<'a, L, M>
+where
+    L: Listener<M>,
+{
+    type Item = M;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.listener.read()
+    }
 }
 
-/// An event that is triggered when an entity of the type `T` is deleted in the domain.
-/// This event is sent to all listener/subscribers of the event.
-pub struct DeleteEvent<T: ?Sized + 'static> {
-	handle: EntityHandle<T>,
+impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
+    type Item = M;
+    type IntoIter = ListenerIterator<'a, dyn Listener<M> + 'a, M>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ListenerIterator::new(self)
+    }
 }
 
-impl <T: ?Sized + 'static> DeleteEvent<T> {
-	pub(crate) fn new(handle: EntityHandle<T>) -> Self {
-		DeleteEvent { handle }
-	}
+/// The `DefaultListener` struct exists to read messages from a `trotcast` receiver.
+#[derive(Clone)]
+pub struct DefaultListener<M>(pub(crate) Receiver<M>);
 
-	pub fn handle(&self) -> &EntityHandle<T> {
-		&self.handle
-	}
+impl<M: Clone> DefaultListener<M> {
+    pub fn filtered<F>(&self, filter: F) -> FilteredListener<DefaultListener<M>, M, F>
+    where
+        F: Fn(&M) -> bool,
+    {
+        FilteredListener(self.clone(), filter, PhantomData)
+    }
 }
 
-impl <T: ?Sized + 'static> Event for DeleteEvent<T> {
+impl<M: Clone> Listener<M> for DefaultListener<M> {
+    fn read(&mut self) -> Option<M> {
+        self.0.try_recv().ok()
+    }
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-mod tests {
-	use std::assert_matches;
+/// The `FilteredListener` struct exists to compose message predicates over listeners.
+pub struct FilteredListener<L, M: Clone, F>(L, F, PhantomData<M>)
+where
+    L: Listener<M>,
+    F: Fn(&M) -> bool;
 
-	use super::*;
-	use crate::{application::Events, core::{domain::DomainEvents, entity::EntityBuilder, spawn, spawn_as_child}, gameplay::space::Space};
+impl<R, M: Clone, F> FilteredListener<R, M, F>
+where
+    R: Listener<M>,
+    F: Fn(&M) -> bool,
+{
+}
 
-	#[test]
-	fn listeners() {
-		struct Component {
-			name: String,
-			value: u32,
-		}
+impl<L, M: Clone, F> Listener<M> for FilteredListener<L, M, F>
+where
+    L: Listener<M>,
+    F: Fn(&M) -> bool,
+{
+    fn read(&mut self) -> Option<M> {
+        // Drain pending messages until one satisfies the filter predicate.
+        while let Some(message) = self.0.read() {
+            if (self.1)(&message) {
+                return Some(message);
+            }
+        }
 
-		impl Entity for Component {}
-
-		struct System {
-
-		}
-
-		impl Entity for System {
-			fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-				EntityBuilder::new(self).listen_to::<CreateEvent<Component>>()
-			}
-		}
-
-		impl System {
-			fn new<'c>() -> System {
-				System {}
-			}
-		}
-
-		impl Listener<CreateEvent<Component>> for System {
-			fn handle(&mut self, event: &CreateEvent<Component>) -> () {
-			}
-		}
-
-		impl Listener<DeleteEvent<Component>> for System {
-			fn handle(&mut self, event: &DeleteEvent<Component>) -> () {
-			}
-		}
-
-		let domain: EntityHandle<dyn Domain> = spawn(Space::new());
-
-		let _: EntityHandle<System> = domain.spawn(System::new().builder());
-
-		let events = domain.write().get_events();
-
-		assert_matches!(events[0], DomainEvents::StartListen { .. });
-
-		let _: EntityHandle<Component> = domain.spawn(Component { name: "test".to_string(), value: 1 }.builder());
-
-		let events = domain.write().get_events();
-
-		assert_matches!(events[0], DomainEvents::EntityCreated { .. });
-	}
-
-	#[test]
-	fn listen_for_traits() {
-		trait Boo: Entity {
-			fn get_name(&self) -> String;
-			fn get_value(&self) -> u32;
-		}
-
-		struct Component {
-			name: String,
-			value: u32,
-		}
-
-		impl Entity for Component {
-			fn builder(self) -> EntityBuilder<'static, Self> {
-				EntityBuilder::new(Component { name: String::new(), value: 0 }).r#as(|h| h as EntityHandle<dyn Boo>)
-			}
-		}
-
-		impl Boo for Component {
-			fn get_name(&self) -> String { self.name.clone() }
-			fn get_value(&self) -> u32 { self.value }
-		}
-
-		let domain: EntityHandle<dyn Domain> = spawn(Space::new());
-
-		struct System {
-
-		}
-
-		impl Entity for System {
-			fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-				EntityBuilder::new(self).listen_to::<CreateEvent<dyn Boo>>()
-			}
-		}
-
-		impl System {
-			fn new() -> System {
-				System {}
-			}
-		}
-
-		impl Listener<CreateEvent<dyn Boo>> for System {
-			fn handle(&mut self, event: &CreateEvent<dyn Boo>) -> () {
-			}
-		}
-
-		impl Listener<DeleteEvent<dyn Boo>> for System {
-			fn handle(&mut self, event: &DeleteEvent<dyn Boo>) -> () {
-			}
-		}
-
-		let _: EntityHandle<System> = domain.spawn(System::new().builder());
-
-		let events = domain.write().get_events();
-
-		assert_matches!(events[0], DomainEvents::StartListen { .. });
-
-		let _: EntityHandle<Component> = domain.spawn(Component { name: "test".to_string(), value: 1 }.builder());
-
-		let events = domain.write().get_events();
-
-		assert_matches!(events[0], DomainEvents::EntityCreated { .. });
-	}
+        None
+    }
 }

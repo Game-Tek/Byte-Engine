@@ -2,8 +2,8 @@
 
 use math::Vector3;
 
-use crate::core::listener::{CreateEvent, Listener};
-use crate::core::{entity::EntityBuilder, Entity, EntityHandle};
+use crate::core::listener::{Listener};
+use crate::core::{Entity, EntityHandle};
 
 use super::{object::Object, Positionable, transform::Transform};
 
@@ -23,7 +23,7 @@ impl Default for Anchorage {
 	}
 }
 
-pub trait Anchoring: Positionable + Entity {
+pub trait Anchoring: Positionable {
 	fn children(&self) -> Vec<(EntityHandle<dyn Positionable>, Anchorage)>;
 }
 
@@ -86,12 +86,6 @@ pub struct AnchorSystem {
 	anchors: Vec<EntityHandle<dyn Anchoring>>,
 }
 
-impl Entity for AnchorSystem {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn Anchoring>>()
-	}
-}
-
 impl AnchorSystem {
 	pub fn new() -> AnchorSystem {
 		AnchorSystem { anchors: Vec::with_capacity(1024) }
@@ -116,12 +110,5 @@ impl AnchorSystem {
 				}
 			}
 		}
-	}
-}
-
-impl Listener<CreateEvent<dyn Anchoring>> for AnchorSystem {
-	fn handle(&mut self, event: &CreateEvent<dyn Anchoring>) {
-		let handle = event.handle();
-		self.anchors.push(handle.clone());
 	}
 }

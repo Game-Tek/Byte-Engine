@@ -1,6 +1,6 @@
 use math::Vector3;
 
-use crate::{core::{entity::EntityBuilder, Entity, EntityHandle}, inspector::Inspectable, rendering::lights::{Light, LightClasses}};
+use crate::{core::{Entity, EntityHandle}, inspector::Inspectable, rendering::lights::{Light, LightClasses}};
 
 use super::super::cct;
 
@@ -25,12 +25,6 @@ impl PointLight {
 impl Light for PointLight {
 	fn class(&self) -> LightClasses {
 		LightClasses::Point
-	}
-}
-
-impl Entity for PointLight {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).r#as(|e| e).r#as(|h| h as EntityHandle<dyn Inspectable>).r#as(|h| h as EntityHandle<dyn Light>)
 	}
 }
 

@@ -1,4 +1,3 @@
-pub mod space;
 pub mod object;
 pub mod positionable;
 pub mod transform;

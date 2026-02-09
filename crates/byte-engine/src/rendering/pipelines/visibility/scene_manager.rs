@@ -27,9 +27,7 @@ use resource_management::resources::material::{Material as ResourceMaterial, Par
 use resource_management::resources::material::Variant as ResourceVariant;
 use utils::sync::{Rc, Arc, RwLock};
 use utils::{Extent, RGBA, Box};
-
-use crate::core::entity::EntityBuilder;
-use crate::core::listener::{CreateEvent, Listener};
+use crate::core::listener::{Listener};
 use crate::core::{Entity, EntityHandle};
 use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
 use crate::rendering::lights::{DirectionalLight, Light, PointLight};
@@ -49,7 +47,6 @@ use crate::{resource_management::{self, }, camera::{self}};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
-	resource_manager: EntityHandle<ResourceManager>,
 	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
 	/// Render entities that will be rendered in the scene.
@@ -112,7 +109,7 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(device: &mut ghi::Device, resource_manager_handle: EntityHandle<ResourceManager>, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
+	pub fn new(device: &mut ghi::Device, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
@@ -202,8 +199,6 @@ impl VisibilityWorldRenderDomain {
 		Self {
 			render_entities: Vec::with_capacity(512),
 
-			resource_manager: resource_manager_handle,
-
 			visibility_info:  VisibilityInfo::default(),
 
 			meshes: Vec::with_capacity(1024),
@@ -269,12 +264,13 @@ impl VisibilityWorldRenderDomain {
 		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
 		let mut resource_request: Reference<ResourceMesh> = {
-			let resource_manager = self.resource_manager.read();
-			let Ok(resource_request) = resource_manager.request(id) else {
-				log::error!("Failed to load mesh resource {}", id);
-				return Err(());
-			};
-			resource_request
+			return Err(());
+			// let resource_manager = self.resource_manager.read();
+			// let Ok(resource_request) = resource_manager.request(id) else {
+			// 	log::error!("Failed to load mesh resource {}", id);
+			// 	return Err(());
+			// };
+			// resource_request
 		};
 
 		let mesh_resource = resource_request.resource();
@@ -790,14 +786,6 @@ impl VisibilityWorldRenderDomain {
 	}
 }
 
-impl Entity for VisibilityWorldRenderDomain {
-	fn builder(self) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<dyn Light>>()
-			.listen_to::<CreateEvent<dyn RenderableMesh>>()
-	}
-}
-
 impl SceneManager for VisibilityWorldRenderDomain {
 	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
@@ -906,19 +894,6 @@ pub struct LightData {
 #[derive(Copy, Clone)]
 struct MaterialData {
 	textures: [u32; 16],
-}
-
-impl Listener<CreateEvent<dyn RenderableMesh>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<dyn RenderableMesh>) {
-		self.pending_render_entities.push_back(event.handle().clone());
-	}
-}
-
-impl Listener<CreateEvent<dyn Light>> for VisibilityWorldRenderDomain {
-	fn handle(&mut self, event: &CreateEvent<dyn Light>) {
-		let handle = event.handle();
-		self.lights.push(handle.clone());
-	}
 }
 
 impl WorldRenderDomain for VisibilityWorldRenderDomain {

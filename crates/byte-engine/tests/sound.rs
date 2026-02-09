@@ -3,7 +3,7 @@
 //! It does not check if the sound is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer, core::Entity, gameplay::space::Spawner};
+use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer, core::Entity};
 
 #[test]
 fn sound() {
@@ -12,9 +12,7 @@ fn sound() {
 		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
 	]);
 
-    let space_handle = app.get_root_space_handle();
-
-	space_handle.spawn(TestSynthesizer{}.builder());
+    // space_handle.spawn(TestSynthesizer{}.builder());
 
 	app.do_loop();
 }

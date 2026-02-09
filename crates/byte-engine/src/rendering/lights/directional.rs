@@ -28,12 +28,6 @@ impl Light for DirectionalLight {
 	}
 }
 
-impl Entity for DirectionalLight {
-	fn builder(self) -> crate::core::entity::EntityBuilder<'static, Self> where Self: Sized {
-    	crate::core::entity::EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Inspectable>).r#as(|h| h as EntityHandle<dyn Light>)
-	}
-}
-
 impl Inspectable for DirectionalLight {
 	fn as_string(&self) -> String {
 		format!("{:?}", self)

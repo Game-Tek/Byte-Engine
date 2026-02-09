@@ -3,7 +3,7 @@ use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 use oxhttp::{model::{Body, Method, Response, StatusCode}, ListeningServer, Server};
 use utils::sync::Mutex;
 
-use crate::{application::Events, camera::Camera, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, inspector::{Inspectable, Inspector}};
+use crate::{application::Events, camera::Camera, core::{listener::{Listener}, Entity, EntityHandle}, inspector::{Inspectable, Inspector}};
 
 /// This is the HTTP based implementation of the Byte Engine Inspection Protocol.
 ///
@@ -102,11 +102,5 @@ impl HttpInspectorServer {
 
 			inspector,
 		}
-	}
-}
-
-impl Entity for HttpInspectorServer {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self)
 	}
 }

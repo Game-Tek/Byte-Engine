@@ -1,6 +1,5 @@
 use math::Vector3;
 
-use crate::core::entity::EntityBuilder;
 use crate::core::{Entity, EntityHandle};
 use crate::gameplay::{Positionable, Transformable};
 use crate::inspector::Inspectable;
@@ -44,12 +43,6 @@ impl Camera {
 
 	pub fn set_fov(&mut self, fov: f32) {
 		self.fov = fov;
-	}
-}
-
-impl Entity for Camera {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-    	EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Inspectable>)
 	}
 }
 

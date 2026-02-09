@@ -1,4 +1,4 @@
-use std::{borrow::Cow, hash::{Hash, Hasher as _}};
+use std::{borrow::Cow, hash::{Hash, Hasher as _}, sync::Arc};
 
 use math::{normalize, Vector3, Vector4};
 
@@ -190,14 +190,14 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 }
 
-impl Into<Box<dyn MeshGenerator>> for SphereMeshGenerator {
-	fn into(self) -> Box<dyn MeshGenerator> {
-		Box::new(self)
+impl Into<Arc<dyn MeshGenerator>> for SphereMeshGenerator {
+	fn into(self) -> Arc<dyn MeshGenerator> {
+		Arc::new(self)
 	}
 }
 
 impl Into<MeshSource> for SphereMeshGenerator {
 	fn into(self) -> MeshSource {
-		Into::<Box<dyn MeshGenerator>>::into(self).into()
+		Into::<Arc<dyn MeshGenerator>>::into(self).into()
 	}
 }

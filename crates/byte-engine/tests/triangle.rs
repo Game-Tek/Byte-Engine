@@ -3,7 +3,7 @@
 //! It does not check if the triangle is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, gameplay::space::Spawner};
+use byte_engine::{application::{Application, Parameter}};
 
 #[test]
 #[ignore]
@@ -14,8 +14,6 @@ fn triangle() {
 	]);
 
 	byte_engine::application::graphics_application::default_setup(&mut app);
-
-    let space_handle = app.get_root_space_handle();
 
 	app.do_loop();
 }

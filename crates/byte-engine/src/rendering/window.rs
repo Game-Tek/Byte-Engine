@@ -2,6 +2,7 @@ use utils::Extent;
 
 use crate::{camera::Camera, core::{Entity, EntityHandle}};
 
+#[derive(Clone)]
 pub struct Window {
 	name: String,
 	extent: Extent,

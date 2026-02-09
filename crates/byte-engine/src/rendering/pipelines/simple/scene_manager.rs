@@ -9,7 +9,7 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self, EntityBuilder}, listener::{CreateEvent, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self}, factory::CreateMessage, listener::{DefaultListener, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, lights::{Light, Lights}, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
 
 pub struct SceneManager {
 	/// Buffer containing all vertex positions for meshes.
@@ -23,6 +23,8 @@ pub struct SceneManager {
 	pub(super) pipeline: ghi::PipelineHandle,
 	pub(super) pending_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
 	views: Vec<RenderPass>,
+
+	light_listener: DefaultListener<CreateMessage<Lights>>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
@@ -30,7 +32,7 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 ];
 
 impl SceneManager {
-	pub fn new(device: &mut ghi::Device) -> Self {
+	pub fn new(device: &mut ghi::Device, light_listener: DefaultListener<CreateMessage<Lights>>) -> Self {
 		let vertex_positions_buffer = device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
 		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
 
@@ -144,26 +146,18 @@ impl SceneManager {
 			pending_entities: VecDeque::with_capacity(64),
 
 			views: Vec::with_capacity(4),
+
+			light_listener,
 		}
-	}
-}
-
-impl Entity for SceneManager {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn RenderableMesh>>()
-	}
-}
-
-impl Listener<CreateEvent<dyn RenderableMesh>> for SceneManager {
-	fn handle(&mut self, event: &CreateEvent<dyn RenderableMesh>) {
-		let entity = event.handle();
-
-		self.pending_entities.push_back(entity.clone());
 	}
 }
 
 impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		for light in self.light_listener.iter() {
+			log::info!("Added light to scene!");
+		}
+
 		{
 			let pending_entities = self.pending_entities.drain(..);
 

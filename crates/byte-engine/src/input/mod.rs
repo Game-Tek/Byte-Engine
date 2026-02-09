@@ -1,3 +1,5 @@
+use crate::core::factory::Handle;
+
 use super::utils::RGBA;
 
 pub mod input_manager;
@@ -243,5 +245,27 @@ impl Into<ValueMapping> for f32 {
 impl Into<ValueMapping> for Value {
 	fn into(self) -> ValueMapping {
 		ValueMapping::new(Function::Linear, self)
+	}
+}
+
+#[derive(Clone)]
+pub struct ActionEvent {
+	/// The handle of the action that triggered the event.
+	handle: Handle,
+	/// The value of the action that triggered the event.
+	value: Value,
+}
+
+impl ActionEvent {
+	pub fn new(handle: Handle, value: Value) -> Self {
+		Self { handle, value }
+	}
+
+	pub fn handle(&self) -> Handle {
+		self.handle.clone()
+	}
+
+	pub fn value(&self) -> Value {
+		self.value
 	}
 }

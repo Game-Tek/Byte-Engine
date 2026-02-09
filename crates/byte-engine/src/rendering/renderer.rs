@@ -9,8 +9,8 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
 	application::parameters::Parameters, camera::Camera, core::{
-		Entity, EntityHandle, entity::EntityBuilder, listener::{CreateEvent, Listener}
-	}, gameplay::space::Spawner, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
+		Entity, EntityHandle, listener::{Listener}
+	}, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, render_passes::aces::AcesToneMapPass, texture_manager::TextureManager,};
@@ -52,7 +52,7 @@ impl Renderer {
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics device. Defaults to true.
-	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, parameters: &dyn Parameters) -> Self {
+	pub fn new(parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
 		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
@@ -297,83 +297,76 @@ impl Renderer {
 	}
 }
 
-impl Entity for Renderer {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<Window>>()
-	}
-}
+// impl Listener<CreateEvent<Window>> for Renderer {
+// 	fn handle(&mut self, event: &CreateEvent<Window>) {
+// 		let handle = event.handle();
+// 		let window = handle.read();
 
-impl Listener<CreateEvent<Window>> for Renderer {
-	fn handle(&mut self, event: &CreateEvent<Window>) {
-		let handle = event.handle();
-		let window = handle.read();
+// 		let name = window.name();
+// 		let extent = window.extent();
+// 		let camera = window.camera();
 
-		let name = window.name();
-		let extent = window.extent();
-		let camera = window.camera();
+// 		let window = ghi::Window::new_with_params(name, extent, "main_window");
 
-		let window = ghi::Window::new_with_params(name, extent, "main_window");
+// 		match window {
+// 			Ok(window) => {
+// 				let os_handles = window.os_handles();
 
-		match window {
-			Ok(window) => {
-				let os_handles = window.os_handles();
+// 				let device = &mut self.device;
 
-				let device = &mut self.device;
+// 				let swapchain_handle = device.bind_to_window(
+// 					&os_handles,
+// 					ghi::PresentationModes::FIFO,
+// 					extent,
+// 					ghi::Uses::BlitDestination,
+// 				);
 
-				let swapchain_handle = device.bind_to_window(
-					&os_handles,
-					ghi::PresentationModes::FIFO,
-					extent,
-					ghi::Uses::BlitDestination,
-				);
+// 				let view_id = if let Some(camera) = camera {
+// 					let view_id = self.views.len();
+// 					self.views.push((view_id, camera.clone()));
+// 					Some(view_id)
+// 				} else {
+// 					None
+// 				};
 
-				let view_id = if let Some(camera) = camera {
-					let view_id = self.views.len();
-					self.views.push((view_id, camera.clone()));
-					Some(view_id)
-				} else {
-					None
-				};
+// 				if let Some(view_id) = view_id {
+// 					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget | ghi::Uses::InputAttachment).name("main").use_case(ghi::UseCases::DYNAMIC));
+// 					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
+// 					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::BGRAu8, ghi::Uses::Storage | ghi::Uses::BlitSource).name("result").use_case(ghi::UseCases::DYNAMIC));
 
-				if let Some(view_id) = view_id {
-					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget | ghi::Uses::InputAttachment).name("main").use_case(ghi::UseCases::DYNAMIC));
-					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
-					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::BGRAu8, ghi::Uses::Storage | ghi::Uses::BlitSource).name("result").use_case(ghi::UseCases::DYNAMIC));
+// 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16F);
+// 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
+// 					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::BGRAu8);
 
-					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16F);
-					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
-					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::BGRAu8);
+// 					{
+// 						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+// 						let aces_pass = AcesToneMapPass::new(&mut rpb);
+// 						self.aces_passes.push((view_id, aces_pass));
+// 					}
 
-					{
-						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
-						let aces_pass = AcesToneMapPass::new(&mut rpb);
-						self.aces_passes.push((view_id, aces_pass));
-					}
+// 					{
+// 						let scene_managers = self.scene_managers.iter();
 
-					{
-						let scene_managers = self.scene_managers.iter();
+// 						for sm in scene_managers {
+// 							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 
-						for sm in scene_managers {
-							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+// 							sm.write().create_view(view_id, &mut rpb);
 
-							sm.write().create_view(view_id, &mut rpb);
+// 							if rpb.consumed_resources.len() == 0 {
+// 								log::debug!("No resources consumed by scene manager");
+// 							}
+// 						}
+// 					}
+// 				}
 
-							if rpb.consumed_resources.len() == 0 {
-								log::debug!("No resources consumed by scene manager");
-							}
-						}
-					}
-				}
-
-				self.windows.push((window, swapchain_handle));
-			}
-			Err(msg) => {
-				log::error!("Failed to create GHI window: {}", msg);
-			}
-		}
-	}
-}
+// 				self.windows.push((window, swapchain_handle));
+// 			}
+// 			Err(msg) => {
+// 				log::error!("Failed to create GHI window: {}", msg);
+// 			}
+// 		}
+// 	}
+// }
 
 struct Attachment {
 	name: String,

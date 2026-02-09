@@ -4,22 +4,19 @@ use utils::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type EntityWrapper<T> = Arc<RwLock<T>>;
 
-#[derive(Debug,)]
+#[derive(Debug)]
 pub struct Handle<T: ?Sized> {
 	pub(super) container: EntityWrapper<T>,
-	pub(super) internal_id: u32,
 }
 
 pub struct WeakHandle<T: ?Sized> {
 	pub(super) container: std::sync::Weak<RwLock<T>>,
-	pub(super) internal_id: u32,
 }
 
 impl <T: ?Sized> WeakHandle<T> {
 	pub fn upgrade(&self) -> Option<Handle<T>> where T: Sized {
 		self.container.upgrade().map(|c| Handle {
 			container: c,
-			internal_id: self.internal_id,
 		})
 	}
 }
@@ -28,24 +25,14 @@ impl <T: ?Sized> From<Handle<T>> for WeakHandle<T> {
 	fn from(handle: Handle<T>) -> Self {
 		Self {
 			container: std::sync::Arc::downgrade(&handle.container),
-			internal_id: handle.internal_id,
 		}
 	}
 }
 
-pub type EntityHash = u32;
-
-impl <T: ?Sized> From<&Handle<T>> for EntityHash {
-	fn from(handle: &Handle<T>) -> Self {
-		handle.internal_id
-	}
-}
-
 impl <T: ?Sized> Handle<T> {
-	pub fn new(object: EntityWrapper<T>, internal_id: u32,) -> Self {
+	pub fn new(object: EntityWrapper<T>,) -> Self {
 		Self {
 			container: object,
-			internal_id,
 		}
 	}
 
@@ -53,33 +40,27 @@ impl <T: ?Sized> Handle<T> {
 		let down = downcast_inner::<T, U>(&self.container);
 		Some(Handle {
 			container: down?,
-			internal_id: self.internal_id,
 		})
 	}
 
 	pub fn weak(&self) -> WeakHandle<T> {
 		WeakHandle {
 			container: std::sync::Arc::downgrade(&self.container),
-			internal_id: self.internal_id,
+		}
+	}
+}
+
+impl <T: Sized> From<T> for Handle<T> {
+	fn from(value: T) -> Self {
+		Self {
+			container: EntityWrapper::new(RwLock::new(value))
 		}
 	}
 }
 
 impl <T: ?Sized> PartialEq for Handle<T> {
 	fn eq(&self, other: &Self) -> bool {
-		self.internal_id == other.internal_id
-	}
-
-	fn ne(&self, other: &Self) -> bool {
-		self.internal_id != other.internal_id
-	}
-}
-
-impl <T: ?Sized> Eq for Handle<T> {}
-
-impl <T: ?Sized> std::hash::Hash for Handle<T> {
-	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		self.internal_id.hash(state);
+		panic!()
 	}
 }
 
@@ -97,7 +78,6 @@ impl <T: ?Sized> Clone for Handle<T> {
 	fn clone(&self) -> Self {
 		Self {
 			container: self.container.clone(),
-			internal_id: self.internal_id,
 		}
 	}
 }

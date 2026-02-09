@@ -34,7 +34,7 @@ pub trait Application {
 	fn get_name<'a>(&'a self) -> &'a str;
 
 	/// Performs a tick of the application.
-	fn tick(&mut self);
+	fn tick(&mut self) -> bool;
 }
 
 /// The most basic implementation of the application trait.
@@ -89,7 +89,7 @@ impl Application for BaseApplication {
 		application
 	}
 
-	fn tick(&mut self) {}
+	fn tick(&mut self) -> bool { true }
 
 	fn get_name(&self) -> &str { &self.name }
 }

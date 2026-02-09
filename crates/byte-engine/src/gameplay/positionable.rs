@@ -3,7 +3,7 @@ use math::Vector3;
 use crate::core::Entity;
 
 /// A trait for objects that have a position in 3D space.
-pub trait Positionable: Entity {
+pub trait Positionable {
 	/// Get the position of the object.
 	fn position(&self) -> Vector3;
 

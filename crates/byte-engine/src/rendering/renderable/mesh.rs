@@ -1,32 +1,36 @@
+use std::sync::Arc;
+
 use math::{normalize, Vector3};
 
-use crate::{core::{entity::EntityBuilder, Entity, EntityHandle}, gameplay::{transform::Transform, Transformable}, rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator}};
+use crate::{core::{Entity, EntityHandle}, gameplay::{transform::Transform, Transformable}, rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator}};
 
-pub trait RenderableMesh: Transformable + Entity + Send {
+pub trait RenderableMesh: Transformable {
 	fn get_mesh(&self) -> &MeshSource;
 }
 
+#[derive(Clone)]
 pub enum MeshSource {
 	Resource(&'static str),
-	Generated(Box<dyn MeshGenerator>),
+	Generated(Arc<dyn MeshGenerator>),
 }
 
 impl MeshSource {
 	pub fn sphere(radius: f32) -> Self {
-		MeshSource::Generated(Box::new(SphereMeshGenerator::from_radius(radius)))
+		MeshSource::Generated(Arc::new(SphereMeshGenerator::from_radius(radius)))
 	}
 
 	pub fn r#box(size: Vector3) -> Self {
-		MeshSource::Generated(Box::new(BoxMeshGenerator::from_size(size)))
+		MeshSource::Generated(Arc::new(BoxMeshGenerator::from_size(size)))
 	}
 }
 
-impl Into<MeshSource> for Box<dyn MeshGenerator> {
+impl Into<MeshSource> for Arc<dyn MeshGenerator> {
 	fn into(self) -> MeshSource {
 		MeshSource::Generated(self)
 	}
 }
 
+#[derive(Clone)]
 pub struct Mesh {
 	source: MeshSource,
 	transform: Transform,
@@ -47,28 +51,5 @@ impl Transformable for Mesh {
 impl RenderableMesh for Mesh {
 	fn get_mesh(&self) -> &MeshSource {
 		&self.source
-	}
-}
-
-impl Mesh {
-	pub fn new(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
-		Self {
-			source: MeshSource::Resource(resource_id),
-			transform,
-		}.into()
-	}
-
-	pub fn create(resource_id: &'static str, transform: Transform) -> EntityBuilder<'static, Self> {
-		EntityBuilder::new(Self {
-			source: MeshSource::Resource(resource_id),
-			transform,
-		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn RenderableMesh>)
-	}
-
-	pub fn new_generated(generator: Box<dyn MeshGenerator>, transform: Transform) -> EntityBuilder<'static, Self> {
-		Self {
-			source: MeshSource::Generated(generator),
-			transform,
-		}.into()
 	}
 }

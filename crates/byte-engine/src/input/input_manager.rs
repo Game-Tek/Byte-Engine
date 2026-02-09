@@ -24,7 +24,7 @@ use math::{normalize, Base, Vector2, Vector3};
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
-use crate::{core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}};
+use crate::{core::{Entity, EntityHandle, channel::Channel, factory::{CreateMessage, Factory, Handle}, listener::{DefaultListener, Listener}, message::Message}, input::ActionEvent};
 
 use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TriggerHandle, Types, Value};
 
@@ -58,19 +58,12 @@ struct InputSourceState {
 	time: std::time::SystemTime,
 }
 
-enum TypedHandle {
-	Bool(EntityHandle<Action<bool>>),
-	Float(EntityHandle<Action<f32>>),
-	Vector2(EntityHandle<Action<Vector2>>),
-	Vector3(EntityHandle<Action<Vector3>>),
-}
-
 /// An input event is an application specific event that is triggered by a combination of input sources.
 struct InputAction {
 	name: String,
 	r#type: Types,
 	trigger_mappings: Vec<TriggerMapping>,
-	handle: Option<TypedHandle>,
+	handle: Option<Handle>,
 }
 
 pub struct InputSourceEventState {
@@ -88,6 +81,8 @@ pub struct InputEventState {
 	value: Value,
 }
 
+impl Message for Value {}
+
 /// The input manager is responsible for managing input devices and input events.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
@@ -99,11 +94,13 @@ pub struct InputManager {
 	trigger_values: HashMap<(DeviceHandle, TriggerHandle), Record>,
 	/// Stores the last value of an action relative to the device it belongs to.
 	action_values: HashMap<(DeviceHandle, ActionHandle), Value>,
+	action_listener: DefaultListener<CreateMessage<Action>>,
+	event_channel: Channel<ActionEvent>,
 }
 
 impl InputManager {
 	/// Creates a new input manager.
-	pub fn new() -> Self {
+	pub fn new(action_listener: DefaultListener<CreateMessage<Action>>, event_channel: Channel<ActionEvent>) -> Self {
 		InputManager {
 			device_classes: Vec::new(),
 			triggers: Vec::new(),
@@ -112,6 +109,8 @@ impl InputManager {
 			actions: Vec::new(),
 			trigger_values: HashMap::with_capacity(512),
 			action_values: HashMap::with_capacity(64),
+			action_listener,
+			event_channel,
 		}
 	}
 
@@ -330,35 +329,7 @@ impl InputManager {
 			self.action_values.insert((record.device_handle, ActionHandle(i as u32)), value);
 
 			if let Some(handle) = &action.handle {
-				match value {
-					Value::Bool(v) => {
-						match handle {
-							TypedHandle::Bool(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
-							_ => {}
-						}
-					}
-					Value::Float(v) => {
-						match handle {
-							TypedHandle::Float(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
-							_ => {}
-						}
-					}
-					Value::Vector2(v) => {
-						match handle {
-							TypedHandle::Vector2(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
-							_ => {}
-						}
-					}
-					Value::Vector3(v) => {
-						match handle {
-							TypedHandle::Vector3(handle) => { handle.map(|a| { let mut a = a.write(); a.value_mut().set(|_| { v }); }) }
-							_ => {}
-						}
-					}
-					_ => {
-						log::error!("Not implemented!");
-					}
-				}
+				self.event_channel.send(ActionEvent { handle: handle.clone(), value });
 			}
 		}
 	}
@@ -659,74 +630,44 @@ impl InputManager {
 			}
 		}
 	}
-}
 
-impl Into<TypedHandle> for EntityHandle<Action<bool>> {
-	fn into(self) -> TypedHandle {
-		TypedHandle::Bool(self)
+	pub fn event_channel(&self) -> &Channel<ActionEvent> {
+		&self.event_channel
 	}
 }
 
-impl Into<TypedHandle> for EntityHandle<Action<f32>> {
-	fn into(self) -> TypedHandle {
-		TypedHandle::Float(self)
-	}
-}
+// impl Listener<CreateEvent<Action>> for InputManager {
+// 	fn handle(&mut self, event: &CreateEvent<Action>) {
+// 		let handle = event.handle();
+// 		let action = handle.read();
 
-impl Into<TypedHandle> for EntityHandle<Action<Vector2>> {
-	fn into(self) -> TypedHandle {
-		TypedHandle::Vector2(self)
-	}
-}
+// 		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
 
-impl Into<TypedHandle> for EntityHandle<Action<Vector3>> {
-	fn into(self) -> TypedHandle {
-		TypedHandle::Vector3(self)
-	}
-}
+// 		let input_event = InputAction {
+// 			name: name.to_string(),
+// 			r#type,
+// 			trigger_mappings: input_events.iter().map(|input_event| {
+// 				Some(TriggerMapping {
+// 					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
+// 					mapping: input_event.mapping.value,
+// 					function: Some(input_event.mapping.function),
+// 				})
+// 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
+// 			handle: Some(handle.clone().into()),
+// 		};
 
-impl <T: InputValue> Listener<CreateEvent<Action<T>>> for InputManager where EntityHandle<Action<T>>: Into<TypedHandle> {
-	fn handle(&mut self, event: &CreateEvent<Action<T>>) {
-		let handle = event.handle();
-		let action = handle.read();
-
-		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
-
-		let input_event = InputAction {
-			name: name.to_string(),
-			r#type,
-			trigger_mappings: input_events.iter().map(|input_event| {
-				Some(TriggerMapping {
-					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
-					mapping: input_event.mapping.value,
-					function: Some(input_event.mapping.function),
-				})
-			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-			handle: Some(handle.clone().into()),
-		};
-
-		self.actions.push(input_event);
-	}
-}
-
-impl Entity for InputManager {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<Action<bool>>>()
-			.listen_to::<CreateEvent<Action<f32>>>()
-			.listen_to::<CreateEvent<Action<Vector2>>>()
-			.listen_to::<CreateEvent<Action<Vector3>>>()
-	}
-}
+// 		self.actions.push(input_event);
+// 	}
+// }
 
 #[cfg(test)]
 mod tests {
 	use math::Quaternion;
 
-	use crate::{core::{spawn, spawn_as_child}, input::{input_trigger::TriggerDescription, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}, ValueMapping}};
+	use crate::{input::{input_trigger::TriggerDescription, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}, ValueMapping}};
 	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
-	use crate::{gameplay::space::Space, input::ActionBindingDescription};
+	use crate::{input::ActionBindingDescription};
 
 	use super::*;
 
@@ -752,19 +693,26 @@ mod tests {
 		device_class_handle
 	}
 
+	fn build_input_manager() -> InputManager {
+		let action_chanel = Channel::new();
+		let action_listener = action_chanel.listener();
+		let event_channel = Channel::new();
+
+		InputManager::new(action_listener, event_channel)
+	}
+
 	#[test]
 	fn create_device_class() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let _device_class_handle = input_manager.register_device_class("Keyboard");
 	}
 
 	#[test]
 	fn create_input_sources() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
-		let gamepad_class_handle = input_manager.register_device_class("Gamepad");
-
+		let gamepad_class_handle = register_gamepad_device_class(&mut input_manager);
 		register_keyboard_device_class(&mut input_manager);
 
 		let stick_source_description = TriggerDescription::new(Vector2::zero(), Vector2::zero(), Vector2 { x: -1.0, y: -1.0, }, Vector2 { x: 1.0, y: 1.0, });
@@ -779,7 +727,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_source_input_overlap_action() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let x = register_keyboard_device_class(&mut input_manager);
 
@@ -852,7 +800,11 @@ mod tests {
 
 	#[test]
 	fn test_boolean_trigger_2d_action_binding_combination() {
-		let mut input_manager = InputManager::new();
+		let action_chanel = Channel::new();
+		let action_listener = action_chanel.listener();
+		let event_channel = Channel::new();
+
+		let mut input_manager = InputManager::new(action_listener, event_channel);
 
 		let x = register_keyboard_device_class(&mut input_manager);
 
@@ -930,7 +882,7 @@ mod tests {
 
 	#[test]
 	fn record_bool_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
@@ -943,7 +895,7 @@ mod tests {
 
 	#[test]
 	fn record_unicode_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
@@ -956,7 +908,7 @@ mod tests {
 
 	#[test]
 	fn record_int_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = declare_funky_input_device_class(&mut input_manager);
 
@@ -969,7 +921,7 @@ mod tests {
 
 	#[test]
 	fn record_float_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_gamepad_device_class(&mut input_manager);
 
@@ -982,7 +934,7 @@ mod tests {
 
 	#[test]
 	fn record_vector2_input_source_action() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_gamepad_device_class(&mut input_manager);
 
@@ -995,7 +947,7 @@ mod tests {
 
 	#[test]
 	fn record_vector3_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = declare_vr_headset_input_device_class(&mut input_manager);
 
@@ -1008,7 +960,7 @@ mod tests {
 
 	#[test]
 	fn record_quaternion_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = declare_vr_headset_input_device_class(&mut input_manager);
 
@@ -1021,7 +973,7 @@ mod tests {
 
 	#[test]
 	fn record_rgba_input_source_actions() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = declare_funky_input_device_class(&mut input_manager);
 
@@ -1052,7 +1004,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_float_interpolation() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
@@ -1065,7 +1017,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_vector2_interpolation() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
@@ -1078,7 +1030,7 @@ mod tests {
 
 	#[test]
 	fn test_boolean_vector3_interpolation() {
-		let mut input_manager = InputManager::new();
+		let mut input_manager = build_input_manager();
 
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 
@@ -1087,76 +1039,5 @@ mod tests {
 		let handle = TriggerReference::Name("Keyboard.Up");
 
 		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, device, handle, "MoveForward", "Keyboard.Up", Vector3::zero(), Vector3::new(0f32, 0f32, 1f32));
-	}
-
-	#[test]
-	#[ignore]
-	fn test_system_fps_game() {
-		//! Test that the system integration is working and works correctly for a FPS game type setup.
-
-		let space = spawn(Space::new());
-
-		let input_manager: EntityHandle<InputManager> = spawn_as_child(space.clone(), InputManager::new().builder());
-
-		let mouse_device_handle;
-		let keyboard_device_handle;
-		let gamepad_device_handle;
-
-		{
-			let mut input_manager = input_manager.write();
-
-			let mouse_device_class_handle = register_mouse_device_class(&mut input_manager);
-			let keyboard_device_class_handle = register_keyboard_device_class(&mut input_manager);
-			let gamepad_device_class_handle = register_gamepad_device_class(&mut input_manager);
-
-			mouse_device_handle = input_manager.create_device(&mouse_device_class_handle);
-			keyboard_device_handle = input_manager.create_device(&keyboard_device_class_handle);
-			gamepad_device_handle = input_manager.create_device(&gamepad_device_class_handle);
-		}
-
-		// Create the move action
-		let move_action_handle = spawn_as_child(space.clone(), Action::<Vector3>::new("Move", &[
-			ActionBindingDescription::new("Keyboard.W").mapped(Vector3::new(0f32, 0f32, 1f32).into()),
-			ActionBindingDescription::new("Keyboard.S").mapped(Vector3::new(0f32, 0f32, -1f32).into()),
-			ActionBindingDescription::new("Keyboard.A").mapped(Vector3::new(-1f32, 0f32, 0f32).into()),
-			ActionBindingDescription::new("Keyboard.D").mapped(Vector3::new(1f32, 0f32, 0f32).into()),
-
-			ActionBindingDescription::new("Gamepad.LeftStick").mapped(Vector3::new(1f32, 0f32, 1f32).into()),
-		],).builder());
-
-		let input_queue = Rc::new(RefCell::new(Vec::new()));
-
-		{
-			let input_queue = input_queue.clone();
-
-			move_action_handle.write().value_mut().add(move |v| {
-				input_queue.borrow_mut().push(*v);
-			});
-		}
-
-		// Create the jump action
-		let jump_action_handle = spawn_as_child(space.clone(), Action::<bool>::new("Jump", &[
-			ActionBindingDescription::new("Keyboard.Space").mapped(true.into()),
-			ActionBindingDescription::new("Gamepad.A").mapped(true.into()),
-		],).builder());
-
-		{
-			let input_queue = input_queue.clone();
-
-			jump_action_handle.write().value_mut().add(move |v| {
-				input_queue.borrow_mut().push(Vector3::new(0f32, 1f32, 0f32));
-			});
-		}
-
-		{
-			let mut input_manager = input_manager.write();
-
-			input_manager.record_trigger_value_for_device(keyboard_device_handle, TriggerReference::Name("Keyboard.A"), Value::Bool(true));
-
-			input_manager.update();
-		}
-
-		assert_eq!(input_queue.borrow().len(), 1);
-		assert_eq!(input_queue.borrow()[0], Vector3::new(-1f32, 0f32, 0f32));
 	}
 }

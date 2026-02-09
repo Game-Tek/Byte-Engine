@@ -6,7 +6,7 @@ use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMod
 use resource_management::glsl;
 use utils::{Extent, Box};
 
-use crate::core::{Entity, entity::EntityBuilder};
+use crate::core::{Entity};
 
 #[derive(Clone)]
 pub struct BaseAcesToneMapPass {

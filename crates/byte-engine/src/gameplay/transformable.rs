@@ -5,7 +5,7 @@ use crate::core::Entity;
 use super::{Positionable, transform::Transform};
 
 // [`Transformable`] represents an object that can be transformed in the game world.
-pub trait Transformable: Positionable + Entity {
+pub trait Transformable: Positionable {
 	fn transform(&self) -> &Transform;
 	fn transform_mut(&mut self) -> &mut Transform;
 }

@@ -6,11 +6,11 @@ use std::{fmt::Debug, sync::Arc};
 use utils::sync::Mutex;
 use crate::application::{Receiver, Sender};
 
-use crate::{application::Events, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}};
+use crate::{application::Events, core::{listener::{Listener}, Entity, EntityHandle}};
 
 pub mod http;
 
-pub trait Inspectable: Entity + Send + Sync {
+pub trait Inspectable: Send + Sync {
 	fn as_string(&self) -> String;
 
 	fn class_name(&self) -> &'static str {
@@ -65,17 +65,5 @@ impl Inspector {
 
 	pub fn close_application(&self) {
 		self.events.send(Events::Close).unwrap();
-	}
-}
-
-impl Entity for Inspector {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-    	EntityBuilder::new(self).listen_to::<CreateEvent<dyn Inspectable>>()
-	}
-}
-
-impl Listener<CreateEvent<dyn Inspectable>> for Inspector {
-	fn handle(&mut self, event: &CreateEvent<dyn Inspectable>) {
-		self.entities.lock().push(event.handle().clone());
 	}
 }

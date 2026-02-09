@@ -9,13 +9,9 @@ impl UIRenderModel {
 		}
 	}
 
-	pub fn new_as_system<'a>() -> EntityBuilder<'a, Self> {
-		EntityBuilder::new(UIRenderModel::new())
-	}
-
 }
 
-use crate::{core::{Entity, entity::EntityBuilder}, rendering::{Viewport, render_pass::{RenderPassBuilder, RenderPassFunction}, scene_manager::SceneManager}};
+use crate::{core::{Entity}, rendering::{Viewport, render_pass::{RenderPassBuilder, RenderPassFunction}, scene_manager::SceneManager}};
 use utils::Box;
 use super::Text;
 

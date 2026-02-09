@@ -1,11 +1,9 @@
 use math::{Base, Matrix3, Vector3, magnitude, magnitude_squared, mat::MatNew3 as _};
 
-use crate::{core::Entity, gameplay::{Positionable, Transformable}, physics::{collider::Collider, CollisionEvent}};
+use crate::{core::Entity, gameplay::{Positionable, Transformable}, physics::{collider::Collider}};
 
 /// The `Body` trait represents a physical body in the world.
-pub trait Body: Collider + Transformable + Entity {
-	fn on_collision(&mut self) -> Option<&mut CollisionEvent>;
-
+pub trait Body: Collider + Transformable {
 	fn body_type(&self) -> BodyTypes;
 
 	fn velocity(&self) -> Vector3;

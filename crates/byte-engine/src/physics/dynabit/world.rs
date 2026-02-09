@@ -1,5 +1,5 @@
 use math::{collision::{cube_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _}, normalize, sphere::Sphere, Base, Matrix3, Quaternion, Vector3};
-use crate::{application::Time, core::{entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{intersect, PhysicsBody}, contact::{Contact, Side}}}};
+use crate::{application::Time, core::{listener::{Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{intersect, PhysicsBody}, contact::{Contact, Side}}}};
 
 pub struct World {
 	bodies: Vec<PhysicsBody>,
@@ -220,70 +220,64 @@ impl World {
 	}
 }
 
-impl Entity for World {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn Body>>().listen_to::<CreateEvent<dyn Collider>>()
-	}
-}
-
 impl crate::physics::World for World {
 	fn update(&mut self, time: Time) {
     	self.update(time);
 	}
 }
 
-impl Listener<CreateEvent<dyn Body>> for World {
-	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
-		let handle = event.handle();
-		let body = handle.read();
+// impl Listener<CreateEvent<dyn Body>> for World {
+// 	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
+// 		let handle = event.handle();
+// 		let body = handle.read();
 
-		let body_type = body.body_type();
+// 		let body_type = body.body_type();
 
-		let inv_mass = match body_type {
-			BodyTypes::Dynamic => 1f32 / body.mass(),
-			_ => 0f32,
-		};
+// 		let inv_mass = match body_type {
+// 			BodyTypes::Dynamic => 1f32 / body.mass(),
+// 			_ => 0f32,
+// 		};
 
-		let inertia_tensor = body.inertia_tensor();
+// 		let inertia_tensor = body.inertia_tensor();
 
-		self.add_body(PhysicsBody{
-			body_type,
-			position: body.position(),
-			orientation: Quaternion::identity(),
-			linear_velocity: body.velocity(),
-			angular_velocity: Vector3::new(0f32, 0f32, 0f32),
-			acceleration: Vector3::new(0f32, 0f32, 0f32),
-			collision_shape: body.shape(),
-			collider: handle.clone() as EntityHandle<dyn Collider>,
-			body: Some(handle.clone()),
-			inv_mass,
-			center_of_mass: body.center_of_mass(),
-			elasticity: body.elasticity(),
-			inertia_tensor,
-			friction: body.friction(),
-		});
-	}
-}
+// 		self.add_body(PhysicsBody{
+// 			body_type,
+// 			position: body.position(),
+// 			orientation: Quaternion::identity(),
+// 			linear_velocity: body.velocity(),
+// 			angular_velocity: Vector3::new(0f32, 0f32, 0f32),
+// 			acceleration: Vector3::new(0f32, 0f32, 0f32),
+// 			collision_shape: body.shape(),
+// 			collider: handle.clone() as EntityHandle<dyn Collider>,
+// 			body: Some(handle.clone()),
+// 			inv_mass,
+// 			center_of_mass: body.center_of_mass(),
+// 			elasticity: body.elasticity(),
+// 			inertia_tensor,
+// 			friction: body.friction(),
+// 		});
+// 	}
+// }
 
-impl Listener<CreateEvent<dyn Collider>> for World {
-	fn handle(&mut self, event: &CreateEvent<dyn Collider>) {
-		let handle = event.handle();
-		let collider = handle.read();
-		self.add_body(PhysicsBody{
-			body_type: BodyTypes::Static,
-			position: collider.position(),
-			orientation: Quaternion::identity(),
-			linear_velocity: Vector3::zero(),
-			angular_velocity: Vector3::new(0f32, 0f32, 0f32),
-			acceleration: Vector3::zero(),
-			collision_shape: collider.shape(),
-			collider: handle.clone(),
-			body: None,
-			inv_mass: 0f32,
-			center_of_mass: Vector3::zero(),
-			elasticity: collider.elasticity(),
-			inertia_tensor: Matrix3::identity(),
-			friction: collider.friction(),
-		});
-	}
-}
+// impl Listener<CreateEvent<dyn Collider>> for World {
+// 	fn handle(&mut self, event: &CreateEvent<dyn Collider>) {
+// 		let handle = event.handle();
+// 		let collider = handle.read();
+// 		self.add_body(PhysicsBody{
+// 			body_type: BodyTypes::Static,
+// 			position: collider.position(),
+// 			orientation: Quaternion::identity(),
+// 			linear_velocity: Vector3::zero(),
+// 			angular_velocity: Vector3::new(0f32, 0f32, 0f32),
+// 			acceleration: Vector3::zero(),
+// 			collision_shape: collider.shape(),
+// 			collider: handle.clone(),
+// 			body: None,
+// 			inv_mass: 0f32,
+// 			center_of_mass: Vector3::zero(),
+// 			elasticity: collider.elasticity(),
+// 			inertia_tensor: Matrix3::identity(),
+// 			friction: collider.friction(),
+// 		});
+// 	}
+// }

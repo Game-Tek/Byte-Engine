@@ -1,4 +1,4 @@
-use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, domain::{Domain, DomainEvents}, listener::CreateEvent, property::Property, spawn, spawn_as_child, task}, gameplay::space::Spawner as _, input::{input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, rendering::{pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderer, texture_manager::TextureManager}};
+use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, channel::Channel, factory::{CreateMessage, Factory}, task}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::body::PhysicsBody, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderer, texture_manager::TextureManager}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 use tracing::{debug_span, instrument, span, Level};
 use utils::{sync::RwLock, Extent};
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem, space::Space}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, pipelines::visibility::shader_generator::VisibilityShaderGenerator}};
+use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, pipelines::visibility::shader_generator::VisibilityShaderGenerator}};
 
 use super::{application::{Application, BaseApplication}, Parameter, Time, Events, Sender, Receiver};
 
@@ -34,14 +34,16 @@ pub struct GraphicsApplication {
 
 	application_events: (Sender<Events>, Receiver<Events>),
 
-	input_system_handle: EntityHandle<input::InputManager>,
-	resource_manager: EntityHandle<ResourceManager>,
-	renderer_handle: EntityHandle<Renderer>,
-	physics_system_handle: EntityHandle<dyn physics::World>,
-	anchor_system_handle: EntityHandle<AnchorSystem>,
-	tick_handle: EntityHandle<Property<Time>>,
-	task_executor_handle: EntityHandle<task::TaskExecutor>,
-	root_space_handle: EntityHandle<dyn Domain>,
+	window_factory: Factory<Window>,
+	action_factory: Factory<Action>,
+	body_factory: Factory<EntityHandle<dyn physics::Body>>,
+	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
+
+	input_system: input::InputManager,
+	resource_manager: ResourceManager,
+	renderer: Renderer,
+	physics_system: Box<dyn physics::World>,
+	anchor_system: AnchorSystem,
 
 	threads: SmallVec<[Thread; 64]>,
 
@@ -62,20 +64,28 @@ impl Application for GraphicsApplication {
 
 		let application = BaseApplication::new(name, parameters);
 
-		let root_space_handle: EntityHandle<dyn Domain> = spawn(Space::new());
-
 		let resources_path: std::path::PathBuf = application.get_parameter("resources.path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
 
-		let resource_manager = spawn(ResourceManager::new(RedbStorageBackend::new(resources_path)));
+		let resource_manager = ResourceManager::new(RedbStorageBackend::new(resources_path));
 
-		let input_system_handle = root_space_handle.spawn(input::InputManager::new().builder());
-		let renderer_handle = root_space_handle.spawn(rendering::renderer::Renderer::new(resource_manager.clone(), &application).builder());
-		let physics_system_handle = root_space_handle.spawn(physics::dynabit::World::new().builder());
-		let task_executor_handle = root_space_handle.spawn(task::TaskExecutor::create());
+		let action_factory = Factory::new();
 
-		let anchor_system_handle = root_space_handle.spawn(AnchorSystem::new().builder());
+		let input_system = {
+			let action_listener = action_factory.listener();
+			let event_channel = Channel::new();
 
-		let tick_handle = root_space_handle.spawn(Property::new(Time { elapsed: Duration::new(0, 0), delta: Duration::new(0, 0) }).builder());
+			input::InputManager::new(action_listener, event_channel)
+		};
+
+		let renderable_factory = Factory::new();
+
+		let renderer = rendering::renderer::Renderer::new(&application);
+
+		let body_factory = Factory::new();
+
+		let physics_system = Box::new(physics::dynabit::World::new());
+
+		let anchor_system = AnchorSystem::new();
 
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
@@ -89,8 +99,8 @@ impl Application for GraphicsApplication {
 			}
 		}).unwrap();
 
-		let inspector = root_space_handle.spawn(Inspector::new(tx.clone()).builder());
-		root_space_handle.spawn(HttpInspectorServer::new(inspector).builder());
+		// let inspector = Inspector::new(tx.clone());
+		// HttpInspectorServer::new(inspector);
 
 		let rx = tx.spawn_rx();
 		let application_events = (tx, rx);
@@ -100,15 +110,16 @@ impl Application for GraphicsApplication {
 
 			application_events,
 
-			input_system_handle,
-			renderer_handle,
-			resource_manager,
-			physics_system_handle,
-			anchor_system_handle,
-			task_executor_handle,
-			root_space_handle,
+			window_factory: Factory::new(),
+			action_factory,
+			body_factory,
+			renderable_factory,
 
-			tick_handle,
+			input_system,
+			renderer,
+			resource_manager,
+			physics_system,
+			anchor_system,
 
 			threads: SmallVec::new(),
 
@@ -132,7 +143,13 @@ impl Application for GraphicsApplication {
 
 	fn get_name(&self) -> &str { self.application.get_name() }
 
-	fn tick(&mut self) {
+	fn tick(&mut self) -> bool {
+		self.tick_with(|_| {})
+	}
+}
+
+impl GraphicsApplication {
+	pub fn tick_with<F: FnOnce(&mut Self)>(&mut self, f: F) -> bool {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
@@ -143,35 +160,11 @@ impl Application for GraphicsApplication {
 		let elapsed = self.start_time.elapsed();
 		let tick_count = self.tick_count;
 
-		{
-			let events = self.root_space_handle.write().get_events();
-
-			for event in events {
-				match event {
-					DomainEvents::EntityCreated { f } => {
-						self.task_executor_handle.get_mut(|executor| {
-							f(executor);
-						});
-					}
-					DomainEvents::EntityRemoved { f } => {
-						self.task_executor_handle.get_mut(|executor| {
-							f(executor);
-						});
-					}
-					DomainEvents::StartListen { f } => {
-						self.task_executor_handle.get_mut(|executor| {
-							f(executor);
-						});
-					}
-				}
-			}
-		}
-
 		let mut close = false;
 
 		{
-			let mut renderer = self.renderer_handle.write();
-			let mut input_system = self.input_system_handle.write();
+			let renderer = &mut self.renderer;
+			let input_system = &mut self.input_system;
 
 			for window_events in renderer.update_windows() {
 				for event in window_events {
@@ -179,7 +172,7 @@ impl Application for GraphicsApplication {
 						close = true;
 					}
 
-					if let Some((device_handle, input_source_action, value)) = process_default_window_input(&mut input_system, event) {
+					if let Some((device_handle, input_source_action, value)) = process_default_window_input(input_system, event) {
 						input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
 					}
 				}
@@ -198,46 +191,20 @@ impl Application for GraphicsApplication {
 			let _ = self.application_events.0.send(Events::Close);
 			self.threads.drain(..).for_each(|t| { let _ = t.join(); });
 			self.close();
-			return;
+			return false;
 		}
 
 		let time = Time { elapsed, delta: dt };
 
-		self.tick_handle.get_mut(move |tick| {
-			tick.set(|_| time);
-		});
+		self.input_system.update();
 
-		let execution = self.task_executor_handle.map(|handle| {
-			let mut e = handle.write();
-			e.get_execution(elapsed, dt, tick_count)
-		});
+		f(self);
 
-		execution.run();
+		self.anchor_system.update();
 
-		self.task_executor_handle.map(|handle| {
-			let mut e = handle.write();
-			e.update_tasks(elapsed, dt, tick_count);
-		});
+		self.physics_system.update(time);
 
-		self.input_system_handle.map(|handle| {
-			let mut e = handle.write();
-			e.update();
-		});
-
-		self.anchor_system_handle.map(|handle| {
-			let e = handle.write();
-			e.update();
-		});
-
-		self.physics_system_handle.map(move |handle| {
-			let mut e = handle.write();
-			e.update(time);
-		});
-
-		{
-			let mut e = self.renderer_handle.write();
-			e.prepare();
-		}
+		self.renderer.prepare();
 
 		self.tick_count += 1;
 
@@ -258,10 +225,10 @@ impl Application for GraphicsApplication {
 				self.max_frame_time = self.max_frame_time.max(dt);
 			}
 		}
-	}
-}
 
-impl GraphicsApplication {
+		!close
+	}
+
 	/// Flags the application for closing.
 	pub fn close(&mut self) {
 		self.close = true;
@@ -270,24 +237,32 @@ impl GraphicsApplication {
 		log::debug!("Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed(), self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);
 	}
 
-	pub fn get_input_system_handle_ref(&self) -> &EntityHandle<input::InputManager> {
-		&self.input_system_handle
+	pub fn input_system(&self) -> &input::InputManager {
+		&self.input_system
 	}
 
-	pub fn get_physics_world_handle(&self) -> &EntityHandle<dyn physics::World> {
-		&self.physics_system_handle
+	pub fn physics_world(&self) -> &dyn physics::World {
+		self.physics_system.as_ref()
 	}
 
-	pub fn get_root_space_handle(&self) -> &EntityHandle<dyn Domain> {
-		&self.root_space_handle
+	pub fn renderer(&self) -> &Renderer {
+		&self.renderer
 	}
 
-	pub fn get_tick_handle(&self) -> &EntityHandle<Property<Time>> {
-		&self.tick_handle
+	pub fn window_factory(&self) -> &Factory<Window> {
+		&self.window_factory
 	}
 
-	pub fn get_renderer_handle(&self) -> &EntityHandle<Renderer> {
-		&self.renderer_handle
+	pub fn action_factory(&self) -> &Factory<Action> {
+		&self.action_factory
+	}
+
+	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {
+		&self.body_factory
+	}
+
+	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {
+		&self.renderable_factory
 	}
 
 	pub fn do_loop(&mut self) {
@@ -296,7 +271,13 @@ impl GraphicsApplication {
 		}
 	}
 
-	pub fn get_resource_manager_handle(&self) -> &EntityHandle<ResourceManager> {
+	pub fn do_loop_with<F: FnOnce(&mut Self) + Copy>(&mut self, f: F) {
+		while !self.close {
+			self.tick_with(f);
+		}
+	}
+
+	pub fn resource_manager(&self) -> &ResourceManager {
 		&self.resource_manager
 	}
 }
@@ -336,8 +317,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 /// Creates a new window under the root space with the application name and an extent of 1920x1080.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
-	let root_space_handle = application.get_root_space_handle();
-	root_space_handle.spawn(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)).builder());
+	application.window_factory.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
 }
 
 /// Sets up the default resource and asset management for the application.
@@ -353,9 +333,9 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// The resources folder path is taken from the `resources-path` parameter and defaults to `resources`.
 /// The assets folder path is taken from the `assets-path` parameter and defaults to `assets`.
 pub fn setup_default_resource_and_asset_management(application: &mut GraphicsApplication, generator: impl ProgramGenerator + 'static) {
-	let mut resource_manager = application.resource_manager.write();
-
 	let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
+
+	let resource_manager = &mut application.resource_manager;
 
 	let storage_backend = FileStorageBackend::new(assets_path.clone());
 
@@ -375,34 +355,38 @@ pub fn setup_default_resource_and_asset_management(application: &mut GraphicsApp
 /// Sets up a default input system for the application.
 /// This includes setting up mouse, keyboard and gamepad input devices.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
-	let mut input_system = application.input_system_handle.write();
+	let input_system = &mut application.input_system;
 
-	let mouse_device_class_handle = register_mouse_device_class(&mut input_system);
-	let keyboard_device_class_handle = register_keyboard_device_class(&mut input_system);
-	let gamepad_device_class_handle = register_gamepad_device_class(&mut input_system);
+	let mouse_device_class_handle = register_mouse_device_class(input_system);
+	let keyboard_device_class_handle = register_keyboard_device_class(input_system);
+	let gamepad_device_class_handle = register_gamepad_device_class(input_system);
 
 	input_system.create_device(&mouse_device_class_handle);
 	input_system.create_device(&keyboard_device_class_handle);
 	input_system.create_device(&gamepad_device_class_handle);
 }
 
-pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
-	let mut renderer = application.renderer_handle.write();
+pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) -> Factory<Lights> {
+	let renderer = &mut application.renderer;
+
+	let light_factory = Factory::new();
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		application.root_space_handle.spawn(SimpleSceneManager::new(renderer.device_mut()).builder())
+		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), light_factory.listener()))
 	};
 
 	renderer.add_scene_manager(sm);
+
+	(light_factory)
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
-	let mut renderer = application.renderer_handle.write();
+	let renderer = &mut application.renderer;
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		application.root_space_handle.spawn(VisibilityWorldRenderDomain::new(renderer.device_mut(), application.resource_manager.clone(), texture_manager).builder())
+		EntityHandle::from(VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager))
 	};
 
 	renderer.add_scene_manager(sm);
@@ -410,10 +394,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	application.threads.push(Thread::new(application.application_events.0.spawn_rx(), {
-		let resource_manager = application.resource_manager.clone();
+		let resource_manager = &mut application.resource_manager;
 
 		move |mut rx| {
-			let Ok(mut audio_system) = DefaultAudioSystem::try_new(resource_manager).map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
+			let Ok(mut audio_system) = DefaultAudioSystem::try_new().map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
 				return;
 			};
 

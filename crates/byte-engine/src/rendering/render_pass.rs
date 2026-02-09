@@ -1,7 +1,7 @@
 
 use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
-use crate::{core::{EntityHandle, entity::EntityBuilder}, rendering::{Viewport, renderer::RenderTargets}};
+use crate::{core::{EntityHandle}, rendering::{Viewport, renderer::RenderTargets}};
 
 use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _};
 use resource_management::glsl;

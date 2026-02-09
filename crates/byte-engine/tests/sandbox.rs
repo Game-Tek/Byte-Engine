@@ -2,7 +2,7 @@
 //! It's purpose is to check if an entire application can be created and run.
 //! It does not check if the application is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, core::Entity, gameplay::{collider::Cube, space::Spawner}};
+use byte_engine::{application::{Application, Parameter}, gameplay::{collider::Cube}};
 use math::Vector3;
 
 #[test]
@@ -12,9 +12,7 @@ fn sandbox() {
 		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
 	]);
 
-    let space_handle = app.get_root_space_handle();
-
-	space_handle.spawn(Cube::new(Vector3::new(0.5f32, 0.5f32, 0.5f32)).builder());
+    // space_handle.spawn(Cube::new(Vector3::new(0.5f32, 0.5f32, 0.5f32)).builder());
 
 	app.do_loop();
 }

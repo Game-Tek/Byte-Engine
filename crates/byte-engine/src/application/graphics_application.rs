@@ -1,4 +1,4 @@
-use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, channel::Channel, factory::{CreateMessage, Factory}, task}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::body::PhysicsBody, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderer, texture_manager::TextureManager}};
+use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, channel::Channel, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::body::PhysicsBody, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderable, renderer, texture_manager::TextureManager}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -34,7 +34,7 @@ pub struct GraphicsApplication {
 
 	application_events: (Sender<Events>, Receiver<Events>),
 
-	window_factory: Factory<Window>,
+	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	action_factory: Factory<Action>,
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
@@ -105,12 +105,15 @@ impl Application for GraphicsApplication {
 		let rx = tx.spawn_rx();
 		let application_events = (tx, rx);
 
+		let window_factory = Factory::new();
+		let window_factory_listener = window_factory.listener();
+
 		GraphicsApplication {
 			application,
 
 			application_events,
 
-			window_factory: Factory::new(),
+			window_factory: (window_factory, window_factory_listener),
 			action_factory,
 			body_factory,
 			renderable_factory,
@@ -204,7 +207,15 @@ impl GraphicsApplication {
 
 		self.physics_system.update(time);
 
-		self.renderer.prepare();
+		{
+			let window_listener = &mut self.window_factory.1;
+
+			for message in window_listener.iter() {
+				self.renderer.create_window(message.into_data());
+			}
+
+			self.renderer.prepare();
+		}
 
 		self.tick_count += 1;
 
@@ -250,19 +261,35 @@ impl GraphicsApplication {
 	}
 
 	pub fn window_factory(&self) -> &Factory<Window> {
-		&self.window_factory
+		&self.window_factory.0
+	}
+
+	pub fn window_factory_mut(&mut self) -> &mut Factory<Window> {
+		&mut self.window_factory.0
 	}
 
 	pub fn action_factory(&self) -> &Factory<Action> {
 		&self.action_factory
 	}
 
+	pub fn action_factory_mut(&mut self) -> &mut Factory<Action> {
+		&mut self.action_factory
+	}
+
 	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {
 		&self.body_factory
 	}
 
+	pub fn body_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn physics::Body>> {
+		&mut self.body_factory
+	}
+
 	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {
 		&self.renderable_factory
+	}
+
+	pub fn renderable_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn RenderableMesh>> {
+		&mut self.renderable_factory
 	}
 
 	pub fn do_loop(&mut self) {
@@ -317,7 +344,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 /// Creates a new window under the root space with the application name and an extent of 1920x1080.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
-	application.window_factory.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
+	application.window_factory.0.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
 }
 
 /// Sets up the default resource and asset management for the application.
@@ -366,19 +393,18 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 	input_system.create_device(&gamepad_device_class_handle);
 }
 
-pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) -> Factory<Lights> {
-	let renderer = &mut application.renderer;
+pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
+	let renderable_mesh_factory = application.renderable_factory_mut();
+	let listener = renderable_mesh_factory.listener();
 
-	let light_factory = Factory::new();
+	let renderer = &mut application.renderer;
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), light_factory.listener()))
+		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), listener))
 	};
 
 	renderer.add_scene_manager(sm);
-
-	(light_factory)
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {

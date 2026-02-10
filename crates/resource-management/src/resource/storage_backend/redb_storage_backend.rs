@@ -39,7 +39,10 @@ impl RedbStorageBackend {
         let db = match db_res {
             Ok(db) => db,
             Err(_) => {
-                panic!("Could not create database")
+				match redb::Database::builder().create_with_backend(redb::backends::InMemoryBackend::new()) {
+					Ok(db) => db,
+					Err(_) => panic!("Could not create in-memory database"),
+				}
             }
         };
 

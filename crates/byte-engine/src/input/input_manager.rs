@@ -293,6 +293,28 @@ impl InputManager {
 	}
 
 	pub fn update(&mut self) {
+		while let Some(message) = self.action_listener.read() {
+			let handle = *message.handle();
+			let action = message.into_data();
+
+			let (name, r#type, input_events,) = (action.name, action.r#type, action.bindings);
+
+			let input_event = InputAction {
+				name: name.to_string(),
+				r#type,
+				trigger_mappings: input_events.iter().map(|input_event| {
+					Some(TriggerMapping {
+						trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
+						mapping: input_event.mapping.value,
+						function: Some(input_event.mapping.function),
+					})
+				}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
+				handle: Some(handle),
+			};
+
+			self.actions.push(input_event);
+		}
+
 		if self.records.is_empty() { return; }
 
 		let mut records = self.records.clone();
@@ -380,7 +402,7 @@ impl InputManager {
 		}).unwrap_or_else(|| {
 			let action = self.actions.get(action_handle.0 as usize).unwrap();
 			let default_value = match action.r#type {
-				Types::Bool => Value::Bool(false),
+				Types::Boolean => Value::Bool(false),
 				Types::Float => Value::Float(0f32),
 				Types::Vector2 => Value::Vector2(Vector2 { x: 0f32, y: 0f32 }),
 				Types::Vector3 => Value::Vector3(Vector3 { x: 0f32, y: 0f32, z: 0f32 }),
@@ -421,7 +443,7 @@ impl InputManager {
 		};
 
 		match action.r#type {
-			Types::Bool => {
+			Types::Boolean => {
 				let bool: Option<bool> = match record.value {
 					Value::Bool(record_value) => {
 						record_value.into()
@@ -635,30 +657,6 @@ impl InputManager {
 		&self.event_channel
 	}
 }
-
-// impl Listener<CreateEvent<Action>> for InputManager {
-// 	fn handle(&mut self, event: &CreateEvent<Action>) {
-// 		let handle = event.handle();
-// 		let action = handle.read();
-
-// 		let (name, r#type, input_events,) = (action.name, T::get_type(), &action.bindings);
-
-// 		let input_event = InputAction {
-// 			name: name.to_string(),
-// 			r#type,
-// 			trigger_mappings: input_events.iter().map(|input_event| {
-// 				Some(TriggerMapping {
-// 					trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
-// 					mapping: input_event.mapping.value,
-// 					function: Some(input_event.mapping.function),
-// 				})
-// 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
-// 			handle: Some(handle.clone().into()),
-// 		};
-
-// 		self.actions.push(input_event);
-// 	}
-// }
 
 #[cfg(test)]
 mod tests {

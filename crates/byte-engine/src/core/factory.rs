@@ -2,37 +2,56 @@
 
 use crate::core::{channel::Channel, listener::{DefaultListener, Listener}, message::Message};
 
-pub struct Factory<T: Clone + ?Sized>(Channel<CreateMessage<T>>);
+pub struct Factory<T: Clone + ?Sized>(Channel<CreateMessage<T>>, u32);
 
 impl <T: Clone> Factory<T> {
-    pub fn new() -> Self {
-        let sender = Channel::new();
-        Factory(sender)
-    }
+	pub fn new() -> Self {
+		let sender = Channel::new();
+		Factory(sender, 0)
+	}
 
-    pub fn create(&self, data: T) -> Handle {
-        self.0.send(CreateMessage::new(data));
+	pub fn create(&mut self, data: T) -> Handle {
+		let id = self.1;
 
-        Handle
-    }
+		let handle = Handle(id);
 
-    pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
-        self.0.listener()
-    }
+		self.0.send(CreateMessage::new(handle, data));
+
+		self.1 += 1;
+
+		Handle(id)
+	}
+
+	pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
+		self.0.listener()
+	}
 }
 
 #[derive(Debug, Clone)]
 pub struct CreateMessage<T: Clone> {
+	handle: Handle,
 	data: T,
 }
 
 impl <T: Clone> CreateMessage<T> {
-	pub fn new(data: T) -> Self {
-		CreateMessage { data }
+	fn new(handle: Handle, data: T) -> Self {
+		CreateMessage { handle, data }
+	}
+
+	pub fn data(&self) -> &T {
+		&self.data
+	}
+
+	pub fn into_data(self) -> T {
+		self.data
+	}
+
+	pub fn handle(&self) -> &Handle {
+		&self.handle
 	}
 }
 
 impl <T: Clone> Message for CreateMessage<T> {}
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Handle;
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Handle(u32);

@@ -18,6 +18,7 @@ pub struct Action {
 	pub(crate) name: &'static str,
 	pub(crate) bindings: Vec<ActionBindingDescription>,
 	pub(crate) inputs: Vec<TriggerMapping>,
+	pub(crate) r#type: Types,
 }
 
 impl ActionLike for Action {
@@ -31,7 +32,7 @@ pub trait InputValue: Default + Clone + Copy + 'static {
 }
 
 impl InputValue for bool {
-	fn get_type() -> Types { Types::Bool }
+	fn get_type() -> Types { Types::Boolean }
 }
 
 impl InputValue for i32 {
@@ -63,11 +64,12 @@ impl InputValue for RGBA {
 }
 
 impl Action {
-	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action {
+	pub fn new(name: &'static str, bindings: &[ActionBindingDescription], r#type: Types) -> Action {
 		Action {
 			name,
 			bindings: bindings.to_vec(),
 			inputs: Vec::new(),
+			r#type,
 		}
 	}
 }

@@ -1,5 +1,6 @@
 use trotcast::Channel as Sender;
 use trotcast::Receiver as Receiver;
+use trotcast::error::BlockingSendError;
 
 use crate::core::listener::DefaultListener;
 use crate::core::listener::Listener;
@@ -9,7 +10,7 @@ pub struct Channel<M>(Sender<M>);
 
 impl <M: Clone> Channel<M> {
 	pub fn new() -> Self {
-		let sender = Sender::new(4);
+		let sender = Sender::new(128);
 		Channel(sender)
 	}
 
@@ -19,7 +20,12 @@ impl <M: Clone> Channel<M> {
 	}
 
 	pub fn send(&self, message: M) {
-		self.0.blocking_send(message).unwrap()
+		match self.0.blocking_send(message) {
+			Err(BlockingSendError::Disconnected(_)) => {
+				log::debug!("No listeners for the message!");
+			},
+			_ => (),
+		}
 	}
 
 	pub fn listener(&self) -> DefaultListener<M> {

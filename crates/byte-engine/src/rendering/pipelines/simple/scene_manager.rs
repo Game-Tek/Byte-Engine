@@ -9,7 +9,7 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{Entity, EntityHandle, entity::{self}, factory::CreateMessage, listener::{DefaultListener, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, lights::{Light, Lights}, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, channel::Channel, entity::{self}, factory::CreateMessage, listener::{DefaultListener, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, lights::{Light, Lights}, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
 
 pub struct SceneManager {
 	/// Buffer containing all vertex positions for meshes.
@@ -21,10 +21,9 @@ pub struct SceneManager {
 	pub(super) descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	pub(super) pipeline_layout: ghi::PipelineLayoutHandle,
 	pub(super) pipeline: ghi::PipelineHandle,
-	pub(super) pending_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
 	views: Vec<RenderPass>,
 
-	light_listener: DefaultListener<CreateMessage<Lights>>,
+	renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
@@ -32,7 +31,7 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 ];
 
 impl SceneManager {
-	pub fn new(device: &mut ghi::Device, light_listener: DefaultListener<CreateMessage<Lights>>) -> Self {
+	pub fn new(device: &mut ghi::Device, renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>) -> Self {
 		let vertex_positions_buffer = device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
 		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
 
@@ -143,71 +142,62 @@ impl SceneManager {
 			pipeline_layout,
 			pipeline,
 
-			pending_entities: VecDeque::with_capacity(64),
-
 			views: Vec::with_capacity(4),
 
-			light_listener,
+			renderable_meshes_channel,
 		}
 	}
 }
 
 impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
-		for light in self.light_listener.iter() {
-			log::info!("Added light to scene!");
-		}
+		for message in self.renderable_meshes_channel.iter() {
+			let handle = message.into_data();
+			let entity = handle.read();
 
-		{
-			let pending_entities = self.pending_entities.drain(..);
+			let mesh = entity.get_mesh();
 
-			for handle in pending_entities {
-				let entity = handle.read();
+			let mesh_id = match mesh {
+				MeshSource::Generated(generator) => 'a: {
+					let mesh_hash = generator.hash();
 
-				let mesh = entity.get_mesh();
-
-				let mesh_id = match mesh {
-					MeshSource::Generated(generator) => 'a: {
-						let mesh_hash = generator.hash();
-
-						if let Some(mesh_id) = self.mesh_buffers_stats.does_mesh_exist(mesh_hash) {
-							break 'a mesh_id;
-						}
-
-						let positions = generator.positions();
-						let indices = generator.indices();
-						let indices = indices.iter().map(|&index| index as u16);
-
-						let vertex_count = positions.len();
-						let index_count = indices.len();
-
-						let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
-
-						let mesh_ref = self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
-
-						let vertex_buffer_offset = mesh_ref.vertex_offset();
-						let index_buffer_offset = mesh_ref.index_offset();
-
-						vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(positions.as_slice());
-
-						let index_buffer = frame.device().get_mut_buffer_slice(self.indeces_buffer);
-
-						index_buffer[index_buffer_offset..][..index_count].iter_mut().zip(indices).for_each(|(dst, src)| {
-							*dst = src;
-						});
-
-						mesh_ref.id()
+					if let Some(mesh_id) = self.mesh_buffers_stats.does_mesh_exist(mesh_hash) {
+						break 'a mesh_id;
 					}
-					_ => {
-						log::warn!("SimpleRenderModel does not support non-generated meshes");
-						continue;
-					}
-				};
 
-				drop(entity);
+					let positions = generator.positions();
+					let indices = generator.indices();
+					let indices = indices.iter().map(|&index| index as u16);
 
-				self.mesh_buffers_stats.add_instance(mesh_id, handle);
-			}
+					let vertex_count = positions.len();
+					let index_count = indices.len();
+
+					let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
+
+					let mesh_ref = self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
+
+					let vertex_buffer_offset = mesh_ref.vertex_offset();
+					let index_buffer_offset = mesh_ref.index_offset();
+
+					vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(positions.as_slice());
+
+					let index_buffer = frame.device().get_mut_buffer_slice(self.indeces_buffer);
+
+					index_buffer[index_buffer_offset..][..index_count].iter_mut().zip(indices).for_each(|(dst, src)| {
+						*dst = src;
+					});
+
+					mesh_ref.id()
+				}
+				_ => {
+					log::warn!("SimpleRenderModel does not support non-generated meshes");
+					continue;
+				}
+			};
+
+			drop(entity);
+
+			self.mesh_buffers_stats.add_instance(mesh_id, handle);
 		}
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);

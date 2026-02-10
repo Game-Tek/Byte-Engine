@@ -28,7 +28,7 @@ use self::action::InputValue;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Types {
 	/// A boolean value.
-	Bool,
+	Boolean,
 	/// A unicode character.
 	Unicode,
 	/// A floating point value.
@@ -118,7 +118,7 @@ impl Into<Value> for Quaternion {
 impl Into<Types> for Value {
 	fn into(self) -> Types {
 		match self {
-			Value::Bool(_) => Types::Bool,
+			Value::Bool(_) => Types::Boolean,
 			Value::Unicode(_) => Types::Unicode,
 			Value::Float(_) => Types::Float,
 			Value::Int(_) => Types::Int,
@@ -133,7 +133,7 @@ impl Into<Types> for Value {
 impl Types {
 	pub fn default_value(&self) -> Value {
 		match self {
-			Types::Bool => Value::Bool(false),
+			Types::Boolean => Value::Bool(false),
 			Types::Unicode => Value::Unicode('\0'),
 			Types::Float => Value::Float(0.0),
 			Types::Int => Value::Int(0),
@@ -248,7 +248,7 @@ impl Into<ValueMapping> for Value {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ActionEvent {
 	/// The handle of the action that triggered the event.
 	handle: Handle,

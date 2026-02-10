@@ -329,7 +329,9 @@ fn handle_event(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, window_dat
 				)
 			};
 
-			assert!(res >= std::mem::size_of::<RAWINPUT>() as u32, "Failed to get raw input data");
+			if res == u32::MAX { // Error occurred
+				return None;
+			}
 
 			let raw_input = unsafe { &*(raw_input.as_ptr() as *const RAWINPUT) };
 

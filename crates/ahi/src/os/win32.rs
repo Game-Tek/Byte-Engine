@@ -8,7 +8,7 @@ use windows::Win32::{
 	System::Com::{CoCreateInstance, CoTaskMemFree, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,},
 };
 
-use crate::audio_hardware_interface::{BufferPlayFunction, HardwareParameters, Streams, WritePlayFunction};
+use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
 
 pub struct Device {
 	device: IMMDevice,
@@ -21,19 +21,26 @@ unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
-	fn new(params: HardwareParameters) -> Option<Self> {
+	fn new(params: HardwareParameters) -> Result<Self, String> {
 		if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) } != S_OK {
-			panic!("Failed to initialize COM");
+			return Err("Failed to initialize COM".to_string());
 		}
 
-		let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).unwrap() };
+		let enumerator: IMMDeviceEnumerator = unsafe {
+			CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+				.map_err(|_| "Failed to create device enumerator. The COM class for MMDeviceEnumerator could not be instantiated.".to_string())?
+		};
 
 		let device: IMMDevice = unsafe {
-			enumerator.GetDefaultAudioEndpoint(eRender, eConsole).unwrap()
+			enumerator
+				.GetDefaultAudioEndpoint(eRender, eConsole)
+				.map_err(|_| "Failed to get default audio endpoint. The system has no default render device or it is unavailable.".to_string())?
 		};
 
 		let (client, params) = unsafe {
-			let client: IAudioClient = device.Activate(CLSCTX_ALL, None).unwrap();
+			let client: IAudioClient = device
+				.Activate(CLSCTX_ALL, None)
+				.map_err(|_| "Failed to activate audio client. The audio endpoint could not provide an IAudioClient interface.".to_string())?;
 
 			let bits_per_sample = params.bit_depth;
 			let samples_per_second = params.sample_rate;
@@ -88,7 +95,9 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				&m_format
 			};
 
-			client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(m_format), None).unwrap();
+			client
+				.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(m_format), None)
+				.map_err(|_| "Failed to initialize audio client. The device rejected the requested stream format or parameters.".to_string())?;
 
 			let bit_depth = m_format.Format.wBitsPerSample as u32;
 			let sample_rate = m_format.Format.nSamplesPerSec as u32;
@@ -108,19 +117,23 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		};
 
 		let render_client: IAudioRenderClient = unsafe {
-			client.GetService().unwrap()
+			client
+				.GetService()
+				.map_err(|_| "Failed to get render client service. The audio client did not expose IAudioRenderClient.".to_string())?
 		};
 
 		unsafe {
-			client.Start().unwrap();
+			client
+				.Start()
+				.map_err(|_| "Failed to start audio stream. The audio client could not transition to the running state.".to_string())?;
 		}
 
-		Device {
+		Ok(Device {
 			device,
 			client,
 			render_client,
 			parameters: params,
-		}.into()
+		})
 	}
 
 	fn get_period_size(&self) -> usize {
@@ -131,7 +144,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		period_size as usize
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction, _: impl BufferPlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
 		let buffer_size = unsafe { self.client.GetBufferSize().unwrap() };
 		let padding = unsafe { self.client.GetCurrentPadding().unwrap() };
 

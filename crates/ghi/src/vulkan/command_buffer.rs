@@ -504,13 +504,14 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 		let color_attchments = attachments.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|attachment| {
 			let image = self.get_image(self.get_internal_image_handle(attachment.image));
+			let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
 
-			if image.image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
+			if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
 				eprintln!("Creating a render pass with a color attachment from an image that has no image view and no extent. Image was likely created with extent 0 and resize was not called prior to rendering.");
 			}
 
 			vk::RenderingAttachmentInfo::default()
-				.image_view(if let Some(index) = attachment.layer { image.image_views[index as usize] } else { image.image_view })
+				.image_view(image_view)
 				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))
@@ -519,8 +520,10 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 		let depth_attachment = attachments.iter().find(|attachment| attachment.format == graphics_hardware_interface::Formats::Depth32).map(|attachment| {
 			let image = self.get_image(self.get_internal_image_handle(attachment.image));
+			let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
+
 			vk::RenderingAttachmentInfo::default()
-				.image_view(if let Some(index) = attachment.layer { image.image_views[index as usize] } else { image.image_view })
+				.image_view(image_view)
 				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))

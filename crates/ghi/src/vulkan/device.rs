@@ -914,7 +914,6 @@ impl Device {
 				staging_buffer: None,
 				pointer: None,
 				image: vk_image,
-				image_view,
 				image_views,
 				extent: Extent::cube(0, 0, 0),
 				access: graphics_hardware_interface::DeviceAccesses::DeviceOnly,
@@ -1176,7 +1175,6 @@ impl Device {
 				staging_buffer: None,
 				pointer: None,
 				image: vk::Image::null(),
-				image_view: vk::ImageView::null(),
 				image_views: [vk::ImageView::null(); 8],
 				extent,
 				access: device_accesses,
@@ -1206,8 +1204,6 @@ impl Device {
 
 		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
-		let image_view = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, array_layers);
-
 		let (staging_buffer, pointer) = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly) {
 			let vk_buffer_usage_flags = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
@@ -1233,8 +1229,12 @@ impl Device {
 		let image_views = {
 			let mut image_views = [vk::ImageView::null(); 8];
 
-			for i in 0..array_layers.map(|e| e.get()).unwrap_or(1) {
-				image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, NonZeroU32::new(1));
+			if let Some(l) = array_layers.map(|e| e.get()) {
+				for i in 0..l {
+					image_views[i as usize] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, i, NonZeroU32::new(1));
+				}
+			} else {
+				image_views[0] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, None);
 			}
 
 			image_views
@@ -1246,7 +1246,6 @@ impl Device {
 			staging_buffer,
 			pointer,
 			image: texture_creation_result.resource,
-			image_view,
 			image_views,
 			extent,
 			access: device_accesses,
@@ -1323,7 +1322,12 @@ impl Device {
 			todo!("Not implemented!");
 		}
 
-		self.tasks.push(Task::delete_vulkan_image_view(image.image_view, sequence_index));
+		for image_view in image.image_views {
+			if !image_view.is_null() {
+				self.tasks.push(Task::delete_vulkan_image_view(image_view, sequence_index));
+			}
+		}
+
 		self.tasks.push(Task::delete_vulkan_image(image.image, sequence_index));
 
 		// TODO: release memory/allocation
@@ -1419,9 +1423,12 @@ impl Device {
 					let image_handle = handle;
 
 					let image = &self.images[image_handle.0 as usize];
+					let image_view = image.image_views[0];
+					let format = image.format_;
+					let image = image.image;
 
-					let res = if !image.image.is_null() && !image.image_view.is_null() {
-						let e = images.append([vk::DescriptorImageInfo::default().image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None)).image_view(image.image_view)]);
+					let res = if !image.is_null() && !image_view.is_null() {
+						let e = images.append([vk::DescriptorImageInfo::default().image_layout(texture_format_and_resource_use_to_image_layout(format, layout, None)).image_view(image_view)]);
 
 						let write_info = vk::WriteDescriptorSet::default()
 							.dst_set(descriptor_set.descriptor_set)
@@ -1455,7 +1462,7 @@ impl Device {
 						let image_view = if let Some(layer) = layer { // If the descriptor asks for a subresource, we need to create a new image view
 							image.image_views[layer as usize]
 						} else {
-							image.image_view
+							image.image_views[0]
 						};
 
 						let e = images.append([vk::DescriptorImageInfo::default()
@@ -1732,8 +1739,6 @@ impl Drop for Device {
 			});
 
 			self.images.iter().for_each(|image| {
-				self.device.destroy_image_view(image.image_view, None);
-
 				for vk_image_view in image.image_views {
 					self.device.destroy_image_view(vk_image_view, None);
 				}

@@ -20,8 +20,8 @@ use utils::Box;
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
+	device: ghi::Device, // Place device before instance to ensure proper drop order
 	instance: ghi::Instance,
-	device: ghi::Device,
 
 	started_frame_count: usize,
 

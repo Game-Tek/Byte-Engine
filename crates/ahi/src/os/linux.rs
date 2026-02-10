@@ -1,6 +1,6 @@
-use std::sync::Mutex;
+use std::{f64::consts::E, sync::Mutex};
 
-use crate::audio_hardware_interface::{BufferPlayFunction, HardwareParameters, Streams, WritePlayFunction, Writer};
+use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
 
 pub struct Device {
 	pcm: Mutex<alsa::pcm::PCM>,
@@ -8,42 +8,43 @@ pub struct Device {
 }
 
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
-	fn new(params: HardwareParameters) -> Option<Self> {
+	fn new(params: HardwareParameters) -> Result<Self, String> {
 		let name = std::ffi::CString::new("default").unwrap();
-		let pcm = alsa::pcm::PCM::open(&name, alsa::Direction::Playback, false).ok()?;
+		let pcm = alsa::pcm::PCM::open(&name, alsa::Direction::Playback, false)
+			.map_err(|e| format!("Failed to open PCM device: {}", e))?;
 
 		let sample_size = (params.bit_depth.next_multiple_of(8) / 8) as usize;
 		let channel_count = params.channels as usize;
 
 		{
-			let hwp = alsa::pcm::HwParams::any(&pcm).ok()?;
-			hwp.set_channels(params.channels).ok()?;
-			hwp.set_rate(params.sample_rate, alsa::ValueOr::Nearest).ok()?;
+			let hwp = alsa::pcm::HwParams::any(&pcm).map_err(|e| format!("Failed to get hardware parameters: {}", e))?;
+			hwp.set_channels(params.channels).map_err(|e| format!("Failed to set channels: {}", e))?;
+			hwp.set_rate(params.sample_rate, alsa::ValueOr::Nearest).map_err(|e| format!("Failed to set sample rate: {}", e))?;
 			hwp.set_format(match params.bit_depth {
 				8 => alsa::pcm::Format::S8,
 				16 => alsa::pcm::Format::S16LE,
-				24 => return None,
+				24 => return Err("24-bit audio is not supported by this implementation".to_string()),
 				32 => alsa::pcm::Format::FloatLE,
-				_ => return None,
-			}).ok()?;
-			hwp.set_access(alsa::pcm::Access::RWInterleaved).ok()?;
-			let effective_period_size = hwp.set_period_size_near(1024, alsa::ValueOr::Nearest).ok()?;
+				_ => return Err(format!("Unsupported bit depth: {}", params.bit_depth)),
+			}).map_err(|e| format!("Failed to set format: {}", e))?;
+			hwp.set_access(alsa::pcm::Access::RWInterleaved).map_err(|e| format!("Failed to set access type: {}", e))?;
+			let effective_period_size = hwp.set_period_size_near(1024, alsa::ValueOr::Nearest).map_err(|e| format!("Failed to set period size: {}", e))?;
 			let _ = hwp.set_buffer_size_near(effective_period_size * sample_size as i64 * channel_count as i64);
 
-			pcm.hw_params(&hwp).ok()?;
+			pcm.hw_params(&hwp).map_err(|e| format!("Failed to apply hardware parameters: {}", e))?;
 		}
 
 		{
-			let hwp = pcm.hw_params_current().ok()?;
-			let swp = pcm.sw_params_current().ok()?;
-			swp.set_start_threshold(hwp.get_buffer_size().ok()?).ok()?;
-			pcm.sw_params(&swp).ok()?;
+			let hwp = pcm.hw_params_current().map_err(|e| format!("Failed to get current hardware parameters: {}", e))?;
+			let swp = pcm.sw_params_current().map_err(|e| format!("Failed to get current software parameters: {}", e))?;
+			swp.set_start_threshold(hwp.get_buffer_size().map_err(|e| format!("Failed to get buffer size: {}", e))?).map_err(|e| format!("Failed to set start threshold: {}", e))?;
+			pcm.sw_params(&swp).map_err(|e| format!("Failed to set software parameters: {}", e))?;
 		}
 
-		Device {
+		Ok(Device {
 			pcm: Mutex::new(pcm),
 			parameters: params,
-		}.into()
+		})
 	}
 
 	fn get_period_size(&self) -> usize {
@@ -52,7 +53,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		hwp.get_period_size().ok().unwrap() as usize
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction, bpf: impl BufferPlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
 		let pcm = &self.pcm.lock().unwrap();
 
 		let hw_params = pcm.hw_params_current().unwrap();
@@ -80,22 +81,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 							}
 						}).or(Err(()))?
 					}
-					alsa::pcm::Access::RWInterleaved => {
-						match self.parameters.channels {
-							1 => {
-								bpf(Writer::Mono16Bit(Box::new(|b| {
-									let _ = io.writei(b);
-								})))
-							}
-							2 => {
-								bpf(Writer::Stereo16Bit(Box::new(|b| {
-									let _ = io.writei(unsafe { std::mem::transmute(b) });
-								})))
-							}
-							_ => panic!("Unsupported channel count"),
-						}
-					}
-					_ => panic!("Unsupported access type"),
+					_ => return Err(()),
 				};
 
 				Ok(frames)
@@ -121,22 +107,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 							}
 						}).or(Err(()))?
 					}
-					alsa::pcm::Access::RWInterleaved => {
-						match self.parameters.channels {
-							1 => {
-								bpf(Writer::MonoFloat32(Box::new(|b| {
-									let _ = io.writei(b);
-								})))
-							}
-							2 => {
-								bpf(Writer::StereoFloat32(Box::new(|b| {
-									let _ = io.writei(unsafe { std::mem::transmute(b) });
-								})))
-							}
-							_ => panic!("Unsupported channel count"),
-						}
-					}
-					_ => panic!("Unsupported access type"),
+					_ => return Err(()),
 				};
 
 				Ok(frames)

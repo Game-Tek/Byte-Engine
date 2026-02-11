@@ -3,7 +3,7 @@
 //! It does not check if the sound is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}};
+use byte_engine::{application::{Application, Parameter}, audio::synthesizer::Synthesizer};
 
 #[test]
 fn sound() {
@@ -25,5 +25,3 @@ impl Synthesizer for TestSynthesizer {
 		buffer
 	}
 }
-
-impl Entity for TestSynthesizer {}

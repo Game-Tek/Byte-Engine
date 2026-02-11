@@ -21,16 +21,6 @@ pub(crate) fn get_base<'a>(url: &'a str) -> Option<&'a str> {
 	Some(path.to_str()?)
 }
 
-pub(crate) fn get_extension<'a>(url: &'a str) -> Option<&'a str> {
-    let mut split = url.split('#');
-	let url = split.next()?;
-	if url.is_empty() {
-		return None;
-	}
-	let path = std::path::Path::new(url);
-	Some(path.extension()?.to_str()?)
-}
-
 pub(crate) fn get_fragment(url: &str) -> Option<&str> {
 	let mut split = url.split('#');
 	let _ = split.next().and_then(|x| if x.is_empty() { None } else { Some(x) })?;

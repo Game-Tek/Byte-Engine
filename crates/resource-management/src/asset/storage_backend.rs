@@ -34,7 +34,7 @@ impl StorageBackend for FileStorageBackend {
 pub mod tests {
 	use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-	use crate::{asset::{BEADType, ResourceId}, r#async::{BoxedFuture, future, read}, tests::ASSETS_PATH};
+	use crate::{asset::{BEADType, ResourceId}, r#async::{BoxedFuture, read}, tests::ASSETS_PATH};
 
 	use utils::json;
 

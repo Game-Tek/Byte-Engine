@@ -421,7 +421,7 @@ mod tests {
 	use super::*;
 
 	use std::cell::RefCell;
-	use crate::shader_generator::{self, ShaderGenerationSettings, ShaderGenerator};
+	use crate::shader_generator::{self, ShaderGenerationSettings};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {

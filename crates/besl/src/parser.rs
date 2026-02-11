@@ -446,6 +446,16 @@ pub(super) enum ParsingFailReasons {
 	StreamEndedPrematurely,
 }
 
+impl std::fmt::Display for ParsingFailReasons {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			ParsingFailReasons::NotMine => write!(f, "Parser cannot handle this syntax."),
+			ParsingFailReasons::BadSyntax { message } => write!(f, "Bad syntax: {}", message),
+			ParsingFailReasons::StreamEndedPrematurely => write!(f, "Token stream ended prematurely."),
+		}
+	}
+}
+
 fn make_scope<'a>(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
 	Node {
 		node: Nodes::Scope {

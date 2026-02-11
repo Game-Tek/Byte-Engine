@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use crate::shader_generator::{MatrixLayouts, ShaderGenerationSettings, ShaderGenerator, Stages};
-use crate::shader_graph::{Graph, build_graph, topological_sort};
+use crate::shader_graph::{build_graph, topological_sort};
 
 /// HLSL Shader generator.
 ///
@@ -297,7 +297,7 @@ impl HLSLShaderGenerator {
 					}
 				}
 			}
-			besl::Nodes::Binding { name, set, binding, read, write, r#type, count, .. } => {
+			besl::Nodes::Binding { name, set, binding, read: _, write, r#type, count, .. } => {
 				// HLSL uses register syntax: t# for SRV/textures, u# for UAV/images, b# for CBV/constant buffers
 				// Using space# for descriptor set mapping (set * 100 + binding for register number)
 				let register_index = set * 100 + binding;
@@ -436,7 +436,7 @@ impl HLSLShaderGenerator {
 			Stages::Compute { .. } => {
 				hlsl_block.push_str("// Requires: Wave intrinsics (WaveGetLaneCount, WaveGetLaneIndex, etc.)\n");
 			}
-			Stages::Mesh { maximum_vertices, maximum_primitives, .. } => {
+			Stages::Mesh { maximum_vertices: _, maximum_primitives: _, .. } => {
 				hlsl_block.push_str("// Requires: Mesh shader support\n");
 				hlsl_block.push_str(&format!("[outputtopology(\"triangle\")]\n"));
 				hlsl_block.push_str(&format!("[numthreads(1, 1, 1)]\n"));
@@ -450,7 +450,7 @@ impl HLSLShaderGenerator {
 			Stages::Compute { local_size } => {
 				hlsl_block.push_str(&format!("[numthreads({}, {}, {})]\n", local_size.width(), local_size.height(), local_size.depth()));
 			}
-			Stages::Mesh { local_size, .. } => {
+			Stages::Mesh { local_size: _, .. } => {
 				// Already added above in mesh-specific section
 			}
 			_ => {}
@@ -474,7 +474,7 @@ mod tests {
     use super::*;
 
     use std::cell::RefCell;
-    use crate::shader_generator::{self, ShaderGenerationSettings, ShaderGenerator};
+    use crate::shader_generator::{self, ShaderGenerationSettings};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {

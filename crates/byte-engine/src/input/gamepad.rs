@@ -64,7 +64,7 @@ impl Default for GamepadState {
 	}
 }
 
-enum GamepadKind {
+pub(super) enum GamepadKind {
 	DualShock4,
 	DualSense,
 	Xbox,
@@ -229,7 +229,7 @@ impl GamepadDevice {
 	}
 }
 
-struct GamepadEvent {
+pub(super) struct GamepadEvent {
 	device_handle: DeviceHandle,
 	trigger: TriggerReference,
 	value: Value,

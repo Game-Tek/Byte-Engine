@@ -1,4 +1,4 @@
-use ash::vk::{self, Handle as _};
+use ash::vk::{self};
 use utils::Extent;
 
 use crate::{graphics_hardware_interface, vulkan::{BufferCopy, BufferHandle, HandleLike as _, ImageCopy, ImageHandle, Tasks}, CommandBufferRecording, Device, FrameKey};

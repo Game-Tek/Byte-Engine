@@ -27,11 +27,11 @@ pub use self::instance::*;
 pub use self::device::*;
 pub use self::command_buffer::*;
 pub use self::frame::*;
-pub use self::buffer::*;
-pub use self::image::*;
+pub(crate) use self::buffer::*;
+pub(crate) use self::image::*;
 pub use self::descriptor_set::*;
-pub use self::swapchain::*;
-pub use self::synchronizer::*;
+pub(crate) use self::swapchain::*;
+pub(crate) use self::synchronizer::*;
 pub use self::binding::*;
 
 pub(super) enum Descriptor {
@@ -169,13 +169,13 @@ pub struct MemoryBackedResourceCreationResult<T> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct BuildImage {
+pub(crate) struct BuildImage {
 	previous: ImageHandle,
 	master: graphics_hardware_interface::ImageHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct BuildBuffer {
+pub(crate) struct BuildBuffer {
 	previous: BufferHandle,
 	master: graphics_hardware_interface::BaseBufferHandle,
 }
@@ -199,11 +199,6 @@ pub(crate) enum Tasks {
 	UpdateBufferDescriptors {
 		handle: BufferHandle,
 	},
-	/// Patch all descriptors that reference the image.
-	/// Usually, this is done when the image is resized because the Vulkan image will be swapped.
-	UpdateImageDescriptors {
-		handle: ImageHandle,
-	},
 	/// Resize an image
 	ResizeImage {
 		handle: ImageHandle,
@@ -212,12 +207,6 @@ pub(crate) enum Tasks {
 	/// Update the frame-specific (specified in `Task`) descriptor with the given write information for the master resource and descriptor.
 	UpdateDescriptor {
 		descriptor_write: graphics_hardware_interface::DescriptorWrite,
-	},
-	/// Update a particular descriptor.
-	/// This task will most likely be enqueued for performance reasons. Since it is cheaper to update multiple descriptors at once instead of sporadically.
-	WriteDescriptor {
-		binding_handle: DescriptorSetBindingHandle,
-		descriptor: Descriptors,
 	},
 	BuildImage(BuildImage),
 	BuildBuffer(BuildBuffer),
@@ -267,47 +256,21 @@ impl Task {
 		}
 	}
 
-	pub(crate) fn update_image_descriptor(handle: ImageHandle, frame: Option<u8>) -> Self {
-		Self {
-			task: Tasks::UpdateImageDescriptors { handle },
-			frame,
-		}
-	}
-
-	pub(crate) fn update_resource_descriptor(descriptor_write: graphics_hardware_interface::DescriptorWrite, frame: Option<u8>) -> Self {
-		Self {
-			task: Tasks::UpdateDescriptor { descriptor_write },
-			frame,
-		}
-	}
-
-	pub fn frame(&self) -> Option<u8> {
+	pub(crate) fn frame(&self) -> Option<u8> {
 		self.frame
 	}
 
-	pub fn task(&self) -> &Tasks {
+	pub(crate) fn task(&self) -> &Tasks {
 		&self.task
 	}
-
-	pub fn into_task(self) -> Tasks {
-		self.task
-	}
-
-	pub fn write_descriptor(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptors, frame: Option<u8>) -> Task {
-        Self {
-            task: Tasks::WriteDescriptor { binding_handle, descriptor },
-            frame,
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-enum Descriptors {
+pub(crate) enum Descriptors {
 	Buffer{ handle: BufferHandle, size: graphics_hardware_interface::Ranges },
 	Image{ handle: ImageHandle, layout: graphics_hardware_interface::Layouts },
 	CombinedImageSampler{ image_handle: ImageHandle, layout: graphics_hardware_interface::Layouts, sampler_handle: SamplerHandle, layer: Option<u32> },
 	Sampler{ handle: SamplerHandle },
-	CombinedImageSamplerArray,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -383,64 +346,64 @@ mod tests {
 
 	#[test]
 	fn render_triangle() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[ignore = "test is broken because of WSI"]
 	fn render_present() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::present(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[ignore = "test is broken because of WSI"]
 	fn render_multiframe_present() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::multiframe_present(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_multiframe() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_change_frames() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_resize() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::resize(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_dynamic_data() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_with_descriptor_sets() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn render_with_multiframe_resources() {
-		let (instance, mut device, queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[ignore = "not working on supporting rt right now"]
 	fn render_with_ray_tracing() {
-		let (instance, mut device, queue_handle) = create_default_device_setup_with_features(graphics_hardware_interface::Features::new().validation(true).ray_tracing(true));
+		let (_instance, mut device, queue_handle) = create_default_device_setup_with_features(graphics_hardware_interface::Features::new().validation(true).ray_tracing(true));
 		graphics_hardware_interface::tests::ray_tracing(&mut device, queue_handle);
 	}
 }

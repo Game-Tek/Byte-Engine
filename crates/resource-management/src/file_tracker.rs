@@ -3,11 +3,9 @@
 
 use std::path::Path;
 
-use notify_debouncer_full::{new_debouncer, notify::*, DebounceEventResult, DebouncedEvent, FileIdMap, NoCache};
-use redb::ReadableTable;
+use notify_debouncer_full::{new_debouncer, notify::*, DebounceEventResult, DebouncedEvent, FileIdMap};
 
 pub struct FileTracker {
-	db: redb::Database,
 	#[cfg(target_os = "linux")]
 	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, NoCache>,
 	#[cfg(windows)]
@@ -21,11 +19,11 @@ impl FileTracker {
 	pub fn new() -> FileTracker {
 		std::fs::create_dir_all(".byte-editor").unwrap();
 
-		let db = redb::Database::create(".byte-editor/files.db").unwrap();
+		let _db = redb::Database::create(".byte-editor/files.db").unwrap();
 
 		let (tx, rx) = std::sync::mpsc::channel();
 
-		let mut debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |event: DebounceEventResult| {
+		let debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |event: DebounceEventResult| {
 			match event {
 				Ok(events) => {
 					for event in events {
@@ -80,7 +78,6 @@ impl FileTracker {
 		// }
 
 		FileTracker {
-			db,
 			debouncer,
 			rx,
 		}

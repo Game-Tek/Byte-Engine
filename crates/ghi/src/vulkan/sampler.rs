@@ -1,2 +1,2 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct SamplerHandle(pub(super) u64);
+pub(crate) struct SamplerHandle(pub(crate) u64);

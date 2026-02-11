@@ -27,7 +27,7 @@ impl <'a> ReadTargets<'a> {
 	}
 
 	/// Returns a reference to a stream if the data was read into a stream.
-	pub fn stream(&self, arg: &str) -> Option<&Stream> {
+	pub fn stream(&self, arg: &str) -> Option<&Stream<'_>> {
 		match self {
 			ReadTargets::Streams(streams) => streams.iter().find(|s| s.name() == arg),
 			_ => None,
@@ -70,7 +70,7 @@ impl <'a> ReadTargetsMut<'a> {
 	}
 
 	/// Returns a mutable reference to a buffer if the data was read into a buffer.
-	pub fn stream(&self, arg: &str) -> Option<&StreamMut> {
+	pub fn stream(&self, arg: &str) -> Option<&StreamMut<'_>> {
 		match self {
 			ReadTargetsMut::Streams(streams) => streams.iter().find(|s| s.name() == arg),
 			_ => None,

@@ -32,7 +32,7 @@ impl Local {
 		sequence
 	}
 
-	pub(crate) fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
+	pub fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.sequence_buffer[index] == sequence {
 			Some(PacketInfo { acked: self.packet_data.get(index) })
@@ -79,8 +79,8 @@ mod tests {
 		let packet_info = local.get_packet_data(0);
 		assert_eq!(packet_info, Some(PacketInfo { acked: true }));
 
-		for i in 1..1024 {
-			let packet_header = local.get_sequence_number();
+		for _i in 1..1024 {
+			let _packet_header = local.get_sequence_number();
 		}
 
 		local.get_sequence_number();
@@ -126,7 +126,7 @@ mod tests {
 	fn test_packet_acknowledgement() {
 		let mut local = Local::new();
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -138,7 +138,7 @@ mod tests {
 
 		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -161,7 +161,7 @@ mod tests {
 	fn test_sparse_packet_acknowledgement() {
 		let mut local = Local::new();
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -190,7 +190,7 @@ mod tests {
 	fn test_acknowledge_packets() {
 		let mut local = Local::new();
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 

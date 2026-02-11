@@ -95,6 +95,7 @@ impl <const N: usize, const S: usize> PacketBuffer<N, S> {
 	/// This is not an idempotent operation as the retry count will be incremented.
 	pub fn gather_unsent_packets_for_retry(&mut self) -> ArrayVec<[DataPacket<S>; N]> {
         self.buffer.iter_mut().filter_map(|packet| packet.as_mut()).map(|packet| {
+			let _ = packet.connection_id;
 			packet.try_count += 1;
 			packet.packet
 		}).collect()

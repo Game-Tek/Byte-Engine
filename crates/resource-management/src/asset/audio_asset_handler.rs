@@ -203,8 +203,6 @@ impl AssetHandler for AudioAssetHandler {
     }
 }
 
-struct AudioDescription {}
-
 #[cfg(test)]
 mod tests {
     use crate::{r#async, asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId}, resource, resources::audio::Audio, types::BitDepths, AssetHandler};

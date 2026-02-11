@@ -31,6 +31,18 @@ impl Window {
 	pub fn os_handles(&self) -> os::Handles {
 		self.os_window.handles()
 	}
+
+	pub fn name(&self) -> &str {
+		&self.name
+	}
+
+	pub fn extent(&self) -> Extent {
+		self.extent
+	}
+
+	pub fn id_name(&self) -> &str {
+		&self.id_name
+	}
 }
 
 impl TryFrom<u8> for Keys {

@@ -14,7 +14,7 @@ pub mod vulkan;
 pub mod debug;
 #[cfg(target_os = "windows")]
 pub mod dx12;
-#[cfg(any(target_os = "macos"))]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 pub mod metal;
 
 pub use crate::graphics_hardware_interface::*;

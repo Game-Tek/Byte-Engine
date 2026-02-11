@@ -130,11 +130,11 @@ pub(crate) struct DebugCallbackData {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-struct TransitionState {
+pub(crate) struct TransitionState {
 	layout: graphics_hardware_interface::Layouts,
 }
 
-struct Mesh {
+pub(crate) struct Mesh {
 	vertex_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 	index_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 	vertex_count: u32,
@@ -142,7 +142,7 @@ struct Mesh {
 	vertex_size: usize,
 }
 
-struct AccelerationStructure {
+pub(crate) struct AccelerationStructure {
 	structure: Option<Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>>>,
 	buffer: Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
 }
@@ -260,19 +260,19 @@ impl Task {
 		}
 	}
 
-	pub fn frame(&self) -> Option<u8> {
+	pub(crate) fn frame(&self) -> Option<u8> {
 		self.frame
 	}
 
-	pub fn task(&self) -> &Tasks {
+	pub(crate) fn task(&self) -> &Tasks {
 		&self.task
 	}
 
-	pub fn into_task(self) -> Tasks {
+	pub(crate) fn into_task(self) -> Tasks {
 		self.task
 	}
 
-	pub fn write_descriptor(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptors, frame: Option<u8>) -> Task {
+	pub(crate) fn write_descriptor(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptors, frame: Option<u8>) -> Task {
 		Self {
 			task: Tasks::WriteDescriptor { binding_handle, descriptor },
 			frame,
@@ -943,7 +943,7 @@ pub mod device {
 				buffer.setLabel(Some(&NSString::from_str(name)));
 			}
 
-			let pointer = unsafe { buffer.contents().as_ptr() as *mut u8 };
+			let pointer = buffer.contents().as_ptr() as *mut u8;
 			let gpu_address = buffer.gpuAddress() as u64;
 
 			let handle = buffer::BufferHandle(self.buffers.len() as u64);
@@ -1059,7 +1059,7 @@ pub mod device {
 		pub fn create_allocation(&mut self, size: usize, _resource_uses: graphics_hardware_interface::Uses, device_accesses: graphics_hardware_interface::DeviceAccesses) -> graphics_hardware_interface::AllocationHandle {
 			let options = utils::resource_options_from_access(device_accesses);
 			let buffer = self.device.newBufferWithLength_options(size as _, options).expect("Metal allocation failed. The most likely cause is that the device is out of memory.");
-			let pointer = unsafe { buffer.contents().as_ptr() as *mut u8 };
+			let pointer = buffer.contents().as_ptr() as *mut u8;
 
 			self.allocations.push(Allocation { buffer, pointer, size });
 			graphics_hardware_interface::AllocationHandle((self.allocations.len() - 1) as u64)
@@ -1693,4 +1693,4 @@ pub use self::instance::*;
 pub use self::device::*;
 pub use self::command_buffer::*;
 pub use self::frame::*;
-pub use self::descriptor_set::*;
+pub(crate) use self::descriptor_set::*;

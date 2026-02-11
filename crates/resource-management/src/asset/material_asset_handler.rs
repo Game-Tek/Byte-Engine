@@ -13,7 +13,6 @@ pub trait ProgramGenerator: Send + Sync {
 }
 
 struct MaterialAsset {
-    id: String,
     asset: json::Object,
     generator: Arc<dyn ProgramGenerator>,
 }
@@ -193,7 +192,6 @@ impl AssetHandler for MaterialAssetHandler {
 			let asset_json = json::from_str(std::str::from_utf8(&data).or_else(|_| { Err(LoadErrors::FailedToProcess) })?).or_else(|_| { Err(LoadErrors::FailedToProcess) })?;
 
 			Ok(Box::new(MaterialAsset {
-				id: url.to_string(),
 				asset: asset_json,
 				generator: self.generator.clone().ok_or(LoadErrors::FailedToProcess)?,
 			}) as Box<dyn Asset>)
@@ -202,7 +200,7 @@ impl AssetHandler for MaterialAssetHandler {
 }
 
 /// Converts a shader source into a compiled shader and binary payload.
-fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &str, format: &str, domain: &str, material: &json::Object, shader_json: &json::Value, stage: &str) -> Result<(Shader, Box<[u8]>), ()> {
+fn compile_shader(generator: &dyn ProgramGenerator, name: &str, shader_code: &str, format: &str, _domain: &str, material: &json::Object, _shader_json: &json::Value, stage: &str) -> Result<(Shader, Box<[u8]>), ()> {
 	let root_node = if format == "glsl" {
 		// besl::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
 		panic!()

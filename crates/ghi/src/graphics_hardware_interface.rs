@@ -1242,7 +1242,7 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	fn acceleration_structure(bindings: &'a DescriptorSetBindingTemplate, top_level_acceleration_structure: TopLevelAccelerationStructureHandle) -> Self {
+	pub fn acceleration_structure(bindings: &'a DescriptorSetBindingTemplate, top_level_acceleration_structure: TopLevelAccelerationStructureHandle) -> Self {
 		BindingConstructor {
 			descriptor_set_binding_template: bindings,
 			array_element: 0,
@@ -1256,6 +1256,10 @@ impl <'a> BindingConstructor<'a> {
 	pub fn frame(mut self, frame_offset: i8) -> Self {
 		self.frame_offset = Some(frame_offset);
 		self
+	}
+
+	pub fn array_element(&self) -> u32 {
+		self.array_element
 	}
 }
 
@@ -1395,15 +1399,15 @@ impl DescriptorWrite {
 /// Describes the details of the memory layout of a particular image.
 pub struct ImageSubresourceLayout {
 	/// The offset inside a memory region where the texture will read it's first texel from.
-	pub(super) offset: usize,
+	pub offset: usize,
 	/// The size of the texture in bytes.
-	pub(super) size: usize,
+	pub size: usize,
 	/// The row pitch of the texture.
-	pub(super) row_pitch: usize,
+	pub row_pitch: usize,
 	/// The array pitch of the texture.
-	pub(super) array_pitch: usize,
+	pub array_pitch: usize,
 	/// The depth pitch of the texture.
-	pub(super) depth_pitch: usize,
+	pub depth_pitch: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2005,7 +2009,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
-		window.poll();
+		for _ in window.poll() {}
 
 		renderer.start_frame_capture();
 
@@ -2035,7 +2039,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		renderer.end_frame_capture();
 
-		window.poll();
+		for _ in window.poll() {}
 
 		// TODO: assert rendering results
 

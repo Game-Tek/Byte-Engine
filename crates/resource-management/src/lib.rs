@@ -4,13 +4,12 @@
 
 #![feature(closure_lifetime_binder)]
 #![feature(stmt_expr_attributes)]
-#![feature(path_file_prefix, path_add_extension)]
 #![feature(map_try_insert)]
 #![feature(future_join)]
 #![feature(once_cell_try)]
 #![feature(ascii_char)]
 
-use std::{any::Any, hash::Hasher};
+use std::any::Any;
 use serde::{Deserialize, Serialize};
 
 use asset::ResourceId;
@@ -197,9 +196,4 @@ pub trait Description: Any + Send + Sync {
 mod tests {
 	/// Path to the assets folder for the tests.
 	pub const ASSETS_PATH: &str = "../../assets";
-
-	/// Path to the resources folder for the tests.
-	/// This is rarely used, but is here for completeness.
-	/// Most of the time the resources are written to memory backed storage or to a /tmp folder.
-	pub const RESOURCES_PATH: &str = "../../resources";
 }

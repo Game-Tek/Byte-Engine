@@ -7,7 +7,6 @@ use crate::{Description, ProcessedAsset, asset, r#async::{BoxedFuture, spawn_cpu
 use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, resource_id::ResourceIdBase, ResourceId};
 
 pub struct ImageAsset {
-    id: String,
     data: Box<[u8]>,
     extent: Extent,
     format: Formats,
@@ -66,7 +65,6 @@ impl AssetHandler for ImageAssetHandler {
 
 			let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			let id = url.to_string();
 			let semantic = guess_semantic_from_name(url.get_base());
 
 			let decoded = spawn_cpu_task(move || -> Result<ImageAsset, LoadErrors> {
@@ -127,7 +125,6 @@ impl AssetHandler for ImageAssetHandler {
 				}
 
 				Ok(ImageAsset {
-					id,
 					data: buffer.into(),
 					gamma,
 					format,

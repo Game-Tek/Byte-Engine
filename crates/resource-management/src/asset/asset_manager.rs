@@ -1,4 +1,4 @@
-use crate::{asset::ResourceId, resource::StorageBackend as ResourceStorageBackend, Description, Model, ProcessedAsset, ReferenceModel, r#async};
+use crate::{asset::ResourceId, resource::StorageBackend as ResourceStorageBackend, Description, Model, ProcessedAsset, ReferenceModel};
 
 use super::{asset_handler::AssetHandler, StorageBackend};
 
@@ -166,8 +166,6 @@ pub mod tests {
 		}
 	}
 
-	struct TestDescription {}
-
 	impl AssetHandler for TestAssetHandler {
 	    fn can_handle(&self, id: &str) -> bool {
             id == "example"
@@ -225,7 +223,7 @@ pub mod tests {
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
 		let storage_backend = TestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(storage_backend);
+		let _asset_manager = AssetManager::new(storage_backend);
 
 		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -236,7 +234,7 @@ pub mod tests {
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
 		let storage_backend = TestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(storage_backend);
+		let _asset_manager = AssetManager::new(storage_backend);
 
 		let _: json::Value = json::from_str(r#"{}"#).unwrap();
 

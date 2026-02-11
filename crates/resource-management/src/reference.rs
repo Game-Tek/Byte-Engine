@@ -125,7 +125,7 @@ impl<T: Model> ReferenceModel<T> {
         }
     }
 
-	pub fn id(&self) -> ResourceId {
+	pub fn id(&self) -> ResourceId<'_> {
 		ResourceId::new(&self.id)
 	}
 

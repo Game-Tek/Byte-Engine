@@ -8,7 +8,7 @@ use utils::{
 };
 
 use crate::{
-    Description, ProcessedAsset, StreamDescription, asset::{self, image_asset_handler::{Semantic, guess_semantic_from_name}}, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::{material::VariantModel, mesh::{MeshModel, PrimitiveModel}}, types::{
+    ProcessedAsset, StreamDescription, asset::{self, image_asset_handler::{Semantic, guess_semantic_from_name}}, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::{material::VariantModel, mesh::{MeshModel, PrimitiveModel}}, types::{
         Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent,
         VertexSemantics,
     }
@@ -52,8 +52,6 @@ impl AssetHandler for MeshAssetHandler {
 				.resolve(url)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			let id = url.to_string();
 
 			let (gltf, buffers) = if dt == "glb" {
 				let parsed = spawn_cpu_task(move || -> Result<(gltf::Gltf, Vec<gltf::buffer::Data>), LoadErrors> {
@@ -106,7 +104,6 @@ impl AssetHandler for MeshAssetHandler {
 			};
 
 			Ok(Box::new(MeshAsset {
-				id,
 				spec,
 				gltf,
 				buffers,
@@ -116,7 +113,6 @@ impl AssetHandler for MeshAssetHandler {
 }
 
 struct MeshAsset {
-    id: String,
     spec: Option<json::Value>,
     gltf: gltf::Gltf,
     buffers: Vec<gltf::buffer::Data>,
@@ -149,7 +145,7 @@ impl Asset for MeshAsset {
         &'a self,
         asset_manager: &'a AssetManager,
         storage_backend: &'a dyn resource::StorageBackend,
-        asset_storage_backend: &'a dyn asset::StorageBackend,
+        _asset_storage_backend: &'a dyn asset::StorageBackend,
         url: ResourceId<'a>,
     ) -> BoxedFuture<'a, Result<(), String>> {
         Box::pin(async move {
@@ -185,7 +181,7 @@ impl Asset for MeshAsset {
                 },
             };
 
-            let resource = asset_manager.produce(
+            let _resource = asset_manager.produce(
                 url,
                 "image/png",
                 &image_description,
@@ -202,8 +198,6 @@ impl Asset for MeshAsset {
             log::error!("No spec found for {:#?}", url);
             return Err("Need .bead file".to_string());
         };
-
-        const MESHLETIZE: bool = true;
 
         // Gather vertex components and check that they are all equal
         let all = gltf
@@ -234,7 +228,7 @@ impl Asset for MeshAsset {
                                     channel,
                                 },
                                 gltf::Semantic::Colors(_) => todo!(),
-                                gltf::Semantic::TexCoords(count) => VertexComponent {
+                                gltf::Semantic::TexCoords(_count) => VertexComponent {
                                     semantic: VertexSemantics::UV,
                                     format: "vec2f".to_string(),
                                     channel,
@@ -374,13 +368,11 @@ impl Asset for MeshAsset {
             .collect::<Vec<usize>>();
 
         enum MeshBuilds {
-            // Join all primitives into one mesh big mesh with a contiguous index buffer
-            Whole,
             // Each primitive is a separate mesh
             Primitive,
         }
 
-        let mesh_vertex_count = vertex_counts.iter().sum::<usize>();
+        let _mesh_vertex_count = vertex_counts.iter().sum::<usize>();
 
         // Create vertex count prefix sum, from 0
         let vertex_prefix_sum = vertex_counts
@@ -810,27 +802,13 @@ impl Asset for MeshAsset {
                     blocks.into_iter().flatten().flatten().collect::<Vec<u8>>(),
                 )
             }
-            MeshBuilds::Whole => {
-                panic!("Not implemented");
-            }
         };
 
         let resource_document = ProcessedAsset::new(url, mesh).with_streams(streams);
-        storage_backend.store(&resource_document, &buffer);
+        storage_backend.store(&resource_document, &buffer).map_err(|_| "Failed to store mesh resource. The storage backend likely rejected the write.".to_string())?;
 
         Ok(())
         })
-    }
-}
-
-struct MeshDescription {}
-
-impl Description for MeshDescription {
-    fn get_resource_class() -> &'static str
-    where
-        Self: Sized,
-    {
-        "Mesh"
     }
 }
 
@@ -849,7 +827,6 @@ mod tests {
     use crate::r#async;
     use crate::{
         asset::{
-            self,
             asset_handler::AssetHandler,
             asset_manager::AssetManager,
             image_asset_handler::ImageAssetHandler,
@@ -859,7 +836,6 @@ mod tests {
         },
         resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
         resources::mesh::MeshModel,
-        tests::ASSETS_PATH,
         ReferenceModel,
     };
 
@@ -1187,13 +1163,13 @@ mod tests {
             material_asset_handler.set_shader_generator(shader_generator);
             material_asset_handler
         });
-        asset_manager.add_asset_handler({ ImageAssetHandler::new() });
-        asset_manager.add_asset_handler({ MeshAssetHandler::new() });
-        let asset_handler = MeshAssetHandler::new();
+        asset_manager.add_asset_handler(ImageAssetHandler::new() );
+        asset_manager.add_asset_handler(MeshAssetHandler::new() );
+        let _asset_handler = MeshAssetHandler::new();
 
         let url = "Revolver.glb";
 
-        let mesh: ReferenceModel<MeshModel> =
+        let _mesh: ReferenceModel<MeshModel> =
             asset_manager.load(&url, &resource_storage_backend).await.unwrap();
 
         let url = ResourceId::new(url);

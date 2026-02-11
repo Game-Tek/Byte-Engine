@@ -44,6 +44,8 @@ mod packet_buffer;
 pub mod packets;
 
 pub use client::Client;
+pub use local::Local;
+pub use remote::Remote;
 pub use server::Server;
 
 use std::io::{Read as _, Write};
@@ -53,8 +55,8 @@ use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// [`PacketInfo`] contains information about a packet.
 /// - `acked`: A boolean that indicates if the packet has been acknowledged.
-pub(crate) struct PacketInfo {
-    acked: bool,
+pub struct PacketInfo {
+    pub acked: bool,
 }
 
 /// Compares two sequence numbers and returns true if the first sequence number is greater than the second.
@@ -123,12 +125,12 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 	Some(())
 }
 
-pub(crate) fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
+pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
 	let mut cursor = std::io::Cursor::new(buffer);
 
 	let mut protocol_id = [0u8; 4];
 
-	cursor.read(&mut protocol_id);
+	cursor.read_exact(&mut protocol_id).map_err(|_| ())?;
 
 	if protocol_id != ['B' as u8, 'E' as u8, 'T' as u8, 'P' as u8] {
 		return Err(());
@@ -136,7 +138,7 @@ pub(crate) fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
 
 	let mut r#type = [0u8; 1];
 
-	cursor.read(&mut r#type);
+	cursor.read_exact(&mut r#type).map_err(|_| ())?;
 
 	let r#type = unsafe { std::mem::transmute(r#type[0]) };
 

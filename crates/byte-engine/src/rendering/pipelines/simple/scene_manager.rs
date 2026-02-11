@@ -1,6 +1,5 @@
 //! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
 
-use core::slice::SlicePattern;
 use std::{collections::{hash_map::Entry, VecDeque}, sync::Arc};
 
 use besl::ParserNode;
@@ -179,7 +178,7 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 					let vertex_buffer_offset = mesh_ref.vertex_offset();
 					let index_buffer_offset = mesh_ref.index_offset();
 
-					vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(positions.as_slice());
+					vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
 
 					let index_buffer = frame.device().get_mut_buffer_slice(self.indeces_buffer);
 
@@ -229,6 +228,6 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct InstanceShaderData {
+pub(super) struct InstanceShaderData {
 	instance_transform: Matrix4,
 }

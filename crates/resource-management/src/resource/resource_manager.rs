@@ -1,4 +1,4 @@
-use crate::{Reference, ReferenceModel, Resource, SerializableResource, Solver, asset::{ResourceId, asset_manager::AssetManager}, r#async};
+use crate::{Reference, ReferenceModel, Resource, SerializableResource, Solver, asset::{ResourceId, asset_manager::AssetManager}};
 
 use super::{storage_backend::Query, StorageBackend};
 
@@ -49,7 +49,7 @@ impl ResourceManager {
 		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)) {
 			let (resource, _) = result;
 			resource.into()
-		} else if let Some(asset_manager) = &self.asset_manager {
+		} else if let Some(_asset_manager) = &self.asset_manager {
 			todo!("Figure out how to run async code from here!");
 			// asset_manager.load(id, storage_backend).map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
 		} else {
@@ -69,14 +69,6 @@ impl ResourceManager {
 #[cfg(test)]
 mod tests {
 	use crate::{Model, Resource};
-
-	struct MyResourceHandler {}
-
-	impl MyResourceHandler {
-		pub fn new() -> Self {
-			MyResourceHandler {}
-		}
-	}
 
 	impl Resource for () {
 		fn get_class(&self) -> &'static str {

@@ -49,7 +49,7 @@ impl RedbStorageBackend {
 		{
 			let write = db.begin_write().unwrap();
 			let _ = write.open_table(RESOURCES_TABLE); // Create table if it doesn't exist
-			write.commit();
+			let _ = write.commit();
 		}
 
         RedbStorageBackend {

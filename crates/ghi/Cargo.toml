@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 rust-version = "1.73.0"
 
+[features]
+default = []
+metal = []
+
 [dependencies]
 utils = { path = "../utils" }
 

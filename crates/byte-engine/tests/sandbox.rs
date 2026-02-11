@@ -2,8 +2,7 @@
 //! It's purpose is to check if an entire application can be created and run.
 //! It does not check if the application is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, gameplay::{collider::Cube}};
-use math::Vector3;
+use byte_engine::application::{Application, Parameter};
 
 #[test]
 fn sandbox() {

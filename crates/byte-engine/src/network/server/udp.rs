@@ -32,7 +32,7 @@ impl Server {
 impl betp::Server for Server {
 	fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Events>, ConnectionResults> {
 		let socket = &mut self.socket;
-		let mut events = Vec::with_capacity(256);
+		let events = Vec::with_capacity(256);
 
 		let mut buffer = [0u8; 1024];
 

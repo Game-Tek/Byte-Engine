@@ -34,7 +34,7 @@ impl Remote {
     /// Returns information about the packet with the given sequence number.
     /// If the packet is in the history, it returns the information about the packet.
     /// If the packet is not in the history, it returns None.
-    pub(crate) fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
+    pub fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
         let index = (sequence % PACKET_HISTORY as u16) as usize;
         if self.receive_sequence_buffer[index] == sequence {
             Some(PacketInfo {

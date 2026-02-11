@@ -228,7 +228,7 @@ pub fn sphere_vs_cube(
 	Some(Intersection{ normal, depth, point_on_a, point_on_b })
 }
 
-fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
+pub fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
 	let m = sphere_b.center - ray_a.origin;
 	let a = dot(ray_a.direction, ray_a.direction);
 	let b = dot(m, ray_a.direction);
@@ -249,7 +249,7 @@ fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
 	true
 }
 
-fn sphere_vs_sphere_dynamic(sphere_a: &Sphere, sphere_b: &Sphere, a_velocity: Vector3, b_velocity: Vector3, dt: f32) -> Option<DynamicIntersection> {
+pub fn sphere_vs_sphere_dynamic(sphere_a: &Sphere, sphere_b: &Sphere, a_velocity: Vector3, b_velocity: Vector3, dt: f32) -> Option<DynamicIntersection> {
 	let relative_velocity = b_velocity - a_velocity;
 
 	let start = sphere_a.center;

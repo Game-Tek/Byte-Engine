@@ -8,7 +8,7 @@ pub(crate) struct Binding {
 	pub descriptor_set_handle: DescriptorSetHandle,
 	pub descriptor_type: vk::DescriptorType,
 	pub index: u32,
-	pub count: u32,
+	pub _count: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

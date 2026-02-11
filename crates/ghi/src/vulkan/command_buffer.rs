@@ -26,7 +26,7 @@ pub struct CommandBufferRecording<'a> {
 }
 
 impl CommandBufferRecording<'_> {
-	pub fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, buffer_copies: Vec<BufferCopy>, image_copies: Vec<ImageCopy>, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
+	pub(crate) fn new(ghi: &'_ mut Device, command_buffer: graphics_hardware_interface::CommandBufferHandle, buffer_copies: Vec<BufferCopy>, image_copies: Vec<ImageCopy>, frame_key: Option<FrameKey>) -> CommandBufferRecording<'_> {
 		let command_buffer = CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
@@ -1097,7 +1097,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			presentations.clone().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
 				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize].access(&self.ghi.synchronizers).semaphore;
-				let wait_stage = self.states.get(&Handle::Image(swapchain.images[present_key.image_index as usize])).unwrap().stage;
+				let _wait_stage = self.states.get(&Handle::Image(swapchain.images[present_key.image_index as usize])).unwrap().stage;
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
@@ -1437,21 +1437,21 @@ impl BufferCopy {
 }
 
 pub(crate) struct ImageCopy {
-	pub src_texture: ImageHandle,
-	pub src_offset: vk::DeviceSize,
+	pub _src_texture: ImageHandle,
+	pub _src_offset: vk::DeviceSize,
 	pub dst_texture: ImageHandle,
-	pub dst_offset: vk::DeviceSize,
-	pub size: usize,
+	pub _dst_offset: vk::DeviceSize,
+	pub _size: usize,
 }
 
 impl ImageCopy {
 	pub fn new(src_texture: ImageHandle, src_offset: vk::DeviceSize, dst_texture: ImageHandle, dst_offset: vk::DeviceSize, size: usize) -> Self {
 		Self {
-			src_texture,
-			src_offset,
+			_src_texture: src_texture,
+			_src_offset: src_offset,
 			dst_texture,
-			dst_offset,
-			size,
+			_dst_offset: dst_offset,
+			_size: size,
 		}
 	}
 }

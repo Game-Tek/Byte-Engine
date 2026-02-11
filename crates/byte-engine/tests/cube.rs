@@ -3,8 +3,7 @@
 //! It does not check if the cube is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}, camera::Camera, core::Entity, rendering::lights::PointLight};
-use math::Vector3;
+use byte_engine::application::{Application, Parameter};
 
 #[test]
 fn cube() {

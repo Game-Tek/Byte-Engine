@@ -23,7 +23,7 @@ serde = "1.0.219"
 log = "0.4.26"
 downcast-rs = "2.0.1"
 maths-rs = "0.2.6"
-half = "2.5.0"
+
 gxhash = "3.5.0"
 colored = "3.0.0"
 vorbis_rs = "0.5.5"

@@ -27,7 +27,6 @@ version = "0.1.0"
 dependencies = [
  "alsa",
  "objc2-audio-toolbox",
- "objc2-core-audio",
  "objc2-core-audio-types",
  "windows",
 ]
@@ -604,15 +603,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dlib"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
-dependencies = [
- "libloading",
-]
-
-[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -854,7 +844,6 @@ dependencies = [
  "resource-management",
  "smallvec",
  "utils",
- "wayland-backend",
  "wayland-client",
  "wayland-protocols",
  "windows",
@@ -1464,13 +1453,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
 dependencies = [
- "block2",
  "dispatch2",
- "libc",
  "objc2",
  "objc2-core-audio-types",
  "objc2-core-foundation",
- "objc2-foundation",
 ]
 
 [[package]]
@@ -1964,7 +1950,6 @@ dependencies = [
  "downcast-rs 2.0.2",
  "gltf",
  "gxhash",
- "half",
  "intel_tex_2",
  "libdeflater",
  "log",
@@ -2650,7 +2635,6 @@ dependencies = [
  "cc",
  "downcast-rs 1.2.1",
  "rustix",
- "scoped-tls",
  "smallvec",
  "wayland-sys",
 ]
@@ -2696,8 +2680,6 @@ version = "0.31.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6dbfc3ac5ef974c92a2235805cc0114033018ae1290a72e474aa8b28cbbdfd"
 dependencies = [
- "dlib",
- "log",
  "pkg-config",
 ]
 

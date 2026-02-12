@@ -29,7 +29,7 @@ windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win
 xcb = { version = "1.5.0", features=['xtest'] }
 wayland-client = "0.31.8"
 wayland-protocols = { version = "0.32.6", features = ['client', 'unstable'] }
-wayland-backend = { version = "0.3.8", features = ["client_system"] }
+
 xkbcommon = "0.9.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]

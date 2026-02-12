@@ -261,7 +261,7 @@ impl VisibilityWorldRenderDomain {
 			return Ok(*entry);
 		}
 
-		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
+		let meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
 		let mut resource_request: Reference<ResourceMesh> = {
 			return Err(());

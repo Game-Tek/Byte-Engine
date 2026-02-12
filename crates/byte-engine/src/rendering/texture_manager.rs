@@ -50,7 +50,7 @@ impl TextureManager {
 
 		let extent = Extent::from(texture.extent);
 
-		let image = device.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC, None);
+		let image = device.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::HostToDevice, ghi::UseCases::STATIC, None);
 		let target_buffer = device.get_texture_slice_mut(image);
 
 		let load_target = reference.load(target_buffer.into()).unwrap();

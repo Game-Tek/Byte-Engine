@@ -50,13 +50,9 @@ impl <'a> VertexElement<'a> {
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	pub struct DeviceAccesses: u16 {
-		#[deprecated]
 		const CpuRead = 1 << 0;
-		#[deprecated]
 		const CpuWrite = 1 << 1;
-		#[deprecated]
 		const GpuRead = 1 << 2;
-		#[deprecated]
 		const GpuWrite = 1 << 3;
 
 		const DeviceOnly = 1 << 2 | 1 << 3;

@@ -13,8 +13,6 @@ pub struct PhysicsBody {
 	/// Reciprocal mass of the body.
 	pub(crate) inv_mass: f32,
 	pub(crate) center_of_mass: Vector3,
-	pub(crate) collider: EntityHandle<dyn Collider>,
-	pub(crate) body: Option<EntityHandle<dyn Body>>,
 	pub(crate) elasticity: f32,
 	pub(crate) inertia_tensor: Matrix3,
 	pub(crate) friction: f32,

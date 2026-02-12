@@ -83,7 +83,7 @@ impl Application for GraphicsApplication {
 
 		let body_factory = Factory::new();
 
-		let physics_system = Box::new(physics::dynabit::World::new());
+		let physics_system = Box::new(physics::dynabit::World::new(body_factory.listener()));
 
 		let anchor_system = AnchorSystem::new();
 

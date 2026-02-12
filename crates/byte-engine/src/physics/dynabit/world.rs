@@ -1,16 +1,21 @@
+use std::ops::Deref;
+
 use math::{collision::{cube_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _}, normalize, sphere::Sphere, Base, Matrix3, Quaternion, Vector3};
-use crate::{application::Time, core::{listener::{Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{intersect, PhysicsBody}, contact::{Contact, Side}}}};
+use crate::{application::Time, core::{Entity, EntityHandle, factory::CreateMessage, listener::{DefaultListener, Listener}}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{PhysicsBody, intersect}, contact::{Contact, Side}}}};
 
 pub struct World {
 	bodies: Vec<PhysicsBody>,
 	gravity: Vector3,
+
+	body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
 }
 
 impl World {
-	pub fn new() -> Self {
+	pub fn new(body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>) -> Self {
 		Self {
 			bodies: Vec::new(),
 			gravity: Vector3::new(0f32, -16f32, 0f32),
+			body_listener,
 		}
 	}
 
@@ -23,12 +28,19 @@ impl World {
 	pub fn apply_impulse(&mut self, entity: EntityHandle<dyn Body>, impulse: Vector3) {
 		let entity = Some(entity);
 
-		if let Some(body) = self.bodies.iter_mut().find(|e| &e.body == &entity) {
-			body.apply_linear_impulse(impulse);
-		}
+		// if let Some(body) = self.bodies.iter_mut().find(|e| &e.body == &entity) {
+		// 	body.apply_linear_impulse(impulse);
+		// }
 	}
 
 	pub fn update(&mut self, time: Time) {
+		while let Some(message) = self.body_listener.read() {
+			let handle = message.into_data();
+			let body = handle.read();
+
+			self.create_body(body.deref());
+		}
+
 		self.update_velocities(time);
 		self.update_collisions(time);
 		self.update_bodies(time);
@@ -131,9 +143,9 @@ impl World {
 		for body in self.bodies.iter_mut() {
 			match body.body_type {
 				BodyTypes::Dynamic => {
-					let mut e = body.body.as_ref().unwrap().write();
-					e.set_position(body.position);
-					e.transform_mut().set_orientation(body.orientation);
+					// let mut e = body.body.as_ref().unwrap().write();
+					// e.set_position(body.position);
+					// e.transform_mut().set_orientation(body.orientation);
 				}
 				_ => continue,
 			}
@@ -218,6 +230,32 @@ impl World {
 		let b = &mut self.bodies[b_index];
 		b.position += separation * t_b;
 	}
+
+	fn create_body(&mut self, body: &dyn Body) {
+		let body_type = body.body_type();
+
+		let inv_mass = match body_type {
+			BodyTypes::Dynamic => 1f32 / body.mass(),
+			_ => 0f32,
+		};
+
+		let inertia_tensor = body.inertia_tensor();
+
+		self.add_body(PhysicsBody {
+			body_type,
+			position: body.position(),
+			orientation: Quaternion::identity(),
+			linear_velocity: body.velocity(),
+			angular_velocity: Vector3::new(0f32, 0f32, 0f32),
+			acceleration: Vector3::new(0f32, 0f32, 0f32),
+			collision_shape: body.shape(),
+			inv_mass,
+			center_of_mass: body.center_of_mass(),
+			elasticity: body.elasticity(),
+			inertia_tensor,
+			friction: body.friction(),
+		});
+	}
 }
 
 impl crate::physics::World for World {
@@ -225,39 +263,6 @@ impl crate::physics::World for World {
     	self.update(time);
 	}
 }
-
-// impl Listener<CreateEvent<dyn Body>> for World {
-// 	fn handle(&mut self, event: &CreateEvent<dyn Body>) {
-// 		let handle = event.handle();
-// 		let body = handle.read();
-
-// 		let body_type = body.body_type();
-
-// 		let inv_mass = match body_type {
-// 			BodyTypes::Dynamic => 1f32 / body.mass(),
-// 			_ => 0f32,
-// 		};
-
-// 		let inertia_tensor = body.inertia_tensor();
-
-// 		self.add_body(PhysicsBody{
-// 			body_type,
-// 			position: body.position(),
-// 			orientation: Quaternion::identity(),
-// 			linear_velocity: body.velocity(),
-// 			angular_velocity: Vector3::new(0f32, 0f32, 0f32),
-// 			acceleration: Vector3::new(0f32, 0f32, 0f32),
-// 			collision_shape: body.shape(),
-// 			collider: handle.clone() as EntityHandle<dyn Collider>,
-// 			body: Some(handle.clone()),
-// 			inv_mass,
-// 			center_of_mass: body.center_of_mass(),
-// 			elasticity: body.elasticity(),
-// 			inertia_tensor,
-// 			friction: body.friction(),
-// 		});
-// 	}
-// }
 
 // impl Listener<CreateEvent<dyn Collider>> for World {
 // 	fn handle(&mut self, event: &CreateEvent<dyn Collider>) {

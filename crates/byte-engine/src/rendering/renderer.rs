@@ -84,7 +84,26 @@ impl Renderer {
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
 			.debug_log_function(|message| {
-				log::error!("{}\n{}", message, std::backtrace::Backtrace::force_capture());
+				let backtrace = std::backtrace::Backtrace::force_capture().to_string();
+				let manifest_dir = env!("CARGO_MANIFEST_DIR");
+				let workspace_root = manifest_dir
+					.rsplit_once("/crates/")
+					.map(|(root, _)| root)
+					.unwrap_or(manifest_dir);
+
+				let mut filtered = String::new();
+				for line in backtrace.lines() {
+					if line.contains(workspace_root) {
+						filtered.push_str(line);
+						filtered.push('\n');
+					}
+				}
+
+				if filtered.trim().is_empty() {
+					log::error!("{}\n{}", message, backtrace);
+				} else {
+					log::error!("{}\n{}", message, filtered.trim_end());
+				}
 			})
 			.geometry_shader(false)
 			.mesh_shading(settings.mesh_shading)

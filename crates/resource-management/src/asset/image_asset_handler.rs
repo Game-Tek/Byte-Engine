@@ -70,23 +70,30 @@ impl AssetHandler for ImageAssetHandler {
 			let decoded = spawn_cpu_task(move || -> Result<ImageAsset, LoadErrors> {
 				let mut buffer;
 				let extent;
-				let gamma;
+				let gamma: Gamma;
 				let format;
 
 				match dt.as_str() {
 					"png" | "image/png" => {
-						let decoder = png::Decoder::new(data.as_ref());
+						let cursor = std::io::Cursor::new(data);
+						let decoder = png::Decoder::new(cursor);
 						if true { // TODO: make this a setting
 							// decoder.set_transformations(png::Transformations::normalize_to_color8());
 						}
 						let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
-						buffer = vec![0u8; reader.output_buffer_size()];
+
+						let Some(size) = reader.output_buffer_size() else {
+							return Err(LoadErrors::FailedToProcess);
+						};
+
+						buffer = vec![0u8; size];
+
 						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
 
 						extent = Extent::rectangle(info.width, info.height);
 
-						gamma = reader.info().gama_chunk.map(|gamma| {
-							if gamma.into_scaled() == 45455 {
+						gamma = reader.info().gama_chunk.map(|g: png::ScaledFloat| {
+							if g.into_scaled() == 45455 {
 								Gamma::SRGB
 							} else {
 								Gamma::Linear

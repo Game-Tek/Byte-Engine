@@ -5,7 +5,7 @@
 
 use std::hash::Hasher;
 
-use redb::ReadableTable;
+use redb::{ReadableDatabase as _, ReadableTable};
 use utils::sync::{remove_file, File, Write};
 
 use crate::{asset, resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId}, ProcessedAsset, SerializableResource};
@@ -78,7 +78,7 @@ impl ReadStorageBackend for RedbStorageBackend {
     fn read<'s, 'a, 'b>(&'s self, id: asset::ResourceId<'b>,) -> Option<(SerializableResource, MultiResourceReader)> {
 		let read = self.db.begin_read().unwrap();
 		let table = read.open_table(RESOURCES_TABLE).unwrap();
-		
+
 		let id = ResourceId::from(id.as_ref());
 
         if let Some(d) = table.get(&id).unwrap() {

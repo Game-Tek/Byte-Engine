@@ -8,9 +8,10 @@
 #![feature(future_join)]
 #![feature(once_cell_try)]
 #![feature(ascii_char)]
+#![feature(portable_simd)]
 
-use std::any::Any;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 
 use asset::ResourceId;
 
@@ -18,9 +19,9 @@ pub mod asset;
 pub mod resource;
 
 pub mod model;
+pub mod reference;
 pub mod solver;
 pub mod stream;
-pub mod reference;
 
 pub mod types;
 
@@ -33,24 +34,24 @@ pub mod shader_graph;
 
 pub mod glsl_shader_generator;
 pub mod hlsl_shader_generator;
-pub mod msl_shader_generator;
 pub mod msl_shader_compiler;
-pub mod spirv_shader_generator;
+pub mod msl_shader_generator;
 pub mod program_evaluation;
+pub mod spirv_shader_generator;
 
 pub mod glsl;
 
 pub mod r#async;
 
-pub use resource::resource_manager::ResourceManager;
 pub use asset::asset_handler::AssetHandler;
+pub use resource::resource_manager::ResourceManager;
 
 pub use model::Model;
+pub use reference::Reference;
+pub use reference::ReferenceModel;
 pub use resource::Resource;
 pub use solver::Solver;
 pub use stream::Stream;
-pub use reference::Reference;
-pub use reference::ReferenceModel;
 
 pub(crate) type DataStorage = Vec<u8>;
 pub(crate) use pot::from_slice;
@@ -68,7 +69,7 @@ pub struct ProcessedAsset {
     // required_resources: Vec<ProcessedResources>,
     /// The resource data.
     // resource: Data,
-	resource: DataStorage,
+    resource: DataStorage,
     streams: Option<Vec<StreamDescription>>,
 }
 
@@ -147,27 +148,34 @@ pub struct SerializableResource {
     /// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
     class: String,
     size: usize,
-	resource: DataStorage,
-	streams: Option<Vec<StreamDescription>>,
+    resource: DataStorage,
+    streams: Option<Vec<StreamDescription>>,
 }
 
 impl SerializableResource {
-    pub fn new(id: String, hash: u64, class: String, size: usize, resource: DataStorage, streams: Option<Vec<StreamDescription>>) -> Self {
+    pub fn new(
+        id: String,
+        hash: u64,
+        class: String,
+        size: usize,
+        resource: DataStorage,
+        streams: Option<Vec<StreamDescription>>,
+    ) -> Self {
         SerializableResource {
             id,
             hash,
             class,
             size,
             resource,
-			streams,
+            streams,
         }
     }
 }
 
-impl <M: Model> Into<ReferenceModel<M>> for SerializableResource {
-	fn into(self) -> ReferenceModel<M> {
-		ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
-	}
+impl<M: Model> Into<ReferenceModel<M>> for SerializableResource {
+    fn into(self) -> ReferenceModel<M> {
+        ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
+    }
 }
 
 /// Enumaration for all the possible results of a resource load fails.
@@ -194,6 +202,6 @@ pub trait Description: Any + Send + Sync {
 
 #[cfg(test)]
 mod tests {
-	/// Path to the assets folder for the tests.
-	pub const ASSETS_PATH: &str = "../../assets";
+    /// Path to the assets folder for the tests.
+    pub const ASSETS_PATH: &str = "../../assets";
 }

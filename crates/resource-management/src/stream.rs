@@ -14,9 +14,9 @@ impl<'a> Stream<'a> {
         Stream { buffer, name }
     }
 
-	pub fn name(&'a self) -> &'a str {
-		self.name
-	}
+    pub fn name(&'a self) -> &'a str {
+        self.name
+    }
 
     pub fn buffer(&'a self) -> &'a [u8] {
         self.buffer
@@ -39,9 +39,12 @@ pub struct StreamMut<'a> {
 
 impl<'a> StreamMut<'a> {
     pub fn new<T: Copy>(name: &'a str, buffer: &'a mut [T]) -> Self {
-		let buffer = unsafe {
-			std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u8, std::mem::size_of::<T>() * buffer.len())
-		};
+        let buffer = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.as_mut_ptr() as *mut u8,
+                std::mem::size_of::<T>() * buffer.len(),
+            )
+        };
         StreamMut { buffer, name }
     }
 
@@ -53,7 +56,7 @@ impl<'a> StreamMut<'a> {
         self.buffer
     }
 
-	pub fn name(&self) -> &'_ str {
-		self.name
-	}
+    pub fn name(&self) -> &'_ str {
+        self.name
+    }
 }

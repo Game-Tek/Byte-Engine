@@ -1,9 +1,9 @@
 use std::pin::Pin;
 
-pub use compio::runtime::Runtime as Executor;
-pub use compio::fs::File;
 pub use compio::fs::read;
+pub use compio::fs::File;
 pub use compio::runtime::spawn;
+pub use compio::runtime::Runtime as Executor;
 
 pub use compio::runtime::spawn_blocking;
 pub use spawn_blocking as offload;

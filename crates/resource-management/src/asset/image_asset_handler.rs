@@ -2,9 +2,21 @@ use std::any::Any;
 
 use utils::Extent;
 
-use crate::{Description, ProcessedAsset, asset, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::image::Image, types::{Formats, Gamma}};
+use crate::{
+    asset,
+    r#async::{spawn_cpu_task, BoxedFuture},
+    resource,
+    resources::image::Image,
+    types::{Formats, Gamma},
+    Description, ProcessedAsset,
+};
 
-use super::{asset_handler::{Asset, AssetHandler, LoadErrors}, asset_manager::AssetManager, resource_id::ResourceIdBase, ResourceId};
+use super::{
+    asset_handler::{Asset, AssetHandler, LoadErrors},
+    asset_manager::AssetManager,
+    resource_id::ResourceIdBase,
+    ResourceId,
+};
 
 pub struct ImageAsset {
     data: Box<[u8]>,
@@ -14,399 +26,494 @@ pub struct ImageAsset {
 }
 
 impl Asset for ImageAsset {
-    fn requested_assets(&self) -> Vec<String> { vec![] }
+    fn requested_assets(&self) -> Vec<String> {
+        vec![]
+    }
 
-    fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, _: &'a dyn asset::StorageBackend, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), String>> {
-		Box::pin(async move {
-			let semantic = guess_semantic_from_name(url.get_base());
+    fn load<'a>(
+        &'a self,
+        _: &'a AssetManager,
+        storage_backend: &'a dyn resource::StorageBackend,
+        _: &'a dyn asset::StorageBackend,
+        url: ResourceId<'a>,
+    ) -> BoxedFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let semantic = guess_semantic_from_name(url.get_base());
 
-			let format = self.format;
-			let extent = self.extent;
-			let gamma = self.gamma;
+            let format = self.format;
+            let extent = self.extent;
+            let gamma = self.gamma;
 
-			let buffer = self.data.clone();
-			let description = ImageDescription {
-				format,
-				extent,
-				semantic,
-				gamma,
-			};
+            let buffer = self.data.clone();
+            let description = ImageDescription {
+                format,
+                extent,
+                semantic,
+                gamma,
+            };
 
-			let (image, data) = spawn_cpu_task(move || ImageAssetHandler::produce(&description, buffer)).await.or_else(|_| Err("Task panicked"))?;
+            let (image, data) =
+                spawn_cpu_task(move || ImageAssetHandler::produce(&description, buffer))
+                    .await
+                    .or_else(|_| Err("Task panicked"))?;
 
-			let resource_document = ProcessedAsset::new(url, image);
+            let resource_document = ProcessedAsset::new(url, image);
 
-			storage_backend.store(&resource_document, &data).map_err(|_| "Failed to store image resource. The storage backend likely rejected the write.".to_string())?;
+            storage_backend
+                .store(&resource_document, &data)
+                .map_err(|_| {
+                    "Failed to store image resource. The storage backend likely rejected the write."
+                        .to_string()
+                })?;
 
-			Ok(())
-		})
+            Ok(())
+        })
     }
 }
 
-pub struct ImageAssetHandler {
-}
+pub struct ImageAssetHandler {}
 
 impl ImageAssetHandler {
-	pub fn new() -> ImageAssetHandler {
-		ImageAssetHandler {}
-	}
+    pub fn new() -> ImageAssetHandler {
+        ImageAssetHandler {}
+    }
 }
 
 impl AssetHandler for ImageAssetHandler {
-	fn can_handle(&self, r#type: &str) -> bool {
-		r#type == "png" || r#type == "Image" || r#type == "image/png"
-	}
+    fn can_handle(&self, r#type: &str) -> bool {
+        r#type == "png" || r#type == "Image" || r#type == "image/png"
+    }
 
-	fn load<'a>(&'a self, _: &'a AssetManager, storage_backend: &'a dyn resource::StorageBackend, asset_storage_backend: &'a dyn asset::StorageBackend, url: ResourceId<'a>,) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "png" { return Err(LoadErrors::UnsupportedType); }
-			}
+    fn load<'a>(
+        &'a self,
+        _: &'a AssetManager,
+        storage_backend: &'a dyn resource::StorageBackend,
+        asset_storage_backend: &'a dyn asset::StorageBackend,
+        url: ResourceId<'a>,
+    ) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+        Box::pin(async move {
+            if let Some(dt) = storage_backend.get_type(url) {
+                if dt != "png" {
+                    return Err(LoadErrors::UnsupportedType);
+                }
+            }
 
-			let (data, _, dt) = asset_storage_backend.resolve(url).await.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+            let (data, _, dt) = asset_storage_backend
+                .resolve(url)
+                .await
+                .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			let semantic = guess_semantic_from_name(url.get_base());
+            let semantic = guess_semantic_from_name(url.get_base());
 
-			let decoded = spawn_cpu_task(move || -> Result<ImageAsset, LoadErrors> {
-				let mut buffer;
-				let extent;
-				let gamma: Gamma;
-				let format;
+            let decoded = spawn_cpu_task(move || -> Result<ImageAsset, LoadErrors> {
+                let mut buffer;
+                let extent;
+                let gamma: Gamma;
+                let format;
 
-				match dt.as_str() {
-					"png" | "image/png" => {
-						let cursor = std::io::Cursor::new(data);
-						let decoder = png::Decoder::new(cursor);
-						if true { // TODO: make this a setting
-							// decoder.set_transformations(png::Transformations::normalize_to_color8());
-						}
-						let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
+                match dt.as_str() {
+                    "png" | "image/png" => {
+                        let cursor = std::io::Cursor::new(data);
+                        let decoder = png::Decoder::new(cursor);
+                        if true { // TODO: make this a setting
+                             // decoder.set_transformations(png::Transformations::normalize_to_color8());
+                        }
+                        let mut reader = decoder
+                            .read_info()
+                            .map_err(|_| LoadErrors::FailedToProcess)?;
 
-						let Some(size) = reader.output_buffer_size() else {
-							return Err(LoadErrors::FailedToProcess);
-						};
+                        let Some(size) = reader.output_buffer_size() else {
+                            return Err(LoadErrors::FailedToProcess);
+                        };
 
-						buffer = vec![0u8; size];
+                        buffer = vec![0u8; size];
 
-						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
+                        let info = reader
+                            .next_frame(&mut buffer)
+                            .map_err(|_| LoadErrors::FailedToProcess)?;
 
-						extent = Extent::rectangle(info.width, info.height);
+                        extent = Extent::rectangle(info.width, info.height);
 
-						gamma = reader.info().gama_chunk.map(|g: png::ScaledFloat| {
-							if g.into_scaled() == 45455 {
-								Gamma::SRGB
-							} else {
-								Gamma::Linear
-							}
-						}).unwrap_or(gamma_from_semantic(semantic));
+                        gamma = reader
+                            .info()
+                            .gama_chunk
+                            .map(|g: png::ScaledFloat| {
+                                if g.into_scaled() == 45455 {
+                                    Gamma::SRGB
+                                } else {
+                                    Gamma::Linear
+                                }
+                            })
+                            .unwrap_or(gamma_from_semantic(semantic));
 
-						match info.bit_depth {
-							png::BitDepth::Eight => {}
-							png::BitDepth::Sixteen => {
-								for i in 0..buffer.len() / 2 {
-									buffer.swap(i * 2, i * 2 + 1);
-								}
-							}
-							_ => { return Err(LoadErrors::FailedToProcess); }
-						}
+                        match info.bit_depth {
+                            png::BitDepth::Eight => {}
+                            png::BitDepth::Sixteen => {
+                                for i in 0..buffer.len() / 2 {
+                                    buffer.swap(i * 2, i * 2 + 1);
+                                }
+                            }
+                            _ => {
+                                return Err(LoadErrors::FailedToProcess);
+                            }
+                        }
 
-						format = match info.color_type {
-							png::ColorType::Rgb => {
-								match info.bit_depth {
-									png::BitDepth::Eight => Formats::RGB8,
-									png::BitDepth::Sixteen => Formats::RGB16,
-									_ => { return Err(LoadErrors::FailedToProcess); }
-								}
-							}
-							png::ColorType::Rgba => {
-								match info.bit_depth {
-									png::BitDepth::Eight => Formats::RGBA8,
-									png::BitDepth::Sixteen => Formats::RGBA16,
-									_ => { return Err(LoadErrors::FailedToProcess); }
-								}
-							}
-							_ => { return Err(LoadErrors::FailedToProcess); }
-						};
-					}
-					_ => { return Err(LoadErrors::UnsupportedType); }
-				}
+                        format = match info.color_type {
+                            png::ColorType::Rgb => match info.bit_depth {
+                                png::BitDepth::Eight => Formats::RGB8,
+                                png::BitDepth::Sixteen => Formats::RGB16,
+                                _ => {
+                                    return Err(LoadErrors::FailedToProcess);
+                                }
+                            },
+                            png::ColorType::Rgba => match info.bit_depth {
+                                png::BitDepth::Eight => Formats::RGBA8,
+                                png::BitDepth::Sixteen => Formats::RGBA16,
+                                _ => {
+                                    return Err(LoadErrors::FailedToProcess);
+                                }
+                            },
+                            _ => {
+                                return Err(LoadErrors::FailedToProcess);
+                            }
+                        };
+                    }
+                    _ => {
+                        return Err(LoadErrors::UnsupportedType);
+                    }
+                }
 
-				Ok(ImageAsset {
-					data: buffer.into(),
-					gamma,
-					format,
-					extent,
-				})
-			}).await.map_err(|_| LoadErrors::FailedToProcess)??;
+                Ok(ImageAsset {
+                    data: buffer.into(),
+                    gamma,
+                    format,
+                    extent,
+                })
+            })
+            .await
+            .map_err(|_| LoadErrors::FailedToProcess)??;
 
-			Ok(Box::new(decoded) as Box<dyn Asset>)
-		})
-	}
+            Ok(Box::new(decoded) as Box<dyn Asset>)
+        })
+    }
 
-	fn produce<'a>(&'a self, id: ResourceId<'a>, description: &'a dyn Description, data: Box<[u8]>) -> Result<(ProcessedAsset, Box<[u8]>), String> {
-		if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
-		    let description = description.clone();
-			let (resource, buffer) = Self::produce(&description, data);
-			Ok((ProcessedAsset::new(id, resource), buffer))
-		} else {
-			Err("Invalid description".to_string())
-		}
-	}
+    fn produce<'a>(
+        &'a self,
+        id: ResourceId<'a>,
+        description: &'a dyn Description,
+        data: Box<[u8]>,
+    ) -> Result<(ProcessedAsset, Box<[u8]>), String> {
+        if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
+            let description = description.clone();
+            let (resource, buffer) = Self::produce(&description, data);
+            Ok((ProcessedAsset::new(id, resource), buffer))
+        } else {
+            Err("Invalid description".to_string())
+        }
+    }
 }
 
 pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
     let name = name.as_ref();
-	if name.contains("Base_color") || name.contains("Albedo") || name.contains("Diffuse") { Semantic::Albedo }
-	else if name.contains("Normal") { Semantic::Normal }
-	else if name.contains("Metallic") { Semantic::Metallic }
-	else if name.contains("Roughness") { Semantic::Roughness }
-	else if name.contains("Emissive") { Semantic::Emissive }
-	else if name.contains("Height") { Semantic::Height }
-	else if name.contains("Opacity") { Semantic::Opacity }
-	else if name.contains("Displacement") { Semantic::Displacement }
-	else if name.contains("AO") { Semantic::AO }
-	else { Semantic::Other }
+    if name.contains("Base_color") || name.contains("Albedo") || name.contains("Diffuse") {
+        Semantic::Albedo
+    } else if name.contains("Normal") {
+        Semantic::Normal
+    } else if name.contains("Metallic") {
+        Semantic::Metallic
+    } else if name.contains("Roughness") {
+        Semantic::Roughness
+    } else if name.contains("Emissive") {
+        Semantic::Emissive
+    } else if name.contains("Height") {
+        Semantic::Height
+    } else if name.contains("Opacity") {
+        Semantic::Opacity
+    } else if name.contains("Displacement") {
+        Semantic::Displacement
+    } else if name.contains("AO") {
+        Semantic::AO
+    } else {
+        Semantic::Other
+    }
 }
 
 pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
-	match semantic {
-		Semantic::Albedo | Semantic::Other => Gamma::SRGB,
-		Semantic::Normal | Semantic::Metallic | Semantic::Roughness | Semantic::Emissive | Semantic::Height | Semantic::Opacity | Semantic::Displacement | Semantic::AO => Gamma::Linear,
-	}
+    match semantic {
+        Semantic::Albedo | Semantic::Other => Gamma::SRGB,
+        Semantic::Normal
+        | Semantic::Metallic
+        | Semantic::Roughness
+        | Semantic::Emissive
+        | Semantic::Height
+        | Semantic::Opacity
+        | Semantic::Displacement
+        | Semantic::AO => Gamma::Linear,
+    }
 }
 
 impl ImageAssetHandler {
-	fn produce(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, Box<[u8]>) {
-		let ImageDescription { format, extent, semantic, gamma } = description;
+    fn produce(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, Box<[u8]>) {
+        let ImageDescription {
+            format,
+            extent,
+            semantic,
+            gamma,
+        } = description;
 
-		let compress = match semantic {
-			Semantic::Albedo | Semantic::Normal => true,
-			_ => false,
-		};
+        let compress = match semantic {
+            Semantic::Albedo | Semantic::Normal => true,
+            _ => false,
+        };
 
-		let (data, format) = match format {
-			Formats::RGB8 => {
-				let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+        let (data, format) = match format {
+            Formats::RGB8 => {
+                let mut buf: Box<[u8]> =
+                    vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
-				for y in 0..extent.height() {
-					let source_row = &buffer[(y * extent.width() * 3) as usize..][..(extent.width() * 3) as usize];
-					let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
+                for y in 0..extent.height() {
+                    let source_row = &buffer[(y * extent.width() * 3) as usize..]
+                        [..(extent.width() * 3) as usize];
+                    let dest_row = &mut buf[(y * extent.width() * 4) as usize..]
+                        [..(extent.width() * 4) as usize];
 
-					for x in 0..extent.width() {
-						let source_pixel = &source_row[(x * 3) as usize..][..3];
-						let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-						dest_pixel[..3].copy_from_slice(source_pixel);
-						dest_pixel[3] = 0xFF;
-					}
-				}
+                    for x in 0..extent.width() {
+                        let source_pixel = &source_row[(x * 3) as usize..][..3];
+                        let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
+                        dest_pixel[..3].copy_from_slice(source_pixel);
+                        dest_pixel[3] = 0xFF;
+                    }
+                }
 
-				match (compress, semantic) {
-					(true, Semantic::Normal) => {
-						(buf, Formats::BC5)
-					}
-					(true, _) => {
-						(buf, Formats::BC7)
-					}
-					(false, _) => {
-						(buf, Formats::RGBA8)
-					}
-				}
-			}
-			Formats::RGBA8 => {
-				match (compress, semantic) {
-					(true, Semantic::Normal) => {
-						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+                match (compress, semantic) {
+                    (true, Semantic::Normal) => (buf, Formats::BC5),
+                    (true, _) => (buf, Formats::BC7),
+                    (false, _) => (buf, Formats::RGBA8),
+                }
+            }
+            Formats::RGBA8 => match (compress, semantic) {
+                (true, Semantic::Normal) => {
+                    let mut buf: Box<[u8]> =
+                        vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
-						for y in 0..extent.height() {
-							let source_row = &buffer[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-							let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-							for x in 0..extent.width() {
-								let source_pixel = &source_row[(x * 4) as usize..][..4];
-								let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-								dest_pixel[..3].copy_from_slice(&source_pixel[..3]);
-								dest_pixel[3] = 0xFF;
-							}
-						}
+                    for y in 0..extent.height() {
+                        let source_row = &buffer[(y * extent.width() * 4) as usize..]
+                            [..(extent.width() * 4) as usize];
+                        let dest_row = &mut buf[(y * extent.width() * 4) as usize..]
+                            [..(extent.width() * 4) as usize];
+                        for x in 0..extent.width() {
+                            let source_pixel = &source_row[(x * 4) as usize..][..4];
+                            let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
+                            dest_pixel[..3].copy_from_slice(&source_pixel[..3]);
+                            dest_pixel[3] = 0xFF;
+                        }
+                    }
 
-						(buf, Formats::BC5)
-					}
-					(compress, _) => {
-						if compress {
-							(buffer, Formats::BC7)
-						} else {
-							(buffer, Formats::RGBA8)
-						}
-					}
-				}
-			}
-			Formats::RGB16 => {
-				match (compress, semantic) {
-					(true, Semantic::Normal) => {
-						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+                    (buf, Formats::BC5)
+                }
+                (compress, _) => {
+                    if compress {
+                        (buffer, Formats::BC7)
+                    } else {
+                        (buffer, Formats::RGBA8)
+                    }
+                }
+            },
+            Formats::RGB16 => match (compress, semantic) {
+                (true, Semantic::Normal) => {
+                    let mut buf: Box<[u8]> =
+                        vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
-						for y in 0..extent.height() {
-							let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
-							let dest_row = &mut buf[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
-							for x in 0..extent.width() {
-								let source_pixel = &source_row[(x * 6) as usize..][..6];
-								let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
-								let x = u16::from_le_bytes([source_pixel[0], source_pixel[1]]);
-								let y = u16::from_le_bytes([source_pixel[2], source_pixel[3]]);
-								let x: u8 = (x / 256) as u8;
-								let y: u8 = (y / 256) as u8;
-								dest_pixel[0] = x; dest_pixel[1] = y;
-								dest_pixel[2] = 0x00; dest_pixel[3] = 0xFF;
-							}
-						}
+                    for y in 0..extent.height() {
+                        let source_row = &buffer[(y * extent.width() * 6) as usize..]
+                            [..(extent.width() * 6) as usize];
+                        let dest_row = &mut buf[(y * extent.width() * 4) as usize..]
+                            [..(extent.width() * 4) as usize];
+                        for x in 0..extent.width() {
+                            let source_pixel = &source_row[(x * 6) as usize..][..6];
+                            let dest_pixel = &mut dest_row[(x * 4) as usize..][..4];
+                            let x = u16::from_le_bytes([source_pixel[0], source_pixel[1]]);
+                            let y = u16::from_le_bytes([source_pixel[2], source_pixel[3]]);
+                            let x: u8 = (x / 256) as u8;
+                            let y: u8 = (y / 256) as u8;
+                            dest_pixel[0] = x;
+                            dest_pixel[1] = y;
+                            dest_pixel[2] = 0x00;
+                            dest_pixel[3] = 0xFF;
+                        }
+                    }
 
-						(buf, Formats::BC5)
-					}
-					(compress, _) => {
-						let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 8].into();
+                    (buf, Formats::BC5)
+                }
+                (compress, _) => {
+                    let mut buf: Box<[u8]> =
+                        vec![0_u8; extent.width() as usize * extent.height() as usize * 8].into();
 
-						for y in 0..extent.height() {
-							let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
-							let dest_row = &mut buf[(y * extent.width() * 8) as usize..][..(extent.width() * 8) as usize];
-							for x in 0..extent.width() {
-								let source_pixel = &source_row[(x * 6) as usize..][..6];
-								let dest_pixel = &mut dest_row[(x * 8) as usize..][..8];
-								dest_pixel[..6].copy_from_slice(&source_pixel);
-								dest_pixel[6] = 0xFF; dest_pixel[7] = 0xFF;
-							}
-						}
+                    for y in 0..extent.height() {
+                        let source_row = &buffer[(y * extent.width() * 6) as usize..]
+                            [..(extent.width() * 6) as usize];
+                        let dest_row = &mut buf[(y * extent.width() * 8) as usize..]
+                            [..(extent.width() * 8) as usize];
+                        for x in 0..extent.width() {
+                            let source_pixel = &source_row[(x * 6) as usize..][..6];
+                            let dest_pixel = &mut dest_row[(x * 8) as usize..][..8];
+                            dest_pixel[..6].copy_from_slice(&source_pixel);
+                            dest_pixel[6] = 0xFF;
+                            dest_pixel[7] = 0xFF;
+                        }
+                    }
 
-						if compress {
-							(buf, Formats::BC7)
-						} else {
-							(buf, Formats::RGBA16)
-						}
-					}
-				}
-			}
-			_ => {
-				panic!("Unsupported format: {:#?}", format);
-			}
-		};
+                    if compress {
+                        (buf, Formats::BC7)
+                    } else {
+                        (buf, Formats::RGBA16)
+                    }
+                }
+            },
+            _ => {
+                panic!("Unsupported format: {:#?}", format);
+            }
+        };
 
-		let data = match format {
-			Formats::BC5 => {
-				let rgba_surface = intel_tex_2::RgSurface {
-					data: &data,
-					width: extent.width(),
-					height: extent.height(),
-					stride: extent.width() * 4,
-				};
+        let data = match format {
+            Formats::BC5 => {
+                let rgba_surface = intel_tex_2::RgSurface {
+                    data: &data,
+                    width: extent.width(),
+                    height: extent.height(),
+                    stride: extent.width() * 4,
+                };
 
-				intel_tex_2::bc5::compress_blocks(&rgba_surface).into()
-			}
-			Formats::RGB8 | Formats::RGBA8 => {
-				data
-			}
-			Formats::BC7 => {
-				let rgba_surface = intel_tex_2::RgbaSurface {
-					data: &data,
-					width: extent.width(),
-					height: extent.height(),
-					stride: extent.width() * 4,
-				};
+                intel_tex_2::bc5::compress_blocks(&rgba_surface).into()
+            }
+            Formats::RGB8 | Formats::RGBA8 => data,
+            Formats::BC7 => {
+                let rgba_surface = intel_tex_2::RgbaSurface {
+                    data: &data,
+                    width: extent.width(),
+                    height: extent.height(),
+                    stride: extent.width() * 4,
+                };
 
-				let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
+                let settings = intel_tex_2::bc7::opaque_ultra_fast_settings();
 
-				intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface).into()
-			}
-			Formats::RGB16 | Formats::RGBA16 => {
-				data
-			}
-			_ => {
-				panic!("Unsupported format")
-			}
-		};
+                intel_tex_2::bc7::compress_blocks(&settings, &rgba_surface).into()
+            }
+            Formats::RGB16 | Formats::RGBA16 => data,
+            _ => {
+                panic!("Unsupported format")
+            }
+        };
 
-		(Image {
-			format,
-			extent: extent.as_array(),
-			gamma: *gamma,
-		},
-		data)
-	}
+        (
+            Image {
+                format,
+                extent: extent.as_array(),
+                gamma: *gamma,
+            },
+            data,
+        )
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Semantic {
-	Albedo,
-	Normal,
-	Metallic,
-	Roughness,
-	Emissive,
-	Height,
-	Opacity,
-	Displacement,
-	AO,
-	Other,
+    Albedo,
+    Normal,
+    Metallic,
+    Roughness,
+    Emissive,
+    Height,
+    Opacity,
+    Displacement,
+    AO,
+    Other,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct ImageDescription {
-	pub format: Formats,
-	pub extent: Extent,
-	pub gamma: Gamma,
-	pub semantic: Semantic,
+    pub format: Formats,
+    pub extent: Extent,
+    pub gamma: Gamma,
+    pub semantic: Semantic,
 }
 
 impl Description for ImageDescription {
-	// type Resource = Image;
-	fn get_resource_class() -> &'static str {
-		"Image"
-	}
+    // type Resource = Image;
+    fn get_resource_class() -> &'static str {
+        "Image"
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{r#async, asset::{self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId}, resource};
+    use crate::{
+        asset::{
+            self, asset_handler::AssetHandler, asset_manager::AssetManager,
+            image_asset_handler::ImageAssetHandler, ResourceId,
+        },
+        r#async, resource,
+    };
 
-	#[r#async::test]
-	async fn load_image() {
-		let asset_handler = ImageAssetHandler::new();
+    #[r#async::test]
+    async fn load_image() {
+        let asset_handler = ImageAssetHandler::new();
 
-		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
+        let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
+        let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+        let asset_manager = AssetManager::new(asset_storage_backend.clone());
 
-		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
+        let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
-		let asset = asset_handler.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).await.expect("Image asset handler did not handle asset");
+        let asset = asset_handler
+            .load(
+                &asset_manager,
+                &resource_storage_backend,
+                &asset_storage_backend,
+                url,
+            )
+            .await
+            .expect("Image asset handler did not handle asset");
 
-		let _ = asset.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url,).await.expect("Image asset did not load");
+        let _ = asset
+            .load(
+                &asset_manager,
+                &resource_storage_backend,
+                &asset_storage_backend,
+                url,
+            )
+            .await
+            .expect("Image asset did not load");
 
-		let generated_resources = resource_storage_backend.get_resources();
+        let generated_resources = resource_storage_backend.get_resources();
 
-		assert_eq!(generated_resources.len(), 1);
+        assert_eq!(generated_resources.len(), 1);
 
-		let resource = &generated_resources[0];
+        let resource = &generated_resources[0];
 
-		assert_eq!(resource.id, "patterned_brick_floor_02_diff_2k.png");
-		assert_eq!(resource.class, "Image");
-	}
+        assert_eq!(resource.id, "patterned_brick_floor_02_diff_2k.png");
+        assert_eq!(resource.class, "Image");
+    }
 
-	// #[test]
-	// #[ignore]
-	// fn load_16_bit_normal_image() {
-	// 	let asset_manager = AssetManager::new("../assets".into(),);
-	// 	let asset_handler = ImageAssetHandler::new();
+    // #[test]
+    // #[ignore]
+    // fn load_16_bit_normal_image() {
+    // 	let asset_manager = AssetManager::new("../assets".into(),);
+    // 	let asset_handler = ImageAssetHandler::new();
 
-	// 	let url = "Revolver_Normal.png";
+    // 	let url = "Revolver_Normal.png";
 
-	// 	let storage_backend = asset_manager.get_test_storage_backend();
+    // 	let storage_backend = asset_manager.get_test_storage_backend();
 
-	// 	let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
+    // 	let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
 
-	// 	let generated_resources = storage_backend.get_resources();
+    // 	let generated_resources = storage_backend.get_resources();
 
-	// 	assert_eq!(generated_resources.len(), 1);
+    // 	assert_eq!(generated_resources.len(), 1);
 
-	// 	let resource = &generated_resources[0];
+    // 	let resource = &generated_resources[0];
 
-	// 	assert_eq!(resource.id, url);
-	// 	assert_eq!(resource.class, "Image");
-	// }
+    // 	assert_eq!(resource.id, url);
+    // 	assert_eq!(resource.class, "Image");
+    // }
 }

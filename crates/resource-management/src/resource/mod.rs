@@ -8,17 +8,17 @@ pub mod storage_backend;
 
 pub mod resource_id;
 
-pub mod reader;
 pub mod read_target;
+pub mod reader;
 
 pub use storage_backend::redb_storage_backend::RedbStorageBackend;
 pub use storage_backend::ReadStorageBackend;
-pub use storage_backend::WriteStorageBackend;
 pub use storage_backend::StorageBackend;
+pub use storage_backend::WriteStorageBackend;
 
-pub use resource_id::ResourceId;
 pub use read_target::ReadTargets;
 pub use read_target::ReadTargetsMut;
+pub use resource_id::ResourceId;
 
 use crate::Model;
 
@@ -38,38 +38,40 @@ pub mod tests {
 
     use super::{reader::ResourceReader, ReadTargets, ReadTargetsMut};
 
-	#[derive(Debug)]
-	pub struct TestResourceReader {
-		data: Box<[u8]>,
-	}
+    #[derive(Debug)]
+    pub struct TestResourceReader {
+        data: Box<[u8]>,
+    }
 
-	impl TestResourceReader {
-		pub fn new(data: Box<[u8]>) -> Self {
-			Self {
-				data,
-			}
-		}
-	}
+    impl TestResourceReader {
+        pub fn new(data: Box<[u8]>) -> Self {
+            Self { data }
+        }
+    }
 
-	impl ResourceReader for TestResourceReader {
-		fn read_into<'b, 'c: 'b, 'a: 'b>(&mut self, _: Option<&'c [StreamDescription]>, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, ()> {
-			let offset = 0;
+    impl ResourceReader for TestResourceReader {
+        fn read_into<'b, 'c: 'b, 'a: 'b>(
+            &mut self,
+            _: Option<&'c [StreamDescription]>,
+            read_target: ReadTargetsMut<'a>,
+        ) -> Result<ReadTargets<'a>, ()> {
+            let offset = 0;
 
-			match read_target {
-				ReadTargetsMut::Buffer(buffer) => {
-					let l = buffer.len();
-					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-					Ok(ReadTargets::Buffer(&buffer[..self.data.len().min(l)]))
-				}
-				ReadTargetsMut::Box(mut buffer) => {
-					let l = buffer.len();
-					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-					Ok(ReadTargets::Box(buffer))
-				}
-				_ => {
-					Err(())
-				}
-			}
-		}
-	}
+            match read_target {
+                ReadTargetsMut::Buffer(buffer) => {
+                    let l = buffer.len();
+                    buffer[..self.data.len().min(l)]
+                        .copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
+                    Ok(ReadTargets::Buffer(&buffer[..self.data.len().min(l)]))
+                }
+                ReadTargetsMut::Box(mut buffer) => {
+                    let l = buffer.len();
+                    buffer[..self.data.len().min(l)]
+                        .copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
+                    Ok(ReadTargets::Box(buffer))
+                }
+                _ => Err(()),
+            }
+        }
+    }
 }

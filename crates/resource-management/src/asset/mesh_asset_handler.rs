@@ -8,10 +8,21 @@ use utils::{
 };
 
 use crate::{
-    ProcessedAsset, StreamDescription, asset::{self, image_asset_handler::{Semantic, guess_semantic_from_name}}, r#async::{BoxedFuture, spawn_cpu_task}, resource, resources::{material::VariantModel, mesh::{MeshModel, PrimitiveModel}}, types::{
+    asset::{
+        self,
+        image_asset_handler::{guess_semantic_from_name, Semantic},
+    },
+    r#async::{spawn_cpu_task, BoxedFuture},
+    resource,
+    resources::{
+        material::VariantModel,
+        mesh::{MeshModel, PrimitiveModel},
+    },
+    types::{
         Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent,
         VertexSemantics,
-    }
+    },
+    ProcessedAsset, StreamDescription,
 };
 
 use super::{
@@ -24,92 +35,96 @@ use super::{
 pub struct MeshAssetHandler {}
 
 impl MeshAssetHandler {
-	pub fn new() -> MeshAssetHandler {
-		MeshAssetHandler {}
-	}
+    pub fn new() -> MeshAssetHandler {
+        MeshAssetHandler {}
+    }
 }
 
 impl AssetHandler for MeshAssetHandler {
-	fn can_handle(&self, r#type: &str) -> bool {
-		r#type == "gltf" || r#type == "glb"
-	}
+    fn can_handle(&self, r#type: &str) -> bool {
+        r#type == "gltf" || r#type == "glb"
+    }
 
-	fn load<'a>(
-		&'a self,
-		_asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "gltf" && dt != "glb" {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
+    fn load<'a>(
+        &'a self,
+        _asset_manager: &'a AssetManager,
+        storage_backend: &'a dyn resource::StorageBackend,
+        asset_storage_backend: &'a dyn asset::StorageBackend,
+        url: ResourceId<'a>,
+    ) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+        Box::pin(async move {
+            if let Some(dt) = storage_backend.get_type(url) {
+                if dt != "gltf" && dt != "glb" {
+                    return Err(LoadErrors::UnsupportedType);
+                }
+            }
 
-			let (data, spec, dt) = asset_storage_backend
-				.resolve(url)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+            let (data, spec, dt) = asset_storage_backend
+                .resolve(url)
+                .await
+                .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			let (gltf, buffers) = if dt == "glb" {
-				let parsed = spawn_cpu_task(move || -> Result<(gltf::Gltf, Vec<gltf::buffer::Data>), LoadErrors> {
-					let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
-					let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
-					let buffers = gltf::import_buffers(
-						&gltf,
-						None,
-						glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()),
-					)
-					.map_err(|_| LoadErrors::FailedToProcess)?;
-					Ok((gltf, buffers))
-				})
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)??;
+            let (gltf, buffers) = if dt == "glb" {
+                let parsed = spawn_cpu_task(
+                    move || -> Result<(gltf::Gltf, Vec<gltf::buffer::Data>), LoadErrors> {
+                        let glb = gltf::Glb::from_slice(&data)
+                            .map_err(|_| LoadErrors::FailedToProcess)?;
+                        let gltf = gltf::Gltf::from_slice(&glb.json)
+                            .map_err(|_| LoadErrors::FailedToProcess)?;
+                        let buffers = gltf::import_buffers(
+                            &gltf,
+                            None,
+                            glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()),
+                        )
+                        .map_err(|_| LoadErrors::FailedToProcess)?;
+                        Ok((gltf, buffers))
+                    },
+                )
+                .await
+                .map_err(|_| LoadErrors::FailedToProcess)??;
 
-				parsed
-			} else {
-				let gltf = spawn_cpu_task(move || {
-					gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)
-				})
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)??;
+                parsed
+            } else {
+                let gltf = spawn_cpu_task(move || {
+                    gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)
+                })
+                .await
+                .map_err(|_| LoadErrors::FailedToProcess)??;
 
-				let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| {
-					if let gltf::buffer::Source::Uri(r) = b.source() {
-						if r.ends_with(".bin") {
-							Some(r)
-						} else {
-							None
-						}
-					} else {
-						None
-					}
-				}) {
-					let bin_file = ResourceId::new(bin_file);
-					let (bin, ..) = asset_storage_backend
-						.resolve(bin_file)
-						.await
-						.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-					gltf.buffers()
-						.map(|_| gltf::buffer::Data(bin.clone().into()))
-						.collect::<Vec<_>>()
-				} else {
-					gltf::import_buffers(&gltf, None, None)
-						.map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?
-				};
+                let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| {
+                    if let gltf::buffer::Source::Uri(r) = b.source() {
+                        if r.ends_with(".bin") {
+                            Some(r)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }) {
+                    let bin_file = ResourceId::new(bin_file);
+                    let (bin, ..) = asset_storage_backend
+                        .resolve(bin_file)
+                        .await
+                        .or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+                    gltf.buffers()
+                        .map(|_| gltf::buffer::Data(bin.clone().into()))
+                        .collect::<Vec<_>>()
+                } else {
+                    gltf::import_buffers(&gltf, None, None)
+                        .map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?
+                };
 
-				(gltf, buffers)
-			};
+                (gltf, buffers)
+            };
 
-			Ok(Box::new(MeshAsset {
-				spec,
-				gltf,
-				buffers,
-			}) as Box<dyn Asset>)
-		})
-	}
+            Ok(Box::new(MeshAsset {
+                spec,
+                gltf,
+                buffers,
+            }) as Box<dyn Asset>)
+        })
+    }
 }
 
 struct MeshAsset {
@@ -152,662 +167,690 @@ impl Asset for MeshAsset {
             let gltf = &self.gltf;
             let buffers = &self.buffers;
 
-        if let Some(fragment) = url.get_fragment() {
-            let image = gltf
-                .images()
-                .find(|i| i.name() == Some(fragment.as_ref()))
-                .ok_or("Image not found")?;
-            let image = gltf::image::Data::from_source(image.source(), None, &buffers)
-                .map_err(|e| e.to_string())?;
-            let format = match image.format {
-                gltf::image::Format::R8G8B8 => Formats::RGB8,
-                gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
-                gltf::image::Format::R16G16B16 => Formats::RGB16,
-                gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
-                _ => return Err("Unsupported image format".to_string()),
-            };
-            let extent = Extent::rectangle(image.width, image.height);
+            if let Some(fragment) = url.get_fragment() {
+                let image = gltf
+                    .images()
+                    .find(|i| i.name() == Some(fragment.as_ref()))
+                    .ok_or("Image not found")?;
+                let image = gltf::image::Data::from_source(image.source(), None, &buffers)
+                    .map_err(|e| e.to_string())?;
+                let format = match image.format {
+                    gltf::image::Format::R8G8B8 => Formats::RGB8,
+                    gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
+                    gltf::image::Format::R16G16B16 => Formats::RGB16,
+                    gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
+                    _ => return Err("Unsupported image format".to_string()),
+                };
+                let extent = Extent::rectangle(image.width, image.height);
 
-            let semantic = guess_semantic_from_name(url.get_base());
+                let semantic = guess_semantic_from_name(url.get_base());
 
-            let image_description = crate::asset::image_asset_handler::ImageDescription {
-                format,
-                extent,
-                semantic,
-                gamma: if semantic == Semantic::Albedo {
-                    Gamma::SRGB
-                } else {
-                    Gamma::Linear
-                },
-            };
+                let image_description = crate::asset::image_asset_handler::ImageDescription {
+                    format,
+                    extent,
+                    semantic,
+                    gamma: if semantic == Semantic::Albedo {
+                        Gamma::SRGB
+                    } else {
+                        Gamma::Linear
+                    },
+                };
 
-            let _resource = asset_manager.produce(
-                url,
-                "image/png",
-                &image_description,
-                image.pixels.into_boxed_slice(),
-                storage_backend,
-            );
-
-            return Ok(());
-        }
-
-        let spec = if let Some(spec) = &self.spec {
-            spec
-        } else {
-            log::error!("No spec found for {:#?}", url);
-            return Err("Need .bead file".to_string());
-        };
-
-        // Gather vertex components and check that they are all equal
-        let all = gltf
-            .meshes()
-            .map(|mesh| {
-                mesh.primitives().map(|primitive| {
-                    primitive
-                        .attributes()
-                        .scan(0, |state, (semantic, _)| {
-                            let channel = *state;
-
-                            *state += 1;
-
-                            match semantic {
-                                gltf::Semantic::Positions => VertexComponent {
-                                    semantic: VertexSemantics::Position,
-                                    format: "vec3f".to_string(),
-                                    channel,
-                                },
-                                gltf::Semantic::Normals => VertexComponent {
-                                    semantic: VertexSemantics::Normal,
-                                    format: "vec3f".to_string(),
-                                    channel,
-                                },
-                                gltf::Semantic::Tangents => VertexComponent {
-                                    semantic: VertexSemantics::Tangent,
-                                    format: "vec3f".to_string(),
-                                    channel,
-                                },
-                                gltf::Semantic::Colors(_) => todo!(),
-                                gltf::Semantic::TexCoords(_count) => VertexComponent {
-                                    semantic: VertexSemantics::UV,
-                                    format: "vec2f".to_string(),
-                                    channel,
-                                },
-                                gltf::Semantic::Joints(_) => VertexComponent {
-                                    semantic: VertexSemantics::Joints,
-                                    format: "vec4u".to_string(),
-                                    channel,
-                                },
-                                gltf::Semantic::Weights(_) => VertexComponent {
-                                    semantic: VertexSemantics::Weights,
-                                    format: "vec4f".to_string(),
-                                    channel,
-                                },
-                            }
-                            .into()
-                        })
-                        .collect::<Vec<VertexComponent>>()
-                })
-            })
-            .flatten();
-
-        let vertex_layouts = all.collect::<Vec<Vec<VertexComponent>>>();
-        let vertex_layout = vertex_layouts.first().unwrap().clone();
-
-        fn flatten_tree(
-            base: maths_rs::Mat4f,
-            node: gltf::Node,
-        ) -> Vec<(gltf::Node, maths_rs::Mat4f)> {
-            let transform = node.transform().matrix();
-            let transform = base
-                * maths_rs::Mat4f::new(
-                    transform[0][0],
-                    transform[1][0],
-                    transform[2][0],
-                    transform[3][0],
-                    transform[0][1],
-                    transform[1][1],
-                    transform[2][1],
-                    transform[3][1],
-                    transform[0][2],
-                    transform[1][2],
-                    transform[2][2],
-                    transform[3][2],
-                    transform[0][3],
-                    transform[1][3],
-                    transform[2][3],
-                    transform[3][3],
+                let _resource = asset_manager.produce(
+                    url,
+                    "image/png",
+                    &image_description,
+                    image.pixels.into_boxed_slice(),
+                    storage_backend,
                 );
 
-            let mut nodes = vec![(node.clone(), transform)];
-
-            for child in node.children() {
-                nodes.extend(flatten_tree(transform, child));
+                return Ok(());
             }
 
-            nodes
-        }
+            let spec = if let Some(spec) = &self.spec {
+                spec
+            } else {
+                log::error!("No spec found for {:#?}", url);
+                return Err("Need .bead file".to_string());
+            };
 
-        let mut flat_tree = gltf
-            .scenes()
-            .map(|scene| {
-                scene
-                    .nodes()
-                    .map(|node| flatten_tree(maths_rs::Mat4f::identity(), node))
-                    .flatten()
-            })
-            .flatten()
-            .collect::<Vec<(gltf::Node, maths_rs::Mat4f)>>();
+            // Gather vertex components and check that they are all equal
+            let all = gltf
+                .meshes()
+                .map(|mesh| {
+                    mesh.primitives().map(|primitive| {
+                        primitive
+                            .attributes()
+                            .scan(0, |state, (semantic, _)| {
+                                let channel = *state;
 
-        for (_, transform) in &mut flat_tree {
-            *transform = maths_rs::Mat4f::from_scale(Vec3::new(1f32, 1f32, -1f32)) * *transform;
-            // Make vertices left-handed
-        }
+                                *state += 1;
 
-        let primitives = flat_tree
-            .iter()
-            .filter_map(|(node, _)| {
-                node.mesh()
-                    .map(|mesh| mesh.primitives().map(|primitive| primitive))
-            })
-            .flatten()
-            .collect::<Vec<_>>();
-
-        let primitives_and_transform = flat_tree
-            .iter()
-            .filter_map(|(node, transform)| {
-                node.mesh()
-                    .map(|mesh| mesh.primitives().map(|primitive| (primitive, *transform)))
-            })
-            .flatten()
-            .collect::<Vec<_>>();
-
-        let flat_mesh_tree = {
-            primitives_and_transform
-                .iter()
-                .map(|(primitive, transform)| {
-                    (
-                        primitive,
-                        primitive.reader(|buffer| Some(&buffers[buffer.index()])),
-                        *transform,
-                    )
+                                match semantic {
+                                    gltf::Semantic::Positions => VertexComponent {
+                                        semantic: VertexSemantics::Position,
+                                        format: "vec3f".to_string(),
+                                        channel,
+                                    },
+                                    gltf::Semantic::Normals => VertexComponent {
+                                        semantic: VertexSemantics::Normal,
+                                        format: "vec3f".to_string(),
+                                        channel,
+                                    },
+                                    gltf::Semantic::Tangents => VertexComponent {
+                                        semantic: VertexSemantics::Tangent,
+                                        format: "vec3f".to_string(),
+                                        channel,
+                                    },
+                                    gltf::Semantic::Colors(_) => todo!(),
+                                    gltf::Semantic::TexCoords(_count) => VertexComponent {
+                                        semantic: VertexSemantics::UV,
+                                        format: "vec2f".to_string(),
+                                        channel,
+                                    },
+                                    gltf::Semantic::Joints(_) => VertexComponent {
+                                        semantic: VertexSemantics::Joints,
+                                        format: "vec4u".to_string(),
+                                        channel,
+                                    },
+                                    gltf::Semantic::Weights(_) => VertexComponent {
+                                        semantic: VertexSemantics::Weights,
+                                        format: "vec4f".to_string(),
+                                        channel,
+                                    },
+                                }
+                                .into()
+                            })
+                            .collect::<Vec<VertexComponent>>()
+                    })
                 })
-        };
+                .flatten();
 
-        let material_name_per_primitive = primitives
-            .iter()
-            .map(|primitive: &gltf::Primitive| {
-                let asset = &spec["asset"];
+            let vertex_layouts = all.collect::<Vec<Vec<VertexComponent>>>();
+            let vertex_layout = vertex_layouts.first().unwrap().clone();
 
-                let gltf_material = primitive.material();
-                let gltf_material_name = gltf_material.name().unwrap();
+            fn flatten_tree(
+                base: maths_rs::Mat4f,
+                node: gltf::Node,
+            ) -> Vec<(gltf::Node, maths_rs::Mat4f)> {
+                let transform = node.transform().matrix();
+                let transform = base
+                    * maths_rs::Mat4f::new(
+                        transform[0][0],
+                        transform[1][0],
+                        transform[2][0],
+                        transform[3][0],
+                        transform[0][1],
+                        transform[1][1],
+                        transform[2][1],
+                        transform[3][1],
+                        transform[0][2],
+                        transform[1][2],
+                        transform[2][2],
+                        transform[3][2],
+                        transform[0][3],
+                        transform[1][3],
+                        transform[2][3],
+                        transform[3][3],
+                    );
 
-                let material = &asset[gltf_material_name];
-                material["asset"].as_str().unwrap().to_string()
-            })
-            .collect::<Vec<String>>();
+                let mut nodes = vec![(node.clone(), transform)];
 
-        let mut materials_per_primitive = Vec::with_capacity(material_name_per_primitive.len());
-        for name in material_name_per_primitive {
-            let material = asset_manager
+                for child in node.children() {
+                    nodes.extend(flatten_tree(transform, child));
+                }
+
+                nodes
+            }
+
+            let mut flat_tree = gltf
+                .scenes()
+                .map(|scene| {
+                    scene
+                        .nodes()
+                        .map(|node| flatten_tree(maths_rs::Mat4f::identity(), node))
+                        .flatten()
+                })
+                .flatten()
+                .collect::<Vec<(gltf::Node, maths_rs::Mat4f)>>();
+
+            for (_, transform) in &mut flat_tree {
+                *transform = maths_rs::Mat4f::from_scale(Vec3::new(1f32, 1f32, -1f32)) * *transform;
+                // Make vertices left-handed
+            }
+
+            let primitives = flat_tree
+                .iter()
+                .filter_map(|(node, _)| {
+                    node.mesh()
+                        .map(|mesh| mesh.primitives().map(|primitive| primitive))
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+
+            let primitives_and_transform = flat_tree
+                .iter()
+                .filter_map(|(node, transform)| {
+                    node.mesh()
+                        .map(|mesh| mesh.primitives().map(|primitive| (primitive, *transform)))
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+
+            let flat_mesh_tree = {
+                primitives_and_transform
+                    .iter()
+                    .map(|(primitive, transform)| {
+                        (
+                            primitive,
+                            primitive.reader(|buffer| Some(&buffers[buffer.index()])),
+                            *transform,
+                        )
+                    })
+            };
+
+            let material_name_per_primitive = primitives
+                .iter()
+                .map(|primitive: &gltf::Primitive| {
+                    let asset = &spec["asset"];
+
+                    let gltf_material = primitive.material();
+                    let gltf_material_name = gltf_material.name().unwrap();
+
+                    let material = &asset[gltf_material_name];
+                    material["asset"].as_str().unwrap().to_string()
+                })
+                .collect::<Vec<String>>();
+
+            let mut materials_per_primitive = Vec::with_capacity(material_name_per_primitive.len());
+            for name in material_name_per_primitive {
+                let material = asset_manager
                 .load::<VariantModel>(&name, storage_backend)
                 .await
                 .map_err(|_| "Failed to load materials. The referenced material assets could not be loaded.".to_string())?;
-            materials_per_primitive.push(material);
-        }
+                materials_per_primitive.push(material);
+            }
 
-        let vertex_counts = flat_mesh_tree
-            .clone()
-            .map(|(_, reader, _)| {
-                if let Some(positions) = reader.read_positions() {
-                    positions.clone().count()
-                } else {
-                    panic!("We should not be here");
-                }
-            })
-            .collect::<Vec<usize>>();
+            let vertex_counts = flat_mesh_tree
+                .clone()
+                .map(|(_, reader, _)| {
+                    if let Some(positions) = reader.read_positions() {
+                        positions.clone().count()
+                    } else {
+                        panic!("We should not be here");
+                    }
+                })
+                .collect::<Vec<usize>>();
 
-        enum MeshBuilds {
-            // Each primitive is a separate mesh
-            Primitive,
-        }
+            enum MeshBuilds {
+                // Each primitive is a separate mesh
+                Primitive,
+            }
 
-        let _mesh_vertex_count = vertex_counts.iter().sum::<usize>();
+            let _mesh_vertex_count = vertex_counts.iter().sum::<usize>();
 
-        // Create vertex count prefix sum, from 0
-        let vertex_prefix_sum = vertex_counts
-            .iter()
-            .scan(0, |state, &x| {
-                let old = *state;
-                *state += x;
-                Some(old)
-            })
-            .collect::<Vec<usize>>();
+            // Create vertex count prefix sum, from 0
+            let vertex_prefix_sum = vertex_counts
+                .iter()
+                .scan(0, |state, &x| {
+                    let old = *state;
+                    *state += x;
+                    Some(old)
+                })
+                .collect::<Vec<usize>>();
 
-        let (mesh, streams, buffer) = match MeshBuilds::Primitive {
-            MeshBuilds::Primitive => {
-                let buffer_blocks = [
-                    Streams::Vertices(VertexSemantics::Position),
-                    Streams::Vertices(VertexSemantics::Normal),
-                    Streams::Vertices(VertexSemantics::UV),
-                    Streams::Vertices(VertexSemantics::Joints),
-                    Streams::Vertices(VertexSemantics::Weights),
-                    Streams::Indices(IndexStreamTypes::Vertices),
-                    Streams::Indices(IndexStreamTypes::Meshlets),
-                    Streams::Meshlets,
-                ];
+            let (mesh, streams, buffer) = match MeshBuilds::Primitive {
+                MeshBuilds::Primitive => {
+                    let buffer_blocks = [
+                        Streams::Vertices(VertexSemantics::Position),
+                        Streams::Vertices(VertexSemantics::Normal),
+                        Streams::Vertices(VertexSemantics::UV),
+                        Streams::Vertices(VertexSemantics::Joints),
+                        Streams::Vertices(VertexSemantics::Weights),
+                        Streams::Indices(IndexStreamTypes::Vertices),
+                        Streams::Indices(IndexStreamTypes::Meshlets),
+                        Streams::Meshlets,
+                    ];
 
-                let indices_per_primitive = flat_mesh_tree
-                    .clone()
-                    .map(|(_, reader, _)| {
-                        let vertex_count = reader.read_positions().unwrap().len();
-                        let indices = reader
-                            .read_indices()
-                            .unwrap()
-                            .into_u32()
-                            .collect::<Vec<u32>>();
-                        meshopt::optimize_vertex_cache(&indices, vertex_count)
-                    })
-                    .collect::<Vec<Vec<u32>>>();
+                    let indices_per_primitive = flat_mesh_tree
+                        .clone()
+                        .map(|(_, reader, _)| {
+                            let vertex_count = reader.read_positions().unwrap().len();
+                            let indices = reader
+                                .read_indices()
+                                .unwrap()
+                                .into_u32()
+                                .collect::<Vec<u32>>();
+                            meshopt::optimize_vertex_cache(&indices, vertex_count)
+                        })
+                        .collect::<Vec<Vec<u32>>>();
 
-                let vertices_per_primitive = flat_mesh_tree
-                    .clone()
-                    .map(|(_, reader, transform)| {
-                        if let Some(positions) = reader.read_positions() {
-                            positions
-                                .map(|position| {
-                                    let position =
-                                        maths_rs::Vec3f::new(position[0], position[1], position[2]);
-                                    let transformed_position = transform * position;
-                                    transformed_position
-                                        .iter()
-                                        .map(|m| m.to_le_bytes())
-                                        .flatten()
-                                        .collect::<Vec<u8>>()
-                                })
-                                .flatten()
-                                .collect::<Vec<u8>>()
-                        } else {
-                            panic!("We should not be here");
-                        }
-                    })
-                    .collect::<Vec<Vec<u8>>>();
-
-                let meshlets_per_primitive = vertices_per_primitive
-                    .iter()
-                    .zip(indices_per_primitive.iter())
-                    .map(|(vertices, indices)| {
-                        meshopt::clusterize::build_meshlets(
-                            &indices,
-                            &meshopt::VertexDataAdapter::new(&vertices, 12, 0).unwrap(),
-                            64,
-                            124,
-                            0.0f32,
-                        )
-                    })
-                    .collect::<Vec<meshopt::Meshlets>>();
-
-                let blocks = buffer_blocks
-                    .iter()
-                    .map(|&block| {
-                        match block {
-                            Streams::Vertices(VertexSemantics::Position) => {
-                                vertices_per_primitive.clone() // TODO: try to avoid cloning
-                            }
-                            Streams::Vertices(VertexSemantics::Normal) => flat_mesh_tree
-                                .clone()
-                                .map(|(_, reader, transform)| {
-                                    if let Some(normals) = reader.read_normals() {
-                                        normals
-                                            .map(|normal| {
-                                                let normal = maths_rs::Vec3f::new(
-                                                    normal[0], normal[1], normal[2],
-                                                );
-
-                                                let transformed_normal = transform * normal;
-
-                                                transformed_normal
-                                                    .iter()
-                                                    .map(|m| m.to_le_bytes())
-                                                    .flatten()
-                                                    .collect::<Vec<u8>>()
-                                            })
-                                            .flatten()
-                                            .collect::<Vec<u8>>()
-                                    } else {
-                                        panic!("We should not be here");
-                                    }
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            Streams::Vertices(VertexSemantics::UV) => flat_mesh_tree
-                                .clone()
-                                .map(|(_, reader, _)| {
-                                    (0..1)
-                                        .map(|i| {
-                                            if let Some(uv) = reader.read_tex_coords(i) {
-                                                assert_eq!(i, 0);
-                                                uv.into_f32()
-                                                    .map(|uv| {
-                                                        uv.iter()
-                                                            .map(|m| m.to_le_bytes())
-                                                            .flatten()
-                                                            .collect::<Vec<u8>>()
-                                                    })
-                                                    .flatten()
-                                            } else {
-                                                panic!("We should not be here");
-                                            }
-                                        })
-                                        .flatten()
-                                        .collect::<Vec<u8>>()
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            Streams::Vertices(VertexSemantics::Joints) => flat_mesh_tree
-                                .clone()
-                                .map(|(_, reader, _)| {
-                                    if let Some(joints) = reader.read_joints(0) {
-                                        joints
-                                            .into_u16()
-                                            .map(|joint| {
-                                                joint
-                                                    .iter()
-                                                    .map(|m| m.to_le_bytes())
-                                                    .flatten()
-                                                    .collect::<Vec<u8>>()
-                                            })
-                                            .flatten()
-                                            .collect::<Vec<u8>>()
-                                    } else {
-                                        panic!("We should not be here");
-                                    }
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            Streams::Vertices(VertexSemantics::Weights) => flat_mesh_tree
-                                .clone()
-                                .map(|(_, reader, _)| {
-                                    if let Some(weights) = reader.read_weights(0) {
-                                        weights
-                                            .into_f32()
-                                            .map(|weight| {
-                                                weight
-                                                    .iter()
-                                                    .map(|m| m.to_le_bytes())
-                                                    .flatten()
-                                                    .collect::<Vec<u8>>()
-                                            })
-                                            .flatten()
-                                            .collect::<Vec<u8>>()
-                                    } else {
-                                        panic!("We should not be here");
-                                    }
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            Streams::Indices(IndexStreamTypes::Vertices) => {
-                                #[allow(unused_variables)]
-                                meshlets_per_primitive
-                                    .iter()
-                                    .zip(vertex_prefix_sum.iter())
-                                    .map(|(meshlets, vps)| {
-                                        let index_type = IntegralTypes::U16;
-
-                                        let max_size = match index_type {
-                                            IntegralTypes::U16 => 0xFFFFu32,
-                                            IntegralTypes::U32 => 0xFFFFFFFFu32,
-                                            _ => panic!("Unsupported index type"),
-                                        };
-
-                                        debug_assert!(
-                                            meshlets
-                                                .iter()
-                                                .all(|e| e.vertices.iter().all(|e| *e <= max_size)),
-                                            "Vertex index out of bounds"
+                    let vertices_per_primitive = flat_mesh_tree
+                        .clone()
+                        .map(|(_, reader, transform)| {
+                            if let Some(positions) = reader.read_positions() {
+                                positions
+                                    .map(|position| {
+                                        let position = maths_rs::Vec3f::new(
+                                            position[0],
+                                            position[1],
+                                            position[2],
                                         );
+                                        let transformed_position = transform * position;
+                                        transformed_position
+                                            .iter()
+                                            .map(|m| m.to_le_bytes())
+                                            .flatten()
+                                            .collect::<Vec<u8>>()
+                                    })
+                                    .flatten()
+                                    .collect::<Vec<u8>>()
+                            } else {
+                                panic!("We should not be here");
+                            }
+                        })
+                        .collect::<Vec<Vec<u8>>>();
 
-                                        match index_type {
-                                            IntegralTypes::U16 => {
-                                                meshlets
-                                                    .iter()
-                                                    .map(|e| {
-                                                        e.vertices
-                                                            .iter()
-                                                            .map(|i| (*i as u16).to_le_bytes())
-                                                    })
-                                                    .flatten()
-                                                    .flatten()
-                                                    .collect::<Vec<u8>>() // Indices per primitive
-                                                                          // meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16 + *vps as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per mesh
-                                            }
-                                            IntegralTypes::U32 => meshlets
-                                                .iter()
-                                                .map(|e| e.vertices.iter().map(|i| *i))
+                    let meshlets_per_primitive = vertices_per_primitive
+                        .iter()
+                        .zip(indices_per_primitive.iter())
+                        .map(|(vertices, indices)| {
+                            meshopt::clusterize::build_meshlets(
+                                &indices,
+                                &meshopt::VertexDataAdapter::new(&vertices, 12, 0).unwrap(),
+                                64,
+                                124,
+                                0.0f32,
+                            )
+                        })
+                        .collect::<Vec<meshopt::Meshlets>>();
+
+                    let blocks = buffer_blocks
+                        .iter()
+                        .map(|&block| {
+                            match block {
+                                Streams::Vertices(VertexSemantics::Position) => {
+                                    vertices_per_primitive.clone() // TODO: try to avoid cloning
+                                }
+                                Streams::Vertices(VertexSemantics::Normal) => flat_mesh_tree
+                                    .clone()
+                                    .map(|(_, reader, transform)| {
+                                        if let Some(normals) = reader.read_normals() {
+                                            normals
+                                                .map(|normal| {
+                                                    let normal = maths_rs::Vec3f::new(
+                                                        normal[0], normal[1], normal[2],
+                                                    );
+
+                                                    let transformed_normal = transform * normal;
+
+                                                    transformed_normal
+                                                        .iter()
+                                                        .map(|m| m.to_le_bytes())
+                                                        .flatten()
+                                                        .collect::<Vec<u8>>()
+                                                })
                                                 .flatten()
-                                                .map(|e| e.to_le_bytes())
-                                                .flatten()
-                                                .collect::<Vec<u8>>(),
-                                            _ => panic!("Unsupported index type"),
+                                                .collect::<Vec<u8>>()
+                                        } else {
+                                            panic!("We should not be here");
                                         }
                                     })
-                                    .collect::<Vec<Vec<u8>>>()
-                            }
-                            Streams::Indices(IndexStreamTypes::Meshlets) => meshlets_per_primitive
-                                .iter()
-                                .map(|meshlets| {
-                                    debug_assert!(
+                                    .collect::<Vec<Vec<u8>>>(),
+                                Streams::Vertices(VertexSemantics::UV) => flat_mesh_tree
+                                    .clone()
+                                    .map(|(_, reader, _)| {
+                                        (0..1)
+                                            .map(|i| {
+                                                if let Some(uv) = reader.read_tex_coords(i) {
+                                                    assert_eq!(i, 0);
+                                                    uv.into_f32()
+                                                        .map(|uv| {
+                                                            uv.iter()
+                                                                .map(|m| m.to_le_bytes())
+                                                                .flatten()
+                                                                .collect::<Vec<u8>>()
+                                                        })
+                                                        .flatten()
+                                                } else {
+                                                    panic!("We should not be here");
+                                                }
+                                            })
+                                            .flatten()
+                                            .collect::<Vec<u8>>()
+                                    })
+                                    .collect::<Vec<Vec<u8>>>(),
+                                Streams::Vertices(VertexSemantics::Joints) => flat_mesh_tree
+                                    .clone()
+                                    .map(|(_, reader, _)| {
+                                        if let Some(joints) = reader.read_joints(0) {
+                                            joints
+                                                .into_u16()
+                                                .map(|joint| {
+                                                    joint
+                                                        .iter()
+                                                        .map(|m| m.to_le_bytes())
+                                                        .flatten()
+                                                        .collect::<Vec<u8>>()
+                                                })
+                                                .flatten()
+                                                .collect::<Vec<u8>>()
+                                        } else {
+                                            panic!("We should not be here");
+                                        }
+                                    })
+                                    .collect::<Vec<Vec<u8>>>(),
+                                Streams::Vertices(VertexSemantics::Weights) => flat_mesh_tree
+                                    .clone()
+                                    .map(|(_, reader, _)| {
+                                        if let Some(weights) = reader.read_weights(0) {
+                                            weights
+                                                .into_f32()
+                                                .map(|weight| {
+                                                    weight
+                                                        .iter()
+                                                        .map(|m| m.to_le_bytes())
+                                                        .flatten()
+                                                        .collect::<Vec<u8>>()
+                                                })
+                                                .flatten()
+                                                .collect::<Vec<u8>>()
+                                        } else {
+                                            panic!("We should not be here");
+                                        }
+                                    })
+                                    .collect::<Vec<Vec<u8>>>(),
+                                Streams::Indices(IndexStreamTypes::Vertices) => {
+                                    #[allow(unused_variables)]
+                                    meshlets_per_primitive
+                                        .iter()
+                                        .zip(vertex_prefix_sum.iter())
+                                        .map(|(meshlets, vps)| {
+                                            let index_type = IntegralTypes::U16;
+
+                                            let max_size = match index_type {
+                                                IntegralTypes::U16 => 0xFFFFu32,
+                                                IntegralTypes::U32 => 0xFFFFFFFFu32,
+                                                _ => panic!("Unsupported index type"),
+                                            };
+
+                                            debug_assert!(
+                                                meshlets.iter().all(|e| e
+                                                    .vertices
+                                                    .iter()
+                                                    .all(|e| *e <= max_size)),
+                                                "Vertex index out of bounds"
+                                            );
+
+                                            match index_type {
+                                                IntegralTypes::U16 => {
+                                                    meshlets
+                                                        .iter()
+                                                        .map(|e| {
+                                                            e.vertices
+                                                                .iter()
+                                                                .map(|i| (*i as u16).to_le_bytes())
+                                                        })
+                                                        .flatten()
+                                                        .flatten()
+                                                        .collect::<Vec<u8>>() // Indices per primitive
+                                                                              // meshlets.iter().map(|e| e.vertices.iter().map(|i| (*i as u16 + *vps as u16).to_le_bytes())).flatten().flatten().collect::<Vec<u8>>() // Indices per mesh
+                                                }
+                                                IntegralTypes::U32 => meshlets
+                                                    .iter()
+                                                    .map(|e| e.vertices.iter().map(|i| *i))
+                                                    .flatten()
+                                                    .map(|e| e.to_le_bytes())
+                                                    .flatten()
+                                                    .collect::<Vec<u8>>(),
+                                                _ => panic!("Unsupported index type"),
+                                            }
+                                        })
+                                        .collect::<Vec<Vec<u8>>>()
+                                }
+                                Streams::Indices(IndexStreamTypes::Meshlets) => {
+                                    meshlets_per_primitive
+                                        .iter()
+                                        .map(|meshlets| {
+                                            debug_assert!(
+                                                meshlets
+                                                    .iter()
+                                                    .all(|e| e.triangles.iter().all(|e| *e <= 64)),
+                                                "Meshlet vertex index out of bounds"
+                                            );
+
+                                            meshlets
+                                                .iter()
+                                                .map(|e| e.triangles.iter().map(|i| *i))
+                                                .flatten()
+                                                .collect::<Vec<u8>>()
+                                        })
+                                        .collect::<Vec<Vec<u8>>>()
+                                }
+                                Streams::Indices(IndexStreamTypes::Triangles) => {
+                                    indices_per_primitive
+                                        .iter()
+                                        .map(|indices| {
+                                            let index_type = IntegralTypes::U16;
+
+                                            let max_value = match index_type {
+                                                IntegralTypes::U16 => 0xFFFFu32,
+                                                IntegralTypes::U32 => 0xFFFFFFFFu32,
+                                                _ => panic!("Unsupported index type"),
+                                            };
+
+                                            debug_assert!(
+                                                indices.iter().all(|e| *e <= max_value),
+                                                "Index out of bounds"
+                                            );
+
+                                            match index_type {
+                                                IntegralTypes::U16 => indices
+                                                    .iter()
+                                                    .map(|i| *i as u16)
+                                                    .map(|e| e.to_le_bytes())
+                                                    .flatten()
+                                                    .collect::<Vec<u8>>(),
+                                                IntegralTypes::U32 => indices
+                                                    .iter()
+                                                    .map(|i| *i)
+                                                    .map(|e| e.to_le_bytes())
+                                                    .flatten()
+                                                    .collect::<Vec<u8>>(),
+                                                _ => panic!("Unsupported index type"),
+                                            }
+                                        })
+                                        .collect::<Vec<Vec<u8>>>()
+                                }
+                                Streams::Meshlets => meshlets_per_primitive
+                                    .iter()
+                                    .map(|meshlets| {
                                         meshlets
                                             .iter()
-                                            .all(|e| e.triangles.iter().all(|e| *e <= 64)),
-                                        "Meshlet vertex index out of bounds"
-                                    );
-
-                                    meshlets
-                                        .iter()
-                                        .map(|e| e.triangles.iter().map(|i| *i))
-                                        .flatten()
-                                        .collect::<Vec<u8>>()
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            Streams::Indices(IndexStreamTypes::Triangles) => indices_per_primitive
-                                .iter()
-                                .map(|indices| {
-                                    let index_type = IntegralTypes::U16;
-
-                                    let max_value = match index_type {
-                                        IntegralTypes::U16 => 0xFFFFu32,
-                                        IntegralTypes::U32 => 0xFFFFFFFFu32,
-                                        _ => panic!("Unsupported index type"),
-                                    };
-
-                                    debug_assert!(
-                                        indices.iter().all(|e| *e <= max_value),
-                                        "Index out of bounds"
-                                    );
-
-                                    match index_type {
-                                        IntegralTypes::U16 => indices
-                                            .iter()
-                                            .map(|i| *i as u16)
-                                            .map(|e| e.to_le_bytes())
+                                            .map(|meshlet| {
+                                                let vertices = meshlet.vertices.len() as u8;
+                                                let triangles = (meshlet.triangles.len() / 3) as u8;
+                                                [vertices, triangles]
+                                            })
                                             .flatten()
-                                            .collect::<Vec<u8>>(),
-                                        IntegralTypes::U32 => indices
+                                            .collect::<Vec<u8>>()
+                                    })
+                                    .collect::<Vec<Vec<u8>>>(),
+                                _ => todo!(),
+                            }
+                        })
+                        .collect::<Vec<Vec<Vec<u8>>>>();
+
+                    let primitives = flat_mesh_tree
+                        .clone()
+                        .enumerate()
+                        .zip(materials_per_primitive)
+                        .map(|((i, (primitive, reader, _)), material)| {
+                            let global = false;
+
+                            let streams = if global {
+                                buffer_blocks
+                                    .iter()
+                                    .zip(blocks.iter())
+                                    .scan(0, |state, (streams, primitives)| {
+                                        // This offset is global
+                                        let offset = *state
+                                            + primitives
+                                                .iter()
+                                                .take(i)
+                                                .map(|e| e.len())
+                                                .sum::<usize>();
+                                        let size = primitives[i].len();
+
+                                        *state += primitives.iter().map(|e| e.len()).sum::<usize>();
+
+                                        Stream {
+                                            offset,
+                                            size,
+                                            stream_type: *streams,
+                                            stride: match streams {
+                                                Streams::Vertices(VertexSemantics::Position) => 12,
+                                                Streams::Vertices(VertexSemantics::Normal) => 12,
+                                                Streams::Vertices(VertexSemantics::UV) => 8,
+                                                Streams::Vertices(VertexSemantics::Joints) => 8,
+                                                Streams::Vertices(VertexSemantics::Weights) => 16,
+                                                Streams::Indices(IndexStreamTypes::Vertices) => 2,
+                                                Streams::Indices(IndexStreamTypes::Meshlets) => 1,
+                                                Streams::Indices(IndexStreamTypes::Triangles) => 2,
+                                                Streams::Meshlets => 2,
+                                                _ => panic!("Unsupported stream type"),
+                                            },
+                                        }
+                                        .into()
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                buffer_blocks
+                                    .iter()
+                                    .zip(blocks.iter())
+                                    .map(|(streams, primitives)| {
+                                        // This offset is per stream
+                                        let offset = primitives
                                             .iter()
-                                            .map(|i| *i)
-                                            .map(|e| e.to_le_bytes())
-                                            .flatten()
-                                            .collect::<Vec<u8>>(),
-                                        _ => panic!("Unsupported index type"),
-                                    }
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            Streams::Meshlets => meshlets_per_primitive
-                                .iter()
-                                .map(|meshlets| {
-                                    meshlets
-                                        .iter()
-                                        .map(|meshlet| {
-                                            let vertices = meshlet.vertices.len() as u8;
-                                            let triangles = (meshlet.triangles.len() / 3) as u8;
-                                            [vertices, triangles]
-                                        })
-                                        .flatten()
-                                        .collect::<Vec<u8>>()
-                                })
-                                .collect::<Vec<Vec<u8>>>(),
-                            _ => todo!(),
-                        }
-                    })
-                    .collect::<Vec<Vec<Vec<u8>>>>();
+                                            .take(i)
+                                            .map(|e| e.len())
+                                            .sum::<usize>();
+                                        let size = primitives[i].len();
 
-                let primitives = flat_mesh_tree
-                    .clone()
-                    .enumerate()
-                    .zip(materials_per_primitive)
-                    .map(|((i, (primitive, reader, _)), material)| {
-                        let global = false;
+                                        Stream {
+                                            offset,
+                                            size,
+                                            stream_type: *streams,
+                                            stride: match streams {
+                                                Streams::Vertices(VertexSemantics::Position) => 12,
+                                                Streams::Vertices(VertexSemantics::Normal) => 12,
+                                                Streams::Vertices(VertexSemantics::UV) => 8,
+                                                Streams::Vertices(VertexSemantics::Joints) => 8,
+                                                Streams::Vertices(VertexSemantics::Weights) => 16,
+                                                Streams::Indices(IndexStreamTypes::Vertices) => 2,
+                                                Streams::Indices(IndexStreamTypes::Meshlets) => 1,
+                                                Streams::Indices(IndexStreamTypes::Triangles) => 2,
+                                                Streams::Meshlets => 2,
+                                                _ => panic!("Unsupported stream type"),
+                                            },
+                                        }
+                                        .into()
+                                    })
+                                    .collect::<Vec<_>>()
+                            };
 
-                        let streams = if global {
-                            buffer_blocks
-                                .iter()
-                                .zip(blocks.iter())
-                                .scan(0, |state, (streams, primitives)| {
-                                    // This offset is global
-                                    let offset = *state
-                                        + primitives.iter().take(i).map(|e| e.len()).sum::<usize>();
-                                    let size = primitives[i].len();
+                            PrimitiveModel {
+                                material,
+                                streams,
+                                quantization: None,
+                                bounding_box: make_bounding_box(primitive),
+                                vertex_count: reader.read_positions().unwrap().len() as u32,
+                            }
+                        })
+                        .collect::<Vec<_>>();
 
-                                    *state += primitives.iter().map(|e| e.len()).sum::<usize>();
-
-                                    Stream {
-                                        offset,
-                                        size,
-                                        stream_type: *streams,
-                                        stride: match streams {
-                                            Streams::Vertices(VertexSemantics::Position) => 12,
-                                            Streams::Vertices(VertexSemantics::Normal) => 12,
-                                            Streams::Vertices(VertexSemantics::UV) => 8,
-                                            Streams::Vertices(VertexSemantics::Joints) => 8,
-                                            Streams::Vertices(VertexSemantics::Weights) => 16,
-                                            Streams::Indices(IndexStreamTypes::Vertices) => 2,
-                                            Streams::Indices(IndexStreamTypes::Meshlets) => 1,
-                                            Streams::Indices(IndexStreamTypes::Triangles) => 2,
-                                            Streams::Meshlets => 2,
-                                            _ => panic!("Unsupported stream type"),
-                                        },
-                                    }
-                                    .into()
-                                })
-                                .collect::<Vec<_>>()
-                        } else {
-                            buffer_blocks
-                                .iter()
-                                .zip(blocks.iter())
-                                .map(|(streams, primitives)| {
-                                    // This offset is per stream
-                                    let offset =
-                                        primitives.iter().take(i).map(|e| e.len()).sum::<usize>();
-                                    let size = primitives[i].len();
-
-                                    Stream {
-                                        offset,
-                                        size,
-                                        stream_type: *streams,
-                                        stride: match streams {
-                                            Streams::Vertices(VertexSemantics::Position) => 12,
-                                            Streams::Vertices(VertexSemantics::Normal) => 12,
-                                            Streams::Vertices(VertexSemantics::UV) => 8,
-                                            Streams::Vertices(VertexSemantics::Joints) => 8,
-                                            Streams::Vertices(VertexSemantics::Weights) => 16,
-                                            Streams::Indices(IndexStreamTypes::Vertices) => 2,
-                                            Streams::Indices(IndexStreamTypes::Meshlets) => 1,
-                                            Streams::Indices(IndexStreamTypes::Triangles) => 2,
-                                            Streams::Meshlets => 2,
-                                            _ => panic!("Unsupported stream type"),
-                                        },
-                                    }
-                                    .into()
-                                })
-                                .collect::<Vec<_>>()
-                        };
-
-                        PrimitiveModel {
-                            material,
-                            streams,
-                            quantization: None,
-                            bounding_box: make_bounding_box(primitive),
-                            vertex_count: reader.read_positions().unwrap().len() as u32,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-                let streams = buffer_blocks
-                    .iter()
-                    .zip(blocks.iter())
-                    .scan(0usize, |state, (streams, block)| {
-                        let offset = *state;
-                        let size = block.iter().map(|e| e.len()).sum::<usize>();
-                        *state += size;
-                        Stream {
-                            offset,
-                            size,
-                            stream_type: *streams,
-                            stride: match streams {
-                                Streams::Vertices(VertexSemantics::Position) => 12,
-                                Streams::Vertices(VertexSemantics::Normal) => 12,
-                                Streams::Vertices(VertexSemantics::UV) => 8,
-                                Streams::Vertices(VertexSemantics::Joints) => 8,
-                                Streams::Vertices(VertexSemantics::Weights) => 16,
-                                Streams::Indices(IndexStreamTypes::Vertices) => 2,
-                                Streams::Indices(IndexStreamTypes::Meshlets) => 1,
-                                Streams::Indices(IndexStreamTypes::Triangles) => 2,
-                                Streams::Meshlets => 2,
-                                _ => panic!("Unsupported stream type"),
-                            },
-                        }
-                        .into()
-                    })
-                    .collect::<Vec<_>>();
-
-                (
-                    MeshModel {
-                        streams,
-                        primitives,
-                        vertex_components: vertex_layout,
-                    },
-                    buffer_blocks
+                    let streams = buffer_blocks
                         .iter()
                         .zip(blocks.iter())
                         .scan(0usize, |state, (streams, block)| {
                             let offset = *state;
                             let size = block.iter().map(|e| e.len()).sum::<usize>();
                             *state += size;
-
-                            let name = match streams {
-                                Streams::Vertices(VertexSemantics::Position) => "Vertex.Position",
-                                Streams::Vertices(VertexSemantics::Normal) => "Vertex.Normal",
-                                Streams::Vertices(VertexSemantics::UV) => "Vertex.UV",
-                                Streams::Vertices(VertexSemantics::Color) => "Vertex.Color",
-                                Streams::Vertices(VertexSemantics::Tangent) => "Vertex.Tangent",
-                                Streams::Vertices(VertexSemantics::BiTangent) => "Vertex.BiTangent",
-                                Streams::Vertices(VertexSemantics::Joints) => "Vertex.Joints",
-                                Streams::Vertices(VertexSemantics::Weights) => "Vertex.Weights",
-                                Streams::Indices(IndexStreamTypes::Vertices) => "VertexIndices",
-                                Streams::Indices(IndexStreamTypes::Meshlets) => "MeshletIndices",
-                                Streams::Indices(IndexStreamTypes::Triangles) => "TriangleIndices",
-                                Streams::Meshlets => "Meshlets",
-                            };
-
-                            StreamDescription::new(name, size, offset).into()
+                            Stream {
+                                offset,
+                                size,
+                                stream_type: *streams,
+                                stride: match streams {
+                                    Streams::Vertices(VertexSemantics::Position) => 12,
+                                    Streams::Vertices(VertexSemantics::Normal) => 12,
+                                    Streams::Vertices(VertexSemantics::UV) => 8,
+                                    Streams::Vertices(VertexSemantics::Joints) => 8,
+                                    Streams::Vertices(VertexSemantics::Weights) => 16,
+                                    Streams::Indices(IndexStreamTypes::Vertices) => 2,
+                                    Streams::Indices(IndexStreamTypes::Meshlets) => 1,
+                                    Streams::Indices(IndexStreamTypes::Triangles) => 2,
+                                    Streams::Meshlets => 2,
+                                    _ => panic!("Unsupported stream type"),
+                                },
+                            }
+                            .into()
                         })
-                        .collect(),
-                    blocks.into_iter().flatten().flatten().collect::<Vec<u8>>(),
-                )
-            }
-        };
+                        .collect::<Vec<_>>();
 
-        let resource_document = ProcessedAsset::new(url, mesh).with_streams(streams);
-        storage_backend.store(&resource_document, &buffer).map_err(|_| "Failed to store mesh resource. The storage backend likely rejected the write.".to_string())?;
+                    (
+                        MeshModel {
+                            streams,
+                            primitives,
+                            vertex_components: vertex_layout,
+                        },
+                        buffer_blocks
+                            .iter()
+                            .zip(blocks.iter())
+                            .scan(0usize, |state, (streams, block)| {
+                                let offset = *state;
+                                let size = block.iter().map(|e| e.len()).sum::<usize>();
+                                *state += size;
 
-        Ok(())
+                                let name = match streams {
+                                    Streams::Vertices(VertexSemantics::Position) => {
+                                        "Vertex.Position"
+                                    }
+                                    Streams::Vertices(VertexSemantics::Normal) => "Vertex.Normal",
+                                    Streams::Vertices(VertexSemantics::UV) => "Vertex.UV",
+                                    Streams::Vertices(VertexSemantics::Color) => "Vertex.Color",
+                                    Streams::Vertices(VertexSemantics::Tangent) => "Vertex.Tangent",
+                                    Streams::Vertices(VertexSemantics::BiTangent) => {
+                                        "Vertex.BiTangent"
+                                    }
+                                    Streams::Vertices(VertexSemantics::Joints) => "Vertex.Joints",
+                                    Streams::Vertices(VertexSemantics::Weights) => "Vertex.Weights",
+                                    Streams::Indices(IndexStreamTypes::Vertices) => "VertexIndices",
+                                    Streams::Indices(IndexStreamTypes::Meshlets) => {
+                                        "MeshletIndices"
+                                    }
+                                    Streams::Indices(IndexStreamTypes::Triangles) => {
+                                        "TriangleIndices"
+                                    }
+                                    Streams::Meshlets => "Meshlets",
+                                };
+
+                                StreamDescription::new(name, size, offset).into()
+                            })
+                            .collect(),
+                        blocks.into_iter().flatten().flatten().collect::<Vec<u8>>(),
+                    )
+                }
+            };
+
+            let resource_document = ProcessedAsset::new(url, mesh).with_streams(streams);
+            storage_backend
+                .store(&resource_document, &buffer)
+                .map_err(|_| {
+                    "Failed to store mesh resource. The storage backend likely rejected the write."
+                        .to_string()
+                })?;
+
+            Ok(())
         })
     }
 }
@@ -1163,14 +1206,16 @@ mod tests {
             material_asset_handler.set_shader_generator(shader_generator);
             material_asset_handler
         });
-        asset_manager.add_asset_handler(ImageAssetHandler::new() );
-        asset_manager.add_asset_handler(MeshAssetHandler::new() );
+        asset_manager.add_asset_handler(ImageAssetHandler::new());
+        asset_manager.add_asset_handler(MeshAssetHandler::new());
         let _asset_handler = MeshAssetHandler::new();
 
         let url = "Revolver.glb";
 
-        let _mesh: ReferenceModel<MeshModel> =
-            asset_manager.load(&url, &resource_storage_backend).await.unwrap();
+        let _mesh: ReferenceModel<MeshModel> = asset_manager
+            .load(&url, &resource_storage_backend)
+            .await
+            .unwrap();
 
         let url = ResourceId::new(url);
 
@@ -1228,7 +1273,8 @@ mod tests {
                 &resource_storage_backend,
                 asset_manager.get_storage_backend(),
                 url,
-            ).await
+            )
+            .await
             .expect("Image asset handler did not handle asset");
 
         asset_loader

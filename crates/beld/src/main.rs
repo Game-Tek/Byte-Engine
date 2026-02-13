@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
-use utils::{r#async::StreamExt, sync::Arc};
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler, image_asset_handler, material_asset_handler, mesh_asset_handler, FileStorageBackend}, resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend}};
+mod commands;
+mod utils;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -22,8 +22,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-	/// Wipe all resources
+	/// Wipe all resources, same as clear
 	Wipe {},
+	/// Clear all resources, same as wipe
+	Clear {},
 	/// List all resources
 	List {},
 	/// Bake assets into resources
@@ -53,117 +55,10 @@ fn main() -> Result<(), i32> {
 	let destination_path = cli.destination;
 
 	match command {
-		Commands::Wipe {} => {
-			std::fs::remove_dir_all(&destination_path).map_err(|e| {
-				log::error!("Failed to wipe resources. Error: {}", e);
-				1
-			})?;
-
-			std::fs::create_dir(&destination_path).map_err(|e| {
-				log::error!("Failed to create resources directory. Error: {}", e);
-				1
-			})?;
-
-			Ok(())
-		}
-		Commands::List {} => {
-			let storage_backend = RedbStorageBackend::new(destination_path.into());
-
-			match storage_backend.list() {
-				Ok(resources) => {
-					if resources.is_empty() {
-						log::info!("No resources found.");
-					}
-
-					for resource in resources {
-						println!("{}", resource);
-					}
-
-					Ok(())
-				}
-				Err(e) => {
-					log::error!("Failed to list resources. Error: {}", e);
-					Err(1)
-				}
-			}
-		}
-		Commands::Bake { ids } => {
-			let asset_storage_backend = FileStorageBackend::new(source_path.into());
-			let mut asset_manager = AssetManager::new(asset_storage_backend);
-
-			asset_manager.add_asset_handler(image_asset_handler::ImageAssetHandler::new());
-			asset_manager.add_asset_handler(audio_asset_handler::AudioAssetHandler::new());
-			asset_manager.add_asset_handler(mesh_asset_handler::MeshAssetHandler::new());
-
-			{
-				let mut material_asset_handler = material_asset_handler::MaterialAssetHandler::new();
-				let shader_generator = {
-					// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
-					let visibility_shader_generation = byte_engine::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
-					visibility_shader_generation
-				};
-				material_asset_handler.set_shader_generator(shader_generator);
-				asset_manager.add_asset_handler(material_asset_handler);
-			}
-
-			if ids.is_empty() {
-				log::info!("No resources to bake.");
-				return Ok(());
-			}
-
-			let resource_storage_backend = RedbStorageBackend::new(destination_path.into());
-
-			let executor = resource_management::r#async::Executor::new().map_err(|_| 1)?;
-
-			let asset_manager = Arc::new(asset_manager);
-
-			let tasks = ids.into_iter().map(async |id| {
-				let asset_manager = asset_manager.clone();
-				log::info!("Baking resource '{}'", id);
-				match asset_manager.bake(&id, &resource_storage_backend).await {
-					Ok(_) => {
-						log::info!("Baked resource '{}'", id);
-					}
-					Err(e) => {
-						log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
-					}
-				}
-			});
-
-			let tasks = utils::r#async::stream::iter(tasks);
-			let tasks = tasks.buffer_unordered(16).collect::<Vec<_>>();
-
-			executor.block_on(tasks);
-
-			Ok(())
-		}
-		Commands::Delete { ids } => {
-			let storage_backend = RedbStorageBackend::new(destination_path.into());
-
-			let mut ok = true;
-
-			if ids.is_empty() {
-				log::info!("No resources to delete.");
-				return Ok(());
-			}
-
-			for id in ids {
-				match storage_backend.delete(resource_management::asset::ResourceId::new(&id)) {
-					Ok(()) => {
-						log::info!("Deleted resource '{}'", id);
-					}
-					Err(e) => {
-						log::error!("Failed to delete '{}'. Error: {}", id, e);
-						ok = false;
-					}
-				}
-			}
-
-			if ok {
-				Ok(())
-			} else {
-				Err(1)
-			}
-		}
+		Commands::Wipe {} => commands::wipe(destination_path),
+		Commands::Clear {} => commands::wipe(destination_path),
+		Commands::List {} => commands::list(destination_path),
+		Commands::Bake { ids } => commands::bake(source_path, destination_path, ids),
+		Commands::Delete { ids } => commands::delete(destination_path, ids),
 	}
 }

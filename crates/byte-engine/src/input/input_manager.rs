@@ -24,7 +24,7 @@ use math::{normalize, Base, Vector2, Vector3};
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
-use crate::{core::{Entity, EntityHandle, channel::Channel, factory::{CreateMessage, Factory, Handle}, listener::{DefaultListener, Listener}, message::Message}, input::ActionEvent};
+use crate::{core::{Entity, EntityHandle, channel::{Channel as _, DefaultChannel}, factory::{CreateMessage, Factory, Handle}, listener::{DefaultListener, Listener}, message::Message}, input::ActionEvent};
 
 use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TriggerHandle, Types, Value};
 
@@ -95,12 +95,12 @@ pub struct InputManager {
 	/// Stores the last value of an action relative to the device it belongs to.
 	action_values: HashMap<(DeviceHandle, ActionHandle), Value>,
 	action_listener: DefaultListener<CreateMessage<Action>>,
-	event_channel: Channel<ActionEvent>,
+	event_channel: DefaultChannel<ActionEvent>,
 }
 
 impl InputManager {
 	/// Creates a new input manager.
-	pub fn new(action_listener: DefaultListener<CreateMessage<Action>>, event_channel: Channel<ActionEvent>) -> Self {
+	pub fn new(action_listener: DefaultListener<CreateMessage<Action>>, event_channel: DefaultChannel<ActionEvent>) -> Self {
 		InputManager {
 			device_classes: Vec::new(),
 			triggers: Vec::new(),
@@ -653,7 +653,7 @@ impl InputManager {
 		}
 	}
 
-	pub fn event_channel(&self) -> &Channel<ActionEvent> {
+	pub fn event_channel(&self) -> &DefaultChannel<ActionEvent> {
 		&self.event_channel
 	}
 }
@@ -692,9 +692,9 @@ mod tests {
 	}
 
 	fn build_input_manager() -> InputManager {
-		let action_chanel = Channel::new();
+		let action_chanel = DefaultChannel::new();
 		let action_listener = action_chanel.listener();
-		let event_channel = Channel::new();
+		let event_channel = DefaultChannel::new();
 
 		InputManager::new(action_listener, event_channel)
 	}
@@ -798,9 +798,9 @@ mod tests {
 
 	#[test]
 	fn test_boolean_trigger_2d_action_binding_combination() {
-		let action_chanel = Channel::new();
+		let action_chanel = DefaultChannel::new();
 		let action_listener = action_chanel.listener();
-		let event_channel = Channel::new();
+		let event_channel = DefaultChannel::new();
 
 		let mut input_manager = InputManager::new(action_listener, event_channel);
 

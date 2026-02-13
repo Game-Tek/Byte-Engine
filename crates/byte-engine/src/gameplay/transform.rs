@@ -1,5 +1,7 @@
 use math::{Matrix4, Quaternion, Vector3, Vector4, mat::{MatScale as _, MatTranslate as _}};
 
+use crate::core::{channel::{Channel as _, DefaultChannel}, factory::Handle, message::Message};
+
 #[derive(Debug, Clone)]
 pub struct Transform {
 	position: Vector3,
@@ -115,4 +117,35 @@ impl From<&Transform> for Matrix4 {
 	fn from(transform: &Transform) -> Self {
 		transform.get_matrix()
 	}
+}
+
+#[derive(Clone, Debug)]
+pub struct TransformationUpdate {
+	handle: Handle,
+	transform: Transform,
+}
+
+impl TransformationUpdate {
+	pub fn new(handle: Handle, transform: Transform) -> Self {
+		Self { handle, transform }
+	}
+
+	pub fn apply(channel: &mut DefaultChannel<Self>, handle: Handle, transform: Transform) {
+		channel.send(TransformationUpdate::new(handle, transform));
+	}
+
+	pub fn transform(&self) -> &Transform {
+		&self.transform
+	}
+
+	pub fn handle(&self) -> &Handle {
+		&self.handle
+	}
+}
+
+impl Message for TransformationUpdate {}
+
+pub trait Applicator {
+	type Type;
+	fn apply(&mut self, value: Self::Type);
 }

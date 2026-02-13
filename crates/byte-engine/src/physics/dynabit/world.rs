@@ -1,13 +1,17 @@
 use std::ops::Deref;
 
 use math::{collision::{cube_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _}, normalize, sphere::Sphere, Base, Matrix3, Quaternion, Vector3};
-use crate::{application::Time, core::{Entity, EntityHandle, factory::CreateMessage, listener::{DefaultListener, Listener}}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{PhysicsBody, intersect}, contact::{Contact, Side}}}};
+use crate::{application::Time, core::{Entity, EntityHandle, factory::{CreateMessage, Handle}, listener::{DefaultListener, Listener}}, gameplay::transform::TransformationUpdate, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{PhysicsBody, intersect}, contact::{Contact, Side}}}};
+
+use utils::hash::{HashMap, HashMapExt};
 
 pub struct World {
 	bodies: Vec<PhysicsBody>,
 	gravity: Vector3,
 
 	body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
+
+	handles_to_bodies: HashMap<Handle, usize>,
 }
 
 impl World {
@@ -16,6 +20,8 @@ impl World {
 			bodies: Vec::new(),
 			gravity: Vector3::new(0f32, -16f32, 0f32),
 			body_listener,
+
+			handles_to_bodies: HashMap::with_capacity(1024),
 		}
 	}
 
@@ -33,12 +39,24 @@ impl World {
 		// }
 	}
 
-	pub fn update(&mut self, time: Time) {
+	pub fn update(&mut self, time: Time, transform_channel: &mut impl Listener<TransformationUpdate>) {
 		while let Some(message) = self.body_listener.read() {
 			let handle = message.into_data();
 			let body = handle.read();
 
 			self.create_body(body.deref());
+		}
+
+		for message in transform_channel.iter() {
+			let transform = message.transform();
+			let handle = message.handle();
+
+			let idx = self.handles_to_bodies.get(handle).copied();
+
+			if let Some(idx) = idx {
+				let body = &mut self.bodies[idx];
+				body.position = transform.get_position();
+			}
 		}
 
 		self.update_velocities(time);
@@ -255,12 +273,6 @@ impl World {
 			inertia_tensor,
 			friction: body.friction(),
 		});
-	}
-}
-
-impl crate::physics::World for World {
-	fn update(&mut self, time: Time) {
-    	self.update(time);
 	}
 }
 

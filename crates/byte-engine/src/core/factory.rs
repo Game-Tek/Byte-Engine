@@ -1,12 +1,12 @@
 //! The Factory is an special Channel that handles the creation of new entities.
 
-use crate::core::{channel::Channel, listener::{DefaultListener, Listener}, message::Message};
+use crate::core::{channel::{Channel as _, DefaultChannel}, listener::{DefaultListener, Listener}, message::Message};
 
-pub struct Factory<T: Clone + ?Sized>(Channel<CreateMessage<T>>, u32);
+pub struct Factory<T: Clone + ?Sized>(DefaultChannel<CreateMessage<T>>, u32);
 
 impl <T: Clone> Factory<T> {
 	pub fn new() -> Self {
-		let sender = Channel::new();
+		let sender = DefaultChannel::new();
 		Factory(sender, 0)
 	}
 
@@ -53,5 +53,5 @@ impl <T: Clone> CreateMessage<T> {
 
 impl <T: Clone> Message for CreateMessage<T> {}
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Handle(u32);

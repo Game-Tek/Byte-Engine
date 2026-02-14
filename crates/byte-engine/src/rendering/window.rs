@@ -1,12 +1,12 @@
 use utils::Extent;
 
-use crate::{camera::Camera, core::{Entity, EntityHandle}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, factory::Handle}};
 
 #[derive(Clone)]
 pub struct Window {
 	name: String,
 	extent: Extent,
-	camera: Option<EntityHandle<Camera>>,
+	camera: Option<Handle>,
 }
 
 impl Window {
@@ -26,11 +26,11 @@ impl Window {
 		self.extent
 	}
 
-	pub fn attach(&mut self, camera: EntityHandle<Camera>) {
+	pub fn attach(&mut self, camera: Handle) {
 		self.camera = Some(camera);
 	}
 
-	pub fn camera(&self) -> Option<&EntityHandle<Camera>> {
+	pub fn camera(&self) -> Option<&Handle> {
 		self.camera.as_ref()
 	}
 }

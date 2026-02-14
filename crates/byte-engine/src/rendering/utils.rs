@@ -126,9 +126,11 @@ impl <I> MeshBuffersStats<I> {
 		}
 	}
 
-	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) {
+	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) -> usize {
 		assert!(self.meshes.contains_key(&mesh_id), "Provided mesh_id for instance does not exist!");
+		let instance_id = self.instances.len();
 		self.instances.push((mesh_id, instance_data));
+		instance_id
 	}
 
 	pub fn get_instance_batches(&self) -> InstanceBatches<'_, I> {

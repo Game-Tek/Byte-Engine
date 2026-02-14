@@ -9,8 +9,8 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
 	application::parameters::Parameters, camera::Camera, core::{
-		Entity, EntityHandle, listener::{Listener}
-	}, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
+		Entity, EntityHandle, factory::Handle, listener::Listener
+	}, gameplay::{Positionable, transform::TransformationUpdate}, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
 };
 
 use super::{render_pass::{RenderPass, RenderPassBuilder}, render_passes::aces::AcesToneMapPass, texture_manager::TextureManager,};
@@ -29,8 +29,10 @@ pub struct Renderer {
 
 	/// A list of display windows and their associated swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
-	/// A list of windows and their associated cameras.
-	views: SmallVec<[(usize, EntityHandle<Camera>); 16]>,
+	/// A list of windows (idx) and their associated cameras (Handle).
+	views: SmallVec<[(usize, Handle); 16]>,
+	/// A list of cameras and their associated handles.
+	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
 
@@ -132,6 +134,7 @@ impl Renderer {
 
 			windows: SmallVec::with_capacity(16),
 			views: SmallVec::with_capacity(16),
+			cameras: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
 
@@ -179,7 +182,7 @@ impl Renderer {
 	/// This function prepares a frame by invoking multiple render passes.
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
-	pub fn prepare(&'_ mut self) {
+	pub fn prepare(&'_ mut self, transforms_listener: &mut impl Listener<TransformationUpdate>) {
 		let Some(_) = self.windows.first() else {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
 			return;
@@ -188,6 +191,22 @@ impl Renderer {
 		let device = &mut self.device;
 
 		device.start_frame_capture();
+
+		for message in transforms_listener.iter() {
+			let handle = message.handle().clone();
+
+			if let Some(camera) = self.cameras.iter_mut().find_map(|(h, camera)| {
+				if handle == *h {
+					Some(camera)
+				} else {
+					None
+				}
+			}) {
+				camera.set_position(message.transform().get_position());
+			} else {
+				continue;
+			};
+		}
 
 		let mut frame = device.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
 
@@ -212,11 +231,15 @@ impl Renderer {
 		let views = self.views.iter();
 
 		let viewports: SmallVec<[Viewport; 16]> = views.filter_map(|(index, view)| {
-			let Some((present_key, extent, swapchain)) = swapchains[*index] else {
-				return None;
-			};
+			let (present_key, extent, swapchain) = swapchains[*index]?;
 
-			let camera = view.read();
+			let camera = self.cameras.iter().find_map(|(handle, camera)| {
+				if handle == view {
+					Some(camera)
+				} else {
+					None
+				}
+			})?;
 
 			let view = make_perspective_view_from_camera(&camera, extent);
 
@@ -380,6 +403,11 @@ impl Renderer {
 			}
 		}
 	}
+
+	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
+		self.cameras.push((handle, camera));
+	}
+
 }
 
 struct Attachment {

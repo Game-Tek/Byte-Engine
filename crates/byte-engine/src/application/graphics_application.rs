@@ -1,4 +1,4 @@
-use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task}, gameplay::transform::TransformationUpdate, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::{self, body::PhysicsBody}, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderable, renderer, texture_manager::TextureManager}};
+use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task}, gameplay::{Transformable, transform::TransformationUpdate, world::DefaultWorld}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::{self, body::PhysicsBody}, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderable, renderer, texture_manager::TextureManager}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -36,16 +36,14 @@ pub struct GraphicsApplication {
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	action_factory: Factory<Action>,
-	body_factory: Factory<EntityHandle<dyn physics::Body>>,
+
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
 
-	transforms: (DefaultChannel<TransformationUpdate>, DefaultListener<TransformationUpdate>),
+	world: DefaultWorld,
 
 	input_system: input::InputManager,
 	resource_manager: ResourceManager,
 	renderer: Renderer,
-	physics_system: dynabit::World,
-	anchor_system: AnchorSystem,
 
 	threads: SmallVec<[Thread; 64]>,
 
@@ -83,12 +81,6 @@ impl Application for GraphicsApplication {
 
 		let renderer = rendering::renderer::Renderer::new(&application);
 
-		let body_factory = Factory::new();
-
-		let physics_system = dynabit::World::new(body_factory.listener());
-
-		let anchor_system = AnchorSystem::new();
-
 		#[cfg(debug_assertions)]
 		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
 
@@ -110,11 +102,7 @@ impl Application for GraphicsApplication {
 		let window_factory = Factory::new();
 		let window_factory_listener = window_factory.listener();
 
-		let transforms = {
-			let channel = DefaultChannel::with_expected_listeners(128);
-			let listener = channel.listener();
-			(channel, listener)
-		};
+		let world = DefaultWorld::new();
 
 		GraphicsApplication {
 			application,
@@ -123,16 +111,13 @@ impl Application for GraphicsApplication {
 
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
-			body_factory,
 			renderable_factory,
 
-			transforms,
+			world,
 
 			input_system,
 			renderer,
 			resource_manager,
-			physics_system,
-			anchor_system,
 
 			threads: SmallVec::new(),
 
@@ -157,12 +142,12 @@ impl Application for GraphicsApplication {
 	fn get_name(&self) -> &str { self.application.get_name() }
 
 	fn tick(&mut self) -> bool {
-		self.tick_with(|_| {})
+		self.tick_with(|_, _| {})
 	}
 }
 
 impl GraphicsApplication {
-	pub fn tick_with<F: FnOnce(&mut Self)>(&mut self, f: F) -> bool {
+	pub fn tick_with<F: FnOnce(&mut Self, Time)>(&mut self, f: F) -> bool {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
@@ -211,11 +196,9 @@ impl GraphicsApplication {
 
 		self.input_system.update();
 
-		f(self);
+		f(self, time);
 
-		self.anchor_system.update();
-
-		self.physics_system.update(time, &mut self.transforms.1);
+		self.world.update(time);
 
 		{
 			let window_listener = &mut self.window_factory.1;
@@ -224,7 +207,11 @@ impl GraphicsApplication {
 				self.renderer.create_window(message.into_data());
 			}
 
-			self.renderer.prepare();
+			for message in self.world.cameras_listener_mut().iter() {
+				self.renderer.create_camera(message.handle().clone(), message.into_data());
+			}
+
+			self.renderer.prepare(self.world.transforms_listener_mut());
 		}
 
 		self.tick_count += 1;
@@ -262,10 +249,6 @@ impl GraphicsApplication {
 		&self.input_system
 	}
 
-	pub fn physics_world(&self) -> &dynabit::World {
-		&self.physics_system
-	}
-
 	pub fn renderer(&self) -> &Renderer {
 		&self.renderer
 	}
@@ -286,12 +269,12 @@ impl GraphicsApplication {
 		&mut self.action_factory
 	}
 
-	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {
-		&self.body_factory
+	pub fn world(&self) -> &DefaultWorld {
+		&self.world
 	}
 
-	pub fn body_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn physics::Body>> {
-		&mut self.body_factory
+	pub fn world_mut(&mut self) -> &mut DefaultWorld {
+		&mut self.world
 	}
 
 	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {
@@ -308,7 +291,7 @@ impl GraphicsApplication {
 		}
 	}
 
-	pub fn do_loop_with<F: FnOnce(&mut Self) + Copy>(&mut self, f: F) {
+	pub fn do_loop_with<F: FnOnce(&mut Self, Time) + Copy>(&mut self, f: F) {
 		while !self.close {
 			self.tick_with(f);
 		}
@@ -407,11 +390,12 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	let renderable_mesh_factory = application.renderable_factory_mut();
 	let listener = renderable_mesh_factory.listener();
 
+	let transform_listener = application.world_mut().transforms_listener().clone();
 	let renderer = &mut application.renderer;
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), listener))
+		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), listener, transform_listener))
 	};
 
 	renderer.add_scene_manager(sm);

@@ -4,7 +4,7 @@ use crate::core::{Entity, EntityHandle};
 use crate::gameplay::{Positionable, Transformable};
 use crate::inspector::Inspectable;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Camera {
 	position: Vector3,
 	direction: Vector3,

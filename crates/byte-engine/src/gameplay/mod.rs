@@ -6,6 +6,7 @@ pub mod anchor;
 pub mod collider;
 pub mod killer;
 pub mod timer;
+pub mod world;
 
 pub use anchor::Anchor;
 pub use object::Object;

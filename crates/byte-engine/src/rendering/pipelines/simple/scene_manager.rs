@@ -8,7 +8,7 @@ use math::Matrix4;
 use resource_management::{asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{hash::{HashMap, HashMapExt}, json::{self, JsonContainerTrait as _, JsonValueTrait as _}, sync::RwLock, Box, Extent};
 
-use crate::{camera::Camera, core::{Entity, EntityHandle, channel::DefaultChannel, entity::{self}, factory::CreateMessage, listener::{DefaultListener, Listener}}, gameplay::Transformable, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, lights::{Light, Lights}, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
+use crate::{camera::Camera, core::{Entity, EntityHandle, channel::DefaultChannel, entity::{self}, factory::{CreateMessage, Handle}, listener::{DefaultListener, Listener}}, gameplay::{Transformable, transform::TransformationUpdate}, rendering::{RenderableMesh, Viewport, common_shader_generator::CommonShaderScope, lights::{Light, Lights}, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, pipelines::simple::{CameraShaderData, RenderPass, render_pass}, render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn}, renderable::mesh::MeshSource, utils::{InstanceBatch, MeshBuffersStats, MeshStats}, view::View}};
 
 pub struct SceneManager {
 	/// Buffer containing all vertex positions for meshes.
@@ -16,13 +16,14 @@ pub struct SceneManager {
 	pub(super) indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
 	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
-	pub(super) mesh_buffers_stats: MeshBuffersStats<EntityHandle<dyn Transformable>>,
+	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
 	pub(super) descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	pub(super) pipeline_layout: ghi::PipelineLayoutHandle,
 	pub(super) pipeline: ghi::PipelineHandle,
 	views: Vec<RenderPass>,
 
 	renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+	transform_channel: DefaultListener<TransformationUpdate>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
@@ -30,7 +31,11 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
 ];
 
 impl SceneManager {
-	pub fn new(device: &mut ghi::Device, renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>) -> Self {
+	pub fn new(
+		device: &mut ghi::Device,
+		renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		transform_channel: DefaultListener<TransformationUpdate>,
+	) -> Self {
 		let vertex_positions_buffer = device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
 		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
 
@@ -144,6 +149,7 @@ impl SceneManager {
 			views: Vec::with_capacity(4),
 
 			renderable_meshes_channel,
+			transform_channel,
 		}
 	}
 }
@@ -151,8 +157,8 @@ impl SceneManager {
 impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		for message in self.renderable_meshes_channel.iter() {
-			let handle = message.into_data();
-			let entity = handle.read();
+			let handle = message.handle().clone();
+			let entity = message.data().read();
 
 			let mesh = entity.get_mesh();
 
@@ -194,20 +200,24 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 				}
 			};
 
-			drop(entity);
+			let instace_id = self.mesh_buffers_stats.add_instance(mesh_id, handle);
 
-			self.mesh_buffers_stats.add_instance(mesh_id, handle);
+			let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
+
+			let instance_batches = self.mesh_buffers_stats.get_instance_batches();
+			
+			instance_data_buffer[instace_id] = InstanceShaderData { instance_transform: entity.transform().get_matrix() };
 		}
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
-		for batch in instance_batches.iter() {
-			for (index, instance_data) in batch {
-				instance_data_buffer[index] = InstanceShaderData { instance_transform: instance_data.read().transform().get_matrix() };
-			}
-		}
+		// for batch in instance_batches.iter() {
+		// 	for (index, instance_data) in batch {
+		// 		instance_data_buffer[index] = InstanceShaderData { instance_transform: instance_data.read().transform().get_matrix() };
+		// 	}
+		// }
 
 		let instance_batches = instance_batches.iter().into_vec();
 

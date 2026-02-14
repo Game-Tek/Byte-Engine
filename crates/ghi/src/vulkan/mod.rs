@@ -178,6 +178,9 @@ pub(crate) struct BuildImage {
 pub(crate) struct BuildBuffer {
 	previous: BufferHandle,
 	master: graphics_hardware_interface::BaseBufferHandle,
+	/// When `PERSISTENT_WRITE` is enabled, carries the handle of the shared
+	/// CPU-writable source buffer so per-frame buffers can reference it.
+	pub(crate) source: Option<BufferHandle>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]

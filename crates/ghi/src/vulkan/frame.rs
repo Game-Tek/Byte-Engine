@@ -135,6 +135,35 @@ impl crate::frame::Frame for Frame<'_> {
 		// Update descriptors before creating command buffer
 		self.device.process_tasks(frame_key.sequence_index);
 
+		// When PERSISTENT_WRITE is enabled, memcpy from each dynamic buffer's
+		// persistent source buffer into the current frame's staging buffer, then
+		// enqueue the staging→GPU copy. This ensures every frame gets the latest
+		// data even if the CPU didn't write this frame.
+		if super::buffer::PERSISTENT_WRITE {
+			let buffers = &self.device.buffers;
+
+			for master_handle in &self.device.persistent_write_dynamic_buffers {
+				let all_handles = BufferHandle(master_handle.0).get_all(buffers);
+				let frame_buffer_handle = all_handles[frame_key.sequence_index as usize];
+				let frame_buffer = frame_buffer_handle.access(buffers);
+
+				let source_handle = frame_buffer.source.expect("Persistent write dynamic buffer must have a source");
+				let staging_handle = frame_buffer.staging.expect("Persistent write dynamic buffer must have per-frame staging");
+
+				let source_buffer = source_handle.access(buffers);
+				let staging_buffer = staging_handle.access(buffers);
+				let size = frame_buffer.size;
+
+				// CPU-side memcpy: source → per-frame staging
+				unsafe {
+					std::ptr::copy_nonoverlapping(source_buffer.pointer, staging_buffer.pointer, size);
+				}
+
+				// Enqueue staging → GPU copy
+				self.device.pending_buffer_syncs.lock().push_back(frame_buffer_handle);
+			}
+		}
+
 		let pending_buffer_syncs = &self.device.pending_buffer_syncs;
 		let buffers = &self.device.buffers;
 
@@ -176,16 +205,26 @@ impl crate::frame::Frame for Frame<'_> {
 		let frame_key = self.frame_key;
 
 		let handles = BufferHandle(buffer_handle.0).get_all(buffers);
-
 		let handle = handles[frame_key.sequence_index as usize];
+		let buffer = handle.access(buffers);
 
+		if super::buffer::PERSISTENT_WRITE {
+			if let Some(source_handle) = buffer.source {
+				// Return the persistent source buffer's pointer. The user writes
+				// here and every frame the data is automatically memcpy'd to per-frame
+				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
+				let source_buffer = source_handle.access(buffers);
+				return unsafe { std::mem::transmute(source_buffer.pointer) };
+			}
+		}
+
+		// Fallback: original behavior for non-persistent-write buffers
 		self.device.pending_buffer_syncs.lock().push_back(handle);
 
-		let buffer = handle.access(buffers);
-		let buffer = buffer.staging.unwrap().access(buffers);
+		let staging_buffer = buffer.staging.unwrap().access(buffers);
 
 		unsafe {
-			std::mem::transmute(buffer.pointer)
+			std::mem::transmute(staging_buffer.pointer)
 		}
 	}
 

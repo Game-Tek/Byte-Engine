@@ -69,6 +69,11 @@ pub struct Device {
 	/// Tracks pending image host to device, or device to host synchronization operations.
 	pub(super) pending_image_syncs: Mutex<VecDeque<ImageHandle>>,
 
+	/// Tracks all dynamic buffer master handles that use the persistent write mode.
+	/// These buffers have their source buffer memcpy'd into the per-frame staging
+	/// buffer every frame before GPU copies are issued.
+	pub(super) persistent_write_dynamic_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
+
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
 
 	/// Stores the debug names for resources.
@@ -474,6 +479,8 @@ impl Device {
 
 			pending_buffer_syncs: Mutex::new(VecDeque::with_capacity(128)),
 			pending_image_syncs: Mutex::new(VecDeque::with_capacity(128)),
+
+			persistent_write_dynamic_buffers: Vec::with_capacity(64),
 
 			tasks: Vec::with_capacity(1024),
 
@@ -1044,6 +1051,7 @@ impl Device {
 			return Buffer {
 				next,
 				staging: None,
+				source: None,
 				buffer: vk::Buffer::null(),
 				size: 0,
 				device_address: 0,
@@ -1109,6 +1117,7 @@ impl Device {
 			let staging_buffer = Buffer {
 				next,
 				staging: None,
+				source: None,
 				buffer: buffer_creation_result.resource,
 				size,
 				device_address,
@@ -1127,6 +1136,7 @@ impl Device {
 		Buffer {
 			next,
 			staging,
+			source: None,
 			buffer: buffer_creation_result.resource,
 			size,
 			device_address,
@@ -1149,6 +1159,33 @@ impl Device {
 		self.buffers.push(buffer);
 
 		buffer_handle
+	}
+
+	/// Creates a CPU-visible staging buffer (TRANSFER_SRC) for use as a per-frame
+	/// staging buffer in the persistent write mode. Returns its handle.
+	fn create_staging_buffer(&mut self, name: Option<&str>, size: usize) -> BufferHandle {
+		let vk_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+		let device_access = graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite;
+
+		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
+		let (allocation_handle, _) = self.create_allocation_internal(buffer_creation_result.size, buffer_creation_result.memory_flags.into(), device_access);
+		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+		let handle = BufferHandle(self.buffers.len() as u64);
+
+		self.buffers.push(Buffer {
+			next: None,
+			staging: None,
+			source: None,
+			buffer: buffer_creation_result.resource,
+			size,
+			device_address,
+			pointer,
+			uses: crate::Uses::empty(),
+			access: device_access,
+		});
+
+		handle
 	}
 
 	fn build_image_internal(&mut self, next: Option<ImageHandle>, name: Option<&str>, format: crate::Formats, device_accesses: crate::DeviceAccesses, array_layers: Option<NonZeroU32>, extent: Extent, resource_uses: crate::Uses,) -> Image {
@@ -1663,7 +1700,17 @@ impl Device {
 
 					let previous_buffer = builder.previous.access(&self.buffers);
 
-					self.create_buffer_internal(None, Some(builder.previous), name.as_ref().map(|e| e.as_str()), previous_buffer.uses, previous_buffer.size, previous_buffer.access);
+					let new_buffer_handle = self.create_buffer_internal(None, Some(builder.previous), name.as_ref().map(|e| e.as_str()), previous_buffer.uses, previous_buffer.size, previous_buffer.access);
+
+					// When PERSISTENT_WRITE is enabled and this buffer has a source,
+					// create a per-frame staging buffer and point the new buffer's
+					// staging and source fields accordingly.
+					if let Some(source_handle) = builder.source {
+						let size = self.buffers[new_buffer_handle.0 as usize].size;
+						let per_frame_staging = self.create_staging_buffer(name.as_ref().map(|e| e.as_str()), size);
+						self.buffers[new_buffer_handle.0 as usize].staging = Some(per_frame_staging);
+						self.buffers[new_buffer_handle.0 as usize].source = Some(source_handle);
+					}
 				}
 				Tasks::ResizeImage { handle, extent } => {
 					self.resize_image_internal(*handle, *extent, sequence_index);
@@ -2431,12 +2478,41 @@ impl crate::device::Device for Device {
 		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
 		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T>{});
 
-		for i in 1..self.frames {
-			assert!(i < 2, "This does not support more than one deferred buffer!");
-			self.tasks.push(Task::new(Tasks::BuildBuffer(BuildBuffer {
-				previous: buffer_handle,
-				master: handle.into(),
-			}), Some(i)));
+		if super::buffer::PERSISTENT_WRITE && device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+			// The master buffer's existing staging buffer becomes the shared, persistent
+			// CPU-writable source buffer. We create a new per-frame staging buffer for
+			// frame 0 and store the source handle on the master buffer.
+
+			let source_handle = self.buffers[buffer_handle.0 as usize].staging.expect("CpuWrite dynamic buffer must have a staging buffer");
+
+			// Create a new per-frame staging buffer for frame 0
+			let frame0_staging = self.create_staging_buffer(name, size);
+
+			// Reassign: the master's staging now points to the new per-frame staging,
+			// and source points to the original (persistent) CPU-writable buffer.
+			self.buffers[buffer_handle.0 as usize].staging = Some(frame0_staging);
+			self.buffers[buffer_handle.0 as usize].source = Some(source_handle);
+
+			// Track this dynamic buffer for automatic per-frame memcpy
+			self.persistent_write_dynamic_buffers.push(handle.into());
+
+			for i in 1..self.frames {
+				assert!(i < 2, "This does not support more than one deferred buffer!");
+				self.tasks.push(Task::new(Tasks::BuildBuffer(BuildBuffer {
+					previous: buffer_handle,
+					master: handle.into(),
+					source: Some(source_handle),
+				}), Some(i)));
+			}
+		} else {
+			for i in 1..self.frames {
+				assert!(i < 2, "This does not support more than one deferred buffer!");
+				self.tasks.push(Task::new(Tasks::BuildBuffer(BuildBuffer {
+					previous: buffer_handle,
+					master: handle.into(),
+					source: None,
+				}), Some(i)));
+			}
 		}
 
 		handle
@@ -2566,6 +2642,7 @@ impl crate::device::Device for Device {
 		self.buffers.push(Buffer {
 			next: None,
 			staging: None,
+			source: None,
 			buffer: buffer_creation_result.resource,
 			size: buffer_creation_result.size,
 			device_address: address,

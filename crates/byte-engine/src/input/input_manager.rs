@@ -26,7 +26,7 @@ use utils::{insert_return_length, RGBA};
 
 use crate::{core::{Entity, EntityHandle, channel::{Channel as _, DefaultChannel}, factory::{CreateMessage, Factory, Handle}, listener::{DefaultListener, Listener}, message::Message}, input::ActionEvent};
 
-use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TriggerHandle, Types, Value};
+use super::{action::{TriggerMapping, InputValue}, device::Device, device_class::{DeviceClass, DeviceClassHandle}, input_trigger::{Trigger, TriggerDescription}, Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TickPolicy, TriggerHandle, Types, Value};
 
 #[derive(Copy, Clone, Debug)]
 /// A trigger reference is a way to reference an input trigger.
@@ -64,6 +64,7 @@ struct InputAction {
 	r#type: Types,
 	trigger_mappings: Vec<TriggerMapping>,
 	handle: Option<Handle>,
+	tick_policy: TickPolicy,
 }
 
 pub struct InputSourceEventState {
@@ -297,7 +298,7 @@ impl InputManager {
 			let handle = *message.handle();
 			let action = message.into_data();
 
-			let (name, r#type, input_events,) = (action.name, action.r#type, action.bindings);
+			let (name, r#type, input_events, tick_policy) = (action.name, action.r#type, action.bindings, action.tick_policy);
 
 			let input_event = InputAction {
 				name: name.to_string(),
@@ -310,53 +311,83 @@ impl InputManager {
 					})
 				}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 				handle: Some(handle),
+				tick_policy,
 			};
 
 			self.actions.push(input_event);
 		}
 
-		if self.records.is_empty() { return; }
+		// Phase A: Process new records (if any) and resolve actions that received input.
+		if !self.records.is_empty() {
+			let mut records = self.records.clone();
+			self.records.clear();
 
-		let mut records = self.records.clone();
-		self.records.clear();
+			records.sort_by(|a, b| a.time.cmp(&b.time));
 
-		records.sort_by(|a, b| a.time.cmp(&b.time));
+			let mut last_records: HashMap<(DeviceHandle, TriggerHandle), Record> = HashMap::with_capacity(records.len());
 
-		let mut last_records: HashMap<(DeviceHandle, TriggerHandle), Record> = HashMap::with_capacity(records.len());
+			for record in records {
+				last_records.insert((record.device_handle, record.trigger_handle), record);
+			}
 
-		for record in records {
-			last_records.insert((record.device_handle, record.trigger_handle), record);
+			// Deduped and most recent records.
+			let records = last_records.into_values().collect::<Vec<_>>();
+
+			for record in &records {
+				self.trigger_values.insert((record.device_handle, record.trigger_handle), record.clone());
+			}
+
+			for (i, action) in self.actions.iter().enumerate() {
+				let action_records = records.iter().filter(|r| action.trigger_mappings.iter().any(|tm| tm.trigger_handle == r.trigger_handle));
+
+				let most_recent_record = action_records.max_by_key(|r| r.time);
+
+				let record = if let Some(record) = most_recent_record { record } else { continue; };
+
+				let value = if let Some(value) = Self::resolve_action_value_from_record(action, record, &self.trigger_values) { value } else { continue; };
+
+				self.action_values.insert((record.device_handle, ActionHandle(i as u32)), value);
+
+				// OnChange actions emit here (on actual input change).
+				if let Some(handle) = &action.handle {
+					self.event_channel.send(ActionEvent::new(handle.clone(), value));
+				}
+			}
 		}
 
-		// Deduped and most recent records.
-		let records = last_records.into_values().collect::<Vec<_>>();
+		// Phase B: Tick-based emission for WhileActive and Always actions.
+		// Iterates all actions and emits events based on their tick policy using the
+		// most recently resolved value. Only emits for devices that have previously
+		// interacted with the action.
+		let entries: Vec<_> = self.action_values.iter().map(|(k, v)| (*k, *v)).collect();
+		for ((device_handle, action_handle), value) in entries {
+			let action = &self.actions[action_handle.0 as usize];
 
-		for record in &records {
-			let value = record.value;
-			let device_handle = record.device_handle;
-			let trigger_handle = record.trigger_handle;
+			let handle = match &action.handle {
+				Some(h) => h.clone(),
+				None => continue,
+			};
 
-			self.trigger_values.insert((device_handle, trigger_handle), record.clone());
-		}
-
-		for (i, action) in self.actions.iter().enumerate() {
-			let action_records = records.iter().filter(|r| action.trigger_mappings.iter().any(|tm| tm.trigger_handle == r.trigger_handle));
-
-			let most_recent_record = action_records.max_by_key(|r| r.time);
-
-			let record = if let Some(record) = most_recent_record { record } else { continue; };
-
-			let value = if let Some(value) = Self::resolve_action_value_from_record(action, record, &self.trigger_values) { value } else { continue; };
-
-			self.action_values.insert((record.device_handle, ActionHandle(i as u32)), value);
-
-			if let Some(handle) = &action.handle {
-				self.event_channel.send(ActionEvent { handle: handle.clone(), value });
+			match action.tick_policy {
+				TickPolicy::OnChange => {} // Already handled in Phase A.
+				TickPolicy::WhileActive => {
+					if !value.is_default() {
+						self.event_channel.send(ActionEvent::new(handle, value));
+					}
+				}
+				TickPolicy::Always => {
+					self.event_channel.send(ActionEvent::new(handle, value));
+				}
 			}
 		}
 	}
 
 	pub fn create_action(&mut self, name: &str, r#type: Types, action_binding_descriptions: &[ActionBindingDescription]) -> ActionHandle {
+		self.create_action_with_tick_policy(name, r#type, action_binding_descriptions, TickPolicy::OnChange)
+	}
+
+	/// Creates an action with a specific tick policy controlling how frequently events are emitted.
+	pub fn create_action_with_tick_policy(&mut self, name: &str, r#type: Types, action_binding_descriptions: &[ActionBindingDescription], tick_policy: TickPolicy) -> ActionHandle {
 		let input_event = InputAction {
 			name: name.to_string(),
 			r#type,
@@ -368,6 +399,7 @@ impl InputManager {
 				})
 			}).filter_map(|input_event| input_event).collect::<Vec<_>>(),
 			handle: None,
+			tick_policy,
 		};
 
 		let handle = ActionHandle(self.actions.len() as u32);
@@ -1037,5 +1069,140 @@ mod tests {
 		let handle = TriggerReference::Name("Keyboard.Up");
 
 		record_and_assert_boolean_input_source_action_interpolation(&mut input_manager, device, handle, "MoveForward", "Keyboard.Up", Vector3::zero(), Vector3::new(0f32, 0f32, 1f32));
+	}
+
+	fn build_input_manager_with_factory() -> (InputManager, crate::core::factory::Factory<Action>, DefaultListener<ActionEvent>) {
+		let action_factory = crate::core::factory::Factory::<Action>::new();
+		let action_listener = action_factory.listener();
+		let event_channel = DefaultChannel::new();
+		let event_listener = event_channel.listener();
+		let input_manager = InputManager::new(action_listener, event_channel);
+		(input_manager, action_factory, event_listener)
+	}
+
+	fn count_events(listener: &mut DefaultListener<ActionEvent>) -> usize {
+		let mut count = 0;
+		while let Some(_) = Listener::read(listener) { count += 1; }
+		count
+	}
+
+	#[test]
+	fn test_tick_policy_on_change_only_emits_on_input() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
+		let device = input_manager.create_device(&device_class_handle);
+
+		let action = Action::new("MoveForward", &[
+			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32)),
+		], Types::Float).tick_policy(TickPolicy::OnChange);
+		factory.create(action);
+
+		// First update with no input: drains factory, no records -> no events.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+
+		// Second update with no input: no events.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+
+		// Press key -> 1 event.
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
+
+		// No new input -> no events (OnChange doesn't re-emit).
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+
+		// Release key -> 1 event.
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
+
+		// No new input -> no events.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+	}
+
+	#[test]
+	fn test_tick_policy_while_active_emits_while_non_default() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
+		let device = input_manager.create_device(&device_class_handle);
+
+		let action = Action::new("MoveForward", &[
+			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32)),
+		], Types::Float).tick_policy(TickPolicy::WhileActive);
+		factory.create(action);
+
+		// First update registers the action, no records -> no events.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+
+		// Press key -> Phase A emits 1 event + Phase B sees value is non-default and emits 1 = 2.
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.update();
+		let events = count_events(&mut event_listener);
+		assert!(events >= 1, "Expected at least 1 event on key press, got {}", events);
+
+		// No new input, key still held -> WhileActive re-emits because value is non-default.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
+
+		// Still held -> re-emits again.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
+
+		// Release key.
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.update();
+		// Phase A emits change event, Phase B sees value is default so does not re-emit.
+		// The value is now 0.0 (default), so WhileActive should not emit in Phase B.
+		let events_on_release = count_events(&mut event_listener);
+		assert!(events_on_release >= 1, "Expected at least 1 event on key release, got {}", events_on_release);
+
+		// No new input, value is default -> no events.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+	}
+
+	#[test]
+	fn test_tick_policy_always_emits_every_frame() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
+		let device = input_manager.create_device(&device_class_handle);
+
+		let action = Action::new("MoveForward", &[
+			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32)),
+		], Types::Float).tick_policy(TickPolicy::Always);
+		factory.create(action);
+
+		// Registers the action, no device has interacted yet -> no Always events.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 0);
+
+		// Press key -> events emitted.
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.update();
+		let events = count_events(&mut event_listener);
+		assert!(events >= 1, "Expected at least 1 event on key press, got {}", events);
+
+		// No new input -> Always still emits.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
+
+		// Release key -> Still emits (Always emits regardless of value).
+		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.update();
+		let events = count_events(&mut event_listener);
+		assert!(events >= 1);
+
+		// No new input, value is default -> Always STILL emits.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
+
+		// And again.
+		input_manager.update();
+		assert_eq!(count_events(&mut event_listener), 1);
 	}
 }

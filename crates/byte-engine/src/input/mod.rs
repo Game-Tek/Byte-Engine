@@ -115,6 +115,24 @@ impl Into<Value> for Quaternion {
 	}
 }
 
+impl Value {
+	/// Returns `true` if this value is equal to the default value for its type.
+	///
+	/// Used by `TickPolicy::WhileActive` to determine whether to emit events.
+	pub fn is_default(&self) -> bool {
+		match self {
+			Value::Bool(v) => !v,
+			Value::Unicode(v) => *v == '\0',
+			Value::Float(v) => *v == 0.0,
+			Value::Int(v) => *v == 0,
+			Value::Rgba(v) => v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a == 0.0,
+			Value::Vector2(v) => v.x == 0.0 && v.y == 0.0,
+			Value::Vector3(v) => v.x == 0.0 && v.y == 0.0 && v.z == 0.0,
+			Value::Quaternion(v) => *v == Quaternion::identity(),
+		}
+	}
+}
+
 impl Into<Types> for Value {
 	fn into(self) -> Types {
 		match self {
@@ -153,6 +171,22 @@ pub enum Function {
 	Linear,
 	/// Maps a 2D point to a 3D point on a sphere.
 	Sphere,
+}
+
+/// The `TickPolicy` enum controls how frequently an action emits events through the event channel.
+///
+/// This allows applications to choose between event-driven and poll-driven input handling
+/// on a per-action basis.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum TickPolicy {
+	/// Emit events only when a trigger value actually changes. This is the default behavior.
+	#[default]
+	OnChange,
+	/// Emit events every frame while the action's resolved value is non-default
+	/// (e.g. while a key is held, while a stick is displaced from center).
+	WhileActive,
+	/// Emit events every frame unconditionally, regardless of the action's current value.
+	Always,
 }
 
 pub trait Extract<T: InputValue> {

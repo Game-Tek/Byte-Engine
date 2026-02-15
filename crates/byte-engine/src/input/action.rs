@@ -6,7 +6,7 @@ use crate::core::{Entity, EntityHandle};
 use crate::input::ValueMapping;
 
 use super::TriggerHandle;
-use super::{input_manager::TriggerReference, Function, Types, Value};
+use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
 
 trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
@@ -19,6 +19,7 @@ pub struct Action {
 	pub(crate) bindings: Vec<ActionBindingDescription>,
 	pub(crate) inputs: Vec<TriggerMapping>,
 	pub(crate) r#type: Types,
+	pub(crate) tick_policy: TickPolicy,
 }
 
 impl ActionLike for Action {
@@ -70,7 +71,14 @@ impl Action {
 			bindings: bindings.to_vec(),
 			inputs: Vec::new(),
 			r#type,
+			tick_policy: TickPolicy::default(),
 		}
+	}
+
+	/// Sets the tick policy for this action, controlling how frequently it emits events.
+	pub fn tick_policy(mut self, tick_policy: TickPolicy) -> Self {
+		self.tick_policy = tick_policy;
+		self
 	}
 }
 

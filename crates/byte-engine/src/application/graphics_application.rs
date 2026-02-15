@@ -142,12 +142,12 @@ impl Application for GraphicsApplication {
 	fn get_name(&self) -> &str { self.application.get_name() }
 
 	fn tick(&mut self) -> bool {
-		self.tick_with(|_, _| {})
+		self.tick_with(|_, _| {}).is_some()
 	}
 }
 
 impl GraphicsApplication {
-	pub fn tick_with<F: FnOnce(&mut Self, Time)>(&mut self, f: F) -> bool {
+	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
@@ -189,14 +189,17 @@ impl GraphicsApplication {
 			let _ = self.application_events.0.send(Events::Close);
 			self.threads.drain(..).for_each(|t| { let _ = t.join(); });
 			self.close();
-			return false;
+			return None;
 		}
 
 		let time = Time { elapsed, delta: dt };
 
 		self.input_system.update();
 
-		f(self, time);
+		let mut cameras_listener = self.world.camera_factory().listener();
+		let mut transforms_listener = self.world.transforms_channel().listener();
+
+		let result = f(self, time);
 
 		self.world.update(time);
 
@@ -207,11 +210,11 @@ impl GraphicsApplication {
 				self.renderer.create_window(message.into_data());
 			}
 
-			for message in self.world.cameras_listener_mut().iter() {
+			for message in cameras_listener.iter() {
 				self.renderer.create_camera(message.handle().clone(), message.into_data());
 			}
 
-			self.renderer.prepare(self.world.transforms_listener_mut());
+			self.renderer.prepare(&mut transforms_listener);
 		}
 
 		self.tick_count += 1;
@@ -234,7 +237,7 @@ impl GraphicsApplication {
 			}
 		}
 
-		!close
+		(!close).then(|| result)
 	}
 
 	/// Flags the application for closing.
@@ -390,12 +393,11 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	let renderable_mesh_factory = application.renderable_factory_mut();
 	let listener = renderable_mesh_factory.listener();
 
-	let transform_listener = application.world_mut().transforms_listener().clone();
 	let renderer = &mut application.renderer;
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), listener, transform_listener))
+		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), listener))
 	};
 
 	renderer.add_scene_manager(sm);

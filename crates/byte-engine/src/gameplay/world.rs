@@ -2,8 +2,8 @@ use crate::{application::Time, camera::Camera, core::{EntityHandle, channel::Def
 
 pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
-	transforms: (DefaultChannel<TransformationUpdate>, DefaultListener<TransformationUpdate>),
-	cameras: (Factory<Camera>, DefaultListener<CreateMessage<Camera>>),
+	transforms: DefaultChannel<TransformationUpdate>,
+	cameras: Factory<Camera>,
 
 	anchor_system: AnchorSystem,
 	physics_system: dynabit::World,
@@ -12,16 +12,8 @@ pub struct DefaultWorld {
 impl DefaultWorld {
 	pub fn new() -> Self {
 		let body_factory = Factory::new();
-		let transforms = {
-			let channel = DefaultChannel::new();
-			let listener = channel.listener();
-			(channel, listener)
-		};
-		let cameras = {
-			let factory = Factory::new();
-			let listener = factory.listener();
-			(factory, listener)
-		};
+		let transforms = DefaultChannel::new();
+		let cameras = Factory::new();
 
 		let anchor_system = AnchorSystem::new();
 		let physics_system = dynabit::World::new(body_factory.listener());
@@ -49,35 +41,19 @@ impl DefaultWorld {
 		&mut self.body_factory
 	}
 
-	pub fn transforms(&self) -> &DefaultChannel<TransformationUpdate> {
-		&self.transforms.0
+	pub fn transforms_channel(&self) -> &DefaultChannel<TransformationUpdate> {
+		&self.transforms
 	}
 
-	pub fn transforms_mut(&mut self) -> &mut DefaultChannel<TransformationUpdate> {
-		&mut self.transforms.0
-	}
-
-	pub fn transforms_listener(&self) -> &DefaultListener<TransformationUpdate> {
-		&self.transforms.1
-	}
-
-	pub fn transforms_listener_mut(&mut self) -> &mut DefaultListener<TransformationUpdate> {
-		&mut self.transforms.1
+	pub fn transforms_channel_mut(&mut self) -> &mut DefaultChannel<TransformationUpdate> {
+		&mut self.transforms
 	}
 
 	pub fn camera_factory(&self) -> &Factory<Camera> {
-		&self.cameras.0
+		&self.cameras
 	}
 
 	pub fn camera_factory_mut(&mut self) -> &mut Factory<Camera> {
-		&mut self.cameras.0
-	}
-
-	pub fn cameras_listener(&self) -> &DefaultListener<CreateMessage<Camera>> {
-		&self.cameras.1
-	}
-
-	pub fn cameras_listener_mut(&mut self) -> &mut DefaultListener<CreateMessage<Camera>> {
-		&mut self.cameras.1
+		&mut self.cameras
 	}
 }

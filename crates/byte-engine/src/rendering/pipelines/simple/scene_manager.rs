@@ -23,7 +23,6 @@ pub struct SceneManager {
 	views: Vec<RenderPass>,
 
 	renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
-	transform_channel: DefaultListener<TransformationUpdate>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [
@@ -34,7 +33,6 @@ impl SceneManager {
 	pub fn new(
 		device: &mut ghi::Device,
 		renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
-		transform_channel: DefaultListener<TransformationUpdate>,
 	) -> Self {
 		let vertex_positions_buffer = device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
 		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
@@ -149,7 +147,6 @@ impl SceneManager {
 			views: Vec::with_capacity(4),
 
 			renderable_meshes_channel,
-			transform_channel,
 		}
 	}
 }
@@ -205,7 +202,7 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 			let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
 			let instance_batches = self.mesh_buffers_stats.get_instance_batches();
-			
+
 			instance_data_buffer[instace_id] = InstanceShaderData { instance_transform: entity.transform().get_matrix() };
 		}
 

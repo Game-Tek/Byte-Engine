@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
+use smallvec::SmallVec;
 
-use crate::{audio::{emitter::Emitter, round_robin::RoundRobin}, core::{listener::{Listener}, Entity, EntityHandle}, gameplay::Positionable};
+use crate::{audio::{emitter::Emitter, generator::{Generator, PlaybackSettings, PlaybackState}, round_robin::RoundRobin}, core::{Entity, EntityHandle, listener::Listener}, gameplay::Positionable};
 use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams}};
 
 use super::{sound::{self, Sound}, synthesizer::Synthesizer};
+
+use utils::Box as Boxy;
 
 /// The `AudioSystem` trait defines the interface for an audio system which handles audio playback and processing.
 /// It provides methods for playing audio assets, processing audio data, and managing audio channels.
@@ -43,16 +46,10 @@ impl DefaultAudioSystem {
 
 		channels.insert("master".to_string(), Channel { samples: vec![0; device.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
 
-		let sources = vec![Source {
-			generator: Generator::Synthesizer { pitch: 440f32 },
-			current_sample: 0,
-			gain: 1f32,
-		}];
-
 		Ok(Self {
 			device,
 			audio_resources: HashMap::with_capacity(1024),
-			sources,
+			sources: Vec::with_capacity(64),
 			channels,
 			params,
 			last_reported_underrun_count: 0,
@@ -107,7 +104,13 @@ impl DefaultAudioSystem {
 	fn render_sources(&self, buffer: &mut [f32]) {
 		let sample_rate = self.params.get_sample_rate();
 
-		for playing_sound in &self.sources {
+		let mut to_destroy: SmallVec<[usize; 16]> = SmallVec::with_capacity(16);
+
+		let settings = PlaybackSettings {
+			sample_rate,
+		};
+
+		for (idx, playing_sound) in self.sources.iter().enumerate() {
 			let current_sample = playing_sound.current_sample;
 			let gain = playing_sound.gain;
 
@@ -125,36 +128,14 @@ impl DefaultAudioSystem {
 				}
 			};
 
-			match &playing_sound.generator {
-				Generator::File { audio_asset_url } => {
-					play_sound(audio_asset_url);
-				}
-				Generator::RoundRobin(handle) => {
-					let mut rr = handle.write();
-					if let Some(e) = rr.get() {
-						play_sound(e);
-					}
-					}
-					Generator::Synthesizer { pitch } => {
-						let tau = std::f64::consts::TAU;
-						let sample_rate = sample_rate as f64;
-						let phase_step = tau * *pitch as f64 / sample_rate;
-						let mut phase = (current_sample as f64 * phase_step).rem_euclid(tau);
+			let state = PlaybackState {
+				current_sample,
+			};
 
-						for b in buffer.iter_mut() {
-							let sample = phase.sin() as f32;
-							*b += sample * gain;
-
-							phase += phase_step;
-							if phase >= tau {
-								phase -= tau;
-							} else if phase < 0.0 {
-								phase += tau;
-							}
-						}
-					}
-				}
+			if let None = playing_sound.generator.render(settings, state, buffer) {
+				to_destroy.push(idx);
 			}
+		}
 	}
 
 	/// Reports newly observed underruns since the previous render call.
@@ -173,6 +154,11 @@ impl DefaultAudioSystem {
 			underrun_count
 		);
 	}
+
+	pub fn create_generator(&mut self, generator: Arc<dyn Generator>) {
+		let idx = self.sources.len();
+		self.sources.push(Source { generator, current_sample: 0, gain: 1f32 });
+	}
 }
 
 impl Entity for DefaultAudioSystem {}
@@ -181,7 +167,7 @@ impl AudioSystem for DefaultAudioSystem {
 	fn play<'a>(&'a mut self, audio_asset_url: &'a str) {
 		// self.load_asset(audio_asset_url);
 
-		self.sources.push(Source { generator: Generator::File { audio_asset_url: audio_asset_url.to_string() }, current_sample: 0, gain: 1f32 });
+		// self.sources.push(Source { generator: Generator::File { audio_asset_url: audio_asset_url.to_string() }, current_sample: 0, gain: 1f32 });
 	}
 
 	fn render_available(&mut self) -> bool {
@@ -232,6 +218,20 @@ impl AudioSystem for DefaultAudioSystem {
 			e.current_sample += frames as u32;
 		}
 
+		{
+			self.sources.retain(|playing_sound| {
+				let settings = PlaybackSettings {
+					sample_rate: self.params.get_sample_rate(),
+				};
+
+				let state = PlaybackState {
+					current_sample: playing_sound.current_sample,
+				};
+
+				!playing_sound.generator.done(settings, state)
+			});
+		}
+
 		true
 	}
 }
@@ -242,18 +242,8 @@ struct Channel {
 	gain: f32,
 }
 
-enum Generator {
-	Synthesizer {
-		pitch: f32,
-	},
-	File {
-		audio_asset_url: String,
-	},
-	RoundRobin(EntityHandle<RoundRobin>),
-}
-
 struct Source {
-	generator: Generator,
+	generator: Arc<dyn Generator>,
 	current_sample: u32,
 	gain: f32,
 }

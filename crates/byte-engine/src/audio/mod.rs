@@ -7,3 +7,4 @@ pub mod synthesizer;
 pub mod round_robin;
 
 pub mod emitter;
+pub mod generator;

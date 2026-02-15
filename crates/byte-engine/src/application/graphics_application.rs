@@ -1,4 +1,4 @@
-use crate::{application::{parameters::Parameters, thread::Thread}, core::{Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task}, gameplay::{Transformable, transform::TransformationUpdate, world::DefaultWorld}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::{self, body::PhysicsBody}, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderable, renderer, texture_manager::TextureManager}};
+use crate::{application::{parameters::Parameters, thread::Thread}, audio::generator::Generator, core::{Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task}, gameplay::{Transformable, transform::TransformationUpdate, world::DefaultWorld}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::{self, body::PhysicsBody}, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderable, renderer, texture_manager::TextureManager}};
 use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
 
 use math::Vector2;
@@ -38,6 +38,7 @@ pub struct GraphicsApplication {
 	action_factory: Factory<Action>,
 
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
+	generator_factory: Factory<Arc<dyn Generator>>,
 
 	world: DefaultWorld,
 
@@ -112,6 +113,8 @@ impl Application for GraphicsApplication {
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
 			renderable_factory,
+
+			generator_factory: Factory::new(),
 
 			world,
 
@@ -288,6 +291,14 @@ impl GraphicsApplication {
 		&mut self.renderable_factory
 	}
 
+	pub fn generator_factory(&self) -> &Factory<Arc<dyn Generator>> {
+		&self.generator_factory
+	}
+
+	pub fn generator_factory_mut(&mut self) -> &mut Factory<Arc<dyn Generator>> {
+		&mut self.generator_factory
+	}
+
 	pub fn do_loop(&mut self) {
 		while !self.close {
 			self.tick();
@@ -417,6 +428,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	application.threads.push(Thread::new(application.application_events.0.spawn_rx(), {
 		let resource_manager = &mut application.resource_manager;
+		let mut generators_listener = application.generator_factory.listener();
 
 		move |mut rx| {
 			let Ok(mut audio_system) = DefaultAudioSystem::try_new().map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
@@ -433,6 +445,10 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 							break 'a;
 						},
 					}
+				}
+
+				for message in generators_listener.iter() {
+					audio_system.create_generator(message.into_data());
 				}
 
 				if !audio_system.render_available() {

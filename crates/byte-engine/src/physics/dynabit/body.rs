@@ -1,5 +1,5 @@
 use math::{collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _, MatScale as _}, normalize, sphere::Sphere, Base, Magnitude as _, Matrix3, Quaternion, Vector3};
-use crate::{application::Time, core::{listener::{Listener}, Entity, EntityHandle}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}}};
+use crate::{application::Time, core::{Entity, EntityHandle, factory::Handle, listener::Listener}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}}};
 use core::ops::Mul as _;
 
 pub struct PhysicsBody {
@@ -16,6 +16,7 @@ pub struct PhysicsBody {
 	pub(crate) elasticity: f32,
 	pub(crate) inertia_tensor: Matrix3,
 	pub(crate) friction: f32,
+	pub(crate) handle: Handle,
 }
 
 impl PhysicsBody {

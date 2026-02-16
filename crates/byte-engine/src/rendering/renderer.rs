@@ -9,7 +9,7 @@ use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
 
 use crate::{
 	application::parameters::Parameters, camera::Camera, core::{
-		Entity, EntityHandle, factory::Handle, listener::Listener
+		Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::Handle, listener::Listener
 	}, gameplay::{Positionable, transform::TransformationUpdate}, rendering::{View, Viewport, make_perspective_view_from_camera, render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn}, scene_manager::SceneManager, viewport, window::Window}
 };
 
@@ -192,7 +192,9 @@ impl Renderer {
 
 		device.start_frame_capture();
 
-		for message in transforms_listener.iter() {
+		let mut transforms_listener = transforms_listener.to_vec();
+
+		transforms_listener.retain(|message| {
 			let handle = message.handle().clone();
 
 			if let Some(camera) = self.cameras.iter_mut().find_map(|(h, camera)| {
@@ -203,10 +205,11 @@ impl Renderer {
 				}
 			}) {
 				camera.set_position(message.transform().get_position());
+				false
 			} else {
-				continue;
-			};
-		}
+				true
+			}
+		});
 
 		let mut frame = device.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
 
@@ -262,7 +265,7 @@ impl Renderer {
 
 		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]>  = scene_managers.filter_map(|sm| {
 			let mut sm = sm.write();
-			sm.prepare(&mut frame, &viewports)
+			sm.prepare(&mut frame, &viewports, &mut transforms_listener)
 		}).collect();
 
 		// A list of render pass commands and their corresponding viewport index

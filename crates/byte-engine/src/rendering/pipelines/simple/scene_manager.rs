@@ -152,8 +152,8 @@ impl SceneManager {
 }
 
 impl crate::rendering::scene_manager::SceneManager for SceneManager {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
-		for message in self.renderable_meshes_channel.iter() {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport], transforms_listener: &mut dyn Listener<TransformationUpdate>) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		while let Some(message) = self.renderable_meshes_channel.read() {
 			let handle = message.handle().clone();
 			let entity = message.data().read();
 
@@ -210,11 +210,14 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
-		// for batch in instance_batches.iter() {
-		// 	for (index, instance_data) in batch {
-		// 		instance_data_buffer[index] = InstanceShaderData { instance_transform: instance_data.read().transform().get_matrix() };
-		// 	}
-		// }
+		while let Some(message) = transforms_listener.read() {
+			let handle = message.handle().clone();
+			let transform = message.transform();
+
+			let idx = self.mesh_buffers_stats.get_instance_id(handle);
+
+			instance_data_buffer[idx] = InstanceShaderData { instance_transform: transform.get_matrix() };
+		}
 
 		let instance_batches = instance_batches.iter().into_vec();
 

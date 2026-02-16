@@ -40,6 +40,8 @@ use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::scene_manager::{SceneManager};
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
+
+use crate::gameplay::transform::TransformationUpdate;
 use crate::gameplay::Transformable as _;
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{RenderableMesh, Viewport, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain};
@@ -787,7 +789,7 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport], _transforms_listener: &mut dyn Listener<TransformationUpdate>) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
 

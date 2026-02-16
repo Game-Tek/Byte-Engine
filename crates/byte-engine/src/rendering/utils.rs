@@ -2,6 +2,8 @@ use std::{collections::{hash_map::{Entry, Values}}, hash::Hash, marker::PhantomD
 
 use utils::hash::{HashMap, HashMapExt as _};
 
+use crate::core::factory::Handle;
+
 pub struct MeshStats {
 	vertex_count: usize,
 	index_count: usize,
@@ -168,6 +170,10 @@ impl <I> MeshBuffersStats<I> {
 	pub fn index_offset(&self) -> usize {
 		self.index_count
 	}
+
+	pub fn get_instance_id(&self, handle: I) -> usize where I: Eq {
+        self.instances.iter().position(|(_, h)| *h == handle).unwrap()
+    }
 }
 
 impl <I> Default for MeshBuffersStats<I> {

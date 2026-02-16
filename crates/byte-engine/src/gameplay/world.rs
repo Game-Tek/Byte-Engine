@@ -1,4 +1,4 @@
-use crate::{application::Time, camera::Camera, core::{EntityHandle, channel::DefaultChannel, factory::{CreateMessage, Factory}, listener::DefaultListener}, gameplay::{anchor::AnchorSystem, transform::TransformationUpdate}, physics::{self, dynabit}};
+use crate::{application::Time, camera::Camera, core::{EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}}, gameplay::{anchor::AnchorSystem, transform::TransformationUpdate}, physics::{self, dynabit}};
 
 pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
@@ -28,9 +28,9 @@ impl DefaultWorld {
 		}
 	}
 
-	pub fn update(&mut self, time: Time) {
+	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>) {
 		self.anchor_system.update();
-		// self.physics_system.update(time, &mut self.transforms.1);
+		self.physics_system.update(time, transforms_rx, &mut self.transforms);
 	}
 
 	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {

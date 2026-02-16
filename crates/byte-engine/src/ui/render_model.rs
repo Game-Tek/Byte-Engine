@@ -11,12 +11,12 @@ impl UIRenderModel {
 
 }
 
-use crate::{core::{Entity}, rendering::{Viewport, render_pass::{RenderPassBuilder, RenderPassFunction}, scene_manager::SceneManager}};
+use crate::{core::{Entity, listener::Listener}, gameplay::transform::TransformationUpdate, rendering::{Viewport, render_pass::{RenderPassBuilder, RenderPassFunction}, scene_manager::SceneManager}};
 use utils::Box;
 use super::Text;
 
 impl SceneManager for UIRenderModel {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport], _transforms_listener: &mut dyn Listener<TransformationUpdate>) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		None
 	}
 

@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use math::{collision::{cube_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _}, normalize, sphere::Sphere, Base, Matrix3, Quaternion, Vector3};
-use crate::{application::Time, core::{Entity, EntityHandle, factory::{CreateMessage, Handle}, listener::{DefaultListener, Listener}}, gameplay::transform::TransformationUpdate, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{PhysicsBody, intersect}, contact::{Contact, Side}}}};
+use crate::{application::Time, core::{Entity, EntityHandle, channel::Channel, factory::{CreateMessage, Handle}, listener::{DefaultListener, Listener}}, gameplay::transform::{Transform, TransformationUpdate}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}, dynabit::{body::{PhysicsBody, intersect}, contact::{Contact, Side}}}};
 
 use utils::hash::{HashMap, HashMapExt};
 
@@ -39,15 +39,16 @@ impl World {
 		// }
 	}
 
-	pub fn update(&mut self, time: Time, transform_channel: &mut impl Listener<TransformationUpdate>) {
+	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		while let Some(message) = self.body_listener.read() {
-			let handle = message.into_data();
-			let body = handle.read();
+			let handle = message.handle().clone();
+			let body_handle = message.into_data();
+			let body = body_handle.read();
 
-			self.create_body(body.deref());
+			self.create_body(handle, body.deref());
 		}
 
-		for message in transform_channel.iter() {
+		while let Some(message) = transforms_rx.read() {
 			let transform = message.transform();
 			let handle = message.handle();
 
@@ -61,8 +62,7 @@ impl World {
 
 		self.update_velocities(time);
 		self.update_collisions(time);
-		self.update_bodies(time);
-		self.update_entities(time);
+		self.update_bodies(time, transforms_tx);
 	}
 
 	/// Applies all initial impulses to bodies based on forces.
@@ -139,7 +139,7 @@ impl World {
 	}
 
 	/// Updates bodies' positions and orientation based on their velocities.
-	pub fn update_bodies(&mut self, time: Time) {
+	pub fn update_bodies(&mut self, time: Time, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		let dt = time.delta();
 		let dt = dt.as_secs_f32();
 
@@ -147,23 +147,8 @@ impl World {
 			match body.body_type {
 				BodyTypes::Dynamic => {
 					body.update(time);
-				}
-				_ => continue,
-			}
-		}
-	}
 
-	/// Synchronizes game bodies with their internal representation.
-	pub fn update_entities(&mut self, time: Time) {
-		let dt = time.delta();
-		let dt = dt.as_secs_f32();
-
-		for body in self.bodies.iter_mut() {
-			match body.body_type {
-				BodyTypes::Dynamic => {
-					// let mut e = body.body.as_ref().unwrap().write();
-					// e.set_position(body.position);
-					// e.transform_mut().set_orientation(body.orientation);
+					transforms_tx.send(TransformationUpdate::new(body.handle, Transform::from_position(body.position)));
 				}
 				_ => continue,
 			}
@@ -249,7 +234,7 @@ impl World {
 		b.position += separation * t_b;
 	}
 
-	fn create_body(&mut self, body: &dyn Body) {
+	fn create_body(&mut self, handle: Handle, body: &dyn Body) {
 		let body_type = body.body_type();
 
 		let inv_mass = match body_type {
@@ -271,6 +256,7 @@ impl World {
 			center_of_mass: body.center_of_mass(),
 			elasticity: body.elasticity(),
 			inertia_tensor,
+			handle,
 			friction: body.friction(),
 		});
 	}

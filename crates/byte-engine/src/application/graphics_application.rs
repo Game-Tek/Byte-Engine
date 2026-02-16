@@ -200,24 +200,25 @@ impl GraphicsApplication {
 		self.input_system.update();
 
 		let mut cameras_listener = self.world.camera_factory().listener();
-		let mut transforms_listener = self.world.transforms_channel().listener();
+		let mut renderer_transforms_listener = self.world.transforms_channel().listener();
+		let mut physics_transforms_listener = self.world.transforms_channel().listener();
 
 		let result = f(self, time);
 
-		self.world.update(time);
+		self.world.update(time, &mut physics_transforms_listener);
 
 		{
 			let window_listener = &mut self.window_factory.1;
 
-			for message in window_listener.iter() {
+			while let Some(message) = window_listener.read() {
 				self.renderer.create_window(message.into_data());
 			}
 
-			for message in cameras_listener.iter() {
+			while let Some(message) = cameras_listener.read() {
 				self.renderer.create_camera(message.handle().clone(), message.into_data());
 			}
 
-			self.renderer.prepare(&mut transforms_listener);
+			self.renderer.prepare(&mut renderer_transforms_listener);
 		}
 
 		self.tick_count += 1;
@@ -447,7 +448,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 					}
 				}
 
-				for message in generators_listener.iter() {
+				while let Some(message) = generators_listener.read() {
 					audio_system.create_generator(message.into_data());
 				}
 

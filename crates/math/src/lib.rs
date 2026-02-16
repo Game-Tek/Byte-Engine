@@ -178,7 +178,7 @@ pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
 	)
 }
 
-pub fn quaternion_from_direction(direction: Vector3) -> Quaternion {
+pub fn orientation_from_direction(direction: Vector3) -> Quaternion {
     // normalize input direction
     let dir = normalize(direction);
 
@@ -201,6 +201,13 @@ pub fn quaternion_from_direction(direction: Vector3) -> Quaternion {
     let angle = dot.acos();
 
     Quaternion::from_axis_angle(axis, angle)
+}
+
+pub fn direction_from_orientation(orientation: Quaternion) -> Vector3 {
+	// Rotate the base forward vector (0, 0, 1) by the quaternion
+	let forward = Vector3::new(0.0, 0.0, 1.0);
+	let rotated_forward = orientation * forward;
+	normalize(rotated_forward)
 }
 
 /// Left handed row major 4x4 matrix inverse
@@ -265,7 +272,7 @@ mod tests {
 
 	use maths_rs::mat::MatInverse;
 
-use crate::quaternion_from_direction;
+	use crate::orientation_from_direction;
 
 	#[test]
 	fn test_from_normal() {
@@ -361,9 +368,9 @@ use crate::quaternion_from_direction;
 	}
 
 	#[test]
-	fn test_quaternion_from_direction() {
+	fn test_orientation_from_direction() {
 		let dir = maths_rs::Vec3f::from((0f32, 0f32, 1f32));
-		let quaternion = quaternion_from_direction(dir);
+		let quaternion = orientation_from_direction(dir);
 		let s = quaternion.as_slice();
 
 		let nearly_equal = |a: f32, b: f32| (a - b).abs() < 0.0001f32;

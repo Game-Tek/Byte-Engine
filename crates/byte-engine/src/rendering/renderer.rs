@@ -3,6 +3,7 @@ use std::{
 };
 
 use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecordable, RasterizationRenderPassMode as _}, device::Device as _, frame::Frame as _, raster_pipeline, vulkan::command_buffer};
+use math::direction_from_orientation;
 use resource_management::resource::resource_manager::ResourceManager;
 use smallvec::SmallVec;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
@@ -205,6 +206,7 @@ impl Renderer {
 				}
 			}) {
 				camera.set_position(message.transform().get_position());
+				camera.set_orientation(message.transform().get_orientation());
 				false
 			} else {
 				true

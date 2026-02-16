@@ -65,12 +65,12 @@ impl MeshGenerator for SphereMeshGenerator {
 				let j = (ring + 1) * (segments + 1) + segment;
 
 				indices.push(i);
-				indices.push(j);
 				indices.push(i + 1);
+				indices.push(j);
 
 				indices.push(j);
-				indices.push(j + 1);
 				indices.push(i + 1);
+				indices.push(j + 1);
 			}
 		}
 
@@ -152,12 +152,12 @@ impl MeshGenerator for SphereMeshGenerator {
 				let j = ((ring + 1) * (segments + 1) + segment) as u8;
 
 				indices.push(i);
-				indices.push(j);
 				indices.push(i + 1);
+				indices.push(j);
 
 				indices.push(j);
-				indices.push(j + 1);
 				indices.push(i + 1);
+				indices.push(j + 1);
 			}
 		}
 

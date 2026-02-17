@@ -4,7 +4,17 @@
 use std::path::Path;
 
 use notify_debouncer_full::{
-    new_debouncer, notify::*, DebounceEventResult, DebouncedEvent, FileIdMap,
+    new_debouncer, notify::*, DebounceEventResult, DebouncedEvent,
+};
+
+#[cfg(target_os = "linux")]
+use notify_debouncer_full::{
+	NoCache,
+};
+
+#[cfg(target_os = "macos")]
+use notify_debouncer_full::{
+	FileIdMap,
 };
 
 pub struct FileTracker {

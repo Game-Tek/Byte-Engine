@@ -136,8 +136,8 @@ impl WindowLike for Window {
 
 	fn handles(&self) -> Handles {
 		Handles {
-			display: self.display().id().as_ptr() as *mut c_void,
-			surface: self.surface().id().as_ptr() as *mut c_void,
+			display: self.display().id().as_ptr() as _,
+			surface: self.surface().id().as_ptr() as _,
 		}
 	}
 

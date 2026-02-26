@@ -1,15 +1,63 @@
-use crate::{application::{parameters::Parameters, thread::Thread}, audio::generator::Generator, core::{Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task}, gameplay::{Transformable, transform::TransformationUpdate, world::DefaultWorld}, input::{Action, input_trigger, utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class}}, inspector::{Inspector, http::HttpInspectorServer}, physics::dynabit::{self, body::PhysicsBody}, rendering::{RenderableMesh, lights::Lights, pipelines::{simple::{SimpleRenderPass, SimpleSceneManager}, visibility::VisibilityWorldRenderDomain}, render_pass::RenderPass, render_passes::aces::AcesToneMapPass, renderable, renderer, texture_manager::TextureManager}};
-use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
+use crate::{
+	application::{parameters::Parameters, thread::Thread},
+	audio::generator::Generator,
+	core::{
+		Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task
+	},
+	gameplay::{Transformable, transform::TransformationUpdate, world::DefaultWorld},
+	input::{
+		Action, input_trigger, utils::{
+			register_gamepad_device_class, register_keyboard_device_class,
+			register_mouse_device_class,
+		}
+	},
+	inspector::{Inspector, http::HttpInspectorServer},
+	physics::dynabit::{self, body::PhysicsBody},
+	rendering::{
+		RenderableMesh, lights::Lights, pipelines::{
+			simple::{SimpleRenderPass, SimpleSceneManager},
+			visibility::VisibilityWorldRenderDomain,
+		}, render_pass::RenderPass, render_passes::{aces::AcesToneMapPass, agx::AgxToneMapPass}, renderable, renderer, texture_manager::TextureManager
+	},
+};
+use std::{
+	net::{Ipv4Addr, Ipv6Addr},
+	sync::Arc,
+	time::Duration,
+};
 
 use math::Vector2;
-use resource_management::{asset::{asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::{MaterialAssetHandler, ProgramGenerator}, mesh_asset_handler::MeshAssetHandler, FileStorageBackend}, resource::{resource_manager::ResourceManager, RedbStorageBackend}, resources::material::Material};
+use resource_management::{
+	asset::{
+		asset_manager::AssetManager,
+		audio_asset_handler::AudioAssetHandler,
+		image_asset_handler::ImageAssetHandler,
+		material_asset_handler::{MaterialAssetHandler, ProgramGenerator},
+		mesh_asset_handler::MeshAssetHandler,
+		FileStorageBackend,
+	},
+	resource::{resource_manager::ResourceManager, RedbStorageBackend},
+	resources::material::Material,
+};
 use smallvec::SmallVec;
 use tracing::{debug_span, instrument, span, Level};
-use utils::{sync::RwLock, Extent};
+use utils::{sync::RwLock, Box, Extent};
 
-use crate::{audio::audio_system::{AudioSystem, DefaultAudioSystem}, gameplay::{anchor::AnchorSystem}, input, physics, rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, pipelines::visibility::shader_generator::VisibilityShaderGenerator}};
+use crate::{
+	audio::audio_system::{AudioSystem, DefaultAudioSystem},
+	gameplay::anchor::AnchorSystem,
+	input, physics,
+	rendering::{
+		self, common_shader_generator::CommonShaderGenerator,
+		pipelines::visibility::shader_generator::VisibilityShaderGenerator, renderer::Renderer,
+		window::Window,
+	},
+};
 
-use super::{application::{Application, BaseApplication}, Parameter, Time, Events, Sender, Receiver};
+use super::{
+	application::{Application, BaseApplication},
+	Events, Parameter, Receiver, Sender, Time,
+};
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
@@ -60,12 +108,16 @@ pub struct GraphicsApplication {
 }
 
 impl Application for GraphicsApplication {
-	fn new(name: &str, parameters: &[Parameter],) -> Self {
+	fn new(name: &str, parameters: &[Parameter]) -> Self {
 		let start_time = std::time::Instant::now();
 
 		let application = BaseApplication::new(name, parameters);
 
-		let resources_path: std::path::PathBuf = application.get_parameter("resources.path").map(|p| p.value.clone()).unwrap_or_else(|| "resources".into()).into();
+		let resources_path: std::path::PathBuf = application
+			.get_parameter("resources.path")
+			.map(|p| p.value.clone())
+			.unwrap_or_else(|| "resources".into())
+			.into();
 
 		let resource_manager = ResourceManager::new(RedbStorageBackend::new(resources_path));
 
@@ -83,7 +135,9 @@ impl Application for GraphicsApplication {
 		let renderer = rendering::renderer::Renderer::new(&application);
 
 		#[cfg(debug_assertions)]
-		let kill_after = application.get_parameter("kill-after").map(|p| p.value.parse::<u64>().unwrap());
+		let kill_after = application
+			.get_parameter("kill-after")
+			.map(|p| p.value.parse::<u64>().unwrap());
 
 		let tx = Sender::new(16);
 
@@ -92,7 +146,8 @@ impl Application for GraphicsApplication {
 			move || {
 				tx.send(Events::Close).unwrap();
 			}
-		}).unwrap();
+		})
+		.unwrap();
 
 		// let inspector = Inspector::new(tx.clone());
 		// HttpInspectorServer::new(inspector);
@@ -142,7 +197,9 @@ impl Application for GraphicsApplication {
 		}
 	}
 
-	fn get_name(&self) -> &str { self.application.get_name() }
+	fn get_name(&self) -> &str {
+		self.application.get_name()
+	}
 
 	fn tick(&mut self) -> bool {
 		self.tick_with(|_, _| {}).is_some()
@@ -173,8 +230,14 @@ impl GraphicsApplication {
 						close = true;
 					}
 
-					if let Some((device_handle, input_source_action, value)) = process_default_window_input(input_system, event) {
-						input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
+					if let Some((device_handle, input_source_action, value)) =
+						process_default_window_input(input_system, event)
+					{
+						input_system.record_trigger_value_for_device(
+							device_handle,
+							input_source_action,
+							value,
+						);
 					}
 				}
 			}
@@ -190,7 +253,9 @@ impl GraphicsApplication {
 
 		if close {
 			let _ = self.application_events.0.send(Events::Close);
-			self.threads.drain(..).for_each(|t| { let _ = t.join(); });
+			self.threads.drain(..).for_each(|t| {
+				let _ = t.join();
+			});
 			self.close();
 			return None;
 		}
@@ -215,7 +280,8 @@ impl GraphicsApplication {
 			}
 
 			while let Some(message) = cameras_listener.read() {
-				self.renderer.create_camera(message.handle().clone(), message.into_data());
+				self.renderer
+					.create_camera(message.handle().clone(), message.into_data());
 			}
 
 			self.renderer.prepare(&mut renderer_transforms_listener);
@@ -334,7 +400,9 @@ impl Parameters for GraphicsApplication {
 pub fn default_setup(application: &mut GraphicsApplication) {
 	{
 		let generator = {
-			let visibility_shader_generation = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
+			let visibility_shader_generation = VisibilityShaderGenerator::new(
+				false, false, false, false, false, false, true, false,
+			);
 			visibility_shader_generation
 		};
 
@@ -352,7 +420,10 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 /// Creates a new window under the root space with the application name and an extent of 1920x1080.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
-	application.window_factory.0.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080,)));
+	application.window_factory.0.create(Window::new(
+		application.get_name(),
+		Extent::rectangle(1920, 1080),
+	));
 }
 
 /// Sets up the default resource and asset management for the application.
@@ -367,8 +438,15 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// The shader generator is passed as a parameter to this function.
 /// The resources folder path is taken from the `resources-path` parameter and defaults to `resources`.
 /// The assets folder path is taken from the `assets-path` parameter and defaults to `assets`.
-pub fn setup_default_resource_and_asset_management(application: &mut GraphicsApplication, generator: impl ProgramGenerator + 'static) {
-	let assets_path: std::path::PathBuf = application.get_parameter("assets-path").map(|p| p.value.clone()).unwrap_or_else(|| "assets".into()).into();
+pub fn setup_default_resource_and_asset_management(
+	application: &mut GraphicsApplication,
+	generator: impl ProgramGenerator + 'static,
+) {
+	let assets_path: std::path::PathBuf = application
+		.get_parameter("assets-path")
+		.map(|p| p.value.clone())
+		.unwrap_or_else(|| "assets".into())
+		.into();
 
 	let resource_manager = &mut application.resource_manager;
 
@@ -413,6 +491,9 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	};
 
 	renderer.add_scene_manager(sm);
+	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| {
+		Box::new(AgxToneMapPass::new(render_pass_builder))
+	});
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
@@ -420,100 +501,159 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager))
+		EntityHandle::from(VisibilityWorldRenderDomain::new(
+			renderer.device_mut(),
+			texture_manager,
+		))
 	};
 
 	renderer.add_scene_manager(sm);
+	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| {
+		Box::new(AcesToneMapPass::new(render_pass_builder))
+	});
 }
 
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
-	application.threads.push(Thread::new(application.application_events.0.spawn_rx(), {
-		let resource_manager = &mut application.resource_manager;
-		let mut generators_listener = application.generator_factory.listener();
+	application
+		.threads
+		.push(Thread::new(application.application_events.0.spawn_rx(), {
+			let resource_manager = &mut application.resource_manager;
+			let mut generators_listener = application.generator_factory.listener();
 
-		move |mut rx| {
-			let Ok(mut audio_system) = DefaultAudioSystem::try_new().map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e)).warn() else {
-				return;
-			};
+			move |mut rx| {
+				let Ok(mut audio_system) = DefaultAudioSystem::try_new()
+					.map_err(|e| {
+						format!(
+							"Failed to spawn audio system. No audio will play. Reason: {}",
+							e
+						)
+					})
+					.warn()
+				else {
+					return;
+				};
 
-			let span = debug_span!("Render audio");
-			let _ = span.enter();
+				let span = debug_span!("Render audio");
+				let _ = span.enter();
 
-			'a: loop {
-				if let Ok(event) = rx.try_recv() {
-					match event {
-						Events::Close => {
-							break 'a;
-						},
+				'a: loop {
+					if let Ok(event) = rx.try_recv() {
+						match event {
+							Events::Close => {
+								break 'a;
+							}
+						}
+					}
+
+					while let Some(message) = generators_listener.read() {
+						audio_system.create_generator(message.into_data());
+					}
+
+					if !audio_system.render_available() {
+						break 'a; // Audio rendering can no longer be performed.
 					}
 				}
 
-				while let Some(message) = generators_listener.read() {
-					audio_system.create_generator(message.into_data());
-				}
-
-				if !audio_system.render_available() {
-					break 'a; // Audio rendering can no longer be performed.
-				}
+				log::debug!("Exiting audio thread");
 			}
-
-			log::debug!("Exiting audio thread");
-		}
-	}));
+		}));
 }
 
-pub fn process_default_window_input(input_system: &mut input::InputManager, event: ghi::Events) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {
-	let mouse_device_handle = input_system.get_devices_by_class_name("Mouse").unwrap().get(0).unwrap().clone();
-	let keyboard_device_handle = input_system.get_devices_by_class_name("Keyboard").unwrap().get(0).unwrap().clone();
+pub fn process_default_window_input(
+	input_system: &mut input::InputManager,
+	event: ghi::Events,
+) -> Option<(
+	input::DeviceHandle,
+	input::input_manager::TriggerReference,
+	input::Value,
+)> {
+	let mouse_device_handle = input_system
+		.get_devices_by_class_name("Mouse")
+		.unwrap()
+		.get(0)
+		.unwrap()
+		.clone();
+	let keyboard_device_handle = input_system
+		.get_devices_by_class_name("Keyboard")
+		.unwrap()
+		.get(0)
+		.unwrap()
+		.clone();
 
 	let r = match event {
-		ghi::window::Events::Button { pressed, button } => {
-			match button {
-				ghi::window::input::MouseKeys::Left => {
-					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.LeftButton"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::MouseKeys::Right => {
-					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.RightButton"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::MouseKeys::ScrollUp => {
-					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(1f32))
-				},
-				ghi::window::input::MouseKeys::ScrollDown => {
-					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Scroll"), input::Value::Float(-1f32))
-				},
-				ghi::window::input::MouseKeys::Middle => {
-					(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.MiddleButton"), input::Value::Bool(pressed))
-				},
-			}
+		ghi::window::Events::Button { pressed, button } => match button {
+			ghi::window::input::MouseKeys::Left => (
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.LeftButton"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::MouseKeys::Right => (
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.RightButton"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::MouseKeys::ScrollUp => (
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+				input::Value::Float(1f32),
+			),
+			ghi::window::input::MouseKeys::ScrollDown => (
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+				input::Value::Float(-1f32),
+			),
+			ghi::window::input::MouseKeys::Middle => (
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.MiddleButton"),
+				input::Value::Bool(pressed),
+			),
 		},
 		ghi::window::Events::MouseMove { x, y, time: _ } => {
 			let vec = Vector2::new(x, y);
-			(mouse_device_handle, input::input_manager::TriggerReference::Name("Mouse.Position"), input::Value::Vector2(vec))
-		},
-		ghi::window::Events::Key { pressed, key } => {
-			match key {
-				ghi::window::input::Keys::W => {
-					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.W"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::Keys::S => {
-					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.S"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::Keys::A => {
-					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.A"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::Keys::D => {
-					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.D"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::Keys::Space => {
-					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Space"), input::Value::Bool(pressed))
-				},
-				ghi::window::input::Keys::Escape => {
-					(keyboard_device_handle, input::input_manager::TriggerReference::Name("Keyboard.Escape"), input::Value::Bool(pressed))
-				},
-				_ => { return None; }
+			(
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.Position"),
+				input::Value::Vector2(vec),
+			)
+		}
+		ghi::window::Events::Key { pressed, key } => match key {
+			ghi::window::input::Keys::W => (
+				keyboard_device_handle,
+				input::input_manager::TriggerReference::Name("Keyboard.W"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::Keys::S => (
+				keyboard_device_handle,
+				input::input_manager::TriggerReference::Name("Keyboard.S"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::Keys::A => (
+				keyboard_device_handle,
+				input::input_manager::TriggerReference::Name("Keyboard.A"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::Keys::D => (
+				keyboard_device_handle,
+				input::input_manager::TriggerReference::Name("Keyboard.D"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::Keys::Space => (
+				keyboard_device_handle,
+				input::input_manager::TriggerReference::Name("Keyboard.Space"),
+				input::Value::Bool(pressed),
+			),
+			ghi::window::input::Keys::Escape => (
+				keyboard_device_handle,
+				input::input_manager::TriggerReference::Name("Keyboard.Escape"),
+				input::Value::Bool(pressed),
+			),
+			_ => {
+				return None;
 			}
 		},
-		_ => { return None; }
+		_ => {
+			return None;
+		}
 	};
 
 	Some(r)
@@ -523,7 +663,7 @@ trait LogResult {
 	fn warn(self) -> Self;
 }
 
-impl <T> LogResult for Result<T, &'static str> {
+impl<T> LogResult for Result<T, &'static str> {
 	fn warn(self) -> Self {
 		match &self {
 			Err(error) => {
@@ -536,7 +676,7 @@ impl <T> LogResult for Result<T, &'static str> {
 	}
 }
 
-impl <T> LogResult for Result<T, String> {
+impl<T> LogResult for Result<T, String> {
 	fn warn(self) -> Self {
 		match &self {
 			Err(error) => {

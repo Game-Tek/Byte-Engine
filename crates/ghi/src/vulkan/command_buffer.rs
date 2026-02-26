@@ -494,6 +494,123 @@ impl CommandBufferRecording<'_> {
 			_ => unimplemented!(),
 		}
 	}
+
+	fn get_presentable_swapchain_image_handle(
+		&self,
+		present_key: graphics_hardware_interface::PresentKey,
+	) -> ImageHandle {
+		let swapchain = self.get_swapchain(present_key.swapchain);
+		swapchain.native_images[present_key.image_index as usize]
+	}
+
+	fn blit_image_to_image(
+		&mut self,
+		source_image_handle: ImageHandle,
+		destination_image_handle: ImageHandle,
+	) {
+		// Performs a transfer-domain blit from source image to destination image,
+		// including the required layout transitions tracked through `self.states`.
+		let (source_extent, source_vk_image) = {
+			let image = self.get_image(source_image_handle);
+			(image.extent, image.image)
+		};
+		let (destination_extent_raw, destination_vk_image) = {
+			let image = self.get_image(destination_image_handle);
+			(image.extent, image.image)
+		};
+
+		let destination_extent = if destination_extent_raw.width() == 0
+			|| destination_extent_raw.height() == 0
+			|| destination_extent_raw.depth() == 0
+		{
+			source_extent
+		} else {
+			destination_extent_raw
+		};
+
+		if source_extent.width() == 0
+			|| source_extent.height() == 0
+			|| source_extent.depth() == 0
+			|| destination_extent.width() == 0
+			|| destination_extent.height() == 0
+			|| destination_extent.depth() == 0
+		{
+			return;
+		}
+
+		self.states.insert(
+			Handle::Image(destination_image_handle),
+			TransitionState {
+				stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+					| vk::PipelineStageFlags2::BLIT
+					| vk::PipelineStageFlags2::TRANSFER,
+				layout: vk::ImageLayout::UNDEFINED,
+				access: vk::AccessFlags2::NONE,
+			},
+		);
+
+		unsafe {
+			self.consume_resources([
+				Consumption {
+					handle: Handle::Image(source_image_handle),
+					stages: graphics_hardware_interface::Stages::TRANSFER,
+					access: graphics_hardware_interface::AccessPolicies::READ,
+					layout: graphics_hardware_interface::Layouts::Transfer,
+				},
+				Consumption {
+					handle: Handle::Image(destination_image_handle),
+					stages: graphics_hardware_interface::Stages::TRANSFER,
+					access: graphics_hardware_interface::AccessPolicies::WRITE,
+					layout: graphics_hardware_interface::Layouts::Transfer,
+				},
+			])(self);
+		}
+
+		let vk_command_buffer = self.get_command_buffer().command_buffer;
+
+		let image_blits = [vk::ImageBlit2::default()
+			.src_subresource(
+				vk::ImageSubresourceLayers::default()
+					.aspect_mask(vk::ImageAspectFlags::COLOR)
+					.mip_level(0)
+					.base_array_layer(0)
+					.layer_count(1),
+			)
+			.src_offsets([
+				vk::Offset3D::default().x(0).y(0).z(0),
+				vk::Offset3D::default()
+					.x(source_extent.width() as i32)
+					.y(source_extent.height() as i32)
+					.z(source_extent.depth() as i32),
+			])
+			.dst_subresource(
+				vk::ImageSubresourceLayers::default()
+					.aspect_mask(vk::ImageAspectFlags::COLOR)
+					.mip_level(0)
+					.base_array_layer(0)
+					.layer_count(1),
+			)
+			.dst_offsets([
+				vk::Offset3D::default().x(0).y(0).z(0),
+				vk::Offset3D::default()
+					.x(destination_extent.width() as i32)
+					.y(destination_extent.height() as i32)
+					.z(destination_extent.depth() as i32),
+			])];
+
+		let copy_image_info = vk::BlitImageInfo2::default()
+			.src_image(source_vk_image)
+			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+			.dst_image(destination_vk_image)
+			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+			.regions(&image_blits);
+
+		unsafe {
+			self.ghi
+				.device
+				.cmd_blit_image2(vk_command_buffer, &copy_image_info);
+		}
+	}
 }
 
 impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'_> {
@@ -1388,85 +1505,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let swapchain = &self.ghi.swapchains[swapchain_handle.0 as usize];
 		let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
 
-		self.states.insert(
-			Handle::Image(swapchain_image_handle),
-			TransitionState {
-				stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-					| vk::PipelineStageFlags2::BLIT
-					| vk::PipelineStageFlags2::TRANSFER,
-				layout: vk::ImageLayout::UNDEFINED,
-				access: vk::AccessFlags2::NONE,
-			},
-		);
-
-		unsafe {
-			self.consume_resources([
-				Consumption {
-					handle: Handle::Image(source_image_internal_handle),
-					stages: graphics_hardware_interface::Stages::TRANSFER,
-					access: graphics_hardware_interface::AccessPolicies::READ,
-					layout: graphics_hardware_interface::Layouts::Transfer,
-				},
-				Consumption {
-					handle: Handle::Image(swapchain_image_handle),
-					stages: graphics_hardware_interface::Stages::TRANSFER,
-					access: graphics_hardware_interface::AccessPolicies::WRITE,
-					layout: graphics_hardware_interface::Layouts::Transfer,
-				},
-			])(self);
-		}
-
-		let source_texture = self.get_image(source_image_internal_handle);
-		let swapchain_image = swapchain_image_handle.access(&self.ghi.images);
-
-		// Transition source texture to transfer read layout and swapchain image to transfer write layout
-
-		let vk_command_buffer = self.get_command_buffer().command_buffer;
-
-		// Copy texture to swapchain image
-
-		let image_blits = [vk::ImageBlit2::default()
-			.src_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1),
-			)
-			.src_offsets([
-				vk::Offset3D::default().x(0).y(0).z(0),
-				vk::Offset3D::default()
-					.x(source_texture.extent.width() as i32)
-					.y(source_texture.extent.height() as i32)
-					.z(1),
-			])
-			.dst_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1),
-			)
-			.dst_offsets([
-				vk::Offset3D::default().x(0).y(0).z(0),
-				vk::Offset3D::default()
-					.x(source_texture.extent.width() as i32)
-					.y(source_texture.extent.height() as i32)
-					.z(1),
-			])];
-
-		let copy_image_info = vk::BlitImageInfo2::default()
-			.src_image(source_texture.image)
-			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-			.dst_image(swapchain_image.image)
-			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-			.regions(&image_blits);
-
-		unsafe {
-			self.ghi
-				.device
-				.cmd_blit_image2(vk_command_buffer, &copy_image_info);
-		}
+		self.blit_image_to_image(source_image_internal_handle, swapchain_image_handle);
 	}
 
 	fn present(&mut self, present_key: crate::PresentKey) {
@@ -1501,6 +1540,12 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			}
 		}
 
+		let presentation_keys = presentations
+			.iter()
+			.chain(self.present_keys.iter())
+			.copied()
+			.collect::<SmallVec<[graphics_hardware_interface::PresentKey; 8]>>();
+
 		{
 			let command_buffer = self.get_command_buffer();
 			let command_buffer = command_buffer.command_buffer;
@@ -1511,24 +1556,41 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				}
 			}
 
-			{
-				let presentations = presentations.iter().chain(self.present_keys.iter());
-
-				let present_transitions = presentations.clone().map(|present_key| {
+			let proxy_copies = presentation_keys
+				.iter()
+				.filter_map(|present_key| {
 					let swapchain = self.get_swapchain(present_key.swapchain);
-					let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
-
-					Consumption {
-						handle: Handle::Image(swapchain_image_handle),
-						stages: graphics_hardware_interface::Stages::PRESENTATION,
-						access: graphics_hardware_interface::AccessPolicies::READ,
-						layout: graphics_hardware_interface::Layouts::Present,
+					if !swapchain.uses_proxy_images {
+						return None;
 					}
-				});
 
-				unsafe {
-					self.consume_resources(present_transitions)(&mut self);
+					Some((
+						swapchain.images[present_key.image_index as usize],
+						swapchain.native_images[present_key.image_index as usize],
+					))
+				})
+				.collect::<SmallVec<[(ImageHandle, ImageHandle); 8]>>();
+
+			// When the swapchain uses proxies, resolve each user-facing proxy image into
+			// the native presentable swapchain image before transitioning to present.
+			for (proxy_image_handle, native_image_handle) in proxy_copies {
+				self.blit_image_to_image(proxy_image_handle, native_image_handle);
+			}
+
+			let present_transitions = presentation_keys.iter().map(|present_key| {
+				let swapchain_image_handle =
+					self.get_presentable_swapchain_image_handle(*present_key);
+
+				Consumption {
+					handle: Handle::Image(swapchain_image_handle),
+					stages: graphics_hardware_interface::Stages::PRESENTATION,
+					access: graphics_hardware_interface::AccessPolicies::READ,
+					layout: graphics_hardware_interface::Layouts::Present,
 				}
+			});
+
+			unsafe {
+				self.consume_resources(present_transitions)(&mut self);
 			}
 
 			unsafe {
@@ -1548,8 +1610,6 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let command_buffer_infos =
 			[vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
 
-		let presentations = presentations.iter().chain(self.present_keys.iter());
-
 		let wait_semaphores = wait_for_synchronizer_handles
 			.iter()
 			.map(|synchronizer| {
@@ -1559,19 +1619,12 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 						vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER,
 					)
 			})
-			.chain(presentations.clone().map(|present_key| {
+			.chain(presentation_keys.iter().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
 				let semaphore = swapchain.acquire_synchronizers
 					[present_key.sequence_index as usize]
 					.access(&self.ghi.synchronizers)
 					.semaphore;
-				let _wait_stage = self
-					.states
-					.get(&Handle::Image(
-						swapchain.images[present_key.image_index as usize],
-					))
-					.unwrap()
-					.stage;
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
@@ -1590,15 +1643,19 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 					.semaphore(self.get_synchronizer(*synchronizer).semaphore)
 					.stage_mask(vk::PipelineStageFlags2::empty())
 			})
-			.chain(presentations.clone().map(|present_key| {
+			.chain(presentation_keys.iter().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
+				let presentable_image_handle =
+					self.get_presentable_swapchain_image_handle(*present_key);
 				let wait_stage = self
 					.states
-					.get(&Handle::Image(
-						swapchain.images[present_key.image_index as usize],
-					))
-					.unwrap()
-					.stage;
+					.get(&Handle::Image(presentable_image_handle))
+					.map(|state| state.stage)
+					.unwrap_or(
+						vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+							| vk::PipelineStageFlags2::BLIT
+							| vk::PipelineStageFlags2::TRANSFER,
+					);
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(
@@ -1635,13 +1692,13 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			self.ghi.states.insert(k, *v);
 		}
 
-		for presentation in presentations.clone() {
+		for presentation in &presentation_keys {
 			let swapchain = self.get_swapchain(presentation.swapchain);
 
 			let wait_semaphores = signal_synchronizer_handles
 				.iter()
 				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
-				.chain(presentations.clone().map(|present_key| {
+				.chain(presentation_keys.iter().map(|present_key| {
 					self.get_swapchain(present_key.swapchain)
 						.submit_synchronizers[present_key.image_index as usize]
 						.access(&self.ghi.synchronizers)

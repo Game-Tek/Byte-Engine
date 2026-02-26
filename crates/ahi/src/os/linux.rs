@@ -1,9 +1,7 @@
-use std::sync::Mutex;
-
 use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
 
 pub struct Device {
-	pcm: Mutex<alsa::pcm::PCM>,
+	pcm: alsa::pcm::PCM,
 	parameters: HardwareParameters,
 }
 
@@ -42,19 +40,19 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		}
 
 		Ok(Device {
-			pcm: Mutex::new(pcm),
+			pcm,
 			parameters: params,
 		})
 	}
 
 	fn get_period_size(&self) -> usize {
-		let pcm = &self.pcm.lock().unwrap();
+		let pcm = &self.pcm;
 		let hwp = pcm.hw_params_current().ok().unwrap();
 		hwp.get_period_size().ok().unwrap() as usize
 	}
 
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
-		let pcm = &self.pcm.lock().unwrap();
+		let pcm = &self.pcm;
 
 		let hw_params = pcm.hw_params_current().unwrap();
 		let access = hw_params.get_access().unwrap();
@@ -117,7 +115,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	}
 
 	fn pause(&self) {
-		let pcm = &self.pcm.lock().unwrap();
+		let pcm = &self.pcm;
 
 		pcm.pause(true).unwrap();
 	}

@@ -374,11 +374,11 @@ impl Renderer {
 				if let Some(view_id) = view_id {
 					let main = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget | ghi::Uses::InputAttachment).name("main").use_case(ghi::UseCases::DYNAMIC));
 					let depth = device.build_image(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth").use_case(ghi::UseCases::DYNAMIC));
-					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::BGRAu8, ghi::Uses::Storage | ghi::Uses::BlitSource).name("result").use_case(ghi::UseCases::DYNAMIC));
+					let result = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::BlitSource).name("result").use_case(ghi::UseCases::DYNAMIC));
 
 					self.render_targets.insert("main".to_string(), view_id, main, ghi::Formats::RGBA16F);
 					self.render_targets.insert("depth".to_string(), view_id, depth, ghi::Formats::Depth32);
-					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::BGRAu8);
+					self.render_targets.insert("result".to_string(), view_id, result, ghi::Formats::RGBA8UNORM);
 
 					{
 						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);

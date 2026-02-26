@@ -1274,6 +1274,7 @@ impl Device {
 		&mut self,
 		vk_image: vk::Image,
 		format: graphics_hardware_interface::Formats,
+		uses: graphics_hardware_interface::Uses,
 		previous: Option<ImageHandle>,
 	) -> ImageHandle {
 		let root_handle = ImageHandle(self.images.len() as u64);
@@ -1294,8 +1295,7 @@ impl Device {
 				access: graphics_hardware_interface::DeviceAccesses::DeviceOnly,
 				format: to_format(format),
 				format_: format,
-				uses: graphics_hardware_interface::Uses::RenderTarget
-					| graphics_hardware_interface::Uses::TransferDestination,
+				uses,
 				layers: None,
 				owns_image: false,
 			}
@@ -4370,7 +4370,23 @@ impl crate::device::Device for Device {
 
 		let format = graphics_hardware_interface::Formats::BGRAsRGB;
 
-		let image_usage = into_vk_image_usage_flags(uses, format);
+		let requested_image_usage = into_vk_image_usage_flags(uses, format);
+		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
+		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage);
+
+		let native_image_usage = if uses_proxy_images {
+			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
+
+			if !supported_image_usage.contains(fallback_usage) {
+				panic!(
+					"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
+				);
+			}
+
+			fallback_usage
+		} else {
+			requested_image_usage
+		};
 
 		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
 			.push_next(&mut present_modes_create_info)
@@ -4380,7 +4396,7 @@ impl crate::device::Device for Device {
 			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
 			.image_format(vk::Format::B8G8R8A8_SRGB)
 			.image_extent(extent)
-			.image_usage(image_usage)
+			.image_usage(native_image_usage)
 			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.pre_transform(vk_surface_capabilities.current_transform)
 			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -4420,15 +4436,49 @@ impl crate::device::Device for Device {
 			submit_synchronizers[i as usize] = synchronizer;
 		}
 
-		let mut images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		let mut native_images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		let native_resource_uses = uses
+			| if native_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST) {
+				graphics_hardware_interface::Uses::TransferDestination
+			} else {
+				graphics_hardware_interface::Uses::empty()
+			};
 
 		for (i, vk_image) in vk_images.iter().enumerate() {
-			let previous = if i > 0 { Some(images[i - 1]) } else { None };
-			images[i] = self.create_swapchain_image(
+			let previous = if i > 0 {
+				Some(native_images[i - 1])
+			} else {
+				None
+			};
+			native_images[i] = self.create_swapchain_image(
 				*vk_image,
-				graphics_hardware_interface::Formats::BGRAu8,
+				graphics_hardware_interface::Formats::BGRAsRGB,
+				native_resource_uses,
 				previous,
 			);
+		}
+
+		let mut images = native_images;
+
+		if uses_proxy_images {
+			let proxy_extent = Extent::rectangle(extent.width, extent.height);
+			let proxy_uses = uses
+				| graphics_hardware_interface::Uses::TransferSource
+				| graphics_hardware_interface::Uses::TransferDestination;
+
+			for i in 0..image_count as usize {
+				let previous = if i > 0 { Some(images[i - 1]) } else { None };
+				images[i] = self.create_image_internal(
+					None,
+					previous,
+					Some("Swapchain Proxy Image"),
+					graphics_hardware_interface::Formats::BGRAu8,
+					graphics_hardware_interface::DeviceAccesses::DeviceOnly,
+					None,
+					proxy_extent,
+					proxy_uses,
+				);
+			}
 		}
 
 		self.swapchains.push(Swapchain {
@@ -4438,6 +4488,8 @@ impl crate::device::Device for Device {
 			submit_synchronizers,
 			extent,
 			images,
+			native_images,
+			uses_proxy_images,
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,

@@ -69,6 +69,7 @@ pub struct Device {
 	pub(super) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	pub(super) pipeline_layouts: Vec<PipelineLayout>,
 	pub(super) bindings: Vec<Binding>,
+	pub(super) descriptor_pools: Vec<vk::DescriptorPool>,
 	pub(super) descriptor_sets: Vec<DescriptorSet>,
 	pub(super) meshes: Vec<Mesh>,
 	pub(super) acceleration_structures: Vec<AccelerationStructure>,
@@ -639,6 +640,7 @@ impl Device {
 			descriptor_sets_layouts: Vec::with_capacity(128),
 			pipeline_layouts: Vec::with_capacity(64),
 			bindings: Vec::with_capacity(1024),
+			descriptor_pools: Vec::with_capacity(512),
 			descriptor_sets: Vec::with_capacity(512),
 			acceleration_structures: Vec::new(),
 			shaders: Vec::with_capacity(1024),
@@ -2589,6 +2591,10 @@ impl Drop for Device {
 					);
 				});
 
+			self.descriptor_pools.iter().for_each(|descriptor_pool| {
+				self.device.destroy_descriptor_pool(*descriptor_pool, None);
+			});
+
 			self.pipelines.iter().for_each(|pipeline| {
 				self.device.destroy_pipeline(pipeline.pipeline, None);
 			});
@@ -3111,6 +3117,7 @@ impl crate::device::Device for Device {
 				.create_descriptor_pool(&descriptor_pool_create_info, None)
 				.expect("No descriptor pool")
 		};
+		self.descriptor_pools.push(descriptor_pool);
 
 		let descriptor_set_layout = self.descriptor_sets_layouts
 			[descriptor_set_layout_handle.0 as usize]

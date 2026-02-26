@@ -564,8 +564,12 @@ impl RenderTargets {
 	}
 
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
+		let result_index = self.by_name.iter().find(|(name, _)| name == "result").map(|(_, index)| *index);
+
 		let attachments = self.by_view_index.iter().filter_map(|(v, (i, ap))| {
-			if *v == view && self.by_name.iter().find(|(name, _)| name == "result")?.1 != *i { // TODO: temporary fix
+			let is_result_attachment = result_index == Some(*i);
+
+			if *v == view && !is_result_attachment {
 				let (image, format) = self.images.get(*i)?;
 				Some((image, format, ap))
 			} else {
@@ -608,12 +612,6 @@ impl RenderTargets {
 			if *v != index {
 				return None;
 			}
-
-			// if let Some((_, result_index)) = self.by_name.iter().find(|(name, _)| name == "result") {
-			// 	if *result_index == *i {
-			// 		return None;
-			// 	}
-			// }
 
 			self.images.get(*i).map(|(image, _)| image)
 		})

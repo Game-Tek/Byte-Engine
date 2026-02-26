@@ -456,6 +456,7 @@ mod tests {
     };
 
     #[r#async::test]
+    #[ignore = "Test uses data not pushed to the repository"]
     async fn load_image() {
         let asset_handler = ImageAssetHandler::new();
 

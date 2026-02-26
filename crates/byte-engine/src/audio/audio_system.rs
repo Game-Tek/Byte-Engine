@@ -114,7 +114,7 @@ impl DefaultAudioSystem {
 			let current_sample = playing_sound.current_sample;
 			let gain = playing_sound.gain;
 
-			let mut play_sound = |url: &str| {
+			let play_sound = |url: &str| {
 				let (audio, audio_data) = self.audio_resources.get(url).unwrap();
 
 				if current_sample >= audio.sample_count { return; }

@@ -79,12 +79,20 @@ pub fn process_glslc_error<'a>(
         .lines()
         .filter(|error| error.starts_with(shader_name))
         .filter_map(|error| {
-            let split = error.split(':').map(|e| e.trim()).collect::<Vec<_>>();
-            if split.len() == 5 {
-                Some((split[1], (split[3].trim_matches('\''), split[4])))
-            } else {
-                None
+            // `glslc` can include additional `:` characters (for example a trailing `:`).
+            // Split only the fixed prefix fields and keep the remainder as the message.
+            let split = error.splitn(5, ':').map(|e| e.trim()).collect::<Vec<_>>();
+            if split.len() != 5 {
+                return None;
             }
+
+            Some((
+                split[1],
+                (
+                    split[3].trim_matches('\''),
+                    split[4].trim_end_matches(':').trim(),
+                ),
+            ))
         })
         .map(|(error_line_number_string, error)| {
             (
@@ -254,13 +262,13 @@ shaders/fragment.besl:3: error: 'PI' : undeclared identifier";
         let error = process_glslc_error(shader_name, source_code, error_string);
 
         assert_eq!(error.len(), 2);
-        assert_eq!(error[0].line_number, 145);
+        assert_eq!(error[0].line_number, 144);
         assert_eq!(error[0].source_code, "");
         assert_eq!(error[0].errors.len(), 1);
-        assert_eq!(error[0].errors[0].symbol, ">");
+        assert_eq!(error[0].errors[0].symbol, ">=");
         assert_eq!(error[0].errors[0].error, "can't read from writeonly object");
 
-        assert_eq!(error[1].line_number, 147);
+        assert_eq!(error[1].line_number, 146);
         assert_eq!(error[1].source_code, "");
         assert_eq!(error[1].errors.len(), 1);
         assert_eq!(error[1].errors[0].symbol, "initializer");

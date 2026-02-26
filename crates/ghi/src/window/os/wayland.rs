@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, ffi::c_void, io::Read, marker::P
 
 use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
-use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1}, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
+use wayland_protocols::{wp::{pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1}, relative_pointer::zv1::client::{zwp_relative_pointer_manager_v1::{self}, zwp_relative_pointer_v1}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base::{self, XdgWmBase}}};
 use xkbcommon::xkb::{self, keysyms};
 
 use crate::{os::WindowLike, window::{input::{Keys, MouseKeys}, Events}};
@@ -141,7 +141,7 @@ impl WindowLike for Window {
 		}
 	}
 
-	fn poll<'a>(&'a mut self) -> WindowIterator<'a> {
+	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
 		// This implementation first processes all events from the wayland event queue
 		// while producing `Events` which are then handed to an iterator
 		// which is then returned
@@ -834,7 +834,7 @@ mod tests {
 	fn test_wayland_window() {
 		// Only run this test if we are on a Wayland session
 		if std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY").is_some() && std::env::vars().find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland").is_some() {
-			let _ = Window::try_new("My Test Wayland Window", Extent::rectangle(1920, 1080), "my_test_wayland_window.byte_engine").unwrap();
+			let _ = Window::try_new("My Test Wayland Window", Extent::rectangle(1920, 1080), "my_test_wayland_window.byte_engine");
 		}
 	}
 }

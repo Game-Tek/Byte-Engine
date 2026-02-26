@@ -1,4 +1,4 @@
-use resource_management::asset::{FileStorageBackend, StorageBackend, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler};
+use resource_management::asset::{StorageBackend, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, image_asset_handler::ImageAssetHandler, material_asset_handler::MaterialAssetHandler, mesh_asset_handler::MeshAssetHandler};
 
 pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> AssetManager {
 	let mut asset_manager = AssetManager::new(storage_backend);

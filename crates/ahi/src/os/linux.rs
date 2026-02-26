@@ -1,4 +1,4 @@
-use std::{f64::consts::E, sync::Mutex};
+use std::sync::Mutex;
 
 use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
 

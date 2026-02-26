@@ -101,9 +101,14 @@ impl NodeReference {
 						}
 					}
 					Expressions::IntrinsicCall { intrinsic, .. } => {
-						match intrinsic.get_descendant(child_name) {
-							Some(c) => return Some(c),
-							None => { panic!("Expected intrinsic"); }
+						let intrinsic = intrinsic.borrow();
+						match intrinsic.node() {
+							Nodes::Intrinsic { r#return, .. } => {
+								if let Some(c) = r#return.get_descendant(child_name) {
+									return Some(c);
+								}
+							}
+							_ => {}
 						}
 					}
 					_ => {}

@@ -78,6 +78,7 @@ mod tests {
 	use super::*;
 
 	#[test]
+	#[ignore = "need better setup for this test, requires a server to be running"]
 	fn test_client_connect() {
 		let _ = Client::new(std::net::SocketAddr::from_str("127.0.0.1:6669").unwrap()).expect("Failed to connect to server.");
 	}

@@ -145,7 +145,7 @@ pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 	let z_basis = normal;
 
 	if are_colinear(normal, Vector3::new(0f32, 1f32, 0f32)) {
-		x_basis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 0f32, 1f32), maths_rs::normalize(normal)));
+		x_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), crate::Vector3::new(0f32, 0f32, 1f32)));
 		y_basis = maths_rs::normalize(maths_rs::cross(x_basis, maths_rs::normalize(normal)));
 	} else {
 		x_basis = maths_rs::normalize(maths_rs::cross(Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));

@@ -254,6 +254,7 @@ mod tests {
     };
 
     #[r#async::test]
+    #[ignore = "Test uses data not pushed to the repository"]
     async fn test_audio_asset_handler() {
         let audio_asset_handler = AudioAssetHandler::new();
 

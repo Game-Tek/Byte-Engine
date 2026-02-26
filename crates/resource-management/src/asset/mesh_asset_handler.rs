@@ -883,6 +883,7 @@ mod tests {
     };
 
     #[r#async::test]
+    #[ignore = "Test uses data not pushed to the repository"]
     async fn load_gltf() {
         let asset_storage_backend = AssetTestStorageBackend::new();
 
@@ -944,6 +945,7 @@ mod tests {
     }
 
     #[r#async::test]
+    #[ignore = "Test uses data not pushed to the repository"]
     async fn load_gltf_with_bin() {
         let asset_storage_backend = AssetTestStorageBackend::new();
 

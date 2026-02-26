@@ -783,7 +783,7 @@ mod tests {
         {
             let mut main = main.borrow_mut();
             main.add_child(
-                besl::Node::hlsl(
+                besl::Node::glsl(
                     "gl_Position = vec4(0)".to_string(),
                     vec![vertex_struct, used_function],
                     vec![],

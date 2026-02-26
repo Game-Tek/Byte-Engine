@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, ffi::c_void, io::Read, marker::PhantomData, os::fd::{FromRawFd, IntoRawFd}, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, ffi::c_void, marker::PhantomData, rc::Rc};
 
 use utils::Extent;
 use wayland_client::{protocol::{wl_callback, wl_compositor::{self, WlCompositor}, wl_display, wl_keyboard, wl_output::{self, WlOutput}, wl_pointer, wl_region, wl_registry, wl_seat::{self, WlSeat}, wl_surface}, Proxy};
@@ -682,22 +682,20 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 					return;
 				}
 
-				let file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
-				let mut keymap = String::new();
-				let mut reader = file.take(size as u64);
-
-				if reader.read_to_string(&mut keymap).is_err() {
-					return;
-				}
-
-				if let Some(null_pos) = keymap.find('\0') {
-					keymap.truncate(null_pos);
-				}
-
 				let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-				let keymap = match xkb::Keymap::new_from_string(&context, keymap, xkb::KEYMAP_FORMAT_TEXT_V1, xkb::COMPILE_NO_FLAGS) {
-					Some(keymap) => keymap,
-					None => return,
+
+				let keymap = match unsafe {
+					xkb::Keymap::new_from_fd(
+						&context,
+						fd,
+						size as usize,
+						xkb::KEYMAP_FORMAT_TEXT_V1,
+						xkb::COMPILE_NO_FLAGS,
+					)
+				} {
+					Ok(Some(keymap)) => keymap,
+					Ok(None) => return,
+					Err(_) => return,
 				};
 
 				let state = xkb::State::new(&keymap);

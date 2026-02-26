@@ -175,8 +175,8 @@ impl AudioSystem for DefaultAudioSystem {
 
 		let frames = device.play(|streams| {
 			match streams {
-				Streams::MonoFloat32(mut buffer) => { // Hardware is the same format as what we use for rendering
-					self.render_sources(&mut buffer);
+				Streams::MonoFloat32(buffer) => { // Hardware is the same format as what we use for rendering
+					self.render_sources(buffer);
 				}
 				Streams::Mono16Bit(buffer) => {
 					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();

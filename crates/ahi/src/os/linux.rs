@@ -11,9 +11,6 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		let pcm = alsa::pcm::PCM::open(&name, alsa::Direction::Playback, false)
 			.map_err(|e| format!("Failed to open PCM device: {}", e))?;
 
-		let sample_size = (params.bit_depth.next_multiple_of(8) / 8) as usize;
-		let channel_count = params.channels as usize;
-
 		{
 			let hwp = alsa::pcm::HwParams::any(&pcm).map_err(|e| format!("Failed to get hardware parameters: {}", e))?;
 			hwp.set_channels(params.channels).map_err(|e| format!("Failed to set channels: {}", e))?;
@@ -25,9 +22,9 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				32 => alsa::pcm::Format::FloatLE,
 				_ => return Err(format!("Unsupported bit depth: {}", params.bit_depth)),
 			}).map_err(|e| format!("Failed to set format: {}", e))?;
-			hwp.set_access(alsa::pcm::Access::RWInterleaved).map_err(|e| format!("Failed to set access type: {}", e))?;
+			hwp.set_access(alsa::pcm::Access::MMapInterleaved).map_err(|e| format!("Failed to set access type: {}", e))?;
 			let effective_period_size = hwp.set_period_size_near(1024, alsa::ValueOr::Nearest).map_err(|e| format!("Failed to set period size: {}", e))?;
-			let _ = hwp.set_buffer_size_near(effective_period_size * sample_size as i64 * channel_count as i64);
+			let _ = hwp.set_buffer_size_near(effective_period_size * 2);
 
 			pcm.hw_params(&hwp).map_err(|e| format!("Failed to apply hardware parameters: {}", e))?;
 		}
@@ -35,7 +32,9 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		{
 			let hwp = pcm.hw_params_current().map_err(|e| format!("Failed to get current hardware parameters: {}", e))?;
 			let swp = pcm.sw_params_current().map_err(|e| format!("Failed to get current software parameters: {}", e))?;
-			swp.set_start_threshold(hwp.get_buffer_size().map_err(|e| format!("Failed to get buffer size: {}", e))?).map_err(|e| format!("Failed to set start threshold: {}", e))?;
+			let period_size = hwp.get_period_size().map_err(|e| format!("Failed to get period size: {}", e))?;
+			swp.set_start_threshold(period_size).map_err(|e| format!("Failed to set start threshold: {}", e))?;
+			swp.set_avail_min(period_size).map_err(|e| format!("Failed to set minimum available frames: {}", e))?;
 			pcm.sw_params(&swp).map_err(|e| format!("Failed to set software parameters: {}", e))?;
 		}
 
@@ -54,8 +53,25 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
 		let pcm = &self.pcm;
 
+		let available_frames = match pcm.avail_update() {
+			Ok(frames) if frames > 0 => frames as usize,
+			Ok(_) => return Ok(0),
+			Err(error) => {
+				return if pcm.try_recover(error, true).is_ok() {
+					Ok(0)
+				} else {
+					Err(())
+				};
+			}
+		};
+
 		let hw_params = pcm.hw_params_current().unwrap();
 		let access = hw_params.get_access().unwrap();
+		let period_size = self.get_period_size().min(available_frames);
+
+		if period_size == 0 {
+			return Ok(0);
+		}
 
 		match self.parameters.bit_depth {
 			16 => {
@@ -63,24 +79,47 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 				let frames = match access {
 					alsa::pcm::Access::MMapInterleaved => {
-						io.mmap(self.get_period_size(), |b| {
+						let mmap_result = io.mmap(period_size, |b| {
 							match self.parameters.channels {
 								1 => {
-									let frames = b.len() / 2;
+									let frames = b.len();
 									wpf(Streams::Mono16Bit(b));
 									frames
 								}
 								2 => {
-									let frames = b.len() / 4;
-									wpf(Streams::Stereo16Bit(unsafe { std::mem::transmute(b) }));
+									if b.len() % 2 != 0 {
+										return 0;
+									}
+
+									let frames = b.len() / 2;
+									let buffer = unsafe {
+										std::slice::from_raw_parts_mut(b.as_mut_ptr() as *mut (i16, i16), frames)
+									};
+
+									wpf(Streams::Stereo16Bit(buffer));
 									frames
 								}
 								_ => panic!(),
 							}
-						}).or(Err(()))?
+						});
+
+						match mmap_result {
+							Ok(frames) => frames,
+							Err(error) => {
+								return if pcm.try_recover(error, true).is_ok() {
+									Ok(0)
+								} else {
+									Err(())
+								};
+							}
+						}
 					}
 					_ => return Err(()),
 				};
+
+				if frames > 0 && pcm.state() == alsa::pcm::State::Prepared {
+					pcm.start().or(Err(()))?;
+				}
 
 				Ok(frames)
 			}
@@ -89,24 +128,47 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 				let frames = match access {
 					alsa::pcm::Access::MMapInterleaved => {
-						io.mmap(self.get_period_size(), |b| {
+						let mmap_result = io.mmap(period_size, |b| {
 							match self.parameters.channels {
 								1 => {
-									let frames = b.len() / 4;
+									let frames = b.len();
 									wpf(Streams::MonoFloat32(b));
 									frames
 								}
 								2 => {
-									let frames = b.len() / 8;
-									wpf(Streams::StereoFloat32(unsafe { std::mem::transmute(b) }));
+									if b.len() % 2 != 0 {
+										return 0;
+									}
+
+									let frames = b.len() / 2;
+									let buffer = unsafe {
+										std::slice::from_raw_parts_mut(b.as_mut_ptr() as *mut (f32, f32), frames)
+									};
+
+									wpf(Streams::StereoFloat32(buffer));
 									frames
 								}
 								_ => panic!(),
 							}
-						}).or(Err(()))?
+						});
+
+						match mmap_result {
+							Ok(frames) => frames,
+							Err(error) => {
+								return if pcm.try_recover(error, true).is_ok() {
+									Ok(0)
+								} else {
+									Err(())
+								};
+							}
+						}
 					}
 					_ => return Err(()),
 				};
+
+				if frames > 0 && pcm.state() == alsa::pcm::State::Prepared {
+					pcm.start().or(Err(()))?;
+				}
 
 				Ok(frames)
 			}

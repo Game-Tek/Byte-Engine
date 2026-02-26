@@ -199,6 +199,13 @@ impl <'a> Iterator for WindowIterator<'a> {
 
 impl Drop for Window {
 	fn drop(&mut self) {
+		if let Some(confined_pointer) = self.state.confined_pointer.take() {
+			confined_pointer.destroy();
+		}
+		if let Some(locked_pointer) = self.state.locked_pointer.take() {
+			locked_pointer.destroy();
+		}
+
 		self.xdg_toplevel.destroy();
 		self.xdg_surface.destroy();
 		self.surface.destroy();
@@ -258,6 +265,22 @@ struct WindowState {
 	focused_pointer: Option<wl_pointer::WlPointer>,
 	/// The focused keyboard
 	focused_keyboard: Option<wl_keyboard::WlKeyboard>,
+	/// Whether the pointer should remain confined to the window surface.
+	should_confine_pointer: bool,
+	/// Whether the compositor currently reports the pointer as confined.
+	pointer_is_confined: bool,
+	/// Whether the pointer should remain hidden.
+	should_hide_pointer: bool,
+	/// Whether the pointer is currently hidden.
+	pointer_is_hidden: bool,
+	/// Whether the pointer should remain locked.
+	should_lock_pointer: bool,
+	/// Whether the compositor currently reports the pointer as locked.
+	pointer_is_locked: bool,
+	/// The active confined pointer handle, if one is currently set.
+	confined_pointer: Option<zwp_confined_pointer_v1::ZwpConfinedPointerV1>,
+	/// The active locked pointer handle, if one is currently set.
+	locked_pointer: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
 	/// The XKB state for translating keycodes into keysyms.
 	keyboard_state: Option<Rc<RefCell<KeyboardState>>>,
 }
@@ -271,6 +294,14 @@ impl Default for WindowState {
 			monitor_extent: None,
 			focused_pointer: None,
 			focused_keyboard: None,
+			should_confine_pointer: true,
+			pointer_is_confined: false,
+			should_hide_pointer: true,
+			pointer_is_hidden: false,
+			should_lock_pointer: false,
+			pointer_is_locked: false,
+			confined_pointer: None,
+			locked_pointer: None,
 			keyboard_state: None,
 		}
 	}
@@ -394,8 +425,41 @@ impl AppData {
 		self.requests.retain(|e| {
 			match e {
 				Requests::ConstrainPointer => {
-					if let (Some(pointer), Some(_)) = (&self.state.focused_pointer, &self.state.focused_keyboard) {
-						self.zwp_pointer_constraints.confine_pointer(surface, pointer, None, zwp_pointer_constraints_v1::Lifetime::Oneshot, &qh, ());
+					if !self.state.should_confine_pointer {
+						if let Some(confined_pointer) = self.state.confined_pointer.take() {
+							confined_pointer.destroy();
+						}
+
+						self.state.pointer_is_confined = false;
+
+						return false;
+					}
+
+					if self.state.should_lock_pointer {
+						if let Some(confined_pointer) = self.state.confined_pointer.take() {
+							confined_pointer.destroy();
+						}
+
+						self.state.pointer_is_confined = false;
+
+						return false;
+					}
+
+					if self.state.pointer_is_confined {
+						return false;
+					}
+
+					let focused_pointer = self.state.focused_pointer.clone();
+					let focused_keyboard = self.state.focused_keyboard.clone();
+
+					if let (Some(pointer), Some(_)) = (focused_pointer, focused_keyboard) {
+						if let Some(confined_pointer) = self.state.confined_pointer.take() {
+							confined_pointer.destroy();
+						}
+
+						let confined_pointer = self.zwp_pointer_constraints.confine_pointer(surface, &pointer, None, zwp_pointer_constraints_v1::Lifetime::Persistent, &qh, ());
+						self.state.confined_pointer = Some(confined_pointer);
+						self.state.pointer_is_confined = false;
 
 						surface.commit();
 
@@ -405,8 +469,37 @@ impl AppData {
 					}
 				}
 				Requests::LockPointer => {
-					if let (Some(pointer), Some(_)) = (&self.state.focused_pointer, &self.state.focused_keyboard) {
-						self.zwp_pointer_constraints.lock_pointer(surface, pointer, None, zwp_pointer_constraints_v1::Lifetime::Oneshot, &qh, ());
+					if !self.state.should_lock_pointer {
+						if let Some(locked_pointer) = self.state.locked_pointer.take() {
+							locked_pointer.destroy();
+						}
+
+						self.state.pointer_is_locked = false;
+
+						return false;
+					}
+
+					if self.state.pointer_is_locked {
+						return false;
+					}
+
+					let focused_pointer = self.state.focused_pointer.clone();
+					let focused_keyboard = self.state.focused_keyboard.clone();
+
+					if let (Some(pointer), Some(_)) = (focused_pointer, focused_keyboard) {
+						if let Some(locked_pointer) = self.state.locked_pointer.take() {
+							locked_pointer.destroy();
+						}
+
+						if let Some(confined_pointer) = self.state.confined_pointer.take() {
+							confined_pointer.destroy();
+						}
+
+						self.state.pointer_is_confined = false;
+
+						let locked_pointer = self.zwp_pointer_constraints.lock_pointer(surface, &pointer, None, zwp_pointer_constraints_v1::Lifetime::Persistent, &qh, ());
+						self.state.locked_pointer = Some(locked_pointer);
+						self.state.pointer_is_locked = false;
 
 						surface.commit();
 
@@ -416,8 +509,14 @@ impl AppData {
 					}
 				}
 				Requests::HidePointer => {
+					if !self.state.should_hide_pointer {
+						self.state.pointer_is_hidden = false;
+						return false;
+					}
+
 					if let Some(pointer) = &self.state.focused_pointer {
 						pointer.set_cursor(0, None, 0, 0);
+						self.state.pointer_is_hidden = true;
 
 						surface.commit();
 
@@ -590,13 +689,25 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 		match event {
 			wl_pointer::Event::Enter { .. } => {
 				this.state.focused_pointer = Some(pointer.clone());
+				this.state.pointer_is_hidden = false;
+
+				if this.state.should_hide_pointer && !this.requests.iter().any(|request| matches!(request, Requests::HidePointer)) {
+					this.requests.push_back(Requests::HidePointer);
+				}
+
+				if this.state.should_lock_pointer && !this.requests.iter().any(|request| matches!(request, Requests::LockPointer)) {
+					this.requests.push_back(Requests::LockPointer);
+				}
 
 				this.process_requests(qh);
 			}
 			wl_pointer::Event::Leave { .. } => {
-				if let Some(pointer) = &this.state.focused_pointer {
-					if pointer == pointer {
+				if let Some(focused_pointer) = &this.state.focused_pointer {
+					if focused_pointer == pointer {
 						this.state.focused_pointer = None;
+						this.state.pointer_is_confined = false;
+						this.state.pointer_is_hidden = false;
+						this.state.pointer_is_locked = false;
 					}
 				}
 
@@ -715,6 +826,8 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 				if let Some(focused_keyboard) = &this.state.focused_keyboard {
 					if focused_keyboard == keyboard {
 						this.state.focused_keyboard = None;
+						this.state.pointer_is_confined = false;
+						this.state.pointer_is_locked = false;
 					}
 				}
 
@@ -797,12 +910,29 @@ impl wayland_client::Dispatch<zwp_pointer_constraints_v1::ZwpPointerConstraintsV
 }
 
 impl wayland_client::Dispatch<zwp_confined_pointer_v1::ZwpConfinedPointerV1, ()> for AppData {
-	fn event(_: &mut Self, _: &zwp_confined_pointer_v1::ZwpConfinedPointerV1, event: zwp_confined_pointer_v1::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+	fn event(this: &mut Self, confined_pointer: &zwp_confined_pointer_v1::ZwpConfinedPointerV1, event: zwp_confined_pointer_v1::Event, _: &(), _: &wayland_client::Connection, qh: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			zwp_confined_pointer_v1::Event::Confined => {
+				this.state.confined_pointer = Some(confined_pointer.clone());
+				this.state.pointer_is_confined = true;
 				println!("Pointer is confined");
 			}
 			zwp_confined_pointer_v1::Event::Unconfined => {
+				this.state.pointer_is_confined = false;
+
+				if this.state.confined_pointer.as_ref().is_some_and(|p| p == confined_pointer) {
+					if let Some(confined_pointer) = this.state.confined_pointer.take() {
+						confined_pointer.destroy();
+					}
+				} else {
+					confined_pointer.destroy();
+				}
+
+				if this.state.should_confine_pointer && !this.requests.iter().any(|request| matches!(request, Requests::ConstrainPointer)) {
+					this.requests.push_back(Requests::ConstrainPointer);
+					this.process_requests(qh);
+				}
+
 				println!("Pointer is unconfined");
 			}
 			_ => {}
@@ -811,12 +941,29 @@ impl wayland_client::Dispatch<zwp_confined_pointer_v1::ZwpConfinedPointerV1, ()>
 }
 
 impl wayland_client::Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for AppData {
-	fn event(_: &mut Self, _: &zwp_locked_pointer_v1::ZwpLockedPointerV1, event: zwp_locked_pointer_v1::Event, _: &(), _: &wayland_client::Connection, _: &wayland_client::QueueHandle<AppData>,) {
+	fn event(this: &mut Self, locked_pointer: &zwp_locked_pointer_v1::ZwpLockedPointerV1, event: zwp_locked_pointer_v1::Event, _: &(), _: &wayland_client::Connection, qh: &wayland_client::QueueHandle<AppData>,) {
 		match event {
 			zwp_locked_pointer_v1::Event::Locked => {
+				this.state.locked_pointer = Some(locked_pointer.clone());
+				this.state.pointer_is_locked = true;
 				println!("Pointer is locked");
 			}
 			zwp_locked_pointer_v1::Event::Unlocked => {
+				this.state.pointer_is_locked = false;
+
+				if this.state.locked_pointer.as_ref().is_some_and(|p| p == locked_pointer) {
+					if let Some(locked_pointer) = this.state.locked_pointer.take() {
+						locked_pointer.destroy();
+					}
+				} else {
+					locked_pointer.destroy();
+				}
+
+				if this.state.should_lock_pointer && !this.requests.iter().any(|request| matches!(request, Requests::LockPointer)) {
+					this.requests.push_back(Requests::LockPointer);
+					this.process_requests(qh);
+				}
+
 				println!("Pointer is unlocked");
 			}
 			_ => {}

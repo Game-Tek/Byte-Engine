@@ -18,7 +18,7 @@ use crate::{
 			simple::{SimpleRenderPass, SimpleSceneManager},
 			visibility::VisibilityWorldRenderDomain,
 		}, render_pass::RenderPass, render_passes::{aces::AcesToneMapPass, agx::AgxToneMapPass}, renderable, renderer, texture_manager::TextureManager
-	},
+	}, ui::render_pass::{UiRenderData, UiRenderPass},
 };
 use std::{
 	net::{Ipv4Addr, Ipv6Addr},
@@ -491,9 +491,6 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	};
 
 	renderer.add_scene_manager(sm);
-	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| {
-		Box::new(AgxToneMapPass::new(render_pass_builder))
-	});
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
@@ -508,8 +505,27 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	};
 
 	renderer.add_scene_manager(sm);
+}
+
+pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: UiRenderData) {
+	let renderable_mesh_factory = application.renderable_factory_mut();
+	let listener = renderable_mesh_factory.listener();
+
+	let renderer = &mut application.renderer;
+
+	renderer.add_post_scene_render_pass_for_all_views(move |render_pass_builder| {
+		Box::new(UiRenderPass::new(render_pass_builder, ui.clone()))
+	});
+}
+
+pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
+	let renderable_mesh_factory = application.renderable_factory_mut();
+	let listener = renderable_mesh_factory.listener();
+
+	let renderer = &mut application.renderer;
+
 	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| {
-		Box::new(AcesToneMapPass::new(render_pass_builder))
+		Box::new(AgxToneMapPass::new(render_pass_builder))
 	});
 }
 

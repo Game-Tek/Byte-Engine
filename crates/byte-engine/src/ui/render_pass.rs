@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 use besl::ParserNode;
 use ghi::{
@@ -75,33 +75,21 @@ impl UiRenderData {
     }
 
     /// Converts a layout render tree into an internal draw list for the UI pass.
-    pub(crate) fn update_from_render(&self, render: &engine::Render<'_>) {
-        let query = render.query();
-        let mut queue = VecDeque::with_capacity(render.size());
-        queue.push_back(render.root().id());
-
+    pub fn update_from_render(&self, render: &engine::Render<'_>) {
         let root_size = render.root().size;
-        let mut elements = Vec::with_capacity(render.size());
+        let elements = render
+            .elements()
+            .map(|element| {
+                let position = element.position;
+                let size = element.size;
 
-        while let Some(id) = queue.pop_front() {
-            let Some(result) = query.get(id) else {
-                continue;
-            };
-
-            let element = result.element();
-            let position = element.position;
-            let size = element.size;
-
-            elements.push(UiDrawElement {
-                position: [position.x() as f32, position.y() as f32],
-                size: [size.x() as f32, size.y() as f32],
-                color: random_color_from_id(element.id),
-            });
-
-            for child in result.children().ids() {
-                queue.push_back(child);
-            }
-        }
+                UiDrawElement {
+                    position: [position.x() as f32, position.y() as f32],
+                    size: [size.x() as f32, size.y() as f32],
+                    color: random_color_from_id(element.id),
+                }
+            })
+            .collect();
 
         *self.data.write() = UiDrawList {
             layout_size: [root_size.x() as f32, root_size.y() as f32],

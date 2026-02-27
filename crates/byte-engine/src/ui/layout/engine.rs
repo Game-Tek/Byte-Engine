@@ -106,6 +106,10 @@ impl<'a> Render<'a> {
     pub fn size(&self) -> usize {
         self.elements.len()
     }
+
+    pub fn elements(&self) -> impl Iterator<Item = &LayoutElement> {
+		self.elements.iter()
+	}
 }
 
 pub trait Context: Sized {

@@ -1,15 +1,9 @@
 use std::{borrow::Cow, collections::VecDeque, num::NonZeroU32, u64};
 
 use crate::{
-	graphics_hardware_interface, image, raster_pipeline,
-	render_debugger::RenderDebugger,
-	sampler,
-	vulkan::{
-		queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, Descriptor,
-		DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Frame, Handle, HandleLike,
-		ImageCopy, ImageHandle, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
-	},
-	window, CommandBufferRecording, FrameKey, Instance, Size,
+	CommandBufferRecording, FrameKey, Instance, Size, graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, utils::StableVec, vulkan::{
+		BufferCopy, BuildBuffer, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Frame, Handle, HandleLike, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks, queue::Queue, sampler::SamplerHandle
+	}, window
 };
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
@@ -110,9 +104,6 @@ pub struct Device {
 
 	/// A queue of deferred tasks. Usually object deletions and resource updates.
 	pub(crate) tasks: Vec<Task>,
-
-	pub(crate) semaphores: Vec<vk::Semaphore>,
-	pub(crate) timeline_values: Vec<u64>,
 }
 
 unsafe impl Send for Device {}
@@ -583,29 +574,9 @@ impl Device {
 
 		let frames = 2u8;
 
-		let semaphores = (0..frames)
-			.map(|_| {
-				let mut timeline_create_info = vk::SemaphoreTypeCreateInfo::default()
-					.semaphore_type(vk::SemaphoreType::TIMELINE)
-					.initial_value(0);
-
-				unsafe {
-					device
-						.create_semaphore(
-							&vk::SemaphoreCreateInfo::default()
-								.push_next(&mut timeline_create_info),
-							None,
-						)
-						.unwrap()
-				}
-			})
-			.collect::<Vec<_>>();
-
 		Ok(Device {
 			debug_utils,
 			debug_data: instance.debug_data.as_ref() as *const DebugCallbackData,
-
-			semaphores,
 
 			memory_properties,
 
@@ -664,7 +635,6 @@ impl Device {
 			persistent_write_dynamic_buffers: Vec::with_capacity(64),
 
 			tasks: Vec::with_capacity(1024),
-			timeline_values: vec![0; frames as usize],
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity(4096),
@@ -2578,10 +2548,6 @@ impl Drop for Device {
 				self.device.destroy_fence(synchronizer.fence, None);
 			});
 
-			self.semaphores.iter().for_each(|semaphore| {
-				self.device.destroy_semaphore(*semaphore, None);
-			});
-
 			self.descriptor_sets_layouts
 				.iter()
 				.for_each(|descriptor_set_layout| {
@@ -2785,25 +2751,6 @@ impl crate::device::Device for Device {
 					command_pool,
 					command_buffer: vk_command_buffer,
 				});
-			}
-
-			for _ in current_frames..target_frames {
-				let mut timeline_create_info = vk::SemaphoreTypeCreateInfo::default()
-					.semaphore_type(vk::SemaphoreType::TIMELINE)
-					.initial_value(0);
-
-				let semaphore = unsafe {
-					self.device
-						.create_semaphore(
-							&vk::SemaphoreCreateInfo::default()
-								.push_next(&mut timeline_create_info),
-							None,
-						)
-						.expect("No semaphore")
-				};
-
-				self.semaphores.push(semaphore);
-				self.timeline_values.push(0);
 			}
 		} else {
 			unimplemented!()
@@ -4563,16 +4510,6 @@ impl crate::device::Device for Device {
 	) -> Frame<'a> {
 		let frame_index = index;
 		let sequence_index = (index % self.frames as u32) as u8;
-		let timeline_value = self.timeline_values[sequence_index as usize];
-
-		unsafe {
-			let _ = self.device.wait_semaphores(
-				&vk::SemaphoreWaitInfo::default()
-					.semaphores(&[self.semaphores[sequence_index as usize]])
-					.values(&[timeline_value]),
-				u64::MAX,
-			);
-		}
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
 		let synchronizer =
@@ -4637,29 +4574,6 @@ impl crate::device::Device for Device {
 		unsafe {
 			self.device.device_wait_idle().unwrap();
 		}
-	}
-}
-
-struct StableVec<T: Default, const N: usize> {
-	data: [T; N],
-	pos: usize,
-}
-
-impl<T: Default + Copy, const N: usize> StableVec<T, N> {
-	pub fn new() -> Self {
-		StableVec {
-			data: [T::default(); N],
-			pos: 0,
-		}
-	}
-
-	pub fn append<const M: usize>(&mut self, array: [T; M]) -> &'static [T] {
-		assert!(self.pos + M <= N, "StableVec is full");
-		let start = self.pos;
-		let end = start + M;
-		self.data[start..end].copy_from_slice(&array);
-		self.pos += M;
-		unsafe { std::mem::transmute(&self.data[start..end]) } // SAFETY: this is not correct
 	}
 }
 

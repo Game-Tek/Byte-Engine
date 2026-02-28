@@ -38,3 +38,5 @@ pub mod command_buffer;
 pub mod image;
 pub mod sampler;
 pub mod raster_pipeline;
+
+mod utils;

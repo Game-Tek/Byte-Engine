@@ -1728,16 +1728,6 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				dbg!("Some error occurred during presentation");
 			}
 		}
-
-		unsafe {
-			let next_timeline_value = self.ghi.timeline_values[sequence_index as usize] + 1;
-			self.ghi.timeline_values[sequence_index as usize] = next_timeline_value;
-			let _ = self.ghi.device.signal_semaphore(
-				&vk::SemaphoreSignalInfo::default()
-					.semaphore(self.ghi.semaphores[sequence_index as usize])
-					.value(next_timeline_value),
-			);
-		}
 	}
 }
 

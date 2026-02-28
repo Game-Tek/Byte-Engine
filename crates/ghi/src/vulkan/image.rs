@@ -24,9 +24,6 @@ pub(crate) struct Image {
 	pub(crate) owns_image: bool,
 }
 
-unsafe impl Send for Image {}
-unsafe impl Sync for Image {}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ImageHandle(pub(crate) u64);
 

@@ -130,9 +130,6 @@ pub(crate) struct Allocation {
 	pointer: *mut u8,
 }
 
-unsafe impl Send for Allocation {}
-unsafe impl Sync for Allocation {}
-
 pub(crate) struct DebugCallbackData {
 	error_count: AtomicU64,
 	error_log_function: fn(&str),

@@ -10,9 +10,6 @@ pub struct Window {
 	state: State,
 }
 
-unsafe impl Send for Window {}
-unsafe impl Sync for Window {}
-
 pub struct Handles {
 	pub hinstance: HINSTANCE,
 	pub hwnd: HWND,

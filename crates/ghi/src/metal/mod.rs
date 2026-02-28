@@ -121,9 +121,6 @@ pub(crate) struct Allocation {
 	size: usize,
 }
 
-unsafe impl Send for Allocation {}
-unsafe impl Sync for Allocation {}
-
 pub(crate) struct DebugCallbackData {
 	error_count: AtomicU64,
 	error_log_function: fn(&str),
@@ -525,9 +522,6 @@ pub mod buffer {
 		pub(crate) access: DeviceAccesses,
 	}
 
-	unsafe impl Send for Buffer {}
-	unsafe impl Sync for Buffer {}
-
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	pub(crate) struct BufferHandle(pub(crate) u64);
 
@@ -573,9 +567,6 @@ pub mod image {
 		pub(crate) array_layers: u32,
 		pub(crate) staging: Option<Vec<u8>>,
 	}
-
-	unsafe impl Send for Image {}
-	unsafe impl Sync for Image {}
 
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	pub(crate) struct ImageHandle(pub(crate) u64);
@@ -882,9 +873,6 @@ pub mod device {
 		#[cfg(debug_assertions)]
 		pub names: HashMap<graphics_hardware_interface::Handle, String>,
 	}
-
-	unsafe impl Send for Device {}
-	unsafe impl Sync for Device {}
 
 	impl Device {
 		pub fn new(settings: graphics_hardware_interface::Features, device: Retained<ProtocolObject<dyn mtl::MTLDevice>>, queues: &mut [(graphics_hardware_interface::QueueSelection, &mut Option<graphics_hardware_interface::QueueHandle>)]) -> Result<Device, &'static str> {

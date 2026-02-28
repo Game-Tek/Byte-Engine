@@ -283,9 +283,6 @@ impl Drop for Device {
 	}
 }
 
-unsafe impl Send for Device {}
-unsafe impl Sync for Device {}
-
 unsafe extern "C-unwind" fn output_render_callback(
 	ref_con: NonNull<c_void>,
 	io_action_flags: NonNull<AudioUnitRenderActionFlags>,

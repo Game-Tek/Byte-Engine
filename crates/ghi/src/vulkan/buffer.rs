@@ -25,9 +25,6 @@ pub(crate) struct Buffer {
 	pub(crate) access: crate::DeviceAccesses,
 }
 
-unsafe impl Send for Buffer {}
-unsafe impl Sync for Buffer {}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct BufferHandle(pub(crate) u64);
 

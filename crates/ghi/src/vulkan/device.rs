@@ -106,9 +106,6 @@ pub struct Device {
 	pub(crate) tasks: Vec<Task>,
 }
 
-unsafe impl Send for Device {}
-unsafe impl Sync for Device {}
-
 impl Device {
 	pub fn new(
 		settings: graphics_hardware_interface::Features,

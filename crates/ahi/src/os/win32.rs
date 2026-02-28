@@ -17,9 +17,6 @@ pub struct Device {
 	parameters: HardwareParameters,
 }
 
-unsafe impl Send for Device {}
-unsafe impl Sync for Device {}
-
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	fn new(params: HardwareParameters) -> Result<Self, String> {
 		if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) } != S_OK {

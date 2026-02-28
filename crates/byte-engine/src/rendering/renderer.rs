@@ -54,6 +54,13 @@ use utils::Box;
 
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 
+/// A `Viewport` represents a specific way of looking at the scene, defined by a window.
+type ViewportId = usize;
+/// A `View` represents a specific way of looking at the scene, defined by a camera.
+type ViewId = usize;
+/// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
+type RenderPassId = usize;
+
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
@@ -67,14 +74,14 @@ pub struct Renderer {
 	/// A list of display windows and their associated swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
 	/// A list of windows (idx) and their associated cameras (Handle).
-	views: SmallVec<[(usize, Handle); 16]>,
+	views: SmallVec<[(ViewportId, Handle); 16]>,
 	/// A list of cameras and their associated handles.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
 
 	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
-	render_passes_by_view: SmallVec<[(usize, usize); 32]>,
+	render_passes_by_viewport: SmallVec<[(RenderPassId, ViewportId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
 	scene_managers: SmallVec<[EntityHandle<dyn SceneManager>; 16]>,
@@ -185,7 +192,7 @@ impl Renderer {
 			render_targets: RenderTargets::new(),
 
 			render_passes: SmallVec::with_capacity(64),
-			render_passes_by_view: SmallVec::with_capacity(32),
+			render_passes_by_viewport: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 
 			scene_managers: SmallVec::with_capacity(8),
@@ -214,10 +221,10 @@ impl Renderer {
 		self.scene_managers.push(handle);
 	}
 
-	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, view_id: usize) {
+	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, viewport_id: ViewportId) {
 		let render_pass_id = self.render_passes.len();
 		self.render_passes.push(render_pass);
-		self.render_passes_by_view.push((render_pass_id, view_id));
+		self.render_passes_by_viewport.push((render_pass_id, viewport_id));
 	}
 
 	/// Registers a render pass factory that will be instantiated for every current and future view.
@@ -244,14 +251,13 @@ impl Renderer {
 	}
 
 	/// Instantiates all registered post-scene render pass factories for a given view.
-	fn add_post_scene_render_passes_for_view(&mut self, view_id: usize) {
+	fn add_post_scene_render_passes_for_viewport(&mut self, viewport_id: ViewportId) {
 		let mut render_passes_for_view: SmallVec<[Box<dyn RenderPass>; 16]> = SmallVec::new();
 
-		for index in 0..self.post_scene_render_pass_factories.len() {
+		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
-				let render_pass_factory = &self.post_scene_render_pass_factories[index];
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -259,7 +265,7 @@ impl Renderer {
 		}
 
 		for render_pass in render_passes_for_view {
-			self.add_render_pass(render_pass, view_id);
+			self.add_render_pass(render_pass, viewport_id);
 		}
 	}
 
@@ -372,12 +378,12 @@ impl Renderer {
 				.collect();
 
 		// A list of render pass commands and their corresponding viewport index
-		let render_pass_commands: SmallVec<[(RenderPassReturn, usize); 64]> = self
-			.render_passes_by_view
+		let render_pass_commands: SmallVec<[(RenderPassReturn, ViewportId); 64]> = self
+			.render_passes_by_viewport
 			.iter_mut()
-			.filter_map(|(render_pass_id, view_id)| {
+			.filter_map(|(render_pass_id, viewport_id)| {
 				if let Some(render_pass) = self.render_passes.get_mut(*render_pass_id) {
-					if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *view_id) {
+					if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *viewport_id) {
 						if let Some(command) = render_pass.prepare(&mut frame, viewport) {
 							return Some((command, viewport.index()));
 						}
@@ -387,7 +393,7 @@ impl Renderer {
 			})
 			.collect();
 
-		let swapchain_targets: SmallVec<[(usize, ghi::PresentKey, ghi::SwapchainHandle); 16]> =
+		let swapchain_targets: SmallVec<[(ViewportId, ghi::PresentKey, ghi::SwapchainHandle); 16]> =
 			viewports
 				.iter()
 				.filter_map(|viewport| {
@@ -466,6 +472,8 @@ impl Renderer {
 					ghi::Uses::BlitDestination,
 				);
 
+				let viewport_id = self.windows.len();
+
 				let view_id = if let Some(camera) = camera {
 					let view_id = self.views.len();
 					self.views.push((view_id, camera.clone()));
@@ -474,19 +482,43 @@ impl Renderer {
 					None
 				};
 
+				let main = device.build_image(
+					ghi::image::Builder::new(
+						ghi::Formats::RGBA16F,
+						ghi::Uses::Storage
+							| ghi::Uses::TransferSource
+							| ghi::Uses::BlitDestination
+							| ghi::Uses::RenderTarget
+							| ghi::Uses::InputAttachment,
+					)
+					.name("main")
+					.use_case(ghi::UseCases::DYNAMIC),
+				);
+
+				let result = device.build_image(
+					ghi::image::Builder::new(
+						ghi::Formats::RGBA8UNORM,
+						ghi::Uses::Storage | ghi::Uses::BlitSource,
+					)
+					.name("result")
+					.use_case(ghi::UseCases::DYNAMIC),
+				);
+
+				self.render_targets.insert(
+					"main".to_string(),
+					viewport_id,
+					main,
+					ghi::Formats::RGBA16F,
+				);
+
+				self.render_targets.insert(
+					"result".to_string(),
+					viewport_id,
+					result,
+					ghi::Formats::RGBA8UNORM,
+				);
+
 				if let Some(view_id) = view_id {
-					let main = device.build_image(
-						ghi::image::Builder::new(
-							ghi::Formats::RGBA16F,
-							ghi::Uses::Storage
-								| ghi::Uses::TransferSource
-								| ghi::Uses::BlitDestination
-								| ghi::Uses::RenderTarget
-								| ghi::Uses::InputAttachment,
-						)
-						.name("main")
-						.use_case(ghi::UseCases::DYNAMIC),
-					);
 					let depth = device.build_image(
 						ghi::image::Builder::new(
 							ghi::Formats::Depth32,
@@ -495,32 +527,12 @@ impl Renderer {
 						.name("depth")
 						.use_case(ghi::UseCases::DYNAMIC),
 					);
-					let result = device.build_image(
-						ghi::image::Builder::new(
-							ghi::Formats::RGBA8UNORM,
-							ghi::Uses::Storage | ghi::Uses::BlitSource,
-						)
-						.name("result")
-						.use_case(ghi::UseCases::DYNAMIC),
-					);
 
 					self.render_targets.insert(
-						"main".to_string(),
-						view_id,
-						main,
-						ghi::Formats::RGBA16F,
-					);
-					self.render_targets.insert(
 						"depth".to_string(),
-						view_id,
+						viewport_id,
 						depth,
 						ghi::Formats::Depth32,
-					);
-					self.render_targets.insert(
-						"result".to_string(),
-						view_id,
-						result,
-						ghi::Formats::RGBA8UNORM,
 					);
 
 					{
@@ -530,7 +542,7 @@ impl Renderer {
 							let mut rpb = RenderPassBuilder::new(
 								&mut self.device,
 								&mut self.render_targets,
-								view_id,
+								viewport_id,
 							);
 
 							sm.write().create_view(view_id, &mut rpb);
@@ -541,8 +553,9 @@ impl Renderer {
 						}
 					}
 
-					self.add_post_scene_render_passes_for_view(view_id);
 				}
+
+				self.add_post_scene_render_passes_for_viewport(viewport_id);
 
 				self.windows.push((window, swapchain_handle));
 			}

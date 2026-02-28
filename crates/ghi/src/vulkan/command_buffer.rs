@@ -796,7 +796,11 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			self.consume_resources(attachments.iter().map(|attachment| Consumption {
 				handle: Handle::Image(self.get_internal_image_handle(attachment.image)),
 				stages: graphics_hardware_interface::Stages::FRAGMENT,
-				access: graphics_hardware_interface::AccessPolicies::WRITE,
+				access: if attachment.load {
+					graphics_hardware_interface::AccessPolicies::READ_WRITE
+				} else {
+					graphics_hardware_interface::AccessPolicies::WRITE
+				},
 				layout: attachment.layout,
 			}))(self);
 		}
@@ -1629,9 +1633,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
 					.stage_mask(
-						vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-							| vk::PipelineStageFlags2::BLIT
-							| vk::PipelineStageFlags2::TRANSFER,
+						vk::PipelineStageFlags2::ALL_COMMANDS,
 					)
 			}))
 			.collect::<Vec<_>>();
@@ -1652,9 +1654,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 					.get(&Handle::Image(presentable_image_handle))
 					.map(|state| state.stage)
 					.unwrap_or(
-						vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-							| vk::PipelineStageFlags2::BLIT
-							| vk::PipelineStageFlags2::TRANSFER,
+						vk::PipelineStageFlags2::ALL_COMMANDS,
 					);
 
 				vk::SemaphoreSubmitInfo::default()

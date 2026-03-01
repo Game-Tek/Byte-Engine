@@ -2,10 +2,7 @@ use utils::Extent;
 
 use crate::{AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureBuild};
 
-pub trait CommandBufferRecordable where Self: Sized {
-	fn sync_buffers(&mut self);
-	fn sync_textures(&mut self,);
-
+pub trait CommandBufferRecording where Self: Sized {
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
 	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
 
@@ -30,8 +27,6 @@ pub trait CommandBufferRecordable where Self: Sized {
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
 
 	fn present(&mut self, present_key: PresentKey);
-
-	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], presentations: &[PresentKey], execution_synchronizer_handle: SynchronizerHandle);
 }
 
 pub trait CommonCommandBufferMode {
@@ -72,12 +67,12 @@ pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + Rasterizatio
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 }
 
-pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecordable {
+pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
 	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[(u32, u32, u32); N]>, entry_index: usize);
 }
 
-pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecordable {
+pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
 	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
 }

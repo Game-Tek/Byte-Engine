@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use crate::{core::EntityHandle, rendering::{render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn}, view::View, Viewport}};
 
-use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _};
+use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _}, device::Device as _};
 use resource_management::glsl;
 use utils::{Box, Extent};
 

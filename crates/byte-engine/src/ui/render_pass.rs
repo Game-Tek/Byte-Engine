@@ -4,7 +4,7 @@ use besl::ParserNode;
 use ghi::{
     command_buffer::{
         BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-        CommandBufferRecordable as _, CommonCommandBufferMode as _,
+        CommandBufferRecording as _, CommonCommandBufferMode as _,
         RasterizationRenderPassMode as _,
     },
     device::Device as _,

@@ -3,7 +3,7 @@ use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use crate::{core::{EntityHandle}, rendering::{Viewport, renderer::RenderTargets}};
 
-use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _}, device::Device as _, Device as _};
+use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _}, device::Device as _, Device as _};
 use resource_management::glsl;
 use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
 

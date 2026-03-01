@@ -16,48 +16,36 @@ use super::{
 };
 
 pub struct CommandBufferRecording<'a> {
-	ghi: &'a mut Device,
+	device: &'a Device,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
-	in_render_pass: bool,
 	sequence_index: u8,
-	frame_index: u32,
-	states: HashMap<Handle, TransitionState>,
+	pub(crate) states: HashMap<Handle, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
 	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 
-	buffer_copies: Vec<BufferCopy>,
-	image_copies: Vec<ImageCopy>,
-
 	present_keys: Vec<graphics_hardware_interface::PresentKey>,
 }
 
 impl CommandBufferRecording<'_> {
 	pub(crate) fn new(
-		ghi: &'_ mut Device,
+		device: &'_ Device,
 		command_buffer: graphics_hardware_interface::CommandBufferHandle,
-		buffer_copies: Vec<BufferCopy>,
-		image_copies: Vec<ImageCopy>,
 		frame_key: Option<FrameKey>,
 	) -> CommandBufferRecording<'_> {
 		let command_buffer = CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
-			frame_index: frame_key.map(|f| f.frame_index).unwrap_or(0),
-			in_render_pass: false,
-			states: ghi.states.clone(),
+			states: device.states.clone(),
 
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
 
-			buffer_copies,
-			image_copies,
-
-			ghi,
+			device,
 
 			present_keys: Vec::with_capacity(8),
 		};
@@ -71,7 +59,7 @@ impl CommandBufferRecording<'_> {
 		let command_buffer = self.get_command_buffer();
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.reset_command_pool(
 					command_buffer.command_pool,
@@ -84,7 +72,7 @@ impl CommandBufferRecording<'_> {
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.begin_command_buffer(command_buffer.command_buffer, &command_buffer_begin_info)
 				.expect("No command buffer begin")
@@ -92,18 +80,18 @@ impl CommandBufferRecording<'_> {
 	}
 
 	fn get_buffer(&self, buffer_handle: BufferHandle) -> &Buffer {
-		&self.ghi.buffers[buffer_handle.0 as usize]
+		&self.device.buffers[buffer_handle.0 as usize]
 	}
 
 	fn get_image(&self, image_handle: ImageHandle) -> &Image {
-		&self.ghi.images[image_handle.0 as usize]
+		&self.device.images[image_handle.0 as usize]
 	}
 
 	fn get_synchronizer(
 		&self,
 		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> &Synchronizer {
-		&self.ghi.synchronizers[self.ghi.get_syncronizer_handles(syncronizer_handle)
+		&self.device.synchronizers[self.device.get_syncronizer_handles(syncronizer_handle)
 			[self.sequence_index as usize]
 			.0 as usize]
 	}
@@ -112,7 +100,7 @@ impl CommandBufferRecording<'_> {
 		&self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> &Swapchain {
-		&self.ghi.swapchains[swapchain_handle.0 as usize]
+		&self.device.swapchains[swapchain_handle.0 as usize]
 	}
 
 	fn get_internal_top_level_acceleration_structure_handle(
@@ -131,7 +119,7 @@ impl CommandBufferRecording<'_> {
 	) {
 		(
 			acceleration_structure_handle,
-			&self.ghi.acceleration_structures[acceleration_structure_handle.0 as usize],
+			&self.device.acceleration_structures[acceleration_structure_handle.0 as usize],
 		)
 	}
 
@@ -151,12 +139,12 @@ impl CommandBufferRecording<'_> {
 	) {
 		(
 			acceleration_structure_handle,
-			&self.ghi.acceleration_structures[acceleration_structure_handle.0 as usize],
+			&self.device.acceleration_structures[acceleration_structure_handle.0 as usize],
 		)
 	}
 
 	fn get_command_buffer(&self) -> &CommandBufferInternal {
-		&self.ghi.command_buffers[self.command_buffer.0 as usize].frames
+		&self.device.command_buffers[self.command_buffer.0 as usize].frames
 			[self.sequence_index as usize]
 	}
 
@@ -165,12 +153,12 @@ impl CommandBufferRecording<'_> {
 		descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle,
 	) -> DescriptorSetHandle {
 		let handles =
-			DescriptorSetHandle(descriptor_set_handle.0).get_all(&self.ghi.descriptor_sets);
+			DescriptorSetHandle(descriptor_set_handle.0).get_all(&self.device.descriptor_sets);
 		handles[self.sequence_index as usize]
 	}
 
 	fn get_descriptor_set(&self, descriptor_set_handle: &DescriptorSetHandle) -> &DescriptorSet {
-		&self.ghi.descriptor_sets[descriptor_set_handle.0 as usize]
+		&self.device.descriptor_sets[descriptor_set_handle.0 as usize]
 	}
 
 	#[must_use]
@@ -182,7 +170,7 @@ impl CommandBufferRecording<'_> {
 
 		let bound_pipeline_handle = self.bound_pipeline.expect("No bound pipeline");
 
-		let pipeline = &self.ghi.pipelines[bound_pipeline_handle.0 as usize];
+		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
 
 		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
 			let set_handle =
@@ -193,7 +181,7 @@ impl CommandBufferRecording<'_> {
 				};
 
 			let resources = match self
-				.ghi
+				.device
 				.descriptors
 				.get(&set_handle)
 				.map(|d| d.get(&binding_index))
@@ -449,7 +437,7 @@ impl CommandBufferRecording<'_> {
 		let command_buffer = self.get_command_buffer();
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info)
 		};
@@ -461,7 +449,7 @@ impl CommandBufferRecording<'_> {
 		&self,
 		handle: graphics_hardware_interface::BaseBufferHandle,
 	) -> BufferHandle {
-		let handles = BufferHandle(handle.0).get_all(&self.ghi.buffers);
+		let handles = BufferHandle(handle.0).get_all(&self.device.buffers);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
@@ -469,7 +457,7 @@ impl CommandBufferRecording<'_> {
 		&self,
 		handle: graphics_hardware_interface::ImageHandle,
 	) -> ImageHandle {
-		let handles = ImageHandle(handle.0).get_all(&self.ghi.images);
+		let handles = ImageHandle(handle.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
@@ -606,19 +594,217 @@ impl CommandBufferRecording<'_> {
 			.regions(&image_blits);
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_blit_image2(vk_command_buffer, &copy_image_info);
 		}
 	}
-}
 
-impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'_> {
-	fn sync_buffers(&mut self) {
-		let copy_buffers = self.buffer_copies.drain(..).collect::<Vec<_>>();
+	pub fn execute(
+		&mut self,
+		wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle],
+		signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle],
+		presentations: &[graphics_hardware_interface::PresentKey],
+		execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	) {
+		// Transition all resources which where written to but not consumed by any previous command
+		// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed, except for the following commands
+		{
+			let consumptions = self
+				.states
+				.iter()
+				.filter_map(|(handle, ts)| match ts.access {
+					vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
+						access: graphics_hardware_interface::AccessPolicies::NONE,
+						layout: graphics_hardware_interface::Layouts::General,
+						stages: graphics_hardware_interface::Stages::TRANSFER,
+						handle: *handle,
+					}),
+					_ => None,
+				});
+
+			unsafe {
+				self.consume_resources(consumptions)(self);
+			}
+		}
+
+		let presentation_keys = presentations
+			.iter()
+			.chain(self.present_keys.iter())
+			.copied()
+			.collect::<SmallVec<[graphics_hardware_interface::PresentKey; 8]>>();
+
+		{
+			let command_buffer = self.get_command_buffer();
+			let command_buffer = command_buffer.command_buffer;
+
+			let proxy_copies = presentation_keys
+				.iter()
+				.filter_map(|present_key| {
+					let swapchain = self.get_swapchain(present_key.swapchain);
+					if !swapchain.uses_proxy_images {
+						return None;
+					}
+
+					Some((
+						swapchain.images[present_key.image_index as usize],
+						swapchain.native_images[present_key.image_index as usize],
+					))
+				})
+				.collect::<SmallVec<[(ImageHandle, ImageHandle); 8]>>();
+
+			// When the swapchain uses proxies, resolve each user-facing proxy image into
+			// the native presentable swapchain image before transitioning to present.
+			for (proxy_image_handle, native_image_handle) in proxy_copies {
+				self.blit_image_to_image(proxy_image_handle, native_image_handle);
+			}
+
+			let present_transitions = presentation_keys.iter().map(|present_key| {
+				let swapchain_image_handle =
+					self.get_presentable_swapchain_image_handle(*present_key);
+
+				Consumption {
+					handle: Handle::Image(swapchain_image_handle),
+					stages: graphics_hardware_interface::Stages::PRESENTATION,
+					access: graphics_hardware_interface::AccessPolicies::READ,
+					layout: graphics_hardware_interface::Layouts::Present,
+				}
+			});
+
+			unsafe {
+				self.consume_resources(present_transitions)(self);
+			}
+
+			unsafe {
+				self.device
+					.device
+					.end_command_buffer(command_buffer)
+					.expect("Failed to end command buffer.");
+			}
+		}
+
+		let command_buffer = self.get_command_buffer();
+
+		let command_buffers = [command_buffer.command_buffer];
+
+		let command_buffer_infos =
+			[vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
+
+		let wait_semaphores = wait_for_synchronizer_handles
+			.iter()
+			.map(|synchronizer| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_synchronizer(*synchronizer).semaphore)
+					.stage_mask(
+						vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER,
+					)
+			})
+			.chain(presentation_keys.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let semaphore = swapchain.acquire_synchronizers
+					[present_key.sequence_index as usize]
+					.access(&self.device.synchronizers)
+					.semaphore;
+
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(semaphore)
+					.stage_mask(
+						vk::PipelineStageFlags2::ALL_COMMANDS,
+					)
+			}))
+			.collect::<Vec<_>>();
+
+		let signal_semaphores = signal_synchronizer_handles
+			.iter()
+			.map(|synchronizer| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_synchronizer(*synchronizer).semaphore)
+					.stage_mask(vk::PipelineStageFlags2::empty())
+			})
+			.chain(presentation_keys.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let presentable_image_handle =
+					self.get_presentable_swapchain_image_handle(*present_key);
+				let wait_stage = self
+					.states
+					.get(&Handle::Image(presentable_image_handle))
+					.map(|state| state.stage)
+					.unwrap_or(
+						vk::PipelineStageFlags2::ALL_COMMANDS,
+					);
+
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(
+						swapchain.submit_synchronizers[present_key.image_index as usize]
+							.access(&self.device.synchronizers)
+							.semaphore,
+					)
+					.stage_mask(wait_stage)
+			}))
+			.collect::<Vec<_>>();
+
+		let submit_info = vk::SubmitInfo2::default()
+			.command_buffer_infos(&command_buffer_infos)
+			.wait_semaphore_infos(&wait_semaphores)
+			.signal_semaphore_infos(&signal_semaphores);
+
+		let execution_completion_synchronizer =
+			&self.get_synchronizer(execution_synchronizer_handle);
+
+		let vk_queue = command_buffer.vk_queue;
 
 		unsafe {
-			self.vulkan_consume_resources(copy_buffers.iter().map(|e| VulkanConsumption {
+			self.device
+				.device
+				.queue_submit2(
+					vk_queue,
+					&[submit_info],
+					execution_completion_synchronizer.fence,
+				)
+				.expect("Failed to submit command buffer.");
+		}
+
+		for presentation in &presentation_keys {
+			let swapchain = self.get_swapchain(presentation.swapchain);
+
+			let wait_semaphores = signal_synchronizer_handles
+				.iter()
+				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
+				.chain(presentation_keys.iter().map(|present_key| {
+					self.get_swapchain(present_key.swapchain)
+						.submit_synchronizers[present_key.image_index as usize]
+						.access(&self.device.synchronizers)
+						.semaphore
+				}))
+				.collect::<Vec<_>>();
+
+			let swapchains = [swapchain.swapchain];
+			let image_indices = [presentation.image_index as u32];
+
+			let mut results = [vk::Result::default()];
+
+			let present_info = vk::PresentInfoKHR::default()
+				.results(&mut results)
+				.swapchains(&swapchains)
+				.wait_semaphores(&wait_semaphores)
+				.image_indices(&image_indices);
+
+			let _ = unsafe {
+				self.device
+					.swapchain
+					.queue_present(vk_queue, &present_info)
+					.expect("No present")
+			};
+
+			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
+				dbg!("Some error occurred during presentation");
+			}
+		}
+	}
+
+	pub fn sync_buffers(&mut self, copy_buffers: impl Iterator<Item = BufferCopy> + Clone) {
+		unsafe {
+			self.vulkan_consume_resources(copy_buffers.clone().map(|e| VulkanConsumption {
 				handle: Handle::Buffer(e.dst_buffer),
 				stages: vk::PipelineStageFlags2::COPY,
 				access: vk::AccessFlags2::TRANSFER_WRITE,
@@ -647,18 +833,16 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				.regions(&regions);
 
 			unsafe {
-				self.ghi
+				self.device
 					.device
 					.cmd_copy_buffer2(command_buffer.command_buffer, &copy_buffer_info);
 			}
 		}
 	}
 
-	fn sync_textures(&mut self) {
-		let copy_textures = self.image_copies.drain(..).collect::<Vec<_>>();
-
+	pub fn sync_textures(&mut self, copy_textures: impl Iterator<Item = ImageCopy> + Clone) {
 		unsafe {
-			self.vulkan_consume_resources(copy_textures.iter().map(|e| VulkanConsumption {
+			self.vulkan_consume_resources(copy_textures.clone().map(|e| VulkanConsumption {
 				handle: Handle::Image(e.dst_texture),
 				stages: vk::PipelineStageFlags2::TRANSFER,
 				access: vk::AccessFlags2::TRANSFER_WRITE,
@@ -668,7 +852,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 		let command_buffer = self.get_command_buffer();
 
-		for copy_texture in &copy_textures {
+		for copy_texture in copy_textures {
 			let image = self.get_image(copy_texture.dst_texture);
 
 			let regions = [vk::BufferImageCopy2::default()
@@ -700,13 +884,15 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				.regions(&regions);
 
 			unsafe {
-				self.ghi
+				self.device
 					.device
 					.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
 			}
 		}
 	}
+}
 
+impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
 	fn transfer_textures(
 		&mut self,
 		image_handles: &[graphics_hardware_interface::ImageHandle],
@@ -765,7 +951,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 					.regions(&regions);
 
 				unsafe {
-					self.ghi
+					self.device
 						.device
 						.cmd_copy_image_to_buffer2(command_buffer, &copy_image_to_buffer_info);
 				}
@@ -868,22 +1054,20 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let command_buffer = self.get_command_buffer();
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_set_scissor(command_buffer.command_buffer, 0, &[render_area]);
 		}
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_set_viewport(command_buffer.command_buffer, 0, &viewports);
 		}
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_begin_rendering(command_buffer.command_buffer, &rendering_info);
 		}
-
-		self.in_render_pass = true;
 
 		self
 	}
@@ -904,7 +1088,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
 						.geometry(vk::AccelerationStructureGeometryDataKHR{ instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
 							.array_of_pointers(false)
-							.data(vk::DeviceOrHostAddressConstKHR { device_address: self.ghi.get_buffer_address(instances_buffer), })
+							.data(vk::DeviceOrHostAddressConstKHR { device_address: self.device.get_buffer_address(instances_buffer), })
 						})
 						.flags(vk::GeometryFlagsKHR::OPAQUE)
 				], vec![
@@ -921,7 +1105,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			let buffer = self.get_buffer(
 				self.get_internal_buffer_handle(acceleration_structure_build.scratch_buffer.buffer),
 			);
-			self.ghi.device.get_buffer_device_address(
+			self.device.device.get_buffer_device_address(
 				&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer),
 			) + acceleration_structure_build.scratch_buffer.offset as u64
 		};
@@ -966,7 +1150,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			.collect::<Vec<_>>();
 
 		unsafe {
-			self.ghi
+			self.device
 				.acceleration_structure
 				.cmd_build_acceleration_structures(vk_command_buffer, &infos, &build_range_infos)
 		}
@@ -998,12 +1182,12 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::Mesh { vertex_buffer, index_buffer, vertex_position_encoding, index_format, triangle_count, vertex_count } => {
 						let vertex_data_address = unsafe {
 							let buffer = this.get_buffer(this.get_internal_buffer_handle(vertex_buffer.buffer_offset.buffer));
-							this.ghi.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer)) + vertex_buffer.buffer_offset.offset as u64
+							this.device.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer)) + vertex_buffer.buffer_offset.offset as u64
 						};
 
 						let index_data_address = unsafe {
 							let buffer = this.get_buffer(this.get_internal_buffer_handle(index_buffer.buffer_offset.buffer));
-							this.ghi.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer)) + index_buffer.buffer_offset.offset as u64
+							this.device.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer)) + index_buffer.buffer_offset.offset as u64
 						};
 
 						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -1040,7 +1224,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				let scratch_buffer_address = unsafe {
 					let buffer = this
 						.get_buffer(this.get_internal_buffer_handle(build.scratch_buffer.buffer));
-					this.ghi.device.get_buffer_device_address(
+					this.device.device.get_buffer_device_address(
 						&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer),
 					) + build.scratch_buffer.offset as u64
 				};
@@ -1093,7 +1277,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 					.collect::<Vec<_>>();
 
 				unsafe {
-					this.ghi
+					this.device
 						.acceleration_structure
 						.cmd_build_acceleration_structures(
 							command_buffer.command_buffer,
@@ -1148,7 +1332,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 		// TODO: implent slot splitting
 		unsafe {
-			self.ghi.device.cmd_bind_vertex_buffers(
+			self.device.device.cmd_bind_vertex_buffers(
 				command_buffer.command_buffer,
 				0,
 				&buffers,
@@ -1177,7 +1361,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
 
 		unsafe {
-			self.ghi.device.cmd_bind_index_buffer(
+			self.device.device.cmd_bind_index_buffer(
 				command_buffer.command_buffer,
 				buffer.buffer,
 				buffer_descriptor.offset as _,
@@ -1261,7 +1445,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				))
 				.regions(&blits)
 				.filter(vk::Filter::LINEAR);
-			self.ghi
+			self.device
 				.device
 				.cmd_blit_image2(command_buffer.command_buffer, &blit_info);
 		}
@@ -1309,7 +1493,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				};
 
 				unsafe {
-					self.ghi.device.cmd_clear_color_image(
+					self.device.device.cmd_clear_color_image(
 						self.get_command_buffer().command_buffer,
 						image.image,
 						vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -1344,7 +1528,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 				};
 
 				unsafe {
-					self.ghi.device.cmd_clear_depth_stencil_image(
+					self.device.device.cmd_clear_depth_stencil_image(
 						self.get_command_buffer().command_buffer,
 						image.image,
 						vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -1381,7 +1565,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 			}
 
 			unsafe {
-				self.ghi.device.cmd_fill_buffer(
+				self.device.device.cmd_fill_buffer(
 					self.get_command_buffer().command_buffer,
 					buffer.buffer,
 					0,
@@ -1422,7 +1606,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let buffer = texture.staging_buffer.unwrap();
 		let pointer = texture.pointer.unwrap();
 
-		let subresource_layout = self.ghi.get_image_subresource_layout(&image_handle, 0);
+		let subresource_layout = self.device.get_image_subresource_layout(&image_handle, 0);
 
 		if pointer.is_null() {
 			for i in data.len()
@@ -1483,7 +1667,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 		let command_buffer = self.get_command_buffer();
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
 		}
@@ -1506,7 +1690,7 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 	) {
 		let source_image_internal_handle = self.get_internal_image_handle(source_image_handle);
 
-		let swapchain = &self.ghi.swapchains[swapchain_handle.0 as usize];
+		let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
 		let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
 
 		self.blit_image_to_image(source_image_internal_handle, swapchain_image_handle);
@@ -1514,220 +1698,6 @@ impl crate::command_buffer::CommandBufferRecordable for CommandBufferRecording<'
 
 	fn present(&mut self, present_key: crate::PresentKey) {
 		self.present_keys.push(present_key);
-	}
-
-	fn execute(
-		mut self,
-		wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle],
-		signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle],
-		presentations: &[graphics_hardware_interface::PresentKey],
-		execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) {
-		// Transition all resources which where written to but not consumed by any previous command
-		// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed, except for the following commands
-		{
-			let consumptions = self
-				.states
-				.iter()
-				.filter_map(|(handle, ts)| match ts.access {
-					vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
-						access: graphics_hardware_interface::AccessPolicies::NONE,
-						layout: graphics_hardware_interface::Layouts::General,
-						stages: graphics_hardware_interface::Stages::TRANSFER,
-						handle: *handle,
-					}),
-					_ => None,
-				});
-
-			unsafe {
-				self.consume_resources(consumptions)(&mut self);
-			}
-		}
-
-		let presentation_keys = presentations
-			.iter()
-			.chain(self.present_keys.iter())
-			.copied()
-			.collect::<SmallVec<[graphics_hardware_interface::PresentKey; 8]>>();
-
-		{
-			let command_buffer = self.get_command_buffer();
-			let command_buffer = command_buffer.command_buffer;
-
-			if self.in_render_pass {
-				unsafe {
-					self.ghi.device.cmd_end_render_pass(command_buffer);
-				}
-			}
-
-			let proxy_copies = presentation_keys
-				.iter()
-				.filter_map(|present_key| {
-					let swapchain = self.get_swapchain(present_key.swapchain);
-					if !swapchain.uses_proxy_images {
-						return None;
-					}
-
-					Some((
-						swapchain.images[present_key.image_index as usize],
-						swapchain.native_images[present_key.image_index as usize],
-					))
-				})
-				.collect::<SmallVec<[(ImageHandle, ImageHandle); 8]>>();
-
-			// When the swapchain uses proxies, resolve each user-facing proxy image into
-			// the native presentable swapchain image before transitioning to present.
-			for (proxy_image_handle, native_image_handle) in proxy_copies {
-				self.blit_image_to_image(proxy_image_handle, native_image_handle);
-			}
-
-			let present_transitions = presentation_keys.iter().map(|present_key| {
-				let swapchain_image_handle =
-					self.get_presentable_swapchain_image_handle(*present_key);
-
-				Consumption {
-					handle: Handle::Image(swapchain_image_handle),
-					stages: graphics_hardware_interface::Stages::PRESENTATION,
-					access: graphics_hardware_interface::AccessPolicies::READ,
-					layout: graphics_hardware_interface::Layouts::Present,
-				}
-			});
-
-			unsafe {
-				self.consume_resources(present_transitions)(&mut self);
-			}
-
-			unsafe {
-				self.ghi
-					.device
-					.end_command_buffer(command_buffer)
-					.expect("Failed to end command buffer.");
-			}
-		}
-
-		let sequence_index = self.sequence_index;
-
-		let command_buffer = self.get_command_buffer();
-
-		let command_buffers = [command_buffer.command_buffer];
-
-		let command_buffer_infos =
-			[vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
-
-		let wait_semaphores = wait_for_synchronizer_handles
-			.iter()
-			.map(|synchronizer| {
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(*synchronizer).semaphore)
-					.stage_mask(
-						vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER,
-					)
-			})
-			.chain(presentation_keys.iter().map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
-				let semaphore = swapchain.acquire_synchronizers
-					[present_key.sequence_index as usize]
-					.access(&self.ghi.synchronizers)
-					.semaphore;
-
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(semaphore)
-					.stage_mask(
-						vk::PipelineStageFlags2::ALL_COMMANDS,
-					)
-			}))
-			.collect::<Vec<_>>();
-
-		let signal_semaphores = signal_synchronizer_handles
-			.iter()
-			.map(|synchronizer| {
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(*synchronizer).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::empty())
-			})
-			.chain(presentation_keys.iter().map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
-				let presentable_image_handle =
-					self.get_presentable_swapchain_image_handle(*present_key);
-				let wait_stage = self
-					.states
-					.get(&Handle::Image(presentable_image_handle))
-					.map(|state| state.stage)
-					.unwrap_or(
-						vk::PipelineStageFlags2::ALL_COMMANDS,
-					);
-
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(
-						swapchain.submit_synchronizers[present_key.image_index as usize]
-							.access(&self.ghi.synchronizers)
-							.semaphore,
-					)
-					.stage_mask(wait_stage)
-			}))
-			.collect::<Vec<_>>();
-
-		let submit_info = vk::SubmitInfo2::default()
-			.command_buffer_infos(&command_buffer_infos)
-			.wait_semaphore_infos(&wait_semaphores)
-			.signal_semaphore_infos(&signal_semaphores);
-
-		let execution_completion_synchronizer =
-			&self.get_synchronizer(execution_synchronizer_handle);
-
-		let vk_queue = command_buffer.vk_queue;
-
-		unsafe {
-			self.ghi
-				.device
-				.queue_submit2(
-					vk_queue,
-					&[submit_info],
-					execution_completion_synchronizer.fence,
-				)
-				.expect("Failed to submit command buffer.");
-		}
-
-		for (&k, v) in &self.states {
-			self.ghi.states.insert(k, *v);
-		}
-
-		for presentation in &presentation_keys {
-			let swapchain = self.get_swapchain(presentation.swapchain);
-
-			let wait_semaphores = signal_synchronizer_handles
-				.iter()
-				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
-				.chain(presentation_keys.iter().map(|present_key| {
-					self.get_swapchain(present_key.swapchain)
-						.submit_synchronizers[present_key.image_index as usize]
-						.access(&self.ghi.synchronizers)
-						.semaphore
-				}))
-				.collect::<Vec<_>>();
-
-			let swapchains = [swapchain.swapchain];
-			let image_indices = [presentation.image_index as u32];
-
-			let mut results = [vk::Result::default()];
-
-			let present_info = vk::PresentInfoKHR::default()
-				.results(&mut results)
-				.swapchains(&swapchains)
-				.wait_semaphores(&wait_semaphores)
-				.image_indices(&image_indices);
-
-			let _ = unsafe {
-				self.ghi
-					.swapchain
-					.queue_present(vk_queue, &present_info)
-					.expect("No present")
-			};
-
-			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
-				dbg!("Some error occurred during presentation");
-			}
-		}
 	}
 }
 
@@ -1749,7 +1719,7 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 
 		#[cfg(debug_assertions)]
 		unsafe {
-			if let Some(debug_utils) = &self.ghi.debug_utils {
+			if let Some(debug_utils) = &self.device.debug_utils {
 				debug_utils
 					.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
 			}
@@ -1767,7 +1737,7 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 
 		#[cfg(debug_assertions)]
 		unsafe {
-			if let Some(debug_utils) = &self.ghi.debug_utils {
+			if let Some(debug_utils) = &self.device.debug_utils {
 				debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
 			}
 		}
@@ -1779,11 +1749,10 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 	fn end_render_pass(&mut self) {
 		let command_buffer = self.get_command_buffer();
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_end_rendering(command_buffer.command_buffer);
 		}
-		self.in_render_pass = false;
 	}
 }
 
@@ -1793,9 +1762,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl crate::command_buffer::BoundRasterizationPipelineMode {
 		let command_buffer = self.get_command_buffer();
-		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
+		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe {
-			self.ghi.device.cmd_bind_pipeline(
+			self.device.device.cmd_bind_pipeline(
 				command_buffer.command_buffer,
 				vk::PipelineBindPoint::GRAPHICS,
 				pipeline,
@@ -1813,9 +1782,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl crate::command_buffer::BoundComputePipelineMode {
 		let command_buffer = self.get_command_buffer();
-		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
+		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe {
-			self.ghi.device.cmd_bind_pipeline(
+			self.device.device.cmd_bind_pipeline(
 				command_buffer.command_buffer,
 				vk::PipelineBindPoint::COMPUTE,
 				pipeline,
@@ -1833,9 +1802,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl crate::command_buffer::BoundRayTracingPipelineMode {
 		let command_buffer = self.get_command_buffer();
-		let pipeline = self.ghi.pipelines[pipeline_handle.0 as usize].pipeline;
+		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe {
-			self.ghi.device.cmd_bind_pipeline(
+			self.device.device.cmd_bind_pipeline(
 				command_buffer.command_buffer,
 				vk::PipelineBindPoint::RAY_TRACING_KHR,
 				pipeline,
@@ -1855,21 +1824,21 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
 		let command_buffer = self.get_command_buffer();
 		let pipeline_layout =
-			self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
+			self.device.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
 
 		let push_constant_stages = vk::ShaderStageFlags::VERTEX
 			| vk::ShaderStageFlags::FRAGMENT
 			| vk::ShaderStageFlags::COMPUTE;
 
 		let push_constant_stages = push_constant_stages
-			| if self.ghi.settings.mesh_shading {
+			| if self.device.settings.mesh_shading {
 				vk::ShaderStageFlags::MESH_EXT
 			} else {
 				vk::ShaderStageFlags::empty()
 			};
 
 		unsafe {
-			self.ghi.device.cmd_push_constants(
+			self.device.device.cmd_push_constants(
 				command_buffer.command_buffer,
 				pipeline_layout,
 				push_constant_stages,
@@ -1892,7 +1861,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 
 		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
 
-		let pipeline_layout = &self.ghi.pipeline_layouts[pipeline_layout_handle.0 as usize];
+		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
 		let s = sets
 			.iter()
@@ -1949,7 +1918,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 					vk::PipelineBindPoint::COMPUTE,
 				] {
 					// TODO: do this for all needed bind points
-					self.ghi.device.cmd_bind_descriptor_sets(
+					self.device.device.cmd_bind_descriptor_sets(
 						command_buffer.command_buffer,
 						bp,
 						vulkan_pipeline_layout_handle,
@@ -1960,7 +1929,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 				}
 
 				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
-					self.ghi.device.cmd_bind_descriptor_sets(
+					self.device.device.cmd_bind_descriptor_sets(
 						command_buffer.command_buffer,
 						vk::PipelineBindPoint::RAY_TRACING_KHR,
 						vulkan_pipeline_layout_handle,
@@ -1981,7 +1950,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		let command_buffer = self.get_command_buffer();
 
-		let mesh = &self.ghi.meshes[mesh_handle.0 as usize];
+		let mesh = &self.device.meshes[mesh_handle.0 as usize];
 
 		let buffers = [mesh.buffer];
 		let offsets = [0];
@@ -1991,12 +1960,12 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer_handle = command_buffer.command_buffer;
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_bind_vertex_buffers(command_buffer_handle, 0, &buffers, &offsets);
 		}
 		unsafe {
-			self.ghi.device.cmd_bind_index_buffer(
+			self.device.device.cmd_bind_index_buffer(
 				command_buffer_handle,
 				mesh.buffer,
 				index_data_offset,
@@ -2005,7 +1974,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		}
 
 		unsafe {
-			self.ghi
+			self.device
 				.device
 				.cmd_draw_indexed(command_buffer_handle, mesh.index_count, 1, 0, 0, 0);
 		}
@@ -2016,7 +1985,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer_handle = command_buffer.command_buffer;
 
 		unsafe {
-			self.ghi
+			self.device
 				.mesh_shading
 				.cmd_draw_mesh_tasks(command_buffer_handle, x, y, z);
 		}
@@ -2034,7 +2003,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer_handle = command_buffer.command_buffer;
 
 		unsafe {
-			self.ghi.device.cmd_draw_indexed(
+			self.device.device.cmd_draw_indexed(
 				command_buffer_handle,
 				index_count,
 				instance_count,
@@ -2056,7 +2025,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		self.consume_resources_current([])(self);
 
 		unsafe {
-			self.ghi.device.cmd_dispatch(command_buffer_handle, x, y, z);
+			self.device.device.cmd_dispatch(command_buffer_handle, x, y, z);
 		}
 	}
 
@@ -2065,7 +2034,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		buffer_handle: graphics_hardware_interface::BufferHandle<[(u32, u32, u32); N]>,
 		entry_index: usize,
 	) {
-		let buffer = self.ghi.buffers[buffer_handle.0 as usize];
+		let buffer = self.device.buffers[buffer_handle.0 as usize];
 
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
@@ -2078,7 +2047,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		}])(self);
 
 		unsafe {
-			self.ghi.device.cmd_dispatch_indirect(
+			self.device.device.cmd_dispatch_indirect(
 				command_buffer_handle,
 				buffer.buffer,
 				entry_index as u64 * (3 * 4),
@@ -2100,7 +2069,7 @@ impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecordi
 
 		let make_strided_range = |range: graphics_hardware_interface::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
 			vk::StridedDeviceAddressRegionKHR::default()
-				.device_address(self.ghi.get_buffer_address(range.buffer_offset.buffer) as vk::DeviceSize + range.buffer_offset.offset as vk::DeviceSize)
+				.device_address(self.device.get_buffer_address(range.buffer_offset.buffer) as vk::DeviceSize + range.buffer_offset.offset as vk::DeviceSize)
 				.stride(range.stride as vk::DeviceSize)
 				.size(range.size as vk::DeviceSize)
 		};
@@ -2117,7 +2086,7 @@ impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecordi
 		self.consume_resources_current([])(self);
 
 		unsafe {
-			self.ghi.ray_tracing_pipeline.cmd_trace_rays(
+			self.device.ray_tracing_pipeline.cmd_trace_rays(
 				comamand_buffer_handle,
 				&raygen_shader_binding_tables,
 				&miss_shader_binding_tables,
@@ -2131,6 +2100,7 @@ impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecordi
 	}
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct BufferCopy {
 	pub src_buffer: BufferHandle,
 	pub src_offset: vk::DeviceSize,
@@ -2157,6 +2127,7 @@ impl BufferCopy {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct ImageCopy {
 	pub _src_texture: ImageHandle,
 	pub _src_offset: vk::DeviceSize,

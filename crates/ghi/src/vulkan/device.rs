@@ -3602,7 +3602,7 @@ impl crate::device::Device for Device {
 	) -> crate::CommandBufferRecording<'_> {
 		let mut pending_buffers = self.pending_buffer_syncs.lock();
 
-		let buffer_copies = pending_buffers
+		let buffer_copies: Vec<BufferCopy> = pending_buffers
 			.drain(..)
 			.map(|e| {
 				let dst_buffer_handle = e;
@@ -3619,7 +3619,7 @@ impl crate::device::Device for Device {
 
 		let mut pending_images = self.pending_image_syncs.lock();
 
-		let image_copies = pending_images
+		let image_copies: Vec<ImageCopy> = pending_images
 			.drain(..)
 			.map(|e| {
 				let dst_image_handle = e;
@@ -3632,13 +3632,14 @@ impl crate::device::Device for Device {
 
 		drop(pending_images);
 
-		let recording = CommandBufferRecording::new(
+		let mut recording = CommandBufferRecording::new(
 			self,
 			command_buffer_handle,
-			buffer_copies,
-			image_copies,
 			None,
 		);
+
+		recording.sync_buffers(buffer_copies.iter().copied());
+		recording.sync_textures(image_copies.iter().copied());
 
 		recording
 	}

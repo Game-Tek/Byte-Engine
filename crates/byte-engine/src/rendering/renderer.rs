@@ -9,7 +9,7 @@ use std::{
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _,
-		CommandBufferRecordable, RasterizationRenderPassMode as _,
+		CommandBufferRecording, RasterizationRenderPassMode as _,
 	},
 	device::Device as _,
 	frame::Frame as _,
@@ -439,9 +439,6 @@ impl Renderer {
 		let synchronizer = self.render_finished_synchronizer;
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
-
-		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
-		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
 
 		execute(&mut command_buffer_recording);
 

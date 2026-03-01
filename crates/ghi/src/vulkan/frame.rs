@@ -19,7 +19,11 @@ impl <'a> Frame<'a> {
 	}
 }
 
-impl crate::frame::Frame for Frame<'_> {
+impl <'a> crate::frame::Frame for Frame<'a> {
+	type CBR<'f> = CommandBufferRecording<'f>
+	where
+		Self: 'f;
+
 	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {
 		let swapchains = &self.device.swapchains;
 		let synchronizers = &self.device.synchronizers;
@@ -129,7 +133,7 @@ impl crate::frame::Frame for Frame<'_> {
 		self.device.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
 	}
 
-	fn create_command_buffer_recording<'a>(&'a mut self, command_buffer_handle: crate::CommandBufferHandle) -> super::CommandBufferRecording<'a> {
+	fn create_command_buffer_recording<'f>(&'f mut self, command_buffer_handle: crate::CommandBufferHandle) -> Self::CBR<'f> {
 		let frame_key = self.frame_key;
 
 		// Update descriptors before creating command buffer
@@ -169,7 +173,7 @@ impl crate::frame::Frame for Frame<'_> {
 
 		let mut pending_buffers = pending_buffer_syncs.lock();
 
-		let buffer_copies = pending_buffers.drain(..).map(|e| {
+		let buffer_copies: Vec<_> = pending_buffers.drain(..).map(|e| {
 			let dst_buffer_handle = e;
 
 			let dst_buffer = &buffers[dst_buffer_handle.0 as usize];
@@ -185,7 +189,7 @@ impl crate::frame::Frame for Frame<'_> {
 
 		let mut pending_images = pending_image_syncs.lock();
 
-		let image_copies = pending_images.drain(..).map(|e| {
+		let image_copies: Vec<_> = pending_images.drain(..).map(|e| {
 			let dst_image_handle = e;
 
 			let dst_image = &images[dst_image_handle.0 as usize];
@@ -195,12 +199,15 @@ impl crate::frame::Frame for Frame<'_> {
 
 		drop(pending_images);
 
-		let recording = CommandBufferRecording::new(self.device, command_buffer_handle, buffer_copies, image_copies, frame_key.into());
+		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, frame_key.into());
+
+		recording.sync_buffers(buffer_copies.iter().copied());
+		recording.sync_textures(image_copies.iter().copied());
 
 		recording
 	}
 
-	fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: crate::DynamicBufferHandle<T>) -> &'a mut T {
+	fn get_mut_dynamic_buffer_slice<T: Copy>(&self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
 		let buffers = &self.device.buffers;
 		let frame_key = self.frame_key;
 
@@ -230,5 +237,13 @@ impl crate::frame::Frame for Frame<'_> {
 
 	fn device(&mut self) -> &mut Device {
     	self.device
+	}
+
+	fn execute<'f>(&'f mut self, mut command_buffer_recording: Self::CBR<'f>, present_keys: &[graphics_hardware_interface::PresentKey], synchronizer: graphics_hardware_interface::SynchronizerHandle) {
+		command_buffer_recording.execute(&[], &[], present_keys, synchronizer);
+
+		for (&k, v) in &command_buffer_recording.states {
+			self.device.states.insert(k, *v);
+		}
 	}
 }

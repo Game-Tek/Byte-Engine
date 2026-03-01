@@ -4,7 +4,7 @@ use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{RenderPass, Viewport, render_pass::RenderPassReturn};
 use crate::rendering::pipelines::visibility::{INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE, get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_visibility_pass_mesh_source};
-use ghi::command_buffer::{BoundPipelineLayoutMode as _, CommandBufferRecordable as _, CommonCommandBufferMode as _, BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, RasterizationRenderPassMode as _};
+use ghi::command_buffer::{BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _, BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, RasterizationRenderPassMode as _};
 use ghi::device::Device as _;
 use ghi::frame::Frame;
 use ghi::raster_pipeline;

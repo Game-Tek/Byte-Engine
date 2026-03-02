@@ -4035,13 +4035,13 @@ impl crate::device::Device for Device {
 	}
 
 	#[inline]
-	fn start_frame_capture(&self) {
+	fn start_frame_capture(&mut self) {
 		#[cfg(debug_assertions)]
 		self.debugger.start_frame_capture();
 	}
 
 	#[inline]
-	fn end_frame_capture(&self) {
+	fn end_frame_capture(&mut self) {
 		#[cfg(debug_assertions)]
 		self.debugger.end_frame_capture();
 	}

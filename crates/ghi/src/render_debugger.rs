@@ -10,7 +10,7 @@ use renderdoc::{RenderDoc, V141};
 /// It supports RenderDoc.
 pub struct RenderDebugger {
 	#[cfg(not(target_os = "macos"))]
-	renderdoc: Option<std::sync::Mutex<RenderDoc<V141>>>,
+	renderdoc: Option<RenderDoc<V141>>,
 }
 
 impl RenderDebugger {
@@ -19,7 +19,7 @@ impl RenderDebugger {
 	pub fn new() -> RenderDebugger {
 		#[cfg(not(target_os = "macos"))]
 		{
-			let renderdoc = RenderDoc::new().ok().map(std::sync::Mutex::new);
+			let renderdoc = RenderDoc::new().ok();
 			RenderDebugger { renderdoc }
 		}
 
@@ -30,28 +30,22 @@ impl RenderDebugger {
 	}
 
 	/// Starts a frame capture on the render debugger.
-	pub fn start_frame_capture(&self) {
+	pub fn start_frame_capture(&mut self) {
 		#[cfg(not(target_os = "macos"))]
-		if let Some(renderdoc) = &self.renderdoc {
+		if let Some(renderdoc) = self.renderdoc.as_mut() {
 			#[cfg(target_os = "linux")]
-			renderdoc
-				.lock()
-				.unwrap()
-				.start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
+			renderdoc.start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 			// #[cfg(windows)]
 			// renderdoc.lock().unwrap().start_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 		}
 	}
 
 	/// Ends a frame capture on the render debugger.
-	pub fn end_frame_capture(&self) {
+	pub fn end_frame_capture(&mut self) {
 		#[cfg(not(target_os = "macos"))]
-		if let Some(renderdoc) = &self.renderdoc {
+		if let Some(renderdoc) = self.renderdoc.as_mut() {
 			#[cfg(target_os = "linux")]
-			renderdoc
-				.lock()
-				.unwrap()
-				.end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
+			renderdoc.end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 			// #[cfg(windows)]
 			// renderdoc.lock().unwrap().end_frame_capture(std::ptr::null_mut(), std::ptr::null_mut());
 		}

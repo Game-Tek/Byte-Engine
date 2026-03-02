@@ -204,11 +204,11 @@ where
 	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
 
 	/// Starts capturing the underlying's API calls if the application is attached to a graphics debugger.
-	fn start_frame_capture(&self);
+	fn start_frame_capture(&mut self);
 
 	/// Ends capturing the underlying's API calls if the application is attached to a graphics debugger.
 	/// Must only be called after start_frame_capture.
-	fn end_frame_capture(&self);
+	fn end_frame_capture(&mut self);
 
 	/// Waits for all pending operations to complete.
 	/// Usually called before destroying the device or before doing a complex operation.

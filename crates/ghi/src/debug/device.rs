@@ -1,5 +1,5 @@
 use crate::{
-	image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
+	buffer, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
 	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle,
 	DescriptorWrite, DeviceAccesses, DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle,
@@ -116,21 +116,11 @@ impl Device {
 		super::CommandBufferRecording::new(self, command_buffer_handle, Vec::new(), Vec::new(), None)
 	}
 
-	pub fn create_buffer<T: Copy>(
-		&mut self,
-		_name: Option<&str>,
-		_resource_uses: Uses,
-		_device_accesses: DeviceAccesses,
-	) -> BufferHandle<T> {
+	pub fn build_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
 		BufferHandle(0, std::marker::PhantomData)
 	}
 
-	pub fn create_dynamic_buffer<T: Copy>(
-		&mut self,
-		_name: Option<&str>,
-		_resource_uses: Uses,
-		_device_accesses: DeviceAccesses,
-	) -> DynamicBufferHandle<T> {
+	pub fn build_dynamic_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		DynamicBufferHandle(0, std::marker::PhantomData)
 	}
 

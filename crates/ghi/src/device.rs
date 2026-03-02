@@ -1,7 +1,7 @@
 use utils::Extent;
 
 use crate::{
-	image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
+	buffer, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
 	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	CommandBufferRecording, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
 	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, Frame, ImageHandle, MeshHandle,
@@ -110,41 +110,11 @@ where
 		command_buffer_handle: CommandBufferHandle,
 	) -> CommandBufferRecording<'a>;
 
-	/// Creates a new static buffer.\
-	/// If the access includes specifies both device and host access, staging buffers MAY be created.\
-	///
-	/// # Arguments
-	///
-	/// * `resource_uses` - The uses of the buffer.
-	/// * `device_accesses` - The accesses of the buffer.
-	///
-	/// # Returns
-	///
-	/// The handle of the buffer.
-	fn create_buffer<T: Copy>(
-		&mut self,
-		name: Option<&str>,
-		resource_uses: Uses,
-		device_accesses: DeviceAccesses,
-	) -> BufferHandle<T>;
+	/// Creates a static buffer from a builder.
+	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
-	/// Creates a new dynamic buffer. Which can be updated every frame.\
-	/// If the access specifies both device and host access, staging buffers MAY be created.\
-	///
-	/// # Arguments
-	///
-	/// * `resource_uses` - The uses of the buffer.
-	/// * `device_accesses` - The accesses of the buffer.
-	///
-	/// # Returns
-	///
-	/// The handle of the buffer.
-	fn create_dynamic_buffer<T: Copy>(
-		&mut self,
-		name: Option<&str>,
-		resource_uses: Uses,
-		device_accesses: DeviceAccesses,
-	) -> DynamicBufferHandle<T>;
+	/// Creates a dynamic buffer from a builder.
+	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
 
 	/// Returns a device accessible address for the provided buffer handle.
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;

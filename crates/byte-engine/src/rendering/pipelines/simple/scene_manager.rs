@@ -72,19 +72,26 @@ impl SceneManager {
 		device: &mut ghi::Device,
 		renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 	) -> Self {
-		let vertex_positions_buffer =
-			device.create_buffer(Some("Vertex Positions"), ghi::Uses::Vertex, ghi::DeviceAccesses::HostToDevice);
-		let indeces_buffer = device.create_buffer(Some("Indeces"), ghi::Uses::Index, ghi::DeviceAccesses::HostToDevice);
-
-		let camera_data_buffer = device.create_dynamic_buffer(
-			Some("Camera Data Buffer"),
-			ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let vertex_positions_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("Vertex Positions")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let instance_data_buffer = device.create_dynamic_buffer(
-			Some("Instance Data Buffer"),
-			ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let indeces_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index)
+				.name("Indeces")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+
+		let camera_data_buffer = device.build_dynamic_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Camera Data Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let instance_data_buffer = device.build_dynamic_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Instance Data Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
 		let camera_data_binding_template =

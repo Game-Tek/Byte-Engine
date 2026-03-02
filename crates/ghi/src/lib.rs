@@ -32,6 +32,7 @@ pub use vulkan::Frame;
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use vulkan::CommandBufferRecording;
 
+pub mod buffer;
 pub mod command_buffer;
 pub mod device;
 pub mod frame;

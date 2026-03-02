@@ -889,7 +889,7 @@ pub mod device {
 	use objc2_metal::{MTLBuffer, MTLCommandQueue, MTLDevice, MTLResource, MTLTexture};
 
 	use super::*;
-	use crate::{image as image_builder, raster_pipeline, sampler as sampler_builder, window};
+	use crate::{buffer as buffer_builder, image as image_builder, raster_pipeline, sampler as sampler_builder, window};
 
 	pub struct Device {
 		pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
@@ -1414,29 +1414,27 @@ pub mod device {
 			super::CommandBufferRecording::new(self, command_buffer_handle, mtl_command_buffer, None)
 		}
 
-		pub fn create_buffer<T: Copy>(
+		pub fn build_buffer<T: Copy>(
 			&mut self,
-			name: Option<&str>,
-			resource_uses: graphics_hardware_interface::Uses,
-			device_accesses: graphics_hardware_interface::DeviceAccesses,
+			builder: buffer_builder::Builder,
 		) -> graphics_hardware_interface::BufferHandle<T> {
 			let size = std::mem::size_of::<T>();
-			let buffer_handle = self.create_buffer_internal(None, name, size, resource_uses, device_accesses);
+			let buffer_handle =
+				self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 			graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData)
 		}
 
-		pub fn create_dynamic_buffer<T: Copy>(
+		pub fn build_dynamic_buffer<T: Copy>(
 			&mut self,
-			name: Option<&str>,
-			resource_uses: graphics_hardware_interface::Uses,
-			device_accesses: graphics_hardware_interface::DeviceAccesses,
+			builder: buffer_builder::Builder,
 		) -> graphics_hardware_interface::DynamicBufferHandle<T> {
 			let size = std::mem::size_of::<T>();
 			let mut first_handle: Option<buffer::BufferHandle> = None;
 			let mut previous_handle: Option<buffer::BufferHandle> = None;
 
 			for _ in 0..self.frames {
-				let handle = self.create_buffer_internal(None, name, size, resource_uses, device_accesses);
+				let handle =
+					self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 				if let Some(previous) = previous_handle {
 					self.buffers[previous.0 as usize].next = Some(handle);
 				} else {

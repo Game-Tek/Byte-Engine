@@ -171,10 +171,10 @@ impl MaterialCountPass {
 			ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
 		);
 
-		let material_count_buffer = device.create_buffer(
-			Some("Material Count"),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			ghi::DeviceAccesses::HostOnly,
+		let material_count_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material Count")
+				.device_accesses(ghi::DeviceAccesses::HostOnly),
 		);
 
 		MaterialCountPass {
@@ -252,20 +252,20 @@ impl MaterialOffsetPass {
 			ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
 		);
 
-		let material_evaluation_dispatches = device.create_buffer(
-			Some("Material Evaluation Dipatches"),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect,
-			ghi::DeviceAccesses::DeviceOnly,
+		let material_evaluation_dispatches = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect)
+				.name("Material Evaluation Dipatches")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let material_offset_buffer = device.create_buffer(
-			Some("Material Offset"),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			ghi::DeviceAccesses::DeviceOnly,
+		let material_offset_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material Offset")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let material_offset_scratch_buffer = device.create_buffer(
-			Some("Material Offset Scratch"),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			ghi::DeviceAccesses::DeviceOnly,
+		let material_offset_scratch_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material Offset Scratch")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
 		MaterialOffsetPass {

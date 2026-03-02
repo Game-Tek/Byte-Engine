@@ -26,7 +26,7 @@ use windows::{
 };
 
 use crate::{
-	graphics_hardware_interface, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle,
+	buffer, graphics_hardware_interface, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle,
 	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
 	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, FilteringModes, Formats, ImageHandle,
@@ -498,24 +498,23 @@ impl Device {
 		super::CommandBufferRecording::new(self, command_buffer_handle, None)
 	}
 
-	pub fn create_buffer<T: Copy>(
-		&mut self,
-		_name: Option<&str>,
-		resource_uses: Uses,
-		device_accesses: DeviceAccesses,
-	) -> BufferHandle<T> {
-		let handle = Self::create_buffer_with_layout(Layout::new::<T>(), resource_uses, device_accesses, &mut self.buffers);
+	pub fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
+		let handle = Self::create_buffer_with_layout(
+			Layout::new::<T>(),
+			builder.resource_uses,
+			builder.device_accesses,
+			&mut self.buffers,
+		);
 		BufferHandle(handle, std::marker::PhantomData)
 	}
 
-	pub fn create_dynamic_buffer<T: Copy>(
-		&mut self,
-		_name: Option<&str>,
-		resource_uses: Uses,
-		device_accesses: DeviceAccesses,
-	) -> DynamicBufferHandle<T> {
-		let handle =
-			Self::create_buffer_with_layout(Layout::new::<T>(), resource_uses, device_accesses, &mut self.dynamic_buffers);
+	pub fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+		let handle = Self::create_buffer_with_layout(
+			Layout::new::<T>(),
+			builder.resource_uses,
+			builder.device_accesses,
+			&mut self.dynamic_buffers,
+		);
 		DynamicBufferHandle(handle, std::marker::PhantomData)
 	}
 

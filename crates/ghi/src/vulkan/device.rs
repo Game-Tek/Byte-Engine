@@ -3273,32 +3273,27 @@ impl crate::device::Device for Device {
 		recording
 	}
 
-	fn create_buffer<T: Copy>(
-		&mut self,
-		name: Option<&str>,
-		resource_uses: graphics_hardware_interface::Uses,
-		device_accesses: graphics_hardware_interface::DeviceAccesses,
-	) -> graphics_hardware_interface::BufferHandle<T> {
+	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 
-		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
+		let buffer_handle =
+			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
 		let handle = graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
 		return handle;
 	}
 
-	fn create_dynamic_buffer<T: Copy>(
-		&mut self,
-		name: Option<&str>,
-		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-	) -> crate::DynamicBufferHandle<T> {
+	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 
-		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
+		let buffer_handle =
+			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
 		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
-		if super::buffer::PERSISTENT_WRITE && device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
+		if super::buffer::PERSISTENT_WRITE
+			&& builder
+				.device_accesses
+				.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
 		{
 			// The master buffer's existing staging buffer becomes the shared, persistent
 			// CPU-writable source buffer. We create a new per-frame staging buffer for
@@ -3309,7 +3304,7 @@ impl crate::device::Device for Device {
 				.expect("CpuWrite dynamic buffer must have a staging buffer");
 
 			// Create a new per-frame staging buffer for frame 0
-			let frame0_staging = self.create_staging_buffer(name, size);
+			let frame0_staging = self.create_staging_buffer(builder.name, size);
 
 			// Reassign: the master's staging now points to the new per-frame staging,
 			// and source points to the original (persistent) CPU-writable buffer.

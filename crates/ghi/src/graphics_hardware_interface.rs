@@ -2834,7 +2834,8 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let _buffer = device.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::HostToDevice);
+		let _buffer =
+			device.build_buffer::<u8>(crate::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice));
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -3277,8 +3278,9 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let buffer =
-			device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::HostToDevice);
+		let buffer = device.build_dynamic_buffer::<[u8; 64]>(
+			crate::buffer::Builder::new(Uses::Uniform | Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
+		);
 
 		let sampled_texture = device.build_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Image)
@@ -3455,20 +3457,17 @@ pub(super) mod tests {
 
 		let colors: [f32; 4 * 3] = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0];
 
-		let vertex_positions_buffer = renderer.create_buffer::<[f32; 3 * 3]>(
-			None,
-			Uses::Storage | Uses::AccelerationStructureBuild,
-			DeviceAccesses::HostToDevice,
+		let vertex_positions_buffer = renderer.build_buffer::<[f32; 3 * 3]>(
+			crate::buffer::Builder::new(Uses::Storage | Uses::AccelerationStructureBuild)
+				.device_accesses(DeviceAccesses::HostToDevice),
 		);
-		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(
-			None,
-			Uses::Storage | Uses::AccelerationStructureBuild,
-			DeviceAccesses::HostToDevice,
+		let vertex_colors_buffer = renderer.build_buffer::<[f32; 4 * 3]>(
+			crate::buffer::Builder::new(Uses::Storage | Uses::AccelerationStructureBuild)
+				.device_accesses(DeviceAccesses::HostToDevice),
 		);
-		let index_buffer = renderer.create_buffer::<[u16; 3]>(
-			None,
-			Uses::Storage | Uses::AccelerationStructureBuild,
-			DeviceAccesses::HostToDevice,
+		let index_buffer = renderer.build_buffer::<[u16; 3]>(
+			crate::buffer::Builder::new(Uses::Storage | Uses::AccelerationStructureBuild)
+				.device_accesses(DeviceAccesses::HostToDevice),
 		);
 
 		renderer
@@ -3674,16 +3673,19 @@ void main() {
 			bottom_level_acceleration_structure,
 		);
 
-		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(
-			None,
-			Uses::AccelerationStructureBuildScratch,
-			DeviceAccesses::DeviceOnly,
+		let scratch_buffer = renderer.build_buffer::<[u8; 1024 * 1024]>(
+			crate::buffer::Builder::new(Uses::AccelerationStructureBuildScratch).device_accesses(DeviceAccesses::DeviceOnly),
 		);
 
-		let raygen_sbt_buffer =
-			renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
-		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
-		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
+		let raygen_sbt_buffer = renderer.build_buffer::<[u8; 64]>(
+			crate::buffer::Builder::new(Uses::ShaderBindingTable).device_accesses(DeviceAccesses::HostToDevice),
+		);
+		let miss_sbt_buffer = renderer.build_buffer::<[u8; 64]>(
+			crate::buffer::Builder::new(Uses::ShaderBindingTable).device_accesses(DeviceAccesses::HostToDevice),
+		);
+		let hit_sbt_buffer = renderer.build_buffer::<[u8; 64]>(
+			crate::buffer::Builder::new(Uses::ShaderBindingTable).device_accesses(DeviceAccesses::HostToDevice),
+		);
 
 		renderer.write_sbt_entry(raygen_sbt_buffer.into(), 0, pipeline, raygen_shader);
 		renderer.write_sbt_entry(miss_sbt_buffer.into(), 0, pipeline, miss_shader);

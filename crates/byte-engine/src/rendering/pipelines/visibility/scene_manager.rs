@@ -133,47 +133,47 @@ impl VisibilityWorldRenderDomain {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
-		let vertex_positions_buffer_handle = device.create_buffer(
-			Some("Visibility Vertex Positions Buffer"),
-			ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let vertex_positions_buffer_handle = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
+				.name("Visibility Vertex Positions Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_normals_buffer_handle = device.create_buffer(
-			Some("Visibility Vertex Normals Buffer"),
-			ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let vertex_normals_buffer_handle = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
+				.name("Visibility Vertex Normals Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_uv_buffer_handle = device.create_buffer(
-			Some("Visibility Vertex UV Buffer"),
-			ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let vertex_uv_buffer_handle = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
+				.name("Visibility Vertex UV Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_indices_buffer_handle = device.create_buffer(
-			Some("Visibility Index Buffer"),
-			ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let vertex_indices_buffer_handle = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
+				.name("Visibility Index Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let primitive_indices_buffer_handle = device.create_buffer(
-			Some("Visibility Primitive Indices Buffer"),
-			ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let primitive_indices_buffer_handle = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
+				.name("Visibility Primitive Indices Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let meshlets_data_buffer = device.create_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
-			Some("Visibility Meshlets Data"),
-			ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
-		);
-
-		let views_data_buffer_handle = device.create_dynamic_buffer::<[ShaderViewData; 8]>(
-			Some("Visibility Views Data"),
-			ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let meshlets_data_buffer = device.build_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Meshlets Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let meshes_data_buffer = device.create_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
-			Some("Visibility Meshes Data"),
-			ghi::Uses::Storage,
-			ghi::DeviceAccesses::HostToDevice,
+		let views_data_buffer_handle = device.build_dynamic_buffer::<[ShaderViewData; 8]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Views Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+
+		let meshes_data_buffer = device.build_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Meshes Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
 		let bindings = [
@@ -251,20 +251,20 @@ impl VisibilityWorldRenderDomain {
 		let visibility_passes_descriptor_set =
 			device.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout);
 
-		let light_data_buffer = device.create_buffer::<LightingData>(
-			Some("Light Data"),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			ghi::DeviceAccesses::HostToDevice,
+		let light_data_buffer = device.build_buffer::<LightingData>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Light Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
 		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
 
 		lighting_data.count = 0; // Initially, no lights
 
-		let materials_data_buffer_handle = device.create_buffer::<[MaterialData; MAX_MATERIALS]>(
-			Some("Materials Data"),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			ghi::DeviceAccesses::HostToDevice,
+		let materials_data_buffer_handle = device.build_buffer::<[MaterialData; MAX_MATERIALS]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Materials Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
 		let bindings = [

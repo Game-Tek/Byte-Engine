@@ -43,9 +43,7 @@ where
 	fn execute<'s, 'f>(
 		&mut self,
 		cbr: <Self::CBR<'f> as CommandBufferRecording>::Result<'s>,
-		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	)
-	where
+	) where
 		Self: 'f;
 }

@@ -421,7 +421,7 @@ impl Renderer {
 		execute(&mut command_buffer_recording);
 
 		let command_buffer = command_buffer_recording.end(&present_keys);
-		frame.execute(command_buffer, &present_keys, synchronizer);
+		frame.execute(command_buffer, synchronizer);
 	}
 
 	pub fn device_mut(&mut self) -> &mut ghi::Device {

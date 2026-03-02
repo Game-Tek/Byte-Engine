@@ -264,12 +264,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn execute<'s, 'f>(
 		&mut self,
 		cbr: <Self::CBR<'f> as crate::command_buffer::CommandBufferRecording>::Result<'s>,
-		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	)
-	where
+	) where
 		Self: 'f, {
-		let (command_buffer_handle, states, _) = cbr;
+		let (command_buffer_handle, states, present_keys) = cbr;
 
 		let command_buffer = self.device.command_buffers[0].frames[0];
 
@@ -377,11 +375,9 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			}
 		}
 
-		// let states = t.states;
-
-		// for (k, v) in states {
-		// 	self.device.states.insert(k, v);
-		// }
+		for (k, v) in states {
+			self.device.states.insert(k, v);
+		}
 	}
 }
 

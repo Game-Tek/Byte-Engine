@@ -13,7 +13,8 @@ use crate::{
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
 pub trait Device
 where
-	Self: Sized, {
+	Self: Sized,
+{
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;

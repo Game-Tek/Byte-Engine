@@ -177,7 +177,8 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 	fn write_push_constant<T: Copy + 'static>(&mut self, _offset: u32, _data: T)
 	where
-		[(); std::mem::size_of::<T>()]: Sized, {
+		[(); std::mem::size_of::<T>()]: Sized,
+	{
 		// TODO: DX12 uses root constants or inline constant buffers.
 	}
 }

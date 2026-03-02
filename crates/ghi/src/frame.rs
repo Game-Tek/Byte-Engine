@@ -9,7 +9,8 @@ use crate::{
 /// This trait is used to safely access and manage resources within a frame. This is achieved with Rust's lifetime system by mutably borrowing the `Device` while performing per frame operations.
 pub trait Frame<'a>
 where
-	Self: Sized, {
+	Self: Sized,
+{
 	type CBR<'f>: CommandBufferRecording
 	where
 		Self: 'f;

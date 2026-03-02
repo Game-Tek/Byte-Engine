@@ -225,7 +225,8 @@ impl Renderer {
 	/// Registers a render pass factory that will be instantiated for every current and future view.
 	pub fn add_post_scene_render_pass_for_all_views<F>(&mut self, render_pass_factory: F)
 	where
-		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static, {
+		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static,
+	{
 		let render_pass_factory: Box<RenderPassFactory> = Box::new(render_pass_factory);
 		let view_ids: SmallVec<[usize; 16]> = self.views.iter().map(|(view_id, _)| *view_id).collect();
 

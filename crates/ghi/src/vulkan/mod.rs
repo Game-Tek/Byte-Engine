@@ -316,7 +316,8 @@ where
 	Self: Sized,
 	Self: PartialEq<Self>,
 	Self: Clone,
-	Self: Copy, {
+	Self: Copy,
+{
 	type Item: Next<Handle = Self>;
 
 	fn build(value: u64) -> Self;
@@ -354,7 +355,8 @@ where
 
 pub(crate) trait Next
 where
-	Self: Sized, {
+	Self: Sized,
+{
 	type Handle: HandleLike<Item = Self>;
 
 	fn next(&self) -> Option<Self::Handle>;

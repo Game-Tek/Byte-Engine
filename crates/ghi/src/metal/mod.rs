@@ -339,7 +339,8 @@ where
 	Self: Sized,
 	Self: PartialEq<Self>,
 	Self: Clone,
-	Self: Copy, {
+	Self: Copy,
+{
 	type Item: Next<Handle = Self>;
 
 	fn build(value: u64) -> Self;
@@ -377,7 +378,8 @@ where
 
 pub(crate) trait Next
 where
-	Self: Sized, {
+	Self: Sized,
+{
 	type Handle: HandleLike<Item = Self>;
 
 	fn next(&self) -> Option<Self::Handle>;
@@ -2079,7 +2081,8 @@ pub mod command_buffer {
 
 		fn write_push_constant<T: Copy + 'static>(&mut self, _offset: u32, _data: T)
 		where
-			[(); std::mem::size_of::<T>()]: Sized, {
+			[(); std::mem::size_of::<T>()]: Sized,
+		{
 			// TODO: Map push constants to MTLBuffer/bytes per stage.
 		}
 	}

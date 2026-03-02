@@ -22,7 +22,8 @@ impl std::fmt::Debug for NodeReference {
 impl NodeReference {
 	pub fn new<F, E>(f: F) -> Result<NodeReference, E>
 	where
-		F: FnOnce(ParentNodeReference) -> Result<Node, E>, {
+		F: FnOnce(ParentNodeReference) -> Result<Node, E>,
+	{
 		let mut error = None;
 
 		let node = Rc::new_cyclic(|r| match f(r.clone()) {
@@ -166,7 +167,8 @@ impl Eq for NodeReference {}
 impl Hash for NodeReference {
 	fn hash<H>(&self, state: &mut H)
 	where
-		H: std::hash::Hasher, {
+		H: std::hash::Hasher,
+	{
 		Rc::as_ptr(&self.0).hash(state);
 	}
 }

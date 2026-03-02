@@ -1547,7 +1547,8 @@ pub struct SpecializationMapEntry {
 impl SpecializationMapEntry {
 	pub fn new<T: Copy + 'static>(constant_id: u32, r#type: String, value: T) -> Self
 	where
-		[(); std::mem::size_of::<T>()]:, {
+		[(); std::mem::size_of::<T>()]:,
+	{
 		if r#type == "vec4f".to_owned() {
 			assert_eq!(std::mem::size_of::<T>(), 16);
 		}

@@ -266,7 +266,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		cbr: <Self::CBR<'f> as crate::command_buffer::CommandBufferRecording>::Result<'s>,
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) where
-		Self: 'f, {
+		Self: 'f,
+	{
 		let (command_buffer_handle, states, present_keys) = cbr;
 
 		let command_buffer =

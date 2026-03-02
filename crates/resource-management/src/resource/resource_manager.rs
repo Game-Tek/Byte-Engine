@@ -46,7 +46,8 @@ impl ResourceManager {
 	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
-		SerializableResource: TryInto<ReferenceModel<T::Model>>, {
+		SerializableResource: TryInto<ReferenceModel<T::Model>>,
+	{
 		let storage_backend = self.get_storage_backend();
 
 		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)) {
@@ -69,7 +70,8 @@ impl ResourceManager {
 	pub fn query<'a, T: Resource + 'a>(&'a self) -> Vec<Reference<T>>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
-		SerializableResource: Into<ReferenceModel<T::Model>>, {
+		SerializableResource: Into<ReferenceModel<T::Model>>,
+	{
 		self.get_storage_backend()
 			.query(Query::new().classes(&["Material"]))
 			.unwrap()

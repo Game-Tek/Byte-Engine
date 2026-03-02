@@ -9,7 +9,8 @@ use crate::{
 
 pub trait CommandBufferRecording
 where
-	Self: Sized, {
+	Self: Sized,
+{
 	type Result<'a>;
 
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);

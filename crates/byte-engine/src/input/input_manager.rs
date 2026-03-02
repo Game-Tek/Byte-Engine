@@ -162,7 +162,8 @@ impl InputManager {
 		value_type: TriggerDescription<T>,
 	) -> TriggerHandle
 	where
-		T: InputValue + Into<Value>, {
+		T: InputValue + Into<Value>,
+	{
 		let default = value_type.default;
 
 		let default: Value = default.into();
@@ -1100,7 +1101,8 @@ mod tests {
 		z: Z,
 	) where
 		A: Into<Value>,
-		Z: Into<Value>, {
+		Z: Into<Value>,
+	{
 		let a: Value = a.into();
 		let b: Value = b.into();
 		let z: Value = z.into();
@@ -1317,7 +1319,8 @@ mod tests {
 		a: T,
 		b: T,
 	) where
-		T: InputValue + Into<Value> + Into<ValueMapping> + Copy, {
+		T: InputValue + Into<Value> + Into<ValueMapping> + Copy,
+	{
 		let action = input_manager.create_action(
 			action_name,
 			T::get_type(),

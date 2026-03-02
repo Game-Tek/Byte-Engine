@@ -119,7 +119,8 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn write_push_constant<T: Copy + 'static>(&mut self, _offset: u32, _data: T)
 	where
-		[(); std::mem::size_of::<T>()]: Sized, {
+		[(); std::mem::size_of::<T>()]: Sized,
+	{
 	}
 
 	pub fn draw_mesh(&mut self, _mesh_handle: &MeshHandle) {}

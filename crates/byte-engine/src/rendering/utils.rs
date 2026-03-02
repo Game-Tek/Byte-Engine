@@ -190,7 +190,8 @@ impl<I> MeshBuffersStats<I> {
 
 	pub fn get_instance_id(&self, handle: I) -> usize
 	where
-		I: Eq, {
+		I: Eq,
+	{
 		self.instances.iter().position(|(_, h)| *h == handle).unwrap()
 	}
 }

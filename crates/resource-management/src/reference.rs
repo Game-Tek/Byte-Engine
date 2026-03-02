@@ -22,7 +22,8 @@ pub struct Reference<T: Resource> {
 impl<'a, T: Resource + 'a> Serialize for Reference<T> {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 	where
-		S: serde::Serializer, {
+		S: serde::Serializer,
+	{
 		let mut state = serializer.serialize_struct("TypedDocument", 3)?;
 
 		state.serialize_field("id", &self.id)?;
@@ -113,7 +114,8 @@ pub struct ReferenceModel<T: Model> {
 impl<T: Model> ReferenceModel<T> {
 	pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self
 	where
-		T: Serialize, {
+		T: Serialize,
+	{
 		ReferenceModel {
 			id: id.to_string(),
 			hash,

@@ -16,7 +16,8 @@ pub struct WeakHandle<T: ?Sized> {
 impl<T: ?Sized> WeakHandle<T> {
 	pub fn upgrade(&self) -> Option<Handle<T>>
 	where
-		T: Sized, {
+		T: Sized,
+	{
 		self.container.upgrade().map(|c| Handle { container: c })
 	}
 }
@@ -36,7 +37,8 @@ impl<T: ?Sized> Handle<T> {
 
 	pub fn downcast<U>(&self) -> Option<Handle<U>>
 	where
-		T: std::any::Any, {
+		T: std::any::Any,
+	{
 		let down = downcast_inner::<T, U>(&self.container);
 		Some(Handle { container: down? })
 	}

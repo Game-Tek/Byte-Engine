@@ -1,7 +1,8 @@
 #[derive(Debug, Clone, Copy)]
 pub struct BitArray<const N: usize>
 where
-	[u8; N / 8]:, {
+	[u8; N / 8]:,
+{
 	data: [u8; N / 8],
 }
 

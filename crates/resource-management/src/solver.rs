@@ -8,7 +8,8 @@ use crate::resource::ReadStorageBackend;
 /// The initial call to `solve` will be done by the resource manager to resolve the resource which was requested by the client.
 pub trait Solver<'de, T>
 where
-	Self: Deserialize<'de>, {
+	Self: Deserialize<'de>,
+{
 	fn solve(self, storage_backend: &dyn ReadStorageBackend) -> Result<T, SolveErrors>;
 }
 

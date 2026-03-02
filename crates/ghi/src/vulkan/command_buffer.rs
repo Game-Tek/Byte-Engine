@@ -1624,7 +1624,8 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 
 	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
 	where
-		[(); std::mem::size_of::<T>()]: Sized, {
+		[(); std::mem::size_of::<T>()]: Sized,
+	{
 		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
 		let command_buffer = self.get_command_buffer();
 		let pipeline_layout = self.device.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;

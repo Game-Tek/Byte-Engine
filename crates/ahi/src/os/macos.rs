@@ -35,7 +35,8 @@ pub struct Device {
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	fn new(params: HardwareParameters) -> Result<Self, String>
 	where
-		Self: Sized, {
+		Self: Sized,
+	{
 		if !matches!(params.channels, 1 | 2) {
 			return Err("Unsupported number of channels. The most likely cause is that this backend only supports mono and stereo streams.".into());
 		}

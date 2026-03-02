@@ -570,39 +570,18 @@ impl Device {
 		ImageHandle((self.images.len() - 1) as u64)
 	}
 
-	pub fn create_sampler(
-		&mut self,
-		filtering_mode: FilteringModes,
-		reduction_mode: SamplingReductionModes,
-		mip_map_mode: FilteringModes,
-		addressing_mode: SamplerAddressingModes,
-		anisotropy: Option<f32>,
-		min_lod: f32,
-		max_lod: f32,
-	) -> SamplerHandle {
+	pub fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {
 		// Stores sampler parameters without creating a DX12 descriptor.
 		self.samplers.push(Sampler {
-			filtering_mode,
-			reduction_mode,
-			mip_map_mode,
-			addressing_mode,
-			anisotropy,
-			min_lod,
-			max_lod,
+			filtering_mode: builder.filtering_mode,
+			reduction_mode: builder.reduction_mode,
+			mip_map_mode: builder.mip_map_mode,
+			addressing_mode: builder.addressing_mode,
+			anisotropy: builder.anisotropy,
+			min_lod: builder.min_lod,
+			max_lod: builder.max_lod,
 		});
 		SamplerHandle((self.samplers.len() - 1) as u64)
-	}
-
-	pub fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {
-		self.create_sampler(
-			builder.filtering_mode,
-			builder.reduction_mode,
-			builder.mip_map_mode,
-			builder.addressing_mode,
-			builder.anisotropy,
-			builder.min_lod,
-			builder.max_lod,
-		)
 	}
 
 	pub fn create_acceleration_structure_instance_buffer(

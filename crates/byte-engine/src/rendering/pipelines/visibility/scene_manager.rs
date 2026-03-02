@@ -283,23 +283,23 @@ impl VisibilityWorldRenderDomain {
 			),
 		];
 
-		let sampler = device.create_sampler(
-			ghi::FilteringModes::Linear,
-			ghi::SamplingReductionModes::WeightedAverage,
-			ghi::FilteringModes::Linear,
-			ghi::SamplerAddressingModes::Clamp,
-			None,
-			0f32,
-			0f32,
+		let sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+				.min_lod(0f32)
+				.max_lod(0f32),
 		);
-		let depth_sampler = device.create_sampler(
-			ghi::FilteringModes::Linear,
-			ghi::SamplingReductionModes::WeightedAverage,
-			ghi::FilteringModes::Linear,
-			ghi::SamplerAddressingModes::Border {},
-			None,
-			0f32,
-			0f32,
+		let depth_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Border {})
+				.min_lod(0f32)
+				.max_lod(0f32),
 		);
 
 		let material_evaluation_descriptor_set_layout =

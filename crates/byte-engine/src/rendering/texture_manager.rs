@@ -97,7 +97,7 @@ impl TextureManager {
 		// 	new_texture
 		// };
 
-		let sampler = self.create_sampler(device);
+		let sampler = self.build_sampler(device);
 
 		let v = (image, sampler);
 
@@ -108,7 +108,7 @@ impl TextureManager {
 		Some((reference.id().to_string(), v.0, v.1))
 	}
 
-	fn create_sampler(&mut self, device: &mut ghi::Device) -> ghi::SamplerHandle {
+	fn build_sampler(&mut self, device: &mut ghi::Device) -> ghi::SamplerHandle {
 		let sampler_state = SamplerState {
 			filtering_mode: ghi::FilteringModes::Linear,
 			reduction_mode: ghi::SamplingReductionModes::WeightedAverage,
@@ -122,15 +122,19 @@ impl TextureManager {
 		match self.samplers.entry(sampler_state) {
 			Entry::Occupied(v) => v.get().clone(),
 			Entry::Vacant(v) => {
-				let sampler_handler = device.create_sampler(
-					sampler_state.filtering_mode,
-					sampler_state.reduction_mode,
-					sampler_state.mip_map_mode,
-					sampler_state.addressing_mode,
-					sampler_state.anisotropy.map(|v| v.get() as f32),
-					sampler_state.min_lod as f32,
-					sampler_state.max_lod as f32,
-				);
+				let mut sampler_builder = ghi::sampler::Builder::new()
+					.filtering_mode(sampler_state.filtering_mode)
+					.reduction_mode(sampler_state.reduction_mode)
+					.mip_map_mode(sampler_state.mip_map_mode)
+					.addressing_mode(sampler_state.addressing_mode)
+					.min_lod(sampler_state.min_lod as f32)
+					.max_lod(sampler_state.max_lod as f32);
+
+				if let Some(anisotropy) = sampler_state.anisotropy {
+					sampler_builder = sampler_builder.anisotropy(anisotropy.get() as f32);
+				}
+
+				let sampler_handler = device.build_sampler(sampler_builder);
 				v.insert(sampler_handler);
 				sampler_handler
 			}

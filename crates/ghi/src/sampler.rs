@@ -69,14 +69,6 @@ impl Builder {
 	}
 
 	pub fn build(self, device: &mut crate::Device) -> SamplerHandle {
-		device.create_sampler(
-			self.filtering_mode,
-			self.reduction_mode,
-			self.mip_map_mode,
-			self.addressing_mode,
-			self.anisotropy,
-			self.min_lod,
-			self.max_lod,
-		)
+		device.build_sampler(self)
 	}
 }

@@ -2,12 +2,11 @@ use crate::{
 	image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
 	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle,
-	DescriptorWrite, DeviceAccesses, DynamicBufferHandle, FilteringModes, Formats, ImageHandle, MeshHandle, PipelineHandle,
-	PipelineLayoutHandle, PresentationModes, PushConstantRange, QueueHandle, SamplerAddressingModes, SamplerHandle,
-	SamplingReductionModes, ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes, SwapchainHandle,
-	SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, UseCases, Uses, VertexElement,
+	DescriptorWrite, DeviceAccesses, DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle,
+	PresentationModes, PushConstantRange, QueueHandle, SamplerHandle, ShaderBindingDescriptor, ShaderHandle, ShaderParameter,
+	ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
+	Uses, VertexElement,
 };
-use std::num::NonZeroU32;
 use utils::Extent;
 
 pub struct Device {}
@@ -155,19 +154,6 @@ impl Device {
 
 	pub fn build_image(&mut self, _builder: image::Builder) -> ImageHandle {
 		ImageHandle(0)
-	}
-
-	pub fn create_sampler(
-		&mut self,
-		_filtering_mode: FilteringModes,
-		_reduction_mode: SamplingReductionModes,
-		_mip_map_mode: FilteringModes,
-		_addressing_mode: SamplerAddressingModes,
-		_anisotropy: Option<f32>,
-		_min_lod: f32,
-		_max_lod: f32,
-	) -> SamplerHandle {
-		SamplerHandle(0)
 	}
 
 	pub fn build_sampler(&mut self, _builder: sampler::Builder) -> SamplerHandle {

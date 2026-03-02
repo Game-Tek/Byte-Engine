@@ -1525,27 +1525,18 @@ pub mod device {
 			graphics_hardware_interface::ImageHandle(image_handle.0)
 		}
 
-		pub fn create_sampler(
-			&mut self,
-			filtering_mode: graphics_hardware_interface::FilteringModes,
-			_reduction_mode: graphics_hardware_interface::SamplingReductionModes,
-			mip_map_mode: graphics_hardware_interface::FilteringModes,
-			addressing_mode: graphics_hardware_interface::SamplerAddressingModes,
-			anisotropy: Option<f32>,
-			min_lod: f32,
-			max_lod: f32,
-		) -> graphics_hardware_interface::SamplerHandle {
+		pub fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
 			let descriptor = mtl::MTLSamplerDescriptor::new();
-			descriptor.setMinFilter(utils::sampler_min_mag_filter(filtering_mode));
-			descriptor.setMagFilter(utils::sampler_min_mag_filter(filtering_mode));
-			descriptor.setMipFilter(utils::sampler_mip_filter(mip_map_mode));
-			descriptor.setSAddressMode(utils::sampler_address_mode(addressing_mode));
-			descriptor.setTAddressMode(utils::sampler_address_mode(addressing_mode));
-			descriptor.setRAddressMode(utils::sampler_address_mode(addressing_mode));
-			descriptor.setLodMinClamp(min_lod);
-			descriptor.setLodMaxClamp(max_lod);
+			descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
+			descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
+			descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
+			descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
+			descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
+			descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
+			descriptor.setLodMinClamp(builder.min_lod);
+			descriptor.setLodMaxClamp(builder.max_lod);
 
-			if let Some(anisotropy) = anisotropy {
+			if let Some(anisotropy) = builder.anisotropy {
 				descriptor.setMaxAnisotropy(anisotropy as _);
 			}
 
@@ -1555,18 +1546,6 @@ pub mod device {
 				.expect("Metal sampler creation failed. The most likely cause is that the device is out of sampler resources.");
 			self.samplers.push(super::sampler::Sampler { sampler: sampler_state });
 			graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
-		}
-
-		pub fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
-			self.create_sampler(
-				builder.filtering_mode,
-				builder.reduction_mode,
-				builder.mip_map_mode,
-				builder.addressing_mode,
-				builder.anisotropy,
-				builder.min_lod,
-				builder.max_lod,
-			)
 		}
 
 		pub fn create_acceleration_structure_instance_buffer(

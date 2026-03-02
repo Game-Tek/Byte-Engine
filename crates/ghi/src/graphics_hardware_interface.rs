@@ -3315,14 +3315,14 @@ pub(super) mod tests {
 			},
 		];
 
-		let sampler = device.create_sampler(
-			FilteringModes::Closest,
-			SamplingReductionModes::WeightedAverage,
-			FilteringModes::Closest,
-			SamplerAddressingModes::Repeat,
-			None,
-			0.0f32,
-			0.0f32,
+		let sampler = device.build_sampler(
+			crate::sampler::Builder::new()
+				.filtering_mode(FilteringModes::Closest)
+				.reduction_mode(SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(FilteringModes::Closest)
+				.addressing_mode(SamplerAddressingModes::Repeat)
+				.min_lod(0.0f32)
+				.max_lod(0.0f32),
 		);
 
 		let descriptor_set_layout_handle = device.create_descriptor_set_template(

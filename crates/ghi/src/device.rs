@@ -4,11 +4,10 @@ use crate::{
 	image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
 	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	CommandBufferRecording, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, FilteringModes, Frame, ImageHandle,
+	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, Frame, ImageHandle,
 	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, PushConstantRange, QueueHandle,
-	SamplerAddressingModes, SamplerHandle, SamplingReductionModes, ShaderBindingDescriptor, ShaderHandle, ShaderParameter,
-	ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
-	Uses, VertexElement,
+	SamplerHandle, ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes, SwapchainHandle,
+	SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, VertexElement,
 };
 
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
@@ -163,20 +162,6 @@ where
 
 	/// Creates an image from a builder.
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;
-
-	/// Creates an image sampler.
-	///
-	/// Samplers are limited on multiple devices so you are encouraged to reuse them.
-	fn create_sampler(
-		&mut self,
-		filtering_mode: FilteringModes,
-		reduction_mode: SamplingReductionModes,
-		mip_map_mode: FilteringModes,
-		addressing_mode: SamplerAddressingModes,
-		anisotropy: Option<f32>,
-		min_lod: f32,
-		max_lod: f32,
-	) -> SamplerHandle;
 
 	/// Creates an image sampler from a builder.
 	///

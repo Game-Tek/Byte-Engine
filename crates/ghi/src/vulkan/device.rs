@@ -3436,34 +3436,25 @@ impl crate::device::Device for Device {
 		handle
 	}
 
-	fn create_sampler(
-		&mut self,
-		filtering_mode: graphics_hardware_interface::FilteringModes,
-		reduction_mode: graphics_hardware_interface::SamplingReductionModes,
-		mip_map_filter: graphics_hardware_interface::FilteringModes,
-		address_mode: graphics_hardware_interface::SamplerAddressingModes,
-		anisotropy: Option<f32>,
-		min_lod: f32,
-		max_lod: f32,
-	) -> graphics_hardware_interface::SamplerHandle {
-		let filtering_mode = match filtering_mode {
+	fn build_sampler(&mut self, builder: sampler::Builder) -> crate::SamplerHandle {
+		let filtering_mode = match builder.filtering_mode {
 			graphics_hardware_interface::FilteringModes::Closest => vk::Filter::NEAREST,
 			graphics_hardware_interface::FilteringModes::Linear => vk::Filter::LINEAR,
 		};
 
-		let mip_map_filter = match mip_map_filter {
+		let mip_map_filter = match builder.mip_map_mode {
 			graphics_hardware_interface::FilteringModes::Closest => vk::SamplerMipmapMode::NEAREST,
 			graphics_hardware_interface::FilteringModes::Linear => vk::SamplerMipmapMode::LINEAR,
 		};
 
-		let address_mode = match address_mode {
+		let address_mode = match builder.addressing_mode {
 			graphics_hardware_interface::SamplerAddressingModes::Repeat => vk::SamplerAddressMode::REPEAT,
 			graphics_hardware_interface::SamplerAddressingModes::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
 			graphics_hardware_interface::SamplerAddressingModes::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
 			graphics_hardware_interface::SamplerAddressingModes::Border { .. } => vk::SamplerAddressMode::CLAMP_TO_BORDER,
 		};
 
-		let reduction_mode = match reduction_mode {
+		let reduction_mode = match builder.reduction_mode {
 			graphics_hardware_interface::SamplingReductionModes::WeightedAverage => vk::SamplerReductionMode::WEIGHTED_AVERAGE,
 			graphics_hardware_interface::SamplingReductionModes::Min => vk::SamplerReductionMode::MIN,
 			graphics_hardware_interface::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
@@ -3475,23 +3466,11 @@ impl crate::device::Device for Device {
 				reduction_mode,
 				mip_map_filter,
 				address_mode,
-				anisotropy,
-				min_lod,
-				max_lod,
+				builder.anisotropy,
+				builder.min_lod,
+				builder.max_lod,
 			)
 			.as_raw(),
-		)
-	}
-
-	fn build_sampler(&mut self, builder: sampler::Builder) -> crate::SamplerHandle {
-		self.create_sampler(
-			builder.filtering_mode,
-			builder.reduction_mode,
-			builder.mip_map_mode,
-			builder.addressing_mode,
-			builder.anisotropy,
-			builder.min_lod,
-			builder.max_lod,
 		)
 	}
 

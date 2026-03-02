@@ -10,7 +10,9 @@ use crate::{
 pub trait Frame<'a>
 where
 	Self: Sized, {
-	type CBR: CommandBufferRecording;
+	type CBR<'f>: CommandBufferRecording
+	where
+		Self: 'f;
 
 	// Return a mutable slice to the buffer data.
 	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
@@ -24,7 +26,7 @@ where
 	fn resize_image(&mut self, image_handle: ImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.
-	fn create_command_buffer_recording(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CBR;
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> Self::CBR<'_>;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///
@@ -38,10 +40,12 @@ where
 	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
 
 	/// Executes the provided command buffer recording.
-	fn execute<'s>(
+	fn execute<'s, 'f>(
 		&mut self,
-		cbr: <Self::CBR as CommandBufferRecording>::Result<'s>,
+		cbr: <Self::CBR<'f> as CommandBufferRecording>::Result<'s>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	);
+	)
+	where
+		Self: 'f;
 }

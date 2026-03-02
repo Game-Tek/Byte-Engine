@@ -2261,11 +2261,8 @@ pub(super) mod tests {
 
 		command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
-		frame.execute(
-			command_buffer_recording.end(&[]),
-			&[present_key],
-			render_finished_synchronizer,
-		);
+		let terminated_command_buffer = command_buffer_recording.end(&[]);
+		frame.execute(terminated_command_buffer, &[present_key], render_finished_synchronizer);
 
 		renderer.end_frame_capture();
 
@@ -2384,11 +2381,8 @@ pub(super) mod tests {
 
 			command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
-			frame.execute(
-				command_buffer_recording.end(&[]),
-				&[present_key],
-				render_finished_synchronizer,
-			);
+			let terminated_command_buffer = command_buffer_recording.end(&[]);
+			frame.execute(terminated_command_buffer, &[present_key], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 
@@ -2499,7 +2493,8 @@ pub(super) mod tests {
 
 			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
-			frame.execute(command_buffer_recording.end(&[]), &[], render_finished_synchronizer);
+			let terminated_command_buffer = command_buffer_recording.end(&[]);
+			frame.execute(terminated_command_buffer, &[], render_finished_synchronizer);
 
 			device.end_frame_capture();
 
@@ -2621,7 +2616,8 @@ pub(super) mod tests {
 
 			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
-			frame.execute(command_buffer_recording.end(&[]), &[], render_finished_synchronizer);
+			let terminated_command_buffer = command_buffer_recording.end(&[]);
+			frame.execute(terminated_command_buffer, &[], render_finished_synchronizer);
 
 			device.end_frame_capture();
 
@@ -2743,7 +2739,8 @@ pub(super) mod tests {
 
 			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
-			frame.execute(command_buffer_recording.end(&[]), &[], render_finished_synchronizer);
+			let terminated_command_buffer = command_buffer_recording.end(&[]);
+			frame.execute(terminated_command_buffer, &[], render_finished_synchronizer);
 
 			device.end_frame_capture();
 
@@ -2890,7 +2887,8 @@ pub(super) mod tests {
 
 			let copy_texture_handles = cb.transfer_textures(&[render_target]);
 
-			frame.execute(cb.end(&[]), &[], render_finished_synchronizer);
+			let terminated_command_buffer = cb.end(&[]);
+			frame.execute(terminated_command_buffer, &[], render_finished_synchronizer);
 
 			device.end_frame_capture();
 
@@ -3051,7 +3049,8 @@ pub(super) mod tests {
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
-		frame.execute(command_buffer_recording.end(&[]), &[], signal);
+		let terminated_command_buffer = command_buffer_recording.end(&[]);
+		frame.execute(terminated_command_buffer, &[], signal);
 
 		device.wait();
 
@@ -3092,7 +3091,8 @@ pub(super) mod tests {
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
-		frame.execute(command_buffer_recording.end(&[]), &[], signal);
+		let terminated_command_buffer = command_buffer_recording.end(&[]);
+		frame.execute(terminated_command_buffer, &[], signal);
 
 		device.wait();
 
@@ -3131,7 +3131,8 @@ pub(super) mod tests {
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
-		frame.execute(command_buffer_recording.end(&[]), &[], signal);
+		let terminated_command_buffer = command_buffer_recording.end(&[]);
+		frame.execute(terminated_command_buffer, &[], signal);
 
 		device.wait();
 
@@ -3162,7 +3163,8 @@ pub(super) mod tests {
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
-		frame.execute(command_buffer_recording.end(&[]), &[], signal);
+		let terminated_command_buffer = command_buffer_recording.end(&[]);
+		frame.execute(terminated_command_buffer, &[], signal);
 
 		device.wait();
 
@@ -3423,7 +3425,8 @@ pub(super) mod tests {
 
 		let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
-		frame.execute(command_buffer_recording.end(&[]), &[], signal);
+		let terminated_command_buffer = command_buffer_recording.end(&[]);
+		frame.execute(terminated_command_buffer, &[], signal);
 
 		device.end_frame_capture();
 
@@ -3740,7 +3743,8 @@ void main() {
 
 			let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
-			frame.execute(command_buffer_recording.end(&[]), &[], render_finished_synchronizer);
+			let terminated_command_buffer = command_buffer_recording.end(&[]);
+			frame.execute(terminated_command_buffer, &[], render_finished_synchronizer);
 
 			renderer.end_frame_capture();
 

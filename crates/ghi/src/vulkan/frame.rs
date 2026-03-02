@@ -25,7 +25,10 @@ impl<'a> Frame<'a> {
 }
 
 impl<'a> crate::frame::Frame<'a> for Frame<'a> {
-	type CBR = CommandBufferRecording<'a>;
+	type CBR<'f>
+		= CommandBufferRecording<'f>
+	where
+		Self: 'f;
 
 	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
@@ -156,7 +159,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
 	}
 
-	fn create_command_buffer_recording(&'a mut self, command_buffer_handle: crate::CommandBufferHandle) -> Self::CBR {
+	fn create_command_buffer_recording(&mut self, command_buffer_handle: crate::CommandBufferHandle) -> Self::CBR<'_> {
 		let frame_key = self.frame_key;
 
 		// Update descriptors before creating command buffer
@@ -258,12 +261,14 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		unsafe { std::mem::transmute(staging_buffer.pointer) }
 	}
 
-	fn execute<'s>(
+	fn execute<'s, 'f>(
 		&mut self,
-		cbr: <Self::CBR as crate::command_buffer::CommandBufferRecording>::Result<'s>,
+		cbr: <Self::CBR<'f> as crate::command_buffer::CommandBufferRecording>::Result<'s>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	) {
+	)
+	where
+		Self: 'f, {
 		let (command_buffer_handle, states, _) = cbr;
 
 		let command_buffer = self.device.command_buffers[0].frames[0];

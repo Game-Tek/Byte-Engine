@@ -553,28 +553,6 @@ impl Device {
 		f(staging);
 	}
 
-	/// Creates an image and allocates CPU-side staging storage when the format is supported.
-	#[deprecated(note = "Use build_image instead.")]
-	pub fn create_image(
-		&mut self,
-		name: Option<&str>,
-		extent: Extent,
-		format: Formats,
-		resource_uses: Uses,
-		device_accesses: DeviceAccesses,
-		use_case: UseCases,
-		array_layers: Option<NonZeroU32>,
-	) -> ImageHandle {
-		let builder = image::Builder::new(format, resource_uses)
-			.extent(extent)
-			.device_accesses(device_accesses)
-			.use_case(use_case)
-			.array_layers(array_layers);
-		let builder = if let Some(name) = name { builder.name(name) } else { builder };
-
-		self.build_image(builder)
-	}
-
 	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
 		let size = utils::bytes_per_pixel(builder.format).map(|bpp| {
 			bpp * builder.extent.width() as usize * builder.extent.height() as usize * builder.extent.depth() as usize

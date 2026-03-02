@@ -1511,27 +1511,6 @@ pub mod device {
 			}
 		}
 
-		#[deprecated(note = "Use build_image instead.")]
-		pub fn create_image(
-			&mut self,
-			name: Option<&str>,
-			extent: Extent,
-			format: graphics_hardware_interface::Formats,
-			resource_uses: graphics_hardware_interface::Uses,
-			device_accesses: graphics_hardware_interface::DeviceAccesses,
-			use_case: graphics_hardware_interface::UseCases,
-			array_layers: Option<NonZeroU32>,
-		) -> graphics_hardware_interface::ImageHandle {
-			let builder = image_builder::Builder::new(format, resource_uses)
-				.extent(extent)
-				.device_accesses(device_accesses)
-				.use_case(use_case)
-				.array_layers(array_layers);
-			let builder = if let Some(name) = name { builder.name(name) } else { builder };
-
-			self.build_image(builder)
-		}
-
 		pub fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
 			let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
 			let image_handle = self.create_image_internal(
